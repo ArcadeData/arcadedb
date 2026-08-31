@@ -2310,6 +2310,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * full per-entry budget, because each of them travels alone. The resulting publishing payload is at most
    * {@code stores x share}, which is the capacity itself - it fits by construction, at any shard count.
    *
+   * WHY THE CAPACITY IS DIVIDED EVENLY AND NOT BY SIZE. A size-weighted allocation would fit a session that an
+   * even one refuses - one tiny store beside one huge one, on a cap tight enough that the huge one's even share is
+   * smaller than the tiny store already is. Even division is chosen anyway because the property that matters here
+   * is the one a reader can check in a line: no store contributes more than its share, so the total cannot exceed
+   * the capacity, at any shard count and in any order. A weighted split has to be re-derived every time the
+   * publishing entry's contents change, and it buys headroom only in a regime an operator reaches by lowering
+   * {@code arcadedb.ha.tsMaxSealedInlineSize} far below the cap - which the refusal message tells them to undo.
+   *
    * @param sealedEntryBudget  raw sealed bytes one DELIVERY-ONLY entry may carry, from
    *                           {@link GlobalConfiguration#replicatedSealedChunkBudget}; {@code <= 0} means a cap
    *                           too small to slice at all, where every store keeps shipping whole exactly as it did
