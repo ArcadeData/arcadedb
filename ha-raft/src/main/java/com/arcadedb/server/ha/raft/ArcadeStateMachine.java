@@ -2456,10 +2456,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * the caller, not the callee. That one runs during a database open, where an escaping runtime exception fails the
    * open and says so. This one runs inside the Raft apply path, whose whole contract here is that one type must not
    * abort the apply of an entry that may carry blobs for others - the same reason
-   * {@link #repairEngineWithSealedBlob} reports failure rather than throwing. So nothing may escape, including a
-   * programming error. It is logged at SEVERE, WITH its stack trace and its exception class, and names the
-   * consequence precisely, so it does not disappear: swallowing it here must not also hide it, and what it leaves
-   * behind - a type maintained by nothing - is the very defect this method exists to prevent.
+   * {@link #repairEngineWithSealedBlob} reports failure rather than throwing. So no <em>exception</em> may escape,
+   * a programming error included.
+   * <p>
+   * {@code Exception} and not {@code Throwable}, deliberately: an {@code Error} says the JVM itself is no longer in
+   * a state this node can reason about, and the apply path's "do not let one type abort the entry" contract is not
+   * a licence to keep applying Raft entries through one. Errors still propagate.
+   * <p>
+   * What IS swallowed is logged at SEVERE, with its stack trace and its exception class, and names the consequence
+   * precisely, so it does not disappear: swallowing it here must not also hide it, and what it leaves behind - a
+   * type maintained by nothing - is the very defect this method exists to prevent. That is louder than the sibling
+   * catch in {@code LocalSchema.readConfiguration()} on purpose, and for the same reason the catch is wider: there
+   * the alternative was the open failing loudly on its own, here nothing else will ever say a word.
    */
   private void scheduleMaintenanceAfterRepair(final DatabaseInternal db, final LocalTimeSeriesType tsType) {
     try {
