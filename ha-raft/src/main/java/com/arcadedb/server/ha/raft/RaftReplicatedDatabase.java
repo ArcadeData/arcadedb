@@ -2234,11 +2234,22 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private static final SealedSlicePlan NOT_SLICED = new SealedSlicePlan(0, 0, 0, 0L, 0);
 
   /**
-   * Fixed bytes the codec writes per sealed slice besides its payload: the type and file names, six numbers and a
-   * flag (issue #6933). {@link GlobalConfiguration#REPLICATED_SEALED_CHUNK_FRAMING_BYTES} already reserves for
-   * ONE slice, generously; this is what each ADDITIONAL slice sharing the publishing entry costs.
+   * What the codec writes for one sealed slice besides its payload, MEASURED rather than guessed (issue #6933):
+   * the type and file names are variable-length, and a long type name lengthens the derived
+   * {@code .ts.sealed} name with it, so a flat constant is a bound that a sufficiently verbose schema walks past.
+   * <p>
+   * Encoding a whole empty entry rather than the slice section alone overstates it by the entry header, which is
+   * the safe direction: {@link GlobalConfiguration#REPLICATED_SEALED_CHUNK_FRAMING_BYTES} already reserves for
+   * ONE slice, so this is only charged for the stores BEYOND the first.
    */
-  private static final int SEALED_SLICE_FRAMING_BYTES = 256;
+  private static int sealedSliceFraming(final RaftLogEntryCodec.TsSealedBlob blob) {
+    final RaftLogEntryCodec.TsSealedChunk empty = new RaftLogEntryCodec.TsSealedChunk(blob.typeName(),
+        blob.shardIndex(), blob.fileName(), 0L, 0L, 0L, EMPTY_SLICE_PAYLOAD, true);
+    return RaftLogEntryCodec.encodeSchemaEntry("", "", Collections.emptyMap(), Collections.emptyMap(),
+        Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), false, List.of(empty)).size();
+  }
+
+  private static final byte[] EMPTY_SLICE_PAYLOAD = new byte[0];
 
   /**
    * What the publishing entry spends on everything that is NOT sealed payload, measured by encoding it (issue
@@ -2326,15 +2337,19 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
 
     // Every store beyond the first also pays for its own slice framing - the budget reserves for exactly one.
-    final long share = (publishingCapacity - (long) SEALED_SLICE_FRAMING_BYTES * (blobs.size() - 1)) / blobs.size();
+    long extraFraming = 0;
+    for (int i = 1; i < blobs.size(); i++)
+      extraFraming += sealedSliceFraming(blobs.get(i));
+
+    final long share = (publishingCapacity - extraFraming) / blobs.size();
     if (share <= 0)
       throw new ReplicatedEntryTooLargeException(String.format(
           """
           Schema change for database '%s' publishes %d TimeSeries sealed store(s) but only %d bytes of one Raft \
-          entry are left for them once the schema JSON and the file maps are on it. Raise \
-          arcadedb.ha.appendBufferSize - and with it arcadedb.ha.writeBufferSize, which must stay >= \
+          entry are left for them once the schema JSON and the file maps are on it, %d each after their framing. \
+          Raise arcadedb.ha.appendBufferSize - and with it arcadedb.ha.writeBufferSize, which must stay >= \
           appendBufferSize + 8 bytes.""",
-          databaseName, blobs.size(), Math.max(0L, publishingCapacity)));
+          databaseName, blobs.size(), Math.max(0L, publishingCapacity), share));
 
     for (final RaftLogEntryCodec.TsSealedBlob blob : blobs)
       plans.add(planSealedSlices(blob, sealedEntryBudget, share, databaseName));
@@ -2357,8 +2372,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * supposed to have kept it from ever getting this far and the maintenance path (retention, downsampling) has no
    * such guard.
    * <p>
-   * When the tail fits without shrinking anything the slicing is UNIFORM, byte for byte what #4416 shipped: that
-   * is the single-store case, which is every cluster whose types have one shard.
+   * When the tail fits without shrinking anything the slicing is UNIFORM - the shape #4416 shipped. That is not
+   * quite "every single-shard cluster keeps its old byte layout": a lone store owns the whole publishing capacity,
+   * but the capacity itself is now the entry cap less the measured schema JSON and file maps, so a store whose
+   * uniform tail was within a schema JSON of the budget gets one more, smaller, final slice than it used to. That
+   * IS the thin-margin half of #6933, not a side effect of it.
    *
    * @param bodyBudget how many raw bytes of sealed content one delivery-only entry may carry; {@code <= 0}
    *                   disables slicing

@@ -152,6 +152,25 @@ class Issue6933MultiStoreSealedShippingTest {
     assertThat(plans).allSatisfy(plan -> assertThat(plan.sliced()).isFalse());
   }
 
+  /**
+   * The framing a slice costs besides its payload is not a constant: the type name and the file name derived from
+   * it are both written on EVERY slice, and nothing caps a type name's length. A session of stores whose names run
+   * to the hundreds of bytes must still build a publishing entry that fits, which it only does because the margin
+   * is measured rather than assumed.
+   */
+  @Test
+  void storesWithVeryLongNamesStillFitOnePublishingEntry() {
+    final String longType = "t".repeat(400);
+    final List<TsSealedBlob> stores = new ArrayList<>();
+    // Enough shards that the names' bulk outgrows the single-slice reserve the budget already holds back: with a
+    // flat 256-byte allowance per extra store this entry comes out over the cap.
+    for (int shard = 0; shard < 16; shard++)
+      stores.add(new TsSealedBlob(longType, shard, longType + "_shard_" + shard + ".ts.sealed",
+          randomBytes((int) (SEALED_BUDGET * 2))));
+
+    assertThat(encodedPublishingEntrySize(stores)).isLessThanOrEqualTo(ENTRY_CAP);
+  }
+
   // ---- the geometry a follower reassembles from ------------------------------------------------------------
 
   /**
