@@ -26,6 +26,7 @@ import com.mongodb.MongoCredential;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
 import org.bson.Document;
+import org.bson.types.ObjectId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -96,7 +97,7 @@ public class MongoDBHexStringIdAmbiguityTest extends BaseGraphServerTest {
     // Documented limitation (#6955): the client sent a String, but it comes back as an ObjectId because the stored
     // hex form is indistinguishable from a real ObjectId's. Contrast with MongoDBNonObjectIdTest, which covers an
     // odd-length or non-hex-looking String _id: those are not ambiguous and correctly round-trip as a String.
-    assertThat(found.get("_id")).isInstanceOf(org.bson.types.ObjectId.class);
+    assertThat(found.get("_id")).isInstanceOf(ObjectId.class);
     assertThat(found.get("_id").toString()).isEqualTo(hexLookingId);
   }
 }
