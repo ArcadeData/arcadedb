@@ -137,6 +137,54 @@ public class InsertOnDuplicateKeySkipTest extends TestHelper {
   }
 
   @Test
+  void supportsTheSetInsertForm() {
+    // ON DUPLICATE KEY SKIP is wired into SaveElementStep, which every insert body form feeds through - not
+    // just CONTENT [...]. Pins that down for the SET form explicitly.
+    createProductTypeWithUniqueSku();
+    database.command("sql", "INSERT INTO Product SET sku = 'E1', name = 'original'");
+
+    final ResultSet result = database.command("sql",
+        "INSERT INTO Product SET sku = 'E1', name = 'clashes' ON DUPLICATE KEY SKIP");
+
+    final Result item = result.next();
+    assertThat(item.<Boolean>getProperty("@skipped")).isTrue();
+    result.close();
+
+    assertThat(database.countType("Product", true)).isEqualTo(1);
+    assertThat(database.query("sql", "SELECT FROM Product WHERE sku = 'E1'").next().<String>getProperty("name")).isEqualTo("original");
+  }
+
+  @Test
+  void supportsTheFromQueryInsertForm() {
+    // Same reasoning as supportsTheSetInsertForm(), for the INSERT ... FROM <query> form - selecting whole
+    // elements (not a column projection): CopyDocumentStep copies an element into an unsaved in-memory document
+    // and lets SaveElementStep do the one save, same as the CONTENT/SET forms. A projected SELECT is a
+    // different, pre-existing code path in CopyDocumentStep that saves eagerly and bypasses SaveElementStep
+    // entirely - out of scope for this clause, since fixing that is a CopyDocumentStep change unrelated to #4918.
+    createProductTypeWithUniqueSku();
+    database.command("sql", "INSERT INTO Product SET sku = 'D1', name = 'original'");
+    database.getSchema().createDocumentType("Staging").createProperty("sku", Type.STRING);
+    database.getSchema().getType("Staging").createProperty("name", Type.STRING);
+    database.command("sql",
+        "INSERT INTO Staging CONTENT [ {\"sku\":\"D1\",\"name\":\"clashes\"}, {\"sku\":\"D2\",\"name\":\"second\"} ]");
+
+    final ResultSet result = database.command("sql",
+        "INSERT INTO Product ON DUPLICATE KEY SKIP FROM (SELECT FROM Staging ORDER BY sku)");
+
+    final Result first = result.next();
+    assertThat(first.<Boolean>getProperty("@skipped")).isTrue();
+    assertThat(first.<String>getProperty("sku")).isEqualTo("D1");
+
+    final Result second = result.next();
+    assertThat(second.<Boolean>getProperty("@skipped")).isNull();
+    assertThat(second.<String>getProperty("sku")).isEqualTo("D2");
+    result.close();
+
+    assertThat(database.countType("Product", true)).isEqualTo(2);
+    assertThat(database.query("sql", "SELECT FROM Product WHERE sku = 'D1'").next().<String>getProperty("name")).isEqualTo("original");
+  }
+
+  @Test
   void skipsAPartiallyNullCompositeKeyClashingWithAnExistingRecord() {
     // A composite unique index only exempts a key from the uniqueness check when EVERY component is null
     // (LSMTreeIndexAbstract.isKeyNull); a key with just ONE null component, like (John, null) here, is still a
