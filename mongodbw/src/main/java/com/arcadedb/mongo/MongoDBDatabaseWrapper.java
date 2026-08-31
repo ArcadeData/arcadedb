@@ -641,10 +641,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
 
     if (isReplacement(u)) {
-      for (final Map.Entry<String, Object> entry : u.entrySet())
-        record.set(entry.getKey(), entry.getValue());
+      for (final Map.Entry<String, Object> entry : u.entrySet()) {
+        final Object value = entry.getValue();
+        if ("_id".equals(entry.getKey()) && value instanceof ObjectId)
+          idIsObjectId = true;
+        record.set(entry.getKey(), normalizeIdValue(value));
+      }
     } else {
-      applyOperatorsToDocument(record, u);
+      idIsObjectId |= applyOperatorsToDocument(record, u);
     }
 
     // has(), not get() == null: an explicit "_id": null in the filter/update is a legal (if unusual) BSON _id and
@@ -668,14 +672,25 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return value instanceof ObjectId oid ? oid.getHexData() : value;
   }
 
-  private void applyOperatorsToDocument(final MutableDocument record, final Document u) {
+  /**
+   * Applies the update operators to the record being upserted, returning whether an ObjectId-typed {@code _id} was
+   * seeded through {@code $set} - mirroring the same tracking the filter-seeding loop and the replacement branch in
+   * {@link #executeUpsert} already do, so the response reports {@code _id} back as an ObjectId regardless of which
+   * branch supplied it.
+   */
+  private boolean applyOperatorsToDocument(final MutableDocument record, final Document u) {
+    boolean idIsObjectId = false;
     for (final Map.Entry<String, Object> entry : u.entrySet()) {
       final String op = entry.getKey();
       final Document operand = (Document) entry.getValue();
       switch (op) {
       case "$set" -> {
-        for (final Map.Entry<String, Object> f : operand.entrySet())
-          record.set(f.getKey(), f.getValue());
+        for (final Map.Entry<String, Object> f : operand.entrySet()) {
+          final Object value = f.getValue();
+          if ("_id".equals(f.getKey()) && value instanceof ObjectId)
+            idIsObjectId = true;
+          record.set(f.getKey(), normalizeIdValue(value));
+        }
       }
       case "$unset" -> {
         for (final String f : operand.keySet())
@@ -691,6 +706,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
       }
     }
+    return idIsObjectId;
   }
 
   /**
