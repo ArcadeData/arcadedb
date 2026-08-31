@@ -143,8 +143,9 @@ class Issue6943CountCommonNeighborsOverlayTest extends TestHelper {
     database.commit();
 
     final int idC = gav.getNodeId(c.getIdentity());
-    assertThat(idC).as("precondition: C's node id must be an overlay-added id past the base node count")
-        .isGreaterThanOrEqualTo(gav.getNodeCount() - 1);
+    // No deletions precede this add, so C's id is deterministically the next slot after the 2 base nodes (B, X).
+    assertThat(idC).as("precondition: C's node id must be the overlay-added id past the base node count")
+        .isEqualTo(2);
 
     // Before the fix, nodeA=idC indexed the base CSR's offsets array without a bounds check and threw AIOOBE.
     assertThat(gav.countCommonNeighbors(idC, idB, Vertex.DIRECTION.OUT, "KNOWS"))
