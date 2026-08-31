@@ -1593,224 +1593,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (!graphNotYetMaterialised())
         return; // Another thread already resolved this while we waited for graphBuildLock
 
-      // Try to load persisted graph from disk
-      // IMPORTANT: If PRODUCT quantization is enabled but PQ file doesn't exist, we need to rebuild
-      // the graph from scratch so that ordinalToVectorId is consistent between graph and PQ.
-      // Loading graph from disk and then building PQ separately causes ordinal mismatch.
-      final boolean needsGraphRebuildForPQ = metadata.quantizationType == VectorQuantizationType.PRODUCT &&
-          pqFile != null && !pqFile.exists();
-      if (needsGraphRebuildForPQ) {
-        LogManager.instance().log(this, Level.INFO,
-            """
-                PRODUCT quantization enabled but PQ file missing - rebuilding graph from scratch for ordinal \
-                consistency: %s""",
-            indexName);
-      }
-
-      // CRITICAL FIX FOR #3135: Check if vectorIndex contains deleted entries
-      // If vectors were updated/deleted, the persisted graph's ordinal mappings are stale.
-      // The graph was built with ordinals based on the old vector set, but after filtering
-      // deleted vectors, the new ordinalToVectorId array will have different indices.
-      // This causes NPE when JVector tries to access vectors using stale ordinals.
-      // Solution: Rebuild graph from scratch if any deleted entries exist.
-      final boolean hasDeletedVectors = vectorIndex().getDeletedCount() > 0;
-      if (hasDeletedVectors) {
-        LogManager.instance().log(this, Level.INFO,
-            """
-                Deleted vectors detected in index %s - rebuilding graph from scratch to ensure ordinal consistency \
-                (fixes issue #3135: stale ordinal mappings after vector updates)""",
-            indexName);
-      }
-
-      final LSMVectorIndexGraphFile gf = graphFile;
-      if (gf != null && gf.hasPersistedGraph() && !needsGraphRebuildForPQ && !hasDeletedVectors) {
-        try {
-          final var loadedGraph = gf.loadGraph();
-
-          // Rebuild ordinalToVectorId from vectorIndex
-          // IMPORTANT: Must match the validation logic used during graph building
-          final String vectorProp =
-              metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
-                  metadata.propertyNames.getFirst() : "vector";
-
-          // One read of the location index for the whole walk, both because a per-element accessor call would
-          // re-check the materialisation flag on every live vector and because a compaction swaps the instance
-          // (issue #5568) - a filter that straddled the swap would mix two generations of offsets.
-          final VectorLocationIndex validationLocations = vectorIndex();
-          final int[] rebuiltOrdinalToVectorId = validationLocations.getAllVectorIds().filter(id -> {
-            final long offsetAndFlag = validationLocations.getOffsetAndFlag(id);
-            if (offsetAndFlag == VectorLocationIndex.ABSENT) {
-              return false;
-            }
-
-            // Re-validate vectors to match graph building logic
-            // NOTE: PRODUCT quantization does NOT store vectors in pages - must read from documents like NONE
-            final boolean hasInlineQuantization = metadata.quantizationType == VectorQuantizationType.INT8 ||
-                metadata.quantizationType == VectorQuantizationType.BINARY;
-            if (hasInlineQuantization) {
-              // With INT8/BINARY quantization: verify we can read the quantized vector from pages
-              try {
-                final float[] vector = readVectorFromOffset(VectorLocationIndex.offsetOf(offsetAndFlag),
-                    VectorLocationIndex.isCompactedOf(offsetAndFlag));
-                return vector != null && vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector);
-              } catch (final Exception e) {
-                return false;
-              }
-            } else {
-              // Without quantization: validate by reading from document.
-              try {
-                final RID rid = validationLocations.getRid(id);
-                if (rid == null)
-                  return false;
-                final Record record = getDatabase().lookupByRID(rid, false);
-                if (record == null)
-                  return false;
-                final Document doc = (Document) record;
-                final Object vectorObj = doc.get(vectorProp);
-                if (vectorObj == null)
-                  return false;
-                final float[] vector = VectorUtils.toFloatArray(vectorObj, metadata.encoding);
-                return vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector);
-              } catch (final Exception e) {
-                return false;
-              }
-            }
-          }).sorted().toArray();
-
-          final int graphSize = loadedGraph != null ? loadedGraph.size() : 0;
-          LogManager.instance().log(this, Level.INFO,
-              "Loaded graph from disk for index: %s, graphSize=%d, ordinalToVectorIdLength=%d, vectorIndexSize=%d",
-              indexName, graphSize, rebuiltOrdinalToVectorId.length, validationLocations.size());
-
-          // CRITICAL FIX FOR #3722: a persisted graph with fewer nodes than there are active vectors is stale -
-          // vectors were added after it was last built and persisted. On database restart deltaVectors (volatile)
-          // are lost and graphState is set to IMMUTABLE, so rebuildGraphBeforeSearch() never triggers and search
-          // can only find nodes in the stale graph.
-          //
-          // ISSUE #6106: that comparison is about how MANY vectors there are, and reusing the graph needs to know
-          // WHICH ones. The graph is addressed by ordinal, and ordinal i means a record only through the array
-          // rebuilt just above; pair a graph with an array from another generation of the live set and every node
-          // answers for a record it was never built from - a wrong-but-plausible result, not a failure. Counts
-          // cannot separate the two: since the renumbering compaction of issue #5870 every generation's ids are
-          // densely [0, N), so two generations holding different records routinely produce arrays of identical
-          // length. The manifest written next to the graph records the correspondence itself, and comparing
-          // against it is what makes the reuse safe rather than merely plausible.
-          final LSMVectorIndexGraphManifest.Content persistedManifest = gf.getManifest().read();
-
-          final String staleReason;
-          if (persistedManifest == null) {
-            // No manifest: a graph persisted by a version older than this check, or one whose persist was
-            // interrupted before it could write one. Judge it the historical way, by node count, rather than
-            // forcing every existing index to rebuild on the first open after an upgrade - but widen the
-            // comparison to ANY difference, because a graph larger than the live set lines its ordinals up no
-            // better than a smaller one: everything past the end of the rebuilt array is dropped as out of
-            // bounds, and everything before it can still address the wrong record.
-            staleReason = graphSize != rebuiltOrdinalToVectorId.length ?
-                "it has no manifest and holds %d nodes against %d active vectors".formatted(graphSize,
-                    rebuiltOrdinalToVectorId.length) :
-                null;
-            if (staleReason == null) {
-              // Also counted, not only logged: a WARNING is easy to miss, and "is this index still on the weaker
-              // comparison?" is a question an operator should be able to ask the stats rather than the log file.
-              metrics.incrementUnverifiedGraphReuses();
-              LogManager.instance().log(this, Level.WARNING,
-                  "Vector index %s is reusing a persisted graph that carries no manifest: its %d nodes match the "
-                      + "live vector count, but nothing on disk says they describe these records (issue #6106). "
-                      + "The next graph persist writes one; REBUILD INDEX forces it now",
-                  indexName, graphSize);
-            }
-          } else if (persistedManifest.vectorCount() != rebuiltOrdinalToVectorId.length
-              || persistedManifest.fingerprint() != LSMVectorIndexGraphManifest.fingerprintOf(
-              rebuiltOrdinalToVectorId, validationLocations::getRid)) {
-            staleReason = "it was built over %d records the manifest fingerprints as %s, not over the %d now live".formatted(
-                persistedManifest.vectorCount(), Long.toHexString(persistedManifest.fingerprint()),
-                rebuiltOrdinalToVectorId.length);
-          } else if (graphSize != rebuiltOrdinalToVectorId.length) {
-            // The manifest agrees with the live set but the pages do not: a truncated or otherwise damaged
-            // persist. Nothing here can repair it, so rebuild.
-            staleReason = "the pages hold %d nodes while its manifest and the live set both say %d".formatted(
-                graphSize, rebuiltOrdinalToVectorId.length);
-          } else
-            staleReason = null;
-
-          if (staleReason != null) {
-            // ISSUE #6655: a graph stale ONLY because more vectors were added since it was built - no deletions
-            // (guaranteed by the !hasDeletedVectors guard above) and, when a manifest is present, its fingerprint
-            // proves the graph's own ordinals [0, graphSize) still resolve to exactly the records they were built
-            // from - is not wrong, only behind. That is the identical staleness rebuildGraphBeforeSearch()'s async
-            // policy already tolerates mid-session (a graph missing the newest vectors, not one describing the
-            // wrong ones), so it is reused immediately instead of paying a synchronous full rebuild on the calling
-            // search thread for however large the WHOLE index has become - the reopen-time counterpart of #6067's
-            // close-time deferral, reached through the general stale-persisted-graph path rather than only the
-            // deferred-close one. A missing manifest cannot support this: the weak node-count comparison above
-            // proves nothing about WHICH records a same-sized graph describes, and a prefix of it proves even
-            // less. Below the async-rebuild threshold a synchronous rebuild is already cheap, so it is left alone.
-            // vectorIndex.size(), not graphIndex.size() as rebuildGraphBeforeSearch()'s analogous check uses:
-            // graphIndex is not yet set on this path (that is the whole point - the persisted graph has not been
-            // published to it yet), so the only live-vector count available here is the index's, which is also
-            // the more conservative of the two whenever they would differ (rebuiltOrdinalToVectorId.length can
-            // be smaller after validation filtering, never larger) - "is this worth deferring" errs towards yes.
-            final int[] prefix = persistedManifest != null && graphSize == persistedManifest.vectorCount()
-                && graphSize < rebuiltOrdinalToVectorId.length && graphSize > 0
-                && validationLocations.size() >= ASYNC_REBUILD_MIN_GRAPH_SIZE
-                && persistedManifest.fingerprint() == LSMVectorIndexGraphManifest.fingerprintOf(
-                Arrays.copyOf(rebuiltOrdinalToVectorId, graphSize), validationLocations::getRid) ?
-                rebuiltOrdinalToVectorId : null;
-
-            if (prefix != null) {
-              // Deliberately not done here: reuseStalePrefixGraph() does real I/O for the gap and must run
-              // unlocked (see the field javadoc above). Only the decision - not the read - belongs under this
-              // lock, same as every other branch in this method.
-              prefixReuseCandidate = new ReuseCandidate(loadedGraph, prefix, graphSize, vectorProp);
-            } else
-              LogManager.instance().log(this, Level.INFO,
-                  "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
-                  indexName, staleReason);
-            // Don't use the stale graph as IMMUTABLE — fall through to buildGraphFromScratch() below unless the
-            // prefix reuse above already queued a deferred reuse
-          } else {
-            // Graph is up to date — publish it under a brief write lock (issue #6713), then finish PQ
-            // (if needed) unlocked, mirroring buildGraphFromScratchExclusively's own publish step.
-            lock.writeLock().lock();
-            try {
-              this.graphIndex = loadedGraph;
-              this.ordinalToVectorId = rebuiltOrdinalToVectorId;
-              if (graphState == GraphState.LOADING)
-                this.graphState = GraphState.IMMUTABLE;
-              // else: a concurrent put()/putBatch()/remove() already advanced graphState to MUTABLE while
-              // this validation ran unlocked. The freshly loaded graph is still a correct base for
-              // mergeWithDeltaScan() to merge against - it was built from a vectorIndex snapshot taken during
-              // that validation, and whatever changed since then is already in deltaVectors - but overwriting
-              // MUTABLE back to IMMUTABLE here would hide those pending deltas from search.
-            } finally {
-              lock.writeLock().unlock();
-            }
-
-            // Build PQ if PRODUCT quantization is enabled but PQ file doesn't exist
-            // This handles the case where graph was built before PRODUCT quantization was added
-            if (metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null && !pqFile.isPQReady()) {
-              LogManager.instance().log(this, Level.INFO,
-                  "PQ not available after graph load, building PQ for index: %s", indexName);
-              try {
-                // Create vector values from the loaded vectorIndex for PQ building
-                final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(),
-                    metadata.dimensions, vectorProp,
-                    snapshotOf(vectorIndex(), ordinalToVectorId), ordinalToVectorId, this,
-                    computeGraphBuildCacheCapacity(ordinalToVectorId.length, false));
-                buildAndPersistPQ(vectors);
-              } catch (final Exception e) {
-                LogManager.instance().log(this, Level.WARNING,
-                    "Failed to build PQ after graph load for index %s: %s", indexName, e.getMessage());
-              }
-            }
-
-            return;
-          }
-        } catch (final Exception e) {
-          LogManager.instance()
-              .log(this, Level.WARNING, "Failed to load graph for %s, will rebuild: %s", indexName, e.getMessage());
-        }
-      }
+      final PersistedGraphCheck check = loadPersistedGraphOrDecidePrefix();
+      if (check.fullyLoaded())
+        return;
+      prefixReuseCandidate = check.prefix();
 
       // No persisted graph, load failed, or it was stale with no usable prefix - build from scratch.
       // buildGraphFromScratch() acquires graphBuildLock itself; since it is reentrant this is safe to call
@@ -1849,6 +1635,252 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // where graphState stays LOADING across the same window, and it is bounded by a scan rather than by a
       // rebuild.
       reuseStalePrefixGraph(prefixReuseCandidate);
+    }
+  }
+
+  /**
+   * Outcome of {@link #loadPersistedGraphOrDecidePrefix()}: either the persisted graph was already fully
+   * up to date and has been published (nothing more for the caller to do), a stale-but-verified prefix is
+   * available for the caller to reuse via {@link #reuseStalePrefixGraph}, or neither and the caller must
+   * build from scratch.
+   */
+  private record PersistedGraphCheck(boolean fullyLoaded, ReuseCandidate prefix) {
+    private static final PersistedGraphCheck LOADED   = new PersistedGraphCheck(true, null);
+    private static final PersistedGraphCheck UNUSABLE = new PersistedGraphCheck(false, null);
+  }
+
+  /**
+   * The persisted-graph-on-disk decision shared by {@link #ensureGraphAvailable()} and the async-rebuild path
+   * (issue #6859): load it, validate it against the live vector set, and either publish it outright (up to
+   * date), hand back a {@link ReuseCandidate} for the caller to reuse as a prefix (stale only because more
+   * vectors were added - issue #6655), or say neither is possible.
+   * <p>
+   * Must be called while holding {@link #graphBuildLock} - it publishes {@link #graphIndex} directly in the
+   * "up to date" case, and both callers already serialize their own decision under that lock for exactly this
+   * reason. Does no I/O beyond the graph load and the live-set validation scan; the prefix reuse's own gap read
+   * happens later, unlocked, in {@link #reuseStalePrefixGraph}.
+   */
+  private PersistedGraphCheck loadPersistedGraphOrDecidePrefix() {
+    // Try to load persisted graph from disk
+    // IMPORTANT: If PRODUCT quantization is enabled but PQ file doesn't exist, we need to rebuild
+    // the graph from scratch so that ordinalToVectorId is consistent between graph and PQ.
+    // Loading graph from disk and then building PQ separately causes ordinal mismatch.
+    final boolean needsGraphRebuildForPQ = metadata.quantizationType == VectorQuantizationType.PRODUCT &&
+        pqFile != null && !pqFile.exists();
+    if (needsGraphRebuildForPQ) {
+      LogManager.instance().log(this, Level.INFO,
+          """
+              PRODUCT quantization enabled but PQ file missing - rebuilding graph from scratch for ordinal \
+              consistency: %s""",
+          indexName);
+    }
+
+    // CRITICAL FIX FOR #3135: Check if vectorIndex contains deleted entries
+    // If vectors were updated/deleted, the persisted graph's ordinal mappings are stale.
+    // The graph was built with ordinals based on the old vector set, but after filtering
+    // deleted vectors, the new ordinalToVectorId array will have different indices.
+    // This causes NPE when JVector tries to access vectors using stale ordinals.
+    // Solution: Rebuild graph from scratch if any deleted entries exist.
+    final boolean hasDeletedVectors = vectorIndex().getDeletedCount() > 0;
+    if (hasDeletedVectors) {
+      LogManager.instance().log(this, Level.INFO,
+          """
+              Deleted vectors detected in index %s - rebuilding graph from scratch to ensure ordinal consistency \
+              (fixes issue #3135: stale ordinal mappings after vector updates)""",
+          indexName);
+    }
+
+    final LSMVectorIndexGraphFile gf = graphFile;
+    if (gf == null || !gf.hasPersistedGraph() || needsGraphRebuildForPQ || hasDeletedVectors)
+      return PersistedGraphCheck.UNUSABLE;
+
+    try {
+      final var loadedGraph = gf.loadGraph();
+
+      // Rebuild ordinalToVectorId from vectorIndex
+      // IMPORTANT: Must match the validation logic used during graph building
+      final String vectorProp =
+          metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
+              metadata.propertyNames.getFirst() : "vector";
+
+      // One read of the location index for the whole walk, both because a per-element accessor call would
+      // re-check the materialisation flag on every live vector and because a compaction swaps the instance
+      // (issue #5568) - a filter that straddled the swap would mix two generations of offsets.
+      final VectorLocationIndex validationLocations = vectorIndex();
+      final int[] rebuiltOrdinalToVectorId = validationLocations.getAllVectorIds().filter(id -> {
+        final long offsetAndFlag = validationLocations.getOffsetAndFlag(id);
+        if (offsetAndFlag == VectorLocationIndex.ABSENT) {
+          return false;
+        }
+
+        // Re-validate vectors to match graph building logic
+        // NOTE: PRODUCT quantization does NOT store vectors in pages - must read from documents like NONE
+        final boolean hasInlineQuantization = metadata.quantizationType == VectorQuantizationType.INT8 ||
+            metadata.quantizationType == VectorQuantizationType.BINARY;
+        if (hasInlineQuantization) {
+          // With INT8/BINARY quantization: verify we can read the quantized vector from pages
+          try {
+            final float[] vector = readVectorFromOffset(VectorLocationIndex.offsetOf(offsetAndFlag),
+                VectorLocationIndex.isCompactedOf(offsetAndFlag));
+            return vector != null && vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector);
+          } catch (final Exception e) {
+            return false;
+          }
+        } else {
+          // Without quantization: validate by reading from document.
+          try {
+            final RID rid = validationLocations.getRid(id);
+            if (rid == null)
+              return false;
+            final Record record = getDatabase().lookupByRID(rid, false);
+            if (record == null)
+              return false;
+            final Document doc = (Document) record;
+            final Object vectorObj = doc.get(vectorProp);
+            if (vectorObj == null)
+              return false;
+            final float[] vector = VectorUtils.toFloatArray(vectorObj, metadata.encoding);
+            return vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector);
+          } catch (final Exception e) {
+            return false;
+          }
+        }
+      }).sorted().toArray();
+
+      final int graphSize = loadedGraph != null ? loadedGraph.size() : 0;
+      LogManager.instance().log(this, Level.INFO,
+          "Loaded graph from disk for index: %s, graphSize=%d, ordinalToVectorIdLength=%d, vectorIndexSize=%d",
+          indexName, graphSize, rebuiltOrdinalToVectorId.length, validationLocations.size());
+
+      // CRITICAL FIX FOR #3722: a persisted graph with fewer nodes than there are active vectors is stale -
+      // vectors were added after it was last built and persisted. On database restart deltaVectors (volatile)
+      // are lost and graphState is set to IMMUTABLE, so rebuildGraphBeforeSearch() never triggers and search
+      // can only find nodes in the stale graph.
+      //
+      // ISSUE #6106: that comparison is about how MANY vectors there are, and reusing the graph needs to know
+      // WHICH ones. The graph is addressed by ordinal, and ordinal i means a record only through the array
+      // rebuilt just above; pair a graph with an array from another generation of the live set and every node
+      // answers for a record it was never built from - a wrong-but-plausible result, not a failure. Counts
+      // cannot separate the two: since the renumbering compaction of issue #5870 every generation's ids are
+      // densely [0, N), so two generations holding different records routinely produce arrays of identical
+      // length. The manifest written next to the graph records the correspondence itself, and comparing
+      // against it is what makes the reuse safe rather than merely plausible.
+      final LSMVectorIndexGraphManifest.Content persistedManifest = gf.getManifest().read();
+
+      final String staleReason;
+      if (persistedManifest == null) {
+        // No manifest: a graph persisted by a version older than this check, or one whose persist was
+        // interrupted before it could write one. Judge it the historical way, by node count, rather than
+        // forcing every existing index to rebuild on the first open after an upgrade - but widen the
+        // comparison to ANY difference, because a graph larger than the live set lines its ordinals up no
+        // better than a smaller one: everything past the end of the rebuilt array is dropped as out of
+        // bounds, and everything before it can still address the wrong record.
+        staleReason = graphSize != rebuiltOrdinalToVectorId.length ?
+            "it has no manifest and holds %d nodes against %d active vectors".formatted(graphSize,
+                rebuiltOrdinalToVectorId.length) :
+            null;
+        if (staleReason == null) {
+          // Also counted, not only logged: a WARNING is easy to miss, and "is this index still on the weaker
+          // comparison?" is a question an operator should be able to ask the stats rather than the log file.
+          metrics.incrementUnverifiedGraphReuses();
+          LogManager.instance().log(this, Level.WARNING,
+              "Vector index %s is reusing a persisted graph that carries no manifest: its %d nodes match the "
+                  + "live vector count, but nothing on disk says they describe these records (issue #6106). "
+                  + "The next graph persist writes one; REBUILD INDEX forces it now",
+              indexName, graphSize);
+        }
+      } else if (persistedManifest.vectorCount() != rebuiltOrdinalToVectorId.length
+          || persistedManifest.fingerprint() != LSMVectorIndexGraphManifest.fingerprintOf(
+          rebuiltOrdinalToVectorId, validationLocations::getRid)) {
+        staleReason = "it was built over %d records the manifest fingerprints as %s, not over the %d now live".formatted(
+            persistedManifest.vectorCount(), Long.toHexString(persistedManifest.fingerprint()),
+            rebuiltOrdinalToVectorId.length);
+      } else if (graphSize != rebuiltOrdinalToVectorId.length) {
+        // The manifest agrees with the live set but the pages do not: a truncated or otherwise damaged
+        // persist. Nothing here can repair it, so rebuild.
+        staleReason = "the pages hold %d nodes while its manifest and the live set both say %d".formatted(
+            graphSize, rebuiltOrdinalToVectorId.length);
+      } else
+        staleReason = null;
+
+      if (staleReason != null) {
+        // ISSUE #6655: a graph stale ONLY because more vectors were added since it was built - no deletions
+        // (guaranteed by the !hasDeletedVectors guard above) and, when a manifest is present, its fingerprint
+        // proves the graph's own ordinals [0, graphSize) still resolve to exactly the records they were built
+        // from - is not wrong, only behind. That is the identical staleness rebuildGraphBeforeSearch()'s async
+        // policy already tolerates mid-session (a graph missing the newest vectors, not one describing the
+        // wrong ones), so it is reused immediately instead of paying a synchronous full rebuild on the calling
+        // search thread for however large the WHOLE index has become - the reopen-time counterpart of #6067's
+        // close-time deferral, reached through the general stale-persisted-graph path rather than only the
+        // deferred-close one. A missing manifest cannot support this: the weak node-count comparison above
+        // proves nothing about WHICH records a same-sized graph describes, and a prefix of it proves even
+        // less. Below the async-rebuild threshold a synchronous rebuild is already cheap, so it is left alone.
+        // vectorIndex.size(), not graphIndex.size() as rebuildGraphBeforeSearch()'s analogous check uses:
+        // graphIndex is not yet set on this path (that is the whole point - the persisted graph has not been
+        // published to it yet), so the only live-vector count available here is the index's, which is also
+        // the more conservative of the two whenever they would differ (rebuiltOrdinalToVectorId.length can
+        // be smaller after validation filtering, never larger) - "is this worth deferring" errs towards yes.
+        final int[] prefix = persistedManifest != null && graphSize == persistedManifest.vectorCount()
+            && graphSize < rebuiltOrdinalToVectorId.length && graphSize > 0
+            && validationLocations.size() >= ASYNC_REBUILD_MIN_GRAPH_SIZE
+            && persistedManifest.fingerprint() == LSMVectorIndexGraphManifest.fingerprintOf(
+            Arrays.copyOf(rebuiltOrdinalToVectorId, graphSize), validationLocations::getRid) ?
+            rebuiltOrdinalToVectorId : null;
+
+        if (prefix != null) {
+          // Deliberately not done here: reuseStalePrefixGraph() does real I/O for the gap and must run
+          // unlocked (see the field javadoc above). Only the decision - not the read - belongs under this
+          // lock, same as every other branch in this method.
+          return new PersistedGraphCheck(false, new ReuseCandidate(loadedGraph, prefix, graphSize, vectorProp));
+        }
+        LogManager.instance().log(this, Level.INFO,
+            "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
+            indexName, staleReason);
+        // Don't use the stale graph as IMMUTABLE — fall through to buildGraphFromScratch() below unless the
+        // prefix reuse above already queued a deferred reuse
+        return PersistedGraphCheck.UNUSABLE;
+      }
+
+      // Graph is up to date — publish it under a brief write lock (issue #6713), then finish PQ
+      // (if needed) unlocked, mirroring buildGraphFromScratchExclusively's own publish step.
+      lock.writeLock().lock();
+      try {
+        this.graphIndex = loadedGraph;
+        this.ordinalToVectorId = rebuiltOrdinalToVectorId;
+        if (graphState == GraphState.LOADING)
+          this.graphState = GraphState.IMMUTABLE;
+        // else: a concurrent put()/putBatch()/remove() already advanced graphState to MUTABLE while
+        // this validation ran unlocked. The freshly loaded graph is still a correct base for
+        // mergeWithDeltaScan() to merge against - it was built from a vectorIndex snapshot taken during
+        // that validation, and whatever changed since then is already in deltaVectors - but overwriting
+        // MUTABLE back to IMMUTABLE here would hide those pending deltas from search.
+      } finally {
+        lock.writeLock().unlock();
+      }
+
+      // Build PQ if PRODUCT quantization is enabled but PQ file doesn't exist
+      // This handles the case where graph was built before PRODUCT quantization was added
+      if (metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null && !pqFile.isPQReady()) {
+        LogManager.instance().log(this, Level.INFO,
+            "PQ not available after graph load, building PQ for index: %s", indexName);
+        try {
+          // Create vector values from the loaded vectorIndex for PQ building
+          final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(),
+              metadata.dimensions, vectorProp,
+              snapshotOf(vectorIndex(), ordinalToVectorId), ordinalToVectorId, this,
+              computeGraphBuildCacheCapacity(ordinalToVectorId.length, false));
+          buildAndPersistPQ(vectors);
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Failed to build PQ after graph load for index %s: %s", indexName, e.getMessage());
+        }
+      }
+
+      return PersistedGraphCheck.LOADED;
+    } catch (final Exception e) {
+      LogManager.instance()
+          .log(this, Level.WARNING, "Failed to load graph for %s, will rebuild: %s", indexName, e.getMessage());
+      return PersistedGraphCheck.UNUSABLE;
     }
   }
 
@@ -3740,6 +3772,58 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * The build step of an async graph rebuild (issue #6859). {@link #startAsyncGraphRebuild}'s daemon thread
+   * calls this instead of {@link #buildGraphFromScratch()} directly.
+   * <p>
+   * When this session has never resolved what is on disk for this index ({@link #graphIndex} still {@code
+   * null} - the large-but-unloaded case {@link #inactivityRebuildScopeSize()} already recognises, issue
+   * #6798), the same persisted-graph decision {@link #ensureGraphAvailable()} makes on a search is made here
+   * first: a fully up-to-date persisted graph is published outright, with no rebuild needed at all, and a
+   * stale-but-verified prefix (issue #6655) is published and its gap queued into the delta buffer before the
+   * full rebuild below runs. Either way {@link #graphIndex} becomes non-null - and searchable via the ordinary
+   * delta-merge path - long before an O(current live set) {@code buildGraphFromScratch()} would otherwise
+   * finish. That is the gap this closes: with {@link #graphIndex} still null a concurrent search runs its own
+   * {@link #ensureGraphAvailable()}, which contends for {@link #graphBuildLock} - the same lock
+   * {@code buildGraphFromScratch()} holds for the whole rebuild - and blocks for the full O(N) duration instead
+   * of finding a graph already published and merging its delta scan against it, lock-free.
+   * <p>
+   * An already-resident session (a previous build or reuse already published a graph, or a racing thread just
+   * did while this one waited for {@link #graphBuildLock}) skips straight to {@code buildGraphFromScratch()},
+   * unchanged from before this issue: there is no persisted-graph decision left to make, and loading an older
+   * on-disk graph over a newer in-memory one would throw away progress.
+   * <p>
+   * Deliberately NOT implemented by calling {@link #ensureGraphAvailable()} itself: that method's own
+   * prefix-reuse branch calls {@link #startAsyncGraphRebuild()} at its tail to close the gap it just queued,
+   * and this method already runs from inside that very rebuild's daemon thread - the recursive call would find
+   * {@link #asyncRebuildInProgress} still {@code true} and no-op, leaving the gap queued but never folded into
+   * a real graph, and the next inactivity cycle would repeat the same reuse forever without ever finishing one.
+   * Calling {@link #loadPersistedGraphOrDecidePrefix()} and {@link #reuseStalePrefixGraph} directly, then
+   * falling through to {@code buildGraphFromScratch()} in this same invocation, folds the gap in exactly once,
+   * on this rebuild's own dime, the same way an async rebuild always has.
+   */
+  private void buildOrReuseGraphForAsyncRebuild() {
+    PersistedGraphCheck check = null;
+    if (this.graphIndex == null) {
+      graphBuildLock.lock();
+      try {
+        if (this.graphIndex == null)
+          check = loadPersistedGraphOrDecidePrefix();
+      } finally {
+        graphBuildLock.unlock();
+      }
+    }
+
+    if (check != null) {
+      if (check.fullyLoaded())
+        return; // Published outright; nothing left to build.
+      if (check.prefix() != null)
+        reuseStalePrefixGraph(check.prefix()); // Publishes the prefix and queues the gap; folded in below.
+    }
+
+    buildGraphFromScratch();
+  }
+
+  /**
    * Start an asynchronous graph rebuild in a background daemon thread (issue #3679).
    * The current graph remains available for searches while the rebuild is in progress.
    * When the rebuild completes, the new graph is hot-swapped atomically.
@@ -3805,7 +3889,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // actually about to be claimed, and any other index's rebuild has by now released whatever it held.
         if (!admitOnlineRebuild())
           return;
-        buildGraphFromScratch();
+        buildOrReuseGraphForAsyncRebuild();
         completed = true;
         LogManager.instance().log(this, Level.INFO,
             "Async graph rebuild completed for index: %s", indexName);
