@@ -997,8 +997,8 @@ class PostgresTypeTest {
   void deserializeBinaryJson() {
     // issue #6929: PostgreSQL's json_send emits the raw UTF-8 text with no inner length prefix,
     // so the wire payload is just the text bytes (the Bind message carries the length separately).
-    String jsonStr = "{\"key\":\"value\"}";
-    Object result = PostgresType.deserialize(PostgresType.JSON.code, 1, jsonStr.getBytes());
+    final String jsonStr = "{\"key\":\"value\"}";
+    final Object result = PostgresType.deserialize(PostgresType.JSON.code, 1, jsonStr.getBytes());
     assertThat(result).isInstanceOf(JSONObject.class);
     assertThat(((JSONObject) result).getString("key")).isEqualTo("value");
   }

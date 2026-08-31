@@ -2685,7 +2685,7 @@ public class PostgresNetworkExecutor extends Thread {
       return "SAVEPOINT";
     } else if (upperCaseText.startsWith("RELEASE ")) {
       return "RELEASE";
-    } else if (upperCaseText.startsWith("SET ") || "SET".equals(upperCaseText)) {
+    } else if (upperCaseText.startsWith("SET ")) {
       return "SET";
     } else {
       return "";

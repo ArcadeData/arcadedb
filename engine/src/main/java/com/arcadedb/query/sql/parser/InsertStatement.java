@@ -66,9 +66,8 @@ public class InsertStatement extends Statement {
       builder.append(" ");
       insertBody.toString(params, builder);
     }
-    if (onDuplicateKeySkip) {
+    if (onDuplicateKeySkip)
       builder.append(" ON DUPLICATE KEY SKIP");
-    }
     if (returnStatement != null) {
       builder.append(" RETURN ");
       returnStatement.toString(params, builder);
