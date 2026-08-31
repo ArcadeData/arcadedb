@@ -170,8 +170,26 @@ public class WALFile extends LockContext {
       final int segmentSize = readInt(pos);
       pos += Binary.INT_SERIALIZED_SIZE;
 
+      if (segmentSize < 0)
+        // CORRUPT HEADER: a negative size makes the truncation bound below pass trivially, and would
+        // let a record no writer could have produced parse cleanly. INVALID.
+        return null;
+
       if (pos + segmentSize + Binary.LONG_SERIALIZED_SIZE > getSize())
         // TRUNCATED FILE
+        return null;
+
+      // #6932: `pages` comes straight off disk and this array is allocated before a single byte of the
+      // segment is read, so a corrupt count sizes the allocation. At Integer.MAX_VALUE the references
+      // alone are ~17GB and the resulting OutOfMemoryError is an Error, which the catch(Exception)
+      // recovery guard below cannot catch: it unwinds out of TransactionManager.checkIntegrity (a
+      // try/finally with no catch) before the WAL can be dropped or renamed '.corrupt', leaving the
+      // database permanently unopenable on the same bytes. The count is derivable from the already
+      // file-bounded segment size: every segment costs at least its fixed header plus a one-byte delta
+      // (writeTransactionToBuffer rejects deltaSize < 1), so any legal count fits the budget below.
+      // Same guard the Raft entry parser got in #4420 and the per-page deltaSize got in #4958.
+      if (pages < 0 || (long) pages * (PAGE_HEADER_SIZE + 1) > segmentSize)
+        // INVALID
         return null;
 
       tx.pages = new WALPage[pages];
