@@ -289,8 +289,13 @@ public class MongoDBUpdateDeleteTest extends BaseGraphServerTest {
     collection.insertOne(new Document("test", "absent-field"));
     collection.insertOne(new Document("test", "set-field").append("tag", "x"));
 
-    final Document found = collection.find(new Document("tag", new Document("$ne", null))).first();
+    final Document nePredicate = new Document("tag", new Document("$ne", null));
 
+    // countDocuments, not just .first(): pins exclusivity rather than relying on result ordering - if the
+    // translation regressed to also match the null/absent documents, .first() could still return "set-field" and
+    // hide the regression.
+    assertThat(collection.countDocuments(nePredicate)).isEqualTo(1);
+    final Document found = collection.find(nePredicate).first();
     assertThat(found).isNotNull();
     assertThat(found.getString("test")).isEqualTo("set-field");
   }
