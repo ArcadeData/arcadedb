@@ -542,7 +542,7 @@ public class TimeSeriesShard implements AutoCloseable {
           // Raft entry", which made HA_TS_MAX_SEALED_INLINE_SIZE the ceiling on the sealed store itself: a
           // shard that once crossed it never sealed again, because the store it would have to ship only ever
           // grows. A sealed store above one entry is now SLICED across an ordered sequence of entries
-          // (RaftReplicatedDatabase.sliceSealedBlob), so the ceiling is what that sequence can carry - see
+          // (RaftReplicatedDatabase.planSealedSlices), so the ceiling is what that sequence can carry - see
           // GlobalConfiguration.maxReplicatedSealedStoreSize, which still folds in the #4743 rule that the
           // real per-entry ceiling is min(grpcMessageSizeMax, appendBufferSize) and NOT the configured cap
           // alone: shipping an entry above it makes Ratis reject it and the leader step down, over and over.
