@@ -643,12 +643,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (isReplacement(u)) {
       for (final Map.Entry<String, Object> entry : u.entrySet()) {
         final Object value = entry.getValue();
-        if ("_id".equals(entry.getKey()) && value instanceof ObjectId)
-          idIsObjectId = true;
+        // Last write wins, matching record.set() itself: a replacement re-specifying "_id" overrides whatever type
+        // the filter seeded, rather than only ever promoting it to true and leaking a stale ObjectId flag if the
+        // replacement's own _id is some other type.
+        if ("_id".equals(entry.getKey()))
+          idIsObjectId = value instanceof ObjectId;
         record.set(entry.getKey(), normalizeIdValue(value));
       }
     } else {
-      idIsObjectId |= applyOperatorsToDocument(record, u);
+      final Boolean setIdIsObjectId = applyOperatorsToDocument(record, u);
+      if (setIdIsObjectId != null)
+        idIsObjectId = setIdIsObjectId;
     }
 
     // has(), not get() == null: an explicit "_id": null in the filter/update is a legal (if unusual) BSON _id and
@@ -676,10 +681,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * Applies the update operators to the record being upserted, returning whether an ObjectId-typed {@code _id} was
    * seeded through {@code $set} - mirroring the same tracking the filter-seeding loop and the replacement branch in
    * {@link #executeUpsert} already do, so the response reports {@code _id} back as an ObjectId regardless of which
-   * branch supplied it.
+   * branch supplied it. {@code null} means {@code $set} never touched {@code _id} at all, so the caller should keep
+   * whatever the filter-seeding loop already determined instead of overriding it - unlike a plain {@code boolean}
+   * OR, this lets a non-{@code ObjectId} {@code $set}-supplied {@code _id} correctly override (rather than leak
+   * through) a {@code true} the filter already seeded.
    */
-  private boolean applyOperatorsToDocument(final MutableDocument record, final Document u) {
-    boolean idIsObjectId = false;
+  private Boolean applyOperatorsToDocument(final MutableDocument record, final Document u) {
+    Boolean idIsObjectId = null;
     for (final Map.Entry<String, Object> entry : u.entrySet()) {
       final String op = entry.getKey();
       final Document operand = (Document) entry.getValue();
@@ -687,8 +695,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       case "$set" -> {
         for (final Map.Entry<String, Object> f : operand.entrySet()) {
           final Object value = f.getValue();
-          if ("_id".equals(f.getKey()) && value instanceof ObjectId)
-            idIsObjectId = true;
+          if ("_id".equals(f.getKey()))
+            idIsObjectId = value instanceof ObjectId;
           record.set(f.getKey(), normalizeIdValue(value));
         }
       }

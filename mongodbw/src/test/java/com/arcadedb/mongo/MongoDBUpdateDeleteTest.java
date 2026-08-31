@@ -386,5 +386,31 @@ public class MongoDBUpdateDeleteTest extends BaseGraphServerTest {
     final Document found = collection.find(eq("ref", ref)).first();
     assertThat(found).isNotNull();
     assertThat(found.get("replaced")).isEqualTo(true);
+    // Asserts on the stored value directly, not just that the filter round-trip happens to work: "ref" is not
+    // "_id", so it is never promoted back to an ObjectId on read (only "_id" gets that treatment in
+    // convertMapToMongoDB) - it must come back as the plain hex string it was normalized to on write.
+    assertThat(found.get("ref")).isEqualTo(ref.toHexString());
+  }
+
+  /**
+   * Follow-up to #6953, flagged by review: {@code idIsObjectId} must reflect whichever site last set {@code _id},
+   * not just OR together every site that ever saw an ObjectId - otherwise a filter seeding an ObjectId {@code _id}
+   * followed by a {@code $set} that overwrites it with a plain string would still report the response {@code _id}
+   * as an ObjectId, even though the client's own {@code $set} explicitly chose a {@code String}.
+   */
+  @Test
+  void setUpsertOverridingAFilterSeededObjectIdWithAPlainStringReportsTheStringNotTheObjectId() {
+    final ObjectId filterId = new ObjectId();
+
+    final UpdateResult result = collection.updateOne(eq("_id", filterId),
+        new Document("$set", new Document("_id", "plain-string-id").append("v", 1)), new UpdateOptions().upsert(true));
+
+    assertThat(result.getUpsertedId()).isNotNull();
+    assertThat(result.getUpsertedId().isString()).isTrue();
+    assertThat(result.getUpsertedId().asString().getValue()).isEqualTo("plain-string-id");
+
+    final Document found = collection.find(eq("_id", "plain-string-id")).first();
+    assertThat(found).isNotNull();
+    assertThat(found.get("v")).isEqualTo(1);
   }
 }
