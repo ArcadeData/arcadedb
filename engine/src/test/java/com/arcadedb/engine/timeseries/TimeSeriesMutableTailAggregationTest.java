@@ -116,6 +116,23 @@ class TimeSeriesMutableTailAggregationTest {
     assertThat(flat.getBucketTimestamps()).isSorted();
   }
 
+  /**
+   * The overflow count is reported through {@link AggregationMetrics} so a future sizing regression is
+   * observable in a profile instead of only in this test class.
+   */
+  @Test
+  void aggregationMetricsReportTheOverflowBucketCount() throws Exception {
+    final TimeSeriesEngine engine = createSealedPlusMutableTail();
+
+    final AggregationMetrics metrics = new AggregationMetrics();
+    engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE,
+        List.of(new MultiColumnAggregationRequest(-1, AggregationType.COUNT, "cnt")),
+        MINUTE_MS, null, metrics);
+
+    assertThat(metrics.getOverflowBuckets()).isZero();
+    assertThat(metrics.toString()).contains("overflow=0");
+  }
+
   @Test
   void bucketedAggregationMatchesTheUnbucketedTotal() throws Exception {
     final TimeSeriesEngine engine = createSealedPlusMutableTail();

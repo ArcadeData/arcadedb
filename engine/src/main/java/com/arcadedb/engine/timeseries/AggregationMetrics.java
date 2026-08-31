@@ -40,6 +40,7 @@ public final class AggregationMetrics {
   private int  scannedPages;
   private int  skippedPages;
   private long materializedRows;
+  private int  overflowBuckets;
 
   public void addIo(final long nanos) {
     ioNanos += nanos;
@@ -90,6 +91,16 @@ public final class AggregationMetrics {
     materializedRows += rows;
   }
 
+  /**
+   * Buckets the flat-mode result had to park in its overflow map because they fell outside the
+   * pre-allocated window (issue #6937). Correct output either way - the overflow map keeps the numbers
+   * right - but a non-zero value means the sizing estimate in {@code aggregateMulti()} came up short,
+   * which is the thing that used to lose samples silently. Worth watching in a profile.
+   */
+  public void addOverflowBuckets(final int buckets) {
+    overflowBuckets += buckets;
+  }
+
   public long getIoNanos() {
     return ioNanos;
   }
@@ -130,6 +141,10 @@ public final class AggregationMetrics {
     return materializedRows;
   }
 
+  public int getOverflowBuckets() {
+    return overflowBuckets;
+  }
+
   /**
    * Merges counters from another instance (used to aggregate across shards).
    */
@@ -144,6 +159,7 @@ public final class AggregationMetrics {
     scannedPages += other.scannedPages;
     skippedPages += other.skippedPages;
     materializedRows += other.materializedRows;
+    overflowBuckets += other.overflowBuckets;
   }
 
   @Override
@@ -151,9 +167,9 @@ public final class AggregationMetrics {
     final long totalNanos = ioNanos + decompTsNanos + decompValNanos + accumNanos;
     return String.format(
         "AggMetrics[io=%dms decompTs=%dms decompVal=%dms accum=%dms total=%dms | blocks: fast=%d slow=%d skipped=%d"
-            + " | pages: scanned=%d skipped=%d | rows: materialized=%d]",
+            + " | pages: scanned=%d skipped=%d | rows: materialized=%d | buckets: overflow=%d]",
         ioNanos / 1_000_000, decompTsNanos / 1_000_000, decompValNanos / 1_000_000,
         accumNanos / 1_000_000, totalNanos / 1_000_000,
-        fastPathBlocks, slowPathBlocks, skippedBlocks, scannedPages, skippedPages, materializedRows);
+        fastPathBlocks, slowPathBlocks, skippedBlocks, scannedPages, skippedPages, materializedRows, overflowBuckets);
   }
 }

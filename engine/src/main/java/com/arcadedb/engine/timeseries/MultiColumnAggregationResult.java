@@ -433,9 +433,12 @@ public final class MultiColumnAggregationResult {
 
   /**
    * Number of buckets that had to be parked in the flat-mode overflow map because they fell outside
-   * the pre-allocated window. Always 0 in map mode. Exposed for tests that assert the caller sized
-   * the flat window correctly, so a sizing regression is visible even though the overflow map keeps
-   * the numbers right (issue #6937).
+   * the pre-allocated window (issue #6937). The results are correct either way; a non-zero value means
+   * the caller's range estimate came up short, which is what used to lose samples silently. Read by
+   * {@code TimeSeriesEngine.aggregateMulti()} into {@link AggregationMetrics#addOverflowBuckets(int)},
+   * and by the tests that assert the sizing itself is right rather than merely rescued.
+   *
+   * @return the overflow bucket count, always 0 in map mode
    */
   int getOverflowBucketCount() {
     return overflowValues != null ? overflowValues.size() : 0;

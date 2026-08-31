@@ -563,6 +563,8 @@ public class TimeSeriesEngine implements AutoCloseable {
         }
 
         result.finalizeAvg();
+        if (metrics != null)
+          metrics.addOverflowBuckets(result.getOverflowBucketCount());
         return result;
       } finally {
         for (int s = 0; s < shardCount; s++)
@@ -611,6 +613,8 @@ public class TimeSeriesEngine implements AutoCloseable {
       }
 
       result.finalizeAvg();
+      if (metrics != null)
+        metrics.addOverflowBuckets(result.getOverflowBucketCount());
       return result;
     }
   }
