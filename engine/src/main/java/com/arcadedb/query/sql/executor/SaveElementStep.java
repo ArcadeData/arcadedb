@@ -34,7 +34,6 @@ import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.ContinuousAggregate;
 import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.ContinuousAggregateRefresher;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
@@ -92,6 +91,11 @@ public class SaveElementStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
+      // Every record pulled through one INSERT statement targets the same type, so the unique-index list is
+      // resolved once per distinct type name seen rather than on every single row of a CONTENT [...] batch.
+      private String          cachedTypeName;
+      private List<TypeIndex> cachedUniqueIndexes;
+
       @Override
       public boolean hasNext() {
         return upstream.hasNext();
@@ -127,7 +131,11 @@ public class SaveElementStep extends AbstractExecutionStep {
             return result;
 
           if (skipDuplicateKey) {
-            final DuplicateKeyConflict conflict = findDuplicateKeyConflict(modifiableDoc, context);
+            if (!docType.getName().equals(cachedTypeName)) {
+              cachedTypeName = docType.getName();
+              cachedUniqueIndexes = docType.getAllIndexes(true).stream().filter(TypeIndex::isUnique).toList();
+            }
+            final DuplicateKeyConflict conflict = findDuplicateKeyConflict(modifiableDoc, cachedUniqueIndexes);
             if (conflict != null)
               return skippedResult(modifiableDoc, conflict);
           }
@@ -148,9 +156,10 @@ public class SaveElementStep extends AbstractExecutionStep {
   }
 
   /**
-   * Probes every unique index on the document's type (issue #4918) for a key already claimed by another record -
-   * either a previously committed one or an earlier record in this same batch, since {@link TypeIndex#get} reads
-   * through to this transaction's own staged-but-uncommitted index entries.
+   * Probes the document type's unique indexes (issue #4918, already filtered to the unique ones and cached by
+   * the caller - see {@link #syncPull}) for a key already claimed by another record - either a previously
+   * committed one or an earlier record in this same batch, since {@link TypeIndex#get} reads through to this
+   * transaction's own staged-but-uncommitted index entries.
    * <p>
    * A key is exempted from the check exactly when {@link LSMTreeIndexAbstract#isKeyNull} says so (every
    * component null, not just one) - unconditionally, regardless of the index's {@code NULL_STRATEGY}, matching
@@ -162,12 +171,8 @@ public class SaveElementStep extends AbstractExecutionStep {
    *
    * @return the conflicting index/RID, or {@code null} if no unique index on this type is violated
    */
-  private static DuplicateKeyConflict findDuplicateKeyConflict(final MutableDocument doc, final CommandContext context) {
-    final DocumentType type = context.getDatabase().getSchema().getType(doc.getTypeName());
-    for (final TypeIndex index : type.getAllIndexes(true)) {
-      if (!index.isUnique())
-        continue;
-
+  private static DuplicateKeyConflict findDuplicateKeyConflict(final MutableDocument doc, final List<TypeIndex> uniqueIndexes) {
+    for (final TypeIndex index : uniqueIndexes) {
       final List<String> keyProperties = index.getPropertyNames();
       final Object[] keyValues = new Object[keyProperties.size()];
       for (int i = 0; i < keyProperties.size(); i++)
