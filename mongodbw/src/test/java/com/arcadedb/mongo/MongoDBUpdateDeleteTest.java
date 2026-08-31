@@ -185,6 +185,24 @@ public class MongoDBUpdateDeleteTest extends BaseGraphServerTest {
   }
 
   /**
+   * Follow-up to #6941 flagged by review: a client-supplied {@code String _id} that happens to be exactly 24 hex
+   * characters is indistinguishable, once stored, from a real ObjectId's hex encoding. {@code executeUpsert} used
+   * to promote every such stored hex string back to an ObjectId in the response regardless of what the client
+   * actually sent, silently changing the wire type of an id the client chose as a plain string.
+   */
+  @Test
+  void upsertFilteredOnHexLookingStringIdReportsItAsAStringNotAnObjectId() {
+    final String hexLookingId = "abcdef0123456789abcdef01";
+
+    final UpdateResult result = collection.updateOne(eq("_id", hexLookingId), new Document("$set", new Document("v", 1)),
+        new UpdateOptions().upsert(true));
+
+    assertThat(result.getUpsertedId()).isNotNull();
+    assertThat(result.getUpsertedId().isString()).isTrue();
+    assertThat(result.getUpsertedId().asString().getValue()).isEqualTo(hexLookingId);
+  }
+
+  /**
    * Follow-up to #6941 flagged by review: an explicit {@code _id: null} filter is a legal, if unusual, BSON _id.
    * {@code executeUpsert} must tell that apart from a genuinely absent {@code _id} and preserve it, rather than
    * discarding it for a freshly generated one the way the original #6941 bug discarded a seeded ObjectId.
@@ -204,6 +222,9 @@ public class MongoDBUpdateDeleteTest extends BaseGraphServerTest {
 
     final Document inserted = collection.find(eq("v", 1)).first();
     assertThat(inserted).isNotNull();
+    // containsKey, not just get() == null: a Map.get returns null for a missing key too, so this confirms the
+    // wire response actually carries an "_id" field rather than having dropped it.
+    assertThat(inserted.containsKey("_id")).isTrue();
     assertThat(inserted.get("_id")).isNull();
   }
 }
