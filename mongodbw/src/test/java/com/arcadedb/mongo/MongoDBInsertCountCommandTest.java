@@ -124,4 +124,16 @@ public class MongoDBInsertCountCommandTest extends BaseGraphServerTest {
     final Document both = mongoDatabase.runCommand(new Document("count", "doc").append("skip", 8).append("limit", 5));
     assertThat(both.getInteger("n")).isEqualTo(2);
   }
+
+  @Test
+  void countCommandHonoursQueryTogetherWithSkipAndLimit() {
+    for (int i = 0; i < 10; i++)
+      collection.insertOne(new Document("counter", i).append("even", i % 2 == 0));
+
+    // 5 matching documents (0,2,4,6,8); skip 1, limit 2 -> 2,4
+    final Document result = mongoDatabase.runCommand(
+        new Document("count", "doc").append("query", new Document("even", true)).append("skip", 1).append("limit", 2));
+
+    assertThat(result.getInteger("n")).isEqualTo(2);
+  }
 }

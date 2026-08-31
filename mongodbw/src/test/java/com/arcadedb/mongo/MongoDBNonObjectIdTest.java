@@ -99,12 +99,15 @@ public class MongoDBNonObjectIdTest extends BaseGraphServerTest {
 
   @Test
   void evenLengthNonHexStringIdIsPreservedNotSilentlyCorrupted() {
-    collection.insertOne(new Document("_id", "not-a-hex-strng!").append("name", "z"));
+    // Exactly 24 chars (the ObjectId hex length) but 'g' is not a hex digit, so this must be rejected by the
+    // per-character check in isObjectIdHex rather than the length check alone.
+    final String id = "g".repeat(24);
+    collection.insertOne(new Document("_id", id).append("name", "z"));
 
     final Document found = collection.find().first();
 
     assertThat(found).isNotNull();
-    assertThat(found.get("_id")).isEqualTo("not-a-hex-strng!");
+    assertThat(found.get("_id")).isEqualTo(id);
   }
 
   @Test
