@@ -183,7 +183,13 @@ public class PromQLEvaluator {
       if (result instanceof InstantVector iv) {
         for (final VectorSample sample : iv.samples()) {
           final String key = labelKey(sample.labels());
-          seriesMap.computeIfAbsent(key, k -> new ArrayList<>()).add(new double[] { sample.timestampMs(), sample.value() });
+          // Stamped with the evaluation step `t`, not with the sample's own timestamp (issue #6938):
+          // Prometheus guarantees one matrix point per step at exactly start + n*step, while the sample
+          // timestamp is wherever the lookback window happened to resolve. A series sparser than the step
+          // resolved to the same sample on several consecutive steps and repeated its timestamp, so any
+          // consumer indexing the matrix by timestamp (Grafana included) saw duplicate keys and jitter
+          // instead of a regular grid. The raw timestamp still drives staleness/lookback inside evaluate().
+          seriesMap.computeIfAbsent(key, k -> new ArrayList<>()).add(new double[] { t, sample.value() });
           labelsMap.putIfAbsent(key, sample.labels());
         }
       } else if (result instanceof ScalarResult sr) {
@@ -229,6 +235,9 @@ public class PromQLEvaluator {
     final List<ColumnDefinition> columns = tsType.getTsColumns();
 
     warnIfMultipleFields(columns, vs.metricName());
+
+    if (excludesEverySeries(vs.matchers(), columns, regexDeadline()))
+      return new InstantVector(List.of());
 
     final TagFilter tagFilter = buildTagFilter(vs.matchers(), columns);
     final long offset = vs.offsetMs();
@@ -279,6 +288,9 @@ public class PromQLEvaluator {
     final List<ColumnDefinition> columns = tsType.getTsColumns();
 
     warnIfMultipleFields(columns, vs.metricName());
+
+    if (excludesEverySeries(vs.matchers(), columns, regexDeadline()))
+      return new RangeVector(List.of());
 
     final TagFilter tagFilter = buildTagFilter(vs.matchers(), columns);
     final long offset = vs.offsetMs();
@@ -532,6 +544,43 @@ public class PromQLEvaluator {
     return filter;
   }
 
+  /**
+   * Returns {@code true} when a matcher naming a column the type does not declare rules out every series of
+   * that type (issue #6938).
+   * <p>
+   * A label the schema has no column for is absent from every series, so Prometheus' absent-label rules decide
+   * the whole type in one go: {@code =} with a non-empty value and {@code !=""} select nothing, while
+   * {@code !=} with a non-empty value, {@code =""} and any regex the empty string satisfies select everything.
+   * The evaluator used to get both directions backwards - {@link #buildTagFilter} silently dropped an unknown
+   * {@code =} matcher (so a typo like {@code up{jobb="api"}} widened the query to every series instead of
+   * narrowing it to none) and {@link #matchesPostFilters} rejected every row for an unknown {@code !=}/{@code !~}.
+   * Deciding it here, before the scan, also means the query never runs when the answer is already known.
+   */
+  private boolean excludesEverySeries(final List<LabelMatcher> matchers, final List<ColumnDefinition> columns,
+      final long regexDeadline) {
+    for (final LabelMatcher m : matchers) {
+      if ("__name__".equals(m.name()))
+        continue;
+      if (findNonTsRowIndex(m.name(), columns) >= 0)
+        continue;
+      if (!matchesAbsentLabel(m, regexDeadline))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * Applies a matcher to a label that no series carries, which Prometheus treats as the empty string.
+   */
+  private boolean matchesAbsentLabel(final LabelMatcher m, final long regexDeadline) {
+    return switch (m.op()) {
+      case EQ -> m.value().isEmpty();
+      case NEQ -> !m.value().isEmpty();
+      case RE -> TimeBoundRegex.matchesUntil(compilePattern(m.value()), "", regexDeadline);
+      case NRE -> !TimeBoundRegex.matchesUntil(compilePattern(m.value()), "", regexDeadline);
+    };
+  }
+
   private boolean matchesPostFilters(final Object[] row, final List<LabelMatcher> matchers,
       final List<ColumnDefinition> columns, final long regexDeadline) {
     for (final LabelMatcher m : matchers) {
@@ -539,7 +588,10 @@ public class PromQLEvaluator {
         continue;
       final int rowIdx = findNonTsRowIndex(m.name(), columns);
       if (rowIdx < 0)
-        return false;
+        // The column is absent from the schema, so the label is absent from every series. excludesEverySeries()
+        // already settled such a matcher for the whole type before the scan started: reaching a row at all
+        // means it selected everything, so it cannot reject this one (issue #6938).
+        continue;
       final Object val = rowIdx < row.length ? row[rowIdx] : null;
       final String strVal = val != null ? val.toString() : "";
       switch (m.op()) {
@@ -711,7 +763,11 @@ public class PromQLEvaluator {
     for (final VectorSample ls : left.samples()) {
       final VectorSample rs = rightMap.get(labelKey(ls.labels()));
       if (rs != null) {
-        if (op == BinaryOp.AND) {
+        if (op == BinaryOp.AND || op == BinaryOp.OR) {
+          // For a matched label set both AND and OR are the left-hand sample by definition. OR used to fall
+          // into the arithmetic branch below, where applyBinaryOp() maps the set operators to NaN (issue
+          // #6938) - and since aggregation collapses labels to the empty set, the canonical
+          // `sum(a) or sum(b)` fallback always matched and always produced that NaN.
           result.add(ls);
         } else if (op == BinaryOp.UNLESS) {
           // skip — matched, so excluded
