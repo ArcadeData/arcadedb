@@ -105,8 +105,18 @@ public class TimeSeriesMaintenanceScheduler {
     // result to followers. Followers running it independently would diverge. The individual
     // engine operations also self-gate via runWithCompactionReplication, but skipping here avoids
     // the wasted DatabaseContext init + transaction churn on every follower tick.
+    //
+    // The two flags MUST be read off getWrappedDatabaseInstance() and not off the scheduled reference
+    // (issue #6948). Every schedule() call site hands over the instance LocalSchema was built with, and
+    // LocalSchema's `database` field is final and captured inside LocalDatabase.openInternal() - before the
+    // server has wrapped the database for HA, and never updated afterwards. So the scheduled reference is the
+    // raw LocalDatabase, whose isReplicated() is the DatabaseInternal default `false`, and this skip could
+    // never fire for anyone. getWrappedDatabaseInstance() resolves the CURRENT wrapper on every tick, which is
+    // the same idiom the operations below already use to reach runWithCompactionReplication - which is why the
+    // consequence was wasted work on every follower tick rather than divergence.
     final DatabaseInternal dbInternal = (DatabaseInternal) db;
-    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+    final DatabaseInternal replicationView = dbInternal.getWrappedDatabaseInstance();
+    if (replicationView != null && replicationView.isReplicated() && !replicationView.isLeader())
       return;
 
     // The maintenance thread is created by a ScheduledExecutorService and does not
@@ -142,6 +152,20 @@ public class TimeSeriesMaintenanceScheduler {
       // next pass on the same thread could commit against the wrong database (see issue #4519).
       DatabaseContext.INSTANCE.removeContext(dbInternal.getDatabasePath());
     }
+  }
+
+  /**
+   * Whether a maintenance task is currently registered and live for the given type name.
+   * <p>
+   * Exists because "this type is maintained" has no other observable: the recurring task logs nothing when it
+   * finds nothing to do, and its three effects - {@code compactAll()}, {@code applyRetention()} and
+   * {@code applyDownsampling()} - are invisible until enough data has accumulated for one of them to change
+   * something. A caller that has just made a type usable again (issue #6948: the HA sealed-store repair) needs to
+   * be able to assert that it also made it maintained.
+   */
+  public boolean isScheduled(final String typeName) {
+    final ScheduledFuture<?> future = tasks.get(typeName);
+    return future != null && !future.isCancelled() && !future.isDone();
   }
 
   /**
