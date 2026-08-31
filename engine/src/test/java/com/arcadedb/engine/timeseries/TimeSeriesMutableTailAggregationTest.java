@@ -213,6 +213,78 @@ class TimeSeriesMutableTailAggregationTest {
     assertThat(result.getValue(0L, 0)).isEqualTo(10.0);
   }
 
+  /**
+   * The overflow path has its own branches in {@code finalizeAvg()} and in the untouched-MIN/MAX ->
+   * NaN check, so drive AVG/MIN/MAX through it as well and not just the SUM/COUNT accumulators.
+   */
+  @Test
+  void flatModeOverflowFinalizesAvgAndMinMaxLikeTheFlatArray() {
+    final List<MultiColumnAggregationRequest> requests = List.of(
+        new MultiColumnAggregationRequest(2, AggregationType.AVG, "avg_val"),
+        new MultiColumnAggregationRequest(2, AggregationType.MIN, "min_val"),
+        new MultiColumnAggregationRequest(2, AggregationType.MAX, "max_val"));
+
+    // Room for exactly 2 buckets: [0, 60_000) and [60_000, 120_000).
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests, 0L, MINUTE_MS, 2);
+
+    // In-window bucket, as the reference.
+    result.accumulateRow(0L, new double[] { 4.0, 4.0, 4.0 });
+    result.accumulateRow(0L, new double[] { 8.0, 8.0, 8.0 });
+
+    // Overflow bucket, same data.
+    result.accumulateRow(300_000L, new double[] { 4.0, 4.0, 4.0 });
+    result.accumulateRow(300_000L, new double[] { 8.0, 8.0, 8.0 });
+
+    // Overflow bucket touched only by AVG, so MIN/MAX there never saw a sample.
+    result.accumulate(600_000L, 0, 10.0);
+
+    result.finalizeAvg();
+
+    assertThat(result.getOverflowBucketCount()).isEqualTo(2);
+
+    assertThat(result.getValue(0L, 0)).isEqualTo(6.0);
+    assertThat(result.getValue(300_000L, 0)).as("AVG must be divided by its count in the overflow map too").isEqualTo(6.0);
+    assertThat(result.getValue(300_000L, 1)).isEqualTo(4.0);
+    assertThat(result.getValue(300_000L, 2)).isEqualTo(8.0);
+    assertThat(result.getCount(300_000L, 0)).isEqualTo(2);
+
+    assertThat(result.getValue(600_000L, 0)).isEqualTo(10.0);
+    assertThat(result.getValue(600_000L, 1)).as("untouched MIN must surface as NaN, not the sentinel").isNaN();
+    assertThat(result.getValue(600_000L, 2)).as("untouched MAX must surface as NaN, not the sentinel").isNaN();
+
+    assertThat(result.getBucketTimestamps()).containsExactly(0L, 300_000L, 600_000L);
+  }
+
+  /**
+   * The parallel branch merges per-shard results; an overflow bucket on either side must survive that
+   * merge with its AVG denominator and MIN/MAX intact.
+   */
+  @Test
+  void mergeFromCarriesOverflowBucketsAcross() {
+    final List<MultiColumnAggregationRequest> requests = List.of(
+        new MultiColumnAggregationRequest(2, AggregationType.AVG, "avg_val"),
+        new MultiColumnAggregationRequest(2, AggregationType.MIN, "min_val"),
+        new MultiColumnAggregationRequest(2, AggregationType.MAX, "max_val"));
+
+    final MultiColumnAggregationResult left = new MultiColumnAggregationResult(requests, 0L, MINUTE_MS, 2);
+    final MultiColumnAggregationResult right = new MultiColumnAggregationResult(requests, 0L, MINUTE_MS, 2);
+
+    left.accumulateRow(300_000L, new double[] { 4.0, 4.0, 4.0 });
+    right.accumulateRow(300_000L, new double[] { 8.0, 8.0, 8.0 });
+    right.accumulateRow(0L, new double[] { 2.0, 2.0, 2.0 });
+
+    left.mergeFrom(right);
+    left.finalizeAvg();
+
+    assertThat(left.getOverflowBucketCount()).isEqualTo(1);
+    assertThat(left.getCount(300_000L, 0)).isEqualTo(2);
+    assertThat(left.getValue(300_000L, 0)).isEqualTo(6.0);
+    assertThat(left.getValue(300_000L, 1)).isEqualTo(4.0);
+    assertThat(left.getValue(300_000L, 2)).isEqualTo(8.0);
+    assertThat(left.getValue(0L, 0)).isEqualTo(2.0);
+    assertThat(left.getBucketTimestamps()).containsExactly(0L, 300_000L);
+  }
+
   // ---- helpers ----
 
   private TimeSeriesEngine createSealedPlusMutableTail() throws Exception {
