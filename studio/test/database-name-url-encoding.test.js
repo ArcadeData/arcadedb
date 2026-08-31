@@ -84,15 +84,19 @@ test("a missing name yields an empty segment rather than the string 'null'", () 
   assert.equal(encodeDatabaseName(undefined), "");
 });
 
-// Every endpoint registered in HttpServer.setupRoutes() whose path template carries a `{database}`
-// segment, plus the two the Raft plugin adds under `cluster/`. The alternation is the whole point of
-// this file's invariant: #6830 fixed the `command`/`query` sites and #6947 found that `ts` - a segment
-// nobody had listed here - was still concatenating the name raw in studio-timeseries.js. Add an entry
-// here whenever a route gains a `{database}` segment, or the next class of call sites is invisible too.
-const DATABASE_SEGMENT_ENDPOINTS = ["batch", "begin", "command", "commit", "exists", "progress", "query", "rollback", "ts"];
-const DATABASE_SEGMENT_RE = new RegExp(
-  "api/v1/(?:(?:" + DATABASE_SEGMENT_ENDPOINTS.join("|") + ")|cluster/(?:resync|verify))/"
-);
+// Every endpoint whose path template carries a `{database}` segment: the ones HttpServer.setupRoutes()
+// registers, then the three RaftHAPlugin.registerAPI() adds. The alternation is the whole point of this
+// file's invariant: #6830 fixed the `command`/`query` sites and #6947 found that `ts` - a prefix nobody
+// had listed here - was still concatenating the name raw in studio-timeseries.js, invisible to the test
+// that was supposed to prevent exactly that. So the list is kept exhaustive rather than trimmed to what
+// the Studio calls today: `ha/snapshot` has no Studio call site yet, and listing it is what stops the
+// first one from repeating #6947. Add an entry whenever a route gains a `{database}` segment.
+const DATABASE_SEGMENT_ENDPOINTS = [
+  "batch", "begin", "command", "commit", "exists", "progress", "query", "rollback", "ts", // HttpServer
+  "cluster/resync", "cluster/verify", "ha/snapshot",                                      // RaftHAPlugin
+];
+// The trailing slash is required: it is what keeps a hypothetical `api/v1/tsdb/` from matching `ts`.
+const DATABASE_SEGMENT_RE = new RegExp("api/v1/(?:" + DATABASE_SEGMENT_ENDPOINTS.join("|") + ")/");
 
 // A line that only talks about an endpoint - a comment naming `POST /api/v1/cluster/verify/{db}` - builds
 // no URL, so it cannot carry the defect and must not be reported as one.
