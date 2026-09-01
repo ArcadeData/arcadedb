@@ -45,6 +45,20 @@ class JavaFunctionTest extends TestHelper {
     }
   }
 
+  public static class Overloaded {
+    public static String format(final String s) {
+      return "one:" + s;
+    }
+
+    public static String format(final String s, final int repeat) {
+      return "two:" + s.repeat(repeat);
+    }
+
+    public static String format(final int n) {
+      return "int:" + n;
+    }
+  }
+
   @Test
   void registration()
     throws Exception {
@@ -154,6 +168,36 @@ class JavaFunctionTest extends TestHelper {
         .isInstanceOf(FunctionExecutionException.class)
         .hasRootCauseInstanceOf(IllegalStateException.class)
         .hasRootCauseMessage("boom from target method");
+  }
+
+  @Test
+  void overloadsAreAllKeptAndDispatchedByArgumentCountAndType()
+    throws Exception {
+    // issue #7007: overloaded public methods used to collapse to whichever one Class.getDeclaredMethods() happened
+    // to return last, non-deterministically. All overloads must survive registration and be dispatched by the
+    // actual arguments passed at call time.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("fmt", JavaFunctionTest.Overloaded.class));
+    try {
+      final var function = database.getSchema().getFunction("fmt", "format");
+
+      assertThat(function.execute("x")).isEqualTo("one:x");
+      assertThat(function.execute("ab", 3)).isEqualTo("two:ababab");
+      assertThat(function.execute(7)).isEqualTo("int:7");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("fmt");
+    }
+  }
+
+  @Test
+  void overloadWithNoMatchingParameterCountThrows()
+    throws Exception {
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("fmt", JavaFunctionTest.Overloaded.class));
+    try {
+      final var function = database.getSchema().getFunction("fmt", "format");
+      assertThatThrownBy(() -> function.execute("a", "b", "c")).isInstanceOf(FunctionExecutionException.class);
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("fmt");
+    }
   }
 
   private void registerClass() throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {

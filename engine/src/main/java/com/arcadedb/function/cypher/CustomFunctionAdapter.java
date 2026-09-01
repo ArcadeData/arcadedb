@@ -54,13 +54,14 @@ public class CustomFunctionAdapter implements StatelessFunction {
       throw new CommandExecutionException("Unknown function: " + fullName);
 
     // Try exact match first
+    FunctionDefinition function = null;
     try {
-      final FunctionDefinition function = database.getSchema().getFunction(libraryName, functionName);
-      if (function != null)
-        return function.execute(args);
+      function = database.getSchema().getFunction(libraryName, functionName);
     } catch (final IllegalArgumentException e) {
       // Fall through to case-insensitive search
     }
+    if (function != null)
+      return function.execute(args);
 
     // Case-insensitive search - iterate through all functions in library
     final var library = database.getSchema().getFunctionLibrary(libraryName);
