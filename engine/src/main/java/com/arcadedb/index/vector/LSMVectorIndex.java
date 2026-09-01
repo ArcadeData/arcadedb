@@ -6624,8 +6624,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * and of the in-memory location index on every re-embedding cycle (issue #5516). The replay itself comes in
    * through {@link #putReplay}/{@link #removeReplay} and bypasses this check.
    * <p>
-   * A replica never replays the queue (the index pages arrive with the leader's changes), so there the commit-time
-   * call stays the one that applies the change.
+   * {@code isIndexChangesReplayed()} is always true (#6964): every transaction that reaches
+   * {@code COMMIT_1ST_PHASE} here is one originating its own commit - the leader's, or a replica's own - and
+   * always replays its queue, so this branch always queues rather than applying directly.
    */
   private boolean isTransactionalCall() {
     final TransactionContext tx = getDatabase().getTransaction();
