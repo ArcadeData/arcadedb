@@ -1051,7 +1051,7 @@ public class SelectExecutionPlanner {
       return;
     }
     final GroupBy newGroupBy = new GroupBy();
-    final int i = 0;
+    int nextAliasCount = 0;
     for (final Expression exp : info.groupBy.getItems()) {
       if (exp.isAggregate(context)) {
         throw new CommandExecutionException("Cannot group by an aggregate function");
@@ -1071,7 +1071,7 @@ public class SelectExecutionPlanner {
       if (!found) {
         final ProjectionItem newItem = new ProjectionItem();
         newItem.setExpression(exp);
-        final Identifier groupByAlias = new Identifier("_$$$GROUP_BY_ALIAS$$$_" + i);
+        final Identifier groupByAlias = new Identifier("_$$$GROUP_BY_ALIAS$$$_" + (nextAliasCount++));
         newItem.setAlias(groupByAlias);
         if (info.preAggregateProjection == null) {
           info.preAggregateProjection = new Projection();
@@ -1082,10 +1082,9 @@ public class SelectExecutionPlanner {
         info.preAggregateProjection.getItems().add(newItem);
         newGroupBy.getItems().add(new Expression(groupByAlias));
       }
-
-      info.groupBy = newGroupBy;
     }
 
+    info.groupBy = newGroupBy;
   }
 
   /**
