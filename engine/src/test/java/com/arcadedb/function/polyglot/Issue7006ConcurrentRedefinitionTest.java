@@ -82,6 +82,9 @@ class Issue7006ConcurrentRedefinitionTest extends TestHelper {
     // The redefinition is started while the caller is inside execute(), holding engineLock: reloadEngine() must
     // block on that same monitor until the call below releases it, rather than closing the engine underneath it.
     redefiner.start();
+    // Best-effort nudge to increase the odds the redefiner has actually reached (and blocked on) the lock before
+    // we release the call; not required for correctness (the assertions below hold either way), just makes the
+    // race window this test targets more likely to actually be exercised on a given run.
     Thread.sleep(200);
     releaseCall.countDown();
 
