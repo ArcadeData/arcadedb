@@ -297,6 +297,24 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         satisfied = settingMismatches.isEmpty();
       }
 
+      // Third half, once the definition lines up: the NAME the caller wrote. A name is not a label on the request -
+      // an index is reachable only through it (SEARCH_INDEX('<name>', ...), DROP INDEX, REBUILD INDEX) - so an index
+      // already on these properties under a different name does not provide what was asked for either, and a type
+      // holds one index per property set so the requested name cannot be added next to it. Answering the guard with
+      // the other index left the requested name uncreated while the statement reported on the request, and every
+      // later lookup through that name failed (issue #6921).
+      //
+      // Last of the three on purpose: a definition mismatch is the harder problem and stays the reported one, so a
+      // named request over an index of the wrong kind or configuration still names the kind or the settings rather
+      // than the name. And only a name the caller WROTE reaches this - {@link CreateIndexStatement} forwards the
+      // manual name alone and leaves the auto-derived typeName[properties] form out - which keeps a guarded request
+      // that named nothing the plain no-op it has always been.
+      //
+      // Applied on the unguarded path too: a name conflict is not something IF NOT EXISTS makes idempotent, so the
+      // "use IF NOT EXISTS" hint the unguarded message below ends with would be the wrong advice here.
+      if (satisfied && indexName != null && !indexName.isEmpty() && !indexName.equals(existingTypeIndex.getName()))
+        throw conflictWithExistingIndexName(existingTypeIndex, indexName, metadata.typeName, metadata.propertyNames);
+
       if (satisfied && ignoreIfExists)
         return existingTypeIndex;
 

@@ -217,6 +217,35 @@ public abstract class IndexBuilder<T extends Index> {
                 + "cannot satisfy would leave the type with no index at all"));
   }
 
+  /**
+   * Builds the error reported when the request WROTE an index name that is not the name of the index already on
+   * those properties.
+   * <p>
+   * The name is part of the request rather than a label on it: an index is reachable only through its name -
+   * {@code SEARCH_INDEX('<name>', ...)}, {@code DROP INDEX <name>}, {@code REBUILD INDEX <name>} - so an index under
+   * another name does not provide what was asked for, whatever its definition. A type keeps one index per property
+   * set, so the requested name cannot be added alongside it either, and answering a guarded request with the other
+   * index left the name silently uncreated while the statement reported on it (issue #6921).
+   * <p>
+   * Separate from {@link #conflictWithExistingIndex} because it is a different refusal: there the definitions do not
+   * line up and the fix is to align them, here they may line up perfectly and the only thing in the way is that
+   * ArcadeDB cannot hold two indexes on one property set. Naming the existing index is the actionable part - it is
+   * what a caller has to search for, or drop.
+   * <p>
+   * {@link IllegalArgumentException} for the same reason as its sibling: the HTTP layer maps it to a 400.
+   */
+  public static IllegalArgumentException conflictWithExistingIndexName(final Index existing, final String requestedName,
+      final String requestedTypeName, final List<String> requestedProperties) {
+    final boolean inherited = !existing.getTypeName().equals(requestedTypeName);
+    return new IllegalArgumentException(
+        "Cannot create the index '" + requestedName + "' on type '" + requestedTypeName + "' properties "
+            + requestedProperties + " because those properties are already indexed by '" + existing.getName() + "'"
+            + (inherited ? " on the parent type '" + existing.getTypeName() + "'" : "")
+            + ". A type holds one index per property set, so the requested name cannot be added next to it: use '"
+            + existing.getName() + "' to address the existing index, or drop it first to create the index under the "
+            + "requested name");
+  }
+
   private static String describeDefinition(final Schema.INDEX_TYPE indexType, final boolean unique) {
     return indexType + " (unique=" + unique + ")";
   }

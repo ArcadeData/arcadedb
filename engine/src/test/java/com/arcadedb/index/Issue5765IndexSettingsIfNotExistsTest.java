@@ -213,15 +213,21 @@ public class Issue5765IndexSettingsIfNotExistsTest extends TestHelper {
 
   /**
    * The other direction of the builder half: settings that match make the guarded statement the no-op it asks to be.
-   * The answer names the index that actually satisfied the request - not the name the statement asked for, which
-   * nothing was created under - and reports {@code created: false} so a caller cannot read success as "my name is
-   * now on an index".
+   * The answer names the index that actually satisfied the request and reports {@code created: false}, so a caller
+   * cannot read success as "my name is now on an index".
+   * <p>
+   * The vehicle used to be an explicit index name, which is what got the statement past {@code CreateIndexStatement}'s
+   * {@code existsIndex(name)} shortcut and into the builder. A name the statement WROTE is now part of the request
+   * (issue #6921) - it cannot be satisfied by an index carrying another one - so the no-op is reached here through a
+   * SUBTYPE instead: {@code SubDoc[embedding]} does not exist either, and the builder finds the parent's index by
+   * properties exactly the same way. The named form of this very statement is asserted right below.
    */
   @Test
-  void namedGuardedMatchingSettingsStayANoOp() {
+  void guardedMatchingSettingsStayANoOpInTheBuilder() {
     createVectorIndex(384, "COSINE");
+    database.command("sql", "CREATE DOCUMENT TYPE SubDoc EXTENDS Doc");
 
-    final ResultSet rs = database.command("sql", "CREATE INDEX myVectorIdx IF NOT EXISTS ON Doc (embedding) LSM_VECTOR "
+    final ResultSet rs = database.command("sql", "CREATE INDEX IF NOT EXISTS ON SubDoc (embedding) LSM_VECTOR "
         + "METADATA {\"dimensions\": 384, \"similarity\": \"COSINE\"}");
     final Result result = rs.next();
     assertThat(result.<Boolean>getProperty("created")).isFalse();
@@ -229,23 +235,61 @@ public class Issue5765IndexSettingsIfNotExistsTest extends TestHelper {
     assertThat(result.<Long>getProperty("totalIndexed")).isEqualTo(0L);
 
     assertThat(dimensionsOf("Doc[embedding]")).isEqualTo(384);
+    assertThat(database.getSchema().existsIndex("SubDoc[embedding]")).isFalse();
+  }
+
+  /**
+   * The named form of the statement above. Its settings match, so nothing in the definition is in the way and the
+   * message carries no settings mismatch - the only thing that cannot be granted is the NAME, because a type holds
+   * one index per property set and {@code Doc[embedding]} already occupies it (issue #6921).
+   */
+  @Test
+  void namedGuardedMatchingSettingsReportTheNameConflict() {
+    createVectorIndex(384, "COSINE");
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE INDEX myVectorIdx IF NOT EXISTS ON Doc (embedding) "
+        + "LSM_VECTOR METADATA {\"dimensions\": 384, \"similarity\": \"COSINE\"}"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("myVectorIdx")
+        .hasMessageContaining("Doc[embedding]")
+        .hasMessageNotContaining("dimensions=");
+
+    assertThat(dimensionsOf("Doc[embedding]")).isEqualTo(384);
     assertThat(database.getSchema().existsIndex("myVectorIdx")).isFalse();
   }
 
   /**
-   * Same no-op, on the non-vector builder: a named guarded full-text create whose analyzer matches leaves the existing
-   * index alone and reports it under its own name.
+   * Same no-op, on the non-vector builder: a guarded full-text create whose analyzer matches leaves the existing index
+   * alone and reports it under its own name.
    */
   @Test
-  void namedGuardedMatchingFullTextSettingsStayANoOp() {
+  void guardedMatchingFullTextSettingsStayANoOpInTheBuilder() {
     database.command("sql", "CREATE INDEX ON Doc (title) FULL_TEXT METADATA "
         + "{\"analyzer\": \"org.apache.lucene.analysis.core.KeywordAnalyzer\"}");
+    database.command("sql", "CREATE DOCUMENT TYPE SubDoc EXTENDS Doc");
 
-    final ResultSet rs = database.command("sql", "CREATE INDEX myTitleIdx IF NOT EXISTS ON Doc (title) FULL_TEXT "
+    final ResultSet rs = database.command("sql", "CREATE INDEX IF NOT EXISTS ON SubDoc (title) FULL_TEXT "
         + "METADATA {\"analyzer\": \"org.apache.lucene.analysis.core.KeywordAnalyzer\"}");
     final Result result = rs.next();
     assertThat(result.<Boolean>getProperty("created")).isFalse();
     assertThat(result.<String>getProperty("name")).isEqualTo("Doc[title]");
+
+    assertThat(database.getSchema().existsIndex("Doc[title]")).isTrue();
+    assertThat(database.getSchema().existsIndex("SubDoc[title]")).isFalse();
+  }
+
+  /** The named form of the full-text no-op: matching settings, and the name is the only thing reported. */
+  @Test
+  void namedGuardedMatchingFullTextSettingsReportTheNameConflict() {
+    database.command("sql", "CREATE INDEX ON Doc (title) FULL_TEXT METADATA "
+        + "{\"analyzer\": \"org.apache.lucene.analysis.core.KeywordAnalyzer\"}");
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE INDEX myTitleIdx IF NOT EXISTS ON Doc (title) FULL_TEXT "
+        + "METADATA {\"analyzer\": \"org.apache.lucene.analysis.core.KeywordAnalyzer\"}"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("myTitleIdx")
+        .hasMessageContaining("Doc[title]")
+        .hasMessageNotContaining("analyzer=");
 
     assertThat(database.getSchema().existsIndex("Doc[title]")).isTrue();
     assertThat(database.getSchema().existsIndex("myTitleIdx")).isFalse();
