@@ -26,6 +26,7 @@ import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NodeEdgeWeights;
@@ -107,7 +108,7 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
     // Collect all edges based on direction — use CSR + edge properties when available
     final List<int[]> edgeList = new ArrayList<>();
     final List<Double> edgeWeights = new ArrayList<>();
-    final Vertex.DIRECTION dir = parseDirection(direction);
+    final Vertex.DIRECTION dir = GraphEngine.parseDirection(direction);
 
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db);
     // The columnar path is taken per node and only when edgeWeightsOf() can answer - i.e. when the provider can
@@ -240,14 +241,6 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
     while (multiIter.hasNext())
       vertices.add(multiIter.next());
     return vertices;
-  }
-
-  private Vertex.DIRECTION parseDirection(final String direction) {
-    return switch (direction) {
-      case "OUT" -> Vertex.DIRECTION.OUT;
-      case "IN" -> Vertex.DIRECTION.IN;
-      default -> Vertex.DIRECTION.BOTH;
-    };
   }
 
   /**
