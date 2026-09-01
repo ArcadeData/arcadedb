@@ -145,8 +145,8 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
    * {@code direction} note in the docs says about most algorithms.
    * <p>
    * Deliberately local rather than routed through {@link com.arcadedb.graph.GraphEngine#parseDirection}: that
-   * helper coerces unknown values to BOTH and is shared by around twenty other {@code algo.*} procedures, so
-   * tightening it is a far wider behaviour change than this procedure's own bug fix should carry.
+   * helper now rejects an unrecognised value too (issue #6976), but its default for absent/null is BOTH, not
+   * this procedure's OUT - two genuinely different defaults, not one shared behaviour with a wrapper around it.
    */
   private Vertex.DIRECTION extractDirection(final Object value) {
     if (value == null)
