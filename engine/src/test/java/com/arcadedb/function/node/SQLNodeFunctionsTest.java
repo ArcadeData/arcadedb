@@ -20,6 +20,7 @@ package com.arcadedb.function.node;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Collection;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SQLNodeFunctionsTest extends TestHelper {
 
@@ -66,6 +68,52 @@ class SQLNodeFunctionsTest extends TestHelper {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<Long>getProperty("d")).isEqualTo(2L);
     }
+  }
+
+  @Test
+  void nodeDegreeFromSql_directionIsHonoured() {
+    // Friend is directed Ada -> Bob and Ada -> Cara: Ada's OUT degree is 2, Bob's IN degree is 1 and Bob's OUT
+    // degree is 0. If an unrecognised direction silently became BOTH, OUT/IN would read the same as BOTH.
+    try (final ResultSet rs = database.query("sql", "SELECT node.degree(@this, 'Friend', 'OUT') AS d FROM Person WHERE name = 'Ada'")) {
+      assertThat(rs.next().<Long>getProperty("d")).isEqualTo(2L);
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT node.degree(@this, 'Friend', 'IN') AS d FROM Person WHERE name = 'Bob'")) {
+      assertThat(rs.next().<Long>getProperty("d")).isEqualTo(1L);
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT node.degree(@this, 'Friend', 'OUT') AS d FROM Person WHERE name = 'Bob'")) {
+      assertThat(rs.next().<Long>getProperty("d")).isEqualTo(0L);
+    }
+  }
+
+  /**
+   * Regression for issue #6976: {@code AbstractNodeFunction.parseDirection} used to carry the same
+   * silent-coercion bug as {@code GraphEngine.parseDirection} - any unrecognised direction string, like a typo
+   * of {@code 'IN'}, silently became {@code BOTH} instead of erroring. It backs {@code node.degree()},
+   * {@code node.relationship.exists()} and {@code node.relationship.types()}.
+   * <p>
+   * {@code node.relationship.exists}/{@code .types} are invoked directly here rather than through a query
+   * string: their two-dot names are OpenCypher function names, and SQL's own dot syntax would parse
+   * {@code node.relationship.exists(...)} as a method call on the field {@code node.relationship} instead of a
+   * call to the function of that name.
+   */
+  @Test
+  void unrecognisedDirectionIsRejectedNotCoercedToBoth() {
+    assertThatThrownBy(() -> database.query("sql", "SELECT node.degree(@this, 'Friend', 'INCOMING2') AS d FROM Person WHERE name = 'Ada'").next())
+        .hasStackTraceContaining("direction")
+        .hasStackTraceContaining("IN, OUT or BOTH");
+
+    final Vertex ada = database.query("sql", "SELECT FROM Person WHERE name = 'Ada'").next().getRecord().get().asVertex();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    assertThatThrownBy(() -> new NodeRelationshipExists().execute(new Object[] { ada, "Friend", "INCOMING2" }, context))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("direction")
+        .hasMessageContaining("IN, OUT or BOTH");
+    assertThatThrownBy(() -> new NodeRelationshipTypes().execute(new Object[] { ada, "INCOMING2" }, context))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("direction")
+        .hasMessageContaining("IN, OUT or BOTH");
   }
 
   @Test

@@ -1321,6 +1321,12 @@ public final class GraphAlgorithms {
    * neighbours and weights come from {@link com.arcadedb.graph.GraphTraversalProvider#edgeWeightsOf}, which
    * resolves the overlay against the columns, instead of the raw CSR arrays the overlay-free path indexes
    * directly. {@code dist} arrives with {@code dist[source] = 0} already set by the caller.
+   * <p>
+   * {@code dist} is sized once, against the id-space upper bound the caller's snapshot reported at the start of
+   * the search - but this method reads the live {@code view} once per popped node, not that pinned snapshot, so
+   * a commit that widens the overlay further while a long search is still in flight could hand back a neighbour
+   * id past the end of {@code dist}. Refusing that node the same way an unresolvable one is refused, rather than
+   * indexing past the array, is what keeps that race a refusal instead of an {@code ArrayIndexOutOfBoundsException}.
    */
   private static double[] dijkstraSingleSourceViaProvider(final GraphAnalyticalView view, final int source,
       final double[] dist, final String weightProperty, final Vertex.DIRECTION direction, final String... edgeTypes) {
@@ -1341,11 +1347,13 @@ public final class GraphAlgorithms {
       final int[] neighbors = edges.neighbors();
       final double[] weights = edges.weights();
       for (int j = 0; j < neighbors.length; j++) {
+        final int v = neighbors[j];
+        if (v >= dist.length)
+          return null; // a concurrent commit widened the id space past this search's pinned bound; refuse rather than overrun it
         final double w = weights[j];
         if (w < 0)
           continue;
         final double newDist = d + w;
-        final int v = neighbors[j];
         if (newDist < dist[v]) {
           dist[v] = newDist;
           heap.offer(new double[]{ newDist, v });
