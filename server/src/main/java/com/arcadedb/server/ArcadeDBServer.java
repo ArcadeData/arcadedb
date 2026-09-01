@@ -547,14 +547,7 @@ public class ArcadeDBServer {
         : configuration.getValueAsLong(GlobalConfiguration.SERVER_SHUTDOWN_TIMEOUT);
 
     if (!awaitLifecycleLock(lifecycleLock, timeout)) {
-      LogManager.instance().log(this, Level.WARNING,
-          """
-          Could not acquire the server lifecycle lock within %dms while status is %s, so the shutdown hook is \
-          returning WITHOUT a graceful stop and the JVM will exit. Another thread is inside start()/stop() and \
-          did not release it - typically a startup failure that called System.exit() from inside start() (e.g. a \
-          port already in use). Open databases were not closed cleanly; the next open replays the WAL. Raise \
-          arcadedb.server.shutdownTimeout if a legitimate shutdown needs longer.""",
-          timeout, status);
+      LogManager.instance().log(this, Level.WARNING, shutdownHookLockTimeoutWarning(timeout, status));
       return;
     }
 
@@ -563,6 +556,27 @@ public class ArcadeDBServer {
     } finally {
       lifecycleLock.unlock();
     }
+  }
+
+  /**
+   * Builds the WARNING for a shutdown hook that could not acquire the lifecycle lock. The advice depends
+   * on which bound was in effect: while {@code STARTING} the wait is the fixed
+   * {@link #SHUTDOWN_HOOK_STARTING_TIMEOUT_MS}, so pointing the operator at
+   * {@code arcadedb.server.shutdownTimeout} would name the one setting that provably had no effect on
+   * that branch (issue #6981). Extracted so the message can be tested without driving a real JVM shutdown.
+   */
+  // @VisibleForTesting
+  static String shutdownHookLockTimeoutWarning(final long timeout, final STATUS status) {
+    final String hint = status == STATUS.STARTING ?
+        "This wait during STARTING is a fixed " + SHUTDOWN_HOOK_STARTING_TIMEOUT_MS
+            + "ms bound not governed by arcadedb.server.shutdownTimeout." :
+        "Raise arcadedb.server.shutdownTimeout if a legitimate shutdown needs longer.";
+    return """
+        Could not acquire the server lifecycle lock within %dms while status is %s, so the shutdown hook is \
+        returning WITHOUT a graceful stop and the JVM will exit. Another thread is inside start()/stop() and \
+        did not release it - typically a startup failure that called System.exit() from inside start() (e.g. a \
+        port already in use). Open databases were not closed cleanly; the next open replays the WAL. %s""".formatted(
+        timeout, status, hint);
   }
 
   /**
