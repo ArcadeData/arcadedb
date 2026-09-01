@@ -21,6 +21,9 @@ package com.arcadedb.server;
 import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -70,5 +73,21 @@ class Issue6981ShutdownHookHintTest {
     assertThat(description)
         .as("the configured bound DOES apply once the status left STARTING, even before start() releases the lock")
         .contains("the tail of start() after the status has already turned ONLINE");
+  }
+
+  @Test
+  void settingDescriptionMustQuoteTheSameStartingBoundTheHookApplies() {
+    // The description spells the STARTING bound out as a literal, because GlobalConfiguration lives in the
+    // engine module and cannot see the server's SHUTDOWN_HOOK_STARTING_TIMEOUT_MS. Nothing but this test
+    // keeps the two in step, and a description quoting a bound the hook no longer applies is exactly the
+    // defect #6981 reports - one module edit away from coming back.
+    final Matcher bound = Pattern.compile("fixed (\\d+)ms bound")
+        .matcher(ArcadeDBServer.shutdownHookLockTimeoutWarning(2_000, ArcadeDBServer.STATUS.STARTING));
+
+    assertThat(bound.find()).as("the STARTING warning must state the fixed bound it applied").isTrue();
+
+    assertThat(GlobalConfiguration.SERVER_SHUTDOWN_TIMEOUT.getDescription())
+        .as("the setting description quotes the STARTING bound as a literal: it must match the constant the hook uses")
+        .contains("fixed " + bound.group(1) + "ms bound");
   }
 }

@@ -534,8 +534,9 @@ public class ArcadeDBServer {
    *   <li>{@code STARTING}: the server never came up, so there is nothing worth flushing and the holder
    *       is very likely the thread that triggered this shutdown. Wait only briefly, for the benign race
    *       where a concurrent start is about to finish.</li>
-   *   <li>anything else: a legitimate concurrent {@code stop()} may be flushing databases, and cutting
-   *       that short would cost a WAL recovery on the next open. Wait up to
+   *   <li>anything else: a legitimate concurrent {@code stop()} may be flushing databases - and so may the
+   *       tail of a {@code start()} that already flipped the status to {@code ONLINE} but has not released
+   *       the mutex yet - and cutting that short would cost a WAL recovery on the next open. Wait up to
    *       {@code arcadedb.server.shutdownTimeout}.</li>
    * </ul>
    * If the mutex never arrives, the databases are left as they are: the next open replays the WAL,
