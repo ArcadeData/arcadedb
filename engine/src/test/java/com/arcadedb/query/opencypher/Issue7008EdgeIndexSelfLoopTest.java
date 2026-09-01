@@ -53,7 +53,12 @@ class Issue7008EdgeIndexSelfLoopTest {
     database.getSchema().createVertexType("Account");
     final var transfer = database.getSchema().createEdgeType("TRANSFER");
     transfer.createProperty("transactionId", Type.STRING);
+    transfer.createProperty("date", Type.DATE);
     database.getSchema().buildTypeIndex("TRANSFER", new String[] { "transactionId" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false).create();
+    // A second, composite index. The seed picks the longest index its equality predicates fully cover, so a
+    // WHERE on transactionId alone still seeks the single-property one and a WHERE on both seeks this one.
+    database.getSchema().buildTypeIndex("TRANSFER", new String[] { "transactionId", "date" })
         .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false).create();
 
     database.transaction(() -> {
@@ -62,9 +67,9 @@ class Issue7008EdgeIndexSelfLoopTest {
       final MutableVertex c = database.newVertex("Account").set("name", "C").save();
 
       // A plain edge between two DIFFERENT accounts: no self-loop shape must ever match it.
-      a.newEdge("TRANSFER", b).set("transactionId", "74529884").save();
+      a.newEdge("TRANSFER", b).set("transactionId", "74529884").set("date", "2026-02-28").save();
       // A genuine self-loop on C: the self-loop shape must find exactly this one.
-      c.newEdge("TRANSFER", c).set("transactionId", "11112222").save();
+      c.newEdge("TRANSFER", c).set("transactionId", "11112222").set("date", "2026-02-28").save();
     });
   }
 
@@ -126,13 +131,24 @@ class Issue7008EdgeIndexSelfLoopTest {
     // The self-loop constraint has to be enforced without giving up the index speedup issue #740 added.
     // Pinning the plan shape is what keeps this file honest: the alternative fix - refusing the seed for a
     // repeated variable - would make every assertion above pass while silently losing the optimization.
-    try (final ResultSet rs = database.query("opencypher",
-        "PROFILE MATCH (a)-[t:TRANSFER]->(a) WHERE t.transactionId = '11112222' RETURN a.name AS n")) {
-      while (rs.hasNext())
-        rs.next();
-      final String planString = rs.getExecutionPlan().get().prettyPrint(0, 2);
-      assertThat(planString).contains("MATCH EDGE BY INDEX");
-    }
+    assertThat(profiledPlanOf("MATCH (a)-[t:TRANSFER]->(a) WHERE t.transactionId = '11112222' RETURN a.name AS n"))
+        .contains("MATCH EDGE BY INDEX");
+  }
+
+  @Test
+  void selfLoopConstraintSurvivesACompositeIndexSeek() {
+    // A multi-column key drives a different branch of the seed's index choice, so the constraint has to hold
+    // there too. Assert the composite index really is the one seeded, otherwise this only re-tests the
+    // single-property path under a longer WHERE clause.
+    final String nonSelfLoop = "MATCH (a)-[t:TRANSFER]->(a) "
+        + "WHERE t.transactionId = '74529884' AND t.date = date('2026-02-28') RETURN a.name AS n";
+    assertThat(profiledPlanOf(nonSelfLoop)).contains("on transactionId,date");
+    assertThat(namesOf(nonSelfLoop)).isEmpty();
+
+    final String selfLoop = "MATCH (a)-[t:TRANSFER]->(a) "
+        + "WHERE t.transactionId = '11112222' AND t.date = date('2026-02-28') RETURN a.name AS n";
+    assertThat(profiledPlanOf(selfLoop)).contains("on transactionId,date");
+    assertThat(namesOf(selfLoop)).containsExactly("C");
   }
 
   @Test
@@ -148,6 +164,15 @@ class Issue7008EdgeIndexSelfLoopTest {
         "MATCH (a:Account)-[t:TRANSFER]->(a) WHERE t.transactionId = '11112222' RETURN a.name AS n";
     assertThat(planOf(selfLoop)).contains("Cost-Based Query Optimizer");
     assertThat(namesOf(selfLoop)).containsExactly("C");
+  }
+
+  /** Drains a PROFILEd run so the plan reflects what actually executed, not just what was planned. */
+  private String profiledPlanOf(final String cypher) {
+    try (final ResultSet rs = database.query("opencypher", "PROFILE " + cypher)) {
+      while (rs.hasNext())
+        rs.next();
+      return rs.getExecutionPlan().get().prettyPrint(0, 2);
+    }
   }
 
   private String planOf(final String cypher) {
