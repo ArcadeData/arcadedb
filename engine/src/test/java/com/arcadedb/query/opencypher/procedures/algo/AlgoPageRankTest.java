@@ -149,6 +149,7 @@ class AlgoPageRankTest {
     // Weighted PageRank never takes the CSR path, so the OLTP fallback's weight arrays are only exercised here,
     // and only through Cypher - which also covers the 'IN' and 'OUT' config strings end to end.
     final Map<String, Double> unweightedIn = pageRankByName("IN", null);
+    final Map<String, Double> unweightedOut = pageRankByName("OUT", null);
 
     // Weights are set through the graph API on purpose. `UPDATE LINKS SET weight = 9 WHERE out.name = 'A'` looks
     // like it would work and matches zero rows: `out`/`in` do not dereference to the endpoint vertex on an edge
@@ -170,12 +171,18 @@ class AlgoPageRankTest {
 
     // A -> B, A -> C (weight 9), B -> C, C -> A. Following the stored direction concentrates rank on C;
     // reversing it concentrates rank on A, where both B's rank and 90% of C's now flows.
-    assertThat(topRanked(pageRankByName("OUT", "weight"))).isEqualTo("C");
+    final Map<String, Double> weightedOut = pageRankByName("OUT", "weight");
+    assertThat(topRanked(weightedOut)).isEqualTo("C");
     final Map<String, Double> weightedIn = pageRankByName("IN", "weight");
     assertThat(topRanked(weightedIn)).isEqualTo("A");
 
-    // The split has to reach the SCORES too, or this test would pass identically with the weight arrays ignored:
-    // unweighted IN splits C's rank evenly between A and B, weighted IN sends 90% of it to A.
+    // Both top-ranked checks above are only orientation: C already wins OUT and A already wins IN at uniform
+    // weights, so neither can tell a consumed weight array from an ignored one. These two can. In each direction
+    // the 9:1 split diverts rank that an even split would have sent to B, so B must end up strictly poorer:
+    // under OUT it is A's rank being split 90/10 towards C, under IN it is C's being split 90/10 towards A.
+    assertThat(weightedOut.get("B"))
+        .as("weighted OUT must leave B less of A's rank than an even split would")
+        .isLessThan(unweightedOut.get("B") - 1e-6);
     assertThat(weightedIn.get("B"))
         .as("weighted IN must leave B less of C's rank than an even split would")
         .isLessThan(unweightedIn.get("B") - 1e-6);
@@ -215,6 +222,39 @@ class AlgoPageRankTest {
       csrScores.forEach((rid, score) -> byName.put(rid.asVertex().getString("name"), score));
       assertThat(byName.get("A")).isGreaterThan(byName.get("B"));
       assertThat(byName.get("A")).isGreaterThan(byName.get("C"));
+    } finally {
+      gav.shutdown();
+    }
+  }
+
+  @Test
+  void pageRankInDirectionAgreesOnDanglingNodesToo() {
+    // Reversing the direction also reverses which nodes are DANGLING, and dangling rank is redistributed by
+    // separate code in each kernel (the CSR one precomputes a dangling-node list from out-degree once; the OLTP
+    // one re-sums it every iteration). The A/B/C fixture cannot cover that under IN: every node there has an
+    // incoming edge, so nothing is dangling. D is a pure source - no incoming edges at all - so it pushes
+    // nothing under IN and its rank has to be redistributed rather than lost.
+    database.transaction(() -> {
+      final MutableVertex d = database.newVertex("Page").set("name", "D").save();
+      d.newEdge("LINKS", database.select().fromType("Page").where().property("name").eq().value("A").vertices().next(),
+          true, (Object[]) null).save();
+    });
+
+    final Map<RID, Double> oltpScores = pageRankScores(newContext(), Vertex.DIRECTION.IN, 0.0);
+    assertThat(oltpScores).hasSize(4);
+
+    final GraphAnalyticalView gav = readyView("pagerank-in-dangling-csr");
+    try {
+      final BasicCommandContext csrContext = newContext();
+      final Map<RID, Double> csrScores = pageRankScores(csrContext, Vertex.DIRECTION.IN, 0.0);
+      assertCSRAccelerated(csrContext);
+      assertScoresMatch(oltpScores, csrScores);
+
+      // Rank must be conserved: a dangling node's share is redistributed, not dropped on the floor.
+      double sum = 0;
+      for (final double score : csrScores.values())
+        sum += score;
+      assertThat(sum).as("dangling rank under IN must be redistributed, not lost").isBetween(0.9, 1.1);
     } finally {
       gav.shutdown();
     }
