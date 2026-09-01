@@ -45,6 +45,16 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class JavaMethodFunctionDefinition implements FunctionDefinition {
+  // JLS 5.1.2 widening primitive conversions that method.invoke() itself accepts (after unboxing the argument):
+  // e.g. an Integer argument is a valid call-site match for a `long` parameter.
+  private static final Map<Class<?>, Set<Class<?>>> WIDENING_CONVERSIONS = Map.of(//
+      byte.class, Set.of(short.class, int.class, long.class, float.class, double.class), //
+      short.class, Set.of(int.class, long.class, float.class, double.class), //
+      char.class, Set.of(int.class, long.class, float.class, double.class), //
+      int.class, Set.of(long.class, float.class, double.class), //
+      long.class, Set.of(float.class, double.class), //
+      float.class, Set.of(double.class));
+
   private final List<Method> methods;
   private final Object       instance;
 
@@ -250,16 +260,6 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     }
     return true;
   }
-
-  // JLS 5.1.2 widening primitive conversions that method.invoke() itself accepts (after unboxing the argument):
-  // e.g. an Integer argument is a valid call-site match for a `long` parameter.
-  private static final Map<Class<?>, Set<Class<?>>> WIDENING_CONVERSIONS = Map.of(//
-      byte.class, Set.of(short.class, int.class, long.class, float.class, double.class), //
-      short.class, Set.of(int.class, long.class, float.class, double.class), //
-      char.class, Set.of(int.class, long.class, float.class, double.class), //
-      int.class, Set.of(long.class, float.class, double.class), //
-      long.class, Set.of(float.class, double.class), //
-      float.class, Set.of(double.class));
 
   private static boolean typeMatches(final Class<?> paramType, final Object arg) {
     if (arg == null)
