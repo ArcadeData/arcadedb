@@ -1422,6 +1422,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         null);
   }
 
+  /**
+   * Writes a record to its page immediately, without the read lock {@link #updateRecord(Record)} takes.
+   * <p>
+   * <b>The #6950 MVCC guard lives on the two paths INTO this method, not inside it.</b> A caller already holding a
+   * transaction gets it from {@code TransactionContext.addUpdatedRecord}, which pins the record's page and checks the
+   * image the moment the record is taken for update; a caller with no transaction gets it from the implicit-transaction
+   * branch below. Everything that reaches this method with a transaction someone ELSE opened - the edge-append rebase
+   * and the commit-time {@code updatedRecords} flush - is deliberately unguarded here, because the check already ran
+   * once for it. A NEW direct caller that opens its own transaction and then calls this is therefore the one shape
+   * that would slip through both: route it through {@link #updateRecord(Record)} instead of adding a third bypass.
+   */
   @Override
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
     boolean success = false;
