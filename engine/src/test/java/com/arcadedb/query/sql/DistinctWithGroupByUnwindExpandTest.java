@@ -177,6 +177,55 @@ class DistinctWithGroupByUnwindExpandTest extends TestHelper {
     });
   }
 
+  /**
+   * Same pagination invariant again, this time for the UNWIND branch. Note the clause order the grammar
+   * requires (ORDER BY before UNWIND); the plan still unwinds first and sorts the unwound rows.
+   */
+  @Test
+  void distinctWithUnwindHonoursOrderByAndLimit() {
+    database.transaction(() -> {
+      database.command("SQL", "CREATE DOCUMENT TYPE W");
+      database.command("SQL", "INSERT INTO W SET tag = ['b', 'a', 'a', 'c']");
+
+      final List<Result> all = toList(database.query("SQL", "SELECT DISTINCT tag FROM W ORDER BY tag UNWIND tag"));
+      assertThat(all.stream().map(r -> (String) r.getProperty("tag")).toList()).containsExactly("a", "b", "c");
+
+      final List<Result> limited = toList(
+          database.query("SQL", "SELECT DISTINCT tag FROM W ORDER BY tag UNWIND tag LIMIT 2"));
+      assertThat(limited.stream().map(r -> (String) r.getProperty("tag")).toList()).containsExactly("a", "b");
+
+      final List<Result> skipped = toList(
+          database.query("SQL", "SELECT DISTINCT tag FROM W ORDER BY tag UNWIND tag SKIP 1 LIMIT 1"));
+      assertThat(skipped.stream().map(r -> (String) r.getProperty("tag")).toList()).containsExactly("b");
+    });
+  }
+
+  /**
+   * GROUP BY and UNWIND in the same statement: the dedup has to see the rows the UNWIND produced, not the
+   * groups the aggregation produced, so it can only be chained after both.
+   */
+  @Test
+  void distinctIsAppliedWithGroupByAndUnwindTogether() {
+    database.transaction(() -> {
+      database.command("SQL", "CREATE DOCUMENT TYPE C");
+      database.command("SQL", "INSERT INTO C SET a = 'x'");
+      database.command("SQL", "INSERT INTO C SET a = 'x'");
+      database.command("SQL", "INSERT INTO C SET a = 'y'");
+      database.command("SQL", "INSERT INTO C SET a = 'z'");
+      database.command("SQL", "INSERT INTO C SET a = 'z'");
+
+      // Three groups with counts 2, 1, 2; each is unwound into two rows -> 6 rows, of which the two
+      // count-2 groups produce the same pair, so DISTINCT leaves 4.
+      final String sql = "SELECT count(*) AS c, [1, 2] AS p FROM C GROUP BY a UNWIND p";
+      assertThat(toList(database.query("SQL", sql))).hasSize(6);
+
+      final List<Result> rows = toList(database.query("SQL", "SELECT DISTINCT count(*) AS c, [1, 2] AS p FROM C GROUP BY a UNWIND p"));
+      assertThat(rows).hasSize(4);
+      assertThat(rows.stream().map(r -> ((Number) r.getProperty("c")).longValue() + ":" + r.getProperty("p")).toList())
+          .containsExactlyInAnyOrder("2:1", "2:2", "1:1", "1:2");
+    });
+  }
+
   @Test
   void distinctIsAppliedWithUnwindInMatch() {
     database.transaction(() -> {
