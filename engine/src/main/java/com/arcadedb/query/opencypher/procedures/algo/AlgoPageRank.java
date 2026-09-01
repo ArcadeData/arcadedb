@@ -32,7 +32,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
@@ -52,7 +52,8 @@ import java.util.stream.Stream;
  *   <li>maxIterations (int, default 20): maximum number of iterations</li>
  *   <li>tolerance (double, default 0.0001): convergence threshold</li>
  *   <li>weightProperty (string, default null): edge property to use as weight</li>
- *   <li>direction (string, default "OUT"): edge direction for push — "OUT" for directed graphs, "BOTH" for undirected</li>
+ *   <li>direction (string, default "OUT"): edges rank is pushed along - "OUT", "IN", or "BOTH".
+ *       Anything else is rejected rather than coerced, since the three answer different questions</li>
  * </ul>
  * </p>
  * <p>
@@ -68,6 +69,9 @@ import java.util.stream.Stream;
  */
 public class AlgoPageRank extends AbstractAlgoProcedure {
   public static final String NAME = "algo.pagerank";
+
+  /** Starting size of the per-node adjacency buffer the OLTP fallback reuses; it doubles on demand. */
+  private static final int INITIAL_ADJACENCY_CAPACITY = 16;
 
   @Override
   public String getName() {
@@ -107,9 +111,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?
         n.doubleValue() : 0.0001;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
-    final String dirStr = config != null && config.get("direction") instanceof String s ? s : "OUT";
-    final Vertex.DIRECTION direction = "BOTH".equalsIgnoreCase(dirStr) ? Vertex.DIRECTION.BOTH :
-        "IN".equalsIgnoreCase(dirStr) ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+    final Vertex.DIRECTION direction = extractDirection(config != null ? config.get("direction") : null);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
@@ -126,6 +128,40 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
 
     // Fall back to OLTP path
     return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, weightProperty, direction, guard);
+  }
+
+  /**
+   * Resolves the {@code direction} config value, rejecting anything that is neither absent nor one of the three
+   * supported values.
+   * <p>
+   * The three directions answer genuinely different questions - OUT pushes rank along stored edges, IN along
+   * their reverse, BOTH along both - so coercing an unrecognised value to OUT, as this did before, answers a
+   * question the caller did not ask and returns a plausible-looking result rather than an error. {@code
+   * 'INCOMING'} is the case that matters: it is what someone reaching for {@code IN} types, and it used to
+   * silently produce OUT's scores. That was harmless only while IN was broken anyway (see the direction fix in
+   * PR #6956); now that IN works, the silence is the bug.
+   * <p>
+   * Absent and explicitly null both mean "use the default", which is OUT - not BOTH, whatever the shared
+   * {@code direction} note in the docs says about most algorithms.
+   * <p>
+   * Deliberately local rather than routed through {@link com.arcadedb.graph.GraphEngine#parseDirection}: that
+   * helper coerces unknown values to BOTH and is shared by around twenty other {@code algo.*} procedures, so
+   * tightening it is a far wider behaviour change than this procedure's own bug fix should carry.
+   */
+  private Vertex.DIRECTION extractDirection(final Object value) {
+    if (value == null)
+      return Vertex.DIRECTION.OUT;
+    if (!(value instanceof String s))
+      throw new IllegalArgumentException(
+          getName() + "(): direction must be a string, one of OUT, IN or BOTH, got " + value);
+    if ("OUT".equalsIgnoreCase(s))
+      return Vertex.DIRECTION.OUT;
+    if ("IN".equalsIgnoreCase(s))
+      return Vertex.DIRECTION.IN;
+    if ("BOTH".equalsIgnoreCase(s))
+      return Vertex.DIRECTION.BOTH;
+    throw new IllegalArgumentException(
+        getName() + "(): unknown direction '" + s + "', expected one of OUT, IN or BOTH");
   }
 
   private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav,
@@ -159,57 +195,60 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final int n = vertices.size();
     final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
 
-    // Build adjacency once: for each node, store (neighborIdx, weight) pairs.
-    // When direction is BOTH, edges are treated as bidirectional (undirected graphs).
+    // Build adjacency once: for each node, the dense ids it pushes rank to, and the matching weights.
+    //
+    // `direction` names the edges rank travels ALONG, so it selects which stored directions to walk rather than
+    // which to report: OUT pushes along stored edges, IN pushes along their reverse, and BOTH pushes both ways,
+    // which is what makes it undirected. Before PR #6956 the OUT walk was unconditional and only BOTH added
+    // the reverse one, so an IN request was answered with OUT's adjacency.
     final int[][] outNeighbors = new int[n][];
     final double[][] outWeights = weightProperty != null ? new double[n][] : null;
+    final Vertex.DIRECTION[] walks = direction == Vertex.DIRECTION.BOTH ?
+        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
+        new Vertex.DIRECTION[] { direction };
+    // One growable primitive buffer, reused across every node and copied out at its exact size, rather than a
+    // List<int[]> whose every entry was a one-element array and a List<Double> that boxed every weight: that is
+    // two allocations per EDGE on a path that walks the whole graph.
+    int[] nbrBuf = new int[INITIAL_ADJACENCY_CAPACITY];
+    double[] wtBuf = weightProperty != null ? new double[INITIAL_ADJACENCY_CAPACITY] : null;
+    int edgeStep = 0;
     for (int i = 0; i < n; i++) {
       final Vertex v = vertices.get(i);
-      final List<int[]> nbrs = new ArrayList<>();
-      final List<Double> wts = weightProperty != null ? new ArrayList<>() : null;
+      int count = 0;
 
-      // Always traverse OUT edges
-      for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
-        try {
-          final Integer neighborIdx = ridToIdx.get(edge.getInVertex().getIdentity());
-          if (neighborIdx == null)
-            continue;
-          nbrs.add(new int[]{ neighborIdx });
-          if (wts != null) {
-            final Object w = edge.get(weightProperty);
-            wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
-          }
-        } catch (final RecordNotFoundException e) {
-          GhostEdgeReporter.reportSkipped(e);
-        }
-      }
-
-      // For BOTH direction, also traverse IN edges (treat undirected edges as bidirectional)
-      if (direction == Vertex.DIRECTION.BOTH) {
-        for (final Edge edge : v.getEdges(Vertex.DIRECTION.IN)) {
+      for (final Vertex.DIRECTION walk : walks) {
+        for (final Edge edge : v.getEdges(walk)) {
+          // This build walks and deserialises every edge in the graph and had no checkpoint at all: the first
+          // one a call reached was the iteration loop below, so a deadline could not be seen until the whole
+          // adjacency was already materialised. Throttled by EDGE rather than by vertex for the reason
+          // AbstractAlgoProcedure.RecordRowReader gives for the same walk - one supernode can hold millions of
+          // them, and a per-vertex checkpoint would leave that whole node unabortable.
+          guard.checkPeriodically(edgeStep++);
           try {
-            final Integer neighborIdx = ridToIdx.get(edge.getOutVertex().getIdentity());
+            final Integer neighborIdx = ridToIdx.get(
+                walk == Vertex.DIRECTION.OUT ? edge.getInVertex().getIdentity() : edge.getOutVertex().getIdentity());
             if (neighborIdx == null)
               continue;
-            nbrs.add(new int[]{ neighborIdx });
-            if (wts != null) {
-              final Object w = edge.get(weightProperty);
-              wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
+            if (count == nbrBuf.length) {
+              nbrBuf = Arrays.copyOf(nbrBuf, count << 1);
+              if (wtBuf != null)
+                wtBuf = Arrays.copyOf(wtBuf, count << 1);
             }
+            nbrBuf[count] = neighborIdx;
+            if (wtBuf != null) {
+              final Object w = edge.get(weightProperty);
+              wtBuf[count] = w instanceof Number num ? num.doubleValue() : 1.0;
+            }
+            count++;
           } catch (final RecordNotFoundException e) {
             GhostEdgeReporter.reportSkipped(e);
           }
         }
       }
 
-      outNeighbors[i] = new int[nbrs.size()];
-      for (int j = 0; j < nbrs.size(); j++)
-        outNeighbors[i][j] = nbrs.get(j)[0];
-      if (outWeights != null) {
-        outWeights[i] = new double[wts.size()];
-        for (int j = 0; j < wts.size(); j++)
-          outWeights[i][j] = wts.get(j);
-      }
+      outNeighbors[i] = Arrays.copyOf(nbrBuf, count);
+      if (outWeights != null)
+        outWeights[i] = Arrays.copyOf(wtBuf, count);
     }
 
     // Iterate purely in-memory

@@ -310,13 +310,19 @@ public final class GraphAlgorithms {
    * via CSR arrays. Each thread writes to a disjoint range of the next[] array,
    * requiring zero synchronization.
    * <p>
-   * When direction is OUT (directed), out-degree uses forward CSR and pull reads backward CSR.
-   * When direction is BOTH (undirected), out-degree uses forward+backward CSR and pull reads both.
+   * The direction names the edges rank is pushed ALONG, so it selects which CSR array plays each role.
+   * OUT pushes along stored edges: out-degree comes from the forward CSR and the pull reads the backward one.
+   * IN pushes along reversed edges, which is the mirror image: out-degree comes from the backward CSR and the
+   * pull reads the forward one. BOTH treats the graph as undirected and uses both arrays for both roles.
+   * <p>
+   * IN is not a decoration on OUT - it is the only way to ask for rank flowing backwards without materializing a
+   * reversed copy of the graph, and until PR #6956 this kernel silently ignored it and answered OUT, so a
+   * covered {@code algo.pagerank({direction: 'IN'})} disagreed with the same call on an uncovered graph.
    *
    * @param view       the analytical view (must be built)
    * @param damping    damping factor, typically 0.85
    * @param iterations number of power-iteration steps
-   * @param direction  edge direction: OUT for directed, BOTH for undirected
+   * @param direction  edge direction rank is pushed along: OUT, IN, or BOTH (undirected)
    * @param edgeTypes  edge types to traverse (null or empty = all)
    * @return double[] of ranks indexed by dense node ID
    */
@@ -347,7 +353,11 @@ public final class GraphAlgorithms {
     if (n == 0)
       return new double[0];
 
-    final boolean undirected = direction == DIRECTION.BOTH;
+    // Rank is pushed along `direction`, so each CSR array's role follows from it: `pushForward` means stored
+    // edges carry rank (out-degree from the forward CSR, pull from the backward one) and `pushBackward` means
+    // reversed edges do. BOTH sets both, which is what makes it undirected.
+    final boolean pushForward = direction != DIRECTION.IN;
+    final boolean pushBackward = direction != DIRECTION.OUT;
 
     double[] rank = new double[n];
     double[] next = new double[n];
@@ -375,12 +385,12 @@ public final class GraphAlgorithms {
     // Precompute outDegree array across all edge types (once, outside iteration loop)
     final int[] outDeg = new int[n];
     for (int t = 0; t < typeCount; t++) {
-      if (allFwdOffsets[t] != null) {
+      if (pushForward && allFwdOffsets[t] != null) {
         final int[] fwdOffsets = allFwdOffsets[t];
         for (int u = 0; u < n; u++)
           outDeg[u] += fwdOffsets[u + 1] - fwdOffsets[u];
       }
-      if (undirected && allBwdOffsets[t] != null) {
+      if (pushBackward && allBwdOffsets[t] != null) {
         final int[] bwdOffsets = allBwdOffsets[t];
         for (int u = 0; u < n; u++)
           outDeg[u] += bwdOffsets[u + 1] - bwdOffsets[u];
@@ -422,13 +432,15 @@ public final class GraphAlgorithms {
         for (int u = start; u < end; u++) {
           double sum = 0;
           for (int t = 0; t < typeCount; t++) {
-            if (allBwdOffsets[t] != null) {
+            // u receives from every node that pushes to it: pushing forward along v -> u means v is one of u's
+            // backward neighbors, pushing backward along u -> v means v is one of u's forward neighbors.
+            if (pushForward && allBwdOffsets[t] != null) {
               final int[] bwdOffsets = allBwdOffsets[t];
               final int[] bwdNeighbors = allBwdNeighbors[t];
               for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++)
                 sum += contrib[bwdNeighbors[j]];
             }
-            if (undirected && allFwdOffsets[t] != null) {
+            if (pushBackward && allFwdOffsets[t] != null) {
               final int[] fwdOffsets = allFwdOffsets[t];
               final int[] fwdNeighbors = allFwdNeighbors[t];
               for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++)

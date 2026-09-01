@@ -154,4 +154,23 @@ class Issue6792AddedVertexIdSpaceTest {
     assertThat(components.get(c)).isEqualTo(components.get(fresh));
     assertThat(components.get(a)).isNotEqualTo(components.get(c));
   }
+
+  @Test
+  void pageRankInDirectionFollowsIncomingEdgesWhileTheViewHasPendingChanges() {
+    assertThat(view.hasPendingChanges()).isTrue();
+
+    final Map<RID, Double> scores = new HashMap<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank({direction: 'IN', maxIterations: 20, tolerance: 0.0}) YIELD node, score RETURN node, score")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        scores.put(row.getProperty("node"), ((Number) row.getProperty("score")).doubleValue());
+      }
+    }
+
+    assertThat(scores).hasSize(4);
+    // A -> B and C -> FRESH. Reversing the traversal must therefore rank A above B and C above FRESH.
+    assertThat(scores.get(a)).isGreaterThan(scores.get(b));
+    assertThat(scores.get(c)).isGreaterThan(scores.get(fresh));
+  }
 }
