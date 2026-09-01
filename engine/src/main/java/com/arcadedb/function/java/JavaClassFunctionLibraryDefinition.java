@@ -22,13 +22,21 @@ import com.arcadedb.function.FunctionLibraryDefinition;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
  * Binds a Java class into a function library, where each method of the class are invokable functions. At construction time, the class is inspected to
  * find the methods by using reflection This library definition implementation does not allow dynamic function registration.
+ * <p>
+ * Overloaded public methods (same name, different signature) are all bound under their shared name: the matching
+ * overload is picked at call time by {@link JavaMethodFunctionDefinition} based on the arguments actually passed,
+ * rather than only one overload surviving registration depending on the JVM's unspecified method enumeration order.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -50,17 +58,22 @@ public class JavaClassFunctionLibraryDefinition implements FunctionLibraryDefini
       throws InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
     this.libraryName = libraryName;
 
-    Object instance = null;
+    final Map<String, List<Method>> methodsByName = new LinkedHashMap<>();
     for (final Method m : impl.getDeclaredMethods()) {
       if (!Modifier.isPublic(m.getModifiers()))
         continue;
-
-      final JavaMethodFunctionDefinition f = new JavaMethodFunctionDefinition(instance, m);
-      if (f.getInstance() != null)
-        instance = f.getInstance();
-
-      functions.put(m.getName(), f);
+      methodsByName.computeIfAbsent(m.getName(), k -> new ArrayList<>()).add(m);
     }
+
+    // A SINGLE INSTANCE IS SHARED BY ALL THE NON-STATIC METHODS OF THE CLASS
+    Object instance = null;
+    for (final List<Method> group : methodsByName.values())
+      for (final Method m : group)
+        if (!Modifier.isStatic(m.getModifiers()) && instance == null)
+          instance = impl.getConstructor().newInstance();
+
+    for (final Map.Entry<String, List<Method>> entry : methodsByName.entrySet())
+      functions.put(entry.getKey(), new JavaMethodFunctionDefinition(instance, entry.getValue()));
   }
 
   public String getName() {

@@ -28,6 +28,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFunctionDefinition> implements FunctionLibraryDefinition<T> {
   protected final Database                 database;
@@ -35,6 +36,11 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
   protected final String                   language;
   protected final List<String>             allowedPackages;
   protected final ConcurrentMap<String, T> functions = new ConcurrentHashMap<>();
+  // Dedicated, never-reassigned lock so the monitor identity stays stable across an engine swap in reloadEngine():
+  // callers of execute() take the read lock, reloadEngine() takes the write lock around the close+rebuild, so an
+  // in-flight call either finishes against the old engine before the swap or waits for the new one instead of
+  // having its engine closed underneath it (issue #7006).
+  private final    ReentrantReadWriteLock  engineLock = new ReentrantReadWriteLock();
   protected       GraalPolyglotEngine      polyglotEngine;
 
   public interface Callback {
@@ -77,12 +83,17 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
    * method throw, leaving the caller to decide how to recover.
    */
   private void reloadEngine() {
-    // REGISTER ALL THE FUNCTIONS UNDER THE NEW ENGINE INSTANCE
-    this.polyglotEngine.close();
-    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
-        .setLanguage(language).setAllowedPackages(allowedPackages).build();
-    for (final T f : functions.values())
-      f.init(this);
+    engineLock.writeLock().lock();
+    try {
+      // REGISTER ALL THE FUNCTIONS UNDER THE NEW ENGINE INSTANCE
+      this.polyglotEngine.close();
+      this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
+          .setLanguage(language).setAllowedPackages(allowedPackages).build();
+      for (final T f : functions.values())
+        f.init(this);
+    } finally {
+      engineLock.writeLock().unlock();
+    }
   }
 
   @Override
@@ -136,8 +147,11 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
   }
 
   public Object execute(final Callback callback) {
-    synchronized (polyglotEngine) {
+    engineLock.readLock().lock();
+    try {
       return callback.execute(polyglotEngine);
+    } finally {
+      engineLock.readLock().unlock();
     }
   }
 }
