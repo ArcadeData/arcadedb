@@ -519,6 +519,39 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction not begun");
   }
 
+  /**
+   * Refuses, with the retryable conflict the caller already knows how to handle, an update computed from a record
+   * image that is no longer the committed one (#6950).
+   * <p>
+   * A record's page is put under the commit-time MVCC check when the record is TAKEN for update - not when its
+   * content was read. Under the default READ_COMMITTED isolation a read caches no page in the transaction (see
+   * {@link #getPage(PageId, int)}), so a commit landing between the read and the pin hands the pin the NEWER
+   * version: the version check then has nothing left to refuse, and the read-modify-write is applied on top of a
+   * value it never saw. That is a SILENTLY lost update - no exception for either writer, so no retry loop can help -
+   * and it is what handed two writers the same range in the counter-document (hi-lo / sequence emulation) pattern.
+   * Comparing the image the update is diffed against with the slot the pin just loaded is what tells a stale
+   * read-modify-write from a good one, at RECORD granularity, so a concurrent write to another slot of the same page
+   * stays the false conflict it is.
+   * <p>
+   * Only for a {@link MutableDocument}: its buffer is the pre-update image by construction - properties are overlaid
+   * on a map and the buffer is left alone, which is exactly what {@code LocalDatabase.getOriginalDocument} relies on
+   * to diff the indexes. An edge segment, by contrast, is mutated IN PLACE before it is handed to
+   * {@code updateRecord}, so its buffer is the image being WRITTEN rather than the one that was read: comparing it
+   * would refuse every edge append. Concurrency on those chunks is owned by the commutative edge-append merge.
+   *
+   * @param recordPage the page just pinned for {@code rid}, or {@code null} when the RID could not name one.
+   */
+  public static void checkRecordIsStillTheOneRead(final LocalBucket bucket, final RID rid, final BasePage recordPage,
+      final Record record) {
+    if (recordPage == null || !(record instanceof MutableDocument))
+      return;
+
+    final Binary readImage = ((RecordInternal) record).getBuffer();
+    if (readImage != null && bucket.hasRecordChangedSinceRead(rid, recordPage, readImage))
+      throw new ConcurrentModificationException("Record " + rid + " was modified by a concurrent transaction between "
+          + "its read and its update. Please retry the operation");
+  }
+
   public void addUpdatedRecord(final Record record) throws IOException {
     final RID rid = record.getIdentity();
 
@@ -527,6 +560,14 @@ public class TransactionContext implements Transaction {
     if (updatedRecords.put(record.getIdentity(), record) == null) {
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
       final MutablePage recordPage = bucket.fetchPageInTransaction(rid);
+      try {
+        checkRecordIsStillTheOneRead(bucket, rid, recordPage, record);
+      } catch (final ConcurrentModificationException e) {
+        // The transaction is doomed either way, but a caller that swallows the conflict and commits anyway must not
+        // find this record still queued for a write it never got to make.
+        updatedRecords.remove(rid);
+        throw e;
+      }
       // #6129, #6141: same moment, and the same reason, as the page pinned right above - it is the view of the record
       // this update is based on. The pin covers the record's own slot and nothing else, so a record that keeps content
       // on another page (the chunk chain of a multi-page record past its head, the content record behind a placeholder

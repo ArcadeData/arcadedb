@@ -1428,6 +1428,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
     try {
+      if (implicitTransaction) {
+        // #6950: the transaction was opened by THIS call, so the record was read before it existed and nothing has
+        // put its page under the MVCC check yet. Pin it and verify it still holds the image this update is diffed
+        // against: a concurrent commit that landed in between would otherwise be overwritten silently, since the
+        // page loaded here is already the newer one and the commit-time version check has nothing to refuse. The
+        // transactional path does the same at the moment the record is taken for update (addUpdatedRecord).
+        final RID rid = record.getIdentity();
+        final LocalBucket bucket = (LocalBucket) schema.getBucketById(rid.getBucketId());
+        try {
+          TransactionContext.checkRecordIsStillTheOneRead(bucket, rid, bucket.fetchPageInTransaction(rid), record);
+        } catch (final IOException e) {
+          throw new DatabaseOperationException("Error on update the record " + rid, e);
+        }
+      }
+
       final List<IndexInternal> indexes = record instanceof Document d ? indexer.getInvolvedIndexes(d) :
           Collections.emptyList();
 
