@@ -466,9 +466,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
       readReply(socket); // $3\r\n3.3
 
       sendCommand(socket, "DECR", "decrFloatKey");
-      final String reply = readReply(socket);
-      assertThat(reply).startsWith("-ERR");
-      assertThat(reply).containsIgnoringCase("not an integer");
+      assertThat(readReply(socket)).isEqualTo("-ERR value is not an integer or out of range");
 
       // A rejected DECR must be a no-op: the stored value stays untouched.
       sendCommand(socket, "GET", "decrFloatKey");
@@ -493,9 +491,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
       readReply(socket); // $3\r\n3.3
 
       sendCommand(socket, "INCR", "incrFloatKey");
-      final String reply = readReply(socket);
-      assertThat(reply).startsWith("-ERR");
-      assertThat(reply).containsIgnoringCase("not an integer");
+      assertThat(readReply(socket)).isEqualTo("-ERR value is not an integer or out of range");
 
       sendCommand(socket, "GET", "incrFloatKey");
       assertThat(readReply(socket)).isEqualTo("$3\r\n3.3");
@@ -518,14 +514,10 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
       readReply(socket); // +OK
 
       sendCommand(socket, "INCR", "fractionalStringKey");
-      String reply = readReply(socket);
-      assertThat(reply).startsWith("-ERR");
-      assertThat(reply).containsIgnoringCase("not an integer");
+      assertThat(readReply(socket)).isEqualTo("-ERR value is not an integer or out of range");
 
       sendCommand(socket, "DECR", "fractionalStringKey");
-      reply = readReply(socket);
-      assertThat(reply).startsWith("-ERR");
-      assertThat(reply).containsIgnoringCase("not an integer");
+      assertThat(readReply(socket)).isEqualTo("-ERR value is not an integer or out of range");
 
       // Neither rejected command touched the stored value.
       sendCommand(socket, "GET", "fractionalStringKey");
@@ -566,14 +558,10 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
       readReply(socket); // +OK
 
       sendCommand(socket, "INCRBY", "incrByDecrByFloatKey", "5");
-      String reply = readReply(socket);
-      assertThat(reply).startsWith("-ERR");
-      assertThat(reply).containsIgnoringCase("not an integer");
+      assertThat(readReply(socket)).isEqualTo("-ERR value is not an integer or out of range");
 
       sendCommand(socket, "DECRBY", "incrByDecrByFloatKey", "5");
-      reply = readReply(socket);
-      assertThat(reply).startsWith("-ERR");
-      assertThat(reply).containsIgnoringCase("not an integer");
+      assertThat(readReply(socket)).isEqualTo("-ERR value is not an integer or out of range");
 
       sendCommand(socket, "GET", "incrByDecrByFloatKey");
       assertThat(readReply(socket)).isEqualTo("$3\r\n3.3");
