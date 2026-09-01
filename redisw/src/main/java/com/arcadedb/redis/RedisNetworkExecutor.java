@@ -420,29 +420,45 @@ public class RedisNetworkExecutor extends Thread {
     final String k = (String) list.get(1);
     final long by = list.size() > 2 ? Long.parseLong((String) list.get(2)) : 1L;
 
-    Object number = getVariable(k);
-    if (number == null) {
-      number = 0L;
-    } else if (!(number instanceof Number)) {
-      if (NumberUtils.isIntegerNumber(number.toString()))
-        number = Long.parseLong(number.toString());
-      else
-        throw new RedisException("Key '" + k + "' is not a number");
-    }
+    final long number = requireIntegralValue(getVariable(k)).longValue();
 
-    final Number newValue;
-    if (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte) {
-      try {
-        newValue = Math.subtractExact(((Number) number).longValue(), by);
-      } catch (final ArithmeticException e) {
-        throw new RedisException("increment or decrement would overflow", e);
-      }
-    } else
-      newValue = Type.decrement((Number) number, by);
+    final long newValue;
+    try {
+      newValue = Math.subtractExact(number, by);
+    } catch (final ArithmeticException e) {
+      throw new RedisException("increment or decrement would overflow", e);
+    }
 
     setVariable(k, newValue);
     value.append(":");
     value.append(newValue);
+  }
+
+  /**
+   * Normalizes a stored Redis value for DECR/DECRBY and the non-decimal path of INCR/INCRBY: a
+   * {@code null} key reads as {@code 0}, and a non-{@code Number} stored value (always a {@code String}
+   * here) is parsed as a 64-bit integer. Anything that isn't - or can't be parsed as - an integral value,
+   * such as a fractional string or a {@code Double} left behind by INCRBYFLOAT, is rejected with real
+   * Redis' own "value is not an integer or out of range" (issue #6942 code review) rather than emitting an
+   * invalid RESP integer reply.
+   */
+  private static Number requireIntegralValue(final Object stored) {
+    if (stored == null)
+      return 0L;
+
+    Object number = stored;
+    if (!(number instanceof Number)) {
+      try {
+        number = Long.parseLong(number.toString());
+      } catch (final NumberFormatException e) {
+        throw new RedisException("value is not an integer or out of range");
+      }
+    }
+
+    if (!(number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte))
+      throw new RedisException("value is not an integer or out of range");
+
+    return (Number) number;
   }
 
   private void exists(final List<Object> list) {
@@ -648,25 +664,35 @@ public class RedisNetworkExecutor extends Thread {
     } else
       by = 1L;
 
-    Object number = getVariable(k);
-    if (number == null) {
-      number = 0L;
-    } else if (!(number instanceof Number)) {
-      if (NumberUtils.isIntegerNumber(number.toString()))
-        number = Long.parseLong(number.toString());
-      else
-        throw new RedisException("Key '" + k + "' is not a number");
-    }
+    // INCRBYFLOAT has no integral restriction - it promotes an integral value to float and accepts any
+    // stored value it can read as a float ("3.3" included, issue #6942 code review) - while INCR/INCRBY
+    // reuse the DECR/DECRBY validation in requireIntegralValue().
+    final Number number;
+    if (decimal) {
+      final Object stored = getVariable(k);
+      if (stored == null)
+        number = 0L;
+      else if (stored instanceof Number storedNumber)
+        number = storedNumber;
+      else {
+        try {
+          number = Double.parseDouble(stored.toString());
+        } catch (final NumberFormatException e) {
+          throw new RedisException("value is not a valid float");
+        }
+      }
+    } else
+      number = requireIntegralValue(getVariable(k));
 
     final Number newValue;
-    if (!decimal && (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte)) {
+    if (!decimal) {
       try {
-        newValue = Math.addExact(((Number) number).longValue(), by.longValue());
+        newValue = Math.addExact(number.longValue(), by.longValue());
       } catch (final ArithmeticException e) {
         throw new RedisException("increment or decrement would overflow", e);
       }
     } else
-      newValue = Type.increment((Number) number, by);
+      newValue = Type.increment(number, by);
 
     setVariable(k, newValue);
     if (decimal) {
@@ -676,7 +702,7 @@ public class RedisNetworkExecutor extends Thread {
       appendCrLf();
       value.append(text);
     } else {
-      value.append(newValue instanceof Long ? ":" : "+");
+      value.append(":");
       value.append(newValue);
     }
   }
@@ -749,9 +775,15 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   private void ping(final List<Object> list) {
-    final String response = list.size() > 1 ? (String) list.get(1) : "PONG";
-    value.append("+");
-    value.append(response);
+    if (list.size() > 1)
+      // The argument is echoed back verbatim, which can contain "\r\n" (issue #6942): a simple-string
+      // reply is CRLF-terminated, so that payload would split into two frames and desync the connection.
+      // The bulk-string encoding is length-prefixed and carries the CRLF as payload instead.
+      respondValue((String) list.get(1), true);
+    else {
+      value.append("+");
+      value.append("PONG");
+    }
   }
 
   /**
