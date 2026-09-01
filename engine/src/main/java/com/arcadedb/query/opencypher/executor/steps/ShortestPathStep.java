@@ -953,11 +953,16 @@ public class ShortestPathStep extends AbstractExecutionStep {
     builder.append("+ SHORTEST PATH ");
     builder.append("(").append(sourceVariable).append(")");
     if (pattern.getRelationshipCount() > 0) {
+      final RelationshipPattern rel = pattern.getRelationship(0);
       builder.append("-[");
-      if (pattern.getRelationship(0).hasTypes()) {
-        builder.append(":").append(String.join("|", pattern.getRelationship(0).getTypes()));
+      if (rel.hasTypes()) {
+        builder.append(":").append(String.join("|", rel.getTypes()));
       }
-      builder.append(patternHopBounds().toString()).append("]-");
+      // Render the quantifier only when the pattern actually carries one: a plain -[:LINK]- is a single hop
+      // and spelling it "*1..1" (or, as this line used to, a bare "*") describes a pattern nobody wrote.
+      if (rel.isVariableLength())
+        builder.append(patternHopBounds().toString());
+      builder.append("]-");
     }
     builder.append("(").append(targetVariable).append(")");
     if (pattern.isAllPaths()) {
