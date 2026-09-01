@@ -3495,7 +3495,16 @@ public class SelectExecutionPlanner {
       } else if (!order.equals(item.getType())) {
         return false;
       }
-      orderItems.add(item.getAlias());
+
+      // getAlias() is null for a record attribute (ORDER BY @rid) and for a complex expression (ORDER BY CASE WHEN ...),
+      // so ask for the name the item is actually known by. A modifier (ORDER BY p.sub, ORDER BY p[0]) orders by something
+      // the index does not hold, so the item is not covered by the index order either. In both cases the planner cannot
+      // prove the index iteration already yields the requested order, so the ORDER BY step has to stay (issue #6926).
+      final String name = item.getModifier() == null ? item.getName() : null;
+      if (name == null)
+        return false;
+
+      orderItems.add(name);
     }
 
     final List<String> conditionItems = new ArrayList<>();
