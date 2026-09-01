@@ -33,9 +33,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code registerFunction()}) reassigns without holding that same monitor. A call already in flight on the old
  * engine had it closed underneath it instead of either completing first or being serialized behind the swap.
  * <p>
- * The fix introduces a dedicated {@link java.util.concurrent.locks.ReentrantReadWriteLock}: {@code execute()} takes
- * the read lock and {@code reloadEngine()} takes the write lock around the close-and-rebuild, so a redefinition
- * always waits for in-flight calls to finish before closing their engine.
+ * The fix introduces a dedicated, never-reassigned {@code engineLock} monitor: {@code execute()} and
+ * {@code reloadEngine()} both synchronize on it (a plain mutex, not a read-write lock, since the shared GraalVM
+ * {@code Context} does not support concurrent callers either - see {@link Issue7006ConcurrentCallSerializationTest}),
+ * so a redefinition always waits for in-flight calls to finish before closing their engine.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

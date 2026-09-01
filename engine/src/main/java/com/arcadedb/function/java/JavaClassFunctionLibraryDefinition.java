@@ -60,7 +60,10 @@ public class JavaClassFunctionLibraryDefinition implements FunctionLibraryDefini
 
     final Map<String, List<Method>> methodsByName = new LinkedHashMap<>();
     for (final Method m : impl.getDeclaredMethods()) {
-      if (!Modifier.isPublic(m.getModifiers()))
+      // Bridge/synthetic methods (generated for generic or covariant-return overrides) are public too, and would
+      // otherwise be grouped alongside the real method under the same name - making an unambiguous call reject as
+      // ambiguous between the real method and its own compiler-generated bridge.
+      if (!Modifier.isPublic(m.getModifiers()) || m.isBridge() || m.isSynthetic())
         continue;
       methodsByName.computeIfAbsent(m.getName(), k -> new ArrayList<>()).add(m);
     }

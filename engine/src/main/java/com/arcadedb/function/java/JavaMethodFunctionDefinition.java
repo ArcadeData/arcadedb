@@ -20,10 +20,13 @@ package com.arcadedb.function.java;/*
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionExecutionException;
 
+import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -87,7 +90,11 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     if (methods.isEmpty())
       throw new IllegalArgumentException("At least one method is required");
     this.instance = instance;
-    this.methods = List.copyOf(methods);
+    // Sorted so which overload names an error message (getName(), or the "expected/received" and ambiguity
+    // messages) is deterministic, rather than depending on the JVM's unspecified getDeclaredMethods() order.
+    this.methods = methods.stream()
+        .sorted(Comparator.<Method>comparingInt(Method::getParameterCount).thenComparing(m -> Arrays.toString(m.getParameterTypes())))
+        .toList();
   }
 
   @Override
@@ -141,9 +148,9 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     final int fixedCount = paramTypes.length - 1;
     final Class<?> varargsType = paramTypes[fixedCount];
 
-    final Object varargsArray = java.lang.reflect.Array.newInstance(varargsType.getComponentType(), args.length - fixedCount);
+    final Object varargsArray = Array.newInstance(varargsType.getComponentType(), args.length - fixedCount);
     for (int i = fixedCount; i < args.length; i++)
-      java.lang.reflect.Array.set(varargsArray, i - fixedCount, args[i]);
+      Array.set(varargsArray, i - fixedCount, args[i]);
 
     final Object[] invokeArgs = new Object[fixedCount + 1];
     System.arraycopy(args, 0, invokeArgs, 0, fixedCount);
@@ -162,30 +169,53 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     return args.length == paramTypes.length && (args[fixedCount] == null || paramTypes[fixedCount].isInstance(args[fixedCount]));
   }
 
+  /**
+   * All overloads whose parameter count can possibly accept {@code received} arguments - both an exact-arity
+   * non-varargs match and a varargs match that could still absorb them. Both kinds are kept together (rather than
+   * a fixed-arity match with a matching count unconditionally winning regardless of its parameter types) so that
+   * {@link #disambiguateByArgumentType} gets the chance to fall back to a type-compatible varargs overload when the
+   * fixed-arity one does not actually accept the arguments' runtime types.
+   */
   private List<Method> candidatesByParameterCount(final int received) {
-    final List<Method> exact = new ArrayList<>();
-    final List<Method> varargs = new ArrayList<>();
+    final List<Method> candidates = new ArrayList<>();
     for (final Method m : methods) {
       if (m.isVarArgs()) {
         if (received >= m.getParameterCount() - 1)
-          varargs.add(m);
+          candidates.add(m);
       } else if (m.getParameterCount() == received)
-        exact.add(m);
+        candidates.add(m);
     }
-    return !exact.isEmpty() ? exact : varargs;
+    return candidates;
   }
 
+  /**
+   * Picks the overload matching the arguments' runtime types, preferring a fixed-arity match over a varargs one -
+   * mirroring how {@code javac} only falls back to varargs (its resolution phase 3) once no fixed-arity applicable
+   * method exists - rather than ranking by parameter-type specificity in general (see the class Javadoc).
+   */
   private Method disambiguateByArgumentType(final List<Method> candidates, final Object[] args) {
+    final List<Method> fixedArity = new ArrayList<>();
+    final List<Method> varArgs = new ArrayList<>();
+    for (final Method m : candidates)
+      (m.isVarArgs() ? varArgs : fixedArity).add(m);
+
+    Method match = matchByType(candidates, fixedArity, args);
+    if (match == null)
+      match = matchByType(candidates, varArgs, args);
+    if (match == null)
+      throw noMatchingOverloadException(candidates, args);
+    return match;
+  }
+
+  private Method matchByType(final List<Method> allCandidates, final List<Method> pool, final Object[] args) {
     Method match = null;
-    for (final Method m : candidates) {
+    for (final Method m : pool) {
       if (acceptsArgumentTypes(m, args)) {
         if (match != null)
-          throw ambiguousOverloadException(candidates, args);
+          throw ambiguousOverloadException(allCandidates, args);
         match = m;
       }
     }
-    if (match == null)
-      throw noMatchingOverloadException(candidates, args);
     return match;
   }
 

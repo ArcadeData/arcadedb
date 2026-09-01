@@ -94,6 +94,10 @@ class PolyglotFunctionTest extends TestHelper {
             .registerFunction(new JavascriptFunctionDefinition("broken", "if (a > b) { return a;", "a", "b"))))
         .isInstanceOf(FunctionExecutionException.class)
         .hasMessageContaining("broken")
+        // Assert the forwarded parser diagnostic itself, not just the wrapper text naming the function - the
+        // message would still contain "broken" even if e.getMessage() were dropped from JavascriptFunctionDefinition.
+        .hasMessageContaining("SyntaxError")
+        .hasMessageContaining("Expected")
         .hasCauseInstanceOf(Exception.class);
   }
 
