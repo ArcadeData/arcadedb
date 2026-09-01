@@ -1764,7 +1764,15 @@ public class PageManagerFlushThread extends Thread {
   /** Removes the dropped file's pages from a batch and returns the sum of their in-RAM size (issue #4728). */
   private long removePagesOfFileFromBatch(final PagesToFlush pagesToFlush, final Database database, final int fileId) {
     // pages is null for the SHUTDOWN_THREAD marker.
-    if (pagesToFlush.pages == null || !database.equals(pagesToFlush.database))
+    //
+    // Reference identity ON PURPOSE (issue #6931), NOT database.equals(pagesToFlush.database): this is the very
+    // aliasing removeAllPagesOfDatabase was switched away from in #6440, a few methods up in this same file.
+    // LocalDatabase compares by PATH, so dropping a file on THIS instance would otherwise match a same-path
+    // sibling's still-pending batch (a restore, a re-provision, or a test reusing one fixed path) and discard
+    // pages that were never written - releasing their WAL acks on the way out, so there is not even a WAL entry
+    // left to replay them from: a silent write loss. Only the EXACT instance whose file was dropped may have its
+    // batches purged here.
+    if (pagesToFlush.pages == null || pagesToFlush.database != database)
       return 0;
 
     long removedBytes = 0;
@@ -1772,16 +1780,22 @@ public class PageManagerFlushThread extends Thread {
       for (final Iterator<MutablePage> it = pagesToFlush.pages.iterator(); it.hasNext(); ) {
         final MutablePage page = it.next();
         if (page.getPageId().getFileId() == fileId) {
-          pageIndex.remove(page.getPageId());
+          // removeIfSame (via removeFromFlushIndex), NOT pageIndex.remove(page.getPageId()) (issue #6931): the
+          // single-key overload is a plain, equals()-based pages.remove(), and PageId.equals()/hashCode() go
+          // through path-based Database.equals() too - so a same-path sibling's LIVE page could be sitting at
+          // this exact (fileId, pageNumber) map slot (retained as THIS page's PageId key by Map.put()'s "keep
+          // the old key on an equals() match" behavior) and get silently evicted, unacked, by this instance's
+          // own cleanup. Identical reasoning, and identical remedy, to removeAllPagesOfDatabase's own purge.
+          // Nothing is missed by the narrower removal: removeAllPagesOfFile closes with a
+          // pageIndex.removeAllOfFile that sweeps whatever entry this file still has.
+          removeFromFlushIndex(page);
           it.remove();
           removedBytes += page.getPhysicalSize();
           // The purged page will never be flushed and its content is irrelevant (its file was dropped):
           // release its WAL ack so the close-time ack gate (#4928) is not tripped by stale pending counts.
           // takeWALFile makes the release exactly-once against the racing flush loop (which does NOT remove
           // pages from this batch list, so both paths can visit the same page).
-          final WALFile walFile = page.takeWALFile();
-          if (walFile != null)
-            walFile.notifyPageFlushed();
+          ackWalFileOfAbandonedPage(page);
         }
       }
     }
