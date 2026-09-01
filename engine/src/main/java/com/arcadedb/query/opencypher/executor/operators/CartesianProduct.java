@@ -75,15 +75,15 @@ public class CartesianProduct extends AbstractPhysicalOperator {
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {
-      private ResultSet   leftResults    = null;
-      private ResultSet   rightResults   = null;
-      private List<Result> rightBuffer   = null;
-      private Result      currentLeft    = null;
-      private int         rightIndex     = 0;
-      private boolean     rightExhausted = false;
-      private boolean     finished       = false;
-      private boolean     initialized    = false;
-      private Result      pendingRight;
+      private ResultSet leftResults = null;
+      private ResultSet rightResults = null;
+      private List<Result> rightBuffer = null;
+      private Result currentLeft = null;
+      private int rightIndex = 0;
+      private boolean rightExhausted = false;
+      private boolean finished = false;
+      private boolean initialized = false;
+      private Result pendingRight;
 
       @Override
       public boolean hasNext() {
@@ -156,7 +156,7 @@ public class CartesianProduct extends AbstractPhysicalOperator {
         if (rightExhausted)
           return null;
 
-        guard.check();
+        // No guard.check() here: advance() checks every candidate this returns, buffered or freshly pulled.
         if (rightResults != null && rightResults.hasNext()) {
           final Result row = rightResults.next();
           rightBuffer.add(row);
@@ -171,7 +171,9 @@ public class CartesianProduct extends AbstractPhysicalOperator {
       }
 
       private void ensureInitialized(final CommandContext ctx, final int n) {
-        if (initialized)
+        // "finished" covers close(): a closed result set must never execute its children again, or a
+        // close() before the first pull would open two cursors that nothing then closes.
+        if (initialized || finished)
           return;
         initialized = true;
 

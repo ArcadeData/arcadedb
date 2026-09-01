@@ -112,6 +112,30 @@ class CypherCartesianProductIssue7010Test {
     assertThat(right.closeCount).as("a second close() must not re-close the children").isEqualTo(1);
   }
 
+  @Test
+  void aClosedResultSetDoesNotReopenItsChildren() {
+    // close() before the first pull leaves initialized == false, so a later hasNext() used to run
+    // ensureInitialized() and execute both children again - two cursors nothing would ever close,
+    // the very leak this issue is about.
+    final RecordingOperator left = new RecordingOperator("a", 3);
+    final RecordingOperator right = new RecordingOperator("b", 3);
+    final ResultSet rs = product(left, right).execute(context(), -1);
+
+    rs.close();
+
+    assertThat(rs.hasNext()).as("a closed result set is exhausted").isFalse();
+    assertThat(left.executeCount).as("the left child must not be executed by a closed result set").isZero();
+    assertThat(right.executeCount).as("the right child must not be executed by a closed result set").isZero();
+
+    // Same guarantee once the rows have been consumed and close() has already run.
+    final ResultSet consumed = product(left, right).execute(context(), -1);
+    drainPairs(consumed);
+    consumed.close();
+    assertThat(consumed.hasNext()).isFalse();
+    assertThat(left.executeCount).as("no re-execution after a drained-then-closed result set").isEqualTo(1);
+    assertThat(right.executeCount).as("no re-execution after a drained-then-closed result set").isEqualTo(1);
+  }
+
   // ---------------------------------------------------------------------------------------------
   // 2. the right input must not be materialized before the first row
   // ---------------------------------------------------------------------------------------------
@@ -276,6 +300,7 @@ class CypherCartesianProductIssue7010Test {
     private final int    rowCount;
     int rowsProduced;
     int closeCount;
+    int executeCount;
 
     RecordingOperator(final String propertyName, final int rowCount) {
       this.propertyName = propertyName;
@@ -284,6 +309,7 @@ class CypherCartesianProductIssue7010Test {
 
     @Override
     public ResultSet execute(final CommandContext context, final int nRecords) {
+      ++executeCount;
       return new ResultSet() {
         private int emitted = 0;
 

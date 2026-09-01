@@ -1033,14 +1033,17 @@ public class CypherExecutionPlan {
     // Create a wrapper step that executes the physical operators
     AbstractExecutionStep currentStep = new AbstractExecutionStep(context) {
       private ResultSet operatorResults = null;
+      private boolean closed = false;
 
       @Override
       public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
-        if (operatorResults == null) {
+        // Once closed this step stays closed: re-executing the operator tree here would open a second
+        // set of cursors that the already-spent close() chain would never reach.
+        if (operatorResults == null && !closed) {
           // Execute physical operators on first pull
           operatorResults = physicalPlan.getRootOperator().execute(ctx, nRecords);
         }
-        return operatorResults;
+        return operatorResults != null ? operatorResults : new IteratorResultSet(Collections.<Result>emptyList().iterator());
       }
 
       /**
@@ -1051,9 +1054,10 @@ public class CypherExecutionPlan {
        */
       @Override
       public void close() {
-        if (operatorResults != null) {
-          operatorResults.close();
-          operatorResults = null;
+        if (!closed) {
+          closed = true;
+          if (operatorResults != null)
+            operatorResults.close();
         }
         super.close();
       }
