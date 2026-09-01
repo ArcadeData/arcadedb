@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.Vertex.DIRECTION;
 
@@ -1165,15 +1166,22 @@ public final class GraphAlgorithms {
 
   /**
    * Computes single-source shortest paths using Dijkstra's algorithm directly on CSR arrays
-   * with edge weights from columnar storage. Zero OLTP access.
+   * with edge weights from columnar storage. Zero OLTP access when no delta overlay is active.
    *
-   * <b>Answers {@code null} while a delta overlay is active</b>, and the caller must then read the edges
-   * itself. This kernel reads the CSR offset and neighbour arrays directly - that is what makes it worth
-   * having - and those arrays are the graph as it stood at the last build: the edges a committed transaction
-   * has since added or deleted live in the overlay, which nothing here consults. Refusing is decided here
-   * rather than left to the caller because the caller cannot see the difference in the result; it used to be
-   * decided for it, as a side effect of the view reporting no edge properties whenever an overlay was active,
-   * and that reason went away when the view learned to serve them exactly through it (issue #6315).
+   * <p>While a delta overlay is active, the base CSR offset and neighbour arrays are the graph as it stood at
+   * the last build: the edges a committed transaction has since added or deleted live in the overlay, which the
+   * raw arrays do not consult. Rather than refuse the whole computation and send the caller to the edge records
+   * - which under {@code UpdateMode.SYNCHRONOUS} is the state the view is in after every single commit, making
+   * this procedure read edge records approximately always (issue #6791) - this kernel falls back, per popped
+   * node, to {@link com.arcadedb.graph.GraphTraversalProvider#edgeWeightsOf}, which resolves the overlay against
+   * the columns exactly (issue #6315) at the cost of one small allocation per node it is asked about instead of
+   * zero. Dijkstra only pops the nodes it actually reaches, so that cost is bounded by the search itself rather
+   * than by the whole graph, unlike the OLTP fallback this replaces for the overlay-active case.
+   *
+   * <p>If {@code edgeWeightsOf} ever refuses a popped node - the one case being an ambiguous parallel-edge
+   * deletion the overlay cannot resolve on its own - this kernel refuses the whole computation the same way the
+   * all-array path used to refuse unconditionally: a partial answer would be a plausible wrong distance, which
+   * this method never returns. The caller then reads the edges itself, exactly as before.
    *
    * @param view           the analytical view (must be built with edge properties)
    * @param source         source dense node ID
@@ -1181,7 +1189,7 @@ public final class GraphAlgorithms {
    * @param direction      traversal direction (OUT, IN, or BOTH)
    * @param edgeTypes      edge types to traverse (null or empty = all)
    * @return double[] of distances indexed by dense node ID (POSITIVE_INFINITY = unreachable), or {@code null}
-   * if the base CSR arrays are not the whole graph right now
+   * if a node reached along the way cannot be answered exactly
    */
   public static double[] dijkstraSingleSource(final GraphAnalyticalView view, final int source,
       final String weightProperty, final Vertex.DIRECTION direction, final String... edgeTypes) {
@@ -1191,10 +1199,12 @@ public final class GraphAlgorithms {
     // different graphs - out of which this would compute a plausible wrong distance rather than fail, which is
     // the failure class issue #6315 exists to close, not to move.
     final GraphAnalyticalView.Snapshot snap = view.captureSnapshot();
-    if (snap.overlay != null)
-      return null;
 
-    final int n = snap.nodeMapping.size();
+    // dist is indexed by dense node id, and while an overlay is active that space runs past nodeMapping.size():
+    // the overlay allocates every added node's id above the base mapping and never reclaims a deleted one's
+    // (issue #6792). Sizing dist to the base mapping while an overlay may have widened it would throw on a
+    // neighbour id the overlay-aware branch below hands back for an added node.
+    final int n = snap.overlay != null ? snap.overlay.getNodeIdUpperBound() : snap.nodeMapping.size();
     final double[] dist = new double[n];
     Arrays.fill(dist, Double.POSITIVE_INFINITY);
 
@@ -1202,6 +1212,10 @@ public final class GraphAlgorithms {
       return dist;
 
     dist[source] = 0.0;
+
+    if (snap.overlay != null)
+      return dijkstraSingleSourceViaProvider(view, source, dist, weightProperty, direction, edgeTypes);
+
     final String[] types = edgeTypes != null && edgeTypes.length > 0 ? edgeTypes
         : snap.csrPerType.keySet().toArray(new String[0]);
 
@@ -1295,6 +1309,46 @@ public final class GraphAlgorithms {
               heap.offer(new double[]{ newDist, v });
             }
           }
+        }
+      }
+    }
+
+    return dist;
+  }
+
+  /**
+   * Same Dijkstra as {@link #dijkstraSingleSource}, run while a delta overlay is active: each popped node's
+   * neighbours and weights come from {@link com.arcadedb.graph.GraphTraversalProvider#edgeWeightsOf}, which
+   * resolves the overlay against the columns, instead of the raw CSR arrays the overlay-free path indexes
+   * directly. {@code dist} arrives with {@code dist[source] = 0} already set by the caller.
+   */
+  private static double[] dijkstraSingleSourceViaProvider(final GraphAnalyticalView view, final int source,
+      final double[] dist, final String weightProperty, final Vertex.DIRECTION direction, final String... edgeTypes) {
+    final PriorityQueue<double[]> heap = new PriorityQueue<>((a, b) -> Double.compare(a[0], b[0]));
+    heap.offer(new double[]{ 0.0, source });
+
+    while (!heap.isEmpty()) {
+      final double[] entry = heap.poll();
+      final double d = entry[0];
+      final int u = (int) entry[1];
+      if (d > dist[u])
+        continue;
+
+      final NodeEdgeWeights edges = view.edgeWeightsOf(u, direction, weightProperty, 1.0, edgeTypes);
+      if (edges == null)
+        return null; // one node the overlay cannot resolve exactly makes the whole answer refuse, not guess
+
+      final int[] neighbors = edges.neighbors();
+      final double[] weights = edges.weights();
+      for (int j = 0; j < neighbors.length; j++) {
+        final double w = weights[j];
+        if (w < 0)
+          continue;
+        final double newDist = d + w;
+        final int v = neighbors[j];
+        if (newDist < dist[v]) {
+          dist[v] = newDist;
+          heap.offer(new double[]{ newDist, v });
         }
       }
     }

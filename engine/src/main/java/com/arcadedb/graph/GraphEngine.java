@@ -58,6 +58,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -2398,15 +2399,18 @@ public class GraphEngine {
 
   /**
    * Parses a direction string ("OUT", "IN", "BOTH") into a {@link Vertex.DIRECTION} enum value.
-   * Returns {@code BOTH} for null or unknown values.
+   * A {@code null} argument means "use the default" and returns {@code BOTH}, but a present, unrecognised
+   * value is rejected rather than coerced: OUT, IN and BOTH answer genuinely different questions, so silently
+   * falling back to BOTH would answer a question the caller did not ask (issue #6976).
    */
   public static Vertex.DIRECTION parseDirection(final String dir) {
     if (dir == null)
       return Vertex.DIRECTION.BOTH;
-    return switch (dir.toUpperCase()) {
+    return switch (dir.toUpperCase(Locale.ROOT)) {
       case "OUT" -> Vertex.DIRECTION.OUT;
       case "IN" -> Vertex.DIRECTION.IN;
-      default -> Vertex.DIRECTION.BOTH;
+      case "BOTH" -> Vertex.DIRECTION.BOTH;
+      default -> throw new IllegalArgumentException("unknown direction '" + dir + "', expected one of OUT, IN or BOTH");
     };
   }
 

@@ -207,4 +207,21 @@ class SQLFunctionBellmanFordTest {
           .hasMessageContaining("bellmanFord");
     });
   }
+
+  @Test
+  void rejectsAnUnrecognisedDirectionInsteadOfSilentlyTraversingBoth() throws Exception {
+    // Regression for issue #6976: this function used to carry its own copy of the same silent-coercion bug,
+    // separate from GraphEngine.parseDirection - 'INCOMING' used to become BOTH instead of erroring.
+    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordUnknownDirection", graph -> {
+      setUp(graph);
+      final BasicCommandContext ctx = new BasicCommandContext();
+      ctx.setDatabase(graph);
+
+      assertThatThrownBy(() -> functionBellmanFord.execute(null, null, null,
+          new Object[] { v1, v4, "'weight'", "INCOMING" }, ctx))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("direction")
+          .hasMessageContaining("OUT, IN or BOTH");
+    });
+  }
 }
