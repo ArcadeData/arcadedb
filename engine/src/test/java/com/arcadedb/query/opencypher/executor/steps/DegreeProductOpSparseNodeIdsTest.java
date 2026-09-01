@@ -42,4 +42,23 @@ class DegreeProductOpSparseNodeIdsTest {
 
     assertThat(count).isEqualTo(4L);
   }
+
+  /**
+   * Same fixture as {@link #includesLiveCentralNodeAboveLiveNodeCount()} but with NeighborViews exposed, so
+   * the scan runs through {@code executeFastScan} (the {@code NeighborView.degree()} array-arithmetic path
+   * production star-join queries actually hit) rather than the per-node {@code executePerNode} fallback.
+   */
+  @Test
+  void includesLiveCentralNodeAboveLiveNodeCountWithViews() {
+    final SparseNodeIdProvider provider = new SparseNodeIdProvider()
+        .withEdges("ARM", Vertex.DIRECTION.OUT, 0, 2)
+        .withEdges("ARM", Vertex.DIRECTION.OUT, HIGH_ID, 2, 3, 4);
+    final DegreeProductOp op = new DegreeProductOp("Central", new DegreeProductOp.Arm[] {
+        new DegreeProductOp.Arm(new String[] { "ARM" }, new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT }, false)
+    });
+
+    final long count = op.execute(provider, null, WorkGuard.forCommandDeadline(null));
+
+    assertThat(count).isEqualTo(4L);
+  }
 }

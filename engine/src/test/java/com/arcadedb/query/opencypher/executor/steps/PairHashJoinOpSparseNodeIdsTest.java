@@ -55,6 +55,29 @@ class PairHashJoinOpSparseNodeIdsTest {
     assertThat(count).isEqualTo(2L);
   }
 
+  /**
+   * Same fixture as {@link #buildsPairFromLiveNodeAboveLiveNodeCount()} but with NeighborViews exposed, so
+   * the build phase runs through {@code buildAndProbeInline}'s NeighborView-backed walk - the path a real
+   * CSR-backed provider actually exposes - rather than the per-node {@code walkArm} fallback.
+   */
+  @Test
+  void buildsPairFromLiveNodeAboveLiveNodeCountWithViews() {
+    final SparseNodeIdProvider provider = new SparseNodeIdProvider()
+        .withEdges("ARM_1", Vertex.DIRECTION.OUT, 0, 2)
+        .withEdges("ARM_2", Vertex.DIRECTION.OUT, 0, 3)
+        .withEdges("ARM_1", Vertex.DIRECTION.OUT, HIGH_ID, 2)
+        .withEdges("ARM_2", Vertex.DIRECTION.OUT, HIGH_ID, 3)
+        .withEdges("PROBE", Vertex.DIRECTION.OUT, 2, 3);
+    final PairHashJoinOp op = new PairHashJoinOp("Build",
+        new String[] { "ARM_1" }, new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT }, null,
+        new String[] { "ARM_2" }, new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT }, null,
+        "PROBE", Vertex.DIRECTION.OUT);
+
+    final long count = op.execute(provider, databaseWithBuildBucket(), WorkGuard.forCommandDeadline(null));
+
+    assertThat(count).isEqualTo(2L);
+  }
+
   private static Database databaseWithBuildBucket() {
     final Database db = Mockito.mock(Database.class);
     final Schema schema = Mockito.mock(Schema.class);

@@ -41,4 +41,22 @@ class PropagateChainOpSparseNodeIdsTest {
 
     assertThat(count).isEqualTo(2L);
   }
+
+  /**
+   * Same fixture as {@link #propagatesFromLiveAnchorAboveLiveNodeCount()} but with NeighborViews exposed, so
+   * the dense propagation runs through {@link CSRCountUtils#propagateOneHop}'s NeighborView-backed branch
+   * rather than its per-node {@code getNeighborIds} fallback.
+   */
+  @Test
+  void propagatesFromLiveAnchorAboveLiveNodeCountWithViews() {
+    final SparseNodeIdProvider provider = new SparseNodeIdProvider()
+        .withEdges("CHAIN", Vertex.DIRECTION.OUT, 0, 2)
+        .withEdges("CHAIN", Vertex.DIRECTION.OUT, HIGH_ID, 3);
+    final PropagateChainOp op = new PropagateChainOp(new String[] { null, null },
+        new String[] { "CHAIN" }, new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT }, -1, -1);
+
+    final long count = op.execute(provider, null, WorkGuard.forCommandDeadline(null));
+
+    assertThat(count).isEqualTo(2L);
+  }
 }

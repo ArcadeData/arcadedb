@@ -42,4 +42,23 @@ class AntiJoinChainOpSparseNodeIdsTest {
 
     assertThat(count).isEqualTo(2L);
   }
+
+  /**
+   * Same fixture as {@link #evaluatesLiveAnchorAboveLiveNodeCount()} but with NeighborViews exposed, so the
+   * scan runs through the {@code hopViews}-based expansion in {@code countWithAntiJoin} rather than the
+   * per-node {@code getNeighborIds} fallback - the path a real CSR-backed provider actually exposes.
+   */
+  @Test
+  void evaluatesLiveAnchorAboveLiveNodeCountWithViews() {
+    final SparseNodeIdProvider provider = new SparseNodeIdProvider()
+        .withEdges("CHAIN", Vertex.DIRECTION.OUT, 0, 2)
+        .withEdges("CHAIN", Vertex.DIRECTION.OUT, HIGH_ID, 3);
+    final AntiJoinChainOp op = new AntiJoinChainOp(new String[] { null, null },
+        new String[] { "CHAIN" }, new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT },
+        0, 1, "BLOCKS", Vertex.DIRECTION.OUT, -1, -1);
+
+    final long count = op.execute(provider, null, WorkGuard.forCommandDeadline(null));
+
+    assertThat(count).isEqualTo(2L);
+  }
 }

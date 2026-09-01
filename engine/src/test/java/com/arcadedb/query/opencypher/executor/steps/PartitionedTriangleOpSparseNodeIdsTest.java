@@ -45,4 +45,26 @@ class PartitionedTriangleOpSparseNodeIdsTest {
 
     assertThat(count).isEqualTo(6L);
   }
+
+  /**
+   * Same fixture as {@link #countsTriangleContainingLiveNodeAboveLiveNodeCount()} but with NeighborViews
+   * exposed, so partition mapping and triangle counting run through the CSR sorted-intersection
+   * {@code countRange} path rather than the per-node {@code countTrianglesPerNode} fallback.
+   */
+  @Test
+  void countsTriangleContainingLiveNodeAboveLiveNodeCountWithViews() {
+    final SparseNodeIdProvider provider = new SparseNodeIdProvider()
+        .withEdges("IN_CITY", Vertex.DIRECTION.OUT, 2, 4)
+        .withEdges("IN_CITY", Vertex.DIRECTION.OUT, 3, 4)
+        .withEdges("IN_CITY", Vertex.DIRECTION.OUT, HIGH_ID, 4)
+        .withEdges("KNOWS", Vertex.DIRECTION.BOTH, 2, 3, HIGH_ID)
+        .withEdges("KNOWS", Vertex.DIRECTION.BOTH, 3, 2, HIGH_ID)
+        .withEdges("KNOWS", Vertex.DIRECTION.BOTH, HIGH_ID, 2, 3);
+    final PartitionedTriangleOp op = new PartitionedTriangleOp(new String[] { "IN_CITY" },
+        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT }, "KNOWS");
+
+    final long count = op.execute(provider, null, WorkGuard.forCommandDeadline(null));
+
+    assertThat(count).isEqualTo(6L);
+  }
 }
