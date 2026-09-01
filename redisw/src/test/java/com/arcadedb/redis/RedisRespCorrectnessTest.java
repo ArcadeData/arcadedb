@@ -552,6 +552,58 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
+  void incrByAndDecrByWithExplicitAmountRejectFractionalValueTheSameWayAsIncrAndDecr() throws Exception {
+    // (issue #6942 code review): INCRBY/DECRBY dispatch through the same incrBy()/decrBy() as INCR/DECR
+    // (RedisNetworkExecutor's INCR/INCRBY and DECR/DECRBY cases both call the same method), so this locks
+    // in that the explicit-amount form goes through requireIntegralValue() exactly like the no-amount form.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "incrByDecrByFloatKey", "3.3");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCRBY", "incrByDecrByFloatKey", "5");
+      String reply = readReply(socket);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("not an integer");
+
+      sendCommand(socket, "DECRBY", "incrByDecrByFloatKey", "5");
+      reply = readReply(socket);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("not an integer");
+
+      sendCommand(socket, "GET", "incrByDecrByFloatKey");
+      assertThat(readReply(socket)).isEqualTo("$3\r\n3.3");
+    }
+  }
+
+  @Test
+  void incrByOverflowStillReturnsOverflowErrorAfterIntegralValueRefactor() throws Exception {
+    // (issue #6942 code review): confirms Math.addExact's ArithmeticException -> "increment or decrement
+    // would overflow" still fires for INCRBY after routing the stored value through requireIntegralValue().
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "incrByOverflowKey", "9223372036854775807"); // Long.MAX_VALUE
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCRBY", "incrByOverflowKey", "1");
+      final String reply = readReply(socket);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("overflow");
+
+      sendCommand(socket, "GET", "incrByOverflowKey");
+      assertThat(readReply(socket)).isEqualTo("$19\r\n9223372036854775807");
+    }
+  }
+
+  @Test
   void concurrentSetNxOnSharedDatabaseKeyOnlyLetsOneWinnerThrough() throws Exception {
     // (issue #6466 follow-up): the initial fix evaluated NX as "does the key exist?" then "write it" as two
     // separate calls. That is only safe when the key lives in a per-connection bucket; once a key is backed
