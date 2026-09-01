@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -28,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #6964: a document INSERTED on a Raft replica through the embedded transaction API commits, and the record
@@ -97,6 +99,18 @@ class ReplicaInsertUniqueIndexInvisibleIT extends BaseRaftHATest {
     assertThat(awaitValue(1, () -> indexVisible(getServerDatabase(leaderIndex, getDatabaseName()), "from-replica")))
         .as("a committed, replicated insert must be visible through its unique index on the leader")
         .isEqualTo(1);
+
+    // The index does not just exist - it must ENFORCE uniqueness. An unguarded second insert of the same key
+    // (bypassing insertSingleton's own lookup-then-insert guard) on the replica must be rejected, and must not
+    // leave a duplicate or phantom record behind on either node.
+    assertThatThrownBy(() -> replicaDb.transaction(() -> replicaDb.newDocument(TYPE_NAME).set("name", "from-replica").save()))
+        .isInstanceOf(DuplicatedKeyException.class);
+    assertThat(scanCount(getServerDatabase(replicaIndex, getDatabaseName())))
+        .as("a rejected duplicate insert must not leave a phantom record on the replica")
+        .isEqualTo(2);
+    assertThat(scanCount(getServerDatabase(leaderIndex, getDatabaseName())))
+        .as("a rejected duplicate insert must not leave a phantom record on the leader")
+        .isEqualTo(2);
   }
 
   /**
