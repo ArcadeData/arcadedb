@@ -1022,6 +1022,62 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return database.getTransaction().getPageToModify(new PageId(database, file.getFileId(), pageId), pageSize, false);
   }
 
+  /**
+   * Whether the slot of {@code rid} on {@code page} no longer holds, byte for byte, the record image an update was
+   * computed from (#6950).
+   * <p>
+   * The page a deferred update is validated against is pinned when the record is TAKEN for update
+   * ({@code TransactionContext.addUpdatedRecord}), not when its content was read: under the default READ_COMMITTED
+   * isolation a plain read caches nothing in the transaction, so a commit landing in between hands the pin the NEWER
+   * version and the commit-time version check has nothing left to refuse. The read-modify-write is then applied on
+   * top of a value it never saw - a silently lost update rather than a retryable conflict. Comparing the image the
+   * update started from against the slot the pin just loaded is what tells the two apart, and it does so at RECORD
+   * granularity, so a concurrent write to another slot of the same page stays the false conflict it is.
+   * <p>
+   * Answers only for a plain record stored inside this very slot. A placeholder pointer, a multi-page record's head
+   * chunk and a placeholder's content keep their body elsewhere, so this page cannot see whether it changed: they
+   * return {@code false} here and stay covered by the off-page fingerprint
+   * ({@link #offPageContentFingerprint(RID, BasePage, boolean)}) exactly as before. A freed or deleted slot also
+   * returns {@code false}: the commit's own vanished-record check (#4959) is what reports that one.
+   * <p>
+   * Never throws. A page that cannot be read where a record was is not a reason to fail a write that would otherwise
+   * succeed, and the commit-time version check is still behind it.
+   *
+   * @param readImage the image the update is diffed against - the record's own buffer, the same one
+   *                  {@code LocalDatabase.getOriginalDocument} rebuilds the pre-update document from.
+   */
+  public boolean hasRecordChangedSinceRead(final RID rid, final BasePage page, final Binary readImage) {
+    try {
+      final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
+      if (positionInPage >= page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+        return false;
+
+      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      if (recordPositionInPage == 0)
+        // FREE SLOT (NEVER USED OR DELETED)
+        return false;
+
+      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+      if (recordSize[0] <= 0)
+        // DELETED, OR A SHAPE WHOSE BODY IS NOT (ENTIRELY) IN THIS SLOT: SEE THE JAVADOC
+        return false;
+
+      final int size = (int) recordSize[0];
+      if (size != readImage.size())
+        return true;
+
+      // One intrinsified Arrays.equals over the two heap arrays, stopping at the first difference, rather than a
+      // byte loop through the page accessors: this runs on the write path, once per record taken for update.
+      return !page.isSameContentAs((int) (recordPositionInPage + recordSize[1]), readImage, 0, size);
+
+    } catch (final Exception e) {
+      LogManager.instance()
+          .log(this, Level.FINE, "Unable to re-read record %s on page %s while taking it for update", e, rid,
+              page.getPageId());
+      return false;
+    }
+  }
+
   @Override
   public Iterator<Record> iterator() {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
