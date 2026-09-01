@@ -287,9 +287,24 @@ class FlushPageIndex {
    */
   void removeAllOfFile(final BasicDatabase database, final int fileId) {
     // Walked (weakly consistent, never throws) rather than removeIf'd so each removal goes through the accounting.
-    for (final PageId pageId : pages.keySet())
-      if (pageId.getFileId() == fileId && database.equals(pageId.getDatabase()))
-        remove(pageId);
+    //
+    // Over the VALUES, matched on the value's OWN PageId, and by reference identity (issue #6931) - the same three
+    // corrections removeAllOfDatabase took in #6440, for the same two reasons, because PageId.equals()/
+    // hashCode() go through path-based Database.equals() just like Database itself does:
+    // - filtering the RETAINED MAP KEY (pages.keySet()) matches a stale same-path sibling's key whose CURRENT value
+    //   is a live, un-flushed page of a DIFFERENT instance - Map.put() on an equals()-match keeps the original key
+    //   and swaps only the value - so the sibling's page is evicted, unacked, by this instance's file drop;
+    // - remove(PageId) then releases the ARGUMENT's database counter, i.e. the stale KEY owner's rather than the
+    //   removed VALUE owner's, so the live instance's own count drifts HIGH and never returns to zero: the "hangs
+    //   close() forever on a pipeline that is in fact empty" failure this class's javadoc names.
+    // removeIfSame answers both: it removes only when this exact instance is still the indexed value, and releases
+    // that value's own database - MutablePage.getPageId() being the value's own field, immune to which key object
+    // the map happened to retain.
+    for (final MutablePage page : pages.values()) {
+      final PageId pageId = page.getPageId();
+      if (pageId.getFileId() == fileId && pageId.getDatabase() == database)
+        removeIfSame(page);
+    }
   }
 
   /**
