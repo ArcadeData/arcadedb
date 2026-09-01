@@ -28,6 +28,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Maps one or more overloaded Java methods sharing the same name to a callable function. When more than one public
@@ -108,20 +110,27 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     final Object[] args = parameters != null ? parameters : new Object[0];
     final int received = args.length;
 
-    final List<Method> candidates = candidatesByParameterCount(received);
-
-    if (candidates.isEmpty()) {
-      if (methods.size() == 1) {
-        final Method only = methods.get(0);
+    if (methods.size() == 1) {
+      // Fast path for the overwhelmingly common non-overloaded case: skips the List allocation
+      // candidatesByParameterCount()/disambiguateByArgumentType() would otherwise do on every single call.
+      final Method only = methods.get(0);
+      final int minReceived = only.isVarArgs() ? only.getParameterCount() - 1 : only.getParameterCount();
+      if (only.isVarArgs() ? received < minReceived : received != minReceived)
         throw new FunctionExecutionException(
             "Error on executing function '" + only + "': expected " + only.getParameterCount() + " parameter(s) but received " + received);
-      }
-      throw new FunctionExecutionException(
-          "Error on executing function '" + getName() + "': none of the " + methods.size() + " overloads accepts " + received + " parameter(s)");
+      return invoke(only, args);
     }
 
-    final Method method = candidates.size() == 1 ? candidates.get(0) : disambiguateByArgumentType(candidates, args);
+    final List<Method> candidates = candidatesByParameterCount(received);
+    if (candidates.isEmpty())
+      throw new FunctionExecutionException(
+          "Error on executing function '" + getName() + "': none of the " + methods.size() + " overloads accepts " + received + " parameter(s)");
 
+    final Method method = candidates.size() == 1 ? candidates.get(0) : disambiguateByArgumentType(candidates, args);
+    return invoke(method, args);
+  }
+
+  private Object invoke(final Method method, final Object[] args) {
     try {
       return method.invoke(instance, toInvokeArgs(method, args));
     } catch (final InvocationTargetException e) {
@@ -242,32 +251,49 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     return true;
   }
 
+  // JLS 5.1.2 widening primitive conversions that method.invoke() itself accepts (after unboxing the argument):
+  // e.g. an Integer argument is a valid call-site match for a `long` parameter.
+  private static final Map<Class<?>, Set<Class<?>>> WIDENING_CONVERSIONS = Map.of(//
+      byte.class, Set.of(short.class, int.class, long.class, float.class, double.class), //
+      short.class, Set.of(int.class, long.class, float.class, double.class), //
+      char.class, Set.of(int.class, long.class, float.class, double.class), //
+      int.class, Set.of(long.class, float.class, double.class), //
+      long.class, Set.of(float.class, double.class), //
+      float.class, Set.of(double.class));
+
   private static boolean typeMatches(final Class<?> paramType, final Object arg) {
     if (arg == null)
       return !paramType.isPrimitive();
-    return wrap(paramType).isInstance(arg);
+    if (paramType.isPrimitive()) {
+      final Class<?> argPrimitiveType = unwrap(arg.getClass());
+      return argPrimitiveType != null
+          && (argPrimitiveType == paramType || WIDENING_CONVERSIONS.getOrDefault(argPrimitiveType, Set.of()).contains(paramType));
+    }
+    return paramType.isInstance(arg);
   }
 
-  private static Class<?> wrap(final Class<?> type) {
-    if (!type.isPrimitive())
-      return type;
-    if (type == int.class)
-      return Integer.class;
-    if (type == long.class)
-      return Long.class;
-    if (type == double.class)
-      return Double.class;
-    if (type == float.class)
-      return Float.class;
-    if (type == boolean.class)
-      return Boolean.class;
-    if (type == byte.class)
-      return Byte.class;
-    if (type == short.class)
-      return Short.class;
-    if (type == char.class)
-      return Character.class;
-    return type;
+  /**
+   * The primitive type a wrapper class unboxes to, or {@code null} if {@code wrapperType} is not one of the eight
+   * primitive wrapper classes.
+   */
+  private static Class<?> unwrap(final Class<?> wrapperType) {
+    if (wrapperType == Integer.class)
+      return int.class;
+    if (wrapperType == Long.class)
+      return long.class;
+    if (wrapperType == Double.class)
+      return double.class;
+    if (wrapperType == Float.class)
+      return float.class;
+    if (wrapperType == Boolean.class)
+      return boolean.class;
+    if (wrapperType == Byte.class)
+      return byte.class;
+    if (wrapperType == Short.class)
+      return short.class;
+    if (wrapperType == Character.class)
+      return char.class;
+    return null;
   }
 
   private FunctionExecutionException noMatchingOverloadException(final List<Method> candidates, final Object[] args) {

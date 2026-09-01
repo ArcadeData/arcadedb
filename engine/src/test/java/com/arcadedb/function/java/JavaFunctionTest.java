@@ -96,6 +96,16 @@ class JavaFunctionTest extends TestHelper {
     }
   }
 
+  public static class NumericVarargsOverloaded {
+    public static String describe(final long... values) {
+      return "longs:" + values.length;
+    }
+
+    public static String describe(final String... values) {
+      return "strings:" + values.length;
+    }
+  }
+
   public static class VarargsOverloaded {
     public static String join(final String sep, final String... parts) {
       return "strs:" + String.join(sep, parts);
@@ -336,6 +346,21 @@ class JavaFunctionTest extends TestHelper {
       assertThat(function.execute("-", "a", "b", "c")).isEqualTo("a-b-c");
     } finally {
       database.getSchema().unregisterFunctionLibrary("sjoin");
+    }
+  }
+
+  @Test
+  void primitiveWideningIsAcceptedDuringOverloadSelection()
+    throws Exception {
+    // typeMatches() used to accept only the exact wrapper type for a primitive parameter, so an Integer argument
+    // was rejected for a `long` parameter even though Method.invoke() itself accepts the unboxing+widening
+    // conversion. A call that should widen into the numeric overload must not be swallowed by an unrelated one.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("wide", JavaFunctionTest.NumericVarargsOverloaded.class));
+    try {
+      final var function = database.getSchema().getFunction("wide", "describe");
+      assertThat(function.execute(1)).isEqualTo("longs:1");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("wide");
     }
   }
 
