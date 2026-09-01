@@ -1043,6 +1043,21 @@ public class CypherExecutionPlan {
         return operatorResults;
       }
 
+      /**
+       * The physical-operator tree hangs off this step's result set, not off a previous step, so
+       * without this override the close() chain stopped one step short of the operators and every
+       * cursor they hold stayed open for as long as the plan was retained (issue #7010, and #5635
+       * for why an index cursor has to be closed explicitly).
+       */
+      @Override
+      public void close() {
+        if (operatorResults != null) {
+          operatorResults.close();
+          operatorResults = null;
+        }
+        super.close();
+      }
+
       @Override
       public String prettyPrint(final int depth, final int indent) {
         return "  ".repeat(Math.max(0, depth * indent)) + "+ OPTIMIZED MATCH (physical operators)\n" +
