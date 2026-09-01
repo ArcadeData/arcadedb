@@ -170,6 +170,9 @@ public class HashIndex implements IndexInternal {
       Set<IndexCursorEntry> txChanges = null;
       Set<RID> removedRids = null;
       boolean hasRemoves = false;
+      // #6927: a remove(keys) carrying no RID kills EVERY disk RID at this key. It used to allocate an EMPTY
+      // removedRids set, which then filtered nothing at all, so the disk entries survived a whole-key removal.
+      boolean keyWideRemove = false;
 
       final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges =
           getDatabase().getTransaction().getIndexChanges().getIndexKeys(getName());
@@ -184,11 +187,25 @@ public class HashIndex implements IndexInternal {
                   return EMPTY_CURSOR;
 
                 hasRemoves = true;
+                if (value.rid == null)
+                  keyWideRemove = true;
+                else {
+                  if (removedRids == null)
+                    removedRids = new HashSet<>();
+                  removedRids.add(value.rid);
+                }
+                continue;
+              }
+
+              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REPLACE && value.oldRid != null) {
+                // #6927: on a unique index a same-key REMOVE + ADD is merged into ONE entry whose oldRid is the RID
+                // being replaced - the REMOVE no longer exists on its own. Commit replays that removal
+                // (TransactionIndexContext.commit), so the lookup must not hand the old RID back either; without this
+                // the caller saw BOTH RIDs under a key that is supposed to hold one.
+                hasRemoves = true;
                 if (removedRids == null)
                   removedRids = new HashSet<>();
-                if (value.rid != null)
-                  removedRids.add(value.rid);
-                continue;
+                removedRids.add(value.oldRid);
               }
 
               if (txChanges == null)
@@ -211,8 +228,9 @@ public class HashIndex implements IndexInternal {
 
         while (result.hasNext()) {
           final Identifiable next = result.next();
-          if (removedRids == null || !removedRids.contains(next.getIdentity()))
-            txChanges.add(new IndexCursorEntry(convertedKeys, next, 1));
+          if (keyWideRemove || (removedRids != null && removedRids.contains(next.getIdentity())))
+            continue;
+          txChanges.add(new IndexCursorEntry(convertedKeys, next, 1));
         }
         return new TempIndexCursor(txChanges);
       }
