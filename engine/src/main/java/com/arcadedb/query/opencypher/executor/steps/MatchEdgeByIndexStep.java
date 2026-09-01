@@ -163,15 +163,17 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
               if (!(record instanceof Edge))
                 continue;
               edge = (Edge) record;
+
+              // A repeated endpoint variable constrains the hop to self-loops. This reads the two RIDs the
+              // edge carries rather than resolving the vertex records, so a rejected edge costs no extra
+              // load - but getOut()/getIn() still lazy-load the EDGE's own content, so the comparison has to
+              // sit under the same dangling-entry guard as the resolution above.
+              if (selfLoopOnly && !edge.getOut().equals(edge.getIn()))
+                continue;
             } catch (final RecordNotFoundException e) {
               // Dangling index entry pointing at a removed edge: skip it, like every other RID resolver.
               continue;
             }
-
-            // A repeated endpoint variable constrains the hop to self-loops. Compare the two RIDs the edge
-            // already carries rather than the vertex records, so a rejected edge costs no record load.
-            if (selfLoopOnly && !edge.getOut().equals(edge.getIn()))
-              continue;
 
             final ResultInternal result = new ResultInternal();
             if (relationshipVariable != null && !relationshipVariable.isEmpty())
