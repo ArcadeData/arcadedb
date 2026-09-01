@@ -134,16 +134,12 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
    * unchanged.
    */
   private static Object[] toInvokeArgs(final Method method, final Object[] args) {
-    if (!method.isVarArgs())
+    if (!method.isVarArgs() || isPrePacked(method, args))
       return args;
 
     final Class<?>[] paramTypes = method.getParameterTypes();
     final int fixedCount = paramTypes.length - 1;
     final Class<?> varargsType = paramTypes[fixedCount];
-
-    // Already in invoke() shape: the caller passed the vararg part pre-packed as a single matching array.
-    if (args.length == paramTypes.length && (args[fixedCount] == null || varargsType.isInstance(args[fixedCount])))
-      return args;
 
     final Object varargsArray = java.lang.reflect.Array.newInstance(varargsType.getComponentType(), args.length - fixedCount);
     for (int i = fixedCount; i < args.length; i++)
@@ -153,6 +149,17 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     System.arraycopy(args, 0, invokeArgs, 0, fixedCount);
     invokeArgs[fixedCount] = varargsArray;
     return invokeArgs;
+  }
+
+  /**
+   * True when the caller already passed the vararg part pre-packed as a single array matching the vararg component
+   * type - i.e. {@code args} is already in the exact shape {@link Method#invoke} requires - rather than as flat,
+   * positionally-passed elements.
+   */
+  private static boolean isPrePacked(final Method method, final Object[] args) {
+    final Class<?>[] paramTypes = method.getParameterTypes();
+    final int fixedCount = paramTypes.length - 1;
+    return args.length == paramTypes.length && (args[fixedCount] == null || paramTypes[fixedCount].isInstance(args[fixedCount]));
   }
 
   private List<Method> candidatesByParameterCount(final int received) {
@@ -178,7 +185,7 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
       }
     }
     if (match == null)
-      throw ambiguousOverloadException(candidates, args);
+      throw noMatchingOverloadException(candidates, args);
     return match;
   }
 
@@ -192,6 +199,11 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
         return false;
 
     if (varArgs) {
+      if (isPrePacked(method, args))
+        // the vararg part was passed as a single, already-built array: match it against the array type itself
+        // rather than element-by-element, otherwise e.g. a pre-packed String[] would be compared to String and fail.
+        return typeMatches(paramTypes[fixedCount], args[fixedCount]);
+
       final Class<?> componentType = paramTypes[fixedCount].getComponentType();
       for (int i = fixedCount; i < args.length; i++)
         if (!typeMatches(componentType, args[i]))
@@ -228,16 +240,25 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     return type;
   }
 
+  private FunctionExecutionException noMatchingOverloadException(final List<Method> candidates, final Object[] args) {
+    return new FunctionExecutionException(
+        "Error on executing function '" + getName() + "': none of " + candidates + " accepts argument type(s) [" + describeArgumentTypes(args) + "]");
+  }
+
   private FunctionExecutionException ambiguousOverloadException(final List<Method> candidates, final Object[] args) {
+    return new FunctionExecutionException(
+        "Error on executing function '" + getName() + "': cannot resolve which overload to call among " + candidates
+            + " for argument type(s) [" + describeArgumentTypes(args) + "]");
+  }
+
+  private static String describeArgumentTypes(final Object[] args) {
     final StringBuilder argTypes = new StringBuilder();
     for (int i = 0; i < args.length; i++) {
       if (i > 0)
         argTypes.append(", ");
       argTypes.append(args[i] != null ? args[i].getClass().getName() : "null");
     }
-    return new FunctionExecutionException(
-        "Error on executing function '" + getName() + "': cannot resolve which overload to call among " + candidates
-            + " for argument type(s) [" + argTypes + "]");
+    return argTypes.toString();
   }
 
   /**
