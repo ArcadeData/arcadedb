@@ -59,6 +59,22 @@ class JavaFunctionTest extends TestHelper {
     }
   }
 
+  public static class VarargsOverloaded {
+    public static String join(final String sep, final String... parts) {
+      return "strs:" + String.join(sep, parts);
+    }
+
+    public static String join(final String sep, final Integer... parts) {
+      final StringBuilder sb = new StringBuilder();
+      for (int i = 0; i < parts.length; i++) {
+        if (i > 0)
+          sb.append(sep);
+        sb.append(parts[i]);
+      }
+      return "ints:" + sb;
+    }
+  }
+
   @Test
   void registration()
     throws Exception {
@@ -197,6 +213,23 @@ class JavaFunctionTest extends TestHelper {
       assertThatThrownBy(() -> function.execute("a", "b", "c")).isInstanceOf(FunctionExecutionException.class);
     } finally {
       database.getSchema().unregisterFunctionLibrary("fmt");
+    }
+  }
+
+  @Test
+  void overloadedVarargsMethodsAreDispatchedByArgumentType()
+    throws Exception {
+    // Regression for a gap the overload-dispatch fix (issue #7007) left open: when candidatesByParameterCount()
+    // returns only varargs candidates, disambiguateByArgumentType() must still be able to pick among them by the
+    // type of the trailing (vararg) arguments instead of unconditionally rejecting the call as ambiguous.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("vjoin", JavaFunctionTest.VarargsOverloaded.class));
+    try {
+      final var function = database.getSchema().getFunction("vjoin", "join");
+
+      assertThat(function.execute("-", "a", "b", "c")).isEqualTo("strs:a-b-c");
+      assertThat(function.execute("-", 1, 2, 3)).isEqualTo("ints:1-2-3");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("vjoin");
     }
   }
 

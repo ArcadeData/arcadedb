@@ -28,7 +28,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFunctionDefinition> implements FunctionLibraryDefinition<T> {
   protected final Database                 database;
@@ -36,11 +35,17 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
   protected final String                   language;
   protected final List<String>             allowedPackages;
   protected final ConcurrentMap<String, T> functions = new ConcurrentHashMap<>();
-  // Dedicated, never-reassigned lock so the monitor identity stays stable across an engine swap in reloadEngine():
-  // callers of execute() take the read lock, reloadEngine() takes the write lock around the close+rebuild, so an
-  // in-flight call either finishes against the old engine before the swap or waits for the new one instead of
-  // having its engine closed underneath it (issue #7006).
-  private final    ReentrantReadWriteLock  engineLock = new ReentrantReadWriteLock();
+  /**
+   * Dedicated, never-reassigned lock so the monitor identity stays stable across an engine swap in reloadEngine():
+   * {@code synchronized} on the {@code polyglotEngine} field itself let a thread inside {@link #execute(Callback)}
+   * and a concurrent {@code reloadEngine()} lock two different monitors over what is meant to be a serialized
+   * engine, so a redefinition could close the engine underneath an in-flight call (issue #7006). A plain mutex -
+   * rather than a read-write lock - keeps every caller of {@link #execute(Callback)} serialized against every other
+   * caller too: the shared GraalVM {@code Context} does not support concurrent invocation without explicit
+   * multi-threaded access configuration, which is exactly the problem {@code PolyglotQueryEngine} already solved
+   * the same way for issue #6759.
+   */
+  private final    Object                  engineLock = new Object();
   protected       GraalPolyglotEngine      polyglotEngine;
 
   public interface Callback {
@@ -83,16 +88,13 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
    * method throw, leaving the caller to decide how to recover.
    */
   private void reloadEngine() {
-    engineLock.writeLock().lock();
-    try {
+    synchronized (engineLock) {
       // REGISTER ALL THE FUNCTIONS UNDER THE NEW ENGINE INSTANCE
       this.polyglotEngine.close();
       this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
           .setLanguage(language).setAllowedPackages(allowedPackages).build();
       for (final T f : functions.values())
         f.init(this);
-    } finally {
-      engineLock.writeLock().unlock();
     }
   }
 
@@ -147,11 +149,8 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
   }
 
   public Object execute(final Callback callback) {
-    engineLock.readLock().lock();
-    try {
+    synchronized (engineLock) {
       return callback.execute(polyglotEngine);
-    } finally {
-      engineLock.readLock().unlock();
     }
   }
 }
