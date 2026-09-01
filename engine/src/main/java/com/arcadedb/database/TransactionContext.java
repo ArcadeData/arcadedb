@@ -1629,6 +1629,10 @@ public class TransactionContext implements Transaction {
 
   /**
    * Locks the files in order, then checks all the pre-conditions.
+   *
+   * @param isLeader whether this node is the current Raft leader - no longer consulted for index replay (#6964,
+   *                 always replayed below), still consulted further down to gate the edge-append/slot-merge
+   *                 conflict-rebase, which stays leader-only.
    */
   public TransactionPhase1 commit1stPhase(final boolean isLeader) {
     if (status == STATUS.INACTIVE)
