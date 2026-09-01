@@ -84,6 +84,12 @@ public class LSMTreeIndexCursor implements IndexCursor {
   /** The entry {@link #next()} last returned: what {@link #getRecord()} and {@link #getKeys()} describe. */
   private       RID                                    lastReturnedValue;
   private       Object[]                               lastReturnedKeys;
+  /** #6944: the 3 containers below are per-key-group scratch space, hoisted here and {@code clear()}ed at the
+   *  start of every group instead of being reallocated - the cursor is single-threaded and each group's
+   *  contents are fully consumed before the next group starts, so nothing outlives a reuse. */
+  private final List<Integer>                          minorKeyIndexes    = new ArrayList<>();
+  private final HashMap<RID, Boolean>                   ridState           = new HashMap<>();
+  private final HashSet<RID>                            mergedRIDs         = new HashSet<>();
 
   public LSMTreeIndexCursor(final LSMTreeIndexMutable index, final boolean ascendingOrder) throws IOException {
     this(index, ascendingOrder, null, true, null, true);
@@ -437,7 +443,10 @@ public class LSMTreeIndexCursor implements IndexCursor {
       currentValueIndex = 0;
 
       Object[] minorKey = null;
-      final List<Integer> minorKeyIndexes = new ArrayList<>();
+      // #6944: explicit clear() rather than relying on the in-loop clear()s below, which only fire on paths
+      // that touch a live pageCursor - a tx-only group (no live pageCursors this round) would otherwise carry
+      // over stale indices from the previous group.
+      minorKeyIndexes.clear();
 
       // FIND THE MINOR KEY
       for (int p = 0; p < totalCursors; ++p) {
@@ -514,7 +523,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
       // [newest, ..., oldest], so iterate it in reverse) and within each page in insertion
       // order. We track per-RID validity and only mark the whole key as deleted when we
       // encounter a REMOVED_ENTRY_RID tombstone; a later insert at the same key resurrects it.
-      final HashMap<RID, Boolean> ridState = new HashMap<>();
+      ridState.clear();
 
       for (int i = minorKeyIndexes.size() - 1; i >= 0; --i) {
         final int minorKeyIndex = minorKeyIndexes.get(i);
@@ -539,7 +548,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
       // Collect the surviving RIDs for this key. #5055: disk RIDs and overlay RIDs are UNIONed - a committed
       // record and an uncommitted one sharing the same non-unique key must both appear during in-tx iteration.
-      final Set<RID> mergedRIDs = new HashSet<>();
+      mergedRIDs.clear();
 
       // ADVANCE EACH PAGE CURSOR PAST THIS KEY and, if any page contributed, add its per-RID-filtered set.
       if (!minorKeyIndexes.isEmpty()) {

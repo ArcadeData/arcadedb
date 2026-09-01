@@ -2616,11 +2616,55 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return end - start;
   }
 
+  /**
+   * Counts, per requested direction, the neighbours nodeA and nodeB have in common for one edge type.
+   * <p>
+   * #6943: this used to read only the base CSR - the one pair accessor on this class that never consulted
+   * {@code snap.overlay}, unlike its siblings {@link #isConnectedForType} and {@link #countBetweenForType} - so an
+   * overlay-deleted common neighbour stayed counted and an overlay-added one never was. It also omitted the
+   * {@code nodeA < snap.nodeMapping.size()} guard both siblings carry, so an overlay-added node id - legal once
+   * {@link #getNodeIdUpperBound()} exceeds {@link #getNodeCount()} - indexed {@code offsets[nodeA + 1]} straight
+   * past the end of the {@code n+1}-long array.
+   * <p>
+   * Fixed by delegating to {@link #getNeighborsFromCSR}, the same overlay-aware (added minus deleted, base-CSR
+   * bounds already guarded) per-node/per-direction accessor {@link #countDirectional} and {@link #getVertices}
+   * already rely on, instead of duplicating that merge logic here. OUT and IN are intersected separately (not
+   * merged into one BOTH-direction set first) so a BOTH request still means "common OUT-neighbours plus common
+   * IN-neighbours" - the same split the original code and {@link #isConnectedForType}/{@link #countBetweenForType}
+   * use - rather than crediting a pair where nodeA reaches C via OUT and nodeB reaches C via IN as a match.
+   * <p>
+   * {@link #getNeighborsFromCSR} allocates a {@code copyOfRange} per direction per node even on the overwhelmingly
+   * common no-overlay case, where a direct CSR intersection needs zero allocation. {@link #countCommonForTypeNoOverlay}
+   * keeps that zero-copy path, gated on {@code snap.overlay == null} - the same "fast path when no overlay" split
+   * {@link #getNeighborsFromCSR} itself already uses - falling back to the overlay-aware accessor only when an
+   * overlay is active or a node id falls outside the base CSR.
+   */
   private int countCommonForType(final Snapshot snap, final int nodeA, final int nodeB,
       final Vertex.DIRECTION direction, final String edgeType) {
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
-    if (csr == null)
+    if (csr == null && snap.overlay == null)
       return 0;
+
+    if (snap.overlay == null && csr != null && nodeA < snap.nodeMapping.size() && nodeB < snap.nodeMapping.size())
+      return countCommonForTypeNoOverlay(csr, nodeA, nodeB, direction);
+
+    int count = 0;
+    if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
+      final int[] aOut = getNeighborsFromCSR(snap, csr, nodeA, Vertex.DIRECTION.OUT, edgeType);
+      final int[] bOut = getNeighborsFromCSR(snap, csr, nodeB, Vertex.DIRECTION.OUT, edgeType);
+      count += sortedIntersectionCount(aOut, 0, aOut.length, bOut, 0, bOut.length);
+    }
+    if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
+      final int[] aIn = getNeighborsFromCSR(snap, csr, nodeA, Vertex.DIRECTION.IN, edgeType);
+      final int[] bIn = getNeighborsFromCSR(snap, csr, nodeB, Vertex.DIRECTION.IN, edgeType);
+      count += sortedIntersectionCount(aIn, 0, aIn.length, bIn, 0, bIn.length);
+    }
+    return count;
+  }
+
+  /** Zero-copy fast path for {@link #countCommonForType}: no overlay, both nodes in the base CSR. */
+  private static int countCommonForTypeNoOverlay(final CSRAdjacencyIndex csr, final int nodeA, final int nodeB,
+      final Vertex.DIRECTION direction) {
     int count = 0;
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
       final int[] neighbors = csr.getForwardNeighbors();
