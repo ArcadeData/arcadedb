@@ -421,29 +421,11 @@ public class RedisNetworkExecutor extends Thread {
     final String k = (String) list.get(1);
     final long by = list.size() > 2 ? Long.parseLong((String) list.get(2)) : 1L;
 
-    Object number = getVariable(k);
-    if (number == null) {
-      number = 0L;
-    } else if (!(number instanceof Number)) {
-      // DECR/DECRBY only operate on integral values, and real Redis answers a stored value it cannot
-      // parse as a 64-bit integer - "3.3", "abc", or one simply out of Long range - with this exact
-      // message rather than a generic "not a number" (issue #6942 code review).
-      try {
-        number = Long.parseLong(number.toString());
-      } catch (final NumberFormatException e) {
-        throw new RedisException("value is not an integer or out of range");
-      }
-    }
-
-    // DECR/DECRBY only operate on integral values: a Double/Float (e.g. left behind by INCRBYFLOAT) has no
-    // valid RESP integer reply, and real Redis rejects it rather than emitting a floating-point ":" reply
-    // (issue #6942).
-    if (!(number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte))
-      throw new RedisException("value is not an integer or out of range");
+    final long number = requireIntegralValue(getVariable(k)).longValue();
 
     final long newValue;
     try {
-      newValue = Math.subtractExact(((Number) number).longValue(), by);
+      newValue = Math.subtractExact(number, by);
     } catch (final ArithmeticException e) {
       throw new RedisException("increment or decrement would overflow", e);
     }
@@ -451,6 +433,33 @@ public class RedisNetworkExecutor extends Thread {
     setVariable(k, newValue);
     value.append(":");
     value.append(newValue);
+  }
+
+  /**
+   * Normalizes a stored Redis value for DECR/DECRBY and the non-decimal path of INCR/INCRBY: a
+   * {@code null} key reads as {@code 0}, and a non-{@code Number} stored value (always a {@code String}
+   * here) is parsed as a 64-bit integer. Anything that isn't - or can't be parsed as - an integral value,
+   * such as a fractional string or a {@code Double} left behind by INCRBYFLOAT, is rejected with real
+   * Redis' own "value is not an integer or out of range" (issue #6942 code review) rather than emitting an
+   * invalid RESP integer reply.
+   */
+  private static Number requireIntegralValue(final Object stored) {
+    if (stored == null)
+      return 0L;
+
+    Object number = stored;
+    if (!(number instanceof Number)) {
+      try {
+        number = Long.parseLong(number.toString());
+      } catch (final NumberFormatException e) {
+        throw new RedisException("value is not an integer or out of range");
+      }
+    }
+
+    if (!(number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte))
+      throw new RedisException("value is not an integer or out of range");
+
+    return (Number) number;
   }
 
   private void exists(final List<Object> list) {
@@ -664,47 +673,35 @@ public class RedisNetworkExecutor extends Thread {
     } else
       by = 1L;
 
-    Object number = getVariable(k);
-    if (number == null) {
-      number = 0L;
-    } else if (!(number instanceof Number)) {
-      // Real Redis parses the stored value against the command's own numeric type rather than a
-      // generic "is this a number" check (issue #6942 code review): INCRBYFLOAT accepts any stored
-      // value it can read as a float - "3.3" included - while INCR/INCRBY reject anything it cannot
-      // read as a 64-bit integer, with the same "not an integer or out of range" message whether the
-      // value is non-numeric or merely out of Long range.
-      //
-      // Deliberately two branches, not `decimal ? Double.parseDouble(...) : Long.parseLong(...)`: a
-      // Java conditional expression with one `double` arm and one `long` arm promotes BOTH arms to
-      // double (JLS 15.25), so the long arm's result would get silently widened and reboxed to Double
-      // even when decimal is false, turning every later `instanceof Long` check on it false.
-      try {
-        if (decimal)
-          number = Double.parseDouble(number.toString());
-        else
-          number = Long.parseLong(number.toString());
-      } catch (final NumberFormatException e) {
-        throw new RedisException(decimal ? "value is not a valid float" : "value is not an integer or out of range");
+    // INCRBYFLOAT has no integral restriction - it promotes an integral value to float and accepts any
+    // stored value it can read as a float ("3.3" included, issue #6942 code review) - while INCR/INCRBY
+    // reuse the DECR/DECRBY validation in requireIntegralValue().
+    final Number number;
+    if (decimal) {
+      final Object stored = getVariable(k);
+      if (stored == null)
+        number = 0L;
+      else if (stored instanceof Number storedNumber)
+        number = storedNumber;
+      else {
+        try {
+          number = Double.parseDouble(stored.toString());
+        } catch (final NumberFormatException e) {
+          throw new RedisException("value is not a valid float");
+        }
       }
-    }
-
-    final boolean integralStorage = number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte;
-
-    // INCR/INCRBY only operate on integral values: a Double/Float left behind by INCRBYFLOAT has no valid
-    // RESP integer reply, and real Redis rejects it rather than emitting a floating-point "+" reply
-    // (issue #6942). INCRBYFLOAT itself has no such restriction - it promotes an integral value to float.
-    if (!decimal && !integralStorage)
-      throw new RedisException("value is not an integer or out of range");
+    } else
+      number = requireIntegralValue(getVariable(k));
 
     final Number newValue;
-    if (!decimal && integralStorage) {
+    if (!decimal) {
       try {
-        newValue = Math.addExact(((Number) number).longValue(), by.longValue());
+        newValue = Math.addExact(number.longValue(), by.longValue());
       } catch (final ArithmeticException e) {
         throw new RedisException("increment or decrement would overflow", e);
       }
     } else
-      newValue = Type.increment((Number) number, by);
+      newValue = Type.increment(number, by);
 
     setVariable(k, newValue);
     if (decimal) {
