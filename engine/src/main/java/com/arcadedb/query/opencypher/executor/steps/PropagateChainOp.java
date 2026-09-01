@@ -91,7 +91,7 @@ public final class PropagateChainOp implements CountOp {
     if (anchorRid != null)
       return executeFromSeededAnchor(provider, db, guard);
 
-    final int nodeCount = provider.getNodeCount();
+    final int nodeIdUpperBound = provider.getNodeIdUpperBound();
     final int hops = edgeTypes.length;
 
     // Pre-compute valid bucket sets for type filtering at each level. null = unlabelled, so no filter.
@@ -110,27 +110,26 @@ public final class PropagateChainOp implements CountOp {
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0
         && Math.min(inequalityIdxA, inequalityIdxB) == 0
         && hops <= 2)
-      return executePerSourceInequality(provider, nodeCount, validBuckets, guard);
+      return executePerSourceInequality(provider, nodeIdUpperBound, validBuckets, guard);
 
     // Standard dense array propagation for chains without inequality
     // (or with inequality source not at position 0)
 
     // Pre-compute bucket IDs once for all filtering operations. A pattern that labels no position needs none of
     // them, and the scan costs one getRID per node.
-    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeCount, guard) : null;
+    final int[] bucketIds = anyLabelled(validBuckets)
+        ? precomputeBucketIds(provider, nodeIdUpperBound, guard) : null;
 
     // Initialize anchor counts via bucket filtering (avoids OLTP iterateType). An unlabelled anchor accepts every
     // vertex, which is the whole node domain (issue #5757).
-    long[] current = new long[nodeCount];
+    long[] current = new long[nodeIdUpperBound];
     final IntHashSet anchorBuckets = validBuckets[0];
-    if (anchorBuckets == null)
-      Arrays.fill(current, 1L);
-    else {
-      for (int v = 0; v < nodeCount; v++) {
-        guard.checkPeriodically(v);
-        if (anchorBuckets.contains(bucketIds[v]))
-          current[v] = 1;
-      }
+    for (int v = 0; v < nodeIdUpperBound; v++) {
+      guard.checkPeriodically(v);
+      if (!provider.isNodeLive(v))
+        continue;
+      if (anchorBuckets == null || anchorBuckets.contains(bucketIds[v]))
+        current[v] = 1;
     }
 
     for (int hop = 0; hop < hops; hop++) {
@@ -142,8 +141,10 @@ public final class PropagateChainOp implements CountOp {
     }
 
     long total = 0;
-    for (int v = 0; v < nodeCount; v++) {
+    for (int v = 0; v < nodeIdUpperBound; v++) {
       guard.checkPeriodically(v);
+      if (!provider.isNodeLive(v))
+        continue;
       total += current[v];
     }
 
@@ -249,7 +250,7 @@ public final class PropagateChainOp implements CountOp {
    * For Q6 (10K persons × ~1.7K frontier nodes each): ~17M CSR ops (comparable to dense + self-loop).
    */
   private long executePerSourceInequality(final GraphTraversalProvider provider,
-      final int nodeCount, final IntHashSet[] validBuckets, final WorkGuard guard) {
+      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final WorkGuard guard) {
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
 
     // Pre-fetch NeighborViews for hops up to the inequality target
@@ -259,7 +260,8 @@ public final class PropagateChainOp implements CountOp {
 
     // Pre-compute bucket IDs for all nodes — eliminates per-node getRID calls during
     // frontier type filtering. One-time O(nodeCount) cost, amortized across all sources.
-    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeCount, guard) : null;
+    final int[] bucketIds = anyLabelled(validBuckets)
+        ? precomputeBucketIds(provider, nodeIdUpperBound, guard) : null;
 
     // Identify anchor nodes via bucket filtering (avoids db.iterateType OLTP reads). null accepts every vertex,
     // empty accepts none (issue #5757).
@@ -269,8 +271,10 @@ public final class PropagateChainOp implements CountOp {
 
     long totalCount = 0;
 
-    for (int srcId = 0; srcId < nodeCount; srcId++) {
+    for (int srcId = 0; srcId < nodeIdUpperBound; srcId++) {
       guard.check();
+      if (!provider.isNodeLive(srcId))
+        continue;
       if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[srcId]))
         continue;
 
@@ -311,7 +315,7 @@ public final class PropagateChainOp implements CountOp {
 
   private long countSelfLoopPaths(final GraphTraversalProvider provider,
       final IntHashSet[] validBuckets, final WorkGuard guard) {
-    final int nodeCount = provider.getNodeCount();
+    final int nodeIdUpperBound = provider.getNodeIdUpperBound();
     final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
     final int subChainLength = idxB - idxA;
@@ -321,7 +325,7 @@ public final class PropagateChainOp implements CountOp {
     // and compute |E0_reverse_nbrs(m) ∩ E2_nbrs(c)| for each middle edge (m,c).
     // For Q5: 2.6M REPLY_OF edges × ~2 merge ops = ~5M ops (vs 16K × 300 = ~14M per-anchor).
     if (subChainLength == 3 && idxA == 0 && idxB == edgeTypes.length) {
-      return countSelfLoop3HopEdgeScan(provider, nodeCount, validBuckets, guard);
+      return countSelfLoop3HopEdgeScan(provider, nodeIdUpperBound, validBuckets, guard);
     }
 
     // GENERAL PATH: per-anchor expansion
@@ -337,10 +341,13 @@ public final class PropagateChainOp implements CountOp {
     final IntHashSet anchorBuckets = validBuckets[idxA];
     if (anchorBuckets != null && anchorBuckets.isEmpty())
       return 0;
-    final int[] anchorBucketIds = anchorBuckets == null ? null : precomputeBucketIds(provider, nodeCount, guard);
+    final int[] anchorBucketIds = anchorBuckets == null ? null
+        : precomputeBucketIds(provider, nodeIdUpperBound, guard);
 
-    for (int vId = 0; vId < nodeCount; vId++) {
+    for (int vId = 0; vId < nodeIdUpperBound; vId++) {
       guard.check();
+      if (!provider.isNodeLive(vId))
+        continue;
       if (anchorBuckets != null && !anchorBuckets.contains(anchorBucketIds[vId]))
         continue;
 
@@ -390,7 +397,7 @@ public final class PropagateChainOp implements CountOp {
    * Avg ~2 merge comparisons per edge → ~5M ops total at ~3-5ns = ~15-25ms.
    */
   private long countSelfLoop3HopEdgeScan(final GraphTraversalProvider provider,
-      final int nodeCount, final IntHashSet[] validBuckets, final WorkGuard guard) {
+      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final WorkGuard guard) {
     // E0: edge from pos0 to pos1, direction directions[0]
     // E1: edge from pos1 to pos2, direction directions[1] (middle, iterated)
     // E2: edge from pos2 to pos3, direction directions[2]
@@ -406,7 +413,7 @@ public final class PropagateChainOp implements CountOp {
 
     if (viewA == null || viewE1 == null || viewC == null) {
       // Fallback: can't get NeighborViews, use per-anchor approach
-      return countSelfLoopPerAnchorFallback(provider, nodeCount, validBuckets, guard);
+      return countSelfLoopPerAnchorFallback(provider, nodeIdUpperBound, validBuckets, guard);
     }
 
     final int[] aNbrs = viewA.neighbors();
@@ -420,13 +427,15 @@ public final class PropagateChainOp implements CountOp {
     if ((pos1Buckets != null && pos1Buckets.isEmpty()) || (pos2Buckets != null && pos2Buckets.isEmpty()))
       return 0;
     final int[] bucketIds = (pos1Buckets != null || pos2Buckets != null)
-        ? precomputeBucketIds(provider, nodeCount, guard) : null;
+        ? precomputeBucketIds(provider, nodeIdUpperBound, guard) : null;
 
     long selfLoop = 0;
 
     // Scan all E1 edges by iterating pos1 nodes
-    for (int b = 0; b < nodeCount; b++) {
+    for (int b = 0; b < nodeIdUpperBound; b++) {
       guard.check();
+      if (!provider.isNodeLive(b))
+        continue;
       // Check pos1 type filter
       if (pos1Buckets != null && !pos1Buckets.contains(bucketIds[b]))
         continue;
@@ -486,7 +495,7 @@ public final class PropagateChainOp implements CountOp {
    * Fallback per-anchor self-loop when NeighborViews are unavailable.
    */
   private long countSelfLoopPerAnchorFallback(final GraphTraversalProvider provider,
-      final int nodeCount, final IntHashSet[] validBuckets, final WorkGuard guard) {
+      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final WorkGuard guard) {
     // Reuse existing per-anchor expansion logic
     final int subChainLength = Math.max(inequalityIdxA, inequalityIdxB);
     final NeighborView[] subViews = new NeighborView[subChainLength];
@@ -496,11 +505,14 @@ public final class PropagateChainOp implements CountOp {
     final IntHashSet anchorBuckets = validBuckets[0];
     if (anchorBuckets != null && anchorBuckets.isEmpty())
       return 0;
-    final int[] bucketIds = anchorBuckets == null ? null : precomputeBucketIds(provider, nodeCount, guard);
+    final int[] bucketIds = anchorBuckets == null ? null
+        : precomputeBucketIds(provider, nodeIdUpperBound, guard);
 
     long selfLoopTotal = 0;
-    for (int vId = 0; vId < nodeCount; vId++) {
+    for (int vId = 0; vId < nodeIdUpperBound; vId++) {
       guard.check();
+      if (!provider.isNodeLive(vId))
+        continue;
       if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[vId]))
         continue;
       selfLoopTotal += countLoopsFromNode(provider, vId, subViews, 0, subChainLength, validBuckets);
@@ -660,15 +672,14 @@ public final class PropagateChainOp implements CountOp {
     return pos < next.length ? Arrays.copyOf(next, pos) : next;
   }
 
-  /**
-   * Pre-computes bucket IDs for all CSR nodes. One-time O(nodeCount) cost via bulk
-   * getDegrees-style scan, amortized across all per-source expansions.
-   */
-  private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeCount,
+  /** Pre-computes bucket IDs for all live CSR nodes, amortized across all per-source expansions. */
+  private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeIdUpperBound,
       final WorkGuard guard) {
-    final int[] bucketIds = new int[nodeCount];
-    for (int v = 0; v < nodeCount; v++) {
+    final int[] bucketIds = new int[nodeIdUpperBound];
+    for (int v = 0; v < nodeIdUpperBound; v++) {
       guard.checkPeriodically(v);
+      if (!provider.isNodeLive(v))
+        continue;
       bucketIds[v] = provider.getRID(v).getBucketId();
     }
     return bucketIds;

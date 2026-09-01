@@ -114,7 +114,7 @@ public final class AntiJoinChainOp implements CountOp {
 
   @Override
   public long execute(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
-    final int nodeCount = provider.getNodeCount();
+    final int nodeIdUpperBound = provider.getNodeIdUpperBound();
     final int hops = edgeTypes.length;
 
     // Pre-compute valid bucket sets for type filtering. null = unlabelled, so no filter.
@@ -150,7 +150,7 @@ public final class AntiJoinChainOp implements CountOp {
         && antiJoinEdgeType.equals(edgeTypes[0])
         && inequalityIdxA >= 0 && inequalityIdxB >= 0
         && ineqMin == 0 && ineqMax == hops) {
-      final long result = executeEdgeScanAlgebraic(provider, nodeCount, validBuckets, guard);
+      final long result = executeEdgeScanAlgebraic(provider, nodeIdUpperBound, validBuckets, guard);
       if (result >= 0)
         return result;
     }
@@ -169,12 +169,15 @@ public final class AntiJoinChainOp implements CountOp {
 
     // Pre-compute bucket IDs for CSR-based anchor iteration and frontier filtering. A pattern that labels no
     // position needs none of them.
-    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeCount, guard) : null;
+    final int[] bucketIds = anyLabelled(validBuckets)
+        ? precomputeBucketIds(provider, nodeIdUpperBound, guard) : null;
 
     long totalCount = 0;
 
-    for (int anchorId = 0; anchorId < nodeCount; anchorId++) {
+    for (int anchorId = 0; anchorId < nodeIdUpperBound; anchorId++) {
       guard.check();
+      if (!provider.isNodeLive(anchorId))
+        continue;
       if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[anchorId]))
         continue;
 
@@ -207,7 +210,7 @@ public final class AntiJoinChainOp implements CountOp {
    * @return count, or -1 if NeighborViews unavailable (caller should fall back)
    */
   private long executeEdgeScanAlgebraic(final GraphTraversalProvider provider,
-      final int nodeCount, final IntHashSet[] validBuckets, final WorkGuard guard) {
+      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final WorkGuard guard) {
     final Vertex.DIRECTION revDir0 = directions[0] == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN
         : directions[0] == Vertex.DIRECTION.IN ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.BOTH;
     final NeighborView viewA = provider.getNeighborView(revDir0, edgeTypes[0]);
@@ -227,13 +230,15 @@ public final class AntiJoinChainOp implements CountOp {
     if ((pos1Buckets != null && pos1Buckets.isEmpty()) || (pos2Buckets != null && pos2Buckets.isEmpty()))
       return 0;
     final int[] bucketIds = (pos1Buckets != null || pos2Buckets != null)
-        ? precomputeBucketIds(provider, nodeCount, guard) : null;
+        ? precomputeBucketIds(provider, nodeIdUpperBound, guard) : null;
 
     long total = 0;
 
     // Scan all E1 (middle) edges by iterating pos1 nodes
-    for (int b = 0; b < nodeCount; b++) {
+    for (int b = 0; b < nodeIdUpperBound; b++) {
       guard.check();
+      if (!provider.isNodeLive(b))
+        continue;
       if (pos1Buckets != null && !pos1Buckets.contains(bucketIds[b]))
         continue;
 
@@ -279,12 +284,14 @@ public final class AntiJoinChainOp implements CountOp {
     return false;
   }
 
-  /** Pre-computes bucket IDs for all CSR nodes. One-time O(nodeCount) cost, amortized across all anchors. */
-  private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeCount,
+  /** Pre-computes bucket IDs for all live CSR nodes. One-time O(node ID space) cost. */
+  private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeIdUpperBound,
       final WorkGuard guard) {
-    final int[] bucketIds = new int[nodeCount];
-    for (int v = 0; v < nodeCount; v++) {
+    final int[] bucketIds = new int[nodeIdUpperBound];
+    for (int v = 0; v < nodeIdUpperBound; v++) {
       guard.checkPeriodically(v);
+      if (!provider.isNodeLive(v))
+        continue;
       bucketIds[v] = provider.getRID(v).getBucketId();
     }
     return bucketIds;

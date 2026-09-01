@@ -91,7 +91,7 @@ public final class PairHashJoinOp implements CountOp {
   @Override
   @SuppressWarnings("unchecked")
   public long execute(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
-    final int nodeCount = provider.getNodeCount();
+    final int nodeIdUpperBound = provider.getNodeIdUpperBound();
 
     // Pre-compute intermediate label bucket sets ONCE (not per vertex!)
     final IntHashSet[] arm1Buckets = buildValidBucketSets(db, arm1IntermediateLabels);
@@ -120,9 +120,11 @@ public final class PairHashJoinOp implements CountOp {
     // because the table was owned by the arm2 branch (issue #6304).
     final int[] bucketIds;
     if (arm1View != null && (arm1Buckets != null || arm2Buckets != null)) {
-      bucketIds = new int[nodeCount];
-      for (int v = 0; v < nodeCount; v++) {
+      bucketIds = new int[nodeIdUpperBound];
+      for (int v = 0; v < nodeIdUpperBound; v++) {
         guard.checkPeriodically(v);
+        if (!provider.isNodeLive(v))
+          continue;
         bucketIds[v] = provider.getRID(v).getBucketId();
       }
     } else
@@ -148,19 +150,22 @@ public final class PairHashJoinOp implements CountOp {
       }
 
       if (allArm2Views) {
-        return buildAndProbeInline(arm1View, arm1Filter, arm2Views, arm2Buckets, probeView, nodeCount, bucketIds, guard);
+        return buildAndProbeInline(provider, arm1View, arm1Filter, arm2Views, arm2Buckets, probeView,
+            nodeIdUpperBound, bucketIds, guard);
       }
     }
 
     // FALLBACK: HashMap build + probe (for cases without full NeighborView coverage)
     if (arm1View != null && arm2View != null) {
-      buildWithViews(arm1View, arm1Filter, arm2View, arm2Buckets != null ? arm2Buckets[0] : null, pairCounts, nodeCount,
-          bucketIds, guard);
+      buildWithViews(provider, arm1View, arm1Filter, arm2View, arm2Buckets != null ? arm2Buckets[0] : null,
+          pairCounts, nodeIdUpperBound, bucketIds, guard);
     } else if (arm1View != null) {
-      buildWithArm1View(arm1View, arm1Filter, provider, arm2Buckets, pairCounts, nodeCount, bucketIds, guard);
+      buildWithArm1View(arm1View, arm1Filter, provider, arm2Buckets, pairCounts, nodeIdUpperBound, bucketIds, guard);
     } else {
-      for (int startId = 0; startId < nodeCount; startId++) {
+      for (int startId = 0; startId < nodeIdUpperBound; startId++) {
         guard.check();
+        if (!provider.isNodeLive(startId))
+          continue;
         final int[] ep1Ids = CSRCountUtils.walkArm(provider, startId, arm1EdgeTypes, arm1Directions, arm1Buckets);
         if (ep1Ids.length == 0)
           continue;
@@ -177,14 +182,18 @@ public final class PairHashJoinOp implements CountOp {
     long total = 0;
     if (probeViewFallback != null) {
       final int[] probeNbrs = probeViewFallback.neighbors();
-      for (int p1 = 0; p1 < nodeCount; p1++) {
+      for (int p1 = 0; p1 < nodeIdUpperBound; p1++) {
         guard.checkPeriodically(p1);
+        if (!provider.isNodeLive(p1))
+          continue;
         for (int j = probeViewFallback.offset(p1), end = probeViewFallback.offsetEnd(p1); j < end; j++)
           total += pairCounts.get(CSRCountUtils.packPair(p1, probeNbrs[j]), 0);
       }
     } else {
-      for (int p1 = 0; p1 < nodeCount; p1++) {
+      for (int p1 = 0; p1 < nodeIdUpperBound; p1++) {
         guard.checkPeriodically(p1);
+        if (!provider.isNodeLive(p1))
+          continue;
         final int[] neighbors = provider.getNeighborIds(p1, probeDirection, probeEdgeType);
         for (final int p2 : neighbors)
           total += pairCounts.get(CSRCountUtils.packPair(p1, p2), 0);
@@ -256,9 +265,10 @@ public final class PairHashJoinOp implements CountOp {
    * When arm2 has exactly 2 hops (the Q2 case), fuses the arm2 walk with the probe
    * check inline to avoid allocating an intermediate int[] per build node.
    */
-  private long buildAndProbeInline(final NeighborView arm1View, final IntHashSet arm1Filter,
+  private long buildAndProbeInline(final GraphTraversalProvider provider, final NeighborView arm1View,
+      final IntHashSet arm1Filter,
       final NeighborView[] arm2Views, final IntHashSet[] arm2Buckets, final NeighborView probeView,
-      final int nodeCount, final int[] bucketIds, final WorkGuard guard) {
+      final int nodeIdUpperBound, final int[] bucketIds, final WorkGuard guard) {
     final int[] arm1Nbrs = arm1View.neighbors();
     final int[] probeNbrs = probeView.neighbors();
     long total = 0;
@@ -270,9 +280,11 @@ public final class PairHashJoinOp implements CountOp {
       final IntHashSet arm2Filter0 = arm2Buckets != null ? arm2Buckets[0] : null;
       final IntHashSet arm2Filter1 = arm2Buckets != null ? arm2Buckets[1] : null;
 
-      for (int startId = 0; startId < nodeCount; startId++) {
+      for (int startId = 0; startId < nodeIdUpperBound; startId++) {
         // The build node's own cost is O(arm1 x arm2 x log d), so a per-anchor check is what bounds it.
         guard.check();
+        if (!provider.isNodeLive(startId))
+          continue;
         final int a1Start = arm1View.offset(startId);
         final int a1End = arm1View.offsetEnd(startId);
         if (a1Start == a1End) continue;
@@ -310,8 +322,10 @@ public final class PairHashJoinOp implements CountOp {
     }
 
     // GENERAL PATH: allocate arm2 endpoints array per build node
-    for (int startId = 0; startId < nodeCount; startId++) {
+    for (int startId = 0; startId < nodeIdUpperBound; startId++) {
       guard.check();
+      if (!provider.isNodeLive(startId))
+        continue;
       final int a1Start = arm1View.offset(startId);
       final int a1End = arm1View.offsetEnd(startId);
       if (a1Start == a1End) continue;
@@ -343,13 +357,16 @@ public final class PairHashJoinOp implements CountOp {
    * The two endpoint filters are the labels the pattern put on the shared variables; dropping one does not make
    * the join cheaper, it makes it count endpoints the pattern excluded (issue #6304).
    */
-  private void buildWithViews(final NeighborView arm1View, final IntHashSet arm1Filter,
+  private void buildWithViews(final GraphTraversalProvider provider, final NeighborView arm1View,
+      final IntHashSet arm1Filter,
       final NeighborView arm2View, final IntHashSet arm2Filter, final LongLongHashMap pairCounts,
-      final int nodeCount, final int[] bucketIds, final WorkGuard guard) {
+      final int nodeIdUpperBound, final int[] bucketIds, final WorkGuard guard) {
     final int[] arm1Nbrs = arm1View.neighbors();
     final int[] arm2Nbrs = arm2View.neighbors();
-    for (int startId = 0; startId < nodeCount; startId++) {
+    for (int startId = 0; startId < nodeIdUpperBound; startId++) {
       guard.check();
+      if (!provider.isNodeLive(startId))
+        continue;
       final int a1Start = arm1View.offset(startId);
       final int a1End = arm1View.offsetEnd(startId);
       if (a1Start == a1End) continue;
@@ -376,7 +393,7 @@ public final class PairHashJoinOp implements CountOp {
    */
   private void buildWithArm1View(final NeighborView arm1View, final IntHashSet arm1Filter,
       final GraphTraversalProvider provider, final IntHashSet[] arm2Buckets, final LongLongHashMap pairCounts,
-      final int nodeCount, final int[] bucketIds, final WorkGuard guard) {
+      final int nodeIdUpperBound, final int[] bucketIds, final WorkGuard guard) {
     final int[] arm1Nbrs = arm1View.neighbors();
 
     // Pre-fetch NeighborViews for arm2 hops
@@ -387,8 +404,10 @@ public final class PairHashJoinOp implements CountOp {
       if (arm2Views[h] == null) { allArm2Views = false; break; }
     }
 
-    for (int startId = 0; startId < nodeCount; startId++) {
+    for (int startId = 0; startId < nodeIdUpperBound; startId++) {
       guard.check();
+      if (!provider.isNodeLive(startId))
+        continue;
       final int a1Start = arm1View.offset(startId);
       final int a1End = arm1View.offsetEnd(startId);
       if (a1Start == a1End) continue;
