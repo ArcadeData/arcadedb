@@ -30,7 +30,6 @@ import com.arcadedb.function.sql.graph.SQLFunctionShortestPath;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Expression representing a shortestPath() or allShortestPaths() pattern in Cypher.
@@ -168,17 +167,9 @@ public class ShortestPathExpression implements Expression {
     else
       edgeTypeParam = edgeTypes;
 
-    // An upper hop bound also bounds the search: SQLFunctionShortestPath counts maxDepth in vertices, so the
-    // pattern's maxHops becomes maxHops + 1 there. The answer is re-checked against both bounds below.
-    final Integer maxDepth = bounds.maxDepthParameter();
-    final Object[] params;
-    if (maxDepth != null)
-      params = new Object[] { startVertex, endVertex, direction, edgeTypeParam,
-          Map.of(SQLFunctionShortestPath.PARAM_MAX_DEPTH, maxDepth) };
-    else if (edgeTypeParam != null)
-      params = new Object[] { startVertex, endVertex, direction, edgeTypeParam };
-    else
-      params = new Object[] { startVertex, endVertex, direction };
+    // An upper hop bound also bounds the search; the answer is re-checked against both bounds below.
+    final Object[] params = ShortestPathStep.shortestPathArguments(startVertex, endVertex, direction, edgeTypeParam,
+        bounds);
 
     final List<RID> pathRids = shortestPathFunction.execute(null, null, null, params, context);
 

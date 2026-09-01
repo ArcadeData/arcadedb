@@ -263,20 +263,8 @@ public class ShortestPathStep extends AbstractExecutionStep {
     else
       edgeTypeParam = edgeTypes;
 
-    // An upper hop bound also bounds the search: SQLFunctionShortestPath counts maxDepth in vertices, so
-    // the pattern's maxHops becomes maxHops + 1 there. The bound is re-checked on the answer below, which
-    // is what actually guarantees the contract - the pruning is only there to keep a bounded search cheap.
-    final Integer maxDepth = bounds.maxDepthParameter();
-    final Object[] params;
-    if (maxDepth != null)
-      params = new Object[] { source, target, direction, edgeTypeParam,
-          Map.of(SQLFunctionShortestPath.PARAM_MAX_DEPTH, maxDepth) };
-    else if (edgeTypeParam != null)
-      params = new Object[] { source, target, direction, edgeTypeParam };
-    else
-      params = new Object[] { source, target, direction };
-
-    final List<RID> pathRids = shortestPathFunction.execute(null, null, null, params, context);
+    final List<RID> pathRids = shortestPathFunction.execute(null, null, null,
+        shortestPathArguments(source, target, direction, edgeTypeParam, bounds), context);
     if (pathRids == null || pathRids.isEmpty())
       return null;
 
@@ -773,6 +761,29 @@ public class ShortestPathStep extends AbstractExecutionStep {
   }
 
   /**
+   * Builds the positional argument list {@link SQLFunctionShortestPath} expects, carrying an upper hop bound
+   * as its {@code maxDepth} option so a bounded pattern also bounds the search. Shared by the two evaluators
+   * that delegate to the function - this step and {@code ShortestPathExpression} - so a bound cannot reach
+   * one of them and not the other, which is how it came to be dropped in the first place.
+   * <p>
+   * The bound is still re-checked on the path that comes back: that check is what guarantees the contract,
+   * and the pruning here only keeps a bounded search cheap.
+   *
+   * @param edgeTypeParam a single type name, a {@link List} of them, or {@code null} to allow any type
+   */
+  public static Object[] shortestPathArguments(final Vertex source, final Vertex target, final String direction,
+      final Object edgeTypeParam, final HopBounds bounds) {
+    // maxDepth counts the vertices on the path rather than the relationships between them, hence maxHops + 1.
+    final Integer maxDepth = bounds.maxDepthParameter();
+    if (maxDepth != null)
+      return new Object[] { source, target, direction, edgeTypeParam,
+          Map.of(SQLFunctionShortestPath.PARAM_MAX_DEPTH, maxDepth) };
+    if (edgeTypeParam != null)
+      return new Object[] { source, target, direction, edgeTypeParam };
+    return new Object[] { source, target, direction };
+  }
+
+  /**
    * The {@code *min..max} hop bounds declared on a pattern relationship, resolved once so every
    * shortestPath()/allShortestPaths() evaluator applies the same rule to the path it found.
    * <p>
@@ -838,6 +849,8 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     @Override
     public String toString() {
+      if (min == max)
+        return "*" + min;
       return "*" + min + ".." + (max == Integer.MAX_VALUE ? "" : max);
     }
   }

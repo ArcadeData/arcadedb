@@ -254,6 +254,23 @@ class CypherShortestPathHopBoundsIssue7009Test extends TestHelper {
   // ---------------------------------------------------------------------------------------------
 
   @Test
+  void aRelationshipWrittenWithoutAQuantifierIsASingleHop() {
+    // A plain -[:LINK]- inside shortestPath() parses, and it declares one hop: getEffectiveMinHops() and
+    // getEffectiveMaxHops() both answer 1 for it, exactly as they do for ExpandPathStep and VarLengthExpand
+    // elsewhere in the engine. Before issue #7009 every shortestPath() traversal ran unbounded, so this
+    // shape searched for a path of any length; it is bounded now, and this pins that deliberately.
+    assertThat(lengths("MATCH (s:N {k:'g'}), (e:N {k:'h'}), p = shortestPath((s)-[:LINK]-(e)) RETURN length(p) AS len"))
+        .as("g -> h is a direct edge, which is what a single-hop pattern asks for")
+        .containsExactly(1);
+    assertThat(lengths("MATCH (s:N {k:'c'}), (e:N {k:'f'}), p = shortestPath((s)-[:LINK]-(e)) RETURN length(p) AS len"))
+        .as("the shortest c..f path is 2 hops, so a single-hop pattern matches nothing")
+        .isEmpty();
+    assertThat(lengths("MATCH (s:N {k:'c'}), (e:N {k:'f'}), p = allShortestPaths((s)-[:LINK]-(e)) RETURN length(p) AS len"))
+        .as("allShortestPaths() reads the same pattern the same way")
+        .isEmpty();
+  }
+
+  @Test
   void aZeroLengthSelfPathIsStillReturned() {
     // The endpoints resolving to the same vertex short-circuits to the zero-length path before any hop
     // bound applies, which is what MATCH p = shortestPath((a)-[:KNOWS*]-(a)) has always answered
