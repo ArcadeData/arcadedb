@@ -194,9 +194,6 @@ public class SelectExecutionPlanner {
 
     final SelectExecutionPlan selectExecutionPlan = new SelectExecutionPlan(context, limitValue);
 
-    if (info.expand && info.distinct)
-      throw new CommandExecutionException("Cannot execute a statement with DISTINCT expand(), please use a subquery");
-
     // A statement whose own text proves that it cannot return a row is answered without touching the storage. This is
     // read off the clauses as the statement wrote them, before optimizeQuery() rearranges them into index searches.
     final String emptyReason = emptyByConstructionReason(context);
@@ -322,6 +319,13 @@ public class SelectExecutionPlanner {
         result.chain(new ProjectionCalculationStep(info.projectionAfterUnwind, context));
 
       handleOrderBy(result, info, context);
+      // DISTINCT has to be chained here as well, and after the ORDER BY exactly like the branch below does it:
+      // info.distinct is read off the projection in init() and then cleared, so a statement that also has
+      // expand(), UNWIND or GROUP BY used to have the keyword accepted, dropped and never re-applied (issue
+      // #6925). Chaining it after handleOrderBy() is what makes the dedup see the final row shape - the
+      // projection that strips the columns an ORDER BY on a non-selected alias added is chained by
+      // handleOrderBy() itself - and it keeps SKIP/LIMIT counting the rows the statement returns.
+      handleDistinct(result, info, context);
       if (info.skip != null)
         result.chain(new SkipExecutionStep(info.skip, context));
 
@@ -703,7 +707,10 @@ public class SelectExecutionPlanner {
       }
       if (info.aggregateProjection != null) {
         long aggregationLimit = -1;
-        if (info.orderBy == null && info.limit != null) {
+        // The cap counts the groups the aggregation emits, so it is only equivalent to the statement's LIMIT
+        // when nothing downstream can drop a row. A DISTINCT collapses groups that project to the same row,
+        // so pushing SKIP+LIMIT into the aggregation would under-deliver rows (issue #6925).
+        if (info.orderBy == null && info.limit != null && !info.distinct) {
           try {
             aggregationLimit = info.limit.getValue(context);
             if (info.skip != null && info.skip.getValue(context) > 0) {
@@ -1797,7 +1804,10 @@ public class SelectExecutionPlanner {
     if (limitSize >= 0)
       maxResults = skipSize + limitSize;
 
-    if (info.expand || info.unwind != null)
+    // The cap is on the rows the sort emits, so it is only the answer when nothing downstream can drop rows.
+    // A DISTINCT chained after the ORDER BY collapses duplicates out of those SKIP+LIMIT rows and would then
+    // return fewer rows than the LIMIT asked for, so the sort stays uncapped in that case (issue #6925).
+    if (info.expand || info.unwind != null || info.distinct)
       maxResults = null;
 
     if (!info.orderApplied && info.orderBy != null && info.orderBy.getItems() != null && !info.orderBy.getItems().isEmpty()) {
