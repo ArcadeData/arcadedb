@@ -102,6 +102,7 @@ import com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.IndexSeekStep;
 import com.arcadedb.query.opencypher.executor.steps.LimitStep;
 import com.arcadedb.query.opencypher.executor.steps.LoadCSVStep;
+import com.arcadedb.query.opencypher.executor.steps.MatchEdgeByIndexStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchRelationshipStep;
 import com.arcadedb.query.opencypher.executor.steps.MergeStep;
@@ -121,6 +122,7 @@ import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
@@ -2028,6 +2030,19 @@ public class CypherExecutionPlan {
           matchChainStart = shortestStep;
         }
       } else {
+        // Issue #740: drive a single-hop pattern from the edge type's own index when the endpoints are
+        // unselective and the edge carries a full-key equality filter, mirroring the SQL FETCH FROM INDEX
+        // path. Only attempted as the leading (seed) step of a non-optional MATCH whose WHERE clause is
+        // re-applied above, so the index seek is always a safe prefilter.
+        if (!isOptional && currentStep == null) {
+          final MatchEdgeByIndexStep edgeIndexSeed = tryBuildEdgeIndexScanSeed(matchClause, pathPattern,
+              boundVariables, matchVariables, context);
+          if (edgeIndexSeed != null) {
+            currentStep = edgeIndexSeed;
+            continue;
+          }
+        }
+
         NodePattern sourceNode = pathPattern.getFirstNode();
         String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
             ("  src" + anonymousVarCounter++);
@@ -2292,6 +2307,157 @@ public class CypherExecutionPlan {
     boundVariables.addAll(matchVariables);
 
     return currentStep;
+  }
+
+  /**
+   * Builds a {@link MatchEdgeByIndexStep} seed for a single-hop pattern whose edge type has an index
+   * fully covered by equality predicates on the edge variable, when neither endpoint is selective
+   * (issue #740). Returns {@code null} - deferring to the ordinary vertex-scan + expansion plan -
+   * whenever any precondition is not met. On success it also registers the source, target and edge
+   * variables in {@code matchVariables}, since the seed step binds all three.
+   * <p>
+   * Safety: the seek is an equality lookup on the full index key, so it returns exactly the edges
+   * carrying those key values - a superset of the rows the MATCH's WHERE clause keeps. That WHERE
+   * clause is re-applied by the {@link FilterPropertiesStep} added above this step, so the seek can
+   * never let through a row the unoptimised plan would have rejected.
+   */
+  private MatchEdgeByIndexStep tryBuildEdgeIndexScanSeed(final MatchClause matchClause,
+      final PathPattern pathPattern, final Set<String> boundVariables, final Set<String> matchVariables,
+      final CommandContext context) {
+    // The WHERE clause must belong to this MATCH so its FilterPropertiesStep re-validates above the seed.
+    if (!matchClause.hasWhereClause() || matchClause.getWhereClause() == null)
+      return null;
+    if (pathPattern.hasPathVariable() || pathPattern.getRelationshipCount() != 1)
+      return null;
+
+    final RelationshipPattern rel = pathPattern.getRelationship(0);
+    if (rel.isVariableLength() || rel.hasProperties() || rel.hasWhereExpression()
+        || rel.getPropertiesParameterName() != null)
+      return null;
+
+    // Only a directed hop maps unambiguously to the edge's out/in endpoints; BOTH is skipped.
+    final Direction dir = rel.getDirection();
+    if (dir != Direction.OUT && dir != Direction.IN)
+      return null;
+
+    // Exactly one edge type, which must be a declared edge type.
+    if (!rel.hasTypes() || rel.getTypes().size() != 1)
+      return null;
+    final String edgeTypeName = rel.getTypes().get(0);
+    if (!context.getDatabase().getSchema().existsType(edgeTypeName)
+        || !(context.getDatabase().getSchema().getType(edgeTypeName) instanceof EdgeType edgeType))
+      return null;
+
+    // The WHERE clause references the edge, so the edge must carry a named variable that is still free.
+    final String edgeVar = rel.getVariable();
+    if (edgeVar == null || edgeVar.isEmpty()
+        || boundVariables.contains(edgeVar) || matchVariables.contains(edgeVar))
+      return null;
+
+    // Both endpoints must be unselective (no labels, no inline properties) and not already bound - there
+    // is nothing to validate on them beyond what the WHERE filter above already re-checks.
+    final NodePattern srcNode = pathPattern.getFirstNode();
+    final NodePattern tgtNode = pathPattern.getLastNode();
+    if (isSelectiveEndpoint(srcNode, boundVariables, matchVariables)
+        || isSelectiveEndpoint(tgtNode, boundVariables, matchVariables))
+      return null;
+
+    // Collect row-independent equality predicates on the edge variable from the WHERE clause.
+    final Map<String, Expression> predicates = new LinkedHashMap<>();
+    extractEdgeEqualityPredicates(edgeVar, matchClause.getWhereClause().getConditionExpression(), predicates);
+    if (predicates.isEmpty())
+      return null;
+
+    // Pick the longest index whose whole key is covered by those equality predicates (lookupByKey needs
+    // every key column). A partial-prefix seek would need an index range cursor and is left for later.
+    TypeIndex bestIndex = null;
+    List<String> bestKey = null;
+    for (final TypeIndex index : edgeType.getAllIndexes(false)) {
+      final List<String> keyProps = index.getPropertyNames();
+      if (keyProps.isEmpty() || !predicates.keySet().containsAll(keyProps))
+        continue;
+      if (bestKey == null || keyProps.size() > bestKey.size()) {
+        bestIndex = index;
+        bestKey = keyProps;
+      }
+    }
+    if (bestIndex == null)
+      return null;
+
+    final String[] propertyNames = bestKey.toArray(new String[0]);
+    final Expression[] valueExpressions = new Expression[propertyNames.length];
+    for (int i = 0; i < propertyNames.length; i++)
+      valueExpressions[i] = predicates.get(propertyNames[i]);
+
+    final String effectiveSourceVar = srcNode.getVariable() != null ? srcNode.getVariable()
+        : ("  src" + anonymousVarCounter++);
+    final String effectiveTargetVar = tgtNode.getVariable() != null ? tgtNode.getVariable()
+        : ("  tgt" + anonymousVarCounter++);
+
+    matchVariables.add(effectiveSourceVar);
+    matchVariables.add(effectiveTargetVar);
+    matchVariables.add(edgeVar);
+
+    return new MatchEdgeByIndexStep(edgeTypeName, propertyNames, valueExpressions, bestIndex.getName(), dir,
+        effectiveSourceVar, edgeVar, effectiveTargetVar, context);
+  }
+
+  /** An endpoint is selective (and so must anchor the plan itself) if it has labels, inline properties, or is already bound. */
+  private boolean isSelectiveEndpoint(final NodePattern node, final Set<String> boundVariables,
+      final Set<String> matchVariables) {
+    if (node.hasLabels() || node.hasDynamicLabels() || node.hasProperties())
+      return true;
+    final String var = node.getVariable();
+    return var != null && (boundVariables.contains(var) || matchVariables.contains(var));
+  }
+
+  /**
+   * Collects {@code edgeVar.property = <value>} (or reversed) equality predicates from the AND-chain of a
+   * WHERE expression, keeping only predicates whose value is row-independent (a literal, a parameter, or a
+   * function of those such as {@code date('...')}). A value that would need the current row cannot seed a
+   * static index lookup, so it is left out - the optimization then simply does not apply.
+   */
+  private void extractEdgeEqualityPredicates(final String edgeVar, final BooleanExpression expression,
+      final Map<String, Expression> predicates) {
+    if (expression == null)
+      return;
+
+    if (expression instanceof BooleanWrapperExpression wrapper) {
+      extractEdgeEqualityPredicates(edgeVar, wrapper.getBooleanExpression(), predicates);
+      return;
+    }
+    if (expression instanceof LogicalExpression logical) {
+      if (logical.getOperator() == LogicalExpression.Operator.AND) {
+        extractEdgeEqualityPredicates(edgeVar, logical.getLeft(), predicates);
+        extractEdgeEqualityPredicates(edgeVar, logical.getRight(), predicates);
+      }
+      return;
+    }
+    if (!(expression instanceof ComparisonExpression comparison)
+        || comparison.getOperator() != ComparisonExpression.Operator.EQUALS)
+      return;
+
+    final Expression left = comparison.getLeft();
+    final Expression right = comparison.getRight();
+    if (left instanceof PropertyAccessExpression prop && edgeVar.equals(prop.getVariableName())
+        && isRowIndependentExpression(right))
+      predicates.putIfAbsent(prop.getPropertyName(), right);
+    else if (right instanceof PropertyAccessExpression prop && edgeVar.equals(prop.getVariableName())
+        && isRowIndependentExpression(left))
+      predicates.putIfAbsent(prop.getPropertyName(), left);
+  }
+
+  /** True when an expression can be evaluated without a row: a literal, a parameter, or a function of such. */
+  private boolean isRowIndependentExpression(final Expression expression) {
+    if (expression instanceof LiteralExpression || expression instanceof ParameterExpression)
+      return true;
+    if (expression instanceof FunctionCallExpression func) {
+      for (final Expression arg : func.getArguments())
+        if (!isRowIndependentExpression(arg))
+          return false;
+      return true;
+    }
+    return false;
   }
 
   /**
