@@ -61,6 +61,11 @@ public class CustomFunctionAdapter implements StatelessFunction {
       // Not found under this exact name: fall through to a case-insensitive search
       return executeCaseInsensitive(database, args);
     }
+    // FunctionLibraryDefinition is a public extension point: a third-party implementation that violates the
+    // "getFunction() never returns null" contract gets a clear error here instead of a raw NPE.
+    if (function == null)
+      throw new CommandExecutionException(
+          "Function library '" + libraryName + "' returned null for '" + functionName + "', violating the FunctionLibraryDefinition.getFunction() contract");
     return function.execute(args);
   }
 
