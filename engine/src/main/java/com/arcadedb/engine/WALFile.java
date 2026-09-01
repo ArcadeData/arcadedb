@@ -170,8 +170,24 @@ public class WALFile extends LockContext {
       final int segmentSize = readInt(pos);
       pos += Binary.INT_SERIALIZED_SIZE;
 
+      if (segmentSize < 0)
+        // CORRUPT HEADER: a negative size makes the truncation bound below pass trivially, and would
+        // let a record no writer could have produced parse cleanly. INVALID.
+        return null;
+
       if (pos + segmentSize + Binary.LONG_SERIALIZED_SIZE > getSize())
         // TRUNCATED FILE
+        return null;
+
+      // #6932: `pages` comes straight off disk and sizes this array before a byte of the segment is read.
+      // The OutOfMemoryError it can raise is an Error, so neither the catch(Exception) below nor
+      // TransactionManager.checkIntegrity (try/finally, no catch) can contain it: it unwinds out of
+      // LocalDatabase.open before the WAL is dropped or renamed '.corrupt', and every later open reads
+      // the same bytes. The bound is exact, not a heuristic: writeTransactionToBuffer charges every
+      // segment PAGE_HEADER_SIZE + deltaSize and rejects deltaSize < 1. Same guard as #4420 (Raft entry
+      // parser) and #4958 (per-page deltaSize).
+      if (pages < 0 || (long) pages * (PAGE_HEADER_SIZE + 1) > segmentSize)
+        // INVALID
         return null;
 
       tx.pages = new WALPage[pages];
