@@ -198,8 +198,8 @@ public class TransactionContext implements Transaction {
   private       List<Integer>                        explicitLockedFiles   = null;
   private       long                                 txId                  = -1;
   private       STATUS                               status                = STATUS.INACTIVE;
-  // Whether the 1st phase in progress ends by replaying the queued index operations (leader only). See
-  // isIndexChangesReplayed().
+  // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
+  // originating commit. See isIndexChangesReplayed().
   private       boolean                              indexChangesReplayed  = true;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
@@ -1629,6 +1629,10 @@ public class TransactionContext implements Transaction {
 
   /**
    * Locks the files in order, then checks all the pre-conditions.
+   *
+   * @param isLeader whether this node is the current Raft leader - no longer consulted for index replay (#6964,
+   *                 always replayed below), still consulted further down to gate the edge-append/slot-merge
+   *                 conflict-rebase, which stays leader-only.
    */
   public TransactionPhase1 commit1stPhase(final boolean isLeader) {
     if (status == STATUS.INACTIVE)
@@ -1642,9 +1646,15 @@ public class TransactionContext implements Transaction {
     // Without this, concurrent updateRecordNoLock calls could both load the same page
     // at the same version, bypassing MVCC version checks.
     status = STATUS.COMMIT_1ST_PHASE;
-    // Only the leader replays the queued index operations below: on a replica the index pages arrive with the
-    // leader's changes. An index that skips work during this phase because "the replay will do it" must know.
-    this.indexChangesReplayed = isLeader;
+    // The queued index operations are always replayed below, regardless of isLeader: this method runs only for a
+    // transaction ORIGINATING its own commit - on the leader directly, or on a replica shipping its own WAL bytes
+    // through Raft (#5503) - never for a node passively applying someone else's already-decided changes (that goes
+    // through TransactionManager.applyChangesInternal, which never touches TransactionContext/indexChanges at all).
+    // A replica-originated commit that skipped this replay (#6964) would ship WAL bytes with no index pages in
+    // them, so the index entry would be missing everywhere, forever - not just on the replica. isLeader still
+    // gates conflict-rebase below: replaying an index queue is a pure local recomputation, but rebasing a page
+    // against a newer local version is unsafe once the result has to survive an extra hop through Raft ordering.
+    this.indexChangesReplayed = true;
 
     try {
       // #4937: explicit-lock mode captured before checkExplicitLocks nulls explicitLockedFiles, so the
@@ -1696,20 +1706,18 @@ public class TransactionContext implements Transaction {
         updatedRecordsIndexSnapshot = null;
       }
 
-      if (!isLeader || !hasChanges()) {
-        if (!hasChanges()) {
-          if (lockedFiles != null) {
-            database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
-            lockedFiles = null;
-          }
-          status = STATUS.INACTIVE;
-          return null;
+      if (!hasChanges()) {
+        if (lockedFiles != null) {
+          database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
+          lockedFiles = null;
         }
+        status = STATUS.INACTIVE;
+        return null;
       }
 
-      if (isLeader)
-        // COMMIT INDEX CHANGES (IN CASE OF REPLICA THIS IS DEMANDED TO THE LEADER EXECUTION)
-        indexChanges.commit();
+      // COMMIT INDEX CHANGES: always, on whichever node originates this commit (#6964) - see the note on
+      // indexChangesReplayed above.
+      indexChanges.commit();
 
       // #4937: the steps above (updateRecordNoLock, indexChanges.commit) can add pages of files that were
       // NOT in the lock set computed at lock time - EXTERNAL-property buckets, indexes created inside this
@@ -2133,12 +2141,14 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * Whether the index operations queued on this transaction are replayed at the end of the 1st commit phase. True on
-   * a leader (and on any non-replicated database); false on a replica, where the index pages come from the leader's
-   * changes and {@link TransactionIndexContext#commit()} is never invoked. An index consulted during
-   * {@link STATUS#COMMIT_1ST_PHASE} - the phase that re-runs {@code DocumentIndexer.updateDocument} while
-   * serializing the records updated in this transaction - uses this to tell whether it can leave the work to the
-   * replay instead of applying it a second time (issue #5516).
+   * Whether the index operations queued on this transaction are replayed at the end of the 1st commit phase. Always
+   * true: {@link TransactionContext#commit1stPhase} runs only for a transaction originating its own commit - the
+   * leader's, or a replica's own (#5503) - and every such commit replays the queue (#6964). A node passively
+   * applying someone else's already-decided changes never reaches this class at all (see
+   * {@code TransactionManager#applyChangesInternal}). An index consulted during {@link STATUS#COMMIT_1ST_PHASE} -
+   * the phase that re-runs {@code DocumentIndexer.updateDocument} while serializing the records updated in this
+   * transaction - uses this to tell whether it can leave the work to the replay instead of applying it a second
+   * time (issue #5516).
    */
   public boolean isIndexChangesReplayed() {
     return indexChangesReplayed;
