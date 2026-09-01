@@ -26,6 +26,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -52,9 +53,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * in between handed the pin the newer version and the version check had nothing left to refuse. Both writers were
  * told they had succeeded and one increment vanished, which no retry loop can repair.
  * <p>
- * The two racy methods are the reproducer from the issue: they fail within seconds without the fix. The two
- * deterministic ones plant exactly the state the race leaves - a record replaced between the read and the update -
- * so the contract is pinned without depending on a schedule, for both the transactional and the auto-committed path.
+ * The two racy methods are the reproducer from the issue: they fail within seconds without the fix. They are
+ * {@code @Tag("slow")} because each drives 4,000 contended SQL statements through tens of thousands of retries, which
+ * is the shape that lane exists for; the two deterministic ones are not, so the contract stays pinned in the default
+ * lane. Those plant exactly the state the race leaves - a record replaced between the read and the update - so it is
+ * pinned without depending on a schedule, for both the transactional and the auto-committed path.
  */
 public class ConcurrentUpdateStatementLostUpdateTest extends TestHelper {
   private static final int  WRITERS               = 8;
@@ -62,12 +65,14 @@ public class ConcurrentUpdateStatementLostUpdateTest extends TestHelper {
   private static final long DELTA                 = 25;
   private static final int  MAX_RETRIES           = 10_000;
 
+  @Tag("slow")
   @Test
   void concurrentUpdateStatementsInExplicitTransactionsMustNotLoseIncrements() throws Exception {
     createCounter("CounterTx");
     runConcurrentIncrements("CounterTx", true);
   }
 
+  @Tag("slow")
   @Test
   void concurrentAutoCommittedUpdateStatementsMustNotLoseIncrements() throws Exception {
     createCounter("CounterAutoCommit");
