@@ -430,15 +430,18 @@ public class RedisNetworkExecutor extends Thread {
         throw new RedisException("Key '" + k + "' is not a number");
     }
 
-    final Number newValue;
-    if (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte) {
-      try {
-        newValue = Math.subtractExact(((Number) number).longValue(), by);
-      } catch (final ArithmeticException e) {
-        throw new RedisException("increment or decrement would overflow", e);
-      }
-    } else
-      newValue = Type.decrement((Number) number, by);
+    // DECR/DECRBY only operate on integral values: a Double/Float (e.g. left behind by INCRBYFLOAT) has no
+    // valid RESP integer reply, and real Redis rejects it rather than emitting a floating-point ":" reply
+    // (issue #6942).
+    if (!(number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte))
+      throw new RedisException("value is not an integer or out of range");
+
+    final long newValue;
+    try {
+      newValue = Math.subtractExact(((Number) number).longValue(), by);
+    } catch (final ArithmeticException e) {
+      throw new RedisException("increment or decrement would overflow", e);
+    }
 
     setVariable(k, newValue);
     value.append(":");
@@ -658,8 +661,16 @@ public class RedisNetworkExecutor extends Thread {
         throw new RedisException("Key '" + k + "' is not a number");
     }
 
+    final boolean integralStorage = number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte;
+
+    // INCR/INCRBY only operate on integral values: a Double/Float left behind by INCRBYFLOAT has no valid
+    // RESP integer reply, and real Redis rejects it rather than emitting a floating-point "+" reply
+    // (issue #6942). INCRBYFLOAT itself has no such restriction - it promotes an integral value to float.
+    if (!decimal && !integralStorage)
+      throw new RedisException("value is not an integer or out of range");
+
     final Number newValue;
-    if (!decimal && (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte)) {
+    if (!decimal && integralStorage) {
       try {
         newValue = Math.addExact(((Number) number).longValue(), by.longValue());
       } catch (final ArithmeticException e) {
@@ -676,7 +687,7 @@ public class RedisNetworkExecutor extends Thread {
       appendCrLf();
       value.append(text);
     } else {
-      value.append(newValue instanceof Long ? ":" : "+");
+      value.append(":");
       value.append(newValue);
     }
   }
@@ -749,9 +760,15 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   private void ping(final List<Object> list) {
-    final String response = list.size() > 1 ? (String) list.get(1) : "PONG";
-    value.append("+");
-    value.append(response);
+    if (list.size() > 1)
+      // The argument is echoed back verbatim, which can contain "\r\n" (issue #6942): a simple-string
+      // reply is CRLF-terminated, so that payload would split into two frames and desync the connection.
+      // The bulk-string encoding is length-prefixed and carries the CRLF as payload instead.
+      respondValue((String) list.get(1), true);
+    else {
+      value.append("+");
+      value.append("PONG");
+    }
   }
 
   /**
