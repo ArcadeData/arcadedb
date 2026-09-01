@@ -145,6 +145,38 @@ class AlgoPageRankTest {
   }
 
   @Test
+  void pageRankRejectsAnUnrecognisedDirection() {
+    // The three directions genuinely answer different questions (see the parity tests above), so silently
+    // coercing an unrecognised one to OUT answers a question the caller did not ask and looks like a working
+    // result. 'INCOMING' is the shape that matters: it is what someone reaching for IN actually types.
+    for (final String bad : new String[] { "INCOMING", "OUTGOING", "in ", "" })
+      assertThatThrownBy(() -> drainPageRank("CALL algo.pagerank({direction: '" + bad + "'}) YIELD node RETURN node"))
+          .as("direction '%s' must be rejected, not coerced to OUT", bad)
+          .hasStackTraceContaining("direction")
+          .hasStackTraceContaining("OUT, IN or BOTH");
+
+    // A present-but-not-a-string direction was silently coerced the same way.
+    assertThatThrownBy(() -> drainPageRank("CALL algo.pagerank({direction: 42}) YIELD node RETURN node"))
+        .hasStackTraceContaining("direction");
+
+    // The three valid values, in both cases, still work - and an absent or explicitly null direction still
+    // defaults to OUT rather than being rejected.
+    for (final String good : new String[] { "OUT", "IN", "BOTH", "out", "in", "both" })
+      assertThat(drainPageRank("CALL algo.pagerank({direction: '" + good + "'}) YIELD node RETURN node")).hasSize(3);
+    assertThat(drainPageRank("CALL algo.pagerank() YIELD node RETURN node")).hasSize(3);
+    assertThat(drainPageRank("CALL algo.pagerank({direction: null}) YIELD node RETURN node")).hasSize(3);
+  }
+
+  private List<Result> drainPageRank(final String query) {
+    final List<Result> rows = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      while (rs.hasNext())
+        rows.add(rs.next());
+    }
+    return rows;
+  }
+
+  @Test
   void weightedPageRankHonoursInDirection() {
     // Weighted PageRank never takes the CSR path, so the OLTP fallback's weight arrays are only exercised here,
     // and only through Cypher - which also covers the 'IN' and 'OUT' config strings end to end.

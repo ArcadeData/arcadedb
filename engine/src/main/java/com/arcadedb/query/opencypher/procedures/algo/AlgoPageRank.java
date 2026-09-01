@@ -52,7 +52,8 @@ import java.util.stream.Stream;
  *   <li>maxIterations (int, default 20): maximum number of iterations</li>
  *   <li>tolerance (double, default 0.0001): convergence threshold</li>
  *   <li>weightProperty (string, default null): edge property to use as weight</li>
- *   <li>direction (string, default "OUT"): edge direction for push - "OUT", "IN", or "BOTH"</li>
+ *   <li>direction (string, default "OUT"): edges rank is pushed along - "OUT", "IN", or "BOTH".
+ *       Anything else is rejected rather than coerced, since the three answer different questions</li>
  * </ul>
  * </p>
  * <p>
@@ -110,9 +111,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?
         n.doubleValue() : 0.0001;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
-    final String dirStr = config != null && config.get("direction") instanceof String s ? s : "OUT";
-    final Vertex.DIRECTION direction = "BOTH".equalsIgnoreCase(dirStr) ? Vertex.DIRECTION.BOTH :
-        "IN".equalsIgnoreCase(dirStr) ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+    final Vertex.DIRECTION direction = extractDirection(config != null ? config.get("direction") : null);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
@@ -129,6 +128,40 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
 
     // Fall back to OLTP path
     return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, weightProperty, direction, guard);
+  }
+
+  /**
+   * Resolves the {@code direction} config value, rejecting anything that is neither absent nor one of the three
+   * supported values.
+   * <p>
+   * The three directions answer genuinely different questions - OUT pushes rank along stored edges, IN along
+   * their reverse, BOTH along both - so coercing an unrecognised value to OUT, as this did before, answers a
+   * question the caller did not ask and returns a plausible-looking result rather than an error. {@code
+   * 'INCOMING'} is the case that matters: it is what someone reaching for {@code IN} types, and it used to
+   * silently produce OUT's scores. That was harmless only while IN was broken anyway (see the direction fix in
+   * PR #6956); now that IN works, the silence is the bug.
+   * <p>
+   * Absent and explicitly null both mean "use the default", which is OUT - not BOTH, whatever the shared
+   * {@code direction} note in the docs says about most algorithms.
+   * <p>
+   * Deliberately local rather than routed through {@link com.arcadedb.graph.GraphEngine#parseDirection}: that
+   * helper coerces unknown values to BOTH and is shared by around twenty other {@code algo.*} procedures, so
+   * tightening it is a far wider behaviour change than this procedure's own bug fix should carry.
+   */
+  private Vertex.DIRECTION extractDirection(final Object value) {
+    if (value == null)
+      return Vertex.DIRECTION.OUT;
+    if (!(value instanceof String s))
+      throw new IllegalArgumentException(
+          getName() + "(): direction must be a string, one of OUT, IN or BOTH, got " + value);
+    if ("OUT".equalsIgnoreCase(s))
+      return Vertex.DIRECTION.OUT;
+    if ("IN".equalsIgnoreCase(s))
+      return Vertex.DIRECTION.IN;
+    if ("BOTH".equalsIgnoreCase(s))
+      return Vertex.DIRECTION.BOTH;
+    throw new IllegalArgumentException(
+        getName() + "(): unknown direction '" + s + "', expected one of OUT, IN or BOTH");
   }
 
   private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav,
