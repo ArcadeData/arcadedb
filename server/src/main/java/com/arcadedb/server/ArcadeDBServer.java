@@ -542,12 +542,16 @@ public class ArcadeDBServer {
    * exactly as after a kill. That is strictly better than a process that cannot be stopped.
    */
   private void stopFromShutdownHook() {
-    final long timeout = status == STATUS.STARTING
+    // Snapshot the status once: start() can flip it STARTING -> ONLINE while still holding the
+    // lifecycle lock, so re-reading it after the bounded wait could describe a bound that was not
+    // the one actually applied. The warning must be built from the same snapshot that chose the bound.
+    final STATUS observedStatus = status;
+    final long timeout = observedStatus == STATUS.STARTING
         ? SHUTDOWN_HOOK_STARTING_TIMEOUT_MS
         : configuration.getValueAsLong(GlobalConfiguration.SERVER_SHUTDOWN_TIMEOUT);
 
     if (!awaitLifecycleLock(lifecycleLock, timeout)) {
-      LogManager.instance().log(this, Level.WARNING, shutdownHookLockTimeoutWarning(timeout, status));
+      LogManager.instance().log(this, Level.WARNING, shutdownHookLockTimeoutWarning(timeout, observedStatus));
       return;
     }
 

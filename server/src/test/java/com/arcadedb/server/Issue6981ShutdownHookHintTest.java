@@ -67,5 +67,8 @@ class Issue6981ShutdownHookHintTest {
         .as("the setting does not bound the shutdown-hook wait during start(), so its description must not say so")
         .doesNotContain("start()/stop()");
     assertThat(description).contains("this setting does not govern");
+    assertThat(description)
+        .as("the configured bound DOES apply once the status left STARTING, even before start() releases the lock")
+        .contains("the tail of start() after the status has already turned ONLINE");
   }
 }
