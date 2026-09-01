@@ -59,6 +59,16 @@ class JavaFunctionTest extends TestHelper {
     }
   }
 
+  public static class AmbiguousOverloaded {
+    public static String describe(final Object o) {
+      return "object:" + o;
+    }
+
+    public static String describe(final String s) {
+      return "string:" + s;
+    }
+  }
+
   public static class VarargsOverloaded {
     public static String join(final String sep, final String... parts) {
       return "strs:" + String.join(sep, parts);
@@ -230,6 +240,40 @@ class JavaFunctionTest extends TestHelper {
       assertThat(function.execute("-", 1, 2, 3)).isEqualTo("ints:1-2-3");
     } finally {
       database.getSchema().unregisterFunctionLibrary("vjoin");
+    }
+  }
+
+  @Test
+  void genuinelyAmbiguousOverloadThrows()
+    throws Exception {
+    // Documents the deliberate, javadoc'd tradeoff: unlike the Java compiler, dispatch here does not rank
+    // overloads by specificity, so a String argument matching both describe(Object) and describe(String) is
+    // rejected rather than silently resolved to the more specific overload.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("amb", JavaFunctionTest.AmbiguousOverloaded.class));
+    try {
+      final var function = database.getSchema().getFunction("amb", "describe");
+      assertThatThrownBy(() -> function.execute("x"))
+          .isInstanceOf(FunctionExecutionException.class)
+          .hasMessageContaining("cannot resolve which overload");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("amb");
+    }
+  }
+
+  @Test
+  void prePackedVarargsArrayIsDispatchedAmongMultipleVarargsOverloads()
+    throws Exception {
+    // Regression for a narrower gap in the varargs-dispatch fix: when the vararg part is passed pre-packed as a
+    // single array (the shape Method.invoke() itself requires) rather than as flat elements, type matching against
+    // more than one varargs candidate must compare the array itself to the candidate's vararg array type instead of
+    // (incorrectly) treating the array object as one flat vararg element.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("vjoin2", JavaFunctionTest.VarargsOverloaded.class));
+    try {
+      final var function = database.getSchema().getFunction("vjoin2", "join");
+      assertThat(function.execute("-", new String[] { "a", "b" })).isEqualTo("strs:a-b");
+      assertThat(function.execute("-", new Integer[] { 1, 2 })).isEqualTo("ints:1-2");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("vjoin2");
     }
   }
 
