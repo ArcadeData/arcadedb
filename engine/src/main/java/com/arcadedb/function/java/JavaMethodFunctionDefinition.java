@@ -32,6 +32,10 @@ import java.util.List;
  * the number of arguments (and, if that is not enough to disambiguate, their runtime type) actually passed is
  * selected on every {@link #execute(Object...)} call, instead of registering only one of them depending on the
  * JVM's unspecified {@link Class#getDeclaredMethods()} order.
+ * <p>
+ * Unlike the Java compiler, this does not rank overloads by specificity: if more than one overload's parameter
+ * types accept the arguments (e.g. {@code foo(Object)} and {@code foo(String)} both called with a {@code String}),
+ * the call is rejected as ambiguous rather than silently picking the most specific match.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -112,7 +116,7 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     final Method method = candidates.size() == 1 ? candidates.get(0) : disambiguateByArgumentType(candidates, args);
 
     try {
-      return method.invoke(instance, args);
+      return method.invoke(instance, toInvokeArgs(method, args));
     } catch (final InvocationTargetException e) {
       // PRESERVE THE ORIGINAL EXCEPTION THROWN BY THE TARGET METHOD INSTEAD OF THE REFLECTION WRAPPER
       final Throwable cause = e.getCause() != null ? e.getCause() : e;
@@ -120,6 +124,35 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     } catch (final IllegalAccessException | IllegalArgumentException e) {
       throw new FunctionExecutionException("Error on executing function '" + method + "'", e);
     }
+  }
+
+  /**
+   * Unlike a normal (compiled) varargs call, {@link Method#invoke} does not pack trailing arguments into an array
+   * itself: it requires the args array to have exactly as many elements as the method's formal parameters, with the
+   * last one already being an array of the vararg component type. This packs the flat, positionally-passed
+   * arguments this class receives into that shape for a varargs method; non-varargs methods are passed through
+   * unchanged.
+   */
+  private static Object[] toInvokeArgs(final Method method, final Object[] args) {
+    if (!method.isVarArgs())
+      return args;
+
+    final Class<?>[] paramTypes = method.getParameterTypes();
+    final int fixedCount = paramTypes.length - 1;
+    final Class<?> varargsType = paramTypes[fixedCount];
+
+    // Already in invoke() shape: the caller passed the vararg part pre-packed as a single matching array.
+    if (args.length == paramTypes.length && (args[fixedCount] == null || varargsType.isInstance(args[fixedCount])))
+      return args;
+
+    final Object varargsArray = java.lang.reflect.Array.newInstance(varargsType.getComponentType(), args.length - fixedCount);
+    for (int i = fixedCount; i < args.length; i++)
+      java.lang.reflect.Array.set(varargsArray, i - fixedCount, args[i]);
+
+    final Object[] invokeArgs = new Object[fixedCount + 1];
+    System.arraycopy(args, 0, invokeArgs, 0, fixedCount);
+    invokeArgs[fixedCount] = varargsArray;
+    return invokeArgs;
   }
 
   private List<Method> candidatesByParameterCount(final int received) {
@@ -138,7 +171,7 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
   private Method disambiguateByArgumentType(final List<Method> candidates, final Object[] args) {
     Method match = null;
     for (final Method m : candidates) {
-      if (!m.isVarArgs() && acceptsArgumentTypes(m, args)) {
+      if (acceptsArgumentTypes(m, args)) {
         if (match != null)
           throw ambiguousOverloadException(candidates, args);
         match = m;
@@ -151,17 +184,26 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
 
   private static boolean acceptsArgumentTypes(final Method method, final Object[] args) {
     final Class<?>[] paramTypes = method.getParameterTypes();
-    for (int i = 0; i < paramTypes.length; i++) {
-      final Object arg = args[i];
-      if (arg == null) {
-        if (paramTypes[i].isPrimitive())
-          return false;
-        continue;
-      }
-      if (!wrap(paramTypes[i]).isInstance(arg))
+    final boolean varArgs = method.isVarArgs();
+    final int fixedCount = varArgs ? paramTypes.length - 1 : paramTypes.length;
+
+    for (int i = 0; i < fixedCount; i++)
+      if (!typeMatches(paramTypes[i], args[i]))
         return false;
+
+    if (varArgs) {
+      final Class<?> componentType = paramTypes[fixedCount].getComponentType();
+      for (int i = fixedCount; i < args.length; i++)
+        if (!typeMatches(componentType, args[i]))
+          return false;
     }
     return true;
+  }
+
+  private static boolean typeMatches(final Class<?> paramType, final Object arg) {
+    if (arg == null)
+      return !paramType.isPrimitive();
+    return wrap(paramType).isInstance(arg);
   }
 
   private static Class<?> wrap(final Class<?> type) {

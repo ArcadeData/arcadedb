@@ -66,11 +66,8 @@ public class JavaClassFunctionLibraryDefinition implements FunctionLibraryDefini
     }
 
     // A SINGLE INSTANCE IS SHARED BY ALL THE NON-STATIC METHODS OF THE CLASS
-    Object instance = null;
-    for (final List<Method> group : methodsByName.values())
-      for (final Method m : group)
-        if (!Modifier.isStatic(m.getModifiers()) && instance == null)
-          instance = impl.getConstructor().newInstance();
+    final boolean hasInstanceMethod = methodsByName.values().stream().flatMap(List::stream).anyMatch(m -> !Modifier.isStatic(m.getModifiers()));
+    final Object instance = hasInstanceMethod ? impl.getConstructor().newInstance() : null;
 
     for (final Map.Entry<String, List<Method>> entry : methodsByName.entrySet())
       functions.put(entry.getKey(), new JavaMethodFunctionDefinition(instance, entry.getValue()));
