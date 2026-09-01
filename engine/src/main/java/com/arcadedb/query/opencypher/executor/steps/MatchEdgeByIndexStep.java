@@ -71,6 +71,13 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
 
   private final ExpressionEvaluator evaluator;
 
+  // Held at the step level (not local to the syncPull() ResultSet) so close() can release it, matching the
+  // AutoCloseable contract on IndexCursor and this codebase's convention for any step holding one (see
+  // FetchFromIndexStep). openCursor() always resolves through a full-key equality lookupByKey(), which today
+  // returns an already fully-drained IndexCursorCollection - so this is a robustness/consistency measure, not
+  // a fix for a reproducible leak: nothing here can hold a live LSM series cursor open across pulls.
+  private IndexCursor cursor;
+
   // Read-only empty row used to evaluate the (row-independent) key value expressions - literals,
   // parameters and functions such as date('...'). Mirrors MatchNodeStep.EMPTY_RESULT.
   private static final Result EMPTY_RESULT = new ResultInternal(Collections.emptyMap());
@@ -97,7 +104,6 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {
-      private IndexCursor        cursor = null;
       private boolean            initialized = false;
       private final List<Result> buffer = new ArrayList<>();
       private int                bufferIndex = 0;
@@ -188,6 +194,23 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
         MatchEdgeByIndexStep.this.close();
       }
     };
+  }
+
+  @Override
+  public void close() {
+    releaseCursor();
+    super.close();
+  }
+
+  /**
+   * Releases whatever {@link #openCursor()} returned, honouring the {@code IndexCursor} contract regardless of
+   * how the current or a future {@code lookupByKey()} implementation backs it.
+   */
+  private void releaseCursor() {
+    if (cursor != null) {
+      cursor.close();
+      cursor = null;
+    }
   }
 
   private IndexCursor openCursor() {
