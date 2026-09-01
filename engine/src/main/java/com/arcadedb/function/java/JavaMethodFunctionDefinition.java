@@ -124,10 +124,12 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
       // Fast path for the overwhelmingly common non-overloaded case: skips the List allocation
       // candidatesByParameterCount()/disambiguateByArgumentType() would otherwise do on every single call.
       final Method only = methods.get(0);
-      final int minReceived = only.isVarArgs() ? only.getParameterCount() - 1 : only.getParameterCount();
-      if (only.isVarArgs() ? received < minReceived : received != minReceived)
+      final boolean varArgs = only.isVarArgs();
+      final int minReceived = varArgs ? only.getParameterCount() - 1 : only.getParameterCount();
+      if (varArgs ? received < minReceived : received != minReceived)
         throw new FunctionExecutionException(
-            "Error on executing function '" + only + "': expected " + only.getParameterCount() + " parameter(s) but received " + received);
+            "Error on executing function '" + only + "': expected " + (varArgs ? "at least " + minReceived : minReceived)
+                + " parameter(s) but received " + received);
       return invoke(only, args);
     }
 

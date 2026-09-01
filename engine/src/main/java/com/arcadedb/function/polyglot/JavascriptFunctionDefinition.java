@@ -74,7 +74,8 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
         declaration.append(" }");
         return polyglotEngine.eval(declaration.toString());
       } catch (final Exception e) {
-        throw new FunctionExecutionException("Error on definition of function '" + functionName + "': " + e.getMessage(), e);
+        final String detail = e.getMessage() != null ? e.getMessage() : e.toString();
+        throw new FunctionExecutionException("Error on definition of function '" + functionName + "': " + detail, e);
       }
     });
   }
