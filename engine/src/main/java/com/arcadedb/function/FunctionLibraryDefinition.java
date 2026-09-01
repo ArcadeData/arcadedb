@@ -54,7 +54,9 @@ public interface FunctionLibraryDefinition<T extends FunctionDefinition> {
   Iterable<T> getFunctions();
 
   /**
-   * Returns a function by its name
+   * Returns a function by its name. Implementations must never return {@code null}: an undefined function is
+   * reported via the {@link IllegalArgumentException} below, not a {@code null} return value. Callers (e.g.
+   * {@code CustomFunctionAdapter}) rely on this to treat a successful return as always non-null.
    *
    * @param functionName Name of the function to retrieve
    *

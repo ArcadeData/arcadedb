@@ -79,8 +79,8 @@ class Issue7006ConcurrentRedefinitionTest extends TestHelper {
     caller.start();
     assertThat(callStarted.await(10, TimeUnit.SECONDS)).isTrue();
 
-    // The redefinition is started while the caller is inside execute(), holding the read lock: reloadEngine() must
-    // block on the write lock until the call below releases it, rather than closing the engine underneath it.
+    // The redefinition is started while the caller is inside execute(), holding engineLock: reloadEngine() must
+    // block on that same monitor until the call below releases it, rather than closing the engine underneath it.
     redefiner.start();
     Thread.sleep(200);
     releaseCall.countDown();
