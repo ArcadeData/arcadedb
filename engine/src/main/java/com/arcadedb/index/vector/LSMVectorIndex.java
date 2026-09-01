@@ -3822,7 +3822,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return; // Published outright; nothing left to build.
       }
       if (check.prefix() != null)
-        reuseStalePrefixGraph(check.prefix()); // Publishes the prefix and queues the gap; folded in below.
+        // Publishes the prefix and queues the gap. Its own tail call to startAsyncGraphRebuild() is expected to
+        // no-op here - this method runs from inside that very rebuild's daemon thread, so asyncRebuildInProgress
+        // is still true - not a bug: the fold-in happens via the explicit fall-through to buildGraphFromScratch()
+        // below instead.
+        reuseStalePrefixGraph(check.prefix());
     }
 
     buildGraphFromScratch();
