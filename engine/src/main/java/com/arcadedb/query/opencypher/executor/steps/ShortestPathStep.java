@@ -282,7 +282,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     // A source that already is the target short-circuits to the zero-length path before any bound applies:
     // that is what MATCH p = shortestPath((a)-[:R*]-(a)) has always answered, and the implicit minimum of 1
-    // that [*] carries would otherwise suppress it.
+    // that [*] carries would otherwise suppress it. See HopBounds and issue #7017.
     if (pathRids.size() > 1 && !bounds.accepts(pathRids.size() - 1))
       return null;
 
@@ -783,6 +783,13 @@ public class ShortestPathStep extends AbstractExecutionStep {
    * on its shortest layer first. A shortest path below the declared minimum therefore yields no row
    * rather than a longer path satisfying it: finding that path is a different (non-shortest, simple-path
    * enumerating) search, and Neo4j rejects such a pattern outright.
+   * <p>
+   * One shape stays outside the check: endpoints resolving to the same vertex short-circuit to the
+   * zero-length path in every evaluator, before any bound applies, so a declared minimum is unenforceable
+   * there. That is the answer the engine has always given (pinned by
+   * {@code CypherReduceAndShortestPathTest.shortestPathSameNode}), and {@code [*]} is lowered to
+   * {@code minHops = 1} by the parser, so it cannot be told apart from an explicit {@code [*1..]} here.
+   * Changing it is a semantic decision tracked by issue #7017.
    */
   public static final class HopBounds {
     /** No bound at all: accepts every path length. */

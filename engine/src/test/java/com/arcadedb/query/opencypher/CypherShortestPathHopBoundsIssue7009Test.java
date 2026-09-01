@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -46,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CypherShortestPathHopBoundsIssue7009Test extends TestHelper {
   @Override
   protected void beginTest() {
-    database.getSchema().createVertexType("N").createProperty("k", com.arcadedb.schema.Type.STRING);
+    database.getSchema().createVertexType("N").createProperty("k", Type.STRING);
     database.getSchema().createEdgeType("LINK");
 
     // Graph (every LINK carries w=1, so an inline {w: 1} filter changes the evaluator without changing
@@ -255,7 +256,9 @@ class CypherShortestPathHopBoundsIssue7009Test extends TestHelper {
   @Test
   void aZeroLengthSelfPathIsStillReturned() {
     // The endpoints resolving to the same vertex short-circuits to the zero-length path before any hop
-    // bound applies, which is what MATCH p = shortestPath((a)-[:KNOWS*]-(a)) has always answered.
+    // bound applies, which is what MATCH p = shortestPath((a)-[:KNOWS*]-(a)) has always answered
+    // (CypherReduceAndShortestPathTest.shortestPathSameNode). Whether an explicit minimum should suppress
+    // it is a semantic decision tracked by issue #7017.
     try (final ResultSet rs = database.query("opencypher",
         "MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*]-(e)) RETURN length(p) AS len")) {
       assertThat(rs.hasNext()).isTrue();

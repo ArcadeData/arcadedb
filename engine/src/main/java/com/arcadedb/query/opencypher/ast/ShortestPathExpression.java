@@ -186,7 +186,7 @@ public class ShortestPathExpression implements Expression {
       return allPaths ? new ArrayList<>() : null;
 
     // Endpoints resolving to the same vertex short-circuit to the zero-length path before any bound applies,
-    // matching what the MATCH form has always answered for shortestPath((a)-[:R*]-(a)).
+    // matching what the MATCH form has always answered for shortestPath((a)-[:R*]-(a)). See issue #7017.
     if (pathRids.size() > 1 && !bounds.accepts(pathRids.size() - 1))
       return allPaths ? new ArrayList<>() : null;
 
