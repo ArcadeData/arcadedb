@@ -3814,8 +3814,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
 
     if (check != null) {
-      if (check.fullyLoaded())
+      if (check.fullyLoaded()) {
+        // graphIndex is already published by loadPersistedGraphOrDecidePrefix() at this point, so clearing the
+        // latch here (unlike ensureGraphAvailable()'s prefix branch) cannot reopen the graphIndex-null-but-latch
+        // -false race window (issue #6772) - there is nothing left for graphNotYetMaterialised() to answer wrong.
+        persistedGraphUnresolved = false;
         return; // Published outright; nothing left to build.
+      }
       if (check.prefix() != null)
         reuseStalePrefixGraph(check.prefix()); // Publishes the prefix and queues the gap; folded in below.
     }
