@@ -1422,12 +1422,38 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         null);
   }
 
+  /**
+   * Writes a record to its page immediately, without the read lock {@link #updateRecord(Record)} takes.
+   * <p>
+   * <b>The #6950 MVCC guard lives on the two paths INTO this method, not inside it.</b> A caller already holding a
+   * transaction gets it from {@code TransactionContext.addUpdatedRecord}, which pins the record's page and checks the
+   * image the moment the record is taken for update; a caller with no transaction gets it from the implicit-transaction
+   * branch below. Everything that reaches this method with a transaction someone ELSE opened - the edge-append rebase
+   * and the commit-time {@code updatedRecords} flush - is deliberately unguarded here, because the check already ran
+   * once for it. A NEW direct caller that opens its own transaction and then calls this is therefore the one shape
+   * that would slip through both: route it through {@link #updateRecord(Record)} instead of adding a third bypass.
+   */
   @Override
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
     boolean success = false;
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
     try {
+      if (implicitTransaction) {
+        // #6950: the transaction was opened by THIS call, so the record was read before it existed and nothing has
+        // put its page under the MVCC check yet. Pin it and verify it still holds the image this update is diffed
+        // against: a concurrent commit that landed in between would otherwise be overwritten silently, since the
+        // page loaded here is already the newer one and the commit-time version check has nothing to refuse. The
+        // transactional path does the same at the moment the record is taken for update (addUpdatedRecord).
+        final RID rid = record.getIdentity();
+        final LocalBucket bucket = (LocalBucket) schema.getBucketById(rid.getBucketId());
+        try {
+          TransactionContext.checkRecordIsStillTheOneRead(bucket, rid, bucket.fetchPageInTransaction(rid), record);
+        } catch (final IOException e) {
+          throw new DatabaseOperationException("Error on update the record " + rid, e);
+        }
+      }
+
       final List<IndexInternal> indexes = record instanceof Document d ? indexer.getInvolvedIndexes(d) :
           Collections.emptyList();
 
