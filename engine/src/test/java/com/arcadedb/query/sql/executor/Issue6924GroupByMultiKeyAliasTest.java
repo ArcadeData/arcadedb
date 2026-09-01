@@ -121,12 +121,13 @@ class Issue6924GroupByMultiKeyAliasTest extends TestHelper {
       database.command("SQL", "CREATE DOCUMENT TYPE G5");
       database.command("SQL", "INSERT INTO G5 SET a = 1, v = 10");
       database.command("SQL", "INSERT INTO G5 SET a = 1, v = 20");
-      database.command("SQL", "INSERT INTO G5 SET a = 2, v = 30");
+      database.command("SQL", "INSERT INTO G5 SET a = 2, v = 50");
 
+      // distinct per-group sums, so the assertion pins which records landed in which group
       final List<Long> sums = collectLongs("SELECT sum(v) AS c FROM G5 GROUP BY a", "c");
 
       assertThat(sums).hasSize(2);
-      assertThat(sums).containsExactlyInAnyOrder(30L, 30L);
+      assertThat(sums).containsExactlyInAnyOrder(30L, 50L);
     });
   }
 
