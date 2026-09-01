@@ -198,8 +198,8 @@ public class TransactionContext implements Transaction {
   private       List<Integer>                        explicitLockedFiles   = null;
   private       long                                 txId                  = -1;
   private       STATUS                               status                = STATUS.INACTIVE;
-  // Whether the 1st phase in progress ends by replaying the queued index operations (leader only). See
-  // isIndexChangesReplayed().
+  // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
+  // originating commit. See isIndexChangesReplayed().
   private       boolean                              indexChangesReplayed  = true;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
@@ -1702,15 +1702,13 @@ public class TransactionContext implements Transaction {
         updatedRecordsIndexSnapshot = null;
       }
 
-      if (!isLeader || !hasChanges()) {
-        if (!hasChanges()) {
-          if (lockedFiles != null) {
-            database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
-            lockedFiles = null;
-          }
-          status = STATUS.INACTIVE;
-          return null;
+      if (!hasChanges()) {
+        if (lockedFiles != null) {
+          database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
+          lockedFiles = null;
         }
+        status = STATUS.INACTIVE;
+        return null;
       }
 
       // COMMIT INDEX CHANGES: always, on whichever node originates this commit (#6964) - see the note on

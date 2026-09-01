@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -37,6 +38,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -150,6 +152,7 @@ public class ReplicaInsertUniqueIndexInvisibleTest {
     try {
       return database.lookupByKey(TYPE_NAME, "name", name).hasNext();
     } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Index lookup of '%s' failed, retrying", e, name);
       return false;
     }
   }
