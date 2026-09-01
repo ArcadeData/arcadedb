@@ -318,11 +318,4 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     }
     return argTypes.toString();
   }
-
-  /**
-   * Returns the current java object instance to use for method calling. If the instance is null, then the method is static.
-   */
-  public Object getInstance() {
-    return instance;
-  }
 }
