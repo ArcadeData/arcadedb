@@ -44,7 +44,10 @@ public class ContainsCondition extends BooleanExpression {
       // Normalize an array left-hand side (e.g. the result of split()) to a List so it gets the same
       // CONTAINS semantics as a Collection below; MultiValue's iterator covers both object and primitive
       // arrays via reflection, unlike a direct `instanceof Iterable`/`instanceof Collection` check, which
-      // an array never satisfies (issue #6984).
+      // an array never satisfies (issue #6984). Deliberately recurses into the Collection branch rather
+      // than delegating straight to MultiValue.contains(): the Collection branch also unwraps a
+      // single-item Result/Identifiable on the right-hand side (lines below), and a direct delegation
+      // would silently drop that behavior for an array left-hand side.
       final List<Object> leftAsList = new ArrayList<>(MultiValue.getSize(left));
       final Iterator<?> leftArrayIterator = MultiValue.getMultiValueIterator(left);
       while (leftArrayIterator.hasNext())
