@@ -6629,9 +6629,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * and of the in-memory location index on every re-embedding cycle (issue #5516). The replay itself comes in
    * through {@link #putReplay}/{@link #removeReplay} and bypasses this check.
    * <p>
-   * {@code isIndexChangesReplayed()} is always true (#6964): every transaction that reaches
+   * {@code isIndexChangesReplayed()} is always true today (#6964): every transaction that reaches
    * {@code COMMIT_1ST_PHASE} here is one originating its own commit - the leader's, or a replica's own - and
-   * always replays its queue, so this branch always queues rather than applying directly.
+   * always replays its queue, so this branch always queues rather than applying directly. The check is kept
+   * rather than inlined to {@code true}: it names the invariant this method actually depends on (index replay
+   * happens later) instead of hard-coding today's one way of guaranteeing it.
    */
   private boolean isTransactionalCall() {
     final TransactionContext tx = getDatabase().getTransaction();
