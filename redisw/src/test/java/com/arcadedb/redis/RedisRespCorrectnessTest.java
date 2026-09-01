@@ -503,6 +503,55 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
+  void incrOnDirectlySetFractionalStringReturnsIntegerTypeError() throws Exception {
+    // (issue #6942 code review): a key set directly to a fractional string via SET (never touched by
+    // INCRBYFLOAT) hit a different code path than the Double-typed case above and answered with the
+    // generic "Key 'x' is not a number" instead of Redis' exact integer-command error. Same fix, same
+    // message, for INCR/INCRBY/DECR/DECRBY, whichever way the non-integral value got there.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "fractionalStringKey", "3.3");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCR", "fractionalStringKey");
+      String reply = readReply(socket);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("not an integer");
+
+      sendCommand(socket, "DECR", "fractionalStringKey");
+      reply = readReply(socket);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("not an integer");
+
+      // Neither rejected command touched the stored value.
+      sendCommand(socket, "GET", "fractionalStringKey");
+      assertThat(readReply(socket)).isEqualTo("$3\r\n3.3");
+    }
+  }
+
+  @Test
+  void incrByFloatOnDirectlySetFractionalStringSucceeds() throws Exception {
+    // (issue #6942 code review): INCRBYFLOAT has no integer restriction - it must accept a fractional
+    // string exactly like real Redis, not reject it the way INCR/DECR correctly do.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "incrByFloatStringKey", "3.3");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCRBYFLOAT", "incrByFloatStringKey", "1.0");
+      assertThat(readReply(socket)).isEqualTo("$3\r\n4.3");
+    }
+  }
+
+  @Test
   void concurrentSetNxOnSharedDatabaseKeyOnlyLetsOneWinnerThrough() throws Exception {
     // (issue #6466 follow-up): the initial fix evaluated NX as "does the key exist?" then "write it" as two
     // separate calls. That is only safe when the key lives in a per-connection bucket; once a key is backed

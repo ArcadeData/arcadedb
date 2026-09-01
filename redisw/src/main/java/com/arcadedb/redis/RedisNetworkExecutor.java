@@ -425,10 +425,14 @@ public class RedisNetworkExecutor extends Thread {
     if (number == null) {
       number = 0L;
     } else if (!(number instanceof Number)) {
-      if (NumberUtils.isIntegerNumber(number.toString()))
+      // DECR/DECRBY only operate on integral values, and real Redis answers a stored value it cannot
+      // parse as a 64-bit integer - "3.3", "abc", or one simply out of Long range - with this exact
+      // message rather than a generic "not a number" (issue #6942 code review).
+      try {
         number = Long.parseLong(number.toString());
-      else
-        throw new RedisException("Key '" + k + "' is not a number");
+      } catch (final NumberFormatException e) {
+        throw new RedisException("value is not an integer or out of range");
+      }
     }
 
     // DECR/DECRBY only operate on integral values: a Double/Float (e.g. left behind by INCRBYFLOAT) has no
@@ -664,10 +668,24 @@ public class RedisNetworkExecutor extends Thread {
     if (number == null) {
       number = 0L;
     } else if (!(number instanceof Number)) {
-      if (NumberUtils.isIntegerNumber(number.toString()))
-        number = Long.parseLong(number.toString());
-      else
-        throw new RedisException("Key '" + k + "' is not a number");
+      // Real Redis parses the stored value against the command's own numeric type rather than a
+      // generic "is this a number" check (issue #6942 code review): INCRBYFLOAT accepts any stored
+      // value it can read as a float - "3.3" included - while INCR/INCRBY reject anything it cannot
+      // read as a 64-bit integer, with the same "not an integer or out of range" message whether the
+      // value is non-numeric or merely out of Long range.
+      //
+      // Deliberately two branches, not `decimal ? Double.parseDouble(...) : Long.parseLong(...)`: a
+      // Java conditional expression with one `double` arm and one `long` arm promotes BOTH arms to
+      // double (JLS 15.25), so the long arm's result would get silently widened and reboxed to Double
+      // even when decimal is false, turning every later `instanceof Long` check on it false.
+      try {
+        if (decimal)
+          number = Double.parseDouble(number.toString());
+        else
+          number = Long.parseLong(number.toString());
+      } catch (final NumberFormatException e) {
+        throw new RedisException(decimal ? "value is not a valid float" : "value is not an integer or out of range");
+      }
     }
 
     final boolean integralStorage = number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte;
