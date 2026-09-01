@@ -69,6 +69,33 @@ class JavaFunctionTest extends TestHelper {
     }
   }
 
+  public interface Formatter<T> {
+    String format(T value);
+  }
+
+  public static class StringFormatter implements Formatter<String> {
+    @Override
+    public String format(final String value) {
+      return "fmt:" + value;
+    }
+  }
+
+  public static class MixedFixedAndVarargs {
+    public static String format(final Integer a, final Integer b) {
+      return "ints:" + (a + b);
+    }
+
+    public static String format(final String sep, final String... parts) {
+      return "strs:" + String.join(sep, parts);
+    }
+  }
+
+  public static class SingleVarargs {
+    public static String join(final String sep, final String... parts) {
+      return String.join(sep, parts);
+    }
+  }
+
   public static class VarargsOverloaded {
     public static String join(final String sep, final String... parts) {
       return "strs:" + String.join(sep, parts);
@@ -257,6 +284,58 @@ class JavaFunctionTest extends TestHelper {
           .hasMessageContaining("cannot resolve which overload");
     } finally {
       database.getSchema().unregisterFunctionLibrary("amb");
+    }
+  }
+
+  @Test
+  void bridgeMethodsAreExcludedFromOverloadRegistration()
+    throws Exception {
+    // A generic interface override - Formatter<String>.format(String) implemented by StringFormatter - makes the
+    // compiler synthesize a public bridge method format(Object) on StringFormatter. Without excluding
+    // bridge/synthetic methods, that bridge would be grouped as a second "format" overload, and every call would be
+    // rejected as ambiguous between the real method and its own compiler-generated bridge.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("bridge", JavaFunctionTest.StringFormatter.class));
+    try {
+      final var function = database.getSchema().getFunction("bridge", "format");
+      assertThat(function.execute("x")).isEqualTo("fmt:x");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("bridge");
+    }
+  }
+
+  @Test
+  void fixedArityOverloadRejectedByTypeFallsBackToVarargsOverload()
+    throws Exception {
+    // Regression: candidatesByParameterCount() used to let an exact-arity, non-varargs match with the right
+    // parameter count win outright, even when its parameter types did not accept the arguments and a type-compatible
+    // varargs overload existed. format(Integer,Integer) and format(String,String...) both accept 2 arguments; a
+    // call with two Strings must fall back to the varargs overload instead of failing against the mismatched one.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("mixed", JavaFunctionTest.MixedFixedAndVarargs.class));
+    try {
+      final var function = database.getSchema().getFunction("mixed", "format");
+
+      assertThat(function.execute(3, 4)).isEqualTo("ints:7");
+      assertThat(function.execute("-", "a", "b")).isEqualTo("strs:a-b");
+      // Two arguments: matches format(Integer,Integer) by count but not by type, and format(String,String...) by
+      // both count and type (sep="x", one vararg element "y") - must fall back to the varargs overload.
+      assertThat(function.execute("x", "y")).isEqualTo("strs:y");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("mixed");
+    }
+  }
+
+  @Test
+  void singleNonOverloadedVarargsMethodIsInvokedCorrectly()
+    throws Exception {
+    // Pins the toInvokeArgs() vararg-packing fix independently of overload disambiguation: a single, non-overloaded
+    // varargs method takes the candidates.size() == 1 short-circuit path in execute(), which must still pack the
+    // flat, positionally-passed arguments into the array Method.invoke() requires.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("sjoin", JavaFunctionTest.SingleVarargs.class));
+    try {
+      final var function = database.getSchema().getFunction("sjoin", "join");
+      assertThat(function.execute("-", "a", "b", "c")).isEqualTo("a-b-c");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("sjoin");
     }
   }
 

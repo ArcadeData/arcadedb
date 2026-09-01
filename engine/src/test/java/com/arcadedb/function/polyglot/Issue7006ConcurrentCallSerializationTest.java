@@ -28,14 +28,15 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Regression test guarding the fix for #7006 against reintroducing concurrent access to the shared GraalVM
  * {@code Context}. An earlier version of the fix replaced the old (broken) {@code synchronized(polyglotEngine)}
- * with a {@link java.util.concurrent.locks.ReentrantReadWriteLock}, which correctly stopped {@code reloadEngine()}
- * from closing the engine under an in-flight call, but let multiple callers hold the read lock and invoke
+ * with a {@link ReentrantReadWriteLock}, which correctly stopped {@code reloadEngine()} from closing the engine
+ * under an in-flight call, but let multiple callers hold the read lock and invoke
  * {@code callback.execute(polyglotEngine)} concurrently - something GraalVM's JS context does not support without
  * explicit multi-threaded access configuration (the same class of problem already fixed for
  * {@code PolyglotQueryEngine} under issue #6759). The final fix uses a plain mutex instead, so every caller of
