@@ -312,6 +312,13 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       //
       // Applied on the unguarded path too: a name conflict is not something IF NOT EXISTS makes idempotent, so the
       // "use IF NOT EXISTS" hint the unguarded message below ends with would be the wrong advice here.
+      //
+      // The other production caller that sets a name on a TYPE index is {@code RebuildIndexStatement}, which carries
+      // the logical index's own name across the rebuild (issue #5791). It never meets this check: it drops the index
+      // first, inside the same {@code executeLockingFiles} closure, so the lookup above finds nothing on those
+      // properties by the time create() runs. The one shape that still reaches here - a type whose OWN index was just
+      // dropped while a parent type indexes the same properties - was already refused before this check existed, by
+      // the unguarded branch further down; only the message it is refused with changes.
       if (satisfied && indexName != null && !indexName.isEmpty() && !indexName.equals(existingTypeIndex.getName()))
         throw conflictWithExistingIndexName(existingTypeIndex, indexName, metadata.typeName, metadata.propertyNames);
 
