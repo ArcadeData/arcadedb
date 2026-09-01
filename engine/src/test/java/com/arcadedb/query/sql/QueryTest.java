@@ -1433,6 +1433,33 @@ class QueryTest extends TestHelper {
     });
   }
 
+  // Issue #6984: CONTAINS with a method call (split) on the LHS matches a scalar RHS instead of always returning false
+  @Test
+  void containsWithSplitOnLhs() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc6984 IF NOT EXISTS");
+      database.command("sql", "INSERT INTO doc6984 SET txt = 'a b c'");
+      database.command("sql", "INSERT INTO doc6984 SET txt = 'hello world'");
+
+      final ResultSet rs = database.query("sql", "SELECT FROM doc6984 WHERE txt.split(' ') CONTAINS 'a'");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("txt")).isEqualTo("a b c");
+      assertThat(rs.hasNext()).isFalse();
+    });
+  }
+
+  // Issue #6984: CONTAINS with a method call (split) on the LHS returns no rows when nothing matches
+  @Test
+  void containsWithSplitOnLhsNoMatch() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc6984b IF NOT EXISTS");
+      database.command("sql", "INSERT INTO doc6984b SET txt = 'hello world'");
+
+      final ResultSet rs = database.query("sql", "SELECT FROM doc6984b WHERE txt.split(' ') CONTAINS 'a'");
+      assertThat(rs.hasNext()).isFalse();
+    });
+  }
+
   // Issue #3583: chained replace().ilike() inside a LET subquery combined with UNIONALL evaluates without $current null
   @Test
   void replaceWithIlikeInLetSubquery() {
