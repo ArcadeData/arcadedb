@@ -26,6 +26,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 
@@ -176,6 +177,20 @@ public final class BmwScorer {
    * essential/non-essential split and the block-max skip can prune against it. The threshold is
    * conservative (a candidate above it may still be rejected because its specific group has a higher
    * worst), which is fine: pruning is correct, just slightly less aggressive than non-grouped top-K.
+   * <p>
+   * <b>Group admission is not first-come-first-served (issue #6936).</b> Candidates reach this
+   * traversal in ascending RID order, not score order, so the first {@code limit} distinct group
+   * keys encountered are not necessarily the highest-scoring groups - a much later (higher-RID)
+   * document could hold the single best-scoring group in the corpus. Once all {@code limit} slots
+   * are taken, a genuinely new group key is admitted anyway if its score beats the weakest currently
+   * open group's <i>best</i> member, evicting that group entirely to make room; a key that loses
+   * that comparison is rejected exactly as before. This makes the selected {@code limit} groups
+   * exactly the {@code limit} highest-peaking groups seen, mirroring how #5761 redefined "best
+   * group" for the dense (HNSW) grouped search. One trade-off remains: once the threshold above has
+   * risen, the traversal may already have skipped documents on the assumption that the group set was
+   * settled; a group evicted-then-later-reinstated after that point can end up with fewer than
+   * {@code groupSize} members even if the corpus holds more for it. Which {@code limit} groups win is
+   * always exact; a reinstated group's composition is best-effort from the point of reinstatement.
    * <p>
    * <b>{@code allowedRIDs} filter.</b> Applied inline in the scoring branch: a candidate RID outside
    * the whitelist is dropped before the non-essential probe walk even starts (cursors still advance
@@ -809,14 +824,20 @@ public final class BmwScorer {
     }
   }
 
-  /** Grouped top-K: one min-heap per group key, threshold = min across per-group worst scores. */
+  /**
+   * Grouped top-K: one min-heap per group key, threshold = min across per-group worst scores.
+   * <p>
+   * Admission of a brand-new group key once {@code limit} slots are taken is a comparison against
+   * the weakest currently open group's <i>peak</i> (its own best member) - see {@link #topKGrouped}
+   * for why (issue #6936).
+   */
   private static final class GroupedCollector implements Collector {
     private final int                                        limit;
     private final int                                        groupSize;
     private final Function<RID, Object>                      groupKeyResolver;
     private final Set<RID>                                   allowedRIDs;
     private final boolean                                    filterActive;
-    private final HashMap<Object, RidScoreMinHeap>           groups;
+    private final HashMap<Object, GroupState>                groups;
     private int                                              filledGroups;
     private float                                            threshold = Float.NEGATIVE_INFINITY;
 
@@ -843,47 +864,85 @@ public final class BmwScorer {
     @Override
     public void collect(final RID rid, final float score) {
       final Object groupKey = groupKeyResolver.apply(rid);
-      final RidScoreMinHeap group = groups.get(groupKey);
-      boolean stateChanged = false;
-      if (group == null) {
-        if (groups.size() < limit) {
-          final RidScoreMinHeap opened = new RidScoreMinHeap(groupSize);
-          opened.offer(rid, score);
-          groups.put(groupKey, opened);
-          if (opened.isFull())  // groupSize == 1: the group is already at capacity.
-            filledGroups++;
-          stateChanged = true;
-        }
-        // else: limit groups already open and this one is a new key - reject.
+      GroupState group = groups.get(groupKey);
+      boolean stateChanged;
+      if (group != null) {
+        stateChanged = admit(group, rid, score);
+      } else if (groups.size() < limit) {
+        group = new GroupState(groupSize);
+        groups.put(groupKey, group);
+        stateChanged = admit(group, rid, score);
       } else {
-        final boolean wasFull = group.isFull();
-        stateChanged = group.offer(rid, score);
-        if (!wasFull && group.isFull())
-          filledGroups++;
+        // All limit slots are taken by other keys. Find the weakest one - the lowest peak (best
+        // member) among the open groups - and only displace it if this candidate beats that peak;
+        // a linear scan is cheap here since limit is small and this branch only runs for a
+        // genuinely new key, far rarer than a plain collect() call.
+        Object weakestKey = null;
+        GroupState weakest = null;
+        for (final Map.Entry<Object, GroupState> e : groups.entrySet()) {
+          if (weakest == null || e.getValue().peak < weakest.peak) {
+            weakest = e.getValue();
+            weakestKey = e.getKey();
+          }
+        }
+        if (weakest != null && score > weakest.peak) {
+          if (weakest.heap.isFull())
+            filledGroups--;
+          groups.remove(weakestKey);
+          group = new GroupState(groupSize);
+          groups.put(groupKey, group);
+          stateChanged = admit(group, rid, score);
+        } else
+          stateChanged = false;
       }
       // Recompute the global threshold once every group has reached capacity. Until then it stays
-      // at NEGATIVE_INFINITY: a candidate could still open a new group or fill an empty slot inside
-      // an existing one, so pruning against a per-group watermark would be incorrect.
+      // at NEGATIVE_INFINITY: a candidate could still open a new group, evict a weaker one, or fill
+      // an empty slot inside an existing one, so pruning against a per-group watermark would be
+      // incorrect. Never lowered once raised: an eviction that drops filledGroups back under limit
+      // simply skips this block on the next call rather than walking the threshold back, since a
+      // DAAT traversal cannot un-skip documents it has already pruned past.
       if (stateChanged && filledGroups == limit && groups.size() == limit) {
         float min = Float.POSITIVE_INFINITY;
-        for (final RidScoreMinHeap pq : groups.values()) {
-          if (!pq.isEmpty() && pq.minScore() < min)
-            min = pq.minScore();
+        for (final GroupState g : groups.values()) {
+          if (!g.heap.isEmpty() && g.heap.minScore() < min)
+            min = g.heap.minScore();
         }
         if (min != Float.POSITIVE_INFINITY && min > threshold)
           threshold = min;
       }
     }
 
+    /** Offers {@code (rid, score)} into {@code group}'s heap and keeps its peak/fill bookkeeping current. */
+    private boolean admit(final GroupState group, final RID rid, final float score) {
+      final boolean wasFull = group.heap.isFull();
+      final boolean changed = group.heap.offer(rid, score);
+      if (score > group.peak)
+        group.peak = score;
+      if (!wasFull && group.heap.isFull())
+        filledGroups++;
+      return changed;
+    }
+
     List<RidScore> drain() {
       int total = 0;
-      for (final RidScoreMinHeap pq : groups.values())
-        total += pq.size();
+      for (final GroupState g : groups.values())
+        total += g.heap.size();
       final List<RidScore> out = new ArrayList<>(total);
-      for (final RidScoreMinHeap pq : groups.values())
-        pq.drainInto(out);
+      for (final GroupState g : groups.values())
+        g.heap.drainInto(out);
       out.sort(BY_SCORE_DESC);
       return out;
+    }
+  }
+
+  /** One open group's retained members plus its peak (best member ever admitted), tracked apart from
+   *  the min-heap since {@link RidScoreMinHeap} exposes only the current minimum. */
+  private static final class GroupState {
+    final RidScoreMinHeap heap;
+    float                 peak = Float.NEGATIVE_INFINITY;
+
+    GroupState(final int groupSize) {
+      this.heap = new RidScoreMinHeap(groupSize);
     }
   }
 
