@@ -151,6 +151,32 @@ class DistinctWithGroupByUnwindExpandTest extends TestHelper {
     });
   }
 
+  /**
+   * The {@code expand()} branch used to be rejected outright by a (dead) plan-time guard, so it never met
+   * ORDER BY / SKIP / LIMIT at all. Same invariant as the GROUP BY case above: the pagination has to count the
+   * rows the statement returns, not the rows the sort produced.
+   */
+  @Test
+  void distinctWithExpandHonoursOrderByAndLimit() {
+    database.transaction(() -> {
+      database.command("SQL", "CREATE DOCUMENT TYPE E");
+      database.command("SQL", "INSERT INTO E SET tags = ['b', 'a', 'a', 'c']");
+
+      assertThat(toList(database.query("SQL", "SELECT expand(tags) FROM E"))).hasSize(4);
+
+      final List<Result> all = toList(database.query("SQL", "SELECT DISTINCT expand(tags) FROM E ORDER BY value"));
+      assertThat(all.stream().map(r -> (String) r.getProperty("value")).toList()).containsExactly("a", "b", "c");
+
+      final List<Result> limited = toList(
+          database.query("SQL", "SELECT DISTINCT expand(tags) FROM E ORDER BY value LIMIT 2"));
+      assertThat(limited.stream().map(r -> (String) r.getProperty("value")).toList()).containsExactly("a", "b");
+
+      final List<Result> skipped = toList(
+          database.query("SQL", "SELECT DISTINCT expand(tags) FROM E ORDER BY value SKIP 1 LIMIT 1"));
+      assertThat(skipped.stream().map(r -> (String) r.getProperty("value")).toList()).containsExactly("b");
+    });
+  }
+
   @Test
   void distinctIsAppliedWithUnwindInMatch() {
     database.transaction(() -> {
