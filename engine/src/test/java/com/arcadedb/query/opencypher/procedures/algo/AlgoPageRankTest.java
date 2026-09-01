@@ -20,7 +20,13 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -34,6 +40,7 @@ import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -138,102 +145,265 @@ class AlgoPageRankTest {
   }
 
   @Test
-  void pageRankCSRAndOLTPProduceIdenticalResults() {
-    // Step 1: Run PageRank without GAV → OLTP path
-    final Map<String, Double> oltpScores = new HashMap<>();
-    try (final ResultSet rs = database.query("opencypher",
-        """
-        CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0001}) \
-        YIELD node, score RETURN node.name AS name, score""")) {
-      while (rs.hasNext()) {
-        final Result r = rs.next();
-        oltpScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
-      }
+  void pageRankRejectsAnUnrecognisedDirection() {
+    // The three directions genuinely answer different questions (see the parity tests above), so silently
+    // coercing an unrecognised one to OUT answers a question the caller did not ask and looks like a working
+    // result. 'INCOMING' is the shape that matters: it is what someone reaching for IN actually types.
+    for (final String bad : new String[] { "INCOMING", "OUTGOING", "in ", "" })
+      assertThatThrownBy(() -> drainPageRank("CALL algo.pagerank({direction: '" + bad + "'}) YIELD node RETURN node"))
+          .as("direction '%s' must be rejected, not coerced to OUT", bad)
+          .hasStackTraceContaining("direction")
+          .hasStackTraceContaining("OUT, IN or BOTH");
+
+    // A present-but-not-a-string direction was silently coerced the same way.
+    assertThatThrownBy(() -> drainPageRank("CALL algo.pagerank({direction: 42}) YIELD node RETURN node"))
+        .hasStackTraceContaining("direction");
+
+    // The three valid values, in both cases, still work - and an absent or explicitly null direction still
+    // defaults to OUT rather than being rejected.
+    for (final String good : new String[] { "OUT", "IN", "BOTH", "out", "in", "both" })
+      assertThat(drainPageRank("CALL algo.pagerank({direction: '" + good + "'}) YIELD node RETURN node")).hasSize(3);
+    assertThat(drainPageRank("CALL algo.pagerank() YIELD node RETURN node")).hasSize(3);
+    assertThat(drainPageRank("CALL algo.pagerank({direction: null}) YIELD node RETURN node")).hasSize(3);
+  }
+
+  private List<Result> drainPageRank(final String query) {
+    final List<Result> rows = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      while (rs.hasNext())
+        rows.add(rs.next());
     }
+    return rows;
+  }
+
+  @Test
+  void weightedPageRankHonoursInDirection() {
+    // Weighted PageRank never takes the CSR path, so the OLTP fallback's weight arrays are only exercised here,
+    // and only through Cypher - which also covers the 'IN' and 'OUT' config strings end to end.
+    final Map<String, Double> unweightedIn = pageRankByName("IN", null);
+    final Map<String, Double> unweightedOut = pageRankByName("OUT", null);
+
+    // Weights are set through the graph API on purpose. `UPDATE LINKS SET weight = 9 WHERE out.name = 'A'` looks
+    // like it would work and matches zero rows: `out`/`in` do not dereference to the endpoint vertex on an edge
+    // type, so the whole fixture silently no-ops and every weight stays 1 - which is indistinguishable from an
+    // algorithm that ignores weights entirely.
+    database.transaction(() -> {
+      for (final Iterator<Vertex> vertices = database.select().fromType("Page").vertices(); vertices.hasNext(); ) {
+        final Vertex v = vertices.next();
+        for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
+          final MutableEdge weighted = edge.modify();
+          weighted.set("weight", "A".equals(v.getString("name")) && "C".equals(edge.getInVertex().getString("name"))
+              ? 9.0 : 1.0);
+          weighted.save();
+        }
+      }
+    });
+    assertThat(edgeWeights()).as("the 9:1 split must actually reach the edges").containsExactlyInAnyOrder(
+        1.0, 1.0, 1.0, 9.0);
+
+    // A -> B, A -> C (weight 9), B -> C, C -> A. Following the stored direction concentrates rank on C;
+    // reversing it concentrates rank on A, where both B's rank and 90% of C's now flows.
+    final Map<String, Double> weightedOut = pageRankByName("OUT", "weight");
+    assertThat(topRanked(weightedOut)).isEqualTo("C");
+    final Map<String, Double> weightedIn = pageRankByName("IN", "weight");
+    assertThat(topRanked(weightedIn)).isEqualTo("A");
+
+    // Both top-ranked checks above are only orientation: C already wins OUT and A already wins IN at uniform
+    // weights, so neither can tell a consumed weight array from an ignored one. These two can. In each direction
+    // the 9:1 split diverts rank that an even split would have sent to B, so B must end up strictly poorer:
+    // under OUT it is A's rank being split 90/10 towards C, under IN it is C's being split 90/10 towards A.
+    assertThat(weightedOut.get("B"))
+        .as("weighted OUT must leave B less of A's rank than an even split would")
+        .isLessThan(unweightedOut.get("B") - 1e-6);
+    assertThat(weightedIn.get("B"))
+        .as("weighted IN must leave B less of C's rank than an even split would")
+        .isLessThan(unweightedIn.get("B") - 1e-6);
+  }
+
+  @Test
+  void pageRankCSRAndOLTPProduceIdenticalResults() {
+    final Map<RID, Double> oltpScores = pageRankScores(newContext(), null, 0.0001);
     assertThat(oltpScores).hasSize(3);
 
-    // Step 2: Build a GAV so the CSR path is used
-    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
-        .withName("pagerank-csr")
-        .withVertexTypes("Page")
-        .withEdgeTypes("LINKS")
-        .build();
-    gav.awaitReady(10, TimeUnit.SECONDS);
-
-    // Step 3: Run PageRank with GAV → CSR path
-    final Map<String, Double> csrScores = new HashMap<>();
-    try (final ResultSet rs = database.query("opencypher",
-        """
-        CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0001}) \
-        YIELD node, score RETURN node.name AS name, score""")) {
-      while (rs.hasNext()) {
-        final Result r = rs.next();
-        csrScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
-      }
+    final GraphAnalyticalView gav = readyView("pagerank-csr");
+    try {
+      final BasicCommandContext csrContext = newContext();
+      final Map<RID, Double> csrScores = pageRankScores(csrContext, null, 0.0001);
+      assertCSRAccelerated(csrContext);
+      assertScoresMatch(oltpScores, csrScores);
+    } finally {
+      gav.shutdown();
     }
-    assertThat(csrScores).hasSize(3);
+  }
 
-    // Step 4: Compare — CSR and OLTP paths accumulate floating-point differences
-    // due to different iteration order and convergence behavior, so use 1e-4 tolerance
-    for (final Map.Entry<String, Double> entry : oltpScores.entrySet()) {
-      final String name = entry.getKey();
-      assertThat(csrScores).containsKey(name);
-      assertThat(csrScores.get(name)).isCloseTo(entry.getValue(), Offset.offset(1e-4));
+  @Test
+  void pageRankInDirectionCSRAndOLTPProduceIdenticalResults() {
+    // The 'IN' config string itself is covered end-to-end through Cypher by weightedPageRankHonoursInDirection.
+    final Map<RID, Double> oltpScores = pageRankScores(newContext(), Vertex.DIRECTION.IN, 0.0);
+    assertThat(oltpScores).hasSize(3);
+
+    final GraphAnalyticalView gav = readyView("pagerank-in-csr");
+    try {
+      final BasicCommandContext csrContext = newContext();
+      final Map<RID, Double> csrScores = pageRankScores(csrContext, Vertex.DIRECTION.IN, 0.0);
+      assertCSRAccelerated(csrContext);
+      assertScoresMatch(oltpScores, csrScores);
+
+      // A -> B, A -> C, B -> C, C -> A. Reversed, A is where both B's and C's rank flows, so A must top both.
+      final Map<String, Double> byName = new HashMap<>();
+      csrScores.forEach((rid, score) -> byName.put(rid.asVertex().getString("name"), score));
+      assertThat(byName.get("A")).isGreaterThan(byName.get("B"));
+      assertThat(byName.get("A")).isGreaterThan(byName.get("C"));
+    } finally {
+      gav.shutdown();
     }
+  }
 
-    gav.shutdown();
+  @Test
+  void pageRankInDirectionAgreesOnDanglingNodesToo() {
+    // Reversing the direction also reverses which nodes are DANGLING, and dangling rank is redistributed by
+    // separate code in each kernel (the CSR one precomputes a dangling-node list from out-degree once; the OLTP
+    // one re-sums it every iteration). The A/B/C fixture cannot cover that under IN: every node there has an
+    // incoming edge, so nothing is dangling. D is a pure source - no incoming edges at all - so it pushes
+    // nothing under IN and its rank has to be redistributed rather than lost.
+    database.transaction(() -> {
+      final MutableVertex d = database.newVertex("Page").set("name", "D").save();
+      d.newEdge("LINKS", database.select().fromType("Page").where().property("name").eq().value("A").vertices().next(),
+          true, (Object[]) null).save();
+    });
+
+    final Map<RID, Double> oltpScores = pageRankScores(newContext(), Vertex.DIRECTION.IN, 0.0);
+    assertThat(oltpScores).hasSize(4);
+
+    final GraphAnalyticalView gav = readyView("pagerank-in-dangling-csr");
+    try {
+      final BasicCommandContext csrContext = newContext();
+      final Map<RID, Double> csrScores = pageRankScores(csrContext, Vertex.DIRECTION.IN, 0.0);
+      assertCSRAccelerated(csrContext);
+      assertScoresMatch(oltpScores, csrScores);
+
+      // Rank must be conserved: a dangling node's share is redistributed, not dropped on the floor.
+      double sum = 0;
+      for (final double score : csrScores.values())
+        sum += score;
+      assertThat(sum).as("dangling rank under IN must be redistributed, not lost").isBetween(0.9, 1.1);
+    } finally {
+      gav.shutdown();
+    }
   }
 
   @Test
   void pageRankBothDirectionCSRAndOLTPProduceIdenticalResults() {
-    // Step 1: Run PageRank with direction=BOTH without GAV → OLTP path
-    final Map<String, Double> oltpScores = new HashMap<>();
-    try (final ResultSet rs = database.query("opencypher",
-        """
-        CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0, direction: 'BOTH'}) \
-        YIELD node, score RETURN node.name AS name, score""")) {
-      while (rs.hasNext()) {
-        final Result r = rs.next();
-        oltpScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
-      }
-    }
+    final Map<RID, Double> oltpScores = pageRankScores(newContext(), Vertex.DIRECTION.BOTH, 0.0);
     assertThat(oltpScores).hasSize(3);
 
-    // Step 2: Build a GAV so the CSR path is used
+    final GraphAnalyticalView gav = readyView("pagerank-both-csr");
+    try {
+      final BasicCommandContext csrContext = newContext();
+      final Map<RID, Double> csrScores = pageRankScores(csrContext, Vertex.DIRECTION.BOTH, 0.0);
+      assertCSRAccelerated(csrContext);
+      assertScoresMatch(oltpScores, csrScores);
+
+      // Treating the graph as undirected redistributes rank but must not create or destroy any of it.
+      double sum = 0;
+      for (final double score : csrScores.values())
+        sum += score;
+      assertThat(sum).isBetween(0.9, 1.1);
+    } finally {
+      gav.shutdown();
+    }
+  }
+
+  private List<Double> edgeWeights() {
+    final List<Double> weights = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT weight FROM LINKS")) {
+      while (rs.hasNext())
+        weights.add(((Number) rs.next().getProperty("weight")).doubleValue());
+    }
+    return weights;
+  }
+
+  /** Runs algo.pagerank through Cypher, so the config-map literal and the direction string are covered too. */
+  private Map<String, Double> pageRankByName(final String direction, final String weightProperty) {
+    final Map<String, Double> scores = new HashMap<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 40, tolerance: 0.0, direction: '" + direction + "'"
+            + (weightProperty != null ? ", weightProperty: '" + weightProperty + "'" : "")
+            + "}) YIELD node, score RETURN node.name AS name, score")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        scores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
+      }
+    }
+    assertThat(scores).hasSize(3);
+    return scores;
+  }
+
+  private static String topRanked(final Map<String, Double> scores) {
+    return scores.entrySet().stream().max(Map.Entry.comparingByValue()).orElseThrow().getKey();
+  }
+
+  // ── CSR/OLTP parity fixtures ────────────────────────────────────────
+
+  private BasicCommandContext newContext() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    return context;
+  }
+
+  /**
+   * Runs {@code algo.pagerank} through the procedure rather than the query engine, so the call's
+   * {@link CommandContext} stays observable and {@link #assertCSRAccelerated} can say which path served it.
+   *
+   * @param direction the {@code direction} config value, or null to leave the key out and take the default
+   */
+  private Map<RID, Double> pageRankScores(final CommandContext context, final Vertex.DIRECTION direction,
+      final double tolerance) {
+    final Map<String, Object> config = new HashMap<>();
+    config.put("dampingFactor", 0.85);
+    config.put("maxIterations", 20);
+    config.put("tolerance", tolerance);
+    if (direction != null)
+      config.put("direction", direction.name());
+
+    final Map<RID, Double> scores = new HashMap<>();
+    for (final Iterator<Result> it = new AlgoPageRank().execute(new Object[] { config }, null, context).iterator();
+        it.hasNext(); ) {
+      final Result row = it.next();
+      scores.put(row.getProperty("node"), ((Number) row.getProperty("score")).doubleValue());
+    }
+    return scores;
+  }
+
+  /**
+   * A CSR/OLTP parity test whose CSR half quietly fell back to OLTP compares the OLTP path with itself and can
+   * never fail, whatever the CSR kernel does. {@code awaitReady()} returning true does not rule that out on its
+   * own either: {@link AlgoPageRank} also falls back when the view reports pending changes and when
+   * {@code findProvider()} does not reach it. This variable is what the procedure sets on the CSR path, so it is
+   * the only signal that says which one actually ran.
+   */
+  private void assertCSRAccelerated(final CommandContext context) {
+    assertThat(context.getVariable(CommandContext.CSR_ACCELERATED_VAR))
+        .as("the view must actually back the call, or this comparison pins the OLTP path against itself")
+        .isEqualTo(true);
+  }
+
+  /** Asserts every OLTP score has a CSR counterpart within the tolerance the two paths' iteration orders need. */
+  private void assertScoresMatch(final Map<RID, Double> oltpScores, final Map<RID, Double> csrScores) {
+    assertThat(csrScores.keySet()).isEqualTo(oltpScores.keySet());
+    for (final Map.Entry<RID, Double> entry : oltpScores.entrySet())
+      assertThat(csrScores.get(entry.getKey())).as("score for " + entry.getKey())
+          .isCloseTo(entry.getValue(), Offset.offset(1e-4));
+  }
+
+  private GraphAnalyticalView readyView(final String name) {
     final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
-        .withName("pagerank-both-csr")
+        .withName(name)
         .withVertexTypes("Page")
         .withEdgeTypes("LINKS")
         .build();
-    gav.awaitReady(10, TimeUnit.SECONDS);
-
-    // Step 3: Run PageRank with direction=BOTH with GAV → CSR path
-    final Map<String, Double> csrScores = new HashMap<>();
-    try (final ResultSet rs = database.query("opencypher",
-        """
-        CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0, direction: 'BOTH'}) \
-        YIELD node, score RETURN node.name AS name, score""")) {
-      while (rs.hasNext()) {
-        final Result r = rs.next();
-        csrScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
-      }
-    }
-    assertThat(csrScores).hasSize(3);
-
-    // Step 4: Compare — CSR and OLTP paths should match closely
-    for (final Map.Entry<String, Double> entry : oltpScores.entrySet()) {
-      final String name = entry.getKey();
-      assertThat(csrScores).containsKey(name);
-      assertThat(csrScores.get(name)).isCloseTo(entry.getValue(), Offset.offset(1e-4));
-    }
-
-    // Step 5: For undirected graph, scores should be more evenly distributed than directed
-    double sum = 0;
-    for (final double s : csrScores.values())
-      sum += s;
-    assertThat(sum).isBetween(0.9, 1.1);
-
-    gav.shutdown();
+    assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    return gav;
   }
 
   /**
