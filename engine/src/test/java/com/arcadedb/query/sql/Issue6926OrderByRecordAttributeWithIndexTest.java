@@ -67,6 +67,15 @@ class Issue6926OrderByRecordAttributeWithIndexTest extends TestHelper {
       database.command("sql", "INSERT INTO J SET p = 1, s = 'c3'");
       database.command("sql", "INSERT INTO J SET p = 1, s = 'd2'");
       database.command("sql", "INSERT INTO J SET p = 1, s = 'e1'");
+
+      // single-property index: the fields.size() < orderedFields.size() guard already stopped the NPE here, so this
+      // type pins that pre-existing rescue in place
+      database.command("sql", "CREATE DOCUMENT TYPE K");
+      database.command("sql", "CREATE PROPERTY K.p INTEGER");
+      database.command("sql", "CREATE INDEX ON K (p) NOTUNIQUE");
+
+      for (int i = 0; i < 5; i++)
+        database.command("sql", "INSERT INTO K SET p = 1, i = " + i);
     });
   }
 
@@ -115,6 +124,30 @@ class Issue6926OrderByRecordAttributeWithIndexTest extends TestHelper {
     }
 
     assertThat(values).containsExactly("e1", "d2", "c3", "b4", "a5");
+  }
+
+  @Test
+  void orderByIndexedPropertyWithModifierDescIsNotSatisfiedByTheIndexOrder() {
+    final List<String> values = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM J WHERE p = 1 ORDER BY s.right(1) DESC")) {
+      while (rs.hasNext())
+        values.add(rs.next().getProperty("s"));
+    }
+
+    assertThat(values).containsExactly("a5", "b4", "c3", "d2", "e1");
+  }
+
+  @Test
+  void orderByRidWithIndexedEqualityOnSinglePropertyIndex() {
+    final List<RID> rids = ridsOf("SELECT FROM K WHERE p = 1 ORDER BY @rid");
+
+    assertThat(rids).hasSize(5);
+    for (int i = 0; i < rids.size() - 1; i++)
+      assertThat(rids.get(i).getPosition()).isLessThan(rids.get(i + 1).getPosition());
+
+    final String plan = explain("SELECT FROM K WHERE p = 1 ORDER BY @rid");
+    assertThat(plan).contains("FETCH FROM INDEX");
+    assertThat(plan).contains("ORDER BY");
   }
 
   @Test
