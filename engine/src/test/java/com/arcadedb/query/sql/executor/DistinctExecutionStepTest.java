@@ -130,6 +130,40 @@ class DistinctExecutionStepTest extends TestHelper {
     result.close();
   }
 
+  /**
+   * Regression test for issue #6923: the planner turns SKIP+LIMIT into a Top-K bound on the ORDER BY step,
+   * which used to truncate the sort buffer to SKIP+LIMIT rows before DISTINCT got a chance to dedup them, so
+   * fewer rows than LIMIT asked for came back.
+   */
+  @Test
+  void shouldReturnDistinctWithOrderByAndLimit() {
+    database.getSchema().createDocumentType("Staff");
+
+    database.transaction(() -> {
+      database.newDocument("Staff").set("department", "Engineering").save();
+      database.newDocument("Staff").set("department", "Engineering").save();
+      database.newDocument("Staff").set("department", "Sales").save();
+    });
+
+    final ResultSet limited = database.query("sql",
+        "SELECT DISTINCT department FROM Staff ORDER BY department ASC LIMIT 2");
+
+    assertThat(limited.hasNext()).isTrue();
+    assertThat(limited.next().<String>getProperty("department")).isEqualTo("Engineering");
+    assertThat(limited.hasNext()).isTrue();
+    assertThat(limited.next().<String>getProperty("department")).isEqualTo("Sales");
+    assertThat(limited.hasNext()).isFalse();
+    limited.close();
+
+    final ResultSet skipped = database.query("sql",
+        "SELECT DISTINCT department FROM Staff ORDER BY department ASC SKIP 1 LIMIT 1");
+
+    assertThat(skipped.hasNext()).isTrue();
+    assertThat(skipped.next().<String>getProperty("department")).isEqualTo("Sales");
+    assertThat(skipped.hasNext()).isFalse();
+    skipped.close();
+  }
+
   @Test
   void shouldReturnDistinctWithLimit() {
     database.getSchema().createDocumentType("Tag");

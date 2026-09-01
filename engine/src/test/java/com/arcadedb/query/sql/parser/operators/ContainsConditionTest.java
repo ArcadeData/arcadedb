@@ -87,4 +87,24 @@ class ContainsConditionTest {
 
     assertThat(op.execute(nullList, nullList)).isTrue();
   }
+
+  /**
+   * Regression test for issue #6984: a String[] left-hand side - such as the result of split() - satisfies
+   * neither `instanceof Collection` nor `instanceof Iterable` (arrays don't implement Iterable), so it used
+   * to fall through to the final `return false` instead of being matched against the scalar/collection on
+   * the right.
+   */
+  @Test
+  void issue6984ArrayLeftHandSide() {
+    final ContainsCondition op = new ContainsCondition();
+
+    final String[] left = "a b c".split(" ");
+
+    assertThat(op.execute(left, "a")).isTrue();
+    assertThat(op.execute(left, "z")).isFalse();
+
+    final int[] primitiveLeft = { 1, 2, 3 };
+    assertThat(op.execute(primitiveLeft, 2)).isTrue();
+    assertThat(op.execute(primitiveLeft, 5)).isFalse();
+  }
 }
