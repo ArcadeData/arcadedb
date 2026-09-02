@@ -135,6 +135,30 @@ class CypherVectorQueryNodesDuplicateTest extends TestHelper {
     assertThat(new LinkedHashSet<>(uuids)).as("rows %s must all be distinct records", uuids).hasSize(6);
   }
 
+  /**
+   * A huge {@code k} must be answered from the records that exist, not sized for. On the non-grouped path
+   * {@code limit} is the raw caller-supplied value - checked only for {@code <= 0}, since the
+   * {@code MAX_FETCH_CANDIDATES} budget guards the grouped path alone - and the per-record dedup set has to be
+   * sized from the candidates actually fetched. Sizing it from {@code k} would have {@code RidHashSet} round
+   * {@link Integer#MAX_VALUE} up to a negative capacity and throw {@code NegativeArraySizeException} before a
+   * single record was read, and a merely large {@code k} claim gigabytes for an index holding a hundred rows.
+   */
+  @Test
+  void vectorNeighborsSurvivesAnUnboundedLimit() {
+    final Map<String, Object> params = new HashMap<>();
+    params.put("v", vector(3));
+
+    final List<String> uuids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql",
+        "SELECT expand(vector.neighbors('Entity[name_embedding]', :v, " + Integer.MAX_VALUE + "))", params)) {
+      while (rs.hasNext())
+        uuids.add(rs.next().getProperty("uuid"));
+    }
+
+    assertThat(uuids).hasSize(NODES);
+    assertThat(new LinkedHashSet<>(uuids)).hasSize(NODES);
+  }
+
   /** The ordinary case: nothing anomalous, and the answer must stay exactly what it was. */
   @Test
   void queryNodesStillReturnsTheNearestNodesInOrder() {

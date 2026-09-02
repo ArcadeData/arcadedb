@@ -271,7 +271,15 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // One record, one row. This list is the concatenation of one search per index, so a record offered by more than
     // one of them would otherwise take two of the caller's `limit` slots - and, under groupBy, two slots of its own
     // group's cap (issue #7057). The list is already sorted, so the sighting kept is the nearest one.
-    final RidHashSet emitted = new RidHashSet(Math.max(limit, 16));
+    //
+    // Sized from the candidates actually fetched, never from `limit`. On the non-grouped path `limit` is the raw
+    // caller-supplied k, checked only for `<= 0` - the MAX_FETCH_CANDIDATES budget above guards the grouped path
+    // alone. RidHashSet allocates an int[] and a long[] of the next power of two up front, so sizing off k would
+    // let `vector.neighbors(idx, v, 100000000)` claim ~1.5GB before looking at a single record, and a k near
+    // Integer.MAX_VALUE would overflow the rounding to a negative capacity and throw NegativeArraySizeException.
+    // That is the hazard issue #5924 already closed one layer down, where findNeighborsFromVector clamps k against
+    // the real candidate count; allNeighbors.size() is that clamp having already happened, per index and summed.
+    final RidHashSet emitted = new RidHashSet(Math.min(limit, allNeighbors.size()));
 
     for (final Pair<RID, Float> neighbor : allNeighbors) {
       // Stop conditions:
