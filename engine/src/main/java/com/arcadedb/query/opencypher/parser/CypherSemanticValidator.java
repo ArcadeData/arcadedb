@@ -348,9 +348,17 @@ public class CypherSemanticValidator {
     for (final NodePattern node : path.getNodes())
       if (node.getVariable() != null)
         declareVar(node.getVariable(), VarType.NODE, scope, declaredHere);
-    for (final RelationshipPattern rel : path.getRelationships())
+    for (final RelationshipPattern rel : path.getRelationships()) {
       if (rel.getVariable() != null)
         declareVar(rel.getVariable(), VarType.RELATIONSHIP, scope, declaredHere);
+      // A GQL quantified path pattern (issue #4531) also declares its inner variables, which bind
+      // outside the group to one list element per repetition. They are declared as plain values, not
+      // as NODE/RELATIONSHIP: the name holds a LIST<NODE> or LIST<RELATIONSHIP>, so the structural
+      // rules those kinds carry do not apply to it.
+      if (rel instanceof QuantifiedPathPattern quantified)
+        for (final String groupVariable : quantified.getGroupVariables())
+          declareVar(groupVariable, VarType.SCALAR, scope, declaredHere);
+    }
   }
 
   /**
@@ -472,9 +480,13 @@ public class CypherSemanticValidator {
     for (final NodePattern node : path.getNodes())
       if (node.getVariable() != null)
         boundVars.add(node.getVariable());
-    for (final RelationshipPattern rel : path.getRelationships())
+    for (final RelationshipPattern rel : path.getRelationships()) {
       if (rel.getVariable() != null)
         boundVars.add(rel.getVariable());
+      // Group variables of a quantified path pattern are bound by the MATCH too (issue #4531)
+      if (rel instanceof QuantifiedPathPattern quantified)
+        boundVars.addAll(quantified.getGroupVariables());
+    }
   }
 
   private void checkCreateBinding(final PathPattern path, final Set<String> boundVars) {
