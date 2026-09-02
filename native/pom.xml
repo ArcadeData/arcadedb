@@ -63,16 +63,31 @@
             language embed into the image.
 
             DEPENDABOT WILL TRY TO BUMP THIS AND MUST BE REFUSED unless native-image.yml's
-            java-version moves in the same change. Its last attempt (3fecba4bf, merged [skip ci] as
-            d463a31d0) raised this to 25.2.4 and broke every native leg with exactly the
-            getLoopNodeFactory() error above. 25.2.4 is NOT a drop-in for the builder: it is a
-            GraalVM intermediate release, published by graalvm/graalvm-ce-builds under the tag
-            graal-25.2.4 with assets named graalvm-community-jdk-25i2-25.0.4_*, which
-            graalvm/setup-graalvm cannot select through a plain java-version. jdk-25.0.2 is the
-            newest mainline JDK 25 Community build, so 25.0.2 is the version both sides can agree
-            on. A newer pin needs the builder side proven first.
+            java-version moves in the same change. It has now got through twice:
+
+              1. 3fecba4bf (merged [skip ci] as d463a31d0) raised this to 25.2.4 and broke every
+                 native leg with exactly the getLoopNodeFactory() error above. Reverted, and this
+                 warning written, by #5811 (1ca1bc4420).
+              2. b53c48c1e2 (merged [skip ci] as e32e663604) then raised it to 25.3.4.1 from a base
+                 that still said 25.2.4, silently undoing that revert, and broke all three legs of
+                 run 33608446679 the same way.
+
+            Neither of those is a version the builder can be moved to. Both are GraalVM
+            INTERMEDIATE releases, published by graalvm/graalvm-ce-builds under the tags
+            graal-25.2.4 and graal-25.3.4.1, whose assets are named graalvm-community-jdk-25i2-*
+            and graalvm-community-jdk-25i3-* - graalvm/setup-graalvm cannot select either through a
+            plain java-version. jdk-25.0.2 is still the newest mainline JDK 25 Community build, so
+            25.0.2 remains the version both sides can agree on. A newer pin needs the builder side
+            proven first.
+
+            A comment is not a control: it did not stop attempt 2, because .mergify.yml auto-merges
+            a dependabot PR on one approval with no green-CI condition, and stamps [skip ci] on the
+            merge so main never re-tests it either. The enforcement now lives in
+            .github/scripts/check-native-graalvm-pin.py, which fails the always-on `lint` job the
+            moment this property and native-image.yml's java-version disagree, and .mergify.yml no
+            longer auto-merges a PR that touches this file.
         -->
-        <native.graalvm.version>25.3.4.1</native.graalvm.version>
+        <native.graalvm.version>25.0.2</native.graalvm.version>
         <!--
             Flag plumbed through by the CI matrix (native-image.yml) for the linux/amd64 job.
             Activates the native-static profile below, which appends the fully-static musl

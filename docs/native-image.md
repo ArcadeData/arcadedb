@@ -20,7 +20,9 @@ treat it as best-effort outside Linux.
   the GraalVM polyglot/Truffle artifacts (`graal-sdk`, `polyglot`, `js-language`, `truffle-*`, etc.)
   to `25.0.2` to match the builder exactly; a Truffle version skew between the builder and those
   artifacts fails the build at feature registration (`NoSuchMethodError:
-  OptimizedTruffleRuntime.getLoopNodeFactory()`).
+  OptimizedTruffleRuntime.getLoopNodeFactory()`). That error names neither file, and two Dependabot
+  bumps have shipped the skew, so `.github/scripts/check-native-graalvm-pin.py` now enforces the
+  equality in the always-on `lint` job. Move both sides in the same change, or neither.
 - **`JAVA_HOME` (and `GRAALVM_HOME`) must point at the GraalVM home itself.** The
   `native-maven-plugin` resolves the native-image builder from `JAVA_HOME`/`GRAALVM_HOME`, not by
   searching `PATH` for a `native-image` executable. A version-manager shim (jenv, sdkman shell

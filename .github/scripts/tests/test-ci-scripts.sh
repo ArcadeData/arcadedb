@@ -29,6 +29,7 @@ DBDOCSSYNC="$SCRIPTS/check-database-docs-sync.py"
 CONTROLCHARS="$SCRIPTS/check-source-control-chars.py"
 NEEDSOUTPUTS="$SCRIPTS/check-workflow-needs-outputs.py"
 STATUSCOMPLETE="$SCRIPTS/check-ci-status-completeness.py"
+GRAALVMPIN="$SCRIPTS/check-native-graalvm-pin.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -1380,6 +1381,132 @@ jobs:
 YAML
 expect "reports a workflow it cannot parse as YAML" 1 "not parseable as YAML" \
     "$STATUSCOMPLETE" "$work/status-unparseable"
+
+echo "check-native-graalvm-pin.py"
+
+# A tiny helper: these cases only ever vary the pinned property and the installed java-version, so
+# writing two whole files per case would bury the one number that matters in boilerplate.
+graalvm_pom() {
+    cat >"$1" <<XML
+<project>
+    <properties>
+        <native.graalvm.version>$2</native.graalvm.version>
+    </properties>
+</project>
+XML
+}
+
+graalvm_workflow() {
+    local path="$1" java_version="$2" step_name="${3:-Set up GraalVM}"
+    cat >"$path" <<YAML
+name: Native Image
+on: [ workflow_dispatch ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: $step_name
+        uses: graalvm/setup-graalvm@5298d94fb55a4f185c602eeac5de1b553882abe2 # v1.6.1
+        with:
+          java-version: "$java_version"
+          distribution: "graalvm-community"
+YAML
+}
+
+mkdir -p "$work/graalvm"
+
+# The happy path: a mainline three-component pin the builder can actually be set to.
+graalvm_pom "$work/graalvm/ok-pom.xml" 25.0.2
+graalvm_workflow "$work/graalvm/ok.yml" 25.0.2 "Set up GraalVM (Community, JDK 25.0.2)"
+expect "accepts a pin equal to the builder java-version" 0 "consistent" \
+    "$GRAALVMPIN" "$work/graalvm/ok-pom.xml" "$work/graalvm/ok.yml"
+
+# The regression this script exists for: run 33608446679, where dependabot's b53c48c1e2 left the
+# pom at 25.3.4.1 while the workflow still installed 25.0.2. All three native legs died in
+# TruffleBaseFeature.afterRegistration.
+graalvm_pom "$work/graalvm/skew-pom.xml" 25.3.4.1
+graalvm_workflow "$work/graalvm/skew.yml" 25.0.2
+expect "rejects the b53c48c1e2 skew (pom 25.3.4.1, builder 25.0.2)" 1 "getLoopNodeFactory" \
+    "$GRAALVMPIN" "$work/graalvm/skew-pom.xml" "$work/graalvm/skew.yml"
+
+# Making the two sides "agree" on an intermediate release is not a fix: setup-graalvm cannot select
+# graal-25.3.4.1 through a plain java-version, so this would just fail one step earlier.
+graalvm_pom "$work/graalvm/intermediate-pom.xml" 25.3.4.1
+graalvm_workflow "$work/graalvm/intermediate.yml" 25.3.4.1
+expect "rejects an intermediate release even when both sides agree" 1 "INTERMEDIATE" \
+    "$GRAALVMPIN" "$work/graalvm/intermediate-pom.xml" "$work/graalvm/intermediate.yml"
+
+# The step name is the first thing a reader sees, so it may not name a version other than the one
+# it installs.
+graalvm_pom "$work/graalvm/stale-name-pom.xml" 25.0.2
+graalvm_workflow "$work/graalvm/stale-name.yml" 25.0.2 "Set up GraalVM (Community, JDK 24.0.2)"
+expect "rejects a step name that contradicts the version it installs" 1 "names a version other than" \
+    "$GRAALVMPIN" "$work/graalvm/stale-name-pom.xml" "$work/graalvm/stale-name.yml"
+
+# A version-free step name is not a contradiction, so it passes.
+graalvm_pom "$work/graalvm/plain-name-pom.xml" 25.0.2
+graalvm_workflow "$work/graalvm/plain-name.yml" 25.0.2 "Set up GraalVM"
+expect "accepts a step name that names no version at all" 0 "consistent" \
+    "$GRAALVMPIN" "$work/graalvm/plain-name-pom.xml" "$work/graalvm/plain-name.yml"
+
+# Fail closed: a workflow that no longer sets up GraalVM leaves nothing to compare, and passing on
+# nothing is exactly how the pin drifted unnoticed.
+graalvm_pom "$work/graalvm/no-setup-pom.xml" 25.0.2
+cat >"$work/graalvm/no-setup.yml" <<'YAML'
+name: Native Image
+on: [ workflow_dispatch ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo building
+YAML
+expect "reports a workflow with no setup-graalvm step" 1 "no graalvm/setup-graalvm step" \
+    "$GRAALVMPIN" "$work/graalvm/no-setup-pom.xml" "$work/graalvm/no-setup.yml"
+
+# Same posture on the other side: a renamed or deleted property is reported, not skipped.
+cat >"$work/graalvm/no-property-pom.xml" <<'XML'
+<project>
+    <properties>
+        <graalvm.version>25.0.2</graalvm.version>
+    </properties>
+</project>
+XML
+graalvm_workflow "$work/graalvm/no-property.yml" 25.0.2
+expect "reports a pom with no native.graalvm.version property" 1 "no <native.graalvm.version>" \
+    "$GRAALVMPIN" "$work/graalvm/no-property-pom.xml" "$work/graalvm/no-property.yml"
+
+# An unpinned builder is a skew waiting to happen, so it is a failure rather than a pass.
+graalvm_pom "$work/graalvm/unpinned-pom.xml" 25.0.2
+cat >"$work/graalvm/unpinned.yml" <<'YAML'
+name: Native Image
+on: [ workflow_dispatch ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@5298d94fb55a4f185c602eeac5de1b553882abe2 # v1.6.1
+        with:
+          distribution: "graalvm-community"
+YAML
+expect "reports a setup-graalvm step that pins no java-version" 1 "sets no java-version" \
+    "$GRAALVMPIN" "$work/graalvm/unpinned-pom.xml" "$work/graalvm/unpinned.yml"
+
+# Same as the sibling scripts: a workflow that will not parse is reported, never silently skipped.
+graalvm_pom "$work/graalvm/broken-pom.xml" 25.0.2
+cat >"$work/graalvm/broken.yml" <<'YAML'
+name: broken
+on: [workflow_dispatch
+jobs:
+  build:
+YAML
+expect "reports a workflow it cannot parse as YAML" 1 "not parseable as YAML" \
+    "$GRAALVMPIN" "$work/graalvm/broken-pom.xml" "$work/graalvm/broken.yml"
+
+# The repository's own two files must agree - this is the case that would have caught b53c48c1e2.
+expect "the repository's own native pin matches its own workflow" 0 "consistent" \
+    "$GRAALVMPIN"
 
 echo
 if [[ $failures -gt 0 ]]; then
