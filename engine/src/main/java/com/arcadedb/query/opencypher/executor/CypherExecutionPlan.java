@@ -400,6 +400,9 @@ public class CypherExecutionPlan {
       final List<ResultInternal> allResults = new ArrayList<>();
       final Set<String> seen = removeDuplicates ? new HashSet<>() : null;
       for (final CypherExecutionPlan branchPlan : branchPlans) {
+        // No inherit() here on purpose: the branch runs through this same method with the REAL outerContext,
+        // so it takes the non-union path below and does its own inherit under the same gate. A second copy
+        // here would be one more thing to keep in step with that gate (issue #6977).
         final ResultSet rs = branchPlan.executeWithSeedRow(seedRow, outerContext);
         while (rs.hasNext()) {
           unionGuard.check();

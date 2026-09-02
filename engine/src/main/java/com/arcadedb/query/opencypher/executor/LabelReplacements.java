@@ -192,6 +192,14 @@ public final class LabelReplacements {
   public void redirect(final Result row) {
     if (row == null || vertices.isEmpty())
       return;
+    // The ResultInternal cast below is unguarded where SubqueryStep.refreshDocumentBindings guards its own, and
+    // deliberately so rather than by oversight. Both plan shapes feed the write steps ResultInternal rows -
+    // the optimizer is not disabled by a REMOVE/SET after the MATCH, but its NodeByLabelScan/ExpandAll chain
+    // materializes ResultInternal, and the one Result that is not (GAVResult, from the fused GAV chain) has
+    // no path into a label write today. Should one appear, failing loudly is the answer that matches what
+    // this method is for: skipping silently would leave the row pointing at the record the write deleted,
+    // which is the defect the class exists to prevent, whereas the refresh next door is an optimisation that
+    // is allowed to decline.
     for (final String name : row.getPropertyNames()) {
       final Object value = row.getProperty(name);
       final Object live = redirectValue(value);
