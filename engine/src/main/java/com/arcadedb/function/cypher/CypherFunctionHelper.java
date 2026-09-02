@@ -378,9 +378,12 @@ public final class CypherFunctionHelper {
    * map - is what lets a nested plan join a statement clock its enclosing plan has not needed yet.
    * <p>
    * Not synchronized, exactly like the context variable it replaces: one statement's expressions are evaluated
-   * by the thread executing it.
+   * by the thread executing it. The one machinery that would break that assumption - {@code BasicCommandContext.copy()}
+   * handing each parallel worker a shallow copy of the variables map, as {@code FetchFromTypeExecutionStep}'s
+   * parallel bucket scan does - is reachable only from the SQL planners, and every function reading this clock is
+   * Cypher-only. A parallel scan on the Cypher side would have to revisit this.
    */
-  public static final class StatementClock {
+  private static final class StatementClock {
     private Map<String, Object> values;
 
     private Map<String, Object> values() {

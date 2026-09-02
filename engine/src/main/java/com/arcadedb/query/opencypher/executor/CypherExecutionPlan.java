@@ -423,8 +423,10 @@ public class CypherExecutionPlan {
       ctx.setDatabase(database);
       ctx.setInputParameters(parameters);
       setupFunctionResolver(ctx);
+      // The deadline is inherited because the WorkGuard below reads it; nothing else is, because nothing else
+      // is read. No expression is ever evaluated against this ctx - each branch re-enters this method with the
+      // REAL outerContext - so inheriting the statement clock here would be dead weight.
       inheritCommandDeadline(ctx, outerContext);
-      CypherFunctionHelper.inheritStatementTime(ctx, outerContext);
 
       // Execute each branch with the seed row, collect all results
       final WorkGuard unionGuard = WorkGuard.forCommandDeadline(ctx);
