@@ -72,14 +72,31 @@ public class SuffixIdentifier extends SimpleNode {
     }
   }
 
+  /**
+   * Whether {@code name} names a context variable rather than a property of the record being evaluated: a user-visible
+   * {@code $variable}, or one of the {@code _$$$...} aliases the planner generates when it lifts a sub-query out of an
+   * expression ({@link SubQueryCollector}) or splits an aggregate projection ({@link AggregateProjectionSplit}) into a
+   * LET clause. No record can own a property under either spelling, so the context is the only place such a name can be
+   * resolved from - and every overload of {@code execute()} has to agree on that, or the same condition answers
+   * differently depending on whether the row reaching it happens to be a {@link Result} or an {@link Identifiable}
+   * (issue #7054: {@code $nested CONTAINS (@rid IN (SELECT ...))} hands each item over as an Identifiable, so the
+   * lifted sub-query resolved to null and the condition was never true).
+   */
+  private static boolean isContextVariable(final String name) {
+    return name.startsWith("$") || name.startsWith("_$$$");
+  }
+
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
     if (star) {
       return currentRecord;
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && varName.startsWith("$") && context.getVariable(varName) != null)
-        return context.getVariable(varName);
+      if (context != null && isContextVariable(varName)) {
+        final Object ctxVar = context.getVariable(varName);
+        if (ctxVar != null)
+          return ctxVar;
+      }
 
       if (currentRecord != null) {
         final Record record = currentRecord.getRecord();
@@ -130,7 +147,7 @@ public class SuffixIdentifier extends SimpleNode {
       if (currentRecord != null && varName.startsWith("$") && currentRecord.getMetadataKeys().contains(varName)) {
         return currentRecord.getMetadata(varName);
       }
-      if (context != null && (varName.startsWith("$") || varName.startsWith("_$$$"))) {
+      if (context != null && isContextVariable(varName)) {
         final Object ctxVar = context.getVariable(varName);
         if (ctxVar != null) {
           return ctxVar;
