@@ -62,6 +62,15 @@ import java.util.logging.Level;
  * instance there lives for exactly one row, so the second outer row met the vertex the first one had deleted and the
  * label write followed a RID that was gone (issue #6977). {@link #inherit} is what carries the enclosing statement's
  * map into such a nested plan's own context.
+ * <p>
+ * <b>What the wider scope costs.</b> The map is keyed by RID, and a RID is a physical position, so a slot freed
+ * by the delete inside {@link #replace} can in principle be handed to a record created later in the same
+ * statement - which {@link #resolve} would then answer for with the replacement of the record that used to live
+ * there. The window was one step's rows before and is the statement's now, so the scope change widens it rather
+ * than opening it, and nothing here has been observed to reach it: {@link #replace} creates the replacement
+ * before deleting the original, so the two can never collide, and only a separate later insert landing on the
+ * exact freed slot could. Recorded because it is the one thing the wider scope makes more likely, not because
+ * a reproduction exists.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
