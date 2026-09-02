@@ -138,7 +138,25 @@ public abstract class ExpressionRewriter {
     if (expression instanceof StarExpression)
       return visitStar((StarExpression) expression);
 
-    // Unknown expression type: return as-is
+    // Unknown expression type: hand it to the fail-open/fail-closed hook below.
+    return visitUnknown(expression);
+  }
+
+  /**
+   * Handles an expression whose concrete type {@code rewriteDispatch} does not know.
+   * <p>
+   * The default is to fail OPEN - return the node untouched, without descending into whatever it
+   * wraps - which is right for a rewriter: a rewrite that does not reach a subtree merely misses an
+   * optimization. A subclass whose answer is a SAFETY property rather than an optimization must
+   * override this and fail CLOSED, because for it a subtree the walk never reached is a wrong answer
+   * and not a missed one. {@code CypherExecutionPlan.GraphReadDetector} is such a subclass.
+   * <p>
+   * Two live types reach this today: {@code TernaryLogicalExpression}, which the general expression
+   * parser builds for a top-level {@code AND}/{@code OR}/{@code XOR}/{@code NOT}, and
+   * {@code CypherExpressionBuilder.ChainedPropertyAccessExpression}, which is package-private and so
+   * cannot be dispatched on from here at all.
+   */
+  protected Object visitUnknown(final Object expression) {
     return expression;
   }
 
