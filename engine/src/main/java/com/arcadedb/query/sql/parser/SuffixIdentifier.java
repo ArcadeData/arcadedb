@@ -190,8 +190,15 @@ public class SuffixIdentifier extends SimpleNode {
       if (context != null && "$parent".equalsIgnoreCase(varName))
         return context.getParent();
 
-      if (context != null && context.getVariable(varName) != null)
-        return context.getVariable(varName);
+      // Same predicate as the other two overloads, and for the same reason. Without it this one asked the context about
+      // EVERY name, so a plain map key was shadowed by any context variable that happened to share it: `$m.name` with a
+      // `LET $name = ...` in scope answered the variable instead of the map entry, and a database global variable could
+      // shadow a key with no LET involved at all.
+      if (context != null && isContextVariable(varName)) {
+        final Object ctxVar = context.getVariable(varName);
+        if (ctxVar != null)
+          return ctxVar;
+      }
 
       if (currentRecord != null)
         return currentRecord.get(varName);
