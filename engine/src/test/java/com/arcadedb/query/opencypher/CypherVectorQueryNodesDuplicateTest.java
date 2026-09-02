@@ -71,9 +71,12 @@ class CypherVectorQueryNodesDuplicateTest extends TestHelper {
 
   /**
    * The reported shape. A type whose {@link TypeIndex} carries the same bucket sub-index twice - which
-   * {@link TypeIndex#addIndexOnBucket} accepts without complaint, and which a schema holding a stale definition
-   * beside the one that replaced it produces - made the procedure search the same records twice and concatenate the
-   * two answers. Before the fix this returned the issue's numbers exactly: 6 rows, 3 distinct.
+   * {@link TypeIndex#addIndexOnBucket} accepts without complaint - made the procedure search the same records twice
+   * and concatenate the two answers. Before the fix this returned the issue's numbers exactly: 6 rows, 3 distinct.
+   * <p>
+   * The same sub-index, not two different ones on one bucket: the schema rejects a second index over an
+   * already-indexed property set outright ("A type holds one index per property set"), so listing one index twice is
+   * the only multiplicity this fan-out can actually meet.
    */
   @Test
   void queryNodesReturnsDistinctNodesWhenTheSameSubIndexIsAttachedTwice() {

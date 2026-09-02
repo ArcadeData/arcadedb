@@ -26,12 +26,12 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RidHashSet;
@@ -233,34 +233,17 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
   }
 
   /**
-   * Collects the vector sub-indexes to search, at most one per bucket.
-   * <p>
-   * {@link TypeIndex#addIndexOnBucket} appends without checking, and a schema carrying two entries for the same
-   * bucket and property - a stale definition left beside the one that replaced it - attaches both. The two describe
-   * the same records, so searching both returns every record twice: k rows holding k/2 distinct nodes, which is
-   * issue #7057. Only the first sub-index on a bucket is searched; a second one can contribute nothing the first
-   * did not already have, so this removes the wasted search rather than merely cleaning up after it.
-   * </p>
+   * Resolves the vector sub-indexes to search. See
+   * {@link VectorUtils#collectVectorSubIndexes(IndexInternal[], java.util.function.IntPredicate)} for why the same
+   * sub-index can be listed twice and why the guard is on identity rather than on the bucket id (issue #7057).
    */
   private List<LSMVectorIndex> filterVectorIndexes(final TypeIndex typeIndex, final Set<Integer> allowedBucketIds) {
-    final var bucketIndexes = typeIndex.getIndexesOnBuckets();
+    final IndexInternal[] bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null || bucketIndexes.length == 0)
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
 
-    final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
-    final IntHashSet searchedBucketIds = new IntHashSet();
-    for (final IndexInternal bucketIndex : bucketIndexes) {
-      if (bucketIndex instanceof LSMVectorIndex lsmIndex) {
-        final int bucketId = bucketIndex.getAssociatedBucketId();
-        if (allowedBucketIds != null && !allowedBucketIds.contains(bucketId))
-          continue;
-        // A negative id means the sub-index is not bound to a bucket, which cannot be deduplicated by bucket and is
-        // left alone rather than collapsed onto whatever else reports the same sentinel.
-        if (bucketId >= 0 && !searchedBucketIds.add(bucketId))
-          continue;
-        vectorIndexes.add(lsmIndex);
-      }
-    }
+    final List<LSMVectorIndex> vectorIndexes = VectorUtils.collectVectorSubIndexes(bucketIndexes,
+        allowedBucketIds == null ? null : allowedBucketIds::contains);
 
     if (vectorIndexes.isEmpty())
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' is not a vector index");

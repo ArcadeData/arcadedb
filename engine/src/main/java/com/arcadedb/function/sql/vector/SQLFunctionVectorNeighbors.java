@@ -174,24 +174,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
     }
 
-    // Filter bucket indexes if a specific type was requested, and search each bucket at most once.
-    // TypeIndex.addIndexOnBucket appends without checking, so a schema carrying two entries for the same bucket and
-    // property - a stale definition left beside the one that replaced it - attaches both. The two describe the same
-    // records, so searching both returns every record twice (issue #7057).
-    final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
-    final IntHashSet searchedBucketIds = new IntHashSet();
-    for (final IndexInternal bucketIndex : bucketIndexes) {
-      if (bucketIndex instanceof LSMVectorIndex lsmIndex) {
-        final int bucketId = bucketIndex.getAssociatedBucketId();
-        if (allowedBucketIds != null && !allowedBucketIds.contains(bucketId))
-          continue;
-        // A negative id means the sub-index is not bound to a bucket, which cannot be deduplicated by bucket and is
-        // left alone rather than collapsed onto whatever else reports the same sentinel.
-        if (bucketId >= 0 && !searchedBucketIds.add(bucketId))
-          continue;
-        vectorIndexes.add(lsmIndex);
-      }
-    }
+    // Filter bucket indexes if a specific type was requested, and visit each sub-index at most once. See
+    // VectorUtils.collectVectorSubIndexes for why the same sub-index can be listed twice (issue #7057).
+    final List<LSMVectorIndex> vectorIndexes = VectorUtils.collectVectorSubIndexes(bucketIndexes,
+        allowedBucketIds == null ? null : allowedBucketIds::contains);
 
     if (vectorIndexes.isEmpty()) {
       if (allowedBucketIds != null) {
