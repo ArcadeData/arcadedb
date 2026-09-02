@@ -57,13 +57,17 @@ public class ForeachStep extends AbstractExecutionStep {
 
   /**
    * When true, the whole upstream row set is read to completion before the first FOREACH iteration
-   * runs. Needed only when the MATCH feeding this FOREACH has disconnected path patterns (see
-   * {@link com.arcadedb.query.opencypher.ast.MatchClause#hasDisconnectedPathPatterns(java.util.List)})
-   * AND this FOREACH's body contains a DELETE ({@link ForeachClause#containsDelete()}): such a MATCH
-   * can bind the same underlying vertex/edge across more than one output row, and a DELETE inside one
-   * iteration's body removing it while a later row is still being produced makes that row dereference
-   * an already-removed record (issue #6491) - the identical hazard {@code DeleteStep} guards against,
-   * just reached through FOREACH's own row-by-row loop instead.
+   * runs. Needed only when this FOREACH's body contains a DELETE ({@link ForeachClause#containsDelete()})
+   * AND the MATCH feeding this FOREACH can let a later row observe what an earlier row's DELETE already
+   * removed - either because it has disconnected path patterns (see
+   * {@link com.arcadedb.query.opencypher.ast.MatchClause#hasDisconnectedPathPatterns(java.util.List)}),
+   * which can bind the same underlying vertex/edge across more than one output row (issue #6491), or
+   * because it has a variable-length/quantified relationship (see
+   * {@link com.arcadedb.query.opencypher.ast.MatchClause#hasVariableLengthRelationships(java.util.List)}),
+   * whose traverser keeps edge-segment cursors open across the rows it is still producing (issue #7023).
+   * Either way, a DELETE inside one iteration's body removing an entity while a later row is still being
+   * produced makes that row dereference an already-removed record - the identical hazard
+   * {@code DeleteStep} guards against, just reached through FOREACH's own row-by-row loop instead.
    */
   private final boolean eagerMaterialize;
 
