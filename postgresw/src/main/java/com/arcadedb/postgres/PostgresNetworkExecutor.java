@@ -421,8 +421,12 @@ public class PostgresNetworkExecutor extends Thread {
           resolvePortalColumns(portal);
         answerWithColumns(portal);
       } else
-        // No rows are coming: an INSERT/UPDATE/DELETE portal, or SAVEPOINT/RELEASE/ROLLBACK TO/SET, which
-        // carry no statement and never produce a result (issue #6930).
+        // In practice, SAVEPOINT/RELEASE/ROLLBACK TO/SET and nothing else (issue #6930): they are the only
+        // portals that carry no statement, never produce a result, and never get columns. An INSERT/UPDATE/
+        // DELETE does NOT land here - it is run by the first arm and announced under whatever columns its
+        // rows carried, empty ones included, exactly like the {cypher} write with no RETURN. The arm is kept
+        // general rather than written as `ignoreExecution` because it is also the backstop that keeps the
+        // reply count right: whatever state a portal reaches Describe in, it leaves with exactly one answer.
         writeNoData();
     } else if (type == 'S') {
       // Describe Statement: send ParameterDescription followed by RowDescription/NoData
