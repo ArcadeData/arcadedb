@@ -31,8 +31,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.RidHashSet;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.math.BigDecimal;
@@ -130,8 +132,19 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     final int resultCount = Math.min(limit, allNeighbors.size());
     final List<Result> results = new ArrayList<>(resultCount);
 
-    for (int i = 0; i < resultCount; i++) {
-      final Pair<RID, Float> neighbor = allNeighbors.get(i);
+    // One node, one row: the Neo4j procedure this mirrors promises k rows carrying k DISTINCT nodes, and every
+    // consumer taking the top k relies on it. Nothing upstream can promise it on its own - this list is the
+    // concatenation of one search per resolved index, and a single record can be offered by more than one of them
+    // (issue #7057). Deduplicating here, after the sort, keeps each node at its NEAREST distance and lets the walk
+    // continue past a repeat, so a k that was silently halved comes back full instead of merely unduplicated.
+    final RidHashSet emitted = new RidHashSet(Math.max(resultCount, 16));
+
+    for (final Pair<RID, Float> neighbor : allNeighbors) {
+      if (results.size() == resultCount)
+        break;
+      if (!emitted.add(neighbor.getFirst()))
+        continue;
+
       final Document record = neighbor.getFirst().asDocument();
       final float distance = neighbor.getSecond();
 
@@ -219,16 +232,34 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
             (directIndex != null ? directIndex.getClass().getSimpleName() : "null") + ")");
   }
 
+  /**
+   * Collects the vector sub-indexes to search, at most one per bucket.
+   * <p>
+   * {@link TypeIndex#addIndexOnBucket} appends without checking, and a schema carrying two entries for the same
+   * bucket and property - a stale definition left beside the one that replaced it - attaches both. The two describe
+   * the same records, so searching both returns every record twice: k rows holding k/2 distinct nodes, which is
+   * issue #7057. Only the first sub-index on a bucket is searched; a second one can contribute nothing the first
+   * did not already have, so this removes the wasted search rather than merely cleaning up after it.
+   * </p>
+   */
   private List<LSMVectorIndex> filterVectorIndexes(final TypeIndex typeIndex, final Set<Integer> allowedBucketIds) {
     final var bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null || bucketIndexes.length == 0)
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
 
     final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
+    final IntHashSet searchedBucketIds = new IntHashSet();
     for (final IndexInternal bucketIndex : bucketIndexes) {
-      if (bucketIndex instanceof LSMVectorIndex lsmIndex)
-        if (allowedBucketIds == null || allowedBucketIds.contains(bucketIndex.getAssociatedBucketId()))
-          vectorIndexes.add(lsmIndex);
+      if (bucketIndex instanceof LSMVectorIndex lsmIndex) {
+        final int bucketId = bucketIndex.getAssociatedBucketId();
+        if (allowedBucketIds != null && !allowedBucketIds.contains(bucketId))
+          continue;
+        // A negative id means the sub-index is not bound to a bucket, which cannot be deduplicated by bucket and is
+        // left alone rather than collapsed onto whatever else reports the same sentinel.
+        if (bucketId >= 0 && !searchedBucketIds.add(bucketId))
+          continue;
+        vectorIndexes.add(lsmIndex);
+      }
     }
 
     if (vectorIndexes.isEmpty())

@@ -37,6 +37,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -173,13 +174,22 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
     }
 
-    // Filter bucket indexes if a specific type was requested
+    // Filter bucket indexes if a specific type was requested, and search each bucket at most once.
+    // TypeIndex.addIndexOnBucket appends without checking, so a schema carrying two entries for the same bucket and
+    // property - a stale definition left beside the one that replaced it - attaches both. The two describe the same
+    // records, so searching both returns every record twice (issue #7057).
     final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
+    final IntHashSet searchedBucketIds = new IntHashSet();
     for (final IndexInternal bucketIndex : bucketIndexes) {
       if (bucketIndex instanceof LSMVectorIndex lsmIndex) {
-        if (allowedBucketIds == null || allowedBucketIds.contains(bucketIndex.getAssociatedBucketId())) {
-          vectorIndexes.add(lsmIndex);
-        }
+        final int bucketId = bucketIndex.getAssociatedBucketId();
+        if (allowedBucketIds != null && !allowedBucketIds.contains(bucketId))
+          continue;
+        // A negative id means the sub-index is not bound to a bucket, which cannot be deduplicated by bucket and is
+        // left alone rather than collapsed onto whatever else reports the same sentinel.
+        if (bucketId >= 0 && !searchedBucketIds.add(bucketId))
+          continue;
+        vectorIndexes.add(lsmIndex);
       }
     }
 
@@ -272,6 +282,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
     final ArrayList<Object> result = new ArrayList<>();
     final GroupAdmissionState groups = groupBy != null ? new GroupAdmissionState(limit, groupSize) : null;
+    // One record, one row. This list is the concatenation of one search per index, so a record offered by more than
+    // one of them would otherwise take two of the caller's `limit` slots - and, under groupBy, two slots of its own
+    // group's cap (issue #7057). The list is already sorted, so the sighting kept is the nearest one.
+    final RidHashSet emitted = new RidHashSet(Math.max(limit, 16));
 
     for (final Pair<RID, Float> neighbor : allNeighbors) {
       // Stop conditions:
@@ -291,6 +305,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         break;
 
       final RID rid = neighbor.getFirst();
+      if (!emitted.add(rid))
+        continue;
+
       final Document record;
       try {
         record = (Document) db.lookupByRID(rid, true);
