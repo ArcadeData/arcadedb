@@ -61,6 +61,11 @@ jobs:
         run: ./.github/scripts/check-test-reporter-guards.py
       - name: Check source files for raw control bytes
         run: ./.github/scripts/check-source-control-chars.py
+      # native-image.yml runs only on dispatch/release, so nothing else in CI ever notices that its
+      # builder JDK and native/pom.xml's Truffle pin have drifted apart - two Dependabot bumps have
+      # now shipped that skew and broken every native leg. This is cheap and runs on every PR.
+      - name: Check native image GraalVM pin
+        run: ./.github/scripts/check-native-graalvm-pin.py
       - name: Check CI scripts
         run: ./.github/scripts/tests/test-ci-scripts.sh
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1

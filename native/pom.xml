@@ -53,26 +53,56 @@
         <maven.deploy.skip>true</maven.deploy.skip>
         <!--
             GraalVM polyglot/Truffle version used ONLY for the native image build. It MUST match the
-            native-image builder (GraalVM CE 25.0.2) shipped with the local GRAALVM_HOME and pinned
-            by native-image.yml's java-version, otherwise the in-image Truffle feature
-            (TruffleBaseFeature.afterRegistration) fails at build time with NoSuchMethodError
-            OptimizedTruffleRuntime.getLoopNodeFactory() because the SVM Truffle runtime bundled in
-            the builder is compiled against a different Truffle API than the one the engine pulls
-            transitively. Pinning here (native module only) leaves the JVM engine build untouched
-            (engine/pom.xml's own graalvm.version tracks latest independently) while letting the JS
+            native-image builder (GraalVM CE 25.2.4, which carries JDK 25.0.4) shipped with the
+            local GRAALVM_HOME and pinned by native-image.yml's `version` input, otherwise the
+            in-image Truffle feature (TruffleBaseFeature.afterRegistration) fails at build time with
+            NoSuchMethodError OptimizedTruffleRuntime.getLoopNodeFactory(), because the SVM Truffle
+            runtime bundled in the builder is compiled against a different Truffle API than the one
+            the engine pulls transitively. Pinning here (native module only) leaves the JVM engine
+            build untouched (engine/pom.xml's own graalvm.version tracks latest independently -
+            currently also 25.2.4, which is a coincidence, not a constraint) while letting the JS
             language embed into the image.
 
-            DEPENDABOT WILL TRY TO BUMP THIS AND MUST BE REFUSED unless native-image.yml's
-            java-version moves in the same change. Its last attempt (3fecba4bf, merged [skip ci] as
-            d463a31d0) raised this to 25.2.4 and broke every native leg with exactly the
-            getLoopNodeFactory() error above. 25.2.4 is NOT a drop-in for the builder: it is a
-            GraalVM intermediate release, published by graalvm/graalvm-ce-builds under the tag
-            graal-25.2.4 with assets named graalvm-community-jdk-25i2-25.0.4_*, which
-            graalvm/setup-graalvm cannot select through a plain java-version. jdk-25.0.2 is the
-            newest mainline JDK 25 Community build, so 25.0.2 is the version both sides can agree
-            on. A newer pin needs the builder side proven first.
+            HOW THE BUILDER IS SELECTED, because it is not the obvious input. setup-graalvm resolves
+            a Community build two ways, and only one of them can reach this version:
+
+              - `java-version` -> setUpGraalVMJDKCEByJavaVersion: requires exactly three
+                dot-components, then fetches the `jdk-<version>` release. Reaches MAINLINE builds
+                only.
+              - `version` -> setUpGraalVMJDKCE -> findReleaseTag: looks up `graal-<version>` FIRST
+                and `jdk-<version>` second. Reaches both.
+
+            25.2.4 is an INTERMEDIATE release - tag graal-25.2.4, assets
+            graalvm-community-jdk-25i2-25.0.4_* - so native-image.yml pins it through `version`.
+            Switching that step back to `java-version` would silently stop resolving this build.
+
+            DEPENDABOT WILL TRY TO BUMP THIS AND MUST BE REFUSED unless native-image.yml moves in
+            the same change. It has got through twice:
+
+              1. 3fecba4bf (merged [skip ci] as d463a31d0) raised this to 25.2.4 while the workflow
+                 stayed on java-version 25.0.2, and broke every native leg with exactly the
+                 getLoopNodeFactory() error above. Reverted, and this warning first written, by
+                 #5811 (1ca1bc4420). Note what that means: the VERSION was never the problem, only
+                 the skew - which is why the pin sits at 25.2.4 today, with the builder moved too.
+              2. b53c48c1e2 (merged [skip ci] as e32e663604) then raised it to 25.3.4.1 from a base
+                 that still said 25.2.4, silently undoing that revert, and broke all three legs of
+                 run 33608446679 the same way.
+
+            25.3.4.1 in particular must NEVER be pinned here: it is not installable by setup-graalvm
+            through either input. Its tag graal-25.3.4.1 exists, but node-semver rejects four
+            numeric components, so findLatestGraalVMCEVersion skips it as an "unexpected GraalVM CE
+            release", finds no jdk-25.3.4.1 either, and throws. Any future pin must be a version
+            whose graal-* or jdk-* tag parses as three-component semver.
+
+            A comment is not a control: it did not stop attempt 2, because .mergify.yml auto-merged
+            a dependabot PR on one approval with no green-CI condition, and stamped [skip ci] on the
+            merge so main never re-tested it either. The enforcement now lives in
+            .github/scripts/check-native-graalvm-pin.py, which fails the always-on `lint` job the
+            moment this property and native-image.yml's setup step disagree (it reads `version` and
+            `java-version` both, preferring `version` as setup-graalvm itself does), and .mergify.yml
+            no longer auto-merges a PR that touches this file.
         -->
-        <native.graalvm.version>25.0.2</native.graalvm.version>
+        <native.graalvm.version>25.2.4</native.graalvm.version>
         <!--
             Flag plumbed through by the CI matrix (native-image.yml) for the linux/amd64 job.
             Activates the native-static profile below, which appends the fully-static musl

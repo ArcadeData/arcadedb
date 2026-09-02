@@ -14,13 +14,28 @@ treat it as best-effort outside Linux.
 
 ## Prerequisites
 
-- **GraalVM CE 25 (JDK 25).** The build uses the GraalVM Native Image Community Edition builder for
-  JDK 25 (CI pins `graalvm-community-jdk-25.0.2` via
-  [`graalvm/setup-graalvm`](https://github.com/graalvm/setup-graalvm)). `native/pom.xml` also pins
-  the GraalVM polyglot/Truffle artifacts (`graal-sdk`, `polyglot`, `js-language`, `truffle-*`, etc.)
-  to `25.0.2` to match the builder exactly; a Truffle version skew between the builder and those
-  artifacts fails the build at feature registration (`NoSuchMethodError:
-  OptimizedTruffleRuntime.getLoopNodeFactory()`).
+- **GraalVM CE 25.2.4 (JDK 25.0.4).** The build uses the GraalVM Native Image Community Edition
+  builder pinned by CI to `graal-25.2.4` (assets `graalvm-community-jdk-25i2-25.0.4_*`) via
+  [`graalvm/setup-graalvm`](https://github.com/graalvm/setup-graalvm). `native/pom.xml` pins the
+  GraalVM polyglot/Truffle artifacts (`graal-sdk`, `polyglot`, `js-language`, `truffle-*`, etc.) to
+  the same `25.2.4` to match the builder exactly; a Truffle version skew between the builder and
+  those artifacts fails the build at feature registration (`NoSuchMethodError:
+  OptimizedTruffleRuntime.getLoopNodeFactory()`). That error names neither file, and two Dependabot
+  bumps have shipped the skew, so `.github/scripts/check-native-graalvm-pin.py` enforces the
+  equality in the always-on `lint` job. Move both sides in the same change, or neither.
+
+  **The workflow pins the builder through setup-graalvm's `version` input, not `java-version`, and
+  that is not interchangeable.** The action resolves a CE build two ways: `java-version` fetches a
+  `jdk-<version>` release and requires exactly three dot-components, so it reaches *mainline*
+  builds only; `version` looks up `graal-<version>` first and falls back to `jdk-<version>`.
+  25.2.4 is an *intermediate* release published under the `graal-25.2.4` tag, so only `version`
+  can select it - switching that step back to `java-version` would stop resolving this build.
+
+  Any future pin must be a version whose tag parses as three-component semver. `graal-25.3.4.1` is
+  reachable through **neither** input: node-semver rejects its four numeric components, so
+  `findLatestGraalVMCEVersion` skips it as an "unexpected GraalVM CE release", finds no
+  `jdk-25.3.4.1` either, and throws. It has been pinned here by mistake once already.
+
 - **`JAVA_HOME` (and `GRAALVM_HOME`) must point at the GraalVM home itself.** The
   `native-maven-plugin` resolves the native-image builder from `JAVA_HOME`/`GRAALVM_HOME`, not by
   searching `PATH` for a `native-image` executable. A version-manager shim (jenv, sdkman shell
@@ -29,7 +44,7 @@ treat it as best-effort outside Linux.
   JAVA_HOME`. Export both explicitly before building locally, e.g. on macOS:
 
   ```bash
-  export JAVA_HOME=/Library/Java/JavaVirtualMachines/graalvm-community-openjdk-25/Contents/Home
+  export JAVA_HOME=/path/to/graalvm-community-25.2.4/Contents/Home
   export GRAALVM_HOME=$JAVA_HOME
   ```
 

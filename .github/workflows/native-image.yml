@@ -9,6 +9,26 @@ on:
         default: false
   release:
     types: [published]
+  # Daily, because nothing else exercises this workflow. It has no `push`/`pull_request` trigger -
+  # a native image build is far too slow to gate a PR on - so before this schedule existed the only
+  # runs were a manual dispatch and a published release. That is how the GraalVM pin skew of run
+  # 33608446679 sat broken on main for over a month: the Dependabot merge that caused it carried
+  # [skip ci], the workflow that would have caught it does not run on push, and the breakage
+  # surfaced only when somebody dispatched it by hand. A nightly run turns "discovered at release
+  # time" into "discovered the next morning".
+  #
+  # A scheduled run is behaviourally identical to an ordinary dispatch: three free-runner legs
+  # (linux/amd64, linux/arm64, windows/amd64), no paid macOS leg, and every outward-facing step is
+  # gated on `github.event_name == 'release'` - no Docker Hub login, no image push (buildx runs
+  # --load, and the container is still smoke-tested locally), no release asset upload, and the
+  # `manifest` job does not run at all. So this costs free CI minutes and publishes nothing.
+  #
+  # 01:41 UTC is an otherwise empty slot: 00:00 already carries load-tests, ha-resilience-tests and
+  # the Sunday benchmark, 03:00 bolt-nightly, 04:17 meterian. Off the hour on purpose - GitHub
+  # queues on-the-hour crons hardest, and a scheduled run is dropped rather than delayed when the
+  # queue is long.
+  schedule:
+    - cron: "41 1 * * *"
 
 # Least privilege by default: only the build job's "Attach to release" step needs write, and it
 # scopes it below. The docker/manifest jobs authenticate to Docker Hub via secrets, not the
@@ -23,8 +43,9 @@ jobs:
   # native-image wants ~80% of system RAM against a ~630 MB build heap, which does not fit; the xlarge
   # runner has the headroom it needs). To avoid burning paid minutes on routine runs, that leg is only
   # added to the matrix on a published `release`, or on a manual dispatch that explicitly ticks
-  # `include_macos`. On an ordinary dispatch it is absent from the matrix entirely, so no paid runner
-  # is ever allocated (gating the STEPS instead would still allocate and bill the runner). The three
+  # `include_macos`. On an ordinary dispatch - and on the nightly schedule, where `inputs` is empty
+  # so the `= "true"` test is false - it is absent from the matrix entirely, so no paid runner is
+  # ever allocated (gating the STEPS instead would still allocate and bill the runner). The three
   # always-on legs - linux/amd64, linux/arm64 (both required) and windows/amd64 (best-effort) - build
   # on free runners. There is no free hosted x64 macOS runner (GitHub retired macos-13) and no free
   # Windows-on-ARM runner, and native-image cannot cross-compile, so each target builds on its own
@@ -59,7 +80,7 @@ jobs:
             echo "macOS arm64 leg INCLUDED (event=${{ github.event_name }}, include_macos=${{ inputs.include_macos }})"
           else
             include="$(jq -c '.' <<<"$include")"
-            echo "macOS arm64 leg EXCLUDED (ordinary dispatch; tick include_macos or publish a release to build it)"
+            echo "macOS arm64 leg EXCLUDED (scheduled run or ordinary dispatch; tick include_macos or publish a release to build it)"
           fi
           echo "matrix={\"include\":$include}" >> "$GITHUB_OUTPUT"
 
@@ -77,16 +98,24 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      # java-version is pinned to the EXACT patch release (not "25") to match
-      # native/pom.xml's native.graalvm.version, which pins the Truffle/polyglot artifacts to the
-      # same patch. A builder/Truffle version skew fails the native build at feature registration
-      # (NoSuchMethodError: OptimizedTruffleRuntime.getLoopNodeFactory()) - see docs/native-image.md
-      # "Prerequisites". If you bump native.graalvm.version in native/pom.xml, bump this
-      # java-version to match in the SAME change.
-      - name: Set up GraalVM (Community, JDK 25.0.2)
-        uses: graalvm/setup-graalvm@0def53c0fd8534bc13416c9469f5be45265824fd # v1.6.1
+      # `version`, NOT `java-version`, and the difference is load-bearing. setup-graalvm resolves a
+      # Community build two ways: `java-version` fetches a `jdk-<version>` release and so can only
+      # ever reach GraalVM's MAINLINE builds, while `version` looks up `graal-<version>` first and
+      # falls back to `jdk-<version>`. 25.2.4 is an intermediate release, published as the tag
+      # graal-25.2.4 (assets graalvm-community-jdk-25i2-25.0.4_*), so it is reachable through
+      # `version` alone. Both paths still go through findLatestGraalVMCEVersion, which skips any
+      # tag node-semver's semver.valid() rejects - which is why the four-component 25.3.4.1 is
+      # reachable through NEITHER input, and must never be pinned in native/pom.xml.
+      #
+      # This is pinned to the EXACT release that native/pom.xml's native.graalvm.version pins the
+      # Truffle/polyglot artifacts to. A builder/Truffle version skew fails the native build at
+      # feature registration (NoSuchMethodError: OptimizedTruffleRuntime.getLoopNodeFactory()) -
+      # see docs/native-image.md "Prerequisites". Move the two together or not at all;
+      # .github/scripts/check-native-graalvm-pin.py fails the `lint` job if they disagree.
+      - name: Set up GraalVM (Community 25.2.4, JDK 25.0.4)
+        uses: graalvm/setup-graalvm@5298d94fb55a4f185c602eeac5de1b553882abe2 # v1.6.1
         with:
-          java-version: "25.0.2"
+          version: "25.2.4"
           distribution: "graalvm-community"
           github-token: ${{ secrets.GITHUB_TOKEN }}
           native-image-job-reports: "true"
@@ -121,10 +150,10 @@ jobs:
       #     --static --libc=musl, nothing path-related).
       #
       # linux/arm64 (linkmode: mostly-static) deliberately does NOT run this step: GraalVM CE
-      # ships no static musl JDK libraries for aarch64 (the graalvm-community-jdk-25.0.2
+      # ships no static musl JDK libraries for aarch64 (the graalvm-community-jdk-25i2-25.0.4
       # linux-aarch64 release tarball has lib/static/linux-aarch64/glibc but not
       # lib/static/linux-aarch64/musl - linux-amd64 ships both - see oracle/graal#4645, closed
-      # not-planned), so --static --libc=musl can never link on that architecture regardless of
+      # not-planned; re-checked against this tarball when the pin moved off 25.0.2), so --static --libc=musl can never link on that architecture regardless of
       # toolchain setup. Rather than run a toolchain step known to be useless there, the arm64 leg
       # instead builds with -Dnative.mostlystatic=true (native/pom.xml's native-mostly-static
       # profile: -H:+StaticExecutableWithDynamicLibC - static except glibc itself), which needs no
