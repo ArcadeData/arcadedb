@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.functions;
 import com.arcadedb.function.date.*;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Map;
 import java.util.TimeZone;
@@ -169,6 +170,72 @@ class OpenCypherDateFunctionsTest {
     assertThat(result).containsEntry("hour", 10L);
     assertThat(result).containsEntry("minute", 30L);
     assertThat(result).containsEntry("second", 45L);
+  }
+
+  /**
+   * Issue #7044 - follow-up to #4554: date.fields() must report the same ISO-8601 week number as
+   * date.field(..., 'weekofyear'). It used WeekFields.ISO.weekOfYear(), which returns 0 for the
+   * partial week preceding the first full week of the calendar year.
+   */
+  @Test
+  void dateFieldsIsoWeekAtYearBoundary() {
+    final DateFields fn = new DateFields();
+
+    // 2023-01-01 (Sunday) belongs to ISO-8601 week 52 of the week-based-year 2022, not week 0.
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> jan1 = (Map<String, Object>) fn.execute(new Object[]{"2023-01-01T00:00:00"}, null);
+    assertThat(jan1).containsEntry("weekOfYear", 52L);
+    assertThat(jan1).containsEntry("weekBasedYear", 2022L);
+    // the calendar year stays the calendar year
+    assertThat(jan1).containsEntry("year", 2023L);
+
+    // 2023-01-02 (Monday) starts ISO week 1 of the week-based-year 2023
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> jan2 = (Map<String, Object>) fn.execute(new Object[]{"2023-01-02T00:00:00"}, null);
+    assertThat(jan2).containsEntry("weekOfYear", 1L);
+    assertThat(jan2).containsEntry("weekBasedYear", 2023L);
+
+    // 2019-12-30 (Monday) already belongs to ISO week 1 of the week-based-year 2020
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> dec30 = (Map<String, Object>) fn.execute(new Object[]{"2019-12-30T00:00:00"}, null);
+    assertThat(dec30).containsEntry("weekOfYear", 1L);
+    assertThat(dec30).containsEntry("weekBasedYear", 2020L);
+    assertThat(dec30).containsEntry("year", 2019L);
+  }
+
+  /**
+   * Issue #7044 - date.fields() and date.field() are registered side by side and must never
+   * disagree about the week number of the same instant.
+   */
+  @Test
+  void dateFieldsAgreesWithDateFieldOnIsoWeek() {
+    final DateFields fields = new DateFields();
+    final DateField field = new DateField();
+
+    final TimeZone previous = TimeZone.getDefault();
+    try {
+      TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+
+      // one instant per month plus both sides of the 2023 new-year boundary
+      final String[] dates = {
+          "2022-12-31T00:00:00", "2023-01-01T00:00:00", "2023-01-02T00:00:00", "2023-03-15T12:00:00",
+          "2023-06-30T23:59:59", "2023-09-04T00:00:00", "2023-12-31T00:00:00", "2024-01-01T00:00:00",
+          "2020-12-31T00:00:00", "2021-01-04T00:00:00"};
+
+      for (final String date : dates) {
+        @SuppressWarnings("unchecked")
+        final Map<String, Object> map = (Map<String, Object>) fields.execute(new Object[]{date}, null);
+
+        final long millis = LocalDateTime.parse(date).atZone(ZoneId.of("UTC")).toInstant().toEpochMilli();
+
+        assertThat(map.get("weekOfYear")).as("date.fields vs date.field weekofyear for " + date)
+            .isEqualTo(field.execute(new Object[]{millis, "weekofyear"}, null));
+        assertThat(map.get("weekBasedYear")).as("date.fields vs date.field weekyear for " + date)
+            .isEqualTo(field.execute(new Object[]{millis, "weekyear"}, null));
+      }
+    } finally {
+      TimeZone.setDefault(previous);
+    }
   }
 
   @Test

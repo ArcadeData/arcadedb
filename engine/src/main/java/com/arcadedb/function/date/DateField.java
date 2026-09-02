@@ -73,6 +73,7 @@ public class DateField extends AbstractDateFunction {
       case "dayofweek", "weekday" -> (long) dateTime.getDayOfWeek().getValue();
       case "dayofyear" -> (long) dateTime.getDayOfYear();
       case "week", "weekofyear" -> (long) dateTime.get(WeekFields.ISO.weekOfWeekBasedYear());
+      case "weekyear", "weekbasedyear" -> (long) dateTime.get(WeekFields.ISO.weekBasedYear());
       default -> throw new IllegalArgumentException("Unknown date field: " + field);
     };
   }
