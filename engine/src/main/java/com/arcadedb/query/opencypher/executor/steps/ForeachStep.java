@@ -67,18 +67,40 @@ public class ForeachStep extends AbstractExecutionStep {
    */
   private final boolean eagerMaterialize;
 
+  /**
+   * When true, the FOREACH body is executed for every upstream row before the first output row is
+   * emitted, instead of one {@code nRecords}-sized batch at a time.
+   * <p>
+   * The pull model hands {@code nRecords} (100, see {@code CypherExecutionPlan}) down the pipeline,
+   * so without this flag a FOREACH followed by a clause that reads the graph applies the writes of a
+   * whole batch of rows and only then lets the reader see the first of them. The reader therefore
+   * observes neither the pre-FOREACH state nor the post-FOREACH state but a snapshot taken at an
+   * arbitrary batch boundary: {@code UNWIND range(0, 100) AS i FOREACH (j IN range(0, 9) | CREATE
+   * (:L1)) CALL meta.stats() YIELD value AS stats RETURN stats.nodeCount} reported 1000 for the
+   * first 100 rows and 1010 for the 101st, purely because 100 is the batch size (issue #6922).
+   * <p>
+   * openCypher makes an updating clause eager with respect to a following read for exactly this
+   * reason, so the fix is to finish all the writes first: every downstream row then sees the same,
+   * complete post-FOREACH graph. The flag is set by the planner only when a later clause actually
+   * reads the graph, so the streaming {@code MATCH ... FOREACH ... RETURN} bulk-update shape keeps
+   * its bounded memory profile.
+   */
+  private final boolean eagerExecution;
+
   public ForeachStep(final ForeachClause foreachClause, final CommandContext context,
                      final CypherFunctionFactory functionFactory) {
-    this(foreachClause, context, functionFactory, false);
+    this(foreachClause, context, functionFactory, false, false);
   }
 
   public ForeachStep(final ForeachClause foreachClause, final CommandContext context,
-                     final CypherFunctionFactory functionFactory, final boolean eagerMaterialize) {
+                     final CypherFunctionFactory functionFactory, final boolean eagerMaterialize,
+                     final boolean eagerExecution) {
     super(context);
     this.foreachClause = foreachClause;
     this.functionFactory = functionFactory;
     this.evaluator = new ExpressionEvaluator(functionFactory);
     this.eagerMaterialize = eagerMaterialize;
+    this.eagerExecution = eagerExecution;
   }
 
   @Override
@@ -141,7 +163,7 @@ public class ForeachStep extends AbstractExecutionStep {
           }
         }
 
-        while (buffer.size() < n && hasMoreInput()) {
+        while ((eagerExecution || buffer.size() < n) && hasMoreInput()) {
           final Result inputRow = nextInput();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {

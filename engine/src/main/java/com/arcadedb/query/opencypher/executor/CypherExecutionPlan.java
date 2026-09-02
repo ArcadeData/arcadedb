@@ -1537,8 +1537,9 @@ public class CypherExecutionPlan {
         final boolean foreachEagerMaterialize = foreachClause.containsDelete()
             && (matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses)
                 || deleteMayTargetTaintedVariable(collectForeachDeleteTargetVariables(foreachClause), disconnectedTaintedVariables));
+        final boolean foreachEagerExecution = graphReadFollows(clausesInOrder, clausesInOrder.indexOf(entry));
         final ForeachStep foreachStep =
-            new ForeachStep(foreachClause, context, functionFactory, foreachEagerMaterialize);
+            new ForeachStep(foreachClause, context, functionFactory, foreachEagerMaterialize, foreachEagerExecution);
         if (currentStep != null) {
           foreachStep.setPrevious(currentStep);
         }
@@ -4921,6 +4922,40 @@ public class CypherExecutionPlan {
    * that contains only count(*) aggregations (no property access needed from procedure results).
    * Used to enable the count-only fast path in CallStep.
    */
+  /**
+   * Tells whether any clause after {@code clauseIndex} reads the graph, which makes the updating
+   * clause at {@code clauseIndex} eager with respect to that read (issue #6922).
+   * <p>
+   * The pipeline pulls in batches of 100 rows, so a write step that applies one batch of writes per
+   * pull lets a following reader observe a snapshot taken at an arbitrary batch boundary rather than
+   * the pre- or post-write graph. openCypher resolves the same read/write conflict by making the
+   * update eager; this predicate decides when to pay for that.
+   * <p>
+   * The set is deliberately conservative on CALL: a procedure is opaque here, so any procedure call
+   * after the update counts as a read - which is what {@code CALL meta.stats()} in issue #6922 is.
+   * SUBQUERY counts because a CALL {{ ... }} block can contain a MATCH. RETURN, WITH and UNWIND do
+   * not: they only project rows the pipeline already produced.
+   *
+   * @param clausesInOrder the query's clauses in textual order
+   * @param clauseIndex    index of the updating clause, or a negative value when it is not in the list
+   */
+  private boolean graphReadFollows(final List<ClauseEntry> clausesInOrder, final int clauseIndex) {
+    if (clauseIndex < 0)
+      return false;
+    for (int i = clauseIndex + 1; i < clausesInOrder.size(); i++) {
+      switch (clausesInOrder.get(i).getType()) {
+      case MATCH:
+      case MERGE:
+      case CALL:
+      case SUBQUERY:
+        return true;
+      default:
+        break;
+      }
+    }
+    return false;
+  }
+
   private boolean isFollowedByCountOnlyReturn(final List<ClauseEntry> clausesInOrder, final int callIndex) {
     if (callIndex < 0)
       return false;
