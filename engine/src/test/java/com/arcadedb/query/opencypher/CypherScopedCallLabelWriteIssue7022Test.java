@@ -178,6 +178,32 @@ class CypherScopedCallLabelWriteIssue7022Test {
         RETURN n0.id + '-[' + r.w + ']->' + m.id AS v""")).containsExactly("1-[7]->2");
   }
 
+  @Test
+  void theReportedShapeStillTakesTheLegacyPipeline() {
+    cypher("CREATE (:l11:l1 {id: 1})");
+
+    // A tripwire, not a requirement: nothing here wants the optimizer to keep declining correlated subqueries. It
+    // fires the day CypherOptimizer learns them, which is precisely when the four assertions above stop covering
+    // the path the reported query actually runs on - the redirect lives in SubqueryStep, and an optimized plan for
+    // a CALL { } body would need its own. Answering it means re-running this class against the new plan and then
+    // relaxing this assertion, never the other way round.
+    final String plan = rows("""
+        EXPLAIN OPTIONAL MATCH (n0)
+        WITH * WHERE n0 IS NOT NULL
+        CALL (n0) {
+          REMOVE n0:l11
+          RETURN collect(toStringOrNull(1)) AS alias3
+        }
+        RETURN n0""", false, row -> String.valueOf(row.<Object>getProperty("executionPlanAsString"))).getFirst();
+
+    assertThat(plan)
+        .as("CypherOptimizer declines every correlated CALL { } today, so SubqueryStep is the only place the "
+            + "label-write redirect can live and the legacy pipeline is the only path this class covers. If this "
+            + "fails the optimizer has learnt the shape: check that the optimized plan still points the outer row "
+            + "at the replacement vertex, then update this assertion")
+        .contains("Non-Optimized");
+  }
+
   private List<String> rows(final String query) {
     return rows(query, false, row -> String.valueOf(row.<Object>getProperty("v")));
   }
