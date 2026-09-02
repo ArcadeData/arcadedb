@@ -270,6 +270,90 @@ class CypherForeachEagerReadIssue6922Test {
   }
 
   @Test
+  void subqueryUnderATopLevelNotIsStillARead() {
+    // The general expression parser lowers a top-level NOT/AND/OR/XOR to TernaryLogicalExpression,
+    // which ExpressionRewriter's dispatch does not know: the walk used to stop at the operator and
+    // never reach the subquery under it, leaving the FOREACH streaming.
+    final List<Object> values = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN range(0, 1) | CREATE (:L1 {i: i, j: j}))
+        RETURN NOT exists { MATCH (n:L1 {i: 250}) } AS missing""", "missing");
+
+    assertThat(values).hasSize(250);
+    assertThat(values).as("the last row's node exists for every row, or none of them").containsOnly(false);
+  }
+
+  @Test
+  void subqueryUnderATopLevelAndIsStillARead() {
+    final List<Object> values = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN range(0, 1) | CREATE (:L1 {i: i, j: j}))
+        RETURN true AND exists { MATCH (n:L1 {i: 250}) } AS present""", "present");
+
+    assertThat(values).hasSize(250);
+    assertThat(values).containsOnly(true);
+  }
+
+  @Test
+  void subqueryUnderAChainedPropertyAccessIsStillARead() {
+    // (CASE ... END).v parses to CypherExpressionBuilder.ChainedPropertyAccessExpression, which is
+    // package-private and so cannot appear in the rewriter's dispatch at all. It is the fail-closed
+    // default, not a type-specific arm, that has to catch this one.
+    final List<Object> counts = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN range(0, 1) | CREATE (:L1 {i: i, j: j}))
+        RETURN (CASE WHEN true THEN {v: count { MATCH (n:L1) }} ELSE {v: 0} END).v AS visible""", "visible");
+
+    assertThat(counts).hasSize(250);
+    assertThat(counts).containsOnly(500L);
+  }
+
+  @Test
+  void aLaterForeachCreatingFromASubqueryValueIsARead() {
+    // CREATE inside a FOREACH acts on variables the row carries, but its property VALUES are general
+    // expressions and may read: the second FOREACH's count{} must see the first FOREACH completed.
+    final List<Object> rows = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN [1] | CREATE (:L1 {i: i}))
+        FOREACH (j IN [1] | CREATE (:Snapshot {n: count { MATCH (m:L1) }}))
+        RETURN i AS value""", "value");
+
+    assertThat(rows).hasSize(250);
+    assertThat(countOf("L1")).isEqualTo(250L);
+    assertThat(distinctSnapshotCounts())
+        .as("every snapshot must see all 250 nodes, not a 100-row batch boundary")
+        .containsExactly(250L);
+  }
+
+  @Test
+  void aLaterForeachSettingFromASubqueryValueIsARead() {
+    final List<Object> rows = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN [1] | CREATE (:L1 {i: i}))
+        FOREACH (n IN [1] | CREATE (:Snapshot {n: 0}))
+        RETURN i AS value""", "value");
+    assertThat(rows).hasSize(250);
+
+    // The first FOREACH adds to the very label the second one counts, so a SET evaluated mid-drain
+    // reports a batch boundary (350, 450, ...) instead of the completed 500.
+    final List<Object> updated = queryColumn("""
+        MATCH (s:Snapshot)
+        FOREACH (x IN [1] | CREATE (:L1 {i: 0}))
+        FOREACH (x IN [1] | SET s.n = count { MATCH (m:L1) })
+        RETURN s.n AS value""", "value");
+    assertThat(updated).as("one row per Snapshot").hasSize(250);
+    assertThat(countOf("L1")).isEqualTo(500L);
+    assertThat(distinctSnapshotCounts())
+        .as("a SET right-hand side that reads must see the preceding FOREACH completed")
+        .containsExactly(500L);
+  }
+
+  private List<Object> distinctSnapshotCounts() {
+    final ResultSet resultSet = database.query("opencypher", "MATCH (s:Snapshot) RETURN collect(DISTINCT s.n) AS counts");
+    return new ArrayList<>((List<Object>) resultSet.next().getProperty("counts"));
+  }
+
+  @Test
   void eagerReadIsTradedBackForStreamingPerDatabase() {
     // arcadedb.opencypher.foreachEagerRead is the escape hatch for a bulk query whose input does not
     // fit in memory. It is SCOPE.DATABASE, so it is read off this database's ContextConfiguration:

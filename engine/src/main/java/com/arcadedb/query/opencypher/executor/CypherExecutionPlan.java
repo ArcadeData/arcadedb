@@ -4950,9 +4950,16 @@ public class CypherExecutionPlan {
    * after the update counts as a read - which is what {@code CALL meta.stats()} in issue #6922 is.
    * SUBQUERY counts because a CALL { ... } block can contain a MATCH.
    * <p>
-   * A later FOREACH counts only when its own body reads, which the grammar narrows to MERGE (and a
-   * nested FOREACH containing one): CREATE, SET, REMOVE and DELETE all act on variables the row
-   * already carries, and MATCH and CALL are not valid inside a FOREACH body at all.
+   * A later FOREACH counts only when its own body reads. MATCH and CALL are not valid inside a FOREACH
+   * body at all, so that means a MERGE (at any nesting depth), or an expression that reads: the list
+   * the FOREACH iterates, or - because the grammar lets a general expression stand wherever a value
+   * does - a CREATE property value, a SET right-hand side, or a DELETE/REMOVE target. Those clauses
+   * act on variables the row already carries, but the values they compute need not.
+   * <p>
+   * A terminal RETURN's ORDER BY is deliberately NOT scanned. It is parsed onto the statement rather
+   * than onto the ReturnClause, and unlike the WITH case just below it is unreachable: OrderByStep
+   * materializes its whole input before the comparator that evaluates those expressions ever runs, so
+   * the FOREACH has already finished by then no matter what this predicate answered.
    * <p>
    * RETURN, WITH and UNWIND are not reads in themselves - they project rows the pipeline already
    * produced - but the expressions they carry can be. {@code EXISTS { }}, {@code COUNT { }} and
@@ -5023,10 +5030,73 @@ public class CypherExecutionPlan {
         if (foreachBodyReadsGraph(innerClause.getTypedClause()))
           return true;
         break;
+      case CREATE:
+        if (createValuesReadGraph(innerClause.getTypedClause()))
+          return true;
+        break;
+      case SET:
+        for (final SetClause.SetItem setItem : ((SetClause) innerClause.getClause()).getItems())
+          if (expressionReadsGraph(setItem.getValueExpression()) || expressionReadsGraph(setItem.getKeyExpression())
+              || expressionReadsGraph(setItem.getTargetExpression()))
+            return true;
+        break;
+      case REMOVE:
+        for (final RemoveClause.RemoveItem removeItem : ((RemoveClause) innerClause.getClause()).getItems())
+          if (expressionReadsGraph(removeItem.getKeyExpression()))
+            return true;
+        break;
+      case DELETE:
+        for (final Expression deleteExpression : ((DeleteClause) innerClause.getClause()).getExpressions())
+          if (expressionReadsGraph(deleteExpression))
+            return true;
+        break;
       default:
         break;
       }
     }
+    return false;
+  }
+
+  /**
+   * Tells whether a CREATE inside a FOREACH body reads the graph through one of its property values.
+   * <p>
+   * The pattern itself creates rather than matches, but the grammar lets a general expression stand
+   * as a property value, and a general expression can be {@code count { ... }}: in
+   * {@code FOREACH (x IN [1] | CREATE (:S {n: count {{ MATCH (m:L1) }}}))} the value is evaluated per
+   * row against the live graph, which makes the FOREACH before it a reader after all.
+   */
+  private boolean createValuesReadGraph(final CreateClause createClause) {
+    for (final PathPattern pathPattern : createClause.getPathPatterns()) {
+      for (final NodePattern nodePattern : pathPattern.getNodes())
+        if (propertyValuesReadGraph(nodePattern.getProperties()) || expressionsReadGraph(nodePattern.getDynamicLabels()))
+          return true;
+      for (final RelationshipPattern relationshipPattern : pathPattern.getRelationships())
+        if (propertyValuesReadGraph(relationshipPattern.getProperties()))
+          return true;
+    }
+    return false;
+  }
+
+  /**
+   * Tells whether any value of an inline property map reads the graph. The map holds already-evaluated
+   * literals alongside unevaluated {@code Expression} nodes, so every value is offered to the detector
+   * and a non-expression simply answers false.
+   */
+  private boolean propertyValuesReadGraph(final Map<String, Object> properties) {
+    if (properties == null)
+      return false;
+    for (final Object value : properties.values())
+      if (expressionReadsGraph(value))
+        return true;
+    return false;
+  }
+
+  private boolean expressionsReadGraph(final List<Expression> expressions) {
+    if (expressions == null)
+      return false;
+    for (final Expression expression : expressions)
+      if (expressionReadsGraph(expression))
+        return true;
     return false;
   }
 
@@ -5058,11 +5128,12 @@ public class CypherExecutionPlan {
    * passes through, so it also catches the expression types the rewriter's own dispatch does not know
    * (COUNT and COLLECT subqueries among them). Nothing is rewritten - every visit returns its input.
    * <p>
-   * Three of the base class's visits are {@code TODO} stubs that return without recursing, and each one
-   * hides a real case here: {@code size(collect {{ ... }})} behind {@code visitFunctionCall}, and
-   * {@code WHERE exists {{ ... }}} behind the boolean coercion/wrapper pair. They are overridden here
-   * rather than filled in on the shared base class, where every other rewriter would inherit a traversal
-   * change none of them asked for.
+   * Eighteen of the base class's visits return without recursing into what they wrap, and each one can
+   * hide a real case here: {@code size(collect {{ ... }})} behind {@code visitFunctionCall}, and
+   * {@code WHERE exists {{ ... }}} behind the boolean coercion/wrapper pair. Every one is overridden
+   * below rather than filled in on the shared base class, where every other rewriter would inherit a
+   * traversal change none of them asked for. {@code visitUnknown} then closes the remaining hole: a
+   * type the base dispatch does not know at all counts as a read rather than as a leaf.
    */
   private static final class GraphReadDetector extends ExpressionRewriter {
     private boolean found = false;
@@ -5077,7 +5148,33 @@ public class CypherExecutionPlan {
         found = true;
         return expression;
       }
+      // The general expression parser builds this for a top-level AND/OR/XOR/NOT, so it is far too
+      // common to leave to the conservative visitUnknown default: doing so would arm the eager mode
+      // behind every `RETURN a AND b` following a FOREACH, whether or not anything there reads.
+      if (expression instanceof TernaryLogicalExpression ternary) {
+        rewrite(ternary.getLeft());
+        if (!found)
+          rewrite(ternary.getRight());
+        return expression;
+      }
       return super.rewrite(expression);
+    }
+
+    /**
+     * Fails CLOSED where the base class fails open: an expression type {@link ExpressionRewriter}'s
+     * dispatch does not know is treated as a possible read rather than waved through.
+     * <p>
+     * For the rewriters the base class was written for, an unreached subtree costs an optimization.
+     * Here it costs correctness - a missed read leaves the FOREACH streaming and the query answers
+     * from a batch-boundary snapshot - so the two defaults have to differ. This also covers
+     * {@code CypherExpressionBuilder.ChainedPropertyAccessExpression} (package-private, so it cannot
+     * be dispatched on by type from here) and any {@code Expression} subtype added later, which would
+     * otherwise each need their own fix to this class.
+     */
+    @Override
+    protected Object visitUnknown(final Object expression) {
+      found = true;
+      return expression;
     }
 
     @Override
