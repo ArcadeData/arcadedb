@@ -664,8 +664,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // Before the NeedRetryException arm below, which it extends: the refusal names the leader the caller has to
     // dial instead of merely saying "try again", and the forwarding peer rebuilds the typed exception from it
     // (issue #6191).
+    //
+    // Only when it CAN name one. A refusal issued mid-election carries a null leader address - that is what
+    // this exception already means by "retry, destination unknown" everywhere else it is read (see
+    // GrpcClientErrorMapper#leaderAddress and the load-test retry loops). A 400 there names nothing the caller
+    // can act on and tells every client, driver and load balancer "your request was malformed, do not retry"
+    // about a condition that clears itself in milliseconds. So the unnamed case falls through to the
+    // NeedRetryException arm below and answers 503, which is what it always meant.
     final ServerIsNotTheLeaderException notTheLeader = firstOf(e, cause, ServerIsNotTheLeaderException.class);
-    if (notTheLeader != null) {
+    if (notTheLeader != null && notTheLeader.getLeaderAddress() != null && !notTheLeader.getLeaderAddress().isBlank()) {
       logUserError(notTheLeader);
       sendErrorResponse(exchange, 400, "Cannot execute command", notTheLeader, notTheLeader.getLeaderAddress());
       return;

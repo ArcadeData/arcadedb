@@ -199,6 +199,35 @@ class Issue6201ErrorStatusParityTest {
   }
 
   /**
+   * A leadership refusal that cannot name a leader is transient, not a client error. A follower forwards a
+   * server command to the leader; when the request lands during an election {@code getLeaderAddress()} is still
+   * null and the refusal names nobody. That answered 400, which tells every client, driver and load balancer
+   * "your request was malformed, do not retry" about a condition that clears itself in milliseconds - and it is
+   * the opposite of what a null address already means everywhere else this exception is read ("retry,
+   * destination unknown": see {@code GrpcClientErrorMapper#leaderAddress}). It now answers the 503 its
+   * {@code NeedRetryException} supertype always implied, so {@code RemoteHttpComponent}'s retry-on-503 loop
+   * absorbs it.
+   * <p>
+   * The named case is unchanged and still 400 (pinned by the mapping table above): there the address is the
+   * actionable half, and the forwarding peer rebuilds the typed exception from it (issue #6191).
+   */
+  @Test
+  void aLeadershipRefusalThatNamesNoLeaderIsRetryableNotAClientError() {
+    for (final String unnamed : new String[] { null, "", "   " }) {
+      final HandledResponse response = handle(new ServerIsNotTheLeaderException("Leader address is unknown", unnamed));
+
+      assertThat(response.statusCode)
+          .as("a refusal issued mid-election (leader address %s) must be retryable, not a 400 (body=%s)",
+              unnamed == null ? "null" : "'" + unnamed + "'", response.body)
+          .isEqualTo(503);
+      // The typed exception still survives on the wire: the remote driver and the HA leader-exception
+      // reconstruction both rebuild the retryable type from this field.
+      assertThat(new JSONObject(response.body).getString("exception"))
+          .isEqualTo(ServerIsNotTheLeaderException.class.getName());
+    }
+  }
+
+  /**
    * The last-resort walk: a security refusal buried under wrappers the classification does not recognise is still
    * a 403, and it must not matter which of the two unrelated security types it is. The walk used to test only
    * {@code SecurityException}, so the same refusal answered 403 one level up and a generic 500 two levels down.
