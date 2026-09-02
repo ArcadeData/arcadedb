@@ -102,7 +102,7 @@
             `java-version` both, preferring `version` as setup-graalvm itself does), and .mergify.yml
             no longer auto-merges a PR that touches this file.
         -->
-        <native.graalvm.version>25.2.4</native.graalvm.version>
+        <native.graalvm.version>25.3.4.1</native.graalvm.version>
         <!--
             Flag plumbed through by the CI matrix (native-image.yml) for the linux/amd64 job.
             Activates the native-static profile below, which appends the fully-static musl
