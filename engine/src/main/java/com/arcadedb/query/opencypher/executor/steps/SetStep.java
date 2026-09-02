@@ -72,8 +72,9 @@ public class SetStep extends AbstractExecutionStep {
       private final Map<RID, MutableDocument> writtenDocs = new HashMap<>();
       // Tracks the vertices SET n:Label replaced so that when the same node appears on a later row
       // (row fanout), the operation is redirected to the already-replaced vertex and the idempotency
-      // check returns early.
-      private final LabelReplacements labelReplacements = new LabelReplacements();
+      // check returns early. Statement-scoped, so a SET inside a CALL { } body - re-planned once per outer
+      // row - still recognises what an earlier row moved (issue #6977).
+      private final LabelReplacements labelReplacements = LabelReplacements.of(context);
 
       @Override
       public boolean hasNext() {

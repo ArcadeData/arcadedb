@@ -400,6 +400,9 @@ public class CypherExecutionPlan {
       final List<ResultInternal> allResults = new ArrayList<>();
       final Set<String> seen = removeDuplicates ? new HashSet<>() : null;
       for (final CypherExecutionPlan branchPlan : branchPlans) {
+        // No inherit() here on purpose: the branch runs through this same method with the REAL outerContext,
+        // so it takes the non-union path below and does its own inherit under the same gate. A second copy
+        // here would be one more thing to keep in step with that gate (issue #6977).
         final ResultSet rs = branchPlan.executeWithSeedRow(seedRow, outerContext);
         while (rs.hasNext()) {
           unionGuard.check();
@@ -425,8 +428,14 @@ public class CypherExecutionPlan {
     // Only share the outer statistics accumulator for a write CALL body: getStatistics() lazily
     // allocates, so sharing it unconditionally would allocate a QueryStatistics even for a
     // fully read-only CALL, violating the "read queries allocate nothing" constraint.
-    if (outerContext != null && !statement.isReadOnly())
+    if (outerContext != null && !statement.isReadOnly()) {
       context.setStatistics(outerContext.getStatistics());
+      // A label write moves the record, so the map of what it displaced has to outlive this plan: the body of a
+      // CALL { } is re-planned for every outer row, and without this the second row met the vertex the first one
+      // deleted (issue #6977). Same gate as the statistics above - a read-only body performs no label write and
+      // must not make the enclosing statement allocate a map for one.
+      LabelReplacements.inherit(context, outerContext);
+    }
     inheritCommandDeadline(context, outerContext);
 
     // Create a seed step that returns the seed row
