@@ -53,11 +53,13 @@ updates:
       # b53c48c1e2 (-> 25.3.4.1) both did exactly this wrong and broke every
       # native leg.
       #
-      # A bump is not impossible, just not a one-line edit: setup-graalvm's
-      # `java-version` input can only address jdk-* releases, so reaching an
-      # intermediate release such as graal-25.2.4 means switching
-      # native-image.yml to the `version` input. graal-25.3.4.1 is reachable
-      # through neither input - node-semver rejects its four-component tag.
+      # A bump is not impossible, just not a one-line edit. native-image.yml
+      # pins the builder through setup-graalvm's `version` input precisely so
+      # it can address the intermediate release graal-25.2.4; the
+      # `java-version` input reaches jdk-* releases only. Whatever the new
+      # version is, its tag must parse as three-component semver -
+      # graal-25.3.4.1 is reachable through neither input, because node-semver
+      # rejects its four numeric components.
       #
       # Two guards now back that up, because "reviewed by hand" was not one:
       # .github/scripts/check-native-graalvm-pin.py fails the always-on `lint`
