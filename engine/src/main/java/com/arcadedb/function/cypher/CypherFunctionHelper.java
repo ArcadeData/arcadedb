@@ -36,6 +36,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.WeekFields;
 import java.util.ArrayList;
@@ -67,6 +68,12 @@ public final class CypherFunctionHelper {
    * case for the whole family except {@code round()}.
    */
   public static final int ALL_ARGUMENTS = Integer.MAX_VALUE;
+
+  /**
+   * Key of the epoch-milliseconds entry of the statement clock built by {@link #getStatementTime(CommandContext)},
+   * the value {@code timestamp()} answers with.
+   */
+  public static final String TIMESTAMP = "timestamp";
 
   /**
    * A numeric Cypher function: its canonical spelling - the one the runtime check uses, so both the parse-time and the
@@ -359,21 +366,34 @@ public final class CypherFunctionHelper {
   }
 
   /**
-   * Get or initialize statement time for temporal constructors.
-   * In Cypher, temporal functions like date(), localtime(), etc. should return the same
-   * frozen time throughout the entire query execution to ensure consistent results.
+   * Get or initialize the statement clock shared by every clock-reading Cypher function.
+   * <p>
+   * In Cypher, {@code date()}, {@code localtime()}, {@code datetime()}, {@code timestamp()} and friends must all
+   * answer from the same frozen instant for the whole query: Neo4j pins them to the transaction clock, so
+   * {@code RETURN timestamp() AS a, timestamp() AS b} always reports {@code a = b} and repeated calls inside one
+   * statement never advance. The value is frozen on first use and cached in the {@code $statementTime} context
+   * variable.
+   * <p>
+   * Every entry is derived from a <b>single</b> {@link ZonedDateTime#now()} reading. Building them from one
+   * {@code now()} call per entry made the "frozen" time five successive instants instead of one, so
+   * {@code date()} and {@code datetime()} in the same statement could straddle midnight and disagree about the
+   * day, and {@code datetime()} and {@code localdatetime()} could disagree by a millisecond (issue #7052). Each
+   * derivation below is value-identical to the {@code now()} factory it replaces, including {@code time()},
+   * which has always reported the time of day at UTC.
    */
   @SuppressWarnings("unchecked")
   public static Map<String, Object> getStatementTime(final CommandContext context) {
     Map<String, Object> statementTime = (Map<String, Object>) context.getVariable("$statementTime");
     if (statementTime == null) {
-      // First call - freeze the current time
+      // First call - freeze the current time. One clock reading, every entry derived from it.
+      final ZonedDateTime now = ZonedDateTime.now();
       statementTime = new HashMap<>();
-      statementTime.put("date", CypherDate.now());
-      statementTime.put("localtime", CypherLocalTime.now());
-      statementTime.put("time", CypherTime.now());
-      statementTime.put("localdatetime", CypherLocalDateTime.now());
-      statementTime.put("datetime", CypherDateTime.now());
+      statementTime.put(TIMESTAMP, now.toInstant().toEpochMilli());
+      statementTime.put("date", new CypherDate(now.toLocalDate()));
+      statementTime.put("localtime", new CypherLocalTime(now.toLocalTime()));
+      statementTime.put("time", new CypherTime(now.toInstant().atOffset(ZoneOffset.UTC).toOffsetTime()));
+      statementTime.put("localdatetime", new CypherLocalDateTime(now.toLocalDateTime()));
+      statementTime.put("datetime", new CypherDateTime(now));
       context.setVariable("$statementTime", statementTime);
     }
     return statementTime;
