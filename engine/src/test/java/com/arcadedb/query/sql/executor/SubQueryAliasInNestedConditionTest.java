@@ -72,7 +72,9 @@ class SubQueryAliasInNestedConditionTest extends TestHelper {
           + "(SELECT FROM Supplier WHERE name IN ['S1', 'S2'])");
     });
 
-    s1Rid = database.query("sql", "SELECT @rid AS rid FROM Supplier WHERE name = 'S1'").next().getProperty("rid").toString();
+    try (final ResultSet rs = database.query("sql", "SELECT @rid AS rid FROM Supplier WHERE name = 'S1'")) {
+      s1Rid = rs.next().getProperty("rid").toString();
+    }
   }
 
   @Test
