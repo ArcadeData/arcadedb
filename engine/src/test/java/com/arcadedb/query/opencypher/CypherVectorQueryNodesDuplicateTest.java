@@ -53,6 +53,7 @@ class CypherVectorQueryNodesDuplicateTest extends TestHelper {
       database.command("sql", "CREATE VERTEX TYPE Entity IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY Entity.uuid IF NOT EXISTS STRING");
       database.command("sql", "CREATE PROPERTY Entity.name_embedding IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE PROPERTY Entity.grp IF NOT EXISTS STRING");
       database.command("sql", "CREATE INDEX IF NOT EXISTS ON Entity (uuid) UNIQUE");
       database.command("sql", """
           CREATE INDEX IF NOT EXISTS ON Entity (name_embedding) LSM_VECTOR
@@ -65,7 +66,7 @@ class CypherVectorQueryNodesDuplicateTest extends TestHelper {
 
     database.transaction(() -> {
       for (int i = 0; i < NODES; i++)
-        database.newVertex("Entity").set("uuid", "u" + i).set("name_embedding", vector(i)).save();
+        database.newVertex("Entity").set("uuid", "u" + i).set("grp", "g" + (i % 20)).set("name_embedding", vector(i)).save();
     });
   }
 
@@ -157,6 +158,32 @@ class CypherVectorQueryNodesDuplicateTest extends TestHelper {
 
     assertThat(uuids).hasSize(NODES);
     assertThat(new LinkedHashSet<>(uuids)).hasSize(NODES);
+  }
+
+  /**
+   * {@code groupBy} plus a duplicated sub-index. The dedup runs before {@code GroupAdmissionState.admit}, so a
+   * record offered twice gets exactly one admission decision against its group's cap. Without it the two copies
+   * take both slots of a {@code groupSize: 2} group between them - the same record twice, and the group's genuine
+   * second member locked out of an answer it had earned.
+   */
+  @Test
+  void vectorNeighborsGroupCapIsNotSpentTwiceOnOneRecord() {
+    final TypeIndex typeIndex = database.getSchema().getType("Entity").getPolymorphicIndexByProperties("name_embedding");
+    for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
+      typeIndex.addIndexOnBucket(bucketIndex);
+
+    final Map<String, Object> params = new HashMap<>();
+    params.put("v", vector(3));
+
+    final List<String> uuids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql",
+        "SELECT expand(vector.neighbors('Entity[name_embedding]', :v, 3, { groupBy: 'grp', groupSize: 2 }))", params)) {
+      while (rs.hasNext())
+        uuids.add(rs.next().getProperty("uuid"));
+    }
+
+    assertThat(uuids).isNotEmpty();
+    assertThat(new LinkedHashSet<>(uuids)).as("rows %s must all be distinct records", uuids).hasSameSizeAs(uuids);
   }
 
   /** The ordinary case: nothing anomalous, and the answer must stay exactly what it was. */

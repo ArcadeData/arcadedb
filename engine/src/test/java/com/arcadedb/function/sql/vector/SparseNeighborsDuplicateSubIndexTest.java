@@ -87,6 +87,20 @@ class SparseNeighborsDuplicateSubIndexTest extends TestHelper {
     assertThat(new LinkedHashSet<>(uuids)).as("rows %s must all be distinct records", uuids).hasSize(6);
   }
 
+  /**
+   * The sparse counterpart of {@code vectorNeighborsSurvivesAnUnboundedLimit}: k is caller-supplied and only
+   * checked for {@code <= 0}, and {@code RidHashSet} allocates its backing arrays up front, so the dedup set has to
+   * be sized from the candidates actually fetched. Sized from k, {@link Integer#MAX_VALUE} rounds up to a negative
+   * capacity and throws {@code NegativeArraySizeException} before a single record is read.
+   */
+  @Test
+  void sparseNeighborsSurvivesAnUnboundedLimit() {
+    final List<String> uuids = topK(Integer.MAX_VALUE);
+
+    assertThat(uuids).isNotEmpty();
+    assertThat(new LinkedHashSet<>(uuids)).hasSameSizeAs(uuids);
+  }
+
   /** Control: the ordinary path is untouched. */
   @Test
   void sparseNeighborsStillAnswersWithoutTheDuplication() {

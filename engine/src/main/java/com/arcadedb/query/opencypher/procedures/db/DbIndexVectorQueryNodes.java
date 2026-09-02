@@ -137,7 +137,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     // concatenation of one search per resolved index, and a single record can be offered by more than one of them
     // (issue #7057). Deduplicating here, after the sort, keeps each node at its NEAREST distance and lets the walk
     // continue past a repeat, so a k that was silently halved comes back full instead of merely unduplicated.
-    final RidHashSet emitted = new RidHashSet(Math.max(resultCount, 16));
+    final RidHashSet emitted = new RidHashSet(resultCount);
 
     for (final Pair<RID, Float> neighbor : allNeighbors) {
       if (results.size() == resultCount)
