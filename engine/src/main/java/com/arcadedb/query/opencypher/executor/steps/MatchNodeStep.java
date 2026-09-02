@@ -53,6 +53,7 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -120,6 +121,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // live cursor per row is exactly the mechanism issue #6602 exploits, and the RID list is far lighter than
   // the vertices it names.
   private       List<Identifiable>  cachedFullScanCandidates;
+  // The type whose polymorphic index set is held below, compared by identity so a re-resolved type (a
+  // schema change mid-query) resolves afresh rather than answering from the old one's indexes.
+  private       DocumentType        indexesResolvedForType;
+  // Resolved once per type rather than per input row: unlike a type's own index collection, which is a
+  // view over a map it already keeps, the polymorphic one is BUILT - a HashSet plus a walk of every
+  // supertype - so a chained MATCH that re-opens this scan per outer row was allocating one per row from
+  // the moment issue #7021 made this lookup polymorphic. Same write-once-per-execution contract as the
+  // fields above, and cleared with them.
+  private       Collection<TypeIndex> polymorphicIndexes;
 
   /**
    * Creates a match node step.
@@ -685,12 +695,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     int bestMatchCount = 0;
     List<String> bestMatchedProperties = null;
 
-    // Polymorphic: an index declared on a supertype is inherited by this type - the schema keeps a sub-index
-    // for every bucket in the hierarchy - and is exactly as seekable from here as one this type declares
-    // itself. Asking for the type's own indexes only left a child type with no usable index at all, since a
-    // child cannot own a second index on a property its parent already indexes, and fell back to a full label
-    // scan where SQL had always planned a fetch from the inherited index (issue #7021).
-    for (final TypeIndex index : type.getAllIndexes(true)) {
+    for (final TypeIndex index : polymorphicIndexesOf(type)) {
       final List<String> indexProperties = index.getPropertyNames();
 
       // Check how many properties match as a leftmost prefix
@@ -739,6 +744,25 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   /**
+   * Every index seekable from {@code type}, its supertypes' included: an index declared on a supertype is
+   * inherited - the schema keeps a sub-index for every bucket in the hierarchy - and is exactly as seekable
+   * from here as one this type declares itself. Asking for the type's OWN indexes left a child type with no
+   * usable index at all, since a child cannot own a second index on a property its parent already indexes,
+   * and fell back to a full label scan where SQL had always planned a fetch from the inherited index
+   * (issue #7021).
+   * <p>
+   * Memoized because the answer is built rather than viewed (see {@link #polymorphicIndexes}) and this runs
+   * once per input row on a chained MATCH.
+   */
+  private Collection<TypeIndex> polymorphicIndexesOf(final DocumentType type) {
+    if (polymorphicIndexes == null || indexesResolvedForType != type) {
+      indexesResolvedForType = type;
+      polymorphicIndexes = type.getAllIndexes(true);
+    }
+    return polymorphicIndexes;
+  }
+
+  /**
    * Seeks {@code index} for the given key and, when the index is inherited from a supertype, filters its
    * cursor down to the records that really carry {@code label} - the step's own label check short-circuits a
    * single-label pattern on the grounds that the iterator already selected the type, which a polymorphic
@@ -771,8 +795,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     int bestMatchCount = 0;
     List<String> bestMatchedProperties = null;
 
-    // Polymorphic for the same reason as tryFindAndUseIndex above (issue #7021).
-    for (final TypeIndex index : type.getAllIndexes(true)) {
+    for (final TypeIndex index : polymorphicIndexesOf(type)) {
       final List<String> indexProperties = index.getPropertyNames();
       int matchCount = 0;
       final List<String> matchedProperties = new ArrayList<>();
