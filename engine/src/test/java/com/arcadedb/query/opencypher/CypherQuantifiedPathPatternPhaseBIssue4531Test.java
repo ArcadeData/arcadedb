@@ -258,6 +258,46 @@ class CypherQuantifiedPathPatternPhaseBIssue4531Test {
     assertThat(starts).containsExactlyInAnyOrder("A", "B");
   }
 
+  // Issue #4531: a path variable that also spans hops OUTSIDE the group has no per-repetition list form,
+  // so it stays a single path - the group's repetitions are concatenated onto the path the earlier hops
+  // already built, rather than replacing it.
+  @Test
+  void namedPathSpanningAGroupAndOtherHopsStaysOneConcatenatedPath() {
+    createWeightedChain();
+
+    final List<Integer> lengths = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH p = (a:P {name:'A'})-[:KNOWS]->(b:P) ((m:P)-[r:KNOWS]->(n:P))+ (t:P) RETURN p AS p")) {
+      while (rs.hasNext()) {
+        final Object path = rs.next().getProperty("p");
+        assertThat(path).isInstanceOf(TraversalPath.class);
+        final TraversalPath traversal = (TraversalPath) path;
+        // The leading hop is part of the same path, so it always starts at A and stays contiguous.
+        assertThat(traversal.getVertices().get(0).getString("name")).isEqualTo("A");
+        assertThat(traversal.getVertices()).hasSize(traversal.getEdges().size() + 1);
+        lengths.add(traversal.getEdges().size());
+      }
+    }
+    // A->B plus one repetition (A-B-C) and A->B plus two (A-B-C-D).
+    assertThat(lengths).containsExactlyInAnyOrder(2, 3);
+  }
+
+  // Issue #4531: with zero repetitions the group contributes nothing, so the path is exactly what the
+  // hops before it built.
+  @Test
+  void namedPathWithZeroRepetitionsKeepsTheLeadingHopsOnly() {
+    createWeightedChain();
+
+    final List<Integer> lengths = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH p = (a:P {name:'A'})-[:KNOWS]->(b:P) ((m:P)-[r:KNOWS]->(n:P)){0,1} (t:P) RETURN p AS p")) {
+      while (rs.hasNext())
+        lengths.add(((TraversalPath) rs.next().getProperty("p")).getEdges().size());
+    }
+    // Zero repetitions leaves the single A->B hop; one repetition appends B->C.
+    assertThat(lengths).containsExactlyInAnyOrder(1, 2);
+  }
+
   // ---------------------------------------------------------------------------
   // 5. Relationship isomorphism and termination
   // ---------------------------------------------------------------------------

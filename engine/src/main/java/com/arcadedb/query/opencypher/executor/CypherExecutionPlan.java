@@ -4746,6 +4746,17 @@ public class CypherExecutionPlan {
     if (bindsNoEdge(relI) || bindsNoEdge(relJ))
       return false;
 
+    // A GQL quantified group (issue #4531) binds whatever its inner pattern's own hops bind, but the
+    // synthetic hop standing in for it carries PLACEHOLDER types and direction, not the inner ones -
+    // neither test below can say anything true about it. Answer conservatively here rather than let
+    // those placeholders decide it indirectly, which is what QuantifiedPathPattern's class javadoc asks
+    // of every loop over getRelationships(). This is load-bearing: a "no" would let
+    // computeHopEdgeTrackingNeeds drop the sibling hop's relationship variable, and without it on the
+    // row QuantifiedPathStep#collectBoundRelationships cannot see that edge and the group would reuse
+    // it, breaking relationship isomorphism.
+    if (relI instanceof QuantifiedPathPattern || relJ instanceof QuantifiedPathPattern)
+      return true;
+
     if (relI.hasTypes() && relJ.hasTypes() && edgeTypesAreDisjoint(relI.getTypes(), relJ.getTypes()))
       return false;
 
