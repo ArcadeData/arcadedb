@@ -27,8 +27,8 @@ import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
-import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -95,10 +95,11 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
         results.put(refId, buildErrorFrame("Type '" + typeName + "' is not a TimeSeries type"));
         continue;
       }
-      // Gated accessor (per-type ACL): fail the whole request with 403 rather than emitting an error frame
-      // for the denied target - an error frame would confirm the type exists to a caller denied on it, and the
-      // engine-unavailable frame below would hand it a file path too. Hence before the availability branch: the
-      // accessor returns null exactly where isEngineAvailable() was false.
+      // Gated accessor (per-type ACL): a denial fails the whole request with 403 rather than being folded into
+      // an error frame, which a Grafana panel would render as a data problem instead of an access problem. Placed
+      // before the availability branch below because that frame carries getEngineUnavailableReason(), i.e. a path
+      // on disk, which a caller denied on this type must not receive; the accessor returns null in exactly the
+      // cases isEngineAvailable() was false, so it replaces that test rather than following it.
       final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
       if (engine == null) {
         // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS
