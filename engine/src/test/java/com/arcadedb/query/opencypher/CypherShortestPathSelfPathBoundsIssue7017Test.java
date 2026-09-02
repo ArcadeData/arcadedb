@@ -149,6 +149,10 @@ class CypherShortestPathSelfPathBoundsIssue7017Test extends TestHelper {
     assertThat(explain("MATCH (s:N {k:'a'}), (e:N {k:'b'}), p = shortestPath((s)-[:LINK*2..3]-(e)) RETURN p"))
         .as("a pattern that really carries bounds still shows them")
         .contains("[:LINK*2..3]");
+    assertThat(explain("MATCH (s:N {k:'a'}), (e:N {k:'b'}), p = shortestPath((s)-[:LINK*0..]-(e)) RETURN p"))
+        .as("a written zero minimum is a different pattern from [*] - the one that admits the zero-length "
+            + "path outright - so it keeps its lower bound on show")
+        .contains("[:LINK*0..]");
     assertThat(explain("MATCH (s:N {k:'a'}), (e:N {k:'b'}), p = shortestPath((s)-[:LINK]-(e)) RETURN p"))
         .as("and one with no quantifier shows none")
         .contains("[:LINK]");
