@@ -272,10 +272,11 @@ class CypherShortestPathHopBoundsIssue7009Test extends TestHelper {
 
   @Test
   void aZeroLengthSelfPathIsStillReturned() {
-    // The endpoints resolving to the same vertex short-circuits to the zero-length path before any hop
-    // bound applies, which is what MATCH p = shortestPath((a)-[:KNOWS*]-(a)) has always answered
-    // (CypherReduceAndShortestPathTest.shortestPathSameNode). Whether an explicit minimum should suppress
-    // it is a semantic decision tracked by issue #7017.
+    // Endpoints resolving to the same vertex answer with the zero-length path, which is what
+    // MATCH p = shortestPath((a)-[:KNOWS*]-(a)) has always answered
+    // (CypherReduceAndShortestPathTest.shortestPathSameNode). [*] carries an implicit minimum of one hop
+    // and keeps that answer; a minimum ABOVE one hop rejects it - see
+    // CypherShortestPathSelfPathBoundsIssue7017Test and HopBounds.acceptsSelfPath() (issue #7017).
     try (final ResultSet rs = database.query("opencypher",
         "MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*]-(e)) RETURN length(p) AS len")) {
       assertThat(rs.hasNext()).isTrue();
