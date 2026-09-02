@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -67,14 +68,23 @@ class OpenCypherStatementClockTest extends TestHelper {
   }
 
   /**
-   * The pin is per statement, not forever: a statement issued after the clock has demonstrably advanced must
-   * see a larger value. Sleeping guarantees the advance, so this is a lower bound that a slow machine can only
-   * make more true.
+   * The pin is per statement, not forever: a statement issued after the clock has demonstrably advanced must see
+   * a larger value.
+   * <p>
+   * The wait is on the JVM clock itself rather than on a fixed sleep, so what is asserted is "a new statement
+   * re-reads the clock" and not "the sleep outlasts the clock's resolution" - the second is not true on every
+   * platform, and a fixed 10 ms would be a coin flip wherever {@link System#currentTimeMillis()} ticks coarsely.
+   * The bound only stops a broken clock from hanging the suite; a slow machine merely makes the assertion more
+   * true.
    */
   @Test
   void timestampAdvancesBetweenStatements() throws InterruptedException {
     final long first = readTimestamp();
-    Thread.sleep(10);
+
+    final long giveUpAt = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (System.currentTimeMillis() <= first && System.nanoTime() < giveUpAt)
+      Thread.sleep(1);
+
     final long second = readTimestamp();
     assertThat(second).isGreaterThan(first);
   }
