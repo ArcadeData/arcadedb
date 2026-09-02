@@ -113,7 +113,12 @@ public class StatisticsProvider {
     final String typeName = type.getName();
     final List<IndexStatistics> indexStatsList = new ArrayList<>();
 
-    final Collection<TypeIndex> indexes = type.getAllIndexes(false);
+    // Polymorphic: an index declared on a supertype is inherited by this type and is just as seekable from
+    // it, so leaving it out of the statistics is what made the planner fall back to a full label scan for a
+    // child type whose only index lives on its parent (issue #7021). NodeIndexSeek resolves the index it is
+    // handed polymorphically and filters the cursor by the queried label, exactly as SQL's
+    // FETCH FROM INDEX / FILTER ITEMS BY TYPE plan does.
+    final Collection<TypeIndex> indexes = type.getAllIndexes(true);
     for (final TypeIndex index : indexes) {
       final List<String> propertyNames = index.getPropertyNames();
       final boolean isUnique = index.isUnique();

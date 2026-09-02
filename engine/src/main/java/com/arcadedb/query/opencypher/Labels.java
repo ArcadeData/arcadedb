@@ -19,9 +19,11 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
@@ -428,6 +430,66 @@ public final class Labels {
       if (!type.instanceOf(labels.get(i)))
         return false;
     return true;
+  }
+
+  /**
+   * Whether an index resolved for {@code label} can hand back records that do not carry it: true exactly when the
+   * index is declared on a supertype. An inherited index is a single logical index over the whole hierarchy - the
+   * schema gives it a sub-index for every bucket of every subtype - so a seek on it from a child type also walks
+   * the parent's own records and every sibling child's, and has to filter them out. That filter is what the SQL
+   * plan for the same query spells as {@code FILTER ITEMS BY TYPE} (issue #7021).
+   * <p>
+   * A seek on the type's own index needs no filter, which is why this is asked before wrapping a cursor rather
+   * than filtering unconditionally.
+   */
+  public static boolean isInheritedIndex(final Index index, final String label) {
+    return index != null && label != null && !label.equals(index.getTypeName());
+  }
+
+  /**
+   * Whether the record {@code identifiable} names carries {@code label}, answered from the bucket its RID names
+   * so a record of another type in the hierarchy is rejected without ever being loaded. This is the row-level
+   * form of the filter an inherited-index seek owes (see {@link #isInheritedIndex}); a cursor that can be walked
+   * as a plain iterator gets it applied by {@link #filterByLabel} instead.
+   */
+  public static boolean carriesLabel(final Schema schema, final Identifiable identifiable, final String label) {
+    final DocumentType type = schema.getTypeByBucketId(identifiable.getIdentity().getBucketId());
+    return type != null && type.instanceOf(label);
+  }
+
+  /**
+   * Filters an index cursor down to the records that carry {@code label}, for the seeks that read an inherited
+   * index (see {@link #isInheritedIndex}).
+   */
+  public static Iterator<Identifiable> filterByLabel(final Iterator<Identifiable> source, final Database database,
+      final String label) {
+    final Schema schema = database.getSchema();
+    return new Iterator<>() {
+      private Identifiable next = advance();
+
+      private Identifiable advance() {
+        while (source.hasNext()) {
+          final Identifiable candidate = source.next();
+          if (carriesLabel(schema, candidate, label))
+            return candidate;
+        }
+        return null;
+      }
+
+      @Override
+      public boolean hasNext() {
+        return next != null;
+      }
+
+      @Override
+      public Identifiable next() {
+        if (next == null)
+          throw new NoSuchElementException();
+        final Identifiable current = next;
+        next = advance();
+        return current;
+      }
+    };
   }
 
   /**

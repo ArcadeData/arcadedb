@@ -685,7 +685,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
     int bestMatchCount = 0;
     List<String> bestMatchedProperties = null;
 
-    for (final TypeIndex index : type.getAllIndexes(false)) {
+    // Polymorphic: an index declared on a supertype is inherited by this type - the schema keeps a sub-index
+    // for every bucket in the hierarchy - and is exactly as seekable from here as one this type declares
+    // itself. Asking for the type's own indexes only left a child type with no usable index at all, since a
+    // child cannot own a second index on a property its parent already indexes, and fell back to a full label
+    // scan where SQL had always planned a fetch from the inherited index (issue #7021).
+    for (final TypeIndex index : type.getAllIndexes(true)) {
       final List<String> indexProperties = index.getPropertyNames();
 
       // Check how many properties match as a leftmost prefix
@@ -723,14 +728,26 @@ public class MatchNodeStep extends AbstractExecutionStep {
       for (int i = 0; i < propertyNames.length; i++)
         propertyValues[i] = properties.get(propertyNames[i]);
 
-      // Track which index was used for profiling output
-      usedIndexName = label + "[" + String.join(", ", propertyNames) + "]";
+      // Track which index was used for profiling output, named after the type that DECLARES it: an inherited
+      // index reported under the queried type would name an index that does not exist (issue #7021).
+      usedIndexName = bestIndex.getTypeName() + "[" + String.join(", ", propertyNames) + "]";
 
-      final Iterator<Identifiable> iter = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
-      return iter;
+      return lookupByKey(bestIndex, label, propertyNames, propertyValues);
     }
 
     return null;
+  }
+
+  /**
+   * Seeks {@code index} for the given key and, when the index is inherited from a supertype, filters its
+   * cursor down to the records that really carry {@code label} - the step's own label check short-circuits a
+   * single-label pattern on the grounds that the iterator already selected the type, which a polymorphic
+   * index does not do (issue #7021).
+   */
+  private Iterator<Identifiable> lookupByKey(final TypeIndex index, final String label, final String[] propertyNames,
+      final Object[] propertyValues) {
+    final Iterator<Identifiable> cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+    return Labels.isInheritedIndex(index, label) ? Labels.filterByLabel(cursor, context.getDatabase(), label) : cursor;
   }
 
   /**
@@ -754,7 +771,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
     int bestMatchCount = 0;
     List<String> bestMatchedProperties = null;
 
-    for (final TypeIndex index : type.getAllIndexes(false)) {
+    // Polymorphic for the same reason as tryFindAndUseIndex above (issue #7021).
+    for (final TypeIndex index : type.getAllIndexes(true)) {
       final List<String> indexProperties = index.getPropertyNames();
       int matchCount = 0;
       final List<String> matchedProperties = new ArrayList<>();
@@ -781,10 +799,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
       for (int i = 0; i < propertyNames.length; i++)
         propertyValues[i] = equalityPredicates.get(propertyNames[i]);
 
-      usedIndexName = label + "[" + String.join(", ", propertyNames) + "]";
+      usedIndexName = bestIndex.getTypeName() + "[" + String.join(", ", propertyNames) + "]";
 
-      final Iterator<Identifiable> iter = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
-      return iter;
+      return lookupByKey(bestIndex, label, propertyNames, propertyValues);
     }
 
     return null;
