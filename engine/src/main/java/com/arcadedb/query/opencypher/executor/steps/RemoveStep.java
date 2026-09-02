@@ -72,8 +72,10 @@ public class RemoveStep extends AbstractExecutionStep {
       private int bufferIndex = 0;
       private boolean finished = false;
       // Tracks the vertices a label removal replaced. A label change rewrites the record under a new type, so
-      // every later row still holding the original refers to a deleted RID (issues #6312, #6313).
-      private final LabelReplacements replacements = new LabelReplacements();
+      // every later row still holding the original refers to a deleted RID (issues #6312, #6313). Held on the
+      // command context rather than here, so a REMOVE inside a CALL { } body - re-planned once per outer row -
+      // still recognises what an earlier row moved (issue #6977).
+      private final LabelReplacements replacements = LabelReplacements.of(context);
 
       @Override
       public boolean hasNext() {

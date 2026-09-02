@@ -28,6 +28,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -50,18 +51,58 @@ import java.util.logging.Level;
  * as an "edge list not fully visible" complaint from the vertex delete that follows its dangling edge-list chunk
  * (issues #6312 and #6313).
  * <p>
- * One instance is held per running {@code SET}/{@code REMOVE} step, so a node replaced while processing one row is
- * redirected to its live replacement on every later row, and the write becomes idempotent instead of fatal. The
- * edges re-attached on the way are tracked the same, lightweight ones included: they have no record to address, but
- * their identity is the (type, out vertex, in vertex) triple, and that is what moved.
+ * One instance is held per running <b>statement</b> - {@link #of(CommandContext)} keeps it on the command context -
+ * so a node replaced while processing one row is redirected to its live replacement on every later row, and the write
+ * becomes idempotent instead of fatal. The edges re-attached on the way are tracked the same, lightweight ones
+ * included: they have no record to address, but their identity is the (type, out vertex, in vertex) triple, and that
+ * is what moved.
+ * <p>
+ * The scope is the statement and not the step because a {@code CALL { }} body is <b>re-planned for every outer
+ * row</b> ({@code SubqueryStep.executeInnerQuery} builds a fresh {@code CypherExecutionPlan} each time): a per-step
+ * instance there lives for exactly one row, so the second outer row met the vertex the first one had deleted and the
+ * label write followed a RID that was gone (issue #6977). {@link #inherit} is what carries the enclosing statement's
+ * map into such a nested plan's own context.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class LabelReplacements {
   private static final Object[] NO_PROPERTIES = new Object[0];
+  /**
+   * Where {@link #of} parks the statement-wide instance. Held as a context <i>cached value</i> rather than as a
+   * context variable: cached values are engine-internal, while variables are reachable from a query through
+   * {@code $CONTEXT} and fall back to the database's global variables when missing.
+   */
+  private static final String   CONTEXT_KEY   = "$cypher.labelReplacements";
 
   private final Map<RID, Vertex> vertices = new HashMap<>();
   private final Map<RID, Edge>   edges    = new HashMap<>();
+
+  /**
+   * The replacement map of the statement {@code context} belongs to, created on first use.
+   * <p>
+   * Every label write of one statement shares it: the three steps that perform one ({@code SET}, {@code REMOVE} and
+   * {@code MERGE}'s {@code ON CREATE}/{@code ON MATCH SET}) and, through {@link #inherit}, every plan nested inside
+   * it. Allocated only when a write step actually asks for it, so a read-only statement never builds one.
+   */
+  public static LabelReplacements of(final CommandContext context) {
+    if (context == null)
+      return new LabelReplacements();
+    if (context.getCachedValue(CONTEXT_KEY) instanceof LabelReplacements existing)
+      return existing;
+    final LabelReplacements created = new LabelReplacements();
+    context.setCachedValue(CONTEXT_KEY, created);
+    return created;
+  }
+
+  /**
+   * Makes a nested plan's context answer {@link #of} with the enclosing statement's map, so a label write inside a
+   * {@code CALL { }} body is seen by the next outer row even though the body is re-planned for each one.
+   */
+  public static void inherit(final CommandContext inner, final CommandContext outer) {
+    if (inner == null || outer == null)
+      return;
+    inner.setCachedValue(CONTEXT_KEY, of(outer));
+  }
 
   public boolean isEmpty() {
     return vertices.isEmpty();
