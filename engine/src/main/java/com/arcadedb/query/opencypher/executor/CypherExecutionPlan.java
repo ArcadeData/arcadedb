@@ -72,6 +72,7 @@ import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PatternComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.ReduceExpression;
 import com.arcadedb.query.opencypher.ast.RegexExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
@@ -121,6 +122,7 @@ import com.arcadedb.query.opencypher.executor.steps.PairHashJoinOp;
 import com.arcadedb.query.opencypher.executor.steps.PartitionedTriangleOp;
 import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
+import com.arcadedb.query.opencypher.executor.steps.QuantifiedPathStep;
 import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
@@ -413,6 +415,9 @@ public class CypherExecutionPlan {
       final List<ResultInternal> allResults = new ArrayList<>();
       final Set<String> seen = removeDuplicates ? new HashSet<>() : null;
       for (final CypherExecutionPlan branchPlan : branchPlans) {
+        // No inherit() here on purpose: the branch runs through this same method with the REAL outerContext,
+        // so it takes the non-union path below and does its own inherit under the same gate. A second copy
+        // here would be one more thing to keep in step with that gate (issue #6977).
         final ResultSet rs = branchPlan.executeWithSeedRow(seedRow, outerContext);
         while (rs.hasNext()) {
           unionGuard.check();
@@ -438,8 +443,14 @@ public class CypherExecutionPlan {
     // Only share the outer statistics accumulator for a write CALL body: getStatistics() lazily
     // allocates, so sharing it unconditionally would allocate a QueryStatistics even for a
     // fully read-only CALL, violating the "read queries allocate nothing" constraint.
-    if (outerContext != null && !statement.isReadOnly())
+    if (outerContext != null && !statement.isReadOnly()) {
       context.setStatistics(outerContext.getStatistics());
+      // A label write moves the record, so the map of what it displaced has to outlive this plan: the body of a
+      // CALL { } is re-planned for every outer row, and without this the second row met the vertex the first one
+      // deleted (issue #6977). Same gate as the statistics above - a read-only body performs no label write and
+      // must not make the enclosing statement allocate a map for one.
+      LabelReplacements.inherit(context, outerContext);
+    }
     inheritCommandDeadline(context, outerContext);
 
     // Create a seed step that returns the seed row
@@ -1046,14 +1057,33 @@ public class CypherExecutionPlan {
     // Create a wrapper step that executes the physical operators
     AbstractExecutionStep currentStep = new AbstractExecutionStep(context) {
       private ResultSet operatorResults = null;
+      private boolean closed = false;
 
       @Override
       public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
-        if (operatorResults == null) {
+        // Once closed this step stays closed: re-executing the operator tree here would open a second
+        // set of cursors that the already-spent close() chain would never reach.
+        if (operatorResults == null && !closed) {
           // Execute physical operators on first pull
           operatorResults = physicalPlan.getRootOperator().execute(ctx, nRecords);
         }
-        return operatorResults;
+        return operatorResults != null ? operatorResults : new IteratorResultSet(Collections.<Result>emptyList().iterator());
+      }
+
+      /**
+       * The physical-operator tree hangs off this step's result set, not off a previous step, so
+       * without this override the close() chain stopped one step short of the operators and every
+       * cursor they hold stayed open for as long as the plan was retained (issue #7010, and #5635
+       * for why an index cursor has to be closed explicitly).
+       */
+      @Override
+      public void close() {
+        if (!closed) {
+          closed = true;
+          if (operatorResults != null)
+            operatorResults.close();
+        }
+        super.close();
       }
 
       @Override
@@ -2175,7 +2205,13 @@ public class CypherExecutionPlan {
           // For unreferenced fixed-length edges, treat as anonymous for GAV eligibility.
           // Anonymous edge: null if GAV-eligible, internal var if edge tracking needed.
           final String relVar;
-          if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
+          if (relPattern instanceof QuantifiedPathPattern)
+            // A quantified group binds no relationship of its own: its inner relationship variables are
+            // group variables bound to lists by QuantifiedPathStep, and it does its own isomorphism
+            // bookkeeping. Handing it a synthetic edge-tracking variable would register a name in
+            // matchVariables that nothing ever binds.
+            relVar = null;
+          else if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
             if (relPattern.isVariableLength() || CypherVariableUsage.isEdgeVariableReferenced(statement, relPattern.getVariable())
                 || boundVariables.contains(relPattern.getVariable()))
               relVar = relPattern.getVariable();
@@ -2218,7 +2254,16 @@ public class CypherExecutionPlan {
             matchVariables.add(effectiveTargetVar);
 
           AbstractExecutionStep nextStep;
-          if (relPattern.isVariableLength()) {
+          if (relPattern instanceof QuantifiedPathPattern quantified) {
+            // GQL Quantified Path Pattern, Phase B (issue #4531): a repeated inner sub-pattern that no
+            // variable-length hop can express. Its inner variables surface here as group variables.
+            for (final String groupVariable : quantified.getGroupVariables())
+              if (!boundVariables.contains(groupVariable))
+                matchVariables.add(groupVariable);
+            nextStep = new QuantifiedPathStep(effectiveSourceVar, effectiveTargetVar, pathVariable,
+                bindsGroupPathVariable(pathPattern), quantified, effectiveTargetNode,
+                new HashSet<>(boundVariables), context);
+          } else if (relPattern.isVariableLength()) {
             // DFS, not BFS: DFS's active stack is bounded by maxHops regardless of branching
             // factor, while BFS's frontier queue must hold an entire level's children before it
             // can dequeue the first one - level-order expansion via a single FIFO queue offers no
@@ -2371,7 +2416,9 @@ public class CypherExecutionPlan {
       return null;
 
     // Both endpoints must be unselective (no labels, no inline properties) and not already bound - there
-    // is nothing to validate on them beyond what the WHERE filter above already re-checks.
+    // is nothing to validate on them beyond what the WHERE filter above already re-checks. Note that a
+    // variable repeated at both endpoints is unselective by this measure yet still constrains the hop; see
+    // MatchEdgeByIndexStep's class javadoc for why the step, not this test, enforces it (issue #7008).
     final NodePattern srcNode = pathPattern.getFirstNode();
     final NodePattern tgtNode = pathPattern.getLastNode();
     if (isSelectiveEndpoint(srcNode, boundVariables, matchVariables)
@@ -2523,6 +2570,19 @@ public class CypherExecutionPlan {
     final String targetVariable = pathPattern.getLastNode().getVariable();
     return targetVariable != null && !targetVariable.equals(sourceVariable)
         && targetVariable.equals(physicalPlan.getAnchor().getVariable());
+  }
+
+  /**
+   * Returns true when a named path over {@code pathPattern} names nothing but a single quantified group,
+   * which ISO/IEC 39075 §15.4 (grouped path assignment) binds to a {@code LIST<PATH>} - one path per
+   * repetition - rather than to one path.
+   * <p>
+   * A path that also spans ordinary hops around the group has no such list form and stays a single
+   * concatenated path, so the distinction is made here, on the written pattern, and not inside the step.
+   */
+  private static boolean bindsGroupPathVariable(final PathPattern pathPattern) {
+    return pathPattern.getRelationshipCount() == 1
+        && pathPattern.getRelationship(0) instanceof QuantifiedPathPattern;
   }
 
   /**
@@ -3083,7 +3143,9 @@ public class CypherExecutionPlan {
                 final RelationshipPattern relPattern = pathPattern.getRelationship(i);
                 final NodePattern targetNode = pathPattern.getNode(i + 1);
                 final String relVar;
-                if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
+                if (relPattern instanceof QuantifiedPathPattern)
+                  relVar = null; // see the matching note in the ordered builder above
+                else if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
                   if (relPattern.isVariableLength() || CypherVariableUsage.isEdgeVariableReferenced(statement, relPattern.getVariable()))
                     relVar = relPattern.getVariable();
                   else
@@ -3099,7 +3161,15 @@ public class CypherExecutionPlan {
                 matchVariables.add(targetVar);
 
                 AbstractExecutionStep nextStep;
-                if (relPattern.isVariableLength()) {
+                if (relPattern instanceof QuantifiedPathPattern quantified) {
+                  // GQL Quantified Path Pattern, Phase B (issue #4531) - see the ordered builder above
+                  for (final String groupVariable : quantified.getGroupVariables())
+                    if (!legacyBoundVariables.contains(groupVariable))
+                      matchVariables.add(groupVariable);
+                  nextStep = new QuantifiedPathStep(currentSourceVar, targetVar, pathVariable,
+                      bindsGroupPathVariable(pathPattern), quantified, targetNode,
+                      new HashSet<>(legacyBoundVariables), context);
+                } else if (relPattern.isVariableLength()) {
                   // Variable-length path - pass path variable, relationship variable, and target node for label
                   // filtering. Snapshot previously bound variables for relationship-uniqueness scoping.
                   // DFS, not BFS: see the matching comment in the optimizer plan builder above (#6097).
@@ -4721,6 +4791,17 @@ public class CypherExecutionPlan {
     // A hop capped at zero edges - [*0..0] - binds none, so it has nothing to share with anybody.
     if (bindsNoEdge(relI) || bindsNoEdge(relJ))
       return false;
+
+    // A GQL quantified group (issue #4531) binds whatever its inner pattern's own hops bind, but the
+    // synthetic hop standing in for it carries PLACEHOLDER types and direction, not the inner ones -
+    // neither test below can say anything true about it. Answer conservatively here rather than let
+    // those placeholders decide it indirectly, which is what QuantifiedPathPattern's class javadoc asks
+    // of every loop over getRelationships(). This is load-bearing: a "no" would let
+    // computeHopEdgeTrackingNeeds drop the sibling hop's relationship variable, and without it on the
+    // row QuantifiedPathStep#collectBoundRelationships cannot see that edge and the group would reuse
+    // it, breaking relationship isomorphism.
+    if (relI instanceof QuantifiedPathPattern || relJ instanceof QuantifiedPathPattern)
+      return true;
 
     if (relI.hasTypes() && relJ.hasTypes() && edgeTypesAreDisjoint(relI.getTypes(), relJ.getTypes()))
       return false;

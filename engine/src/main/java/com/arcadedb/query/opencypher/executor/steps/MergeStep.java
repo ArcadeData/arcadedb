@@ -100,8 +100,9 @@ public class MergeStep extends AbstractExecutionStep {
       private boolean mergedStandalone = false;
       // Tracks the vertices an ON CREATE/ON MATCH SET n:Label replaced, so a node relabelled while processing one
       // row is not still the deleted original when a later row - or a second alias of the same row - reaches it.
-      // Same reasoning, and same class, as SetStep and RemoveStep (issues #6312, #6313).
-      private final LabelReplacements labelReplacements = new LabelReplacements();
+      // Same reasoning, same class and same statement-wide scope as SetStep and RemoveStep (issues #6312, #6313,
+      // #6977).
+      private final LabelReplacements labelReplacements = LabelReplacements.of(context);
 
       @Override
       public boolean hasNext() {
@@ -212,9 +213,10 @@ public class MergeStep extends AbstractExecutionStep {
     final Database database = context.getDatabase();
     final QueryStatistics stats = context.getStatistics();
     final QueryStatistics statsSnapshot = stats.copy();
-    // labelReplacements is step-wide (shared across every row this MergeStep processes, see the field
-    // Javadoc), so only the entries a FAILED attempt of THIS row added must be undone on retry - entries
-    // an earlier, already-committed row recorded are still live and must survive. Snapshotting here,
+    // labelReplacements is statement-wide (shared across every row this MergeStep processes and with every
+    // other label write of the same statement, see the field Javadoc), so only the entries a FAILED attempt
+    // of THIS row added must be undone on retry - entries an earlier, already-committed row recorded, here
+    // or in another step, are still live and must survive. Snapshotting here,
     // once per row before the first attempt, and restoring it at the top of every attempt (including the
     // first, a no-op there) does exactly that.
     final LabelReplacements.Snapshot labelReplacementsSnapshot = labelReplacements.copy();

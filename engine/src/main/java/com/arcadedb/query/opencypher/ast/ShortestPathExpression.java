@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep.EdgeConstraint;
+import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep.HopBounds;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.function.sql.graph.SQLFunctionShortestPath;
@@ -139,11 +140,15 @@ public class ShortestPathExpression implements Expression {
     // The inline property map and the inline WHERE predicate constrain every relationship on the path.
     // SQLFunctionShortestPath only sees vertices, so a constrained pattern must run the edge-aware BFS
     // shared with the MATCH form instead.
+    // The *min..max hop bounds constrain the answer exactly as they do in the MATCH form: without this the
+    // expression form answered shortestPath((s)-[:R*..2]-(e)) with a 4-hop path (issue #7009).
+    final HopBounds bounds = HopBounds.from(relationship);
+
     final EdgeConstraint constraint = EdgeConstraint.from(relationship, result, context);
     if (constraint != null) {
       final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
       final List<Object> filtered = ShortestPathStep.computeFilteredShortestPath(startVertex, endVertex,
-          traversalDirection, typesArray, constraint, context);
+          traversalDirection, typesArray, constraint, bounds, context);
       if (filtered == null || filtered.isEmpty())
         return allPaths ? new ArrayList<>() : null;
       // allShortestPaths() in expression position still yields the single shortest path found, matching the
@@ -162,13 +167,18 @@ public class ShortestPathExpression implements Expression {
     else
       edgeTypeParam = edgeTypes;
 
-    final Object[] params = edgeTypeParam != null ?
-        new Object[] { startVertex, endVertex, direction, edgeTypeParam } :
-        new Object[] { startVertex, endVertex, direction };
+    // An upper hop bound also bounds the search; the answer is re-checked against both bounds below.
+    final Object[] params = ShortestPathStep.shortestPathArguments(startVertex, endVertex, direction, edgeTypeParam,
+        bounds);
 
     final List<RID> pathRids = shortestPathFunction.execute(null, null, null, params, context);
 
     if (pathRids == null || pathRids.isEmpty())
+      return allPaths ? new ArrayList<>() : null;
+
+    // Endpoints resolving to the same vertex short-circuit to the zero-length path before any bound applies,
+    // matching what the MATCH form has always answered for shortestPath((a)-[:R*]-(a)). See issue #7017.
+    if (pathRids.size() > 1 && !bounds.accepts(pathRids.size() - 1))
       return allPaths ? new ArrayList<>() : null;
 
     // Resolve vertex RIDs and find connecting edges to build a proper path

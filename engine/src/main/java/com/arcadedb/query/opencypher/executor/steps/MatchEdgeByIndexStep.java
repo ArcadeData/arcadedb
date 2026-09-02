@@ -58,6 +58,12 @@ import java.util.NoSuchElementException;
  * key values. The MATCH clause's {@code WHERE} filter is still applied above this step, so any predicate
  * not part of the index key (or any looser interpretation) is re-validated - this step is only ever a
  * selective prefilter, never the final word on membership.
+ * <p>
+ * The one constraint the {@code WHERE} filter above cannot re-validate is the one the <em>pattern</em>
+ * carries rather than the predicate: writing the same variable at both endpoints, as in
+ * {@code (a)-[t:TYPE]->(a)}, asks for self-loops only. Binding both endpoints under one name would let the
+ * second {@code setProperty} silently overwrite the first and pass a non-self-loop edge off as a match
+ * (issue #7008), so this step enforces {@code out == in} itself for that shape and keeps the index seek.
  */
 public class MatchEdgeByIndexStep extends AbstractExecutionStep {
   private final String       edgeType;
@@ -68,6 +74,9 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
   private final String       sourceVariable;
   private final String       relationshipVariable; // may be null when the edge is anonymous
   private final String       targetVariable;
+  // True when the pattern repeats one variable at both endpoints - (a)-[t:TYPE]->(a) - which constrains the
+  // hop to self-loops. Anonymous endpoints get distinct generated names, so only an explicit repeat sets it.
+  private final boolean      selfLoopOnly;
 
   private final ExpressionEvaluator evaluator;
 
@@ -95,6 +104,7 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
     this.sourceVariable = sourceVariable;
     this.relationshipVariable = relationshipVariable;
     this.targetVariable = targetVariable;
+    this.selfLoopOnly = sourceVariable != null && sourceVariable.equals(targetVariable);
     this.evaluator = new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
   }
 
@@ -153,6 +163,13 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
               if (!(record instanceof Edge))
                 continue;
               edge = (Edge) record;
+
+              // A repeated endpoint variable constrains the hop to self-loops. This reads the two RIDs the
+              // edge carries rather than resolving the vertex records, so a rejected edge costs no extra
+              // load - but getOut()/getIn() still lazy-load the EDGE's own content, so the comparison has to
+              // sit under the same dangling-entry guard as the resolution above.
+              if (selfLoopOnly && !edge.getOut().equals(edge.getIn()))
+                continue;
             } catch (final RecordNotFoundException e) {
               // Dangling index entry pointing at a removed edge: skip it, like every other RID resolver.
               continue;
