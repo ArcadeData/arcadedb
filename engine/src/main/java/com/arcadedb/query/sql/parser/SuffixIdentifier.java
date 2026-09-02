@@ -73,17 +73,21 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   /**
-   * Whether {@code name} names a context variable rather than a property of the record being evaluated: a user-visible
-   * {@code $variable}, or one of the {@code _$$$...} aliases the planner generates when it lifts a sub-query out of an
-   * expression ({@link SubQueryCollector}) or splits an aggregate projection ({@link AggregateProjectionSplit}) into a
-   * LET clause. No record can own a property under either spelling, so the context is the only place such a name can be
-   * resolved from - and every overload of {@code execute()} has to agree on that, or the same condition answers
-   * differently depending on whether the row reaching it happens to be a {@link Result} or an {@link Identifiable}
-   * (issue #7054: {@code $nested CONTAINS (@rid IN (SELECT ...))} hands each item over as an Identifiable, so the
-   * lifted sub-query resolved to null and the condition was never true).
+   * Whether {@code name} names a context variable rather than a property of the value being evaluated: a user-visible
+   * {@code $variable}, or a {@link GeneratedAlias} the planner invented for itself.
+   * <p>
+   * Every overload of {@code execute()} has to agree on this, or the same condition answers differently depending on
+   * the shape the value reaching it happens to have. Both directions have already gone wrong (issue #7054):
+   * <ul>
+   * <li>the {@link Identifiable} overload asked the context only about {@code $} names, so a lifted sub-query's alias
+   * resolved to null and {@code $nested CONTAINS (@rid IN (SELECT ...))} was never true - {@code CONTAINS} hands each
+   * item over as an Identifiable when the collection holds records;
+   * <li>the {@link Map} overload asked the context about EVERY name, so a plain map key was shadowed by any context
+   * variable that happened to share it.
+   * </ul>
    */
   private static boolean isContextVariable(final String name) {
-    return name.startsWith("$") || name.startsWith("_$$$");
+    return name.startsWith("$") || GeneratedAlias.is(name);
   }
 
   public Object execute(final Identifiable currentRecord, final CommandContext context) {

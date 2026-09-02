@@ -47,7 +47,7 @@ import java.util.List;
  */
 public class AggregateProjectionSplit {
 
-  protected static final String GENERATED_ALIAS_PREFIX = "_$$$OALIAS$$$_";
+  protected static final String GENERATED_ALIAS_PREFIX = GeneratedAlias.PREFIX + "OALIAS$$$_";
   protected              int    nextAliasId            = 0;
 
   protected List<ProjectionItem> preAggregate = new ArrayList<>();

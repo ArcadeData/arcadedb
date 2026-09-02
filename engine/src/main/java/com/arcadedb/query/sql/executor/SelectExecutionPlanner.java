@@ -49,6 +49,7 @@ import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.FunctionCall;
 import com.arcadedb.query.sql.parser.GeOperator;
+import com.arcadedb.query.sql.parser.GeneratedAlias;
 import com.arcadedb.query.sql.parser.GroupBy;
 import com.arcadedb.query.sql.parser.GtOperator;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -945,7 +946,7 @@ public class SelectExecutionPlanner {
           } else {
             continue;
           }
-          final Identifier newAlias = new Identifier("_$$$ORDER_BY_ALIAS$$$_" + (nextAliasCount++));
+          final Identifier newAlias = new Identifier(GeneratedAlias.PREFIX + "ORDER_BY_ALIAS$$$_" + (nextAliasCount++));
           newProj.setAlias(newAlias);
           item.setAlias(newAlias.getStringValue());
           item.expression = null;
@@ -1072,7 +1073,7 @@ public class SelectExecutionPlanner {
       if (!found) {
         final ProjectionItem newItem = new ProjectionItem();
         newItem.setExpression(exp);
-        final Identifier groupByAlias = new Identifier("_$$$GROUP_BY_ALIAS$$$_" + (nextAliasCount++));
+        final Identifier groupByAlias = new Identifier(GeneratedAlias.PREFIX + "GROUP_BY_ALIAS$$$_" + (nextAliasCount++));
         newItem.setAlias(groupByAlias);
         if (info.preAggregateProjection == null) {
           info.preAggregateProjection = new Projection();

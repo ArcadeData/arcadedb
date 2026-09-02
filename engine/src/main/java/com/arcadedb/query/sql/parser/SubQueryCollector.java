@@ -44,7 +44,7 @@ import java.util.Map;
  */
 public class SubQueryCollector {
 
-  protected static final String GENERATED_ALIAS_PREFIX = "_$$$SUBQUERY$$$_";
+  protected static final String GENERATED_ALIAS_PREFIX = GeneratedAlias.PREFIX + "SUBQUERY$$$_";
   protected              int    nextAliasId            = 0;
 
   protected final Map<Identifier, Statement> subQueries = new LinkedHashMap<>();
