@@ -27,6 +27,7 @@ import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -102,7 +103,9 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
         continue;
       }
 
-      final TimeSeriesEngine engine = tsType.getEngine();
+      // Gated accessor (per-type ACL): fail the whole request with 403 rather than emitting an error frame
+      // for the denied target - an error frame would confirm the type exists to a caller denied on it.
+      final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
       final List<ColumnDefinition> columns = tsType.getTsColumns();
 
       // Build tag filter

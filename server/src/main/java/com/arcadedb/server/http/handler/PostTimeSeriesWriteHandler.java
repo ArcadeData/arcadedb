@@ -28,6 +28,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAReplicatedDatabase;
@@ -208,7 +209,7 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
           // claude-review on PR #6779): every batch here was already filtered by isEngineAvailable() above, so
           // this can never actually throw, but getEngine() alone would silently reintroduce the "no engine"
           // possibility at the type level if that filtering were ever changed.
-          final TimeSeriesEngine engine = batch.type().requireEngine();
+          final TimeSeriesEngine engine = batch.type().requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
           final List<ColumnDefinition> columns = batch.type().getTsColumns();
           final List<Sample> group = batch.samples();
           final int count = group.size();

@@ -23,6 +23,7 @@ import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
@@ -123,7 +124,7 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
           // state its storage is in, so this is where a missing engine is reported - naming the type and why the
           // engine never started, rather than letting a null reach an NPE (issue #6356) or, as before, a phantom
           // "already exists" from the auto-create branch (issue #6839).
-          final TimeSeriesEngine engine = tsType.requireEngine();
+          final TimeSeriesEngine engine = tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
           final List<ColumnDefinition> columns = tsType.getTsColumns();
 
           // Append this series' samples as ONE batch. All samples of a remote-write TimeSeries share the

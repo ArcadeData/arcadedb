@@ -27,6 +27,8 @@ import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -89,6 +91,11 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
 
         final DocumentType docType = database.getSchema().getType(typeName);
         if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
+          continue;
+
+        // Series discovery: a type the caller cannot read is omitted rather than reported as an error, the same
+        // way SELECT FROM schema:types hides it - a matcher legitimately spans several metrics here.
+        if (!SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD))
           continue;
 
         final TimeSeriesEngine engine = tsType.getEngine();
