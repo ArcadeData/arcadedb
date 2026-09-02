@@ -60,6 +60,7 @@ import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LetClause;
 import com.arcadedb.query.sql.parser.LetItem;
 import com.arcadedb.query.sql.parser.LtOperator;
+import com.arcadedb.query.sql.parser.MathExpression;
 import com.arcadedb.query.sql.parser.Node;
 import com.arcadedb.query.sql.parser.OrBlock;
 import com.arcadedb.query.sql.parser.OrderBy;
@@ -2070,19 +2071,33 @@ public class SelectExecutionPlanner {
     if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() != 1)
       return false; // OR at the top level: other branches may match records outside this RID set
 
-    // A remaining (non-@rid) condition that references a per-record LET variable can't be
-    // evaluated here: LET is computed after the fetch step, in handleLet(), which runs after this
-    // method. Chaining it into a FilterStep on the fetch-side plan would evaluate it before LET
-    // populates the variable. Defer to the normal scan path, which applies WHERE only after LET.
-    if (info.perRecordLetClause != null && info.whereClause != null && info.whereClause.toString().contains("$"))
-      return false;
+    final boolean hasPerRecordLet =
+        info.perRecordLetClause != null && info.perRecordLetClause.getItems() != null && !info.perRecordLetClause.getItems()
+            .isEmpty();
 
     final AndBlock andBlock = info.flattenedWhereClause.get(0);
 
     for (int i = 0; i < andBlock.getSubBlocks().size(); i++) {
       final BooleanExpression expr = andBlock.getSubBlocks().get(i);
-      if (extractRidEqualityOrInList(expr, context) == null)
-        continue; // not one of the @rid = <RID> / @rid IN [<RID list>] shapes
+
+      // `@rid IN $var` - which is also what `@rid IN (SELECT ...)` becomes once extractSubQueries() has lifted the
+      // sub-query into a LET under a generated alias. A variable that is still unset at plan time cannot be decided
+      // by extractRidEqualityOrInList() (it would read the null as "IN nothing" and answer the whole query empty for
+      // every execution - issue #7054); it is usable only when something is guaranteed to populate it before the
+      // fetch step pulls, which is what a GLOBAL let does - handleGlobalLet() chains ahead of the fetch, handleLet()
+      // after it.
+      final String ridVariable = ridInVariableName(expr);
+      final boolean unresolvedAtPlanTime = ridVariable != null && context.getVariable(ridVariable) == null;
+      if (unresolvedAtPlanTime ? !isGlobalLetVariable(ridVariable, info) : extractRidEqualityOrInList(expr, context) == null)
+        continue; // not one of the @rid = <RID> / @rid IN [<RID list>] / @rid IN $globalLetVar shapes
+
+      // A condition OTHER than the one matched above that references a per-record LET variable can't be evaluated
+      // here: that LET is computed after the fetch step, in handleLet(), which runs after this method. Chaining such
+      // a condition into a FilterStep on the fetch-side plan would evaluate it before LET populates the variable.
+      // Defer to the normal scan path, which applies WHERE only after LET. The matched condition itself is exempt:
+      // any variable IT reads has just been established to be a global one, computed ahead of the fetch.
+      if (hasPerRecordLet && referencesAVariableOutside(andBlock, i))
+        return false;
 
       // Known tradeoff: this shape check runs against THIS build's bound value, and its true/false
       // outcome (not the resolved RIDs themselves, which are re-resolved per execution below) is
@@ -2105,7 +2120,14 @@ public class SelectExecutionPlanner {
       plan.chain(new FilterByTypeStep(identifier, context));
 
       final List<BooleanExpression> remaining = new ArrayList<>(andBlock.getSubBlocks());
-      remaining.remove(i);
+      // The literal/parameter shapes resolve to exactly the RIDs the condition accepts, so the fetch step fully
+      // replaces them. A variable does not: it can hold projected sub-query rows, which
+      // resolveRidEqualityOrInListAtRuntime() deliberately widens into every RID they could possibly carry, so the
+      // condition has to stay as a residual filter to narrow that over-approximation back to what a plain scan
+      // would have answered. Kept for EVERY variable right-hand side, resolvable at plan time or not, so that the
+      // filter is present exactly whenever the runtime resolution widens.
+      if (ridVariable == null)
+        remaining.remove(i);
       if (!remaining.isEmpty()) {
         final AndBlock remainingBlock = new AndBlock();
         remainingBlock.getSubBlocks().addAll(remaining);
@@ -2122,6 +2144,59 @@ public class SelectExecutionPlanner {
     return false;
   }
 
+  /** Whether any sub-block of {@code andBlock} other than the one at {@code skipIndex} mentions a variable. */
+  private static boolean referencesAVariableOutside(final AndBlock andBlock, final int skipIndex) {
+    for (int i = 0; i < andBlock.getSubBlocks().size(); i++)
+      if (i != skipIndex && andBlock.getSubBlocks().get(i).toString().contains("$"))
+        return true;
+
+    return false;
+  }
+
+  /**
+   * The variable a {@code @rid IN $var} condition reads, or {@code null} when {@code expr} is any other shape.
+   * {@code @rid IN (SELECT ...)} lands here too: {@link #extractSubQueries} has by then replaced the statement with
+   * a {@link SubQueryCollector}-generated alias naming the LET that computes it.
+   */
+  private static String ridInVariableName(final BooleanExpression expr) {
+    if (!(expr instanceof InCondition in) || in.not || !RID_PROPERTY.equalsIgnoreCase(in.getLeft().toString()))
+      return null;
+    return variableName(in.getRightMathExpression());
+  }
+
+  /**
+   * The variable name behind a bare identifier expression - a user {@code $var} or a
+   * {@link SubQueryCollector}-generated sub-query alias, the two names {@code SuffixIdentifier.execute()} resolves
+   * against the command context - or {@code null} when {@code expr} is anything else (a field, a literal).
+   */
+  private static String variableName(final MathExpression expr) {
+    if (!(expr instanceof BaseExpression base) || base.getIdentifier() == null)
+      return null;
+    final SuffixIdentifier suffix = base.getIdentifier().getSuffix();
+    if (suffix == null || suffix.identifier == null)
+      return null;
+    final String name = suffix.identifier.getStringValue();
+    return name.startsWith("$") || SubQueryCollector.isGeneratedAlias(name) ? name : null;
+  }
+
+  /**
+   * Whether {@code variable} is computed by a GLOBAL let, the only kind {@link FetchFromRidsStep} can read: those
+   * steps are chained ahead of the fetch by {@link #handleGlobalLet}. A sub-query that refers to the outer record
+   * ({@code Statement.refersToParent()}) is lifted into the per-record LET clause instead, which
+   * {@link #handleLet} chains AFTER the fetch - its alias is still unset when the fetch pulls, so that shape has to
+   * keep the ordinary scan.
+   */
+  private static boolean isGlobalLetVariable(final String variable, final QueryPlanningInfo info) {
+    if (info.globalLetClause == null || info.globalLetClause.getItems() == null)
+      return false;
+
+    for (final LetItem item : info.globalLetClause.getItems())
+      if (item.getVarName() != null && variable.equals(item.getVarName().getStringValue()))
+        return true;
+
+    return false;
+  }
+
   /**
    * Build-time-only: recognizes {@code @rid = <RID>} and {@code @rid IN [<RID list>]} (also
    * {@code IN (<RID list>)} and {@code IN <bind parameter>}) and resolves the RID(s) against
@@ -2133,7 +2208,9 @@ public class SelectExecutionPlanner {
    * partially-resolvable list correctly on its own. Returns an empty list if the condition can never
    * match any record (empty IN-list, or a bind parameter bound to null). {@code @rid NOT IN [...]}
    * is deliberately not handled here: excluding a RID set still requires scanning every other record
-   * of the type, which this optimization cannot help with.
+   * of the type, which this optimization cannot help with. Neither is {@code @rid IN $var} whose
+   * variable is still unset at plan time - {@link #handleTypeWithRidFilter} decides that shape on
+   * its own, see issue #7054.
    * <p>
    * Do NOT call this from {@link FetchFromRidsStep#syncPull} - once the plan has committed to a
    * {@code FetchFromRidsStep}, there is no scan fallback left, so "abort the whole list to null on
@@ -2147,6 +2224,15 @@ public class SelectExecutionPlanner {
     }
 
     if (!(expr instanceof InCondition in) || in.not || !RID_PROPERTY.equalsIgnoreCase(in.getLeft().toString()))
+      return null;
+
+    // A variable that is still unset - typically the LET alias a lifted sub-query leaves behind (see
+    // extractSubQueries), computed only at execution time. Evaluating it now yields null, which the rawValue == null
+    // branch below would read as "IN nothing" and answer with an empty result for every execution - issue #7054.
+    // Whether that shape is usable anyway is decided by handleTypeWithRidFilter (it needs a global LET); here it is
+    // simply "not a plan-time-resolvable RID list".
+    final String variable = variableName(in.getRightMathExpression());
+    if (variable != null && context.getVariable(variable) == null)
       return null;
 
     final Object rawValue;
@@ -2230,22 +2316,57 @@ public class SelectExecutionPlanner {
     if (rawValue == NOT_A_RESOLVABLE_RID_SHAPE || rawValue == null)
       return List.of(); // subquery on the right, or WHERE @rid IN <null>: matches nothing
 
+    // A variable can hold projected sub-query rows rather than bare RIDs, and a row can carry the RID under any
+    // projection name (SELECT @rid ..., SELECT link_property ...), inside a collection, or not at all. Widen those
+    // rows into every RID they could possibly match: handleTypeWithRidFilter keeps the IN condition as a residual
+    // filter for every variable right-hand side, so an over-approximation here still answers exactly what a plain
+    // scan would.
+    final boolean widen = variableName(in.getRightMathExpression()) != null;
+
     // Same dedup rationale as extractRidEqualityOrInList; unresolvable elements are skipped instead
     // of aborting the whole list, matching how a normal IN scan treats a non-RID element (no match
     // for that element, not a failure of the whole condition).
     final Set<RID> rids = new LinkedHashSet<>();
     if (rawValue instanceof Iterable<?> iterable) {
-      for (final Object item : iterable) {
-        final RID rid = toRid(item, context);
+      for (final Object item : iterable)
+        collectRids(item, widen, context, rids);
+    } else
+      collectRids(rawValue, widen, context, rids);
+
+    return new ArrayList<>(rids);
+  }
+
+  /**
+   * Adds the RID(s) that one element of an {@code @rid IN <list>} right-hand side can stand for to {@code rids}.
+   * With {@code widen} off this is exactly {@link #toRid} - at most one RID per element. With it on (the lifted
+   * sub-query shape) a {@link Result} that is not itself a record also contributes every RID reachable through its
+   * properties, one level of collection included, because the projection name that carries the RID is not known
+   * here and picking one would silently drop the others.
+   */
+  private static void collectRids(final Object value, final boolean widen, final CommandContext context, final Set<RID> rids) {
+    final RID direct = toRid(value, context);
+    if (direct != null) {
+      rids.add(direct);
+      return;
+    }
+
+    if (!widen || !(value instanceof Result result) || result.isElement())
+      return;
+
+    for (final String propertyName : result.getPropertyNames()) {
+      final Object property = result.getProperty(propertyName);
+      if (MultiValue.isMultiValue(property)) {
+        for (final Object item : MultiValue.getMultiValueIterable(property, false)) {
+          final RID rid = toRid(item, context);
+          if (rid != null)
+            rids.add(rid);
+        }
+      } else {
+        final RID rid = toRid(property, context);
         if (rid != null)
           rids.add(rid);
       }
-    } else {
-      final RID rid = toRid(rawValue, context);
-      if (rid != null)
-        rids.add(rid);
     }
-    return new ArrayList<>(rids);
   }
 
   private static RID toRid(final Object value, final CommandContext context) {
