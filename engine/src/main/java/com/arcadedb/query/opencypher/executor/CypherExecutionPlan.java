@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
@@ -1526,7 +1527,7 @@ public class CypherExecutionPlan {
         }
         // Detect count-only pattern: CALL ... YIELD ... RETURN count(*)
         // When detected, enable fast-path that skips per-row Result object creation
-        if (isFollowedByCountOnlyReturn(clausesInOrder, clausesInOrder.indexOf(entry))) {
+        if (isFollowedByCountOnlyReturn(clausesInOrder, entryIndex)) {
           callStep.setCountOnlyOptimization(true);
         }
         currentStep = callStep;
@@ -1537,7 +1538,9 @@ public class CypherExecutionPlan {
         final boolean foreachEagerMaterialize = foreachClause.containsDelete()
             && (matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses)
                 || deleteMayTargetTaintedVariable(collectForeachDeleteTargetVariables(foreachClause), disconnectedTaintedVariables));
-        final boolean foreachEagerExecution = graphReadFollows(clausesInOrder, clausesInOrder.indexOf(entry));
+        final boolean foreachEagerExecution =
+            (Boolean) GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ.getValue()
+                && graphReadFollows(clausesInOrder, entryIndex);
         final ForeachStep foreachStep =
             new ForeachStep(foreachClause, context, functionFactory, foreachEagerMaterialize, foreachEagerExecution);
         if (currentStep != null) {

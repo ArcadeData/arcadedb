@@ -710,6 +710,11 @@ public enum GlobalConfiguration {
       Higher values improve performance but consume more memory. Default: 20000. Recommended range: 10000-100000. Set to 0 to disable batching.""",
       Integer.class, 20_000),
 
+  OPENCYPHER_FOREACH_EAGER_READ("arcadedb.opencypher.foreachEagerRead", SCOPE.DATABASE,
+      """
+      Make FOREACH eager when a later clause in the same query reads the graph (MATCH, MERGE, CALL or a CALL {} subquery).       Eager means the FOREACH body runs for every input row before the first row reaches that reader, so every row sees the       same, complete post-FOREACH graph instead of whichever writes happened to land inside the pull batch it was produced in       (issue #6922). The cost is that the FOREACH's input rows are held in memory until the last write is applied. Set to false       to restore the streaming, batch-at-a-time behaviour for a bulk query whose input does not fit in memory - at the price of       the following read observing a partially applied FOREACH.""",
+      Boolean.class, true),
+
   OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS("arcadedb.opencypher.loadCsv.allowFileUrls", SCOPE.DATABASE,
       """
       Allow LOAD CSV to access local files via file:/// URLs and bare file paths. \

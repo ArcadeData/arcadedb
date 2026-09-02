@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,6 +53,7 @@ class CypherForeachEagerReadIssue6922Test {
 
   @AfterEach
   void tearDown() {
+    GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ.reset();
     if (database != null) {
       database.drop();
       database = null;
@@ -137,6 +140,59 @@ class CypherForeachEagerReadIssue6922Test {
     assertThat(totalNodes()).isEqualTo(500L);
   }
 
+  @Test
+  void mergeAfterForeachMatchesANodeTheForeachCreatedForALaterRow() {
+    // MERGE is a read as well as a write, and it is the only triggering clause here - adding a MATCH
+    // or CALL to observe the graph would arm the eager mode by itself and prove nothing about MERGE.
+    // The FOREACH gives every row its own (:L1 {i}); MERGE then asks for the very last one, which
+    // only a fully applied FOREACH can already hold. Streaming batches emit the first row while
+    // i = 250 is still 150 rows away, so MERGE creates a 251st node instead of matching.
+    final List<Object> rows = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN [0] | CREATE (:L1 {i: i}))
+        MERGE (last:L1 {i: 250})
+        RETURN i AS value""", "value");
+
+    assertThat(rows).hasSize(250);
+    assertThat(countOf("L1")).as("MERGE matched the existing node instead of creating a 251st").isEqualTo(250L);
+  }
+
+  @Test
+  void callSubqueryAfterForeachSeesEveryCreatedNode() {
+    // A CALL {} subquery is opaque to the clause scan but can hold a MATCH, so it counts as a read.
+    final List<Object> counts = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN range(0, 1) | CREATE (:L1 {i: i, j: j}))
+        CALL { MATCH (n:L1) RETURN count(n) AS visible }
+        RETURN visible""", "visible");
+
+    assertThat(counts).hasSize(250);
+    assertThat(counts).containsOnly(500L);
+  }
+
+  @Test
+  void eagerReadCanBeTradedBackForStreaming() {
+    // arcadedb.opencypher.foreachEagerRead is the escape hatch for a bulk query whose input does not
+    // fit in memory: with it off the reader is back to seeing whatever the pull batch had applied, so
+    // the 250 rows no longer agree - which is what proves the setting reaches the planner.
+    GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ.setValue(false);
+    try {
+      final List<Object> counts = queryColumn("""
+          UNWIND range(1, 250) AS i
+          FOREACH (j IN range(0, 1) | CREATE (:L1 {i: i, j: j}))
+          CALL meta.stats() YIELD value AS stats
+          RETURN stats.nodeCount AS nodeCount""", "nodeCount");
+
+      assertThat(counts).hasSize(250);
+      assertThat(totalNodes()).as("every write still lands").isEqualTo(500L);
+      assertThat(new LinkedHashSet<>(counts))
+          .as("streaming visibility restored: the rows disagree again")
+          .hasSizeGreaterThan(1);
+    } finally {
+      GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ.setValue(true);
+    }
+  }
+
   private List<Object> queryColumn(final String cypher, final String column) {
     final List<Object> values = new ArrayList<>();
     database.transaction(() -> {
@@ -149,6 +205,11 @@ class CypherForeachEagerReadIssue6922Test {
 
   private long totalNodes() {
     final ResultSet resultSet = database.query("opencypher", "MATCH (n) RETURN count(n) AS nodes");
+    return ((Number) resultSet.next().getProperty("nodes")).longValue();
+  }
+
+  private long countOf(final String label) {
+    final ResultSet resultSet = database.query("opencypher", "MATCH (n:" + label + ") RETURN count(n) AS nodes");
     return ((Number) resultSet.next().getProperty("nodes")).longValue();
   }
 }

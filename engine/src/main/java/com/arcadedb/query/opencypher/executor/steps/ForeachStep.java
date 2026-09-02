@@ -84,6 +84,11 @@ public class ForeachStep extends AbstractExecutionStep {
    * complete post-FOREACH graph. The flag is set by the planner only when a later clause actually
    * reads the graph, so the streaming {@code MATCH ... FOREACH ... RETURN} bulk-update shape keeps
    * its bounded memory profile.
+   * <p>
+   * What eagerness costs is memory: the input rows are held until the last write is applied. A bulk
+   * query whose input does not fit in memory can trade the guarantee back for streaming by setting
+   * {@code arcadedb.opencypher.foreachEagerRead} to false. Chunking instead of streaming would not
+   * be a fix - a smaller chunk only moves the boundary the reader sees the writes at.
    */
   private final boolean eagerExecution;
 
