@@ -169,6 +169,45 @@ class CypherForeachEagerReadIssue6922Test {
   }
 
   @Test
+  void graphReadNestedInsideAContainerExpressionArmsEagerness() {
+    // The subquery is buried in a CASE branch and in a list literal. Both are containers whose walk
+    // has to descend into them; stopping at the top of the RETURN item finds nothing.
+    final List<Object> fromCase = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN range(0, 1) | CREATE (:L1 {i: i, j: j}))
+        RETURN CASE WHEN true THEN count { MATCH (n:L1) } ELSE 0 END AS visible""", "visible");
+
+    assertThat(fromCase).hasSize(250);
+    assertThat(fromCase).containsOnly(500L);
+
+    database.drop();
+    database = new DatabaseFactory("./target/databases/testopencypher-foreach-eager-read-6922").create();
+
+    final List<Object> fromList = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN range(0, 1) | CREATE (:L1 {i: i, j: j}))
+        RETURN [count { MATCH (n:L1) }] AS visible""", "visible");
+
+    assertThat(fromList).hasSize(250);
+    assertThat(fromList).containsOnly(List.of(500L));
+  }
+
+  @Test
+  void graphReadInALaterForeachListExpressionArmsEagerness() {
+    // A FOREACH's driving list is an expression like any other and is evaluated per row against the
+    // live graph. Here it filters on a node the first FOREACH only creates on its last row, so a
+    // streaming pipeline produced an empty list - and no :Marker - for every row before that write.
+    final List<Object> rows = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN [1] | CREATE (:L1 {i: i}))
+        FOREACH (n IN [x IN range(1, 1) WHERE exists { MATCH (m:L1 {i: 250}) } | x] | CREATE (:Marker {i: i}))
+        RETURN i AS value""", "value");
+
+    assertThat(rows).hasSize(250);
+    assertThat(countOf("Marker")).as("every row's FOREACH body ran").isEqualTo(250L);
+  }
+
+  @Test
   void foreachWithoutAFollowingReadStillPassesEveryRowThrough() {
     // The eager mode must not be armed when nothing downstream reads the graph: the rows still flow
     // through unchanged and every write lands.

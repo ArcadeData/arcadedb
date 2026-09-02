@@ -28,6 +28,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.ast.AllReduceExpression;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
 import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
@@ -36,50 +37,54 @@ import com.arcadedb.query.opencypher.ast.CallClause;
 import com.arcadedb.query.opencypher.ast.CaseAlternative;
 import com.arcadedb.query.opencypher.ast.CaseExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.CollectExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
+import com.arcadedb.query.opencypher.ast.CountExpression;
 import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.ExistsExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.IsNullExpression;
 import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
+import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.ListIndexExpression;
+import com.arcadedb.query.opencypher.ast.ListPredicateExpression;
 import com.arcadedb.query.opencypher.ast.ListSliceExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MapExpression;
+import com.arcadedb.query.opencypher.ast.MapProjectionExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
-import com.arcadedb.query.opencypher.ast.OrderByClause;
-import com.arcadedb.query.opencypher.ast.CollectExpression;
-import com.arcadedb.query.opencypher.ast.CountExpression;
-import com.arcadedb.query.opencypher.ast.ExistsExpression;
-import com.arcadedb.query.opencypher.ast.PatternComprehensionExpression;
-import com.arcadedb.query.opencypher.ast.ShortestPathExpression;
-import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PatternComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.ReduceExpression;
+import com.arcadedb.query.opencypher.ast.RegexExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
+import com.arcadedb.query.opencypher.ast.ShortestPathExpression;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
 import com.arcadedb.query.opencypher.ast.StarExpression;
-import com.arcadedb.query.opencypher.ast.RegexExpression;
 import com.arcadedb.query.opencypher.ast.StringMatchExpression;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.ast.TernaryLogicalExpression;
+import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
@@ -87,19 +92,16 @@ import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
-import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.AntiJoinChainOp;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
+import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.ConstantCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
-import com.arcadedb.query.opencypher.executor.steps.CountOp;
-import com.arcadedb.query.opencypher.executor.steps.DegreeProductOp;
-import com.arcadedb.query.opencypher.executor.steps.PairHashJoinOp;
-import com.arcadedb.query.opencypher.executor.steps.PartitionedTriangleOp;
-import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
+import com.arcadedb.query.opencypher.executor.steps.CountOp;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
+import com.arcadedb.query.opencypher.executor.steps.DegreeProductOp;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
@@ -115,20 +117,23 @@ import com.arcadedb.query.opencypher.executor.steps.MatchRelationshipStep;
 import com.arcadedb.query.opencypher.executor.steps.MergeStep;
 import com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep;
 import com.arcadedb.query.opencypher.executor.steps.OrderByStep;
+import com.arcadedb.query.opencypher.executor.steps.PairHashJoinOp;
+import com.arcadedb.query.opencypher.executor.steps.PartitionedTriangleOp;
 import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
+import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
 import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
 import com.arcadedb.query.opencypher.executor.steps.SubqueryStep;
 import com.arcadedb.query.opencypher.executor.steps.TypeCountStep;
-import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.executor.steps.UnionStep;
 import com.arcadedb.query.opencypher.executor.steps.UnwindStep;
 import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -148,6 +153,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -5000,11 +5006,15 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * Tells whether a FOREACH body reads the graph, i.e. contains a MERGE at any nesting depth. Used by
-   * {@link #graphReadFollows(List, int)} so that a MERGE tucked inside a following FOREACH arms the
-   * eager mode just like a bare one would (issue #6922).
+   * Tells whether a FOREACH reads the graph: a MERGE in its body at any nesting depth, or a read in
+   * the list expression it iterates over. Used by {@link #graphReadFollows(List, int)} so that a read
+   * tucked inside a following FOREACH arms the eager mode just like a bare one would (issue #6922).
    */
   private boolean foreachBodyReadsGraph(final ForeachClause foreachClause) {
+    // The list a FOREACH drives off is an expression like any other: it can be a pattern
+    // comprehension or hold a subquery, and it is evaluated per row against the live graph.
+    if (expressionReadsGraph(foreachClause.getListExpression()))
+      return true;
     for (final ClauseEntry innerClause : foreachClause.getInnerClauses()) {
       switch (innerClause.getType()) {
       case MERGE:
@@ -5072,20 +5082,129 @@ public class CypherExecutionPlan {
 
     @Override
     protected Expression visitFunctionCall(final FunctionCallExpression expr) {
-      for (final Expression argument : expr.getArguments())
-        rewrite(argument);
-      return expr;
+      return descend(expr, expr.getArguments());
     }
 
     @Override
     protected BooleanExpression visitBooleanCoercion(final BooleanCoercionExpression expr) {
-      rewrite(expr.getExpression());
-      return expr;
+      return descend(expr, expr.getExpression());
     }
 
     @Override
     protected Expression visitBooleanWrapper(final BooleanWrapperExpression expr) {
-      rewrite(expr.getBooleanExpression());
+      return descend(expr, expr.getBooleanExpression());
+    }
+
+    @Override
+    protected Expression visitCase(final CaseExpression expr) {
+      rewrite(expr.getCaseExpression());
+      for (final CaseAlternative alternative : expr.getAlternatives()) {
+        rewrite(alternative.getWhenExpression());
+        rewrite(alternative.getThenExpression());
+      }
+      return descend(expr, expr.getElseExpression());
+    }
+
+    @Override
+    protected Expression visitList(final ListExpression expr) {
+      return descend(expr, expr.getElements());
+    }
+
+    @Override
+    protected Expression visitMap(final MapExpression expr) {
+      return descend(expr, expr.getEntries().values());
+    }
+
+    @Override
+    protected Expression visitMapProjection(final MapProjectionExpression expr) {
+      for (final MapProjectionExpression.ProjectionElement element : expr.getElements())
+        rewrite(element.getExpression());
+      return expr;
+    }
+
+    @Override
+    protected Expression visitListComprehension(final ListComprehensionExpression expr) {
+      rewrite(expr.getListExpression());
+      rewrite(expr.getWhereExpression());
+      return descend(expr, expr.getMapExpression());
+    }
+
+    @Override
+    protected Expression visitListPredicate(final ListPredicateExpression expr) {
+      rewrite(expr.getListExpression());
+      return descend(expr, expr.getWhereExpression());
+    }
+
+    @Override
+    protected Expression visitReduce(final ReduceExpression expr) {
+      rewrite(expr.getInitialValue());
+      rewrite(expr.getListExpression());
+      return descend(expr, expr.getReduceExpression());
+    }
+
+    @Override
+    protected Expression visitAllReduce(final AllReduceExpression expr) {
+      rewrite(expr.getInitialValue());
+      rewrite(expr.getListExpression());
+      rewrite(expr.getReduceExpression());
+      return descend(expr, expr.getPredicateExpression());
+    }
+
+    @Override
+    protected Expression visitListIndex(final ListIndexExpression expr) {
+      rewrite(expr.getListExpression());
+      return descend(expr, expr.getIndexExpression());
+    }
+
+    @Override
+    protected Expression visitListSlice(final ListSliceExpression expr) {
+      rewrite(expr.getListExpression());
+      rewrite(expr.getFromExpression());
+      return descend(expr, expr.getToExpression());
+    }
+
+    @Override
+    protected Expression visitArithmetic(final ArithmeticExpression expr) {
+      rewrite(expr.getLeft());
+      return descend(expr, expr.getRight());
+    }
+
+    @Override
+    protected BooleanExpression visitIn(final InExpression expr) {
+      rewrite(expr.getExpression());
+      return descend(expr, expr.getList());
+    }
+
+    @Override
+    protected BooleanExpression visitIsNull(final IsNullExpression expr) {
+      return descend(expr, expr.getExpression());
+    }
+
+    @Override
+    protected BooleanExpression visitStringMatch(final StringMatchExpression expr) {
+      rewrite(expr.getExpression());
+      return descend(expr, expr.getPattern());
+    }
+
+    @Override
+    protected BooleanExpression visitRegex(final RegexExpression expr) {
+      rewrite(expr.getExpression());
+      return descend(expr, expr.getPattern());
+    }
+
+    @Override
+    protected BooleanExpression visitLabelCheck(final LabelCheckExpression expr) {
+      return descend(expr, expr.getVariableExpression());
+    }
+
+    private <T> T descend(final T expr, final Object child) {
+      rewrite(child);
+      return expr;
+    }
+
+    private <T> T descend(final T expr, final Collection<? extends Object> children) {
+      for (final Object child : children)
+        rewrite(child);
       return expr;
     }
   }
