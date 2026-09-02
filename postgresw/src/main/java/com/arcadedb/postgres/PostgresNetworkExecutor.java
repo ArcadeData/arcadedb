@@ -393,51 +393,39 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     if (type == 'P') {
-      if (portal.sqlStatement != null) {
-        if (!portal.executed) {
-          // Guarded so a second Describe('P') on the same portal (or one arriving after an Execute already
-          // ran the statement) reuses the materialized result instead of running the statement again - issue
-          // #6458's follow-up Execute(s) depend on this same fullResultSet being run exactly once.
-          final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-          final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
-          final ResultSet resultSet;
-          try {
-            resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
-          } finally {
-            QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), portal.language, "command");
-          }
-          portal.executed = true;
-          if (portal.isExpectingResult)
-            // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just
-            // the first, to catch a property that only shows up on a later row (documents can be sparse) -
-            // and the portal keeps this list so the Execute(s) that follow slice it by their own row-limit
-            // instead of re-running the statement or losing what Describe already had to read.
-            portal.fullResultSet = browseAndCacheResultSet(resultSet, 0);
-        }
-        if (portal.isExpectingResult) {
-          final List<Result> forColumns = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
-          portal.columns = getColumns(forColumns, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
-          if (portal.columns.isEmpty() && forColumns.isEmpty()) {
-            final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
-                getParams(portal), portal.sqlStatement);
-            if (schemaColumns != null)
-              portal.columns = schemaColumns;
-          }
-          writeRowDescription(portal.columns, portal.resultFormats);
-          portal.rowDescriptionSent = true;
-        } else
-          writeNoData();
-      } else {
-        if (portal.columns != null) {
-          writeRowDescription(portal.columns, portal.resultFormats);
-          portal.rowDescriptionSent = true;
-        } else if (portal.ignoreExecution)
-          // SAVEPOINT/RELEASE/ROLLBACK TO/SET: no statement AND no result ever coming, so Describe still owes
-          // exactly one reply (issue #6930). A non-"sql" language (e.g. cypher) also has no statement here, but
-          // unlike these it DOES expect a result once executed - its columns just are not known yet at Describe
-          // time, so it is deliberately left out of this branch rather than answered with a premature NoData.
-          writeNoData();
-      }
+      // Every Describe is owed exactly one reply - RowDescription or NoData - and a client counting one reply
+      // per request desynchronizes on anything else, so the three arms below are exhaustive by construction
+      // (issue #6996). Which one applies is decided by whether rows are still coming, NOT by whether PARSE
+      // left a parsed SQL statement behind: a portal in a non-"sql" language (cypher/gremlin/graphql) and a
+      // catalog query whose filters are bound parameters both arrive here with no statement and no columns,
+      // and both do produce rows.
+      if (portal.isExpectingResult && !portal.executed && !portal.ignoreExecution) {
+        // Runs the query now and answers from the rows it actually produced - the truthful answer, and the
+        // only one available for a language whose columns no schema resolution can name ahead of execution.
+        // Guarded on !executed so a second Describe('P') on the same portal (or one arriving after an Execute
+        // already ran it) reuses the materialized result instead of running it again: issue #6458's follow-up
+        // Execute(s) depend on this same fullResultSet being run exactly once.
+        final ResultSet resultSet = runPortalQuery(portal);
+        portal.executed = true;
+        // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just the
+        // first, to catch a property that only shows up on a later row (documents can be sparse) - and the
+        // portal keeps this list so the Execute(s) that follow slice it by their own row-limit instead of
+        // re-running the statement or losing what Describe already had to read.
+        portal.fullResultSet = browseAndCacheResultSet(resultSet, 0);
+        resolvePortalColumns(portal);
+        writeRowDescription(portal.columns, portal.resultFormats);
+        portal.rowDescriptionSent = true;
+      } else if (portal.isExpectingResult && portal.columns != null) {
+        // Already materialized: a synthetic answer fixed at PARSE (SHOW/system/catalog), or a portal a
+        // previous Describe/Execute already ran.
+        if (portal.executed && portal.fullResultSet != null)
+          resolvePortalColumns(portal);
+        writeRowDescription(portal.columns, portal.resultFormats);
+        portal.rowDescriptionSent = true;
+      } else
+        // No rows are coming: an INSERT/UPDATE/DELETE portal, or SAVEPOINT/RELEASE/ROLLBACK TO/SET, which
+        // carry no statement and never produce a result (issue #6930).
+        writeNoData();
     } else if (type == 'S') {
       // Describe Statement: send ParameterDescription followed by RowDescription/NoData
       // This tells the client how many parameters the prepared statement expects
@@ -465,6 +453,55 @@ public class PostgresNetworkExecutor extends Thread {
       }
     } else
       throw new PostgresProtocolException("Unexpected describe type '" + type + "'");
+  }
+
+  /**
+   * Runs a portal's query, whichever of the three forms PARSE left it in, and returns its result set.
+   * <p>
+   * Shared by {@code Describe('P')} and {@code Execute} so a portal is run exactly once no matter which of
+   * the two reaches it first (issue #6996): the other finds {@code portal.executed} already true and reads
+   * what this left behind. Before the split existed, Describe could only run the parsed-SQL form, so a portal
+   * in another language had no columns to announce and was answered with nothing at all.
+   */
+  private ResultSet runPortalQuery(final PostgresPortal portal) {
+    if (portal.catalogQuery) {
+      // Deferred from parseCommand because the query's filters are bound parameters (issue #6412).
+      final CatalogAnswer catalogAnswer = handleCatalogQuery(portal.query, getParams(portal));
+      if (catalogAnswer != null)
+        portal.columns = catalogAnswer.columns();
+      return new IteratorResultSet(
+          (catalogAnswer != null ? catalogAnswer.rows() : Collections.<Result>emptyList()).iterator());
+    }
+
+    if (portal.sqlStatement == null)
+      // No parsed statement: a non-"sql" language (cypher/gremlin/graphql) goes straight to its own engine.
+      return database.command(portal.language, portal.query, server.getConfiguration(), getParams(portal));
+
+    final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
+    final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
+    try {
+      return portal.sqlStatement.execute(database, parameters, createCommandContext());
+    } finally {
+      QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), portal.language, "command");
+    }
+  }
+
+  /**
+   * Resolves the columns a materialized portal must be announced under, from the rows it actually produced.
+   * A catalog answer keeps its own columns, which are fixed by the catalog table being emulated rather than
+   * by whichever rows happened to match; a query that came back empty falls back to the schema, so a client
+   * probing a shape with {@code WHERE 1=0} or {@code LIMIT 0} still gets a typed result set.
+   */
+  private void resolvePortalColumns(final PostgresPortal portal) {
+    final List<Result> rows = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
+    if (!portal.catalogQuery || portal.columns == null)
+      portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
+    if (portal.columns.isEmpty() && rows.isEmpty()) {
+      final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
+          getParams(portal), portal.sqlStatement);
+      if (schemaColumns != null)
+        portal.columns = schemaColumns;
+    }
   }
 
   private void executeCommand() {
@@ -502,25 +539,7 @@ public class PostgresNetworkExecutor extends Thread {
       else {
         if (!portal.executed) {
           final long engineStart = System.nanoTime();
-          ResultSet resultSet;
-          if (portal.catalogQuery) {
-            // Deferred from parseCommand because the query's filters are bound parameters (issue #6412).
-            final CatalogAnswer catalogAnswer = handleCatalogQuery(portal.query, getParams(portal));
-            resultSet = new IteratorResultSet(
-                (catalogAnswer != null ? catalogAnswer.rows() : Collections.<Result>emptyList()).iterator());
-            if (catalogAnswer != null)
-              portal.columns = catalogAnswer.columns();
-          } else if (portal.sqlStatement != null) {
-            final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-            final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
-            try {
-              resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
-            } finally {
-              QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), portal.language, "command");
-            }
-          } else {
-            resultSet = database.command(portal.language, portal.query, server.getConfiguration(), getParams(portal));
-          }
+          final ResultSet resultSet = runPortalQuery(portal);
           portal.executed = true;
           if (portal.isExpectingResult) {
             // Materializes the whole result now (issue #6458), the same way Describe('P') does: a client that
@@ -540,16 +559,7 @@ public class PostgresNetworkExecutor extends Thread {
               // mark this portal as having satisfied it, matching real PostgreSQL - a portal never gets a
               // second RowDescription once its statement was already Described.
               if (!portal.columnsDescribed) {
-                // A catalog answer already carries the columns it must be announced under (set on
-                // portal.columns above); only compute from the actual rows when there is none to fall back on.
-                if (!portal.catalogQuery || portal.columns == null)
-                  portal.columns = getColumns(portal.fullResultSet, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
-                if (portal.columns.isEmpty() && portal.fullResultSet.isEmpty()) {
-                  final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
-                      getParams(portal), portal.sqlStatement);
-                  if (schemaColumns != null)
-                    portal.columns = schemaColumns;
-                }
+                resolvePortalColumns(portal);
                 writeRowDescription(portal.columns, portal.resultFormats);
               }
               portal.rowDescriptionSent = true;
