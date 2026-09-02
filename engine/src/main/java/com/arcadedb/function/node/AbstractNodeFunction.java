@@ -70,9 +70,13 @@ public abstract class AbstractNodeFunction implements StatelessFunction {
   }
 
   /**
-   * Parses direction from string.
+   * Parses direction from string. A {@code null} argument means "use the default" and returns {@code BOTH},
+   * but a present, unrecognised value is rejected rather than coerced to {@code BOTH}: IN and OUT answer
+   * genuinely different questions, so silently falling back would answer one the caller did not ask (issue
+   * #6976 - the same bug this backed for {@code node.degree()}, {@code node.relationshipExists()} and
+   * {@code node.relationshipTypes()}).
    *
-   * @param direction the direction string (in, out, both, or null)
+   * @param direction the direction string (in, incoming, out, outgoing, both, or null)
    * @return the Vertex.DIRECTION enum value
    */
   protected Vertex.DIRECTION parseDirection(final String direction) {
@@ -86,8 +90,10 @@ public abstract class AbstractNodeFunction implements StatelessFunction {
     case "out":
     case "outgoing":
       return Vertex.DIRECTION.OUT;
-    default:
+    case "both":
       return Vertex.DIRECTION.BOTH;
+    default:
+      throw new IllegalArgumentException("unknown direction '" + direction + "', expected one of IN, OUT or BOTH");
     }
   }
 }
