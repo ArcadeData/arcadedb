@@ -44,6 +44,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * every row sees the same, complete post-FOREACH graph.
  */
 class CypherForeachEagerReadIssue6922Test {
+  /** 250 rows spans three of the pipeline's 100-row pull batches, and creates 500 nodes in total. */
+  private static final String BATCH_VISIBILITY_QUERY = """
+      UNWIND range(1, 250) AS i
+      FOREACH (j IN range(0, 1) | CREATE (:L1 {i: i, j: j}))
+      CALL meta.stats() YIELD value AS stats
+      RETURN stats.nodeCount AS nodeCount""";
+
   private Database database;
 
   @BeforeEach
@@ -53,7 +60,6 @@ class CypherForeachEagerReadIssue6922Test {
 
   @AfterEach
   void tearDown() {
-    GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ.reset();
     if (database != null) {
       database.drop();
       database = null;
@@ -95,13 +101,9 @@ class CypherForeachEagerReadIssue6922Test {
 
   @Test
   void metaStatsAfterForeachDoesNotDependOnThePullBatchSize() {
-    // 250 rows spans three 100-row pull batches: before the fix this returned 200 for the first 100
-    // rows, 400 for the next 100 and 500 for the last 50 - three values chosen by the batch size.
-    final List<Object> counts = queryColumn("""
-        UNWIND range(1, 250) AS i
-        FOREACH (j IN range(0, 1) | CREATE (:L1 {i: i, j: j}))
-        CALL meta.stats() YIELD value AS stats
-        RETURN stats.nodeCount AS nodeCount""", "nodeCount");
+    // Before the fix this returned 200 for the first 100 rows, 400 for the next 100 and 500 for the
+    // last 50 - three values chosen by the pull batch size rather than by the graph.
+    final List<Object> counts = queryColumn(BATCH_VISIBILITY_QUERY, "nodeCount");
 
     assertThat(counts).hasSize(250);
     assertThat(totalNodes()).isEqualTo(500L);
@@ -158,6 +160,22 @@ class CypherForeachEagerReadIssue6922Test {
   }
 
   @Test
+  void mergeInsideALaterForeachAlsoArmsEagerness() {
+    // Same failure as mergeAfterForeachMatchesANodeTheForeachCreatedForALaterRow, only the MERGE is
+    // tucked inside a second FOREACH. A scan that looks at the later clause's own type alone sees a
+    // FOREACH, calls it a write, and leaves the first FOREACH streaming - so the nested MERGE created
+    // a 251st node.
+    final List<Object> rows = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN [1] | CREATE (:L1 {i: i}))
+        FOREACH (j IN [1] | MERGE (last:L1 {i: 250}))
+        RETURN i AS value""", "value");
+
+    assertThat(rows).hasSize(250);
+    assertThat(countOf("L1")).as("the nested MERGE matched instead of creating a 251st node").isEqualTo(250L);
+  }
+
+  @Test
   void callSubqueryAfterForeachSeesEveryCreatedNode() {
     // A CALL {} subquery is opaque to the clause scan but can hold a MATCH, so it counts as a read.
     final List<Object> counts = queryColumn("""
@@ -171,25 +189,30 @@ class CypherForeachEagerReadIssue6922Test {
   }
 
   @Test
-  void eagerReadCanBeTradedBackForStreaming() {
+  void eagerReadIsTradedBackForStreamingPerDatabase() {
     // arcadedb.opencypher.foreachEagerRead is the escape hatch for a bulk query whose input does not
-    // fit in memory: with it off the reader is back to seeing whatever the pull batch had applied, so
-    // the 250 rows no longer agree - which is what proves the setting reaches the planner.
-    GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ.setValue(false);
-    try {
-      final List<Object> counts = queryColumn("""
-          UNWIND range(1, 250) AS i
-          FOREACH (j IN range(0, 1) | CREATE (:L1 {i: i, j: j}))
-          CALL meta.stats() YIELD value AS stats
-          RETURN stats.nodeCount AS nodeCount""", "nodeCount");
+    // fit in memory. It is SCOPE.DATABASE, so it is read off this database's ContextConfiguration:
+    // turning it off here must not reach a second database that never set it.
+    database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ, false);
 
-      assertThat(counts).hasSize(250);
-      assertThat(totalNodes()).as("every write still lands").isEqualTo(500L);
-      assertThat(new LinkedHashSet<>(counts))
-          .as("streaming visibility restored: the rows disagree again")
-          .hasSizeGreaterThan(1);
+    final List<Object> streamed = queryColumn(BATCH_VISIBILITY_QUERY, "nodeCount");
+    assertThat(streamed).hasSize(250);
+    assertThat(totalNodes()).as("every write still lands").isEqualTo(500L);
+    assertThat(new LinkedHashSet<>(streamed))
+        .as("streaming visibility restored: the rows disagree again")
+        .hasSizeGreaterThan(1);
+
+    final Database other = new DatabaseFactory("./target/databases/testopencypher-foreach-eager-read-6922-other").create();
+    try {
+      final List<Object> eager = new ArrayList<>();
+      other.transaction(() -> {
+        final ResultSet resultSet = other.command("opencypher", BATCH_VISIBILITY_QUERY);
+        while (resultSet.hasNext())
+          eager.add(resultSet.next().getProperty("nodeCount"));
+      });
+      assertThat(eager).as("a database that never set the flag keeps the eager default").containsOnly(500L);
     } finally {
-      GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ.setValue(true);
+      other.drop();
     }
   }
 

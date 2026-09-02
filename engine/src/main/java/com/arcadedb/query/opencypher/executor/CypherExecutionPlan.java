@@ -1539,7 +1539,7 @@ public class CypherExecutionPlan {
             && (matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses)
                 || deleteMayTargetTaintedVariable(collectForeachDeleteTargetVariables(foreachClause), disconnectedTaintedVariables));
         final boolean foreachEagerExecution =
-            (Boolean) GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ.getValue()
+            database.getConfiguration().getValueAsBoolean(GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ)
                 && graphReadFollows(clausesInOrder, entryIndex);
         final ForeachStep foreachStep =
             new ForeachStep(foreachClause, context, functionFactory, foreachEagerMaterialize, foreachEagerExecution);
@@ -4938,6 +4938,10 @@ public class CypherExecutionPlan {
    * after the update counts as a read - which is what {@code CALL meta.stats()} in issue #6922 is.
    * SUBQUERY counts because a CALL {{ ... }} block can contain a MATCH. RETURN, WITH and UNWIND do
    * not: they only project rows the pipeline already produced.
+   * <p>
+   * A later FOREACH counts only when its own body reads, which the grammar narrows to MERGE (and a
+   * nested FOREACH containing one): CREATE, SET, REMOVE and DELETE all act on variables the row
+   * already carries, and MATCH and CALL are not valid inside a FOREACH body at all.
    *
    * @param clausesInOrder the query's clauses in textual order
    * @param clauseIndex    index of the updating clause, or a negative value when it is not in the list
@@ -4946,12 +4950,38 @@ public class CypherExecutionPlan {
     if (clauseIndex < 0)
       return false;
     for (int i = clauseIndex + 1; i < clausesInOrder.size(); i++) {
-      switch (clausesInOrder.get(i).getType()) {
+      final ClauseEntry laterClause = clausesInOrder.get(i);
+      switch (laterClause.getType()) {
       case MATCH:
       case MERGE:
       case CALL:
       case SUBQUERY:
         return true;
+      case FOREACH:
+        if (foreachBodyReadsGraph(laterClause.getTypedClause()))
+          return true;
+        break;
+      default:
+        break;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Tells whether a FOREACH body reads the graph, i.e. contains a MERGE at any nesting depth. Used by
+   * {@link #graphReadFollows(List, int)} so that a MERGE tucked inside a following FOREACH arms the
+   * eager mode just like a bare one would (issue #6922).
+   */
+  private boolean foreachBodyReadsGraph(final ForeachClause foreachClause) {
+    for (final ClauseEntry innerClause : foreachClause.getInnerClauses()) {
+      switch (innerClause.getType()) {
+      case MERGE:
+        return true;
+      case FOREACH:
+        if (foreachBodyReadsGraph(innerClause.getTypedClause()))
+          return true;
+        break;
       default:
         break;
       }

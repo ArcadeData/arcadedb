@@ -712,7 +712,14 @@ public enum GlobalConfiguration {
 
   OPENCYPHER_FOREACH_EAGER_READ("arcadedb.opencypher.foreachEagerRead", SCOPE.DATABASE,
       """
-      Make FOREACH eager when a later clause in the same query reads the graph (MATCH, MERGE, CALL or a CALL {} subquery).       Eager means the FOREACH body runs for every input row before the first row reaches that reader, so every row sees the       same, complete post-FOREACH graph instead of whichever writes happened to land inside the pull batch it was produced in       (issue #6922). The cost is that the FOREACH's input rows are held in memory until the last write is applied. Set to false       to restore the streaming, batch-at-a-time behaviour for a bulk query whose input does not fit in memory - at the price of       the following read observing a partially applied FOREACH.""",
+      Make FOREACH eager when a later clause in the same query reads the graph (MATCH, MERGE, CALL, a CALL {} subquery, \
+      or a later FOREACH whose own body contains a MERGE). Eager means the FOREACH body runs for every input row before \
+      the first row reaches that reader, so every row sees the same, complete post-FOREACH graph instead of whichever \
+      writes happened to land inside the pull batch it was produced in. The cost is that the FOREACH input rows are held \
+      in memory until the last write is applied. Set to false to restore the streaming, batch-at-a-time behaviour for a \
+      bulk query whose input does not fit in memory, at the price of the following read observing a partially applied \
+      FOREACH. Read when the execution plan is built, so a change takes effect for statements planned afterwards \
+      (see arcadedb.opencypher.planCache).""",
       Boolean.class, true),
 
   OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS("arcadedb.opencypher.loadCsv.allowFileUrls", SCOPE.DATABASE,
