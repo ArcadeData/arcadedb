@@ -2800,6 +2800,15 @@ public class CypherExecutionPlan {
    *       unlinks chunks that same cursor is about to follow (issue #7023).</li>
    * </ul>
    *
+   * The answer is deliberately segment-wide rather than per-variable: it is not narrowed to whether the
+   * DELETE's own target is one of the variables the hazardous pattern binds, so {@code MATCH (a)-[*1..3]->(b),
+   * (c:Foo) DETACH DELETE c} materializes eagerly even though {@code c} touches neither the cross join's
+   * other component nor the traversed edges. That over-approximation is inherited from the #6491 gate this
+   * extends and is kept on purpose - a DELETE reaches the graph through more than its named target
+   * (DETACH sweeps incident edges; a path variable expands to entities never named in the DELETE), so
+   * proving non-overlap is harder than it looks, and getting it wrong reintroduces a wrong-results bug to
+   * save memory on a shape that is rare in practice.
+   *
    * @param matchClauses the MATCH clause(s) of the segment feeding the write clause (the ones since the
    *                     last WITH), not every MATCH clause of the statement - see issue #6631
    */
