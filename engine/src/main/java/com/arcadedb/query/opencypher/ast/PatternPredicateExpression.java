@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
@@ -103,6 +104,15 @@ public class PatternPredicateExpression implements BooleanExpression {
 
     // Get the relationship pattern
     final RelationshipPattern relPattern = pathPattern.getRelationship(0);
+
+    // A GQL quantified path pattern (issue #4531) repeats a whole sub-pattern; this predicate evaluator
+    // only knows how to probe a single hop and would answer as if the group were one untyped
+    // variable-length relationship. Say so rather than return a wrong boolean - the EXISTS { MATCH ... }
+    // spelling plans a real execution plan and supports it.
+    if (relPattern instanceof QuantifiedPathPattern)
+      throw new CommandExecutionException(
+          "FeatureNotImplemented: a quantified path pattern is not supported inside an inline pattern predicate; "
+              + "use EXISTS { MATCH ... } instead (issue #4531)");
 
     // Handle variable-length patterns (e.g., -[:REL*2]-, -[:REL*]-)
     if (relPattern.isVariableLength())

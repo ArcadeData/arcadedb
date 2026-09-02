@@ -61,6 +61,7 @@ import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
@@ -109,6 +110,7 @@ import com.arcadedb.query.opencypher.executor.steps.MergeStep;
 import com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep;
 import com.arcadedb.query.opencypher.executor.steps.OrderByStep;
 import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
+import com.arcadedb.query.opencypher.executor.steps.QuantifiedPathStep;
 import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
@@ -2159,7 +2161,13 @@ public class CypherExecutionPlan {
           // For unreferenced fixed-length edges, treat as anonymous for GAV eligibility.
           // Anonymous edge: null if GAV-eligible, internal var if edge tracking needed.
           final String relVar;
-          if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
+          if (relPattern instanceof QuantifiedPathPattern)
+            // A quantified group binds no relationship of its own: its inner relationship variables are
+            // group variables bound to lists by QuantifiedPathStep, and it does its own isomorphism
+            // bookkeeping. Handing it a synthetic edge-tracking variable would register a name in
+            // matchVariables that nothing ever binds.
+            relVar = null;
+          else if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
             if (relPattern.isVariableLength() || CypherVariableUsage.isEdgeVariableReferenced(statement, relPattern.getVariable())
                 || boundVariables.contains(relPattern.getVariable()))
               relVar = relPattern.getVariable();
@@ -2202,7 +2210,16 @@ public class CypherExecutionPlan {
             matchVariables.add(effectiveTargetVar);
 
           AbstractExecutionStep nextStep;
-          if (relPattern.isVariableLength()) {
+          if (relPattern instanceof QuantifiedPathPattern quantified) {
+            // GQL Quantified Path Pattern, Phase B (issue #4531): a repeated inner sub-pattern that no
+            // variable-length hop can express. Its inner variables surface here as group variables.
+            for (final String groupVariable : quantified.getGroupVariables())
+              if (!boundVariables.contains(groupVariable))
+                matchVariables.add(groupVariable);
+            nextStep = new QuantifiedPathStep(effectiveSourceVar, effectiveTargetVar, pathVariable,
+                bindsGroupPathVariable(pathPattern), quantified, effectiveTargetNode,
+                new HashSet<>(boundVariables), context);
+          } else if (relPattern.isVariableLength()) {
             // DFS, not BFS: DFS's active stack is bounded by maxHops regardless of branching
             // factor, while BFS's frontier queue must hold an entire level's children before it
             // can dequeue the first one - level-order expansion via a single FIFO queue offers no
@@ -2507,6 +2524,19 @@ public class CypherExecutionPlan {
     final String targetVariable = pathPattern.getLastNode().getVariable();
     return targetVariable != null && !targetVariable.equals(sourceVariable)
         && targetVariable.equals(physicalPlan.getAnchor().getVariable());
+  }
+
+  /**
+   * Returns true when a named path over {@code pathPattern} names nothing but a single quantified group,
+   * which ISO/IEC 39075 §15.4 (grouped path assignment) binds to a {@code LIST<PATH>} - one path per
+   * repetition - rather than to one path.
+   * <p>
+   * A path that also spans ordinary hops around the group has no such list form and stays a single
+   * concatenated path, so the distinction is made here, on the written pattern, and not inside the step.
+   */
+  private static boolean bindsGroupPathVariable(final PathPattern pathPattern) {
+    return pathPattern.getRelationshipCount() == 1
+        && pathPattern.getRelationship(0) instanceof QuantifiedPathPattern;
   }
 
   /**
@@ -3067,7 +3097,9 @@ public class CypherExecutionPlan {
                 final RelationshipPattern relPattern = pathPattern.getRelationship(i);
                 final NodePattern targetNode = pathPattern.getNode(i + 1);
                 final String relVar;
-                if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
+                if (relPattern instanceof QuantifiedPathPattern)
+                  relVar = null; // see the matching note in the ordered builder above
+                else if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
                   if (relPattern.isVariableLength() || CypherVariableUsage.isEdgeVariableReferenced(statement, relPattern.getVariable()))
                     relVar = relPattern.getVariable();
                   else
@@ -3083,7 +3115,14 @@ public class CypherExecutionPlan {
                 matchVariables.add(targetVar);
 
                 AbstractExecutionStep nextStep;
-                if (relPattern.isVariableLength()) {
+                if (relPattern instanceof QuantifiedPathPattern quantified) {
+                  // GQL Quantified Path Pattern, Phase B (issue #4531) - see the ordered builder above
+                  for (final String groupVariable : quantified.getGroupVariables())
+                    matchVariables.add(groupVariable);
+                  nextStep = new QuantifiedPathStep(currentSourceVar, targetVar, pathVariable,
+                      bindsGroupPathVariable(pathPattern), quantified, targetNode,
+                      new HashSet<>(legacyBoundVariables), context);
+                } else if (relPattern.isVariableLength()) {
                   // Variable-length path - pass path variable, relationship variable, and target node for label
                   // filtering. Snapshot previously bound variables for relationship-uniqueness scoping.
                   // DFS, not BFS: see the matching comment in the optimizer plan builder above (#6097).

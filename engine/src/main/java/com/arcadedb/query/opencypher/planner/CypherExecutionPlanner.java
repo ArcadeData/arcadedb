@@ -219,6 +219,13 @@ public class CypherExecutionPlanner {
           // MatchRelationshipStep applies both filters correctly. See issue #5093.
           for (int ri = 0; ri < path.getRelationshipCount(); ri++) {
             final RelationshipPattern relP = path.getRelationship(ri);
+            // A GQL quantified path pattern (issue #4531) is a repeated sub-pattern with per-repetition
+            // group-variable bindings. The optimizer's LogicalPlan has no representation for it - it
+            // would flatten the hop into a plain variable-length expansion over untyped edges and
+            // silently return the wrong rows - so fall back to the legacy path, whose QuantifiedPathStep
+            // runs it.
+            if (relP instanceof QuantifiedPathPattern)
+              return false;
             if (relP.getPropertiesParameterName() != null)
               return false;
             if ((relP.hasProperties() || relP.hasWhereExpression()) && !relP.isVariableLength())

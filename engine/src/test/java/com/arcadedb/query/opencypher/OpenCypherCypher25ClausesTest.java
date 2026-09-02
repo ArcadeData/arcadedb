@@ -543,30 +543,52 @@ class OpenCypherCypher25ClausesTest {
         .isInstanceOf(CommandParsingException.class);
   }
 
-  // Issue #3365: inner WHERE inside a grouped QPP is rejected (Phase B).
+  // Issue #4531 (was a #3365 Phase B rejection): an inner WHERE now runs, once per repetition.
   @Test
-  void groupedRejectsInnerWhere() {
+  void groupedSupportsInnerWhere() {
     database.getSchema().createEdgeType("KNOWS");
     database.transaction(() ->
       database.command("opencypher",
           "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})"));
 
-    assertThatThrownBy(() -> database.query("opencypher",
-        "MATCH (a:Person {name:'A'})((:Person)-[:KNOWS]->(b:Person) WHERE b.name <> 'X')+(end:Person) RETURN end"))
-        .isInstanceOf(CommandParsingException.class);
+    final List<String> reachable = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:Person {name:'A'})((:Person)-[:KNOWS]->(b:Person) WHERE b.name <> 'X')+(end:Person) "
+            + "RETURN end.name AS name")) {
+      while (rs.hasNext())
+        reachable.add(rs.next().getProperty("name"));
+    }
+    // Every hop satisfies the predicate, so the whole chain downstream of A is reachable.
+    assertThat(reachable).containsExactlyInAnyOrder("B", "C", "D");
+
+    final List<String> filtered = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:Person {name:'A'})((:Person)-[:KNOWS]->(b:Person) WHERE b.name <> 'C')+(end:Person) "
+            + "RETURN end.name AS name")) {
+      while (rs.hasNext())
+        filtered.add(rs.next().getProperty("name"));
+    }
+    // The repetition that would bind b=C fails the predicate, so the walk cannot continue past B.
+    assertThat(filtered).containsExactly("B");
   }
 
-  // Issue #3365: multi-relationship grouped patterns are rejected (Phase B).
+  // Issue #4531 (was a #3365 Phase B rejection): a multi-relationship inner pattern now repeats as a unit.
   @Test
-  void groupedRejectsMultiRelInner() {
+  void groupedSupportsMultiRelInner() {
     database.getSchema().createEdgeType("KNOWS");
     database.transaction(() ->
       database.command("opencypher",
           "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})"));
 
-    assertThatThrownBy(() -> database.query("opencypher",
-        "MATCH (a:Person {name:'A'})((:Person)-[:KNOWS]->(:Person)-[:KNOWS]->(:Person))+(end:Person) RETURN end"))
-        .isInstanceOf(CommandParsingException.class);
+    final List<String> reachable = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:Person {name:'A'})((:Person)-[:KNOWS]->(:Person)-[:KNOWS]->(:Person))+(end:Person) "
+            + "RETURN end.name AS name")) {
+      while (rs.hasNext())
+        reachable.add(rs.next().getProperty("name"));
+    }
+    // The two-hop unit repeats whole: one repetition reaches C, and a second would run off the chain.
+    assertThat(reachable).containsExactly("C");
   }
 
   // ---------------------------------------------------------------------------
