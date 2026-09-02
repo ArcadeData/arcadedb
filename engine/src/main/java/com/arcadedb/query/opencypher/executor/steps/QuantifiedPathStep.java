@@ -42,7 +42,10 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -256,20 +259,55 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
       this.targetLabels = targetNodePattern != null ? resolveLabels(targetNodePattern, input) : null;
     }
 
+    /**
+     * Depth-first search over the repetitions, driven by an explicit stack rather than by recursion.
+     * <p>
+     * The number of repetitions is bounded only by the quantifier and by relationship isomorphism, so on
+     * a long chain it reaches the thousands - and a Java frame per repetition overflowed the stack at
+     * around five thousand, which a graph of that size reaches trivially. Only this level is iterative:
+     * {@link #matchRepetition} still recurses, but its depth is the number of hops the user wrote inside
+     * the group, which is a constant of the query.
+     * <p>
+     * Invariant: {@code pending} always holds exactly one iterator per visited level, so its size is
+     * {@code repetitions.size() + 1}. Popping a level therefore undoes exactly the repetition that
+     * entered it, releasing that repetition's relationships back to the isomorphism set.
+     */
     private void run(final Vertex start) {
-      search(start);
+      final Deque<Iterator<Repetition>> pending = new ArrayDeque<>();
+      visit(start, pending);
+
+      while (!pending.isEmpty()) {
+        guard.check();
+        final Iterator<Repetition> candidates = pending.peek();
+        if (candidates.hasNext()) {
+          final Repetition next = candidates.next();
+          for (final Edge edge : next.edges())
+            usedEdges.add(edge.getIdentity());
+          repetitions.add(next);
+          visit(next.nodes()[next.nodes().length - 1], pending);
+        } else {
+          pending.pop();
+          if (!repetitions.isEmpty()) {
+            final Repetition undone = repetitions.remove(repetitions.size() - 1);
+            for (final Edge edge : undone.edges())
+              usedEdges.remove(edge.getIdentity());
+          }
+        }
+      }
     }
 
-    private void search(final Vertex current) {
-      guard.check();
-
+    /** Emits {@code current} when the repetition count is in range, then stacks the ways to go deeper. */
+    private void visit(final Vertex current, final Deque<Iterator<Repetition>> pending) {
       final int done = repetitions.size();
       if (done >= group.getMinRepetitions() && acceptsEndpoint(current))
         out.add(buildRow(input, current, repetitions));
 
-      if (done >= group.getMaxRepetitions())
-        return;
+      pending.push(done < group.getMaxRepetitions() ?
+          repetitionsFrom(current).iterator() : Collections.emptyIterator());
+    }
 
+    /** Every way the inner pattern matches once starting at {@code current}, in written hop order. */
+    private List<Repetition> repetitionsFrom(final Vertex current) {
       final Vertex[] nodes = new Vertex[innerNodes.size()];
       final Edge[] edges = new Edge[innerRelationships.size()];
       nodes[0] = current;
@@ -277,24 +315,25 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
       // The inner start node's own constraints hold for every repetition, not only the first: the outer
       // boundary node can only carry them for the vertex it binds.
       if (!matchesInnerNode(nodes, edges, 0))
-        return;
+        return Collections.emptyList();
 
-      matchRepetition(nodes, edges, 0);
+      final List<Repetition> found = new ArrayList<>();
+      matchRepetition(nodes, edges, 0, found);
+      return found;
     }
 
     /**
-     * Matches one repetition of the inner pattern hop by hop, recursing into {@link #search} for every
-     * complete assignment. Relationships consumed by the branch are held in {@code usedEdges} for the
-     * duration of the recursion below them and released on backtracking.
+     * Matches one repetition of the inner pattern hop by hop, collecting every complete assignment.
+     * Relationships consumed by the branch are held in {@code usedEdges} for the duration of the
+     * recursion below them and released on backtracking; the ones of an accepted repetition are re-taken
+     * by {@link #run} when it descends into that repetition.
      */
-    private void matchRepetition(final Vertex[] nodes, final Edge[] edges, final int hop) {
+    private void matchRepetition(final Vertex[] nodes, final Edge[] edges, final int hop,
+        final List<Repetition> found) {
       if (hop == innerRelationships.size()) {
-        if (group.getInnerWhere() != null
-            && !group.getInnerWhere().evaluate(repetitionScope(input, nodes, edges, nodes.length - 1), context))
-          return;
-        repetitions.add(new Repetition(nodes.clone(), edges.clone()));
-        search(nodes[nodes.length - 1]);
-        repetitions.remove(repetitions.size() - 1);
+        if (group.getInnerWhere() == null
+            || group.getInnerWhere().evaluate(repetitionScope(input, nodes, edges, nodes.length - 1), context))
+          found.add(new Repetition(nodes.clone(), edges.clone()));
         return;
       }
 
@@ -325,7 +364,7 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
           continue;
 
         usedEdges.add(edgeId);
-        matchRepetition(nodes, edges, hop + 1);
+        matchRepetition(nodes, edges, hop + 1, found);
         usedEdges.remove(edgeId);
       }
     }

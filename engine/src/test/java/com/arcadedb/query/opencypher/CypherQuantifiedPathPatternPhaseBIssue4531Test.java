@@ -443,14 +443,16 @@ class CypherQuantifiedPathPatternPhaseBIssue4531Test {
   }
 
   /**
-   * Issue #4531: the repetition search recurses once per repetition, so a long chain walks the Java call
-   * stack. Pins that a deep but realistic group does not overflow it, since nothing else in the suite
-   * would notice the depth budget shrinking. Tagged slow: it builds and walks a 2,000-vertex chain.
+   * Issue #4531: the repetition count is bounded only by the quantifier and by relationship isomorphism,
+   * so on a chain it reaches the thousands. While the search recursed once per repetition it threw
+   * {@link StackOverflowError} from about five thousand - a size a graph reaches trivially - so
+   * {@code QuantifiedPathStep} drives that level from an explicit stack. Ten thousand repetitions pins
+   * it; the recursive version died at half that. Tagged slow: it builds and walks a 10,000-vertex chain.
    */
   @Test
   @Tag("slow")
   void deepRepetitionDoesNotExhaustTheCallStack() {
-    final int chainLength = 2000;
+    final int chainLength = 10_000;
     database.transaction(() -> {
       final StringBuilder create = new StringBuilder("CREATE (v0:P {name:'v0'})");
       for (int i = 1; i < chainLength; i++)
@@ -458,8 +460,10 @@ class CypherQuantifiedPathPatternPhaseBIssue4531Test {
       database.command("opencypher", create.toString());
     });
 
+    // No group variables, so each row stays constant-size and the test measures search depth rather
+    // than the quadratic cost of materialising a LIST<NODE> per row.
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (s:P {name:'v0'}) ((m:P)-[r:KNOWS]->(n:P))+ (t:P) RETURN count(t) AS reached")) {
+        "MATCH (s:P {name:'v0'}) ((:P)-[:KNOWS]->(:P))+ (t:P) RETURN count(t) AS reached")) {
       assertThat(rs.hasNext()).isTrue();
       // Every vertex downstream of v0 is reachable, at one repetition per hop.
       assertThat(((Number) rs.next().getProperty("reached")).intValue()).isEqualTo(chainLength - 1);
@@ -478,8 +482,10 @@ class CypherQuantifiedPathPatternPhaseBIssue4531Test {
     // Every repetition must start and end on a :P, and the only route out of A goes through a :Q.
     assertThat(namesOf("MATCH (s:P {name:'A'}) ((:P)-[:KNOWS]->(:P))+ (t:P) RETURN t.name AS name"))
         .isEmpty();
-    // An inline property map on an endpoint is the same kind of per-repetition constraint.
-    assertThat(namesOf("MATCH (s:P {name:'A'}) ((:P {name:'A'})-[:KNOWS]->(:P))+ (t:P) RETURN t.name AS name"))
+    // An inline property map on an endpoint is the same kind of per-repetition constraint. Written on
+    // otherwise unlabelled endpoints, so the map alone - not a label - is what blocks the second
+    // repetition: only the first starts on a vertex named 'A'.
+    assertThat(namesOf("MATCH (s:P {name:'A'}) (({name:'A'})-[:KNOWS]->())+ (t:P) RETURN t.name AS name"))
         .isEmpty();
 
     // The unconstrained spelling is the one Phase A still lowers, and it does reach B over the :Q.
