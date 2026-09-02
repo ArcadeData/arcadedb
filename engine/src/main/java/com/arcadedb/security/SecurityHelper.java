@@ -68,12 +68,6 @@ public final class SecurityHelper {
   }
 
   /**
-   * Non-throwing form for catalog listings (e.g. {@code SELECT FROM schema:types}, {@code schema:indexes}): whether
-   * {@code type} should be visible to {@code user} at all, i.e. it grants {@code access} on at least one of the
-   * type's buckets (or, for a bucket-less type, by name). A {@code null} user (no security context: embedded usage
-   * or root) or a {@code null} type sees everything.
-   */
-  /**
    * Same as {@link #canAccessType(SecurityDatabaseUser, DocumentType, SecurityDatabaseUser.ACCESS)}, resolving the
    * user bound to {@code database}'s current context. For listings that must silently hide what the caller cannot
    * see rather than fail the whole request.
@@ -83,6 +77,12 @@ public final class SecurityHelper {
     return canAccessType(dbContext == null ? null : dbContext.getCurrentUser(), type, access);
   }
 
+  /**
+   * Non-throwing form for catalog listings (e.g. {@code SELECT FROM schema:types}, {@code schema:indexes}): whether
+   * {@code type} should be visible to {@code user} at all, i.e. it grants {@code access} on at least one of the
+   * type's buckets (or, for a bucket-less type, by name). A {@code null} user (no security context: embedded usage
+   * or root) or a {@code null} type sees everything.
+   */
   public static boolean canAccessType(final SecurityDatabaseUser user, final DocumentType type, final SecurityDatabaseUser.ACCESS access) {
     if (user == null || type == null)
       return true;
