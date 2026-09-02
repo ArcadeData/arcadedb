@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
@@ -150,7 +151,7 @@ public class ContainsCondition extends BooleanExpression {
 
   /**
    * An array is a multi-value for CONTAINS purposes, with one exception: a {@code byte[]} is ArcadeDB's BINARY
-   * scalar ({@link com.arcadedb.schema.Type#BINARY}), so expanding it to a list of bytes would turn
+   * scalar ({@link Type#BINARY}), so expanding it to a list of bytes would turn
    * {@code list CONTAINS :binary} into a search for a list of numbers instead of for that binary value.
    */
   private static boolean isMultiValue(final Object value) {
