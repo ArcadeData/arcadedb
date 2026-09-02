@@ -49,7 +49,8 @@ public class DateField extends AbstractDateFunction {
 
   @Override
   public String getDescription() {
-    return "Extract a specific field (year, month, day, etc.) from a timestamp";
+    return "Extract a specific field from a timestamp: year, month, day, hour, minute, second, millisecond, "
+        + "dayOfWeek, dayOfYear, week (ISO-8601 week number, alias weekOfYear) or weekYear (ISO-8601 week-based year)";
   }
 
   @Override
@@ -73,6 +74,7 @@ public class DateField extends AbstractDateFunction {
       case "dayofweek", "weekday" -> (long) dateTime.getDayOfWeek().getValue();
       case "dayofyear" -> (long) dateTime.getDayOfYear();
       case "week", "weekofyear" -> (long) dateTime.get(WeekFields.ISO.weekOfWeekBasedYear());
+      case "weekyear", "weekbasedyear" -> (long) dateTime.get(WeekFields.ISO.weekBasedYear());
       default -> throw new IllegalArgumentException("Unknown date field: " + field);
     };
   }
