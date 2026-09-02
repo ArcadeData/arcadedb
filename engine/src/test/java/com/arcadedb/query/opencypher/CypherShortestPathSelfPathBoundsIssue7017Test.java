@@ -109,6 +109,34 @@ class CypherShortestPathSelfPathBoundsIssue7017Test extends TestHelper {
   }
 
   @Test
+  void anExactQuantifierAnswersByItsMinimumLikeAnyOther() {
+    // An upper bound cannot exclude a zero-length path - it is at least zero hops long - so an exact
+    // quantifier is decided by its minimum alone, and [*1..1] keeps the self path exactly as [*] does.
+    assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*1..1]-(e)) RETURN length(p) AS len"))
+        .containsExactly(0);
+    assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK]-(e)) RETURN length(p) AS len"))
+        .as("an unquantified relationship declares the same single hop (issue #7009), so it answers the same")
+        .containsExactly(0);
+    assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*2..2]-(e)) RETURN length(p) AS len"))
+        .as("a minimum of two rejects it, upper bound or not")
+        .isEmpty();
+  }
+
+  @Test
+  void theExplainedPatternKeepsTheSpellingItWasWrittenIn() {
+    // [*] is lowered to minHops = 1 internally; EXPLAIN must not render the commonest pattern of all as
+    // "*1..", a spelling nobody writes it by.
+    assertThat(explain("MATCH (s:N {k:'a'}), (e:N {k:'b'}), p = shortestPath((s)-[:LINK*]-(e)) RETURN p"))
+        .contains("[:LINK*]");
+    assertThat(explain("MATCH (s:N {k:'a'}), (e:N {k:'b'}), p = shortestPath((s)-[:LINK*2..3]-(e)) RETURN p"))
+        .as("a pattern that really carries bounds still shows them")
+        .contains("[:LINK*2..3]");
+    assertThat(explain("MATCH (s:N {k:'a'}), (e:N {k:'b'}), p = shortestPath((s)-[:LINK]-(e)) RETURN p"))
+        .as("and one with no quantifier shows none")
+        .contains("[:LINK]");
+  }
+
+  @Test
   void distinctEndpointsAreUnaffected() {
     assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'b'}), p = shortestPath((s)-[:LINK*]-(e)) RETURN length(p) AS len"))
         .as("control: the self-path rule must not touch a genuine two-endpoint search")
@@ -180,6 +208,13 @@ class CypherShortestPathSelfPathBoundsIssue7017Test extends TestHelper {
         "MATCH (s:N {k:'a'}), (e:N {k:'a'}) RETURN allShortestPaths((s)-[:LINK*3..5]-(e)) AS p")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<List<?>>getProperty("p")).isEmpty();
+    }
+  }
+
+  private String explain(final String query) {
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+      assertThat(rs.hasNext()).isTrue();
+      return rs.next().<Object>getProperty("executionPlanAsString").toString();
     }
   }
 

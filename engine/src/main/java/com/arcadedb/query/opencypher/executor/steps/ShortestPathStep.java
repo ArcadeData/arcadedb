@@ -861,6 +861,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
      * <p>
      * A minimum above one hop is a pattern Neo4j would not have accepted at all, so nothing is owed to it
      * beyond reading it literally: zero hops is not in {@code [min, max]}, so the pattern has no answer here.
+     * Only the minimum decides this - an upper bound cannot exclude a zero-length path, since it is at least
+     * zero hops long - so an exact quantifier answers by its minimum like any other: {@code [*1..1]}, and the
+     * unquantified {@code -[:R]-} that means the same thing, keep the zero-length self path, {@code [*2..2]}
+     * rejects it.
      * Answering it with a cycle back to the source instead - the shortest path of at least {@code min} hops
      * that leaves and returns - would be the same substitution {@link #accepts} already refuses for distinct
      * endpoints, where a shortest path below the declared minimum yields no row rather than a longer one
@@ -880,6 +884,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     @Override
     public String toString() {
+      // "*", not "*1..": the parser lowers a bare [*] to minHops = 1, so an EXPLAIN that spelled it out
+      // would render the commonest pattern of all under a name nobody writes it by.
+      if (min <= 1 && max == Integer.MAX_VALUE)
+        return "*";
       if (min == max)
         return "*" + min;
       return "*" + min + ".." + (max == Integer.MAX_VALUE ? "" : max);
