@@ -460,6 +460,11 @@ public final class Labels {
   /**
    * Filters an index cursor down to the records that carry {@code label}, for the seeks that read an inherited
    * index (see {@link #isInheritedIndex}).
+   * <p>
+   * The wrapper is a plain {@link Iterator}, so it does NOT forward {@code close()} to a source that has one.
+   * That is safe for its callers, which all wrap a full-key {@code Database.lookupByKey()} - an already-drained
+   * collection holding no file open - but it is the thing to fix first if this is ever pointed at a live range
+   * cursor, which does hold its file's retire guard until closed (issue #5635).
    */
   public static Iterator<Identifiable> filterByLabel(final Iterator<Identifiable> source, final Database database,
       final String label) {
