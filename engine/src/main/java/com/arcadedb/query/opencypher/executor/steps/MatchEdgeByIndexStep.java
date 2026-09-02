@@ -175,6 +175,18 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
               continue;
             }
 
+            // An index inherited from a parent edge type spans the whole hierarchy, so its cursor also
+            // carries the parent's own edges and every sibling's. A relationship pattern matches a type and
+            // its subtypes, never its ancestors, so those are not answers (issue #7021).
+            //
+            // Unconditional, unlike the equivalent in NodeIndexSeek/MatchNodeStep, which skip the check
+            // entirely for an index the queried type owns: those pay a bucket-id lookup per row to learn the
+            // type, while the record here is already loaded (the Edge cast above needs it), so the check is
+            // one instanceOf on a type reference already in hand and a flag to skip it would cost more to
+            // carry than to ignore.
+            if (!edge.getType().instanceOf(edgeType))
+              continue;
+
             final ResultInternal result = new ResultInternal();
             if (relationshipVariable != null && !relationshipVariable.isEmpty())
               result.setProperty(relationshipVariable, edge);

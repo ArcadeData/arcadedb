@@ -2436,7 +2436,10 @@ public class CypherExecutionPlan {
     // every key column). A partial-prefix seek would need an index range cursor and is left for later.
     TypeIndex bestIndex = null;
     List<String> bestKey = null;
-    for (final TypeIndex index : edgeType.getAllIndexes(false)) {
+    // Polymorphic, for the same reason node patterns are (issue #7021): an index declared on a parent edge
+    // type is inherited by this one, and a relationship pattern already matches every subtype of the type it
+    // names. MatchEdgeByIndexStep filters an inherited index's cursor back down to that same rule.
+    for (final TypeIndex index : edgeType.getAllIndexes(true)) {
       final List<String> keyProps = index.getPropertyNames();
       if (keyProps.isEmpty() || !predicates.keySet().containsAll(keyProps))
         continue;

@@ -176,9 +176,11 @@ public class ShortestPathExpression implements Expression {
     if (pathRids == null || pathRids.isEmpty())
       return allPaths ? new ArrayList<>() : null;
 
-    // Endpoints resolving to the same vertex short-circuit to the zero-length path before any bound applies,
-    // matching what the MATCH form has always answered for shortestPath((a)-[:R*]-(a)). See issue #7017.
-    if (pathRids.size() > 1 && !bounds.accepts(pathRids.size() - 1))
+    // Endpoints resolving to the same vertex yield the zero-length path, whose admissibility is
+    // HopBounds.acceptsSelfPath()'s call rather than accepts(0)'s (issue #7017); every longer answer is
+    // checked against both declared bounds.
+    final int hops = pathRids.size() - 1;
+    if (hops == 0 ? !bounds.acceptsSelfPath() : !bounds.accepts(hops))
       return allPaths ? new ArrayList<>() : null;
 
     // Resolve vertex RIDs and find connecting edges to build a proper path
