@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.MatchStatement;
 import com.arcadedb.query.sql.parser.OrderBy;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
@@ -2493,17 +2494,26 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   /**
    * Reports whether an SQL statement carries its own ORDER BY. Parsing goes through the database statement cache, so
-   * a repeated query is parsed once. A statement that does not parse, or that is not a SELECT, is reported as
-   * unordered: the page query would fail on execution anyway, and the caller gets the same error it would have got
-   * without the wrapper.
+   * a repeated query is parsed once, and the wrapped query reuses the same entry when it executes.
+   * <p>
+   * SELECT and MATCH are the two statement shapes in this dialect that can carry an ORDER BY, and they do not share
+   * an accessor for it, so both are asked. A statement that does not parse, or that is neither of those, is reported
+   * as unordered and gets the {@code @rid} wrapper: the page query would fail on execution anyway, and the caller
+   * gets the same error it would have got without the wrapper.
    */
   private boolean hasOrderBy(final Database db, final String sql) {
     try {
       final Statement statement = ((DatabaseInternal) db).getStatementCache().get(sql);
-      if (statement instanceof SelectStatement select) {
-        final OrderBy orderBy = select.getOrderBy();
-        return orderBy != null && orderBy.getItems() != null && !orderBy.getItems().isEmpty();
-      }
+
+      final OrderBy orderBy;
+      if (statement instanceof SelectStatement select)
+        orderBy = select.getOrderBy();
+      else if (statement instanceof MatchStatement match)
+        orderBy = match.getOrderBy();
+      else
+        orderBy = null;
+
+      return orderBy != null && orderBy.getItems() != null && !orderBy.getItems().isEmpty();
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.FINE, "Could not parse the query to look for an ORDER BY, paging by @rid: %s", e, sql);

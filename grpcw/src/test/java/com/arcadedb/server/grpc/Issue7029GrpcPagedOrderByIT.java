@@ -177,6 +177,24 @@ public class Issue7029GrpcPagedOrderByIT extends BaseGraphServerTest {
   }
 
   @Test
+  void pagedModeKeepsTheCallerOrderOnAMatchStatement() {
+    // MATCH is the other statement shape in this dialect that can carry an ORDER BY, and it is not a
+    // SelectStatement, so the parse check asks it separately - otherwise the wrapper appends a second, meaningless
+    // sort by @rid on top of the order MATCH already produced.
+    //
+    // Like the projection case above, this is a guard rather than a reproduction: it passes with or without that
+    // branch, because MATCH always projects and so leaves @rid null on every outer row, which makes the outer sort a
+    // stable no-op. Verified by deleting the MatchStatement branch and re-running - still green. The branch is kept
+    // because the parse check should answer honestly about the dialect, not because MATCH was losing its order.
+    final List<Long> seq = streamPagedSeq(
+        "MATCH {type: " + VERTEX1_TYPE_NAME + ", as: v, where: (seq IS NOT NULL)} RETURN v.seq AS seq ORDER BY seq DESC");
+
+    assertThat(seq).hasSize(ROWS);
+    assertThat(seq).as("a MATCH statement's own ORDER BY must survive paging too")
+        .isSortedAccordingTo((a, b) -> Long.compare(b, a));
+  }
+
+  @Test
   void pagedModeStillPagesStablyWhenTheCallerAsksForNoOrder() {
     // Without a caller-supplied ORDER BY the wrapper keeps ordering by @rid, which is what makes SKIP/LIMIT paging
     // sound. RID order is not insertion order - the type's buckets are filled round-robin - so what is asserted here
