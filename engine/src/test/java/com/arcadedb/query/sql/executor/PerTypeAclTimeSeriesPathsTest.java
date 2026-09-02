@@ -123,6 +123,9 @@ class PerTypeAclTimeSeriesPathsTest {
     unbindUser();
     assertThat(database.countType(RESTRICTED_TYPE, false)).as("the rejected sample must not have been persisted")
         .isEqualTo(2);
+    // Without this the test would also pass if the authorized append had silently done nothing.
+    assertThat(database.countType(AUTHORIZED_TYPE, false)).as("the authorized sample must have been persisted")
+        .isEqualTo(3);
   }
 
   @Test

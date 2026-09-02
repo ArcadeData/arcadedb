@@ -103,6 +103,19 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     // TimeSeriesShard.appendSamples commits its own shard transaction per series, so a series already
     // appended before a later one throws is durable regardless of how this request rolls back (issue #5866).
     final HAReplicatedDatabase haDb = resolveHAReplicatedDatabase(database);
+
+    // Per-type ACL preflight, before the first append and before getOrCreateType() can mutate the schema:
+    // TimeSeriesShard.appendSamples commits its own shard transaction, so a denial discovered mid-loop would
+    // return 403 with the earlier series already durable. Checked by NAME so a denied metric is refused without
+    // its type being auto-created first; an unknown name has no entry in the permission map and stays allowed,
+    // which is what keeps auto-create working for a brand-new metric.
+    for (final TimeSeries ts : writeRequest.getTimeSeries()) {
+      final String metricName = ts.getMetricName();
+      if (metricName == null || metricName.isEmpty())
+        continue;
+      database.checkPermissionsOnType(sanitizeTypeName(metricName), SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    }
+
     try {
       // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
       // begin/commit on getWrappedDatabaseInstance(), so every appendBatch below has already committed its
