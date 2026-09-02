@@ -3118,7 +3118,8 @@ public class CypherExecutionPlan {
                 if (relPattern instanceof QuantifiedPathPattern quantified) {
                   // GQL Quantified Path Pattern, Phase B (issue #4531) - see the ordered builder above
                   for (final String groupVariable : quantified.getGroupVariables())
-                    matchVariables.add(groupVariable);
+                    if (!legacyBoundVariables.contains(groupVariable))
+                      matchVariables.add(groupVariable);
                   nextStep = new QuantifiedPathStep(currentSourceVar, targetVar, pathVariable,
                       bindsGroupPathVariable(pathPattern), quantified, targetNode,
                       new HashSet<>(legacyBoundVariables), context);

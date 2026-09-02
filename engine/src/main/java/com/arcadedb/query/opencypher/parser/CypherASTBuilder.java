@@ -1786,10 +1786,21 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   /**
    * Returns true when the group is the Phase A shape that a plain variable-length relationship
    * already expresses exactly: one relationship, no inner {@code WHERE}, and endpoints that bind
-   * nothing and constrain nothing beyond what the outer boundary nodes carry.
+   * nothing and constrain nothing at all.
    * <p>
-   * Endpoint variables force Phase B even for a one-hop group: GQL binds them to one list element
-   * per repetition, which a variable-length relationship has no way to express.
+   * Every endpoint attribute forces Phase B, each for its own reason:
+   * <ul>
+   *   <li>a <b>variable</b> - GQL binds it to one list element per repetition, which a variable-length
+   *       relationship has no way to express;</li>
+   *   <li>a <b>label, dynamic label or property map</b> - the constraint holds for every repetition,
+   *       including the vertices <i>between</i> two repetitions, and a variable-length relationship
+   *       constrains only its two ends. Lowering {@code ((:P)-[:R]->(:P))+} to {@code -[:R*]->} does not
+   *       weaken the constraint, it <i>deletes</i> it: the outer boundary nodes take over both ends and
+   *       the inner labels are never spliced into the chain at all;</li>
+   *   <li>an inline <b>{@code WHERE}</b> - same reasoning as a property map.</li>
+   * </ul>
+   * What is left for Phase A is the genuinely unconstrained spelling, {@code (()-[:R]->())+}, for which
+   * the two forms are interchangeable.
    */
   private static boolean canLowerToVariableLengthRelationship(final PathPattern inner, final BooleanExpression innerWhere) {
     if (innerWhere != null || inner.getRelationshipCount() != 1)
@@ -1799,6 +1810,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       if (node.getVariable() != null && !node.getVariable().isEmpty())
         return false;
       if (node.hasWhereExpression())
+        return false;
+      if (node.hasLabels() || node.hasDynamicLabels() || node.hasProperties())
         return false;
     }
     return true;

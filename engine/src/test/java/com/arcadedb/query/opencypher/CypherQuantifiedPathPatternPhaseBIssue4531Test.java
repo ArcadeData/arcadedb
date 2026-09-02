@@ -279,14 +279,15 @@ class CypherQuantifiedPathPatternPhaseBIssue4531Test {
   // ---------------------------------------------------------------------------
 
   // Issue #4531: a Phase B group is planned as a QuantifiedPathStep on the legacy pipeline. A Phase A
-  // group - one anonymous-endpoint relationship, no inner WHERE - keeps its variable-length lowering.
+  // group - one relationship, no inner WHERE, and endpoints that constrain nothing - keeps its
+  // variable-length lowering.
   @Test
   void quantifiedGroupPlansAsAQuantifiedPathStep() {
     createWeightedChain();
 
     assertThat(explainOf("MATCH (s:P {name:'A'}) ((m:P)-[r:KNOWS]->(n:P))+ (t:P) RETURN t.name AS name"))
         .contains("QUANTIFIED PATH");
-    assertThat(explainOf("MATCH (s:P {name:'A'}) ((:P)-[:KNOWS]->(:P))+ (t:P) RETURN t.name AS name"))
+    assertThat(explainOf("MATCH (s:P {name:'A'}) (()-[:KNOWS]->())+ (t:P) RETURN t.name AS name"))
         .doesNotContain("QUANTIFIED PATH");
   }
 
@@ -295,7 +296,7 @@ class CypherQuantifiedPathPatternPhaseBIssue4531Test {
   void phaseALoweringStillAgreesWithThePhaseBOperator() {
     createWeightedChain();
 
-    assertThat(namesOf("MATCH (s:P {name:'A'}) ((:P)-[:KNOWS]->(:P))+ (t:P) RETURN t.name AS name"))
+    assertThat(namesOf("MATCH (s:P {name:'A'}) (()-[:KNOWS]->())+ (t:P) RETURN t.name AS name"))
         .containsExactlyInAnyOrderElementsOf(
             namesOf("MATCH (s:P {name:'A'}) ((m:P)-[r:KNOWS]->(n:P))+ (t:P) RETURN t.name AS name"));
   }
@@ -462,6 +463,46 @@ class CypherQuantifiedPathPatternPhaseBIssue4531Test {
       assertThat(rs.hasNext()).isTrue();
       // Every vertex downstream of v0 is reachable, at one repetition per hop.
       assertThat(((Number) rs.next().getProperty("reached")).intValue()).isEqualTo(chainLength - 1);
+    }
+  }
+
+  // Issue #4531: Phase A may only claim a group whose endpoints constrain nothing. A label written on an
+  // inner endpoint holds for EVERY repetition, including the vertices between two repetitions, which a
+  // plain variable-length relationship cannot express - lowering it would silently drop the label.
+  @Test
+  void innerEndpointLabelsAreNotDroppedByThePhaseALowering() {
+    database.getSchema().createVertexType("Q");
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (a:P {name:'A'})-[:KNOWS]->(x:Q {name:'X'})-[:KNOWS]->(b:P {name:'B'})"));
+
+    // Every repetition must start and end on a :P, and the only route out of A goes through a :Q.
+    assertThat(namesOf("MATCH (s:P {name:'A'}) ((:P)-[:KNOWS]->(:P))+ (t:P) RETURN t.name AS name"))
+        .isEmpty();
+    // An inline property map on an endpoint is the same kind of per-repetition constraint.
+    assertThat(namesOf("MATCH (s:P {name:'A'}) ((:P {name:'A'})-[:KNOWS]->(:P))+ (t:P) RETURN t.name AS name"))
+        .isEmpty();
+
+    // The unconstrained spelling is the one Phase A still lowers, and it does reach B over the :Q.
+    assertThat(namesOf("MATCH (s:P {name:'A'}) (()-[:KNOWS]->())+ (t:P) RETURN t.name AS name"))
+        .containsExactly("B");
+  }
+
+  // Issue #4531: the step consumes every input row, not just the first batch its previous step returns.
+  @Test
+  void everyInputRowIsExpanded() {
+    final int pairs = 500;
+    database.transaction(() -> {
+      final StringBuilder create = new StringBuilder();
+      for (int i = 0; i < pairs; i++)
+        create.append("CREATE (:P {name:'s").append(i).append("'})-[:KNOWS]->(:P {name:'e").append(i).append("'})\n");
+      for (final String statement : create.toString().split("\n"))
+        database.command("opencypher", statement);
+    });
+
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (s:P) ((m:P)-[r:KNOWS]->(n:P)){1} (t:P) RETURN count(t) AS reached")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(((Number) rs.next().getProperty("reached")).intValue()).isEqualTo(pairs);
     }
   }
 
