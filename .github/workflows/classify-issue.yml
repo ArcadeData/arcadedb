@@ -166,12 +166,19 @@ jobs:
   classify-issue:
     # Only new issues get auto-classified; a reopen keeps whatever labels it already has,
     # and workflow_dispatch is the sponsor-label dry-run entry point, not a classifier run.
-    if: github.event_name == 'issues' && github.event.action == 'opened'
+    # Bot-opened issues are excluded because the action's own checkHumanActor() rejects them,
+    # which would fail the job rather than skip it.
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'opened' &&
+      github.event.issue.user.type == 'User'
     runs-on: ubuntu-latest
+    # No id-token: write here. Supplying github_token below makes the action use this
+    # token directly instead of exchanging an OIDC token for a Claude App token, and that
+    # exchange rejects issues opened by anyone without write access on the repo, i.e. every
+    # external reporter (401 "User does not have write access on this repository").
     permissions:
       contents: read
       issues: write
-      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -183,6 +190,7 @@ jobs:
         uses: anthropics/claude-code-action@e8c2d7c16c018cf1e694711c1c07a5f5db2b5eb1 # v1.0.208
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             REPO: ${{ github.repository }}
 
