@@ -2494,7 +2494,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   /**
    * Reports whether an SQL statement carries its own ORDER BY. Parsing goes through the database statement cache, so
-   * a repeated query is parsed once, and the wrapped query reuses the same entry when it executes.
+   * the answer costs one parse per distinct query text rather than one per page. It is not free: the cache is keyed by
+   * the exact SQL string, and the pages execute the *wrapped* statement, so that is a second entry and a second parse.
+   * One extra parse per distinct PAGED query is the price of not silently discarding the caller's ordering.
    * <p>
    * SELECT and MATCH are the two statement shapes in this dialect that can carry an ORDER BY, and they do not share
    * an accessor for it, so both are asked. A statement that does not parse, or that is neither of those, is reported

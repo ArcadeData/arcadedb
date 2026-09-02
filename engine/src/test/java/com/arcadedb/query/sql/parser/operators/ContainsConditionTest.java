@@ -190,5 +190,10 @@ class ContainsConditionTest {
     assertThat(op.execute(left, (byte) 9)).isFalse();
     // The items are matched with the operator's loose equality, so a widened literal finds them too.
     assertThat(op.execute(left, 2)).isTrue();
+
+    // The corner where the two rules meet: the left side expands to its bytes, the right side stays one BINARY
+    // value, so no item can equal it. That follows from the two rules rather than being a rule of its own, and it is
+    // pinned here so a later change to either side cannot alter it unnoticed.
+    assertThat(op.execute(left, new byte[] { 1, 2, 3 })).isFalse();
   }
 }
