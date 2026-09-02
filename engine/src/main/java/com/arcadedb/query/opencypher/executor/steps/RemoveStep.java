@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
@@ -246,6 +247,22 @@ public class RemoveStep extends AbstractExecutionStep {
   }
 
   /**
+   * Resolves the labels this item removes: the statically written ones, plus whatever each Cypher 25
+   * {@code $(expression)} label evaluates to against the current row. Before issue #7059 the parser dropped the
+   * dynamic labels entirely, so {@code REMOVE n:$(x)} was a silent no-op.
+   */
+  private List<String> resolveLabels(final RemoveClause.RemoveItem item, final Result result) {
+    if (!item.hasLabelExpressions())
+      return item.getLabels();
+
+    final List<String> resolved = new ArrayList<>(item.getLabels().size() + item.getLabelExpressions().size());
+    resolved.addAll(item.getLabels());
+    for (final Expression labelExpression : item.getLabelExpressions())
+      Labels.appendDynamicLabels(resolved, evaluator.evaluate(labelExpression, result, context), "REMOVE");
+    return resolved;
+  }
+
+  /**
    * Removes labels from a vertex by changing its type.
    * Creates a new vertex with the reduced label set and migrates properties/edges.
    */
@@ -271,7 +288,9 @@ public class RemoveStep extends AbstractExecutionStep {
     // instead of with Entity), while keeping every implied label would flatten the hierarchy (issue #6363).
     final DocumentType currentType = vertex.getType();
     final Schema schema = context.getDatabase().getSchema();
-    final List<String> labelsToRemove = item.getLabels();
+    final List<String> labelsToRemove = resolveLabels(item, result);
+    if (labelsToRemove.isEmpty())
+      return;
     final List<String> remainingLabels = Labels.remainingLabels(schema, vertex, labelsToRemove);
 
     // Count the labels the vertex actually carries - a label it does not have is a no-op, exactly as in Neo4j, and

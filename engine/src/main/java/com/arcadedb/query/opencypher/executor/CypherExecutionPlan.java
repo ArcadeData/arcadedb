@@ -5152,14 +5152,18 @@ public class CypherExecutionPlan {
           return true;
         break;
       case SET:
+        // A Cypher 25 dynamic label - SET n:$(expr) - is a right-hand side like any other, so it counts as a read
+        // of the graph when its expression does (issue #7059).
         for (final SetClause.SetItem setItem : ((SetClause) innerClause.getClause()).getItems())
           if (expressionReadsGraph(setItem.getValueExpression()) || expressionReadsGraph(setItem.getKeyExpression())
-              || expressionReadsGraph(setItem.getTargetExpression()))
+              || expressionReadsGraph(setItem.getTargetExpression())
+              || expressionsReadGraph(setItem.getLabelExpressions()))
             return true;
         break;
       case REMOVE:
         for (final RemoveClause.RemoveItem removeItem : ((RemoveClause) innerClause.getClause()).getItems())
-          if (expressionReadsGraph(removeItem.getKeyExpression()))
+          if (expressionReadsGraph(removeItem.getKeyExpression())
+              || expressionsReadGraph(removeItem.getLabelExpressions()))
             return true;
         break;
       case DELETE:

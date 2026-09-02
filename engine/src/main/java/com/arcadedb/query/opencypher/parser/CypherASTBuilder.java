@@ -726,27 +726,17 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         final Expression valueExpr = expressionBuilder.parseExpression(addCtx.expression());
         items.add(new SetClause.SetItem(variable, valueExpr, SetClause.SetType.MERGE_MAP));
       } else if (itemCtx instanceof Cypher25Parser.SetLabelsContext labelsCtx) {
-        // SET n:Label — add labels
-        final String variable = labelsCtx.variable().getText();
-        final String labelsText = labelsCtx.nodeLabels().getText();
-        final String cleanText = labelsText.replaceAll("^:+", "");
-        final String[] parts = cleanText.split("[:&|]+");
+        // SET n:Label / SET n:$(expr) — add labels
         final List<String> labelList = new ArrayList<>();
-        for (final String part : parts)
-          if (!part.isEmpty())
-            labelList.add(stripBackticks(part));
-        items.add(new SetClause.SetItem(variable, labelList));
+        final List<Expression> labelExpressions = new ArrayList<>();
+        collectNodeLabels(labelsCtx.nodeLabels(), labelList, labelExpressions);
+        items.add(new SetClause.SetItem(labelsCtx.variable().getText(), labelList, labelExpressions));
       } else if (itemCtx instanceof Cypher25Parser.SetLabelsIsContext labelsIsCtx) {
-        // SET n IS Label — add labels (IS syntax)
-        final String variable = labelsIsCtx.variable().getText();
-        final String labelsText = labelsIsCtx.nodeLabelsIs().getText();
-        final String cleanText = labelsText.replaceAll("^\\s*IS\\s+", "").replaceAll("^:+", "");
-        final String[] parts = cleanText.split("[:&|]+");
+        // SET n IS Label / SET n IS $(expr) — add labels (IS syntax)
         final List<String> labelList = new ArrayList<>();
-        for (final String part : parts)
-          if (!part.isEmpty())
-            labelList.add(stripBackticks(part));
-        items.add(new SetClause.SetItem(variable, labelList));
+        final List<Expression> labelExpressions = new ArrayList<>();
+        collectNodeLabelsIs(labelsIsCtx.nodeLabelsIs(), labelList, labelExpressions);
+        items.add(new SetClause.SetItem(labelsIsCtx.variable().getText(), labelList, labelExpressions));
       }
     }
 
@@ -764,6 +754,45 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return new DeleteClause(variables, expressions, detach);
+  }
+
+  /**
+   * Splits a {@code nodeLabels} subtree - the label list of a {@code SET n:...} or {@code REMOVE n:...} item - into
+   * the statically written label names and the Cypher 25 {@code $(expression)} labels that have to be resolved per
+   * row.
+   * <p>
+   * Both clauses used to reduce this whole subtree to {@code getText()} and split the result on {@code [:&|]},
+   * which turned the source text of a dynamic label into a label of its own: {@code SET n:$(node.labels)} created a
+   * vertex type literally named {@code $(node.labels)} and attached it to the node, corrupting schema and data with
+   * no error at write time (issue #7059). {@code REMOVE} had the mirror-image defect - it read {@code labelType()}
+   * alone, so a dynamic label was dropped from the AST and the clause silently did nothing.
+   * <p>
+   * Static and dynamic labels are collected into two lists rather than one interleaved sequence because labels are
+   * a set: the composite type name is built from the sorted union either way.
+   */
+  private void collectNodeLabels(final Cypher25Parser.NodeLabelsContext ctx, final List<String> labels,
+      final List<Expression> labelExpressions) {
+    for (final Cypher25Parser.LabelTypeContext labelType : ctx.labelType())
+      labels.add(stripBackticks(labelType.symbolicNameString().getText()));
+    for (final Cypher25Parser.DynamicLabelTypeContext dynamicLabel : ctx.dynamicLabelType())
+      labelExpressions.add(expressionBuilder.parseExpression(dynamicLabel.dynamicExpression().expression()));
+  }
+
+  /**
+   * The {@code IS} spelling of {@link #collectNodeLabels}: {@code SET n IS Label:Other} / {@code SET n IS $(expr)}.
+   * The grammar puts the first label outside the repetition ({@code IS (symbolicNameString | dynamicExpression)
+   * (labelType | dynamicLabelType)*}), so it is read separately.
+   */
+  private void collectNodeLabelsIs(final Cypher25Parser.NodeLabelsIsContext ctx, final List<String> labels,
+      final List<Expression> labelExpressions) {
+    if (ctx.symbolicNameString() != null)
+      labels.add(stripBackticks(ctx.symbolicNameString().getText()));
+    if (ctx.dynamicExpression() != null)
+      labelExpressions.add(expressionBuilder.parseExpression(ctx.dynamicExpression().expression()));
+    for (final Cypher25Parser.LabelTypeContext labelType : ctx.labelType())
+      labels.add(stripBackticks(labelType.symbolicNameString().getText()));
+    for (final Cypher25Parser.DynamicLabelTypeContext dynamicLabel : ctx.dynamicLabelType())
+      labelExpressions.add(expressionBuilder.parseExpression(dynamicLabel.dynamicExpression().expression()));
   }
 
   public RemoveClause visitRemoveClause(final Cypher25Parser.RemoveClauseContext ctx) {
@@ -786,15 +815,21 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         final String variable = dynPropExpr.expression1().getText();
         final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
         items.add(new RemoveClause.RemoveItem(variable, keyExpr));
-      } else if (itemCtx instanceof Cypher25Parser.RemoveLabelsContext) {
-        final Cypher25Parser.RemoveLabelsContext labelsCtx = (Cypher25Parser.RemoveLabelsContext) itemCtx;
-        final String variable = stripBackticks(labelsCtx.variable().getText());
+      } else if (itemCtx instanceof Cypher25Parser.RemoveLabelsContext labelsCtx) {
+        // REMOVE n:Label / REMOVE n:$(expr)
         final List<String> labels = new ArrayList<>();
-        for (final Cypher25Parser.LabelTypeContext lt : labelsCtx.nodeLabels().labelType())
-          labels.add(stripBackticks(lt.symbolicNameString().getText()));
-        items.add(new RemoveClause.RemoveItem(variable, labels));
+        final List<Expression> labelExpressions = new ArrayList<>();
+        collectNodeLabels(labelsCtx.nodeLabels(), labels, labelExpressions);
+        items.add(new RemoveClause.RemoveItem(stripBackticks(labelsCtx.variable().getText()), labels, labelExpressions));
+      } else if (itemCtx instanceof Cypher25Parser.RemoveLabelsIsContext labelsIsCtx) {
+        // REMOVE n IS Label / REMOVE n IS $(expr) — the IS spelling was previously dropped on the floor, so the
+        // whole clause silently did nothing.
+        final List<String> labels = new ArrayList<>();
+        final List<Expression> labelExpressions = new ArrayList<>();
+        collectNodeLabelsIs(labelsIsCtx.nodeLabelsIs(), labels, labelExpressions);
+        items.add(
+            new RemoveClause.RemoveItem(stripBackticks(labelsIsCtx.variable().getText()), labels, labelExpressions));
       }
-      // TODO: Handle RemoveLabelsIs
     }
 
     return new RemoveClause(items);
