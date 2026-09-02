@@ -72,7 +72,10 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
     // the only thing that can enforce a "readRecord" denial on it. Throws SecurityException -> HTTP 403.
     // It runs BEFORE the engine-availability branch below (it returns null exactly where isEngineAvailable()
     // was false) so a denied caller gets the 403 and not the unavailable-engine diagnostic, which names a file
-    // path on disk.
+    // path on disk. The "does not exist" / "is not a TimeSeries type" answers above stay where they are: the ACL
+    // is keyed by type NAME and has no entry for a name that is not in the schema, so it cannot be consulted
+    // before the type resolves - and a 403 that only a real type can produce is the behaviour every other
+    // per-type check in the engine already has.
     final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
     if (engine == null)
       // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS one,
