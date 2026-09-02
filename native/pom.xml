@@ -72,13 +72,26 @@
                  that still said 25.2.4, silently undoing that revert, and broke all three legs of
                  run 33608446679 the same way.
 
-            Neither of those is a version the builder can be moved to. Both are GraalVM
-            INTERMEDIATE releases, published by graalvm/graalvm-ce-builds under the tags
-            graal-25.2.4 and graal-25.3.4.1, whose assets are named graalvm-community-jdk-25i2-*
-            and graalvm-community-jdk-25i3-* - graalvm/setup-graalvm cannot select either through a
-            plain java-version. jdk-25.0.2 is still the newest mainline JDK 25 Community build, so
-            25.0.2 remains the version both sides can agree on. A newer pin needs the builder side
-            proven first.
+            25.3.4.1 is not installable by graalvm/setup-graalvm at all, through either of its
+            inputs. Its release tag graal-25.3.4.1 does exist, but node-semver rejects four numeric
+            components, so setup-graalvm's findLatestGraalVMCEVersion skips the tag as an
+            "unexpected GraalVM CE release", finds no jdk-25.3.4.1 either, and throws. The
+            java-version input cannot reach it under any spelling: it requires exactly three
+            dot-components and only ever fetches a jdk-<version> release.
+
+            Do NOT read that as "intermediate releases are off limits" - that is the wrong lesson,
+            and the earlier revision of this comment had it wrong. graal-25.2.4 IS an intermediate
+            release, its tag has three components, and setup-graalvm installs it happily from
+            `version: "25.2.4"` (setUpGraalVMJDKCE looks up graal-<version> before jdk-<version>).
+            It is unreachable only through java-version. So moving this module to 25.2.4 is a real
+            option, at the cost of switching native-image.yml from java-version to version and
+            accepting an intermediate release's support window. It just has to be proven on the
+            builder side first, in the same change.
+
+            What is pinned here today is the conservative choice: jdk-25.0.2 is the newest MAINLINE
+            JDK 25 Community build, addressable by the java-version input the workflow already
+            uses, and verified end to end (image builds, smoke test passes including the JS
+            round-trip).
 
             A comment is not a control: it did not stop attempt 2, because .mergify.yml auto-merges
             a dependabot PR on one approval with no green-CI condition, and stamps [skip ci] on the

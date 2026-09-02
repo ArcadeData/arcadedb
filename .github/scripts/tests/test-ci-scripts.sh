@@ -1429,12 +1429,56 @@ graalvm_workflow "$work/graalvm/skew.yml" 25.0.2
 expect "rejects the b53c48c1e2 skew (pom 25.3.4.1, builder 25.0.2)" 1 "getLoopNodeFactory" \
     "$GRAALVMPIN" "$work/graalvm/skew-pom.xml" "$work/graalvm/skew.yml"
 
-# Making the two sides "agree" on an intermediate release is not a fix: setup-graalvm cannot select
-# graal-25.3.4.1 through a plain java-version, so this would just fail one step earlier.
-graalvm_pom "$work/graalvm/intermediate-pom.xml" 25.3.4.1
-graalvm_workflow "$work/graalvm/intermediate.yml" 25.3.4.1
-expect "rejects an intermediate release even when both sides agree" 1 "INTERMEDIATE" \
-    "$GRAALVMPIN" "$work/graalvm/intermediate-pom.xml" "$work/graalvm/intermediate.yml"
+# Making the two sides "agree" on 25.3.4.1 is not a fix. The tag graal-25.3.4.1 exists, but
+# node-semver rejects four numeric components, so findLatestGraalVMCEVersion skips it as an
+# "unexpected GraalVM CE release", finds no jdk-25.3.4.1 either, and throws - this would just fail
+# one step earlier, in the setup step.
+graalvm_pom "$work/graalvm/unreachable-pom.xml" 25.3.4.1
+graalvm_workflow "$work/graalvm/unreachable.yml" 25.3.4.1
+expect "rejects a version semver.valid() cannot parse, even when both sides agree" 1 "semver.valid" \
+    "$GRAALVMPIN" "$work/graalvm/unreachable-pom.xml" "$work/graalvm/unreachable.yml"
+
+# The corollary, and the thing this check must NOT get backwards: an intermediate release is not
+# itself unusable. graal-25.2.4 is one, its tag has three components, and `version: "25.2.4"`
+# installs it through setUpGraalVMJDKCE - it is only unreachable through `java-version`, which can
+# address jdk-* tags alone. So a pom pinned at 25.2.4 against a `version`-pinned step is fine.
+graalvm_pom "$work/graalvm/version-input-pom.xml" 25.2.4
+cat >"$work/graalvm/version-input.yml" <<'YAML'
+name: Native Image
+on: [ workflow_dispatch ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@5298d94fb55a4f185c602eeac5de1b553882abe2 # v1.6.1
+        with:
+          version: "25.2.4"
+          distribution: "graalvm-community"
+YAML
+expect "accepts an intermediate release pinned through the version input" 0 "consistent" \
+    "$GRAALVMPIN" "$work/graalvm/version-input-pom.xml" "$work/graalvm/version-input.yml"
+
+# `version` wins over `java-version` when a step sets both, the same precedence setup-graalvm's
+# main.ts applies - so the pom is compared against `version`, and matching only the java-version
+# is a failure.
+graalvm_pom "$work/graalvm/both-inputs-pom.xml" 25.0.2
+cat >"$work/graalvm/both-inputs.yml" <<'YAML'
+name: Native Image
+on: [ workflow_dispatch ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@5298d94fb55a4f185c602eeac5de1b553882abe2 # v1.6.1
+        with:
+          version: "25.2.4"
+          java-version: "25.0.2"
+          distribution: "graalvm-community"
+YAML
+expect "compares against version, not java-version, when a step sets both" 1 "installs version 25.2.4" \
+    "$GRAALVMPIN" "$work/graalvm/both-inputs-pom.xml" "$work/graalvm/both-inputs.yml"
 
 # The step name is the first thing a reader sees, so it may not name a version other than the one
 # it installs.
@@ -1490,7 +1534,7 @@ jobs:
         with:
           distribution: "graalvm-community"
 YAML
-expect "reports a setup-graalvm step that pins no java-version" 1 "sets no java-version" \
+expect "reports a setup-graalvm step that pins no version at all" 1 "neither \`version\` nor" \
     "$GRAALVMPIN" "$work/graalvm/unpinned-pom.xml" "$work/graalvm/unpinned.yml"
 
 # Same as the sibling scripts: a workflow that will not parse is reported, never silently skipped.

@@ -19,13 +19,26 @@ re-tests it either. Hence a check that runs in the always-on `lint` job on every
 
 Two things are enforced:
 
-  1. `native.graalvm.version` equals the `java-version` of every graalvm/setup-graalvm step in
-     native-image.yml.
-  2. That version has the three-component shape of a MAINLINE JDK release (25.0.2). GraalVM's
-     intermediate releases carry four components (25.2.4, 25.3.4.1) and are published under
-     `graal-*` tags with `jdk-25i2-*` / `jdk-25i3-*` assets, which graalvm/setup-graalvm cannot
-     select through a plain java-version at all - so making the two sides "agree" on one of those
-     just moves the failure into the setup step.
+  1. `native.graalvm.version` equals the version every graalvm/setup-graalvm step in
+     native-image.yml installs. That is the step's `version` input when it has one and its
+     `java-version` otherwise, which is the same precedence setup-graalvm's own main.ts applies
+     (`graalVMVersion.length > 0 ? setUpGraalVMJDKCE(...) : setUpGraalVMJDKCEByJavaVersion(...)`).
+  2. That version is parseable as three-component semver. Both of setup-graalvm's CE resolution
+     paths require it, so a version that is not is not installable by ANY input:
+
+       - `java-version` (setUpGraalVMJDKCEByJavaVersion) throws outright unless the resolved
+         version splits into exactly three dot-components, then fetches the `jdk-<version>` release.
+       - `version` (setUpGraalVMJDKCE -> findReleaseTag -> findLatestGraalVMCEVersion) looks up the
+         `graal-<version>` tag first and the `jdk-<version>` tag second, but skips any matching tag
+         that `semver.valid()` rejects.
+
+     This is what makes 25.3.4.1 unreachable: the tag `graal-25.3.4.1` exists, but node-semver
+     rejects four numeric components, so findLatestGraalVMCEVersion logs "Skipping unexpected
+     GraalVM CE release 25.3.4.1", finds no `jdk-25.3.4.1` either, and throws. Note the corollary,
+     because it is easy to get backwards: an INTERMEDIATE release is not itself the problem.
+     `graal-25.2.4` is an intermediate release with a three-component tag, and
+     `version: "25.2.4"` installs it fine - it is only unreachable through `java-version`, which
+     can address `jdk-*` tags alone.
 
 If native-image.yml stops using graalvm/setup-graalvm, this check fails rather than passing
 vacuously: a guard that silently stops guarding is how the pin drifted in the first place.
@@ -45,9 +58,9 @@ import yaml
 SETUP_ACTION = "graalvm/setup-graalvm"
 POM_PROPERTY = "native.graalvm.version"
 
-# A mainline GraalVM Community JDK release: exactly three numeric components, e.g. 25.0.2. Anything
-# with a fourth component is an intermediate release - see the module docstring.
-MAINLINE_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+# What node-semver's semver.valid() accepts, which is what both of setup-graalvm's CE resolution
+# paths require: exactly three numeric components, e.g. 25.0.2. See the module docstring.
+INSTALLABLE_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 
 PROPERTY_PATTERN = re.compile(rf"<{re.escape(POM_PROPERTY)}>\s*([^<\s]+)\s*</{re.escape(POM_PROPERTY)}>")
 
@@ -59,7 +72,10 @@ def pinned_version(pom):
 
 
 def builder_versions(workflow):
-    """Yields (job, step name, java-version) for every graalvm/setup-graalvm step in the workflow."""
+    """Yields (job, step name, input name, version) for every graalvm/setup-graalvm step.
+
+    `version` wins over `java-version` when both are set, matching setup-graalvm's own main.ts.
+    """
     document = yaml.safe_load(workflow.read_text())
 
     for job_id, job in (document.get("jobs") or {}).items():
@@ -68,8 +84,14 @@ def builder_versions(workflow):
             # `uses` carries a SHA pin and a version comment, so match the action, not the whole string.
             if not uses.startswith(f"{SETUP_ACTION}@"):
                 continue
-            java_version = (step.get("with") or {}).get("java-version")
-            yield job_id, step.get("name", uses), str(java_version) if java_version is not None else None
+            with_block = step.get("with") or {}
+            for input_name in ("version", "java-version"):
+                value = with_block.get(input_name)
+                if value is not None and str(value) != "":
+                    yield job_id, step.get("name", uses), input_name, str(value)
+                    break
+            else:
+                yield job_id, step.get("name", uses), None, None
 
 
 def main(argv):
@@ -97,27 +119,31 @@ def main(argv):
 
     if not setups:
         print(f"{workflow}: no {SETUP_ACTION} step found.")
-        print(f"This check exists to keep that step's java-version equal to {POM_PROPERTY}")
+        print(f"This check exists to keep the version that step installs equal to {POM_PROPERTY}")
         print(f"({pinned}). If the builder is now installed some other way, teach this script how to read")
         print("it - leaving the check to pass on nothing is how the pin drifted before.")
         return 1
 
     problems = []
 
-    if not MAINLINE_VERSION.match(pinned):
+    if not INSTALLABLE_VERSION.match(pinned):
         problems.append(
-            f"{pom}: {POM_PROPERTY} is {pinned}, which is a GraalVM INTERMEDIATE release "
-            f"(four components). Those ship under graal-* tags with jdk-25iN-* assets, which "
-            f"graalvm/setup-graalvm cannot select through a plain java-version, so no builder can "
-            f"be matched to it. Pin the newest mainline release instead."
+            f"{pom}: {POM_PROPERTY} is {pinned}, which node-semver's semver.valid() rejects "
+            f"(it takes exactly three numeric components). Both of setup-graalvm's CE resolution "
+            f"paths require that, so no builder can be installed at this version through either "
+            f"`java-version` or `version` - the matching graal-* tag, if one exists, is skipped as "
+            f"an unexpected release. Pin a three-component version instead."
         )
 
-    for job_id, step_name, java_version in setups:
-        if java_version is None:
-            problems.append(f"{workflow}: job '{job_id}', step '{step_name}' sets no java-version, so the builder is unpinned.")
-        elif java_version != pinned:
+    for job_id, step_name, input_name, version in setups:
+        if version is None:
             problems.append(
-                f"{workflow}: job '{job_id}', step '{step_name}' installs java-version {java_version}, "
+                f"{workflow}: job '{job_id}', step '{step_name}' sets neither `version` nor "
+                f"`java-version`, so the builder is unpinned."
+            )
+        elif version != pinned:
+            problems.append(
+                f"{workflow}: job '{job_id}', step '{step_name}' installs {input_name} {version}, "
                 f"but {pom}'s {POM_PROPERTY} is {pinned}."
             )
         elif step_name and re.search(r"\d+\.\d+\.\d+", step_name) and pinned not in step_name:

@@ -23,6 +23,15 @@ treat it as best-effort outside Linux.
   OptimizedTruffleRuntime.getLoopNodeFactory()`). That error names neither file, and two Dependabot
   bumps have shipped the skew, so `.github/scripts/check-native-graalvm-pin.py` now enforces the
   equality in the always-on `lint` job. Move both sides in the same change, or neither.
+
+  A newer pin is possible but is not a one-line edit. `graalvm/setup-graalvm` resolves a CE build
+  two different ways: `java-version` fetches a `jdk-<version>` release and requires exactly three
+  dot-components, while `version` looks up `graal-<version>` first and falls back to
+  `jdk-<version>`. So an *intermediate* release such as `graal-25.2.4` is reachable, but only
+  through `version`, not through the `java-version` this workflow uses. `graal-25.3.4.1` is
+  reachable through neither: node-semver rejects its four-component tag, so setup-graalvm skips it
+  as an "unexpected GraalVM CE release" and fails. `jdk-25.0.2` remains the newest mainline JDK 25
+  Community build.
 - **`JAVA_HOME` (and `GRAALVM_HOME`) must point at the GraalVM home itself.** The
   `native-maven-plugin` resolves the native-image builder from `JAVA_HOME`/`GRAALVM_HOME`, not by
   searching `PATH` for a `native-image` executable. A version-manager shim (jenv, sdkman shell
