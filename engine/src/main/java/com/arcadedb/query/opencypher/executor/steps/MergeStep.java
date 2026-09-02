@@ -1004,7 +1004,11 @@ public class MergeStep extends AbstractExecutionStep {
     int bestMatchCount = 0;
     List<String> bestMatchedProperties = null;
 
-    for (final TypeIndex index : type.getAllIndexes(false)) {
+    // Polymorphic: an index declared on a supertype is inherited by this type and is just as seekable from it
+    // (issue #7021). The cursor it opens is filtered by label below, since it also carries the parent's own
+    // records and every sibling child's - and findAllNodes(), unlike the anchor walk, re-verifies only the
+    // properties, so a MERGE could otherwise match a record of the wrong type and skip the creation.
+    for (final TypeIndex index : type.getAllIndexes(true)) {
       final List<String> indexProperties = index.getPropertyNames();
       int matchCount = 0;
       final List<String> matchedProperties = new ArrayList<>();
@@ -1033,8 +1037,10 @@ public class MergeStep extends AbstractExecutionStep {
     for (int i = 0; i < propertyNames.length; i++)
       propertyValues[i] = evaluatedProperties.get(propertyNames[i]);
 
-    final Iterator<Identifiable> iter = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
-    return iter;
+    final Iterator<Identifiable> cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+    return Labels.isInheritedIndex(bestIndex, label) ?
+        Labels.filterByLabel(cursor, context.getDatabase(), label) :
+        cursor;
   }
 
   /**
