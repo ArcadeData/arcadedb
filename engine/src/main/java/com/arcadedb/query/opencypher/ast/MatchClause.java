@@ -175,6 +175,33 @@ public class MatchClause {
     return computeDisconnected(allPathPatterns);
   }
 
+  /**
+   * True when any path pattern of any given MATCH clause contains a variable-length relationship
+   * ({@code -[*1..6]->}) or a quantified path pattern ({@code ((a)-[]->(b)){1,5}}, which reports itself
+   * as variable-length too).
+   * <p>
+   * Such a MATCH is expanded by a depth-first traverser that keeps live edge-segment cursors open across
+   * the output rows it is still producing. A write clause following it with no intervening WITH therefore
+   * mutates the very structure the traverser is mid-walk over: a {@code DETACH DELETE} of a bound node
+   * unlinks the edge chunks the cursor is about to follow, and the next {@code hasNext()} dereferences an
+   * already-removed segment record ({@code RecordNotFoundException}, issue #7023). The hazard is the same
+   * one {@link #hasDisconnectedPathPatterns(List)} guards - a row observing what an earlier row's write
+   * already removed - reached through the traversal cursor rather than through a cross join, and it has
+   * the same remedy: read the upstream rows to completion before applying the first write.
+   *
+   * @param matchClauses the MATCH clause(s) of the segment feeding the write clause in question
+   * @return true when at least one of them has a variable-length or quantified relationship
+   */
+  public static boolean hasVariableLengthRelationships(final List<MatchClause> matchClauses) {
+    if (matchClauses == null)
+      return false;
+    for (final MatchClause match : matchClauses)
+      for (final PathPattern path : match.pathPatterns)
+        if (path.hasVariableLengthRelationships())
+          return true;
+    return false;
+  }
+
   private static boolean computeDisconnected(final List<PathPattern> pathPatterns) {
     if (pathPatterns.size() < 2)
       return false;

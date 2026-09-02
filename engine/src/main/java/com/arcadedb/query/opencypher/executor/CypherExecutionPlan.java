@@ -1097,7 +1097,7 @@ public class CypherExecutionPlan {
     // in the query (e.g. WITH before UNWIND, not the other way around).
     final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
     // MATCH clauses seen since the last WITH (or since the start), i.e. the ones that actually feed
-    // whichever DELETE segment is reached next - see matchClausesHaveDisconnectedPatterns().
+    // whichever DELETE segment is reached next - see matchClausesNeedEagerDelete().
     final List<MatchClause> currentSegmentMatchClauses = new ArrayList<>();
     if (clausesInOrder != null) {
       for (final ClauseEntry entry : clausesInOrder) {
@@ -1140,7 +1140,7 @@ public class CypherExecutionPlan {
           final DeleteClause deleteClause = entry.getTypedClause();
           if (!deleteClause.isEmpty()) {
             final DeleteStep deleteStep = new DeleteStep(deleteClause, context,
-                matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses));
+                matchClausesNeedEagerDelete(currentSegmentMatchClauses));
             deleteStep.setPrevious(currentStep);
             currentStep = deleteStep;
           }
@@ -1365,10 +1365,11 @@ public class CypherExecutionPlan {
     final Set<String> boundVariables = new HashSet<>(seedVariableNames);
 
     // MATCH clauses seen since the last WITH (or since the start), i.e. the ones that actually feed
-    // whichever DELETE/FOREACH segment is reached next - see matchClausesHaveDisconnectedPatterns().
+    // whichever DELETE/FOREACH segment is reached next - see matchClausesNeedEagerDelete().
     final List<MatchClause> currentSegmentMatchClauses = new ArrayList<>();
-    // Variables bound by a segment that WAS disconnected, kept forever once tainted (even across a WITH
-    // that merely forwards them unchanged) - see closeMatchSegment() and deleteMayTargetTaintedVariable().
+    // Variables bound by a segment that needed the eager guard (disconnected patterns, or a
+    // variable-length relationship), kept forever once tainted (even across a WITH that merely forwards
+    // them unchanged) - see closeMatchSegment() and deleteMayTargetTaintedVariable().
     final Set<String> disconnectedTaintedVariables = new HashSet<>();
 
     // Both count push-downs answer from the schema and the CSR arrays alone: they read the statement's patterns and
@@ -1548,7 +1549,7 @@ public class CypherExecutionPlan {
       case DELETE:
         final DeleteClause deleteClause = entry.getTypedClause();
         if (!deleteClause.isEmpty() && currentStep != null) {
-          final boolean eagerMaterialize = matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses)
+          final boolean eagerMaterialize = matchClausesNeedEagerDelete(currentSegmentMatchClauses)
               || deleteMayTargetTaintedVariable(deleteClause.getVariables(), disconnectedTaintedVariables);
           final DeleteStep deleteStep = new DeleteStep(deleteClause, context, eagerMaterialize);
           deleteStep.setPrevious(currentStep);
@@ -1578,7 +1579,7 @@ public class CypherExecutionPlan {
       case FOREACH:
         final ForeachClause foreachClause = entry.getTypedClause();
         final boolean foreachEagerMaterialize = foreachClause.containsDelete()
-            && (matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses)
+            && (matchClausesNeedEagerDelete(currentSegmentMatchClauses)
                 || deleteMayTargetTaintedVariable(collectForeachDeleteTargetVariables(foreachClause), disconnectedTaintedVariables));
         final boolean foreachEagerExecution =
             database.getConfiguration().getValueAsBoolean(GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ)
@@ -2786,10 +2787,33 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * True when a DELETE (or a FOREACH containing one) fed by the given MATCH clause(s) must read its whole
+   * upstream row set before applying the first deletion, because that MATCH can let a later row observe
+   * what an earlier row's deletion already removed.
+   * <p>
+   * Two independent shapes carry that hazard, and either one alone is enough:
+   * <ul>
+   *   <li>disconnected path patterns, which re-enumerate one component per row of the other and so can
+   *       bind the very same vertex/edge from more than one row (issue #6491);</li>
+   *   <li>a variable-length or quantified relationship, whose depth-first traverser keeps edge-segment
+   *       cursors open across the rows it is still producing, so a {@code DETACH DELETE} of a bound node
+   *       unlinks chunks that same cursor is about to follow (issue #7023).</li>
+   * </ul>
+   *
+   * @param matchClauses the MATCH clause(s) of the segment feeding the write clause (the ones since the
+   *                     last WITH), not every MATCH clause of the statement - see issue #6631
+   */
+  private static boolean matchClausesNeedEagerDelete(final List<MatchClause> matchClauses) {
+    return matchClausesHaveDisconnectedPatterns(matchClauses)
+        || MatchClause.hasVariableLengthRelationships(matchClauses);
+  }
+
+  /**
    * Closes the MATCH segment tracked in {@code currentSegmentMatchClauses} at a WITH boundary: if the
-   * segment being closed is itself disconnected, every node AND relationship variable it bound is added
-   * to {@code disconnectedTaintedVariables} before the segment list is cleared for the next one - a
-   * disconnected MATCH can rebind the same underlying edge across rows exactly as it can a vertex (see
+   * segment being closed needs the eager guard at all ({@link #matchClausesNeedEagerDelete}), every node
+   * AND relationship variable it bound is added to {@code disconnectedTaintedVariables} before the
+   * segment list is cleared for the next one - a disconnected MATCH can rebind the same underlying edge
+   * across rows exactly as it can a vertex, and a variable-length traverser is mid-walk over both (see
    * {@code DeleteStep}'s own {@code eagerMaterialize} field doc), so {@code DELETE r} needs the same
    * guard as {@code DELETE n}.
    * <p>
@@ -2803,7 +2827,7 @@ public class CypherExecutionPlan {
    */
   private static void closeMatchSegment(final List<MatchClause> currentSegmentMatchClauses,
       final Set<String> disconnectedTaintedVariables) {
-    if (matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses))
+    if (matchClausesNeedEagerDelete(currentSegmentMatchClauses))
       for (final MatchClause match : currentSegmentMatchClauses)
         for (final PathPattern path : match.getPathPatterns()) {
           for (final NodePattern node : path.getNodes())
@@ -3404,7 +3428,7 @@ public class CypherExecutionPlan {
     // sees the multi-segment shape #6631 is about.
     if (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty() && currentStep != null) {
       final DeleteStep deleteStep = new DeleteStep(
-          statement.getDeleteClause(), context, matchClausesHaveDisconnectedPatterns(statement.getMatchClauses()));
+          statement.getDeleteClause(), context, matchClausesNeedEagerDelete(statement.getMatchClauses()));
       deleteStep.setPrevious(currentStep);
       currentStep = deleteStep;
     }
