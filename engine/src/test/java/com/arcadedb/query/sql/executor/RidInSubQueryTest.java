@@ -159,6 +159,22 @@ class RidInSubQueryTest extends TestHelper {
     assertThat(collectNames(rs)).containsExactlyInAnyOrder("S1", "S2");
   }
 
+  @Test
+  void ridInVariableShadowedByAPerRecordLetKeepsTheScan() {
+    // $top is assigned twice: the first assignment is early-calculated and becomes a GLOBAL let, the second reads the
+    // record and stays PER-RECORD, shadowing it for every row. Only the global one has run by the time the fetch step
+    // would pull, so resolving RIDs from it fetches the WRONG records (just S1) rather than merely fewer - the
+    // per-record value is each record's own @rid, which every row satisfies. A variable a per-record LET owns has to
+    // keep the scan, whether or not the fetch could otherwise read a value for that name.
+    final ResultSet rs = database.query("sql",
+        "SELECT FROM Supplier LET $top = (SELECT target_rid FROM TopSuppliers WHERE name = 'S1'), $top = @rid "
+            + "WHERE @rid IN $top");
+
+    assertThat(findStep(rs.getExecutionPlan().orElseThrow(), FetchFromRidsStep.class))
+        .as("a variable a per-record LET recomputes cannot be fetched by address").isNull();
+    assertThat(collectNames(rs)).containsExactlyInAnyOrder("S1", "S2", "S3");
+  }
+
   /**
    * Asserts the query answers {@code expected}, and that a plain scan of the same predicate answers the same thing.
    * The scan is reached by negating the condition: {@code @rid NOT IN} declines the address optimization, so its
