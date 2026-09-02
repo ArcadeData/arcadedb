@@ -213,9 +213,10 @@ public class MergeStep extends AbstractExecutionStep {
     final Database database = context.getDatabase();
     final QueryStatistics stats = context.getStatistics();
     final QueryStatistics statsSnapshot = stats.copy();
-    // labelReplacements is step-wide (shared across every row this MergeStep processes, see the field
-    // Javadoc), so only the entries a FAILED attempt of THIS row added must be undone on retry - entries
-    // an earlier, already-committed row recorded are still live and must survive. Snapshotting here,
+    // labelReplacements is statement-wide (shared across every row this MergeStep processes and with every
+    // other label write of the same statement, see the field Javadoc), so only the entries a FAILED attempt
+    // of THIS row added must be undone on retry - entries an earlier, already-committed row recorded, here
+    // or in another step, are still live and must survive. Snapshotting here,
     // once per row before the first attempt, and restoring it at the top of every attempt (including the
     // first, a no-op there) does exactly that.
     final LabelReplacements.Snapshot labelReplacementsSnapshot = labelReplacements.copy();

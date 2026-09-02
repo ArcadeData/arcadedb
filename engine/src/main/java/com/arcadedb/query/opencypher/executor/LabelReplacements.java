@@ -83,6 +83,11 @@ public final class LabelReplacements {
    * Every label write of one statement shares it: the three steps that perform one ({@code SET}, {@code REMOVE} and
    * {@code MERGE}'s {@code ON CREATE}/{@code ON MATCH SET}) and, through {@link #inherit}, every plan nested inside
    * it. Allocated only when a write step actually asks for it, so a read-only statement never builds one.
+   * <p>
+   * A {@code null} context has no statement to share through, so the caller gets a private map rather than an
+   * exception: it is still correct for a single step, only unshared. No call site passes one today - every step
+   * that asks is constructed with the plan's context - and a new one that did would get the pre-#6977 behaviour
+   * back for itself, which is why the fallback is spelled out here rather than left to be inferred.
    */
   public static LabelReplacements of(final CommandContext context) {
     if (context == null)

@@ -52,7 +52,12 @@ class CypherSubqueryLabelWriteIssue6977Test {
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./target/databases/testopencypher-subquery-labelwrite-6977").create();
+    // Same guard OpenCypherConstraintTest uses: a run killed before @AfterEach leaves the directory behind, and
+    // create() on an existing database throws, which would fail every method here for an environmental reason.
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/testopencypher-subquery-labelwrite-6977");
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
   }
 
   @AfterEach
@@ -97,6 +102,29 @@ class CypherSubqueryLabelWriteIssue6977Test {
           RETURN 1 AS ignored
         }
         RETURN labels(n) AS v""")).containsExactly("[Other]");
+  }
+
+  @Test
+  void removeLabelSurvivesTwoLevelsOfNestedSubqueries() {
+    cypher("CREATE (a:Other:Drop {name:'a'})");
+
+    // The map reaches the innermost body only if it is inherited at every level. Two levels is where a future
+    // change to the isReadOnly()/inherit() chain would silently stop propagating it, and one level would not
+    // notice.
+    assertThat(writingRows("""
+        UNWIND [1,2,3] AS i
+        MATCH (n:Other {name:'a'})
+        CALL (*) {
+          CALL (*) {
+            REMOVE n:Drop
+            RETURN n AS innermost
+          }
+          RETURN innermost AS moved
+        }
+        RETURN moved.name + '/' + head(labels(moved)) + '/' + size(labels(moved)) AS v"""))
+        .containsExactly("a/Other/1", "a/Other/1", "a/Other/1");
+
+    assertThat(rows("MATCH (n {name:'a'}) RETURN labels(n) AS v")).containsExactly("[Other]");
   }
 
   @Test
