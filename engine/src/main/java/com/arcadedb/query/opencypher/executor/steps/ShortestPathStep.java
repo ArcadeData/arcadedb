@@ -885,8 +885,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
     @Override
     public String toString() {
       // "*", not "*1..": the parser lowers a bare [*] to minHops = 1, so an EXPLAIN that spelled it out
-      // would render the commonest pattern of all under a name nobody writes it by.
-      if (min <= 1 && max == Integer.MAX_VALUE)
+      // would render the commonest pattern of all under a name nobody writes it by. Exactly one, though -
+      // a written [*0..] is a different pattern (it is the one spelling that admits the zero-length path
+      // outright, see acceptsSelfPath) and keeps its lower bound on show.
+      if (min == 1 && max == Integer.MAX_VALUE)
         return "*";
       if (min == max)
         return "*" + min;
