@@ -1,4 +1,4 @@
-name: Sponsor Priority Label
+name: Classify Issues and Label Sponsors
 
 on:
   issues:
@@ -162,3 +162,36 @@ jobs:
               core.warning(`sponsor-priority: addLabels failed: ${err.message}`);
               audit(true, "errored");
             }
+
+  classify-issue:
+    # Only new issues get auto-classified; a reopen keeps whatever labels it already has,
+    # and workflow_dispatch is the sponsor-label dry-run entry point, not a classifier run.
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Classify the issue and apply labels
+        id: classify
+        uses: anthropics/claude-code-action@e8c2d7c16c018cf1e694711c1c07a5f5db2b5eb1 # v1.0.208
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+
+            classify the issue ${{ github.event.issue.number }} labeling it
+
+            Read the issue with `gh issue view`, list the labels that already exist in the
+            repository with `gh label list`, and apply the ones that fit with
+            `gh issue edit ${{ github.event.issue.number }} --add-label "..."`.
+            Only use labels that already exist; never create new ones. Do not remove
+            existing labels, and do not touch the `high_priority` label, which the
+            sponsor job owns.
+          claude_args: '--model claude-sonnet-5 --allowed-tools "Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue edit:*),Bash(gh label list:*),Bash(gh search:*)"'
