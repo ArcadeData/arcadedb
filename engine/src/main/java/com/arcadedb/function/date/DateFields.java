@@ -101,7 +101,7 @@ public class DateFields extends AbstractDateFunction {
     fields.put("dayOfYear", (long) dateTime.getDayOfYear());
     // ISO-8601 week number: weekOfWeekBasedYear() (not weekOfYear(), which reports 0 for the partial
     // week preceding the first full week of the calendar year). Paired with the week-based year, since
-    // an ISO week number read against the calendar "year" is wrong around a year boundary (issue #7044).
+    // an ISO week number read against the calendar "year" is wrong around a year boundary.
     fields.put("weekOfYear", (long) dateTime.get(WeekFields.ISO.weekOfWeekBasedYear()));
     fields.put("weekBasedYear", (long) dateTime.get(WeekFields.ISO.weekBasedYear()));
     fields.put("timezone", dateTime.getZone().getId());

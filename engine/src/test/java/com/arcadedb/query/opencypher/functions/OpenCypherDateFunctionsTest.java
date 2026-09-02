@@ -153,6 +153,19 @@ class OpenCypherDateFunctionsTest {
     }
   }
 
+  /** The new weekyear/weekbasedyear names must not weaken the rejection of unrecognized field names. */
+  @Test
+  void dateFieldRejectsUnknownFieldName() {
+    final DateField fn = new DateField();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{1672531200000L, "weekofthemonth"}, null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unknown date field: weekofthemonth");
+    assertThatThrownBy(() -> fn.execute(new Object[]{1672531200000L, ""}, null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unknown date field");
+  }
+
   // ============ DateFields tests ============
 
   @Test
