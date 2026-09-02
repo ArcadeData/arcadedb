@@ -366,37 +366,83 @@ public final class CypherFunctionHelper {
   }
 
   /**
+   * Name of the context variable holding the {@link StatementClock} of the statement being executed.
+   */
+  private static final String STATEMENT_CLOCK_VARIABLE = "$statementTime";
+
+  /**
+   * The single instant every clock-reading Cypher function in one statement answers from.
+   * <p>
+   * The instant is read on first use rather than when the clock is created, so a statement that never calls a
+   * temporal function pays for one empty holder and nothing else. Sharing the holder - rather than the frozen
+   * map - is what lets a nested plan join a statement clock its enclosing plan has not needed yet.
+   * <p>
+   * Not synchronized, exactly like the context variable it replaces: one statement's expressions are evaluated
+   * by the thread executing it.
+   */
+  public static final class StatementClock {
+    private Map<String, Object> values;
+
+    private Map<String, Object> values() {
+      if (values == null) {
+        // One clock reading, every entry derived from it.
+        final ZonedDateTime now = ZonedDateTime.now();
+        final Map<String, Object> frozen = new HashMap<>();
+        frozen.put(TIMESTAMP, now.toInstant().toEpochMilli());
+        frozen.put("date", new CypherDate(now.toLocalDate()));
+        frozen.put("localtime", new CypherLocalTime(now.toLocalTime()));
+        frozen.put("time", new CypherTime(now.toInstant().atOffset(ZoneOffset.UTC).toOffsetTime()));
+        frozen.put("localdatetime", new CypherLocalDateTime(now.toLocalDateTime()));
+        frozen.put("datetime", new CypherDateTime(now));
+        values = frozen;
+      }
+      return values;
+    }
+  }
+
+  /**
    * Get or initialize the statement clock shared by every clock-reading Cypher function.
    * <p>
    * In Cypher, {@code date()}, {@code localtime()}, {@code datetime()}, {@code timestamp()} and friends must all
    * answer from the same frozen instant for the whole query: Neo4j pins them to the transaction clock, so
    * {@code RETURN timestamp() AS a, timestamp() AS b} always reports {@code a = b} and repeated calls inside one
-   * statement never advance. The value is frozen on first use and cached in the {@code $statementTime} context
-   * variable.
+   * statement never advance.
    * <p>
    * Every entry is derived from a <b>single</b> {@link ZonedDateTime#now()} reading. Building them from one
    * {@code now()} call per entry made the "frozen" time five successive instants instead of one, so
    * {@code date()} and {@code datetime()} in the same statement could straddle midnight and disagree about the
    * day, and {@code datetime()} and {@code localdatetime()} could disagree by a millisecond (issue #7052). Each
-   * derivation below is value-identical to the {@code now()} factory it replaces, including {@code time()},
-   * which has always reported the time of day at UTC.
+   * derivation is value-identical to the {@code now()} factory it replaces, including {@code time()}, which has
+   * always reported the time of day at UTC.
    */
-  @SuppressWarnings("unchecked")
   public static Map<String, Object> getStatementTime(final CommandContext context) {
-    Map<String, Object> statementTime = (Map<String, Object>) context.getVariable("$statementTime");
-    if (statementTime == null) {
-      // First call - freeze the current time. One clock reading, every entry derived from it.
-      final ZonedDateTime now = ZonedDateTime.now();
-      statementTime = new HashMap<>();
-      statementTime.put(TIMESTAMP, now.toInstant().toEpochMilli());
-      statementTime.put("date", new CypherDate(now.toLocalDate()));
-      statementTime.put("localtime", new CypherLocalTime(now.toLocalTime()));
-      statementTime.put("time", new CypherTime(now.toInstant().atOffset(ZoneOffset.UTC).toOffsetTime()));
-      statementTime.put("localdatetime", new CypherLocalDateTime(now.toLocalDateTime()));
-      statementTime.put("datetime", new CypherDateTime(now));
-      context.setVariable("$statementTime", statementTime);
+    return statementClock(context).values();
+  }
+
+  /**
+   * Makes a nested plan share the enclosing statement's clock instead of freezing one of its own.
+   * <p>
+   * A {@code CALL { }} body and every UNION branch run on a {@link CommandContext} built for them, so without
+   * this the "one frozen instant per statement" contract held only inside a single context and
+   * {@code CALL { RETURN timestamp() AS a } RETURN timestamp() AS b} could still report two values a tick apart -
+   * the reported defect moved one level up (issue #7052). This is the same treatment the command deadline and
+   * the label replacements already get in {@code CypherExecutionPlan}.
+   *
+   * @param context      the nested plan's context
+   * @param outerContext the enclosing statement's context, or {@code null} when there is no enclosing statement
+   */
+  public static void inheritStatementTime(final CommandContext context, final CommandContext outerContext) {
+    if (outerContext != null)
+      context.setVariable(STATEMENT_CLOCK_VARIABLE, statementClock(outerContext));
+  }
+
+  private static StatementClock statementClock(final CommandContext context) {
+    StatementClock clock = (StatementClock) context.getVariable(STATEMENT_CLOCK_VARIABLE);
+    if (clock == null) {
+      clock = new StatementClock();
+      context.setVariable(STATEMENT_CLOCK_VARIABLE, clock);
     }
-    return statementTime;
+    return clock;
   }
 
   /**

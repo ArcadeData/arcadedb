@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -123,6 +124,35 @@ class OpenCypherStatementClockTest extends TestHelper {
     assertThat(asLong(row, "dtHour")).isEqualTo(asLong(row, "ldtHour"));
     assertThat(asLong(row, "dtMinute")).isEqualTo(asLong(row, "ldtMinute"));
     assertThat(asLong(row, "dtSecond")).isEqualTo(asLong(row, "ldtSecond"));
+  }
+
+  /**
+   * A {@code CALL { }} body runs on a CommandContext of its own, so the pin has to travel into it: without that
+   * the reported defect simply moves one level up and the inner and outer {@code timestamp()} land a tick apart.
+   * The body scans long enough to cross many ticks, so an un-shared clock cannot agree by accident.
+   */
+  @Test
+  void timestampIsPinnedAcrossACallSubquery() {
+    final ResultSet result = database.command("opencypher",
+        "CALL { UNWIND range(1, 200000) AS i RETURN max(timestamp()) AS inner } RETURN timestamp() AS outer, inner");
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    assertThat(((Number) row.getProperty("outer")).longValue()).isEqualTo(((Number) row.getProperty("inner")).longValue());
+  }
+
+  /**
+   * Each UNION branch runs on a CommandContext of its own too, and the branches are executed lazily as the
+   * consumer pulls, so the second branch starts well after the first one finished.
+   */
+  @Test
+  void timestampIsPinnedAcrossUnionBranches() {
+    final ResultSet result = database.command("opencypher",
+        "UNWIND range(1, 200000) AS i WITH max(timestamp()) AS t RETURN t UNION ALL RETURN timestamp() AS t");
+    final List<Long> values = new ArrayList<>();
+    while (result.hasNext())
+      values.add(((Number) result.next().getProperty("t")).longValue());
+    assertThat(values).hasSize(2);
+    assertThat(values.get(1)).isEqualTo(values.get(0));
   }
 
   private long readTimestamp() {

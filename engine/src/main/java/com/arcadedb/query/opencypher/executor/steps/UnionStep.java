@@ -115,8 +115,9 @@ public class UnionStep extends AbstractExecutionStep {
               break;
             }
 
-            // Execute next query
-            currentResultSet = queryPlans.get(currentQueryIndex).execute();
+            // Execute next query, on this step's context so the branch joins the enclosing statement's clock
+            // instead of freezing one of its own (issue #7052).
+            currentResultSet = queryPlans.get(currentQueryIndex).execute(context);
             currentQueryIndex++;
           }
 
