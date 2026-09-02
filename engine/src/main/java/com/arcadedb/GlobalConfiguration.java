@@ -1315,11 +1315,13 @@ public enum GlobalConfiguration {
   SERVER_SHUTDOWN_TIMEOUT("arcadedb.server.shutdownTimeout", SCOPE.SERVER,
       """
       Milliseconds the JVM shutdown hook waits for the server lifecycle lock before giving up and letting \
-      the JVM exit WITHOUT a graceful stop. It only matters when another thread is inside start()/stop() \
-      when the shutdown signal arrives: normally the hook takes the lock immediately and this value is \
-      never reached. Giving up leaves databases as a kill would - the next open replays the WAL - which is \
-      the lesser evil, because a hook that waits forever can make the process unkillable (issue #5418). \
-      Raise it if a legitimate shutdown of very large databases needs longer than the default.""",
+      the JVM exit WITHOUT a graceful stop. It only matters when another thread holds the lifecycle lock \
+      when the shutdown signal arrives - a stop() in progress, or the tail of start() after the status has \
+      already turned ONLINE: normally the hook takes the lock immediately and this value is never \
+      reached, and while the server is still STARTING the hook uses a fixed 2000ms bound instead, which \
+      this setting does not govern. Giving up leaves databases as a kill would - the next open replays the \
+      WAL - which is the lesser evil, because a hook that waits forever can make the process unkillable \
+      (issue #5418). Raise it if a legitimate shutdown of very large databases needs longer than the default.""",
       Long.class, 60_000L),
 
   // Metrics
