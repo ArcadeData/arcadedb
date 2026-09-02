@@ -2355,7 +2355,9 @@ public class CypherExecutionPlan {
       return null;
 
     // Both endpoints must be unselective (no labels, no inline properties) and not already bound - there
-    // is nothing to validate on them beyond what the WHERE filter above already re-checks.
+    // is nothing to validate on them beyond what the WHERE filter above already re-checks. Note that a
+    // variable repeated at both endpoints is unselective by this measure yet still constrains the hop; see
+    // MatchEdgeByIndexStep's class javadoc for why the step, not this test, enforces it (issue #7008).
     final NodePattern srcNode = pathPattern.getFirstNode();
     final NodePattern tgtNode = pathPattern.getLastNode();
     if (isSelectiveEndpoint(srcNode, boundVariables, matchVariables)
