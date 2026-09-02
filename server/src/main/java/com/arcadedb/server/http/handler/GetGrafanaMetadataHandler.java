@@ -23,6 +23,8 @@ import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -59,6 +61,9 @@ public class GetGrafanaMetadataHandler extends AbstractServerHttpHandler {
 
     for (final DocumentType docType : database.getSchema().getTypes()) {
       if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
+        continue;
+      // Metadata discovery must not expose the field/tag names of a type the caller cannot read.
+      if (!SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD))
         continue;
 
       final JSONObject typeObj = new JSONObject();

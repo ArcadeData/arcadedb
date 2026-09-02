@@ -18,6 +18,7 @@
  */
 package com.arcadedb.security;
 
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
@@ -72,6 +73,16 @@ public final class SecurityHelper {
    * type's buckets (or, for a bucket-less type, by name). A {@code null} user (no security context: embedded usage
    * or root) or a {@code null} type sees everything.
    */
+  /**
+   * Same as {@link #canAccessType(SecurityDatabaseUser, DocumentType, SecurityDatabaseUser.ACCESS)}, resolving the
+   * user bound to {@code database}'s current context. For listings that must silently hide what the caller cannot
+   * see rather than fail the whole request.
+   */
+  public static boolean canAccessType(final DatabaseInternal database, final DocumentType type, final SecurityDatabaseUser.ACCESS access) {
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    return canAccessType(dbContext == null ? null : dbContext.getCurrentUser(), type, access);
+  }
+
   public static boolean canAccessType(final SecurityDatabaseUser user, final DocumentType type, final SecurityDatabaseUser.ACCESS access) {
     if (user == null || type == null)
       return true;

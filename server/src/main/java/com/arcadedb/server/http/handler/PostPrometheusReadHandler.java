@@ -24,6 +24,7 @@ import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
@@ -115,12 +116,19 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
       }
 
       final DocumentType docType = database.getSchema().getType(typeName);
-      if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null) {
+      if (!(docType instanceof LocalTimeSeriesType tsType)) {
         queryResults.add(new QueryResult(List.of()));
         continue;
       }
 
-      final TimeSeriesEngine engine = tsType.getEngine();
+      // Gated accessor (per-type ACL): the query names this metric explicitly, so a denial is answered with a
+      // 403 rather than an empty result - an empty result is how a NON-EXISTENT metric answers, and conflating
+      // the two would let the caller keep probing a type it has no read right on.
+      final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
+      if (engine == null) {
+        queryResults.add(new QueryResult(List.of()));
+        continue;
+      }
       final List<ColumnDefinition> columns = tsType.getTsColumns();
 
       // Build TagFilter from label matchers (EQ only for now)

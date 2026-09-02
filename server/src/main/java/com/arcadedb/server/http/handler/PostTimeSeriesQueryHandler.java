@@ -29,6 +29,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -87,7 +88,9 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, new JSONObject().put("error", "TimeSeries type '" + typeName
           + "' has no storage engine available: " + tsType.getEngineUnavailableReason()).toString());
 
-    final TimeSeriesEngine engine = tsType.getEngine();
+    // Gated accessor (per-type ACL): a TimeSeries type owns no record bucket, so this type-name check is
+    // the only thing that can enforce a "readRecord" denial on it. Throws SecurityException -> HTTP 403.
+    final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
     final List<ColumnDefinition> columns = tsType.getTsColumns();
 
     final long fromTs = payload.getLong("from", Long.MIN_VALUE);

@@ -27,6 +27,8 @@ import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -94,8 +96,44 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     engineUnavailableReason = null;
   }
 
+  /**
+   * Unchecked accessor, for engine-internal callers only (schema load/save, {@code CHECK DATABASE}, the
+   * maintenance scheduler): it performs NO authorization. Every path that reaches the samples on behalf of a
+   * user must go through {@link #getEngine(SecurityDatabaseUser.ACCESS)} or
+   * {@link #requireEngine(SecurityDatabaseUser.ACCESS)} instead - a TimeSeries type owns no record bucket, so
+   * the per-file check {@code LocalBucket} applies to a normal record never runs for it and the type-name check
+   * these overloads perform is the only thing standing between a denied user and the data.
+   */
   public TimeSeriesEngine getEngine() {
     return engine;
+  }
+
+  /**
+   * Same as {@link #getEngine()} after verifying that the current user (if any) is entitled to {@code access} on
+   * this type, throwing {@code SecurityException} otherwise. The check runs BEFORE the engine is looked at, so a
+   * denied caller cannot tell an unavailable engine from an available one.
+   */
+  public TimeSeriesEngine getEngine(final SecurityDatabaseUser.ACCESS access) {
+    checkAccess(access);
+    return engine;
+  }
+
+  /**
+   * Same as {@link #requireEngine()} after verifying that the current user (if any) is entitled to {@code access}
+   * on this type, throwing {@code SecurityException} otherwise.
+   */
+  public TimeSeriesEngine requireEngine(final SecurityDatabaseUser.ACCESS access) {
+    checkAccess(access);
+    return requireEngine();
+  }
+
+  /**
+   * Applies the per-type ACL for {@code access} on this type, throwing {@code SecurityException} when the current
+   * user is not entitled to it. A no-op when no user is bound to the current context (embedded usage, internal
+   * replication/import).
+   */
+  public void checkAccess(final SecurityDatabaseUser.ACCESS access) {
+    SecurityHelper.checkAccessOnType((DatabaseInternal) schema.getDatabase(), this, access);
   }
 
   /**

@@ -1530,7 +1530,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   @Override
   public void appendSamples(final String typeName, final long[] timestamps, final Object[]... columnValues) {
     final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType(typeName);
-    final TimeSeriesEngine engine = tsType.requireEngine();
+    final TimeSeriesEngine engine = tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
     final int shardIdx = (int) (tsAppendCounter.getAndIncrement() % engine.getShardCount());
     final int slot = getSlot(shardIdx);
     scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, timestamps, columnValues), true,
@@ -1540,7 +1540,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   @Override
   public void appendSamples(final String typeName, final TimeSeriesRowSource source) {
     final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType(typeName);
-    final TimeSeriesEngine engine = tsType.requireEngine();
+    final TimeSeriesEngine engine = tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
     final int shardIdx = (int) (tsAppendCounter.getAndIncrement() % engine.getShardCount());
     final int slot = getSlot(shardIdx);
     scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, source), true, backPressurePercentage);

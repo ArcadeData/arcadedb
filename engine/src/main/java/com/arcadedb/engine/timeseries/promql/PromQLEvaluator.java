@@ -46,6 +46,7 @@ import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.UnaryExpr;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -240,10 +241,15 @@ public class PromQLEvaluator {
       return new InstantVector(List.of());
 
     final DocumentType docType = database.getSchema().getType(typeName);
-    if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
+    if (!(docType instanceof LocalTimeSeriesType tsType))
       return new InstantVector(List.of());
 
-    final TimeSeriesEngine engine = tsType.getEngine();
+    // Gated accessor: PromQL reads the same samples a SELECT would, so a metric the caller is denied must fail
+    // loudly here rather than be served through this side door. Checked before the engine-availability test so a
+    // denied caller learns nothing about the type's storage state.
+    final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
+    if (engine == null)
+      return new InstantVector(List.of());
     final List<ColumnDefinition> columns = tsType.getTsColumns();
 
     warnIfMultipleFields(columns, vs.metricName());
@@ -293,10 +299,13 @@ public class PromQLEvaluator {
       return new RangeVector(List.of());
 
     final DocumentType docType = database.getSchema().getType(typeName);
-    if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
+    if (!(docType instanceof LocalTimeSeriesType tsType))
       return new RangeVector(List.of());
 
-    final TimeSeriesEngine engine = tsType.getEngine();
+    // Same per-type read check as the instant-vector selector above.
+    final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
+    if (engine == null)
+      return new RangeVector(List.of());
     final List<ColumnDefinition> columns = tsType.getTsColumns();
 
     warnIfMultipleFields(columns, vs.metricName());
