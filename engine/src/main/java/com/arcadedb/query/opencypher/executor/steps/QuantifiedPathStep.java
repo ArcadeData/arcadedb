@@ -270,14 +270,15 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
       if (done >= group.getMaxRepetitions())
         return;
 
-      // The inner start node's own constraints hold for every repetition, not only the first: the outer
-      // boundary node can only carry them for the vertex it binds.
-      if (!matchesInnerNode(current, 0))
-        return;
-
       final Vertex[] nodes = new Vertex[innerNodes.size()];
       final Edge[] edges = new Edge[innerRelationships.size()];
       nodes[0] = current;
+
+      // The inner start node's own constraints hold for every repetition, not only the first: the outer
+      // boundary node can only carry them for the vertex it binds.
+      if (!matchesInnerNode(nodes, edges, 0))
+        return;
+
       matchRepetition(nodes, edges, 0);
     }
 
@@ -289,7 +290,7 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
     private void matchRepetition(final Vertex[] nodes, final Edge[] edges, final int hop) {
       if (hop == innerRelationships.size()) {
         if (group.getInnerWhere() != null
-            && !group.getInnerWhere().evaluate(repetitionScope(input, nodes, edges), context))
+            && !group.getInnerWhere().evaluate(repetitionScope(input, nodes, edges, nodes.length - 1), context))
           return;
         repetitions.add(new Repetition(nodes.clone(), edges.clone()));
         search(nodes[nodes.length - 1]);
@@ -316,26 +317,36 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
         if (relationshipPredicates[hop] != null && !relationshipPredicates[hop].test(edge))
           continue;
 
-        final Vertex next = otherEnd(edge, from, direction);
-        if (!matchesInnerNode(next, hop + 1))
+        // Written into the arrays before the check so the node's own inline WHERE is evaluated in the
+        // scope the repetition has built so far - the relationship that reached it included.
+        edges[hop] = edge;
+        nodes[hop + 1] = otherEnd(edge, from, direction);
+        if (!matchesInnerNode(nodes, edges, hop + 1))
           continue;
 
-        edges[hop] = edge;
-        nodes[hop + 1] = next;
         usedEdges.add(edgeId);
         matchRepetition(nodes, edges, hop + 1);
         usedEdges.remove(edgeId);
       }
     }
 
-    /** Applies inner node {@code index}'s labels, resolved inline properties and inline WHERE. */
-    private boolean matchesInnerNode(final Vertex vertex, final int index) {
+    /**
+     * Applies inner node {@code index}'s labels, resolved inline properties and inline {@code WHERE}.
+     * <p>
+     * The inline {@code WHERE} is evaluated in the same scope the group-level {@code WHERE} gets, truncated
+     * to what this repetition has bound so far, so {@code ((x)-[r]->(y WHERE y.w > x.w))} reads a real
+     * {@code x}. Truncation is not cosmetic: the arrays are reused across sibling candidates, so entries
+     * past {@code index} still hold the previous branch's vertices and relationships.
+     */
+    private boolean matchesInnerNode(final Vertex[] nodes, final Edge[] edges, final int index) {
+      final Vertex vertex = nodes[index];
       final NodePattern pattern = innerNodes.get(index);
       if (pattern.hasLabels() && !Labels.matches(vertex, pattern.getLabels(), pattern.isLabelDisjunction()))
         return false;
       if (nodeProperties[index] != null && !matchesResolved(vertex, nodeProperties[index]))
         return false;
-      return !pattern.hasWhereExpression() || matchesNodeWhere(vertex, pattern);
+      return !pattern.hasWhereExpression()
+          || pattern.getWhereExpression().evaluate(repetitionScope(input, nodes, edges, index), context);
     }
 
     /** Checks the right boundary: the pinned target if the row already bound one, then its own constraints. */
@@ -350,17 +361,22 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
       if (targetNodePattern.hasProperties()
           && !InlineProperties.matches(candidate, targetNodePattern.getProperties(), input, context))
         return false;
-      return !targetNodePattern.hasWhereExpression() || matchesNodeWhere(candidate, targetNodePattern);
+      return !targetNodePattern.hasWhereExpression() || matchesBoundaryWhere(candidate);
     }
 
-    private boolean matchesNodeWhere(final Vertex vertex, final NodePattern pattern) {
+    /**
+     * Evaluates the right boundary node's own inline {@code WHERE}. The boundary sits outside the group,
+     * so its scope is the incoming row plus its own binding - never the group's per-repetition bindings,
+     * which have no single value at that point.
+     */
+    private boolean matchesBoundaryWhere(final Vertex candidate) {
       final ResultInternal scope = new ResultInternal();
       for (final String property : input.getPropertyNames())
         scope.setProperty(property, input.getProperty(property));
-      final String variable = pattern.getVariable();
+      final String variable = targetNodePattern.getVariable();
       if (variable != null && !variable.isEmpty())
-        scope.setProperty(variable, vertex);
-      return pattern.getWhereExpression().evaluate(scope, context);
+        scope.setProperty(variable, candidate);
+      return targetNodePattern.getWhereExpression().evaluate(scope, context);
     }
   }
 
@@ -373,21 +389,27 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
 
   /**
    * Builds the scope one repetition's predicates are evaluated in: the incoming row's bindings plus this
-   * repetition's own single-valued bindings. Single-valued, not the group lists - an inner {@code WHERE}
-   * constrains the repetition it is written inside, so {@code WHERE r.weight > 5} reads one relationship.
+   * repetition's own single-valued bindings, up to and including inner node {@code boundThrough}.
+   * Single-valued, not the group lists - an inner {@code WHERE} constrains the repetition it is written
+   * inside, so {@code WHERE r.weight > 5} reads one relationship.
+   *
+   * @param boundThrough index of the last inner node bound so far; nodes and relationships past it are
+   *                     left out, because the arrays are reused across sibling candidates and still carry
+   *                     the previous branch's values there
    */
-  private Result repetitionScope(final Result input, final Vertex[] nodes, final Edge[] edges) {
+  private Result repetitionScope(final Result input, final Vertex[] nodes, final Edge[] edges,
+      final int boundThrough) {
     final ResultInternal scope = new ResultInternal();
     for (final String property : input.getPropertyNames())
       scope.setProperty(property, input.getProperty(property));
-    for (int i = 0; i < nodes.length; i++) {
+    for (int i = 0; i <= boundThrough; i++) {
       final String variable = innerNodes.get(i).getVariable();
-      if (variable != null && !variable.isEmpty() && nodes[i] != null)
+      if (variable != null && !variable.isEmpty())
         scope.setProperty(variable, nodes[i]);
-      if (i < edges.length) {
-        final String relVariable = innerRelationships.get(i).getVariable();
-        if (relVariable != null && !relVariable.isEmpty() && edges[i] != null)
-          scope.setProperty(relVariable, edges[i]);
+      if (i > 0) {
+        final String relVariable = innerRelationships.get(i - 1).getVariable();
+        if (relVariable != null && !relVariable.isEmpty())
+          scope.setProperty(relVariable, edges[i - 1]);
       }
     }
     return scope;

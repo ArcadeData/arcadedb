@@ -62,6 +62,12 @@ public class QuantifiedPathPattern extends RelationshipPattern {
    */
   public QuantifiedPathPattern(final PathPattern inner, final BooleanExpression innerWhere, final Integer min,
       final Integer max) {
+    // The inherited variable, types, direction and property map are PLACEHOLDERS, not traversal semantics:
+    // a group has no single relationship type or direction, they live on the inner pattern's own hops.
+    // Only the hop bounds are real, so that isVariableLength() is true and every shape check that already
+    // declines a variable-length hop declines this one. Any new code that loops over
+    // PathPattern#getRelationships() and reads getDirection()/getTypes() must special-case this type the
+    // way CypherExecutionPlan#buildMatchStep does, rather than rely on an incidental guard elsewhere.
     super(null, null, Direction.BOTH, null, null, min != null ? min : 1, max, null);
     if (inner == null || inner.getRelationshipCount() < 1)
       throw new IllegalArgumentException("A quantified path pattern must repeat at least one relationship");

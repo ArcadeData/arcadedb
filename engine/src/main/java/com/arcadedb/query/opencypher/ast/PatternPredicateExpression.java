@@ -107,8 +107,10 @@ public class PatternPredicateExpression implements BooleanExpression {
 
     // A GQL quantified path pattern (issue #4531) repeats a whole sub-pattern; this predicate evaluator
     // only knows how to probe a single hop and would answer as if the group were one untyped
-    // variable-length relationship. Say so rather than return a wrong boolean - the EXISTS { MATCH ... }
-    // spelling plans a real execution plan and supports it.
+    // variable-length relationship. Unreachable through today's grammar - the pattern-predicate position
+    // parses as pathPatternNonEmpty, which admits no parenthesizedPath, so the group is refused earlier -
+    // and kept so that widening that rule cannot silently turn the rejection into a wrong boolean. The
+    // EXISTS { MATCH ... } spelling plans a real execution plan and supports the group.
     if (relPattern instanceof QuantifiedPathPattern)
       throw new CommandExecutionException(
           "FeatureNotImplemented: a quantified path pattern is not supported inside an inline pattern predicate; "

@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
@@ -380,6 +381,88 @@ class CypherQuantifiedPathPatternPhaseBIssue4531Test {
     assertThat(namesOf("MATCH (s:P {name:'A'})-[e:KNOWS]->(mid:P) ((m:P)-[r:KNOWS]->(n:P))+ (t:P) "
         + "RETURN t.name AS name"))
         .containsExactly("A");
+  }
+
+  // Issue #4531: a node's own inline WHERE inside a group sees the variables the repetition has
+  // already bound, not only the node's own - the same scope the group-level WHERE gets.
+  @Test
+  void innerNodeInlineWhereSeesEarlierBindingsOfTheSameRepetition() {
+    createWeightedChain();
+
+    // n is reached over r, so r is bound when n's inline WHERE runs. A-[10]->B passes, B-[1]->C does not.
+    assertThat(namesOf("MATCH (s:P {name:'A'}) ((m:P)-[r:KNOWS]->(n:P WHERE r.weight > 5))+ (t:P) "
+        + "RETURN t.name AS name"))
+        .containsExactly("B");
+
+    // Referring to the repetition's start node from the end node's inline WHERE.
+    assertThat(namesOf("MATCH (s:P {name:'A'}) ((m:P)-[r:KNOWS]->(n:P WHERE n.name <> m.name))+ (t:P) "
+        + "RETURN t.name AS name"))
+        .containsExactlyInAnyOrder("B", "C", "D");
+  }
+
+  // Issue #4531: a quantified group works inside an EXISTS { MATCH ... } subquery, which plans a real
+  // execution plan (unlike the inline pattern predicate, which reports it).
+  @Test
+  void quantifiedGroupWorksInsideExistsSubquery() {
+    createWeightedChain();
+
+    assertThat(namesOf("MATCH (s:P) WHERE EXISTS { MATCH (s) ((m:P)-[r:KNOWS]->(n:P)){3} (t:P) } "
+        + "RETURN s.name AS name"))
+        .containsExactly("A");
+  }
+
+  // Issue #4531: the inline pattern-predicate spelling cannot express a group at all - the grammar's
+  // pathPatternNonEmpty admits no parenthesized path - so it is refused at parse time rather than
+  // silently answered as if the group were one untyped variable-length hop. EXISTS { MATCH ... } is the
+  // supported spelling, covered above.
+  @Test
+  void inlinePatternPredicateCannotExpressAQuantifiedGroup() {
+    createWeightedChain();
+
+    assertThatThrownBy(() -> namesOf("MATCH (s:P) WHERE (s) ((m:P)-[r:KNOWS]->(n:P))+ (t:P) RETURN s.name AS name"))
+        .isInstanceOf(CommandParsingException.class);
+  }
+
+  // Issue #4531: an inner hop may be written right-to-left or undirected, and may list several types.
+  @Test
+  void innerHopHonoursDirectionAndTypeAlternatives() {
+    createAlternatingChain();
+
+    // A reversed two-hop inner unit walks the chain backwards from E: one repetition reaches C, two reach A.
+    assertThat(namesOf("MATCH (s:P {name:'E'}) ((m:P)<-[:R2]-(y:P)<-[:R1]-(n:P))+ (t:P) RETURN t.name AS name"))
+        .containsExactlyInAnyOrder("C", "A");
+
+    // A type alternative makes the single-hop unit walk the whole mixed-type chain.
+    assertThat(namesOf("MATCH (s:P {name:'A'}) ((m:P)-[r:R1|R2]->(n:P))+ (t:P) RETURN t.name AS name"))
+        .containsExactlyInAnyOrder("B", "C", "D", "E");
+
+    // An undirected inner hop can also travel against the arrows.
+    assertThat(namesOf("MATCH (s:P {name:'C'}) ((m:P)-[r:R1|R2]-(n:P)){1} (t:P) RETURN t.name AS name"))
+        .containsExactlyInAnyOrder("B", "D");
+  }
+
+  /**
+   * Issue #4531: the repetition search recurses once per repetition, so a long chain walks the Java call
+   * stack. Pins that a deep but realistic group does not overflow it, since nothing else in the suite
+   * would notice the depth budget shrinking. Tagged slow: it builds and walks a 2,000-vertex chain.
+   */
+  @Test
+  @Tag("slow")
+  void deepRepetitionDoesNotExhaustTheCallStack() {
+    final int chainLength = 2000;
+    database.transaction(() -> {
+      final StringBuilder create = new StringBuilder("CREATE (v0:P {name:'v0'})");
+      for (int i = 1; i < chainLength; i++)
+        create.append("-[:KNOWS]->(v").append(i).append(":P {name:'v").append(i).append("'})");
+      database.command("opencypher", create.toString());
+    });
+
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (s:P {name:'v0'}) ((m:P)-[r:KNOWS]->(n:P))+ (t:P) RETURN count(t) AS reached")) {
+      assertThat(rs.hasNext()).isTrue();
+      // Every vertex downstream of v0 is reachable, at one repetition per hop.
+      assertThat(((Number) rs.next().getProperty("reached")).intValue()).isEqualTo(chainLength - 1);
+    }
   }
 
   // ---------------------------------------------------------------------------
