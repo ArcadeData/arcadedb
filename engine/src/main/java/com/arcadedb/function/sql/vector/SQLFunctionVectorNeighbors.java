@@ -175,8 +175,8 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     }
 
     // Filter bucket indexes if a specific type was requested, and visit each sub-index at most once. See
-    // VectorUtils.collectVectorSubIndexes for why the same sub-index can be listed twice (issue #7057).
-    final List<LSMVectorIndex> vectorIndexes = VectorUtils.collectVectorSubIndexes(bucketIndexes,
+    // VectorUtils.collectSubIndexesOnce for why the same sub-index can be listed twice (issue #7057).
+    final List<LSMVectorIndex> vectorIndexes = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMVectorIndex.class,
         allowedBucketIds == null ? null : allowedBucketIds::contains);
 
     if (vectorIndexes.isEmpty()) {

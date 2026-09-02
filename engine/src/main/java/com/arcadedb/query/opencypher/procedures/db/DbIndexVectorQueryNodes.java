@@ -234,7 +234,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
 
   /**
    * Resolves the vector sub-indexes to search. See
-   * {@link VectorUtils#collectVectorSubIndexes(IndexInternal[], java.util.function.IntPredicate)} for why the same
+   * {@link VectorUtils#collectSubIndexesOnce(IndexInternal[], Class, java.util.function.IntPredicate)} for why the same
    * sub-index can be listed twice and why the guard is on identity rather than on the bucket id (issue #7057).
    */
   private List<LSMVectorIndex> filterVectorIndexes(final TypeIndex typeIndex, final Set<Integer> allowedBucketIds) {
@@ -242,7 +242,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     if (bucketIndexes == null || bucketIndexes.length == 0)
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
 
-    final List<LSMVectorIndex> vectorIndexes = VectorUtils.collectVectorSubIndexes(bucketIndexes,
+    final List<LSMVectorIndex> vectorIndexes = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMVectorIndex.class,
         allowedBucketIds == null ? null : allowedBucketIds::contains);
 
     if (vectorIndexes.isEmpty())
