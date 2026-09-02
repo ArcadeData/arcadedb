@@ -95,17 +95,18 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
         results.put(refId, buildErrorFrame("Type '" + typeName + "' is not a TimeSeries type"));
         continue;
       }
-      if (!tsType.isEngineAvailable()) {
+      // Gated accessor (per-type ACL): fail the whole request with 403 rather than emitting an error frame
+      // for the denied target - an error frame would confirm the type exists to a caller denied on it, and the
+      // engine-unavailable frame below would hand it a file path too. Hence before the availability branch: the
+      // accessor returns null exactly where isEngineAvailable() was false.
+      final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
+      if (engine == null) {
         // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS
         // one, its storage just failed to load - the old shared message sent an operator chasing the wrong cause.
         results.put(refId, buildErrorFrame(
             "TimeSeries type '" + typeName + "' has no storage engine available: " + tsType.getEngineUnavailableReason()));
         continue;
       }
-
-      // Gated accessor (per-type ACL): fail the whole request with 403 rather than emitting an error frame
-      // for the denied target - an error frame would confirm the type exists to a caller denied on it.
-      final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
       final List<ColumnDefinition> columns = tsType.getTsColumns();
 
       // Build tag filter

@@ -186,6 +186,12 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
           nonTimeSeriesTypes.add(measurement);
           continue;
         }
+        // Per-type ACL, checked HERE rather than only at the append below: TimeSeriesShard.appendSamples commits
+        // its own shard transaction, so a denial discovered mid-write would return 403 with the measurements
+        // before it already durable. Grouping runs entirely before the first append, so refusing here is the only
+        // placement that keeps a rejected request from writing anything. Also before the isEngineAvailable() check
+        // so a denied caller cannot learn from the drop report that the type exists.
+        tsType.checkAccess(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
         if (!tsType.isEngineAvailable()) {
           unavailableTypes.add(measurement);
           continue;

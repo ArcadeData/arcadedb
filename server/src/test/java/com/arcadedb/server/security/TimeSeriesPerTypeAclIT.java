@@ -21,13 +21,23 @@ package com.arcadedb.server.security;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.LabelMatcher;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.MatchType;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Query;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.ReadRequest;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Sample;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.TimeSeries;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.WriteRequest;
 import org.junit.jupiter.api.Test;
+import org.xerial.snappy.Snappy;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -50,6 +60,8 @@ class TimeSeriesPerTypeAclIT extends BaseGraphServerTest {
   private static final String SCOPED_PWD      = "tsscopeduser1";
   private static final String RESTRICTED_TYPE = "SecretMetrics";
   private static final String AUTHORIZED_TYPE = "PublicMetrics";
+  private static final String RESTRICTED_TAG  = "secret_host";
+  private static final String AUTHORIZED_TAG  = "public_host";
 
   private String lastResponseBody = "";
 
@@ -57,10 +69,16 @@ class TimeSeriesPerTypeAclIT extends BaseGraphServerTest {
   void perTypeAclEnforcedOnEveryTimeSeriesPath() throws Exception {
     testEachServer((serverIndex) -> {
       // Types must exist BEFORE the scoped user's per-type map is built, so the map segments the restricted one.
+      // Each type carries a DIFFERENT tag column name, so the discovery endpoints (PromQL labels/series,
+      // Grafana metadata) can be checked for leaking the denied type's schema and not just its samples.
+      command(serverIndex, "CREATE TIMESERIES TYPE " + RESTRICTED_TYPE
+          + " TIMESTAMP ts TAGS (" + RESTRICTED_TAG + " STRING) FIELDS (value DOUBLE)");
+      command(serverIndex, "CREATE TIMESERIES TYPE " + AUTHORIZED_TYPE
+          + " TIMESTAMP ts TAGS (" + AUTHORIZED_TAG + " STRING) FIELDS (value DOUBLE)");
       for (final String typeName : new String[] { RESTRICTED_TYPE, AUTHORIZED_TYPE }) {
-        command(serverIndex, "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts FIELDS (value DOUBLE)");
-        command(serverIndex, "INSERT INTO " + typeName + " SET ts = 1000, value = 42.0");
-        command(serverIndex, "INSERT INTO " + typeName + " SET ts = 2000, value = 1337.0");
+        final String tag = RESTRICTED_TYPE.equals(typeName) ? RESTRICTED_TAG : AUTHORIZED_TAG;
+        command(serverIndex, "INSERT INTO " + typeName + " SET ts = 1000, " + tag + " = 'a', value = 42.0");
+        command(serverIndex, "INSERT INTO " + typeName + " SET ts = 2000, " + tag + " = 'a', value = 1337.0");
       }
 
       createScopedUser(serverIndex);
@@ -94,6 +112,8 @@ class TimeSeriesPerTypeAclIT extends BaseGraphServerTest {
 
         assertThat(getStatus(serverIndex, "/api/v1/ts/" + getDatabaseName() + "/latest?type=" + RESTRICTED_TYPE, auth))
             .as("the TimeSeries latest endpoint must apply the same per-type check").isEqualTo(403);
+        assertThat(getStatus(serverIndex, "/api/v1/ts/" + getDatabaseName() + "/latest?type=" + AUTHORIZED_TYPE, auth))
+            .as("the same endpoint on an authorized type must still work: %s", lastResponseBody).isEqualTo(200);
 
         assertThat(postTextStatus(serverIndex,
             "/api/v1/ts/" + getDatabaseName() + "/write?precision=ms", auth, RESTRICTED_TYPE + " value=-1.0 9999"))
@@ -108,6 +128,10 @@ class TimeSeriesPerTypeAclIT extends BaseGraphServerTest {
             new JSONObject().put("targets", new JSONArray().put(
                 new JSONObject().put("refId", "A").put("type", RESTRICTED_TYPE))).toString()))
             .as("the Grafana query endpoint must apply the same per-type check").isEqualTo(403);
+        assertThat(postJsonStatus(serverIndex, "/api/v1/ts/" + getDatabaseName() + "/grafana/query", auth,
+            new JSONObject().put("targets", new JSONArray().put(
+                new JSONObject().put("refId", "A").put("type", AUTHORIZED_TYPE))).toString()))
+            .as("the same endpoint on an authorized type must still work: %s", lastResponseBody).isEqualTo(200);
 
         final JSONObject metadata = new JSONObject(
             getBody(serverIndex, "/api/v1/ts/" + getDatabaseName() + "/grafana/metadata", auth));
@@ -122,6 +146,32 @@ class TimeSeriesPerTypeAclIT extends BaseGraphServerTest {
         assertThat(getStatus(serverIndex,
             "/api/v1/ts/" + getDatabaseName() + "/prom/api/v1/query?query=" + RESTRICTED_TYPE, auth))
             .as("PromQL must not be a side door onto a denied TimeSeries type").isEqualTo(403);
+        assertThat(getStatus(serverIndex,
+            "/api/v1/ts/" + getDatabaseName() + "/prom/api/v1/query?query=" + AUTHORIZED_TYPE, auth))
+            .as("PromQL on an authorized type must still work: %s", lastResponseBody).isEqualTo(200);
+
+        final JSONObject labels = new JSONObject(getBody(serverIndex,
+            "/api/v1/ts/" + getDatabaseName() + "/prom/api/v1/labels", auth));
+        assertThat(labels.getJSONArray("data").toList())
+            .as("a denied type's tag names must not be discoverable through PromQL labels")
+            .doesNotContain(RESTRICTED_TAG).contains(AUTHORIZED_TAG);
+
+        assertThat(new JSONObject(getBody(serverIndex, "/api/v1/ts/" + getDatabaseName()
+            + "/prom/api/v1/series?match[]=" + RESTRICTED_TYPE, auth)).getJSONArray("data").toList())
+            .as("a denied type's series must not be listed").isEmpty();
+        assertThat(new JSONObject(getBody(serverIndex, "/api/v1/ts/" + getDatabaseName()
+            + "/prom/api/v1/series?match[]=" + AUTHORIZED_TYPE, auth)).getJSONArray("data").toList())
+            .as("an authorized type's series must still be listed").isNotEmpty();
+
+        // --- Prometheus remote write / read ---
+        assertThat(postPromWrite(serverIndex, auth, RESTRICTED_TYPE))
+            .as("Prometheus remote write into a denied type must be rejected").isEqualTo(403);
+        assertThat(postPromWrite(serverIndex, auth, AUTHORIZED_TYPE))
+            .as("Prometheus remote write into an authorized type must still work").isEqualTo(204);
+        assertThat(postPromRead(serverIndex, auth, RESTRICTED_TYPE))
+            .as("Prometheus remote read of a denied type must be rejected").isEqualTo(403);
+        assertThat(postPromRead(serverIndex, auth, AUTHORIZED_TYPE))
+            .as("Prometheus remote read of an authorized type must still work").isEqualTo(200);
 
         final JSONObject labelValues = new JSONObject(getBody(serverIndex,
             "/api/v1/ts/" + getDatabaseName() + "/prom/api/v1/label/__name__/values", auth));
@@ -133,7 +183,7 @@ class TimeSeriesPerTypeAclIT extends BaseGraphServerTest {
         assertThat(countSamples(serverIndex, RESTRICTED_TYPE))
             .as("no sample may have been written to the denied type").isEqualTo(2);
         assertThat(countSamples(serverIndex, AUTHORIZED_TYPE))
-            .as("the authorized line-protocol write must have been persisted").isEqualTo(3);
+            .as("the authorized line-protocol and remote-write samples must have been persisted").isEqualTo(4);
       } finally {
         deleteUser(serverIndex, SCOPED_USER);
       }
@@ -245,6 +295,35 @@ class TimeSeriesPerTypeAclIT extends BaseGraphServerTest {
     try {
       assertThat(connection.getResponseCode()).isEqualTo(200);
       return new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  private int postPromWrite(final int serverIndex, final String auth, final String metric) throws Exception {
+    final WriteRequest request = new WriteRequest(List.of(new TimeSeries(
+        List.of(new Label("__name__", metric)), List.of(new Sample(-1.0, 8888)))));
+    return postBinary(serverIndex, "/api/v1/ts/" + getDatabaseName() + "/prom/write", auth,
+        Snappy.compress(request.encode()));
+  }
+
+  private int postPromRead(final int serverIndex, final String auth, final String metric) throws Exception {
+    final ReadRequest request = new ReadRequest(
+        List.of(new Query(0, 5000, List.of(new LabelMatcher(MatchType.EQ, "__name__", metric)))));
+    return postBinary(serverIndex, "/api/v1/ts/" + getDatabaseName() + "/prom/read", auth,
+        Snappy.compress(request.encode()));
+  }
+
+  private int postBinary(final int serverIndex, final String path, final String auth, final byte[] body)
+      throws Exception {
+    final HttpURLConnection connection = open(serverIndex, "POST", path, auth);
+    connection.setDoOutput(true);
+    connection.setRequestProperty("Content-Type", "application/x-protobuf");
+    connection.setRequestProperty("Content-Encoding", "snappy");
+    connection.getOutputStream().write(body);
+    connection.connect();
+    try {
+      return statusOf(connection);
     } finally {
       connection.disconnect();
     }

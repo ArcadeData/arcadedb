@@ -68,17 +68,19 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
     final DocumentType docType = database.getSchema().getType(typeName);
     if (!(docType instanceof LocalTimeSeriesType tsType))
       return new ExecutionResponse(400, "{ \"error\" : \"Type '" + typeName + "' is not a TimeSeries type\"}");
-    if (!tsType.isEngineAvailable())
+    // Gated accessor (per-type ACL): a TimeSeries type owns no record bucket, so this type-name check is
+    // the only thing that can enforce a "readRecord" denial on it. Throws SecurityException -> HTTP 403.
+    // It runs BEFORE the engine-availability branch below (it returns null exactly where isEngineAvailable()
+    // was false) so a denied caller gets the 403 and not the unavailable-engine diagnostic, which names a file
+    // path on disk.
+    final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
+    if (engine == null)
       // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS one,
       // its storage just failed to load - the old shared message sent an operator chasing the wrong cause.
       // Built with JSONObject rather than string concatenation because the reason embeds a file path that could
       // contain a double quote or backslash, which raw concatenation would turn into invalid JSON.
       return new ExecutionResponse(400, new JSONObject().put("error", "TimeSeries type '" + typeName
           + "' has no storage engine available: " + tsType.getEngineUnavailableReason()).toString());
-
-    // Gated accessor (per-type ACL): a TimeSeries type owns no record bucket, so this type-name check is
-    // the only thing that can enforce a "readRecord" denial on it. Throws SecurityException -> HTTP 403.
-    final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
     final List<ColumnDefinition> columns = tsType.getTsColumns();
 
     // Build tag filter from query param
