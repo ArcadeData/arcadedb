@@ -191,6 +191,13 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Issue reporters are external users with read access, and the action refuses to run
+          # for them unless they are allow-listed here. This is the case the input documents
+          # ("workflows with very limited permissions, e.g. issue labeling"), and it is only
+          # honoured because github_token above is set. The issue body is untrusted input, so
+          # the tool allow-list below is the containment: read this one issue, read the label
+          # list, add labels to this one issue. Nothing else.
+          allowed_non_write_users: "*"
           prompt: |
             REPO: ${{ github.repository }}
 
@@ -202,4 +209,7 @@ jobs:
             Only use labels that already exist; never create new ones. Do not remove
             existing labels, and do not touch the `high_priority` label, which the
             sponsor job owns.
-          claude_args: '--model claude-sonnet-5 --allowed-tools "Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue edit:*),Bash(gh label list:*),Bash(gh search:*)"'
+          # Both gh patterns are pinned to this issue's number, and the edit pattern to
+          # --add-label, so an injected instruction in the issue body cannot retitle, close,
+          # reassign, or relabel any other issue in the repository.
+          claude_args: '--model claude-sonnet-5 --allowed-tools "Bash(gh issue view ${{ github.event.issue.number }}:*),Bash(gh label list:*),Bash(gh issue edit ${{ github.event.issue.number }} --add-label:*)"'
