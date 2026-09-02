@@ -16,8 +16,10 @@ parameter bound to a Java array. The right-hand side is now normalized exactly a
 answers precisely what the identical `List` answers - no more, and no less: a single-item collection is
 unwrapped to its item (the one-row sub-query case), and a longer one is looked for as one element of the
 left-hand collection, which is what `test CONTAINS [1]` has always meant for a row holding `test = [[1]]`.
-The one array kept out of this is `byte[]`, which is the BINARY *scalar* type rather than a multi-value:
-expanding it would turn `list CONTAINS :binary` into a search for a list of numbers.
+The one array kept out of this is `byte[]`, and only on the right: it is the BINARY *scalar* type, so expanding it
+would turn `list CONTAINS :binary` into a search for a list of numbers. The asymmetry is the point rather than an
+oversight - the two operands play different roles. The left-hand side is the container being searched, so expanding
+an array into its items is exactly what it means there, and a `byte[]` on the left keeps behaving as it did.
 
 **A declared `ARRAY_OF_FLOATS` read back over Bolt as `[F@294b13ce` (#7056).** Declaring the property is what
 triggered it: a declared array property is stored as the matching Java primitive array, and the Bolt value

@@ -159,8 +159,9 @@ class ContainsConditionTest {
   }
 
   /**
-   * A byte[] is the BINARY scalar type, not a multi-value: {@code list CONTAINS :binary} must keep looking for that
-   * binary value among the list items rather than degenerating into a byte-by-byte test (issue #6995).
+   * A byte[] is the BINARY scalar type, so on the right-hand side - the value being searched FOR -
+   * {@code list CONTAINS :binary} must keep looking for that one binary value among the list items rather than
+   * degenerating into a search for a list of numbers (issue #6995).
    */
   @Test
   void binaryRightHandSideStaysAScalar() {
@@ -173,5 +174,21 @@ class ContainsConditionTest {
     assertThat(op.execute(left, new byte[] { 1, 2 })).isFalse();
     // Proof it is not being expanded: a single byte of the stored value is not "contained" in the list.
     assertThat(op.execute(left, (byte) 1)).isFalse();
+  }
+
+  /**
+   * The byte[] carve-out is right-hand-side only. On the left the operand is the container being searched, so it is
+   * expanded like any other array - the behaviour #6984 shipped, which the #6995 fix must not disturb.
+   */
+  @Test
+  void binaryLeftHandSideIsStillExpanded() {
+    final ContainsCondition op = new ContainsCondition();
+
+    final byte[] left = { 1, 2, 3 };
+
+    assertThat(op.execute(left, (byte) 2)).isTrue();
+    assertThat(op.execute(left, (byte) 9)).isFalse();
+    // The items are matched with the operator's loose equality, so a widened literal finds them too.
+    assertThat(op.execute(left, 2)).isTrue();
   }
 }
