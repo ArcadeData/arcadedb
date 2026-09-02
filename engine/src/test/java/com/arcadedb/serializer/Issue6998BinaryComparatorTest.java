@@ -130,13 +130,23 @@ class Issue6998BinaryComparatorTest {
     // stderr is inherited rather than merged: a JVM warning on the child's stderr must not end up mixed into the
     // single line this method returns, but it still has to be visible in the build log when something goes wrong.
     final Process process = new ProcessBuilder(command).redirectError(ProcessBuilder.Redirect.INHERIT).start();
-    final String output;
-    try (final var in = process.getInputStream()) {
-      output = new String(in.readAllBytes(), StandardCharsets.US_ASCII).trim();
+    try {
+      final String output;
+      try (final var in = process.getInputStream()) {
+        output = new String(in.readAllBytes(), StandardCharsets.US_ASCII).trim();
+      }
+
+      // A hang detector, not a latency bound: the child prints one line and exits in well under a second, so no
+      // amount of load brings it near this. StallAwareStopwatch does not apply - it discounts a stall observed in
+      // THIS JVM, and the thing being waited on here is a separate process.
+      final boolean exited = process.waitFor(60, TimeUnit.SECONDS);
+      assertThat(exited).as("the forked JVM must terminate; it printed: %s", output).isTrue();
+      assertThat(process.exitValue()).as("the forked JVM failed; it printed: %s", output).isZero();
+      return output;
+    } finally {
+      // Leave nothing behind on any exit path, a timed-out or half-read child included.
+      process.destroyForcibly();
     }
-    assertThat(process.waitFor(60, TimeUnit.SECONDS)).as("the forked JVM must terminate; it printed: %s", output).isTrue();
-    assertThat(process.exitValue()).as("the forked JVM failed; it printed: %s", output).isZero();
-    return output;
   }
 
   /**
