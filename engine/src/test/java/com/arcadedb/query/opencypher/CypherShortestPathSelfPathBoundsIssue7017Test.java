@@ -63,6 +63,7 @@ class CypherShortestPathSelfPathBoundsIssue7017Test extends TestHelper {
 
     // a -> b -> c -> a : a 3-hop cycle through every one of its vertices. Every LINK carries w=1, so an
     // inline {w: 1} filter routes the query to the edge-aware BFS without changing reachability.
+    // d -> d : a real one-hop self loop, so the zero-length answer can be told apart from "found nothing".
     database.transaction(() -> {
       final MutableVertex a = node("a");
       final MutableVertex b = node("b");
@@ -70,6 +71,9 @@ class CypherShortestPathSelfPathBoundsIssue7017Test extends TestHelper {
       link(a, b);
       link(b, c);
       link(c, a);
+
+      final MutableVertex d = node("d");
+      link(d, d);
     });
   }
 
@@ -119,6 +123,20 @@ class CypherShortestPathSelfPathBoundsIssue7017Test extends TestHelper {
         .containsExactly(0);
     assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*2..2]-(e)) RETURN length(p) AS len"))
         .as("a minimum of two rejects it, upper bound or not")
+        .isEmpty();
+  }
+
+  @Test
+  void aRealSelfLoopDoesNotChangeTheAnswer() {
+    // d carries a one-hop LINK to itself, so a 1-hop answer genuinely exists here. The zero-length path is
+    // still the shorter one and still the answer - which is also what makes the assertions above meaningful:
+    // they read 0 because 0 is the shortest path, not because nothing was found.
+    assertThat(selfLengths("MATCH (s:N {k:'d'}), (e:N {k:'d'}), p = shortestPath((s)-[:LINK]-(e)) RETURN length(p) AS len"))
+        .containsExactly(0);
+    assertThat(selfLengths("MATCH (s:N {k:'d'}), (e:N {k:'d'}), p = shortestPath((s)-[:LINK*]-(e)) RETURN length(p) AS len"))
+        .containsExactly(0);
+    assertThat(selfLengths("MATCH (s:N {k:'d'}), (e:N {k:'d'}), p = shortestPath((s)-[:LINK*2..]-(e)) RETURN length(p) AS len"))
+        .as("and a minimum above one hop rejects the zero-length path without reaching for the loop instead")
         .isEmpty();
   }
 
