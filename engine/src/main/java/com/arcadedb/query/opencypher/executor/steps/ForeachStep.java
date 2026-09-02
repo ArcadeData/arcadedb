@@ -351,6 +351,9 @@ public class ForeachStep extends AbstractExecutionStep {
         final RemoveClause removeClause = clauseEntry.getTypedClause();
         return new RemoveStep(removeClause, context, functionFactory);
       case FOREACH:
+        // eagerExecution is deliberately left off for a nested FOREACH rather than forgotten: the
+        // chain built here is drained to exhaustion by executeInnerClauses() once per outer iteration,
+        // so the nRecords cap never splits a nested body across two pulls in the first place.
         final ForeachClause nestedForeach = clauseEntry.getTypedClause();
         return new ForeachStep(nestedForeach, context, functionFactory);
       default:

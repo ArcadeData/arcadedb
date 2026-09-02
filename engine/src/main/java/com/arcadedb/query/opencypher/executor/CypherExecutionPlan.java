@@ -59,6 +59,12 @@ import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
+import com.arcadedb.query.opencypher.ast.CollectExpression;
+import com.arcadedb.query.opencypher.ast.CountExpression;
+import com.arcadedb.query.opencypher.ast.ExistsExpression;
+import com.arcadedb.query.opencypher.ast.PatternComprehensionExpression;
+import com.arcadedb.query.opencypher.ast.ShortestPathExpression;
+import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
@@ -4936,12 +4942,17 @@ public class CypherExecutionPlan {
    * <p>
    * The set is deliberately conservative on CALL: a procedure is opaque here, so any procedure call
    * after the update counts as a read - which is what {@code CALL meta.stats()} in issue #6922 is.
-   * SUBQUERY counts because a CALL {{ ... }} block can contain a MATCH. RETURN, WITH and UNWIND do
-   * not: they only project rows the pipeline already produced.
+   * SUBQUERY counts because a CALL { ... } block can contain a MATCH.
    * <p>
    * A later FOREACH counts only when its own body reads, which the grammar narrows to MERGE (and a
    * nested FOREACH containing one): CREATE, SET, REMOVE and DELETE all act on variables the row
    * already carries, and MATCH and CALL are not valid inside a FOREACH body at all.
+   * <p>
+   * RETURN, WITH and UNWIND are not reads in themselves - they project rows the pipeline already
+   * produced - but the expressions they carry can be. {@code EXISTS { }}, {@code COUNT { }} and
+   * {@code COLLECT { }} run a real query against the live graph per row, and a pattern predicate,
+   * pattern comprehension or shortestPath() traverses it, so those clauses are scanned for such an
+   * expression instead of being waved through on their clause type alone.
    *
    * @param clausesInOrder the query's clauses in textual order
    * @param clauseIndex    index of the updating clause, or a negative value when it is not in the list
@@ -4959,6 +4970,26 @@ public class CypherExecutionPlan {
         return true;
       case FOREACH:
         if (foreachBodyReadsGraph(laterClause.getTypedClause()))
+          return true;
+        break;
+      case RETURN:
+        if (returnItemsReadGraph(((ReturnClause) laterClause.getClause()).getReturnItems()))
+          return true;
+        break;
+      case WITH:
+        final WithClause withClause = laterClause.getTypedClause();
+        if (returnItemsReadGraph(withClause.getItems()))
+          return true;
+        if (withClause.getWhereClause() != null
+            && expressionReadsGraph(withClause.getWhereClause().getConditionExpression()))
+          return true;
+        if (withClause.getOrderByClause() != null)
+          for (final OrderByClause.OrderByItem orderByItem : withClause.getOrderByClause().getItems())
+            if (expressionReadsGraph(orderByItem.getExpressionAST()))
+              return true;
+        break;
+      case UNWIND:
+        if (expressionReadsGraph(((UnwindClause) laterClause.getClause()).getListExpression()))
           return true;
         break;
       default:
@@ -4987,6 +5018,76 @@ public class CypherExecutionPlan {
       }
     }
     return false;
+  }
+
+  private boolean returnItemsReadGraph(final List<ReturnClause.ReturnItem> returnItems) {
+    for (final ReturnClause.ReturnItem returnItem : returnItems)
+      if (expressionReadsGraph(returnItem.getExpression()))
+        return true;
+    return false;
+  }
+
+  /**
+   * Tells whether an expression tree holds anything that goes back to the graph while the row is
+   * being projected: a subquery expression ({@code EXISTS { }}, {@code COUNT { }}, {@code COLLECT { }},
+   * which all run a real query per row through {@code CorrelatedSubqueryRunner}) or a pattern that is
+   * traversed ({@code (n)-->()} as a predicate, a pattern comprehension, {@code shortestPath()}).
+   * Used by {@link #graphReadFollows(List, int)} for issue #6922.
+   */
+  private boolean expressionReadsGraph(final Object expression) {
+    if (expression == null)
+      return false;
+    final GraphReadDetector detector = new GraphReadDetector();
+    detector.rewrite(expression);
+    return detector.found;
+  }
+
+  /**
+   * Walks an expression tree looking for a node that reads the graph, reusing {@link ExpressionRewriter}'s
+   * traversal instead of re-deriving one: the check sits in the {@code rewrite} entry point every node
+   * passes through, so it also catches the expression types the rewriter's own dispatch does not know
+   * (COUNT and COLLECT subqueries among them). Nothing is rewritten - every visit returns its input.
+   * <p>
+   * Three of the base class's visits are {@code TODO} stubs that return without recursing, and each one
+   * hides a real case here: {@code size(collect {{ ... }})} behind {@code visitFunctionCall}, and
+   * {@code WHERE exists {{ ... }}} behind the boolean coercion/wrapper pair. They are overridden here
+   * rather than filled in on the shared base class, where every other rewriter would inherit a traversal
+   * change none of them asked for.
+   */
+  private static final class GraphReadDetector extends ExpressionRewriter {
+    private boolean found = false;
+
+    @Override
+    public Object rewrite(final Object expression) {
+      if (found || expression == null)
+        return expression;
+      if (expression instanceof ExistsExpression || expression instanceof CountExpression
+          || expression instanceof CollectExpression || expression instanceof PatternPredicateExpression
+          || expression instanceof PatternComprehensionExpression || expression instanceof ShortestPathExpression) {
+        found = true;
+        return expression;
+      }
+      return super.rewrite(expression);
+    }
+
+    @Override
+    protected Expression visitFunctionCall(final FunctionCallExpression expr) {
+      for (final Expression argument : expr.getArguments())
+        rewrite(argument);
+      return expr;
+    }
+
+    @Override
+    protected BooleanExpression visitBooleanCoercion(final BooleanCoercionExpression expr) {
+      rewrite(expr.getExpression());
+      return expr;
+    }
+
+    @Override
+    protected Expression visitBooleanWrapper(final BooleanWrapperExpression expr) {
+      rewrite(expr.getBooleanExpression());
+      return expr;
+    }
   }
 
   private boolean isFollowedByCountOnlyReturn(final List<ClauseEntry> clausesInOrder, final int callIndex) {

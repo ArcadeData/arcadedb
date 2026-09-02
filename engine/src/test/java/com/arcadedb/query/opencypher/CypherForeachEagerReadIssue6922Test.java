@@ -127,6 +127,48 @@ class CypherForeachEagerReadIssue6922Test {
   }
 
   @Test
+  void countSubqueryExpressionInReturnSeesEveryCreatedNode() {
+    // The read is an expression inside a RETURN item, not a clause of its own: a scan that classifies
+    // a later clause by its type alone waves the RETURN through and leaves the FOREACH streaming.
+    final List<Object> counts = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN range(0, 1) | CREATE (:L1 {i: i, j: j}))
+        RETURN count { MATCH (n:L1) } AS visible""", "visible");
+
+    assertThat(counts).hasSize(250);
+    assertThat(counts).containsOnly(500L);
+  }
+
+  @Test
+  void collectSubqueryExpressionNestedInAFunctionCallSeesEveryCreatedNode() {
+    // Same read, one level deeper: the COLLECT subquery is an argument of size(), so finding it needs
+    // the walk to descend through the function call.
+    final List<Object> counts = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN range(0, 1) | CREATE (:L1 {i: i, j: j}))
+        RETURN size(collect { MATCH (n:L1) RETURN n.i }) AS visible""", "visible");
+
+    assertThat(counts).hasSize(250);
+    assertThat(counts).containsOnly(500L);
+  }
+
+  @Test
+  void existsSubqueryExpressionInWithWhereSeesEveryCreatedNode() {
+    // The read is in a WITH's WHERE, reached through the boolean coercion the predicate is wrapped in.
+    // It asks for the node the FOREACH only creates on the last row, so a streaming pipeline filtered
+    // out every row produced before that write landed and returned 50 of the 250.
+    final List<Object> rows = queryColumn("""
+        UNWIND range(1, 250) AS i
+        FOREACH (j IN [0] | CREATE (:L1 {i: i}))
+        WITH i WHERE exists { MATCH (n:L1 {i: 250}) }
+        RETURN i AS value""", "value");
+
+    assertThat(rows).hasSize(250);
+    assertThat(rows.getFirst()).isEqualTo(1L);
+    assertThat(rows.getLast()).isEqualTo(250L);
+  }
+
+  @Test
   void foreachWithoutAFollowingReadStillPassesEveryRowThrough() {
     // The eager mode must not be armed when nothing downstream reads the graph: the rows still flow
     // through unchanged and every write lands.
