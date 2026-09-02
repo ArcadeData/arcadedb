@@ -268,10 +268,11 @@ public class ShortestPathStep extends AbstractExecutionStep {
     if (pathRids == null || pathRids.isEmpty())
       return null;
 
-    // A source that already is the target short-circuits to the zero-length path before any bound applies:
-    // that is what MATCH p = shortestPath((a)-[:R*]-(a)) has always answered, and the implicit minimum of 1
-    // that [*] carries would otherwise suppress it. See HopBounds and issue #7017.
-    if (pathRids.size() > 1 && !bounds.accepts(pathRids.size() - 1))
+    // A source that already is the target yields the zero-length path, whose admissibility is
+    // HopBounds.acceptsSelfPath()'s call rather than accepts(0)'s (issue #7017); every longer answer is
+    // checked against both declared bounds.
+    final int hops = pathRids.size() - 1;
+    if (hops == 0 ? !bounds.acceptsSelfPath() : !bounds.accepts(hops))
       return null;
 
     // Build a proper path with alternating Vertex and Edge objects
@@ -328,6 +329,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
     final RID targetRid = target.getIdentity();
 
     if (sourceRid.equals(targetRid)) {
+      // The zero-length path is the only shortest path between a vertex and itself; a declared minimum of
+      // more than one hop rejects it (issue #7017).
+      if (!bounds.acceptsSelfPath())
+        return Collections.emptyList();
       final List<Object> singleNode = new ArrayList<>(1);
       singleNode.add(source);
       return Collections.singletonList(singleNode);
@@ -560,6 +565,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
     final RID sourceRid = source.getIdentity();
     final RID targetRid = target.getIdentity();
     if (sourceRid.equals(targetRid)) {
+      // The zero-length path is the only shortest path between a vertex and itself; a declared minimum of
+      // more than one hop rejects it (issue #7017).
+      if (!bounds.acceptsSelfPath())
+        return null;
       final List<Object> single = new ArrayList<>(1);
       single.add(source);
       return single;
@@ -656,6 +665,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
     final RID sourceRid = source.getIdentity();
     final RID targetRid = target.getIdentity();
     if (sourceRid.equals(targetRid)) {
+      // The zero-length path is the only shortest path between a vertex and itself; a declared minimum of
+      // more than one hop rejects it (issue #7017).
+      if (!bounds.acceptsSelfPath())
+        return Collections.emptyList();
       final List<Object> single = new ArrayList<>(1);
       single.add(source);
       return Collections.singletonList(single);
@@ -795,12 +808,9 @@ public class ShortestPathStep extends AbstractExecutionStep {
    * rather than a longer path satisfying it: finding that path is a different (non-shortest, simple-path
    * enumerating) search, and Neo4j rejects such a pattern outright.
    * <p>
-   * One shape stays outside the check: endpoints resolving to the same vertex short-circuit to the
-   * zero-length path in every evaluator, before any bound applies, so a declared minimum is unenforceable
-   * there. That is the answer the engine has always given (pinned by
-   * {@code CypherReduceAndShortestPathTest.shortestPathSameNode}), and {@code [*]} is lowered to
-   * {@code minHops = 1} by the parser, so it cannot be told apart from an explicit {@code [*1..]} here.
-   * Changing it is a semantic decision tracked by issue #7017.
+   * Endpoints resolving to the same vertex are the one shape that does not go through {@link #accepts}:
+   * the only shortest path from a vertex to itself is the zero-length one, and whether that is an answer is
+   * {@link #acceptsSelfPath}'s call - see there for why it is not simply {@code accepts(0)} (issue #7017).
    */
   public static final class HopBounds {
     /** No bound at all: accepts every path length. */
@@ -837,6 +847,27 @@ public class ShortestPathStep extends AbstractExecutionStep {
      */
     public boolean accepts(final int hops) {
       return hops >= min && hops <= max;
+    }
+
+    /**
+     * Whether the zero-length path - the only shortest path from a vertex to itself - answers this pattern.
+     * <p>
+     * Deliberately not {@code accepts(0)}. Neo4j accepts a {@code shortestPath()} pattern only with a minimum
+     * of 0 or 1 hops, rejecting anything else outright, and answers both of those spellings for identical
+     * endpoints with the zero-length path; the parser here lowers a bare {@code [*]} to {@code minHops = 1},
+     * so an implicit minimum is indistinguishable from an explicitly written {@code [*1..]} and treating
+     * either as a rejection would change the answer to {@code shortestPath((a)-[:R*]-(a))}, which
+     * {@code CypherReduceAndShortestPathTest.shortestPathSameNode} pins to that same zero-length path.
+     * <p>
+     * A minimum above one hop is a pattern Neo4j would not have accepted at all, so nothing is owed to it
+     * beyond reading it literally: zero hops is not in {@code [min, max]}, so the pattern has no answer here.
+     * Answering it with a cycle back to the source instead - the shortest path of at least {@code min} hops
+     * that leaves and returns - would be the same substitution {@link #accepts} already refuses for distinct
+     * endpoints, where a shortest path below the declared minimum yields no row rather than a longer one
+     * (issue #7017).
+     */
+    public boolean acceptsSelfPath() {
+      return min <= 1;
     }
 
     /**
