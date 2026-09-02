@@ -416,9 +416,13 @@ public class PostgresNetworkExecutor extends Thread {
         answerWithColumns(portal);
       } else if (portal.isExpectingResult && portal.columns != null) {
         // Already materialized: a synthetic answer fixed at PARSE (SHOW/system/catalog), or a portal a
-        // previous Describe/Execute already ran.
-        if (portal.executed && portal.fullResultSet != null)
-          resolvePortalColumns(portal);
+        // previous Describe/Execute already ran. Its columns are answered as they stand rather than
+        // re-derived: the rows they came from cannot have changed - the portal is run exactly once - so a
+        // rescan of fullResultSet could only produce the same map, and where it would NOT, it would be
+        // wrong to: a shape promised by an earlier Describe('S') (portal.columnsDescribed) is a contract
+        // executeCommand() already refuses to re-derive, since a schemaless property can type differently
+        // per row and a client that negotiated binary transfer off the promise cannot have it swapped
+        // underneath (issue #6725).
         answerWithColumns(portal);
       } else
         // In practice, SAVEPOINT/RELEASE/ROLLBACK TO/SET and nothing else (issue #6930): they are the only
