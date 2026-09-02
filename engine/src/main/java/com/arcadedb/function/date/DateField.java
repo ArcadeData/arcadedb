@@ -49,7 +49,8 @@ public class DateField extends AbstractDateFunction {
 
   @Override
   public String getDescription() {
-    return "Extract a specific field (year, month, day, etc.) from a timestamp";
+    return "Extract a specific field from a timestamp: year, month, day, hour, minute, second, millisecond, "
+        + "dayOfWeek, dayOfYear, week (ISO-8601 week number, alias weekOfYear) or weekYear (ISO-8601 week-based year)";
   }
 
   @Override

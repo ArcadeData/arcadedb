@@ -59,7 +59,9 @@ public class DateFields extends AbstractDateFunction {
 
   @Override
   public String getDescription() {
-    return "Parse a date string and extract all fields as a map (supports optional timezone parameter)";
+    return "Parse a date string and extract all fields as a map - year, month, day, hour, minute, second, "
+        + "millisecond, dayOfWeek, dayOfYear, weekOfYear (ISO-8601 week number), weekBasedYear and timezone "
+        + "(supports optional format and timezone parameters)";
   }
 
   @Override
