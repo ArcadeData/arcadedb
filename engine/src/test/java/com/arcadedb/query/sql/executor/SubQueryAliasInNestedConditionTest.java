@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -41,6 +42,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * Every case therefore checks the sub-query spelling against the equivalent spelling that never went through the alias
  * (a literal, or an explicit LET variable), so the two cannot drift apart again.
+ * <p>
+ * The last case covers the third overload, which walks a MAP value: it had the opposite half of the same defect, asking
+ * the context about every name instead of only the ones the context can own, so a plain map key was shadowed by any
+ * context variable that happened to share it. All three now decide "context or record?" the same way.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -58,6 +63,7 @@ class SubQueryAliasInNestedConditionTest extends TestHelper {
     database.getSchema().getType("TopSuppliers").createProperty("target_rid", Type.LINK);
     database.getSchema().createVertexType("AllSuppliers").createProperty("code", Type.STRING);
     database.getSchema().createEdgeType("RelSupplier");
+    database.getSchema().createDocumentType("Holder").createProperty("attrs", Type.MAP);
 
     database.transaction(() -> {
       for (final String name : new String[] { "S1", "S2", "S3" }) {
@@ -70,6 +76,8 @@ class SubQueryAliasInNestedConditionTest extends TestHelper {
       // the empty answer the report was about.
       database.command("sql", "CREATE EDGE RelSupplier FROM (SELECT FROM AllSuppliers WHERE code = 'A1') TO "
           + "(SELECT FROM Supplier WHERE name IN ['S1', 'S2'])");
+      // A map whose key collides with a plausible LET variable name.
+      database.newDocument("Holder").set("attrs", Map.of("name", "FROM_MAP")).save();
     });
 
     try (final ResultSet rs = database.query("sql", "SELECT @rid AS rid FROM Supplier WHERE name = 'S1'")) {
@@ -129,6 +137,24 @@ class SubQueryAliasInNestedConditionTest extends TestHelper {
     // ...while no linked supplier is outside {S1, S2}.
     assertThat(nestedNames(SELECT_NESTED + "AND $nested CONTAINS (@rid NOT IN (SELECT target_rid FROM TopSuppliers "
         + "WHERE name IN ['S1', 'S2']))")).isEmpty();
+  }
+
+  @Test
+  void aMapKeyIsNotShadowedByAContextVariableOfTheSameName() {
+    // The third place that had to decide "context variable or property of the row?" is the overload that walks a MAP
+    // value, and it used to ask the context about every name rather than only the ones the context can own. A `LET
+    // $name` therefore hijacked the map's own `name` key.
+    assertThat(single("SELECT $m.name AS v FROM Holder LET $m = attrs")).isEqualTo("FROM_MAP");
+    assertThat(single("SELECT $m.name AS v FROM Holder LET $name = 'SHADOW', $m = attrs")).isEqualTo("FROM_MAP");
+    assertThat(single("SELECT $m.name AS v FROM Holder LET $name = 'SHADOW', $m = attrs WHERE $m.name = 'FROM_MAP'"))
+        .isEqualTo("FROM_MAP");
+  }
+
+  /** The single value the query projects under {@code v}, or null when it returned no row. */
+  private Object single(final String query) {
+    try (final ResultSet rs = database.query("sql", query)) {
+      return rs.hasNext() ? rs.next().getProperty("v") : null;
+    }
   }
 
   /** The names the single AllSuppliers row projects, or an empty list when the WHERE clause excluded it. */
