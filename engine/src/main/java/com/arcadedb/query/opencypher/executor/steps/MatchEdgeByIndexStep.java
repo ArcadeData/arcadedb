@@ -178,7 +178,7 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
             // An index inherited from a parent edge type spans the whole hierarchy, so its cursor also
             // carries the parent's own edges and every sibling's. A relationship pattern matches a type and
             // its subtypes, never its ancestors, so those are not answers (issue #7021).
-            // <p>
+            //
             // Unconditional, unlike the equivalent in NodeIndexSeek/MatchNodeStep, which skip the check
             // entirely for an index the queried type owns: those pay a bucket-id lookup per row to learn the
             // type, while the record here is already loaded (the Edge cast above needs it), so the check is
