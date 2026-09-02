@@ -2087,6 +2087,14 @@ public class SelectExecutionPlanner {
       // fetch step pulls, which is what a GLOBAL let does - handleGlobalLet() chains ahead of the fetch, handleLet()
       // after it.
       final String ridVariable = ridInVariableName(expr);
+
+      // A variable a PER-RECORD let owns is recomputed for every row by handleLet(), which runs after the fetch. Any
+      // value the context happens to carry for that name right now - an outer script LET of the same name, say - is
+      // about to be shadowed, so resolving RIDs from it would fetch the wrong records rather than merely fewer. This
+      // has to be checked before the "already resolved at plan time" branch below, which would otherwise accept it.
+      if (ridVariable != null && isPerRecordLetVariable(ridVariable, info))
+        continue;
+
       final boolean unresolvedAtPlanTime = ridVariable != null && context.getVariable(ridVariable) == null;
       if (unresolvedAtPlanTime ? !isGlobalLetVariable(ridVariable, info) : extractRidEqualityOrInList(expr, context) == null)
         continue; // not one of the @rid = <RID> / @rid IN [<RID list>] / @rid IN $globalLetVar shapes
@@ -2187,10 +2195,19 @@ public class SelectExecutionPlanner {
    * keep the ordinary scan.
    */
   private static boolean isGlobalLetVariable(final String variable, final QueryPlanningInfo info) {
-    if (info.globalLetClause == null || info.globalLetClause.getItems() == null)
+    return declaresVariable(info.globalLetClause, variable);
+  }
+
+  /** Whether {@code variable} is (re)computed per row by {@link #handleLet}, which is chained after the fetch step. */
+  private static boolean isPerRecordLetVariable(final String variable, final QueryPlanningInfo info) {
+    return declaresVariable(info.perRecordLetClause, variable);
+  }
+
+  private static boolean declaresVariable(final LetClause letClause, final String variable) {
+    if (letClause == null || letClause.getItems() == null)
       return false;
 
-    for (final LetItem item : info.globalLetClause.getItems())
+    for (final LetItem item : letClause.getItems())
       if (item.getVarName() != null && variable.equals(item.getVarName().getStringValue()))
         return true;
 
