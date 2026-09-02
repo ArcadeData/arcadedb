@@ -2389,6 +2389,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // Start buffering raw deltas for re-application after the swap
       pendingDeltas = new ArrayList<>();
 
+      // The view as of this instant - after the triggering delta was merged above, before the first BUFFERED
+      // one arrives. It is the reference the deletion side of the re-application below needs: the fresh CSR
+      // scan is read-committed and non-atomic, so the drop from a pair's multiplicity HERE to its
+      // multiplicity in the fresh base is exactly the number of that pair's buffered deletions the scan
+      // already swallowed (issue #7042). Immutable, so holding the reference across the rebuild is free and
+      // safe from the compaction thread.
+      final Snapshot preCompaction = this.snapshot;
+
       // See the `generation` field javadoc (issue #6636): captured at dispatch time, deliberately NOT
       // bumped by the synchronous overlay merge just above (or by any applyDelta() call re-entering while
       // this compaction is in flight) - those deltas are buffered and re-applied against this same
@@ -2433,12 +2441,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                   // These may not be in the fresh CSR (committed after the CSR scan of their bucket).
                   // Merging against the new mapping resolves RIDs to correct dense IDs.
                   if (!buffered.isEmpty()) {
+                    // Asked of the pre-compaction snapshot rather than of the fresh one: it answers "how many
+                    // of this pair did the view hold before any buffered delta", which is what tells a
+                    // deletion the scan already swallowed apart from one that committed behind it (#7042).
+                    final DeltaOverlay.PreCompactionPairCount preCount =
+                        (type, src, tgt) -> preCompactionPairCount(preCompaction, type, src, tgt);
                     DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
                     for (final TxDelta d : buffered) {
                       // Dedup against the fresh base CSR: a buffered delta committed before the scan
                       // crossed its bucket is already in the new base, so re-merging it blindly would
-                      // create duplicate neighbours. See issue #4588.
-                      overlay = overlay.merge(d, result.getMapping(), result.getCsrPerType());
+                      // create duplicate neighbours (adds, issue #4588) or spend an exclusion budget the
+                      // fresh run cannot pay without hiding a live parallel edge (deletions, issue #7042).
+                      overlay = overlay.merge(d, result.getMapping(), result.getCsrPerType(), preCount);
                     }
                     // A change to a base edge's properties has no overlay representation, so a delta buffered
                     // during this rebuild may not be reflected in the fresh CSR (if it committed after the
@@ -2498,6 +2512,25 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': compaction rejected (executor shut down)", name);
       }
     }
+  }
+
+  /**
+   * How many times the pair {@code source -> target} was visible for {@code edgeType} in {@code snap}, asked by
+   * RID so it can be answered against a mapping other than the current one.
+   * <p>
+   * Backs the {@link DeltaOverlay.PreCompactionPairCount} the post-compaction delta re-application hands to
+   * {@link DeltaOverlay#merge}: the buffered deltas carry RIDs, and the dense ids of the pre-compaction
+   * mapping have nothing to do with the ones the freshly built mapping assigns. Zero when either endpoint was
+   * not part of the view at that point - it then held none of the pair, which is what the caller needs to
+   * know. See issue #7042.
+   */
+  private int preCompactionPairCount(final Snapshot snap, final String edgeType, final RID source, final RID target) {
+    final DeltaOverlay ov = snap.overlay;
+    final int src = ov != null ? ov.resolveNodeId(source, snap.nodeMapping) : snap.nodeMapping.getGlobalId(source);
+    final int tgt = ov != null ? ov.resolveNodeId(target, snap.nodeMapping) : snap.nodeMapping.getGlobalId(target);
+    if (src < 0 || tgt < 0)
+      return 0;
+    return (int) countBetweenForType(snap, src, tgt, Vertex.DIRECTION.OUT, edgeType);
   }
 
   private boolean isConnectedForType(final Snapshot snap, final int nodeA, final int nodeB,
@@ -2566,9 +2599,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * neighbour was the very inconsistency #6775 is about, so the two agree instead.
    * <p>
    * The subtraction is clamped at zero rather than trusted to stay non-negative: a budget wider than the
-   * base run is exactly what the two documented overlay gaps (#4588's pair-level re-application dedup and
-   * #6777's RID reuse) can produce, and a negative contribution would corrupt the sum for the OTHER edge
-   * types {@link #countEdgesBetween} adds it to.
+   * base run is what the remaining overlay gaps can produce, and a negative contribution would corrupt the
+   * sum for the OTHER edge types {@link #countEdgesBetween} adds it to. Issue #7042 closed the one that made
+   * this reachable in ordinary use - the deletion side of the post-compaction re-application, which used to
+   * budget for edges the freshly scanned base had already dropped - and the deletion side now spends a budget
+   * only for a deletion the fresh run still carries. What is left is #6777's RID reuse, and the add side's
+   * dedup being by presence rather than by multiplicity (a buffered add of a SECOND parallel edge to a pair
+   * the fresh base already holds one of is skipped, which undercounts rather than overspending). The clamp
+   * stays: it costs nothing, and it is the last line between either of those and a corrupted cross-type sum.
    */
   private long countBetweenForType(final Snapshot snap, final int nodeA, final int nodeB,
       final Vertex.DIRECTION direction, final String edgeType) {
