@@ -26,6 +26,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.DateUtils;
 
 import java.io.IOException;
@@ -80,7 +81,9 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
     try {
       if (!fetched) {
         try {
-          final TimeSeriesEngine engine = tsType.getEngine();
+          // Gated accessor: the push-down aggregation reads the very same samples a plain scan would, so it has
+          // to apply the same per-type read check (a TimeSeries type owns no bucket to gate by file id).
+          final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
           if (engine == null)
             throw new CommandExecutionException(
                 "TimeSeries engine for type '" + tsType.getName() + "' is not initialized");

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.security;
 
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
@@ -64,6 +65,16 @@ public final class SecurityHelper {
       return;
 
     checkAccessOnType(database, database.getSchema().getType(typeName), access);
+  }
+
+  /**
+   * Same as {@link #canAccessType(SecurityDatabaseUser, DocumentType, SecurityDatabaseUser.ACCESS)}, resolving the
+   * user bound to {@code database}'s current context. For listings that must silently hide what the caller cannot
+   * see rather than fail the whole request.
+   */
+  public static boolean canAccessType(final DatabaseInternal database, final DocumentType type, final SecurityDatabaseUser.ACCESS access) {
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    return canAccessType(dbContext == null ? null : dbContext.getCurrentUser(), type, access);
   }
 
   /**
