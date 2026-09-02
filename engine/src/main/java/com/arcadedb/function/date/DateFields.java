@@ -59,7 +59,9 @@ public class DateFields extends AbstractDateFunction {
 
   @Override
   public String getDescription() {
-    return "Parse a date string and extract all fields as a map (supports optional timezone parameter)";
+    return "Parse a date string and extract all fields as a map - year, month, day, hour, minute, second, "
+        + "millisecond, dayOfWeek, dayOfYear, weekOfYear (ISO-8601 week number), weekBasedYear and timezone "
+        + "(supports optional format and timezone parameters)";
   }
 
   @Override
@@ -97,7 +99,11 @@ public class DateFields extends AbstractDateFunction {
     fields.put("millisecond", (long) (dateTime.getNano() / 1_000_000));
     fields.put("dayOfWeek", (long) dateTime.getDayOfWeek().getValue());
     fields.put("dayOfYear", (long) dateTime.getDayOfYear());
-    fields.put("weekOfYear", (long) dateTime.get(WeekFields.ISO.weekOfYear()));
+    // ISO-8601 week number: weekOfWeekBasedYear() (not weekOfYear(), which reports 0 for the partial
+    // week preceding the first full week of the calendar year). Paired with the week-based year, since
+    // an ISO week number read against the calendar "year" is wrong around a year boundary.
+    fields.put("weekOfYear", (long) dateTime.get(WeekFields.ISO.weekOfWeekBasedYear()));
+    fields.put("weekBasedYear", (long) dateTime.get(WeekFields.ISO.weekBasedYear()));
     fields.put("timezone", dateTime.getZone().getId());
 
     return fields;
