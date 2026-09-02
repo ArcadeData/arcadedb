@@ -84,6 +84,24 @@ class PolyglotFunctionTest extends TestHelper {
   }
 
   @Test
+  void definitionSyntaxErrorPreservesCause() {
+    // issue #7006 (part 2 of the batch, filed under #7007): a JS syntax error in DEFINE FUNCTION used to be
+    // reported as a bare "Error on definition of function 'x'" with no line, column or message from the
+    // underlying polyglot parser. The fix chains the polyglot exception as the cause and folds its message in.
+    assertThatThrownBy(() -> database.getSchema().registerFunctionLibrary(//
+        new JavascriptFunctionLibraryDefinition(database, "badJs")//
+            // missing closing brace: guaranteed JS parse error, not a runtime one
+            .registerFunction(new JavascriptFunctionDefinition("broken", "if (a > b) { return a;", "a", "b"))))
+        .isInstanceOf(FunctionExecutionException.class)
+        .hasMessageContaining("broken")
+        // Assert the forwarded parser diagnostic itself, not just the wrapper text naming the function - the
+        // message would still contain "broken" even if e.getMessage() were dropped from JavascriptFunctionDefinition.
+        .hasMessageContaining("SyntaxError")
+        .hasMessageContaining("Expected")
+        .hasCauseInstanceOf(Exception.class);
+  }
+
+  @Test
   void jsonObjectAsInput() {
     database.command("sql", """
         DEFINE FUNCTION Test.objectComparison "return a.foo == 'bar'" PARAMETERS [a] LANGUAGE js;

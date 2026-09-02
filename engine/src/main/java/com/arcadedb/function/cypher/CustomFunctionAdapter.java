@@ -54,15 +54,22 @@ public class CustomFunctionAdapter implements StatelessFunction {
       throw new CommandExecutionException("Unknown function: " + fullName);
 
     // Try exact match first
+    final FunctionDefinition function;
     try {
-      final FunctionDefinition function = database.getSchema().getFunction(libraryName, functionName);
-      if (function != null)
-        return function.execute(args);
+      function = database.getSchema().getFunction(libraryName, functionName);
     } catch (final IllegalArgumentException e) {
-      // Fall through to case-insensitive search
+      // Not found under this exact name: fall through to a case-insensitive search
+      return executeCaseInsensitive(database, args);
     }
+    // FunctionLibraryDefinition is a public extension point: a third-party implementation that violates the
+    // "getFunction() never returns null" contract gets a clear error here instead of a raw NPE.
+    if (function == null)
+      throw new CommandExecutionException(
+          "Function library '" + libraryName + "' returned null for '" + functionName + "', violating the FunctionLibraryDefinition.getFunction() contract");
+    return function.execute(args);
+  }
 
-    // Case-insensitive search - iterate through all functions in library
+  private Object executeCaseInsensitive(final Database database, final Object[] args) {
     final var library = database.getSchema().getFunctionLibrary(libraryName);
     for (final Object funcObj : library.getFunctions()) {
       if (funcObj instanceof FunctionDefinition) {
