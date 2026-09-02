@@ -34,6 +34,7 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -101,12 +102,13 @@ public class BoltStructureMapper {
       return toList(list);
     }
 
-    if (value instanceof Set<?> set) {
-      return toList(new ArrayList<>(set));
+    if (value instanceof Collection<?> collection) {
+      return toList(new ArrayList<>(collection));
     }
 
-    if (value instanceof Object[] array) {
-      return toList(Arrays.asList(array));
+    // A byte[] is the BINARY scalar and travels as PackStream Bytes, so it is excluded here and handled below.
+    if (value.getClass().isArray() && !(value instanceof byte[])) {
+      return toList(CollectionUtils.arrayToList(value));
     }
 
     // Spatial Point: Cypher point() returns a plain Map (there is no Point class), so detect
