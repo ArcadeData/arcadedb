@@ -20,6 +20,9 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.OrderBy;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.DatabaseContext;
@@ -2367,7 +2370,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               "PAGED retrieval mode reserves the parameter names '_skip' and '_limit'; rename the conflicting query parameter or use CURSOR retrieval mode")
           .asRuntimeException();
 
-    final String pagedSql = wrapWithSkipLimit(request.getQuery()); // see helper below
+    final String pagedSql = wrapWithSkipLimit(db, request.getQuery()); // see helper below
     int offset = 0;
     long running = 0L;
     // A full page is held back one step so the terminal page carries is_last_batch=true even when the total
@@ -2469,15 +2472,43 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
-   * Wrap arbitrary SQL so we can safely inject LIMIT/SKIP outside.
+   * Wraps arbitrary SQL so the per-page SKIP/LIMIT can be injected outside it, without disturbing any SKIP/LIMIT the
+   * caller wrote.
+   * <p>
+   * Paging is only sound over a deterministic order, so the wrapper adds {@code ORDER BY @rid} - but only when the
+   * caller expressed no order of its own. A caller-supplied {@code ORDER BY} lives inside the sub-query, which emits
+   * its rows already sorted, and the wrapper preserves that order precisely by adding no {@code ORDER BY} of its own:
+   * re-sorting on the outside used to discard the requested order silently, and could not be repaired by re-stating
+   * the caller's terms outside either, because a projection ({@code SELECT name FROM Doc ORDER BY createdAt}) leaves
+   * neither the sort key nor {@code @rid} visible to the outer statement (issue #7029).
+   * <p>
+   * When the caller orders by a key that is not unique, rows that tie may still move between pages from one page
+   * query to the next; adding a unique tie-break such as {@code @rid} to the query's own ORDER BY is the caller's
+   * call to make, exactly as it would be against any other paged API.
    */
-  private String wrapWithSkipLimit(String originalSql) {
+  private String wrapWithSkipLimit(final Database db, final String originalSql) {
+    final String outerOrderBy = hasOrderBy(db, originalSql) ? "" : " ORDER BY @rid";
+    return "SELECT FROM (" + originalSql + ")" + outerOrderBy + " SKIP :_skip LIMIT :_limit";
+  }
 
-    // Minimal defensive approach; you can do a real parser if needed.
-
-    // ArcadeDB: SELECT FROM (...) [ORDER BY ...] SKIP :_skip LIMIT :_limit
-
-    return "SELECT FROM (" + originalSql + ") ORDER BY @rid SKIP :_skip LIMIT :_limit";
+  /**
+   * Reports whether an SQL statement carries its own ORDER BY. Parsing goes through the database statement cache, so
+   * a repeated query is parsed once. A statement that does not parse, or that is not a SELECT, is reported as
+   * unordered: the page query would fail on execution anyway, and the caller gets the same error it would have got
+   * without the wrapper.
+   */
+  private boolean hasOrderBy(final Database db, final String sql) {
+    try {
+      final Statement statement = ((DatabaseInternal) db).getStatementCache().get(sql);
+      if (statement instanceof SelectStatement select) {
+        final OrderBy orderBy = select.getOrderBy();
+        return orderBy != null && orderBy.getItems() != null && !orderBy.getItems().isEmpty();
+      }
+    } catch (final Exception e) {
+      LogManager.instance()
+          .log(this, Level.FINE, "Could not parse the query to look for an ORDER BY, paging by @rid: %s", e, sql);
+    }
+    return false;
   }
 
   private void safeOnNext(ServerCallStreamObserver<QueryResult> scso, AtomicBoolean cancelled, QueryResult payload) {
