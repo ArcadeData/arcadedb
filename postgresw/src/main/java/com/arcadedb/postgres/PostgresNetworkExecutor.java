@@ -413,15 +413,13 @@ public class PostgresNetworkExecutor extends Thread {
         // re-running the statement or losing what Describe already had to read.
         portal.fullResultSet = browseAndCacheResultSet(resultSet, 0);
         resolvePortalColumns(portal);
-        writeRowDescription(portal.columns, portal.resultFormats);
-        portal.rowDescriptionSent = true;
+        answerWithColumns(portal);
       } else if (portal.isExpectingResult && portal.columns != null) {
         // Already materialized: a synthetic answer fixed at PARSE (SHOW/system/catalog), or a portal a
         // previous Describe/Execute already ran.
         if (portal.executed && portal.fullResultSet != null)
           resolvePortalColumns(portal);
-        writeRowDescription(portal.columns, portal.resultFormats);
-        portal.rowDescriptionSent = true;
+        answerWithColumns(portal);
       } else
         // No rows are coming: an INSERT/UPDATE/DELETE portal, or SAVEPOINT/RELEASE/ROLLBACK TO/SET, which
         // carry no statement and never produce a result (issue #6930).
@@ -453,6 +451,27 @@ public class PostgresNetworkExecutor extends Thread {
       }
     } else
       throw new PostgresProtocolException("Unexpected describe type '" + type + "'");
+  }
+
+  /**
+   * Answers a {@code Describe('P')} on a portal whose result is already materialized, under the columns
+   * {@link #resolvePortalColumns} named for it.
+   * <p>
+   * <b>An empty column set is announced as a zero-field {@code RowDescription}, not as {@code NoData}</b>,
+   * and that is deliberate. {@code NoData} promises the portal will return no result set at all, which
+   * pgjdbc holds it to: {@code executeQuery()} on a portal described that way throws "No results were
+   * returned by the query" rather than yielding an empty result. Only two things reach here with no column
+   * to name - a command with nothing to return ({@code {cypher} CREATE (n)}) and a query whose rows simply
+   * did not match, an unmodelled catalog relation included (issue #6412, pinned by
+   * {@code Issue6412CatalogIT.anUnmodelledCatalogRelationIsDeclinedRatherThanGuessedAt}) - and for a
+   * language this server does not parse, nothing distinguishes them: the row count cannot, since both come
+   * back empty, and the query text cannot without a parser per language. Announcing an empty result set is
+   * the answer that is merely uninformative for the first and correct for the second; {@code NoData} would
+   * be correct for the first and would BREAK the second.
+   */
+  private void answerWithColumns(final PostgresPortal portal) {
+    writeRowDescription(portal.columns, portal.resultFormats);
+    portal.rowDescriptionSent = true;
   }
 
   /**

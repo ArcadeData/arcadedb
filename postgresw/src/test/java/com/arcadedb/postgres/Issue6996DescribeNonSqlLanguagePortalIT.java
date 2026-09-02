@@ -52,6 +52,12 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  * done - and answers from the rows it actually produced, so the announced shape is the real one. The run is
  * shared with {@code Execute}, so the query is still executed exactly once per portal however the client
  * orders the two messages; {@code aWriteCommandDescribedThenExecutedRunsExactlyOnce} pins that.
+ * <p>
+ * A portal that names no column at all is still announced as an (empty) {@code RowDescription} rather than
+ * {@code NoData} - see {@code PostgresNetworkExecutor.answerWithColumns}. The two tests below that reach
+ * that state, a write with nothing to return and a query that matched nothing, are indistinguishable from
+ * each other on this side of the wire, and {@code NoData} is only correct for the first: it promises no
+ * result set at all, which pgjdbc holds the server to.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -111,7 +117,11 @@ class Issue6996DescribeNonSqlLanguagePortalIT extends PostgresWireProtocolTestBa
       final WireMessage describeReply = readWireMessage(in);
       assertThat(describeReply.type())
           .as("one reply, whatever the row count: silence is what desynchronizes the client")
-          .isIn('T', 'n');
+          .isEqualTo('T');
+      assertThat(fieldNamesOf(describeReply))
+          .as("a query that matched nothing names no column: the columns come from the rows, and the schema "
+              + "fallback behind them (issues #6156/#6185) reads the SQL parser, so it cannot answer for {cypher}")
+          .isEmpty();
       assertThat(readWireMessage(in).type()).isEqualTo('Z');
 
       // No rows, so Execute answers with the command tag alone, and the connection stays in sync.
@@ -153,6 +163,47 @@ class Issue6996DescribeNonSqlLanguagePortalIT extends PostgresWireProtocolTestBa
   }
 
   /**
+   * A {@code {cypher}} write with no {@code RETURN} produces no row, so the Describe has no column to name.
+   * It is still answered with an (empty) {@code RowDescription} rather than {@code NoData} - see
+   * {@code PostgresNetworkExecutor.answerWithColumns} for why: {@code NoData} promises no result set at all,
+   * and nothing distinguishes this portal from a query whose rows merely did not match, which pgjdbc's
+   * {@code executeQuery()} would then reject outright.
+   */
+  @Test
+  @DisplayName("[#6996] Describe(P) on a {cypher} write with no RETURN is still answered exactly once")
+  void aWriteWithNothingToReturnIsStillAnsweredExactlyOnce() throws Exception {
+    withConnection((out, in) -> {
+      runSimpleQuery(out, in, "CREATE VERTEX TYPE V6996NoReturn IF NOT EXISTS");
+
+      sendParse(out, "{cypher} CREATE (n:V6996NoReturn {name: 'silent'})");
+      sendBind(out);
+      sendDescribePortal(out);
+      sendSync(out);
+
+      assertThat(readWireMessage(in).type()).isEqualTo('1');
+      assertThat(readWireMessage(in).type()).isEqualTo('2');
+      final WireMessage describeReply = readWireMessage(in);
+      assertThat(describeReply.type())
+          .as("a write with nothing to return is owed a reply like any other portal")
+          .isEqualTo('T');
+      assertThat(fieldNamesOf(describeReply))
+          .as("and it names no column, because the command returns none")
+          .isEmpty();
+      assertThat(readWireMessage(in).type()).isEqualTo('Z');
+
+      // The Execute that follows answers CommandComplete alone: no rows, and no second RowDescription.
+      sendExecute(out);
+      sendSync(out);
+      assertThat(readWireMessage(in).type()).isEqualTo('C');
+      assertThat(readWireMessage(in).type()).isEqualTo('Z');
+
+      assertThat(rowCountOf(out, in, "SELECT count(*) AS total FROM V6996NoReturn"))
+          .as("and the write happened exactly once, at Describe")
+          .isEqualTo(1);
+    });
+  }
+
+  /**
    * The simple-query ('Q') form of the same {@code {cypher}} query, which has always worked: the extended
    * protocol's answer above must carry the same column.
    */
@@ -188,6 +239,10 @@ class Issue6996DescribeNonSqlLanguagePortalIT extends PostgresWireProtocolTestBa
       sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
       readMessageOfType(in, 'Z'); // drain AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
 
+      // A hang detector, not a latency bound: the bug under test is a reply the server never sends, which
+      // leaves the client blocked in readFully() forever. Only a preemptive timeout can end that - a
+      // stopwatch cannot interrupt a blocked socket read, and neither can @Timeout's default thread mode -
+      // so it is sized generously (a stall inside it cannot turn a passing run red) rather than tightly.
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> exchange.run(out, in));
     }
   }
