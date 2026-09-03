@@ -164,7 +164,9 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
 
     for (final Object[] row : rows) {
       for (int c = 0; c < numCols; c++)
-        columnArrays[c].put(row[c]);
+        // Same treatment as the aggregation branch below: a non-finite raw sample is a gap, and it must not
+        // reach a dashboard as a number - nor as a JSON literal the response writer refuses to emit.
+        putSampleValue(columnArrays[c], row[c]);
     }
 
     final JSONArray valuesArray = new JSONArray();

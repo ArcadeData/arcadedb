@@ -42,6 +42,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.JsonGraphSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.serializer.json.NonFiniteNumbers;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -317,7 +318,11 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
           final Object[] row = rows.next();
           final JSONArray sample = new JSONArray();
           for (int i = 0; i < columns.size() && i < row.length; i++)
-            sample.put(encodeSampleValue(row[i]));
+              // Only the non-finite doubles need work, and they need it badly: JSONArray.put(Number) rewrites NaN
+            // and +/-Infinity to 0, so writing them straight would turn "no measurement" into a measurement of
+            // zero. NonFiniteNumbers is the same encoding record properties already travel by, and
+            // JsonlImporterFormat decodes them back against the column's declared type.
+            sample.put(NonFiniteNumbers.encode(row[i]));
           chunk.put(sample);
           context.timeSeriesSamples.incrementAndGet();
 
@@ -336,28 +341,6 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
           database.rollback();
       }
     }
-  }
-
-  /**
-   * Encodes one raw sample value for JSON.
-   * <p>
-   * Only the non-finite doubles need work, and they need it badly: {@code JSONArray.put(Number)} rewrites NaN and
-   * ±Infinity to {@code 0}, so writing them straight would turn "no measurement" into a measurement of zero. They
-   * travel as the same string markers {@link JsonGraphSerializer} already uses for record properties, and
-   * {@code JsonlImporterFormat} decodes them back against the column's declared type.
-   */
-  private static Object encodeSampleValue(final Object value) {
-    if (value instanceof Double d && !Double.isFinite(d))
-      return nonFiniteMarker(d);
-    if (value instanceof Float f && !Float.isFinite(f))
-      return nonFiniteMarker(f);
-    return value;
-  }
-
-  private static String nonFiniteMarker(final double value) {
-    if (Double.isNaN(value))
-      return "NaN";
-    return value > 0 ? "PosInfinity" : "NegInfinity";
   }
 
   protected void writeJsonLine(final String type, final JSONObject json) throws IOException {

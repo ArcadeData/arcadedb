@@ -26,6 +26,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.serializer.json.NonFiniteNumbers;
 import com.arcadedb.utility.DateUtils;
 
 import java.time.temporal.Temporal;
@@ -98,15 +99,10 @@ public class JsonGraphSerializer extends JsonSerializer {
             list.add(o);
           }
           value = list;
-        } else if (value.equals(Double.NaN) || value.equals(Float.NaN))
-          // JSON DOES NOT SUPPORT NaN
-          value = "NaN";
-        else if (value.equals(Double.POSITIVE_INFINITY) || value.equals(Float.POSITIVE_INFINITY))
-          // JSON DOES NOT SUPPORT INFINITY
-          value = "PosInfinity";
-        else if (value.equals(Double.NEGATIVE_INFINITY) || value.equals(Float.NEGATIVE_INFINITY))
-          // JSON DOES NOT SUPPORT INFINITY
-          value = "NegInfinity";
+        } else if (value instanceof Double || value instanceof Float)
+          // JSON supports none of NaN / +Infinity / -Infinity: they travel as the marker strings of
+          // NonFiniteNumbers, which is also what every reader of this output substitutes back.
+          value = NonFiniteNumbers.encode(value);
         else if (type != null && isEncodableTemporal(value) && type.existsProperty(prop.getKey()))
           value = encodeTemporalForWriteBack(value, type.getProperty(prop.getKey()).getType());
       }

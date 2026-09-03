@@ -2080,6 +2080,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * Whether a declared statistic disagrees with the one recomputed from the column's values.
+   * <p>
+   * Plain {@code !=} cannot answer this since issue #7043: NaN is a legitimate declaration (the column carries no
+   * real sample), and {@code NaN != NaN} is true, so it would report every correctly-declared all-NaN column as
+   * damaged. Comparing "is either one absent" first, and only then the numbers, keeps the real-number comparison
+   * exactly as it was - {@code -0.0} and {@code 0.0} still agree, as they always did.
+   */
+  private static boolean statisticDiffers(final double declared, final double recomputed) {
+    if (TimeSeriesNaN.isAbsent(declared) || TimeSeriesNaN.isAbsent(recomputed))
+      return TimeSeriesNaN.isAbsent(declared) != TimeSeriesNaN.isAbsent(recomputed);
+    return declared != recomputed;
+  }
+
+  /**
    * Reduces one numeric column to the {@code {min, max, sum}} triple a block declares for it.
    * <p>
    * ONE definition, shared by the two write paths that produce the triple ({@link #downsampleBlocks} and
@@ -2128,9 +2142,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       return;
     }
 
-    // A NaN declared minimum is how the format says "this column carries no statistics", which is what a writer
-    // records for every column whose codec is not numeric. Nothing to reconcile against.
-    if (Double.isNaN(entry.columnMins[colIdx]) || values.length == 0)
+    if (values.length == 0)
       return;
 
     final double[] stats = reduceNumericStats(values);
@@ -2138,17 +2150,37 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final double max = stats[1];
     final double sum = stats[2];
 
-    if (min != entry.columnMins[colIdx])
+    // A block written before issue #7043 declares the OLD +/-Double.MAX_VALUE seed for a column whose samples
+    // are all NaN, and the aggregation push-down answers MIN/MAX straight out of that header - so it hands the
+    // seed back as a measurement until the block is rewritten. Reported by name, because a generic "declares
+    // 1.79E308 but its values start at NaN" says nothing about what to do, and there IS something to do.
+    if (TimeSeriesNaN.isAbsent(min) && (entry.columnMins[colIdx] == Double.MAX_VALUE
+        || entry.columnMaxs[colIdx] == -Double.MAX_VALUE)) {
+      problems.add(where + " declares the pre-#7043 min/max seed for column '" + column.getName()
+          + "', whose samples are all NaN: an aggregation answered from this block's header returns "
+          + Double.MAX_VALUE + " as if it were data. Recompacting or downsampling the block rewrites the header "
+          + "with the current policy (NaN = no sample)");
+      return;
+    }
+
+    // NaN is a legitimate declaration since issue #7043 - it is what a column with no real sample records - so
+    // the reconciliation has to compare it as a value rather than skip on it. NaN != NaN in Java, so a plain
+    // '!=' would report every correctly-declared all-NaN column as damaged, and would equally MISS a block that
+    // declares NaN over real data.
+    if (statisticDiffers(entry.columnMins[colIdx], min))
       problems.add(where + " declares min " + entry.columnMins[colIdx] + " for column '" + column.getName()
           + "' but its values start at " + min + ": an aggregation answered from this block would be wrong");
-    if (max != entry.columnMaxs[colIdx])
+    if (statisticDiffers(entry.columnMaxs[colIdx], max))
       problems.add(where + " declares max " + entry.columnMaxs[colIdx] + " for column '" + column.getName()
           + "' but its values reach " + max + ": an aggregation answered from this block would be wrong");
     // Relative, because summing the same doubles is only reproducible to within the rounding of the accumulation
     // itself - an absolute bound would fire on a healthy block of large values and pass on a damaged block of
     // small ones.
     final double declaredSum = entry.columnSums[colIdx];
-    if (Math.abs(sum - declaredSum) > SUM_RELATIVE_TOLERANCE * Math.max(1.0, Math.abs(sum)))
+    if (Double.isNaN(sum) != Double.isNaN(declaredSum))
+      problems.add(where + " declares sum " + declaredSum + " for column '" + column.getName()
+          + "' but its values add up to " + sum + ": an aggregation answered from this block would be wrong");
+    else if (Math.abs(sum - declaredSum) > SUM_RELATIVE_TOLERANCE * Math.max(1.0, Math.abs(sum)))
       problems.add(where + " declares sum " + declaredSum + " for column '" + column.getName()
           + "' but its values add up to " + sum + ": an aggregation answered from this block would be wrong");
   }
