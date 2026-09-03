@@ -1748,24 +1748,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     // Handle modifiers if present - chain them using modifier.next
-    if (CollectionUtils.isNotEmpty(ctx.modifier())) {
-      Modifier firstModifier = null;
-      Modifier currentModifier = null;
-
-      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
-        final Modifier modifier = (Modifier) visit(modCtx);
-
-        if (firstModifier == null) {
-          firstModifier = modifier;
-          currentModifier = modifier;
-        } else {
-          currentModifier.next = modifier;
-          currentModifier = modifier;
-        }
-      }
-
-      fromItem.modifier = firstModifier;
-    }
+    fromItem.modifier = buildModifierChain(ctx.modifier());
 
     return fromItem;
   }
@@ -1929,24 +1912,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     fromItem.statement = (Statement) visit(ctx.statement());
 
     // Handle modifiers if present - chain them using modifier.next
-    if (CollectionUtils.isNotEmpty(ctx.modifier())) {
-      Modifier firstModifier = null;
-      Modifier currentModifier = null;
-
-      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
-        final Modifier modifier = (Modifier) visit(modCtx);
-
-        if (firstModifier == null) {
-          firstModifier = modifier;
-          currentModifier = modifier;
-        } else {
-          currentModifier.next = modifier;
-          currentModifier = modifier;
-        }
-      }
-
-      fromItem.modifier = firstModifier;
-    }
+    fromItem.modifier = buildModifierChain(ctx.modifier());
 
     // Handle alias if present
     if (ctx.identifier() != null) {
@@ -2833,21 +2799,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     // Process modifiers (e.g., {"a": 1}.a)
-    if (ctx.modifier() != null && !ctx.modifier().isEmpty()) {
-      Modifier firstModifier = null;
-      Modifier currentModifier = null;
-      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
-        final Modifier modifier = (Modifier) visit(modCtx);
-        if (firstModifier == null) {
-          firstModifier = modifier;
-          currentModifier = modifier;
-        } else {
-          currentModifier.next = modifier;
-          currentModifier = modifier;
-        }
-      }
-      baseExpr.modifier = firstModifier;
-    }
+    baseExpr.modifier = buildModifierChain(ctx.modifier());
 
     return baseExpr;
   }
@@ -3248,23 +3200,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     baseExpr.string = text;
 
     // Process modifiers (method calls like .prefix(), .toUpperCase(), etc.)
-    if (CollectionUtils.isNotEmpty(ctx.modifier())) {
-      Modifier firstModifier = null;
-      Modifier currentModifier = null;
-
-      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
-        final Modifier modifier = (Modifier) visit(modCtx);
-        if (firstModifier == null) {
-          firstModifier = modifier;
-          currentModifier = modifier;
-        } else {
-          currentModifier.next = modifier;
-          currentModifier = modifier;
-        }
-      }
-
-      baseExpr.modifier = firstModifier;
-    }
+    baseExpr.modifier = buildModifierChain(ctx.modifier());
 
     return baseExpr;
   }
@@ -3457,21 +3393,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     baseExpr.expression = expression;
 
     // Process modifiers (method calls like .keys(), .values(), etc.)
-    if (ctx.modifier() != null && !ctx.modifier().isEmpty()) {
-      Modifier firstModifier = null;
-      Modifier currentModifier = null;
-      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
-        final Modifier modifier = (Modifier) visit(modCtx);
-        if (firstModifier == null) {
-          firstModifier = modifier;
-          currentModifier = modifier;
-        } else {
-          currentModifier.next = modifier;
-          currentModifier = modifier;
-        }
-      }
-      baseExpr.modifier = firstModifier;
-    }
+    baseExpr.modifier = buildModifierChain(ctx.modifier());
 
     return baseExpr;
   }
@@ -4032,21 +3954,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     result.expression = wrapperExpression;
 
     // Process modifiers if any
-    if (ctx.modifier() != null && !ctx.modifier().isEmpty()) {
-      Modifier firstModifier = null;
-      Modifier currentModifier = null;
-      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
-        final Modifier modifier = (Modifier) visit(modCtx);
-        if (firstModifier == null) {
-          firstModifier = modifier;
-          currentModifier = modifier;
-        } else {
-          currentModifier.next = modifier;
-          currentModifier = modifier;
-        }
-      }
-      result.modifier = firstModifier;
-    }
+    result.modifier = buildModifierChain(ctx.modifier());
 
     return result;
   }
@@ -4090,21 +3998,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     result.expression = wrapperExpression;
 
     // Process modifiers if any
-    if (ctx.modifier() != null && !ctx.modifier().isEmpty()) {
-      Modifier firstModifier = null;
-      Modifier currentModifier = null;
-      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
-        final Modifier modifier = (Modifier) visit(modCtx);
-        if (firstModifier == null) {
-          firstModifier = modifier;
-          currentModifier = modifier;
-        } else {
-          currentModifier.next = modifier;
-          currentModifier = modifier;
-        }
-      }
-      result.modifier = firstModifier;
-    }
+    result.modifier = buildModifierChain(ctx.modifier());
 
     return result;
   }
