@@ -156,7 +156,8 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       final Object[] row = rows.get(i);
       final JSONArray rowArray = new JSONArray();
       for (final Object val : row)
-        rowArray.put(val);
+        // A raw sample can be NaN too, and it means the same "no measurement" there as in an aggregate.
+        putSampleValue(rowArray, val);
       rowsArray.put(rowArray);
     }
 
@@ -234,7 +235,8 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       bucket.put("timestamp", ts);
       final JSONArray values = new JSONArray();
       for (int r = 0; r < requests.size(); r++)
-        values.put(aggResult.getValue(ts, r));
+        // NOT values.put(double): an absent MIN/MAX answers NaN, which that overload rewrites to 0.
+        putSampleValue(values, aggResult.getValue(ts, r));
       bucket.put("values", values);
       buckets.put(bucket);
     }

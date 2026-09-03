@@ -29,6 +29,11 @@ public class ImporterContext {
   public final AtomicLong createdVertices            = new AtomicLong();
   public final AtomicLong createdEdges               = new AtomicLong();
   public final AtomicLong createdEmbeddedDocuments   = new AtomicLong();
+  /**
+   * TIMESERIES samples appended by the import (issue #7032). Counted apart from the record kinds because a
+   * TimeSeries type owns no record bucket.
+   */
+  public final AtomicLong createdTimeSeriesSamples   = new AtomicLong();
   public final AtomicLong linkedEdges                = new AtomicLong();
   public final AtomicLong updatedDocuments           = new AtomicLong();
   public final AtomicLong documentsWithLinksToUpdate = new AtomicLong();
@@ -71,6 +76,8 @@ public class ImporterContext {
       map.put("createdVertices", createdVertices.get());
     if (createdEdges.get() > 0)
       map.put("createdEdges", createdEdges.get());
+    if (createdTimeSeriesSamples.get() > 0)
+      map.put("createdTimeSeriesSamples", createdTimeSeriesSamples.get());
 
     return map;
   }

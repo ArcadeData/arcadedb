@@ -164,7 +164,9 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
 
     for (final Object[] row : rows) {
       for (int c = 0; c < numCols; c++)
-        columnArrays[c].put(row[c]);
+        // Same treatment as the aggregation branch below: a non-finite raw sample is a gap, and it must not
+        // reach a dashboard as a number - nor as a JSON literal the response writer refuses to emit.
+        putSampleValue(columnArrays[c], row[c]);
     }
 
     final JSONArray valuesArray = new JSONArray();
@@ -235,7 +237,9 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
 
     for (final long ts : timestamps) {
       for (int r = 0; r < requests.size(); r++)
-        aggColumns[r].put(aggResult.getValue(ts, r));
+        // NOT put(double): an absent MIN/MAX answers NaN, which that overload rewrites to 0 - and a dashboard
+        // draws a dip to zero instead of the gap the data actually has.
+        putSampleValue(aggColumns[r], aggResult.getValue(ts, r));
     }
 
     final JSONArray valuesArray = new JSONArray();

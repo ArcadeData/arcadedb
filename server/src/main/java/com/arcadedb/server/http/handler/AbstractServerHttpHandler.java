@@ -1443,4 +1443,22 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     }
     return buffer.toString();
   }
+
+  /**
+   * Appends a TimeSeries value to a JSON response array, emitting JSON {@code null} for a non-finite one.
+   * <p>
+   * NaN is the absent marker of the time-series stack (see {@code TimeSeriesNaN}): a MIN/MAX over a window with
+   * no real sample legitimately answers NaN. JSON has no NaN literal, and {@link JSONArray#put(Number)} resolves
+   * that by rewriting NaN and ±Infinity to {@code 0} - which is indistinguishable from a genuine measurement of
+   * zero and, for a Grafana dashboard, draws a dip to zero where the series actually has a gap. {@code null} is
+   * the encoding both consumers already understand as "no value here".
+   *
+   * @param array the response array to append to
+   * @param value the value; anything that is not a non-finite double or float is appended unchanged
+   */
+  protected static void putSampleValue(final JSONArray array, final Object value) {
+    final boolean absent = (value instanceof Double d && !Double.isFinite(d))
+        || (value instanceof Float f && !Float.isFinite(f));
+    array.put(absent ? JSONObject.NULL : value);
+  }
 }

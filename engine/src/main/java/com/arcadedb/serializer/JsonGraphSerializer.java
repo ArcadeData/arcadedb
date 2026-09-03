@@ -26,6 +26,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.serializer.json.NonFiniteNumbers;
 import com.arcadedb.utility.DateUtils;
 
 import java.time.temporal.Temporal;
@@ -39,6 +40,14 @@ import java.util.Map;
 public class JsonGraphSerializer extends JsonSerializer {
 
   private boolean    expandVertexEdges       = false;
+  /**
+   * Whether a vertex line carries its edge metadata at all. The RID lists {@link #expandVertexEdges} produces are
+   * a diagnostic view, not part of a graph's definition: every importer rebuilds the edges from the edge records
+   * themselves, and a RID does not survive a re-import into a differently laid-out database anyway - so a consumer
+   * that writes them for a machine to read back is paying 2 x average-degree RIDs per vertex for something nothing
+   * reads, and implying a guarantee the format cannot make (issue #7032).
+   */
+  private boolean    includeVertexEdgeMetadata = true;
   private JSONObject sharedJson              = null;
   private boolean    includeMetadata         = true;
   private boolean    precisionAwareTemporals = false;
@@ -90,15 +99,10 @@ public class JsonGraphSerializer extends JsonSerializer {
             list.add(o);
           }
           value = list;
-        } else if (value.equals(Double.NaN) || value.equals(Float.NaN))
-          // JSON DOES NOT SUPPORT NaN
-          value = "NaN";
-        else if (value.equals(Double.POSITIVE_INFINITY) || value.equals(Float.POSITIVE_INFINITY))
-          // JSON DOES NOT SUPPORT INFINITY
-          value = "PosInfinity";
-        else if (value.equals(Double.NEGATIVE_INFINITY) || value.equals(Float.NEGATIVE_INFINITY))
-          // JSON DOES NOT SUPPORT INFINITY
-          value = "NegInfinity";
+        } else if (value instanceof Double || value instanceof Float)
+          // JSON supports none of NaN / +Infinity / -Infinity: they travel as the marker strings of
+          // NonFiniteNumbers, which is also what every reader of this output substitutes back.
+          value = NonFiniteNumbers.encode(value);
         else if (type != null && isEncodableTemporal(value) && type.existsProperty(prop.getKey()))
           value = encodeTemporalForWriteBack(value, type.getProperty(prop.getKey()).getType());
       }
@@ -113,6 +117,9 @@ public class JsonGraphSerializer extends JsonSerializer {
   private void setMetadata(final Document document, final JSONObject object) {
     if (document instanceof Vertex vertex1) {
       final Vertex vertex = vertex1;
+
+      if (!includeVertexEdgeMetadata)
+        return;
 
       if (expandVertexEdges) {
         final JSONArray outEdges = new JSONArray();
@@ -134,6 +141,18 @@ public class JsonGraphSerializer extends JsonSerializer {
       object.put("i", edge.getIn().toString());
       object.put("o", edge.getOut().toString());
     }
+  }
+
+  public boolean isIncludeVertexEdgeMetadata() {
+    return includeVertexEdgeMetadata;
+  }
+
+  /**
+   * See {@link #includeVertexEdgeMetadata}. Edges keep their endpoint RIDs either way - those ARE the edge.
+   */
+  public JsonGraphSerializer setIncludeVertexEdgeMetadata(final boolean includeVertexEdgeMetadata) {
+    this.includeVertexEdgeMetadata = includeVertexEdgeMetadata;
+    return this;
   }
 
   public boolean isExpandVertexEdges() {
