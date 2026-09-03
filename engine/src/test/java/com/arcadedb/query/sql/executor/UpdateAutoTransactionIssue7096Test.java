@@ -233,6 +233,23 @@ class UpdateAutoTransactionIssue7096Test extends TestHelper {
     assertThat(database.countType("Knows", true)).as("no edge of the failed statement survives").isEqualTo(0);
   }
 
+  /** INSERT had no transaction wrapping at all before; a multi-record one is atomic under autocommit too. */
+  @Test
+  void aFailedMultiRecordInsertRollsBackItsAutoTransaction() {
+    database.transaction(() -> {
+      final VertexType type = (VertexType) database.getSchema().getType("Character");
+      type.createProperty("name", Type.STRING);
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+    });
+
+    assertThatThrownBy(() -> database.command("sql",
+        "INSERT INTO Character CONTENT [{'name':'Myriel'},{'name':'Valjean'},{'name':'Myriel'}]").close())
+        .isInstanceOf(DuplicatedKeyException.class);
+    assertThat(database.isTransactionActive()).isFalse();
+
+    assertThat(database.countType("Character", true)).as("neither record inserted before the collision survives").isEqualTo(1);
+  }
+
   @Test
   void deleteAndInsertRunUnderAutoTransactionToo() {
     database.command("sql", "INSERT INTO Character SET name = 'Myriel'").close();
@@ -264,6 +281,29 @@ class UpdateAutoTransactionIssue7096Test extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT name FROM Character")) {
       assertThat(rs.next().<String>getProperty("name")).isEqualTo("Napoleon");
     }
+  }
+
+  /**
+   * CREATE EDGE and MOVE VERTEX used to refuse an empty source selection outside a transaction (without
+   * auto-transaction) before finding out they had nothing to write; they now complete, as UPDATE and DELETE with a
+   * filter matching nothing always did.
+   */
+  @Test
+  void withoutAutoTransactionAStatementThatWritesNothingCompletes() {
+    database.transaction(() -> database.getSchema().createEdgeType("Knows"));
+    database.setAutoTransaction(false);
+
+    try (final ResultSet rs = database.command("sql",
+        "CREATE EDGE Knows FROM (SELECT FROM Character WHERE name = 'Nobody') TO (SELECT FROM Character)")) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+    try (final ResultSet rs = database.command("sql", "MOVE VERTEX (SELECT FROM Character WHERE name = 'Nobody') TO TYPE:Character")) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+    try (final ResultSet rs = database.command("sql", "UPDATE Character SET name = 'x' WHERE name = 'Nobody'")) {
+      assertThat(rs.next().<Long>getProperty("count")).isEqualTo(0L);
+    }
+    assertThat(database.isTransactionActive()).isFalse();
   }
 
   /** A statement issued inside a caller's transaction joins it rather than committing on its own. */

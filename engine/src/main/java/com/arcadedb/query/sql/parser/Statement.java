@@ -79,7 +79,9 @@ public class Statement extends SimpleNode {
    * owns it and must close it with {@link #endImplicitTransaction}; {@code false} when the statement joins the
    * caller's transaction. Outside auto-transaction mode this opens nothing and refuses nothing: a statement that ends
    * up writing a record is refused there ("Transaction not begun"), while one that writes nothing - a filter that
-   * matches no record, a validation failure ahead of the first write - keeps behaving as it always did.
+   * matches no record, a validation failure ahead of the first write - completes. That is what UPDATE, DELETE and
+   * INSERT always did; CREATE VERTEX, CREATE EDGE and MOVE VERTEX used to check on entry, so a CREATE EDGE or MOVE
+   * VERTEX whose source selection was empty was refused although it had nothing to write. They now behave alike.
    * <p>
    * One transaction per statement is what makes autocommit atomic: a multi-record {@code UPDATE} either lands whole
    * or not at all, instead of committing once per record and stopping halfway on the first failure. The one exception
