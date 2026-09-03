@@ -54,6 +54,13 @@ class SQLMethodAppendTest {
   }
 
   @Test
+  void noArgumentsAtAllLeaveTheReceiverUnchanged() {
+    // THE FRAMEWORK ENFORCES THE ARITY (AT LEAST ONE ARGUMENT); A DIRECT CALLER MUST NOT GET AN NPE
+    assertThat(method.execute("x", null, null, null)).isEqualTo("x");
+    assertThat(method.execute("x", null, null, new Object[0])).isEqualTo("x");
+  }
+
+  @Test
   void aNullReceiverStaysNull() {
     assertThat(method.execute(null, null, null, new Object[] { "A" })).isNull();
     assertThat(method.execute(null, null, null, new Object[] { null, "A" })).isNull();
