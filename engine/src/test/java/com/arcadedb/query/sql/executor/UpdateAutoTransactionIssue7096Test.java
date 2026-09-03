@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.EdgeType;
@@ -241,6 +242,27 @@ class UpdateAutoTransactionIssue7096Test extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT name FROM Character")) {
       assertThat(rs.next().<String>getProperty("name")).isEqualTo("Myriel");
       assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * Outside auto-transaction mode nothing changed: a write statement issued with no transaction open is still refused,
+   * for the statements that used to check eagerly on entry (CREATE VERTEX) and for the ones that never did (UPDATE)
+   * alike. The refusal now comes from the record write in both cases.
+   */
+  @Test
+  void withoutAutoTransactionAWriteStatementOutsideATransactionIsStillRefused() {
+    database.setAutoTransaction(false);
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE VERTEX Character SET name = 'Myriel'").close())
+        .isInstanceOf(TransactionException.class).hasMessageContaining("Transaction not begun");
+    assertThatThrownBy(() -> database.command("sql", "UPDATE Character SET name = 'Bonaparte'").close())
+        .isInstanceOf(TransactionException.class).hasMessageContaining("Transaction not begun");
+    assertThat(database.isTransactionActive()).isFalse();
+
+    assertThat(database.countType("Character", true)).isEqualTo(1);
+    try (final ResultSet rs = database.query("sql", "SELECT name FROM Character")) {
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("Napoleon");
     }
   }
 

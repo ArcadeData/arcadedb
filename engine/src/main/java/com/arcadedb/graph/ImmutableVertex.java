@@ -94,7 +94,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
       // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD.
       // With no transaction open there is no page image to pin the record to: the write that follows opens its own
       // implicit transaction (auto-transaction mode) and verifies there that the record is still the one read (#6950),
-      // so modifying outside a transaction is legitimate for a vertex exactly as it is for a document (issue #7096).
+      // so modifying outside a transaction is legitimate for a vertex, as it already was for a document (issue #7096).
       try {
         // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
         transaction.getPageToModify(rid.getPageId(database),
