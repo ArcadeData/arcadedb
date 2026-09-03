@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
@@ -268,15 +269,29 @@ public class CypherExecutionPlan {
    * @return result set
    */
   public ResultSet execute() {
+    return execute(null);
+  }
+
+  /**
+   * Executes the query plan as part of an enclosing statement, whose context supplies what a nested plan must
+   * share rather than re-derive - today the statement clock, so that every {@code timestamp()} and temporal
+   * constructor across the whole statement answers from one frozen instant (issue #7052).
+   *
+   * @param outerContext the enclosing statement's context, or {@code null} for a top-level statement
+   *
+   * @return result set
+   */
+  public ResultSet execute(final CommandContext outerContext) {
     // Handle UNION queries specially
     if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty())
-      return executeUnion();
+      return executeUnion(outerContext);
 
     // Build execution context
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
+    CypherFunctionHelper.inheritStatementTime(context, outerContext);
 
     AbstractExecutionStep rootStep;
 
@@ -408,6 +423,9 @@ public class CypherExecutionPlan {
       ctx.setDatabase(database);
       ctx.setInputParameters(parameters);
       setupFunctionResolver(ctx);
+      // The deadline is inherited because the WorkGuard below reads it; nothing else is, because nothing else
+      // is read. No expression is ever evaluated against this ctx - each branch re-enters this method with the
+      // REAL outerContext - so inheriting the statement clock here would be dead weight.
       inheritCommandDeadline(ctx, outerContext);
 
       // Execute each branch with the seed row, collect all results
@@ -452,6 +470,7 @@ public class CypherExecutionPlan {
       LabelReplacements.inherit(context, outerContext);
     }
     inheritCommandDeadline(context, outerContext);
+    CypherFunctionHelper.inheritStatementTime(context, outerContext);
 
     // Create a seed step that returns the seed row
     final AbstractExecutionStep seedStep = new AbstractExecutionStep(context) {
@@ -675,14 +694,19 @@ public class CypherExecutionPlan {
   /**
    * Executes a UNION query by combining results from all subqueries.
    *
+   * @param outerContext the enclosing statement's context, or {@code null} for a top-level statement
+   *
    * @return combined result set
    */
-  private ResultSet executeUnion() {
+  private ResultSet executeUnion(final CommandContext outerContext) {
     // Use UnionStep to combine results from all subqueries
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
+    // Every branch runs on a context of its own, so the statement clock has to travel from here into each of
+    // them - and into here from an enclosing statement when this UNION is a CALL body (issue #7052).
+    CypherFunctionHelper.inheritStatementTime(context, outerContext);
 
     final UnionStep unionStep =
         new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
