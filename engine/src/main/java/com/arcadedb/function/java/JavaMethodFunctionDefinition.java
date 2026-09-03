@@ -282,13 +282,13 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
    * {@code null} when no such overload exists and the call is genuinely ambiguous (issue #7110).
    */
   private static Method mostSpecific(final List<Method> applicable, final int argCount) {
-    for (final Method candidate : applicable) {
+    final int size = applicable.size();
+    for (int i = 0; i < size; i++) {
+      final Method candidate = applicable.get(i);
       boolean dominates = true;
-      for (final Method other : applicable)
-        if (other != candidate && !isAtLeastAsSpecific(candidate, other, argCount)) {
+      for (int j = 0; j < size && dominates; j++)
+        if (j != i && !isAtLeastAsSpecific(candidate, applicable.get(j), argCount))
           dominates = false;
-          break;
-        }
       if (dominates)
         return candidate;
     }

@@ -136,6 +136,17 @@ class CollectionUtilsTest {
     assertThat(CollectionUtils.compare(m2, m1)).isGreaterThan(0);
   }
 
+  @Test
+  void compareMapsWithKeysOfDifferentClasses() {
+    final Map<Object, Comparable> m1 = new HashMap<>(Map.of("a", 1, 2, "x"));
+    final Map<Object, Comparable> m2 = new HashMap<>(Map.of("a", 1, 3, "x"));
+    final Map<Object, Comparable> m3 = new HashMap<>(Map.of(2, "x", "a", 1));
+
+    assertThat(CollectionUtils.compare(m1, m2)).isLessThan(0);
+    assertThat(CollectionUtils.compare(m2, m1)).isGreaterThan(0);
+    assertThat(CollectionUtils.compare(m1, m3)).isZero();
+  }
+
   /**
    * The comparator contract over a handful of maps: antisymmetry and transitivity of the induced order, which is what a
    * sorted index relies on to place the same entries in the same order on every build.

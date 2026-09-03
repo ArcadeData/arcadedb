@@ -331,7 +331,7 @@ public class DocumentIndexer {
       final Document modifiedRecord, final String[] propertyNames, final KeyExpansion[] expansions) {
     final Object[] oldKey = buildFullTextByItemKey(originalRecord, propertyNames, expansions);
     final Object[] newKey = buildFullTextByItemKey(modifiedRecord, propertyNames, expansions);
-    if (Arrays.equals(oldKey, newKey))
+    if (sameKeyTuple(oldKey, newKey))
       return false;
     if (!isAllEmpty(oldKey))
       index.remove(oldKey, rid);
