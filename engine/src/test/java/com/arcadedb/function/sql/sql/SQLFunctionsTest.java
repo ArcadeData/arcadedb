@@ -592,15 +592,9 @@ class SQLFunctionsTest {
     assertThat(result.hasNext()).isTrue();
     for (final ResultSet it = result; it.hasNext(); ) {
       final Result d = it.next();
-      assertThat(d.<Object>getProperty("value")).isNotNull();
-      assertThat(d.getProperty("value").getClass().isArray()).isTrue();
-
-      final Object[] array = d.getProperty("value");
-
-      assertThat(array.length).isEqualTo(3);
-      assertThat(array[0]).isEqualTo("1");
-      assertThat(array[1]).isEqualTo("2");
-      assertThat(array[2]).isEqualTo("3");
+      // A List, not a String[] (issue #7027): the same shape the split() function and the Cypher split() answer
+      assertThat(d.<Object>getProperty("value")).isInstanceOf(List.class);
+      assertThat(d.<List<Object>>getProperty("value")).containsExactly("1", "2", "3");
     }
   }
 

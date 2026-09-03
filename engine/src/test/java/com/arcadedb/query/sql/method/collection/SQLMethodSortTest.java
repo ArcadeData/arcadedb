@@ -22,6 +22,7 @@ import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -93,5 +94,24 @@ class SQLMethodSortTest {
     final Object result = method.execute(listin, null, null, null);
     assertThat(result).isInstanceOf(Number.class);
     assertThat(result).isEqualTo(listout);
+  }
+
+  @Test
+  void arrayReceiverIsSortedNotReturnedUntouched() {
+    // Issue #7027: an array came back unsorted with no error, which looked like it had worked
+    assertThat(method.execute(new String[] { "b", "a" }, null, null, null)).isEqualTo(List.of("a", "b"));
+    assertThat(method.execute(new int[] { 3, 1, 2 }, null, null, null)).isEqualTo(List.of(1, 2, 3));
+    assertThat(method.execute(new int[] { 3, 1, 2 }, null, null, new Boolean[] { false })).isEqualTo(List.of(3, 2, 1));
+  }
+
+  @Test
+  void setReceiverIsSorted() {
+    assertThat(method.execute(new LinkedHashSet<>(List.of(3, 1, 2)), null, null, null)).isEqualTo(List.of(1, 2, 3));
+  }
+
+  @Test
+  void scalarAndNullAreAnIdentity() {
+    assertThat(method.execute("abc", null, null, null)).isEqualTo("abc");
+    assertThat(method.execute(null, null, null, null)).isNull();
   }
 }

@@ -23,6 +23,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -75,5 +76,25 @@ class SQLMethodJoinTest {
         final Object result = method.execute(List.of("first", "second"), null, null, new String[]{";"});
         assertThat(result).isInstanceOf(String.class);
         assertThat(result).isEqualTo("first;second");
+    }
+
+    @Test
+    void joinAnArrayReceiver() {
+        // Issue #7027: what split() used to answer, and what a JSON array parameter still arrives as
+        assertThat(method.execute(new String[] { "first", "second" }, null, null, new Object[] { "-" })).isEqualTo("first-second");
+        assertThat(method.execute(new int[] { 3, 1, 2 }, null, null, new Object[] { "-" })).isEqualTo("3-1-2");
+    }
+
+    @Test
+    void joinASetHonoursTheSeparator() {
+        // Issue #7027: a Set receiver used to come back as the set's own toString(), separator ignored
+        final Object result = method.execute(new LinkedHashSet<>(List.of("first", "second")), null, null, new Object[] { "-" });
+        assertThat(result).isEqualTo("first-second");
+    }
+
+    @Test
+    void joinAnIterableReceiver() {
+        final Iterable<String> iterable = () -> List.of("a", "b").iterator();
+        assertThat(method.execute(iterable, null, null, new Object[] { "|" })).isEqualTo("a|b");
     }
 }

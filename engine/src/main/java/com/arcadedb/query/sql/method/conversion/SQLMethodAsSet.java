@@ -50,6 +50,9 @@ public class SQLMethodAsSet extends AbstractSQLMethod {
 
     if (value instanceof Collection<?>) {
       return new HashSet<>((Collection<Object>) value);
+    } else if (value.getClass().isArray()) {
+      // SAME AS asList(): AN ARRAY IS A COLLECTION OF ITS ELEMENTS, NOT A SINGLE ITEM (ISSUE #7027)
+      return new HashSet<>(listReceiverOrNull(value));
     } else if (value instanceof Iterable<?> iterable) {
       value = iterable.iterator();
     }

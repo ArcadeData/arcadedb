@@ -38,7 +38,8 @@ class Issue6981ShutdownHookHintTest {
 
   @Test
   void startingWarningMustNotAdviseRaisingTheSettingItIgnores() {
-    final String message = ArcadeDBServer.shutdownHookLockTimeoutWarning(2_000, ArcadeDBServer.STATUS.STARTING);
+    final String message = ArcadeDBServer.shutdownHookLockTimeoutWarning(2_000, ArcadeDBServer.STATUS.STARTING,
+        ArcadeDBServer.ShutdownHookBound.STARTING_NO_DATABASES);
 
     assertThat(message).contains("2000ms").contains("STARTING");
     assertThat(message)
@@ -53,7 +54,8 @@ class Issue6981ShutdownHookHintTest {
   void warningOutsideStartingKeepsTheRaiseHint() {
     for (final ArcadeDBServer.STATUS status : new ArcadeDBServer.STATUS[] { ArcadeDBServer.STATUS.OFFLINE,
         ArcadeDBServer.STATUS.ONLINE, ArcadeDBServer.STATUS.SHUTTING_DOWN }) {
-      final String message = ArcadeDBServer.shutdownHookLockTimeoutWarning(60_000, status);
+      final String message = ArcadeDBServer.shutdownHookLockTimeoutWarning(60_000, status,
+          ArcadeDBServer.ShutdownHookBound.CONFIGURED);
 
       assertThat(message).contains("60000ms").contains(status.toString());
       assertThat(message)
@@ -82,7 +84,8 @@ class Issue6981ShutdownHookHintTest {
     // keeps the two in step, and a description quoting a bound the hook no longer applies is exactly the
     // defect #6981 reports - one module edit away from coming back.
     final Matcher bound = Pattern.compile("fixed (\\d+)ms bound")
-        .matcher(ArcadeDBServer.shutdownHookLockTimeoutWarning(2_000, ArcadeDBServer.STATUS.STARTING));
+        .matcher(ArcadeDBServer.shutdownHookLockTimeoutWarning(2_000, ArcadeDBServer.STATUS.STARTING,
+        ArcadeDBServer.ShutdownHookBound.STARTING_NO_DATABASES));
 
     assertThat(bound.find()).as("the STARTING warning must state the fixed bound it applied").isTrue();
 

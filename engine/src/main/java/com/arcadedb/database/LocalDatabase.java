@@ -1500,8 +1500,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public void deleteRecordNoLock(final Record record) {
-    deleteRecordNoLock(record, null);
+  public boolean deleteRecordNoLock(final Record record) {
+    return deleteRecordNoLock(record, null);
   }
 
   /**
@@ -1510,19 +1510,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    *                         {@link #deleteEdgeSkippingEndpoint(Edge, RID)}). Ignored for any other record type,
    *                         and always {@code null} on the ordinary delete path.
    */
-  private void deleteRecordNoLock(final Record record, final RID skipEdgeEndpoint) {
+  private boolean deleteRecordNoLock(final Record record, final RID skipEdgeEndpoint) {
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
 
-    // INVOKE EVENT CALLBACKS
+    // INVOKE EVENT CALLBACKS. This is the ONE place the delete listeners are dispatched from: every caller, the
+    // asynchronous delete task included, reaches the listeners through here (issue #7003).
     if (!events.onBeforeDelete(record))
-      return;
+      return false;
     if (record instanceof Document document)
       if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeDelete(record))
-        return;
+        return false;
 
     boolean success = false;
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
@@ -1634,6 +1635,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           wrappedDatabaseInstance.rollback();
       }
     }
+    return true;
   }
 
   /** The INDEX/EXTERNAL cleanup could not read the record, so the delete proceeds without it. */

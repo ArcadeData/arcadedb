@@ -353,8 +353,8 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void deleteRecordNoLock(final Record record) {
-    wrapped.deleteRecordNoLock(record);
+  public boolean deleteRecordNoLock(final Record record) {
+    return wrapped.deleteRecordNoLock(record);
   }
 
   @Override

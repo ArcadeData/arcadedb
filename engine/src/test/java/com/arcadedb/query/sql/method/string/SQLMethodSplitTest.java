@@ -28,6 +28,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@SuppressWarnings("unchecked")
 class SQLMethodSplitTest {
 
   private SQLMethod method;
@@ -52,9 +53,9 @@ class SQLMethodSplitTest {
   void splitByComma() {
     //null separator
     final Object result = method.execute("first,second", null, null, new Object[]{","});
-    assertThat(result).isInstanceOf(String[].class);
-    final String[] splitted = (String[]) result;
-    assertThat(splitted).hasSize(2).contains("first", "second");
+    // A List, not a String[] (issue #7027): the same answer as the split() function and the Cypher split()
+    assertThat(result).isInstanceOf(List.class);
+    assertThat((List<Object>) result).containsExactly("first", "second");
   }
 
   @Test
@@ -65,9 +66,8 @@ class SQLMethodSplitTest {
     // regex-metacharacter behavior (a "." delimiter split on every character instead of the literal dot) and
     // to catastrophic backtracking for a maliciously-crafted delimiter.
     final Object result = method.execute("a.b.c", null, null, new Object[] { "." });
-    assertThat(result).isInstanceOf(String[].class);
-    final String[] splitted = (String[]) result;
-    assertThat(splitted).containsExactly("a", "b", "c");
+    assertThat(result).isInstanceOf(List.class);
+    assertThat((List<Object>) result).containsExactly("a", "b", "c");
   }
 
   @Disabled

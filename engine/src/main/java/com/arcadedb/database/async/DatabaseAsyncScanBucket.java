@@ -55,7 +55,10 @@ public class DatabaseAsyncScanBucket implements DatabaseAsyncTask {
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
       bucket.scan((rid, view) -> {
-        if (async.isShutdown())
+        // isAborting(), not isShutdown() (issue #7004): a worker retired by a shrinking setParallelLevel() carries the
+        // shutdown flag while it drains its queue, and this scan is part of that drain. Bailing on it truncated the
+        // scan after its first record while scanType() still reported success to the caller.
+        if (async.isAborting())
           return false;
 
         final Record record = database.getRecordFactory()

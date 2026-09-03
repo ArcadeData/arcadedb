@@ -65,18 +65,7 @@ public class SQLMethodTransform extends AbstractSQLMethod {
       transformers.add(methodFactory.createMethod(o.toString()));
     }
 
-    if (value instanceof List list) {
-      final List<Object> newList = new ArrayList<>(list.size());
-      for (Object o : list) {
-        Object transformed = o;
-
-        for (SQLMethod m : transformers)
-          transformed = m.execute(transformed, null, context, EMPTY_ARGS);
-
-        newList.add(transformed);
-      }
-      return newList;
-    } else if (value instanceof Set set) {
+    if (value instanceof Set set) {
       final Set<Object> newSet = new HashSet<>(set.size());
       for (Object o : set) {
         Object transformed = o;
@@ -87,6 +76,21 @@ public class SQLMethodTransform extends AbstractSQLMethod {
         newSet.add(transformed);
       }
       return newSet;
+    }
+
+    // A LIST, AN ARRAY OR ANY OTHER COLLECTION (ISSUE #7027): SCALARS STAY AN IDENTITY
+    final List<Object> list = listReceiverOrNull(value);
+    if (list != null) {
+      final List<Object> newList = new ArrayList<>(list.size());
+      for (Object o : list) {
+        Object transformed = o;
+
+        for (SQLMethod m : transformers)
+          transformed = m.execute(transformed, null, context, EMPTY_ARGS);
+
+        newList.add(transformed);
+      }
+      return newList;
     }
 
     return value;
