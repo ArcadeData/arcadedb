@@ -114,21 +114,15 @@ public final class PairHashJoinOp implements CountOp {
     final NeighborView arm1View = arm1SingleHop ? provider.getNeighborView(arm1Directions[0], arm1EdgeTypes[0]) : null;
     final NeighborView arm2View = arm2SingleHop ? provider.getNeighborView(arm2Directions[0], arm2EdgeTypes[0]) : null;
 
-    // Every NeighborView build path below needs arm1's view; none of them runs without it. The label filter of
-    // EITHER arm needs the bucket of a node id, so the table is built once here for both, rather than inside
-    // the branch that first wanted it - arm1's filter used to be dropped by all three of those paths precisely
-    // because the table was owned by the arm2 branch (issue #6304).
-    final int[] bucketIds;
-    if (arm1View != null && (arm1Buckets != null || arm2Buckets != null)) {
-      bucketIds = new int[nodeIdUpperBound];
-      for (int v = 0; v < nodeIdUpperBound; v++) {
-        guard.checkPeriodically(v);
-        if (!provider.isNodeLive(v))
-          continue;
-        bucketIds[v] = provider.getRID(v).getBucketId();
-      }
-    } else
-      bucketIds = null;
+    // Every CSR build path needs the build anchor's bucket. Endpoint label filters use the same lookup, so build
+    // it once rather than resolving RIDs in each hot loop.
+    final int[] bucketIds = new int[nodeIdUpperBound];
+    for (int v = 0; v < nodeIdUpperBound; v++) {
+      guard.checkPeriodically(v);
+      if (!provider.isNodeLive(v))
+        continue;
+      bucketIds[v] = provider.getRID(v).getBucketId();
+    }
 
     // A single-hop arm's only label filter sits on its endpoint, which is the one hop it has. arm1 is single-hop
     // wherever arm1View exists, and the multi-hop arm1 case never reaches a path that reads this.
@@ -150,21 +144,23 @@ public final class PairHashJoinOp implements CountOp {
       }
 
       if (allArm2Views) {
-        return buildAndProbeInline(provider, arm1View, arm1Filter, arm2Views, arm2Buckets, probeView,
+        return buildAndProbeInline(provider, buildBuckets, arm1View, arm1Filter, arm2Views, arm2Buckets, probeView,
             nodeIdUpperBound, bucketIds, guard);
       }
     }
 
     // FALLBACK: HashMap build + probe (for cases without full NeighborView coverage)
     if (arm1View != null && arm2View != null) {
-      buildWithViews(provider, arm1View, arm1Filter, arm2View, arm2Buckets != null ? arm2Buckets[0] : null,
+      buildWithViews(provider, buildBuckets, arm1View, arm1Filter,
+          arm2View, arm2Buckets != null ? arm2Buckets[0] : null,
           pairCounts, nodeIdUpperBound, bucketIds, guard);
     } else if (arm1View != null) {
-      buildWithArm1View(arm1View, arm1Filter, provider, arm2Buckets, pairCounts, nodeIdUpperBound, bucketIds, guard);
+      buildWithArm1View(buildBuckets, arm1View, arm1Filter, provider, arm2Buckets,
+          pairCounts, nodeIdUpperBound, bucketIds, guard);
     } else {
       for (int startId = 0; startId < nodeIdUpperBound; startId++) {
         guard.check();
-        if (!provider.isNodeLive(startId))
+        if (!provider.isNodeLive(startId) || !buildBuckets.contains(bucketIds[startId]))
           continue;
         final int[] ep1Ids = CSRCountUtils.walkArm(provider, startId, arm1EdgeTypes, arm1Directions, arm1Buckets);
         if (ep1Ids.length == 0)
@@ -265,7 +261,8 @@ public final class PairHashJoinOp implements CountOp {
    * When arm2 has exactly 2 hops (the Q2 case), fuses the arm2 walk with the probe
    * check inline to avoid allocating an intermediate int[] per build node.
    */
-  private long buildAndProbeInline(final GraphTraversalProvider provider, final NeighborView arm1View,
+  private long buildAndProbeInline(final GraphTraversalProvider provider, final IntHashSet buildBuckets,
+      final NeighborView arm1View,
       final IntHashSet arm1Filter,
       final NeighborView[] arm2Views, final IntHashSet[] arm2Buckets, final NeighborView probeView,
       final int nodeIdUpperBound, final int[] bucketIds, final WorkGuard guard) {
@@ -283,7 +280,7 @@ public final class PairHashJoinOp implements CountOp {
       for (int startId = 0; startId < nodeIdUpperBound; startId++) {
         // The build node's own cost is O(arm1 x arm2 x log d), so a per-anchor check is what bounds it.
         guard.check();
-        if (!provider.isNodeLive(startId))
+        if (!provider.isNodeLive(startId) || !buildBuckets.contains(bucketIds[startId]))
           continue;
         final int a1Start = arm1View.offset(startId);
         final int a1End = arm1View.offsetEnd(startId);
@@ -324,7 +321,7 @@ public final class PairHashJoinOp implements CountOp {
     // GENERAL PATH: allocate arm2 endpoints array per build node
     for (int startId = 0; startId < nodeIdUpperBound; startId++) {
       guard.check();
-      if (!provider.isNodeLive(startId))
+      if (!provider.isNodeLive(startId) || !buildBuckets.contains(bucketIds[startId]))
         continue;
       final int a1Start = arm1View.offset(startId);
       final int a1End = arm1View.offsetEnd(startId);
@@ -357,7 +354,8 @@ public final class PairHashJoinOp implements CountOp {
    * The two endpoint filters are the labels the pattern put on the shared variables; dropping one does not make
    * the join cheaper, it makes it count endpoints the pattern excluded (issue #6304).
    */
-  private void buildWithViews(final GraphTraversalProvider provider, final NeighborView arm1View,
+  private void buildWithViews(final GraphTraversalProvider provider, final IntHashSet buildBuckets,
+      final NeighborView arm1View,
       final IntHashSet arm1Filter,
       final NeighborView arm2View, final IntHashSet arm2Filter, final LongLongHashMap pairCounts,
       final int nodeIdUpperBound, final int[] bucketIds, final WorkGuard guard) {
@@ -365,7 +363,7 @@ public final class PairHashJoinOp implements CountOp {
     final int[] arm2Nbrs = arm2View.neighbors();
     for (int startId = 0; startId < nodeIdUpperBound; startId++) {
       guard.check();
-      if (!provider.isNodeLive(startId))
+      if (!provider.isNodeLive(startId) || !buildBuckets.contains(bucketIds[startId]))
         continue;
       final int a1Start = arm1View.offset(startId);
       final int a1End = arm1View.offsetEnd(startId);
@@ -391,7 +389,8 @@ public final class PairHashJoinOp implements CountOp {
    * Uses pre-fetched NeighborViews for arm2 hops to avoid per-node getNeighborIds calls.
    * For Q2: arm1=HAS_CREATOR OUT (Comment→Person), arm2=REPLY_OF+HAS_CREATOR (Comment→Post→Person).
    */
-  private void buildWithArm1View(final NeighborView arm1View, final IntHashSet arm1Filter,
+  private void buildWithArm1View(final IntHashSet buildBuckets, final NeighborView arm1View,
+      final IntHashSet arm1Filter,
       final GraphTraversalProvider provider, final IntHashSet[] arm2Buckets, final LongLongHashMap pairCounts,
       final int nodeIdUpperBound, final int[] bucketIds, final WorkGuard guard) {
     final int[] arm1Nbrs = arm1View.neighbors();
@@ -406,7 +405,7 @@ public final class PairHashJoinOp implements CountOp {
 
     for (int startId = 0; startId < nodeIdUpperBound; startId++) {
       guard.check();
-      if (!provider.isNodeLive(startId))
+      if (!provider.isNodeLive(startId) || !buildBuckets.contains(bucketIds[startId]))
         continue;
       final int a1Start = arm1View.offset(startId);
       final int a1End = arm1View.offsetEnd(startId);
