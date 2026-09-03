@@ -2161,14 +2161,15 @@ public enum GlobalConfiguration {
       "Maximum size in bytes accepted for a single bind-message parameter value on the Postgres wire protocol. Values declaring a larger size are rejected before allocation. Default is 16MB",
       Integer.class, 16 * 1024 * 1024),
 
-  POSTGRES_SIMPLE_QUERY_MAX_ROWS("arcadedb.postgres.simpleQueryMaxRows", SCOPE.SERVER, """
-      Maximum number of rows a simple-query protocol ('Q' message) SELECT is allowed to buffer server-side before \
-      the first row is sent. Unlike the extended query protocol, the simple-query protocol has no client-driven \
-      cursor/max-rows mechanism and always expects the complete result set in one response, so the server has to \
-      hold it in memory to determine the row description (column set and types) before streaming it. A SELECT whose \
-      result exceeds this limit is refused with an error instead of risking an OutOfMemoryError; the client should \
-      use the extended query protocol with a bounded portal fetch size for very large result sets. Default is \
-      1000000""", Integer.class, 1_000_000),
+  POSTGRES_QUERY_MAX_ROWS("arcadedb.postgres.queryMaxRows", SCOPE.SERVER, """
+      Maximum number of rows the result of one statement is allowed to occupy server-side before the first row is \
+      sent to a Postgres wire protocol client, on the simple-query ('Q') and the extended-query (Parse/Bind/\
+      Describe/Execute) protocol alike. Postgres fixes the column set in the RowDescription that precedes every \
+      DataRow, and a schemaless document can carry a property no earlier row had, so the server has to see the \
+      whole result before it can announce it: on the extended protocol the portal's row limit bounds what each \
+      Execute sends, not what the server holds. A statement whose result exceeds this limit is refused with an \
+      error instead of risking an OutOfMemoryError; narrow it with a WHERE or LIMIT clause or raise the limit. \
+      0 means unlimited. Default is 1000000""", Integer.class, 1_000_000),
 
   // BOLT (Neo4j)
   BOLT_PORT("arcadedb.bolt.port", SCOPE.SERVER,

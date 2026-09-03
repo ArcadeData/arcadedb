@@ -78,6 +78,73 @@ class ContainsAnyConditionTest {
     assertThat(op.execute(left, right)).isTrue();
   }
 
+  /**
+   * Issue #7084: an array right-hand side (the result of split(), a parameter bound to a Java array) must be expanded into
+   * its items exactly as a List is, instead of being compared as one opaque object against the collection.
+   */
+  @Test
+  void arrayRightHandSide() {
+    final ContainsAnyCondition op = new ContainsAnyCondition();
+    final List<Object> left = Arrays.asList("a", "b", "c");
+
+    assertThat(op.execute(left, new String[] { "a", "x" })).isTrue();
+    assertThat(op.execute(left, new String[] { "x", "c" })).isTrue();
+    assertThat(op.execute(left, new String[] { "x", "y" })).isFalse();
+    assertThat(op.execute(left, new String[0])).isFalse();
+
+    final List<Object> numbers = Arrays.asList(1, 2, 3);
+    assertThat(op.execute(numbers, new int[] { 9, 2 })).isTrue();
+    assertThat(op.execute(numbers, new int[] { 9, 8 })).isFalse();
+    // A Java array on the left is expanded too
+    assertThat(op.execute(new String[] { "a", "b" }, new String[] { "b" })).isTrue();
+    assertThat(op.execute(new String[] { "a", "b" }, Arrays.asList("x", "a"))).isTrue();
+  }
+
+  /**
+   * A byte[] is the BINARY scalar: it is the value being searched for, not a list of numbers to expand.
+   */
+  @Test
+  void byteArrayRightHandSideStaysScalar() {
+    final ContainsAnyCondition op = new ContainsAnyCondition();
+    final byte[] binary = new byte[] { 1, 2 };
+
+    assertThat(op.execute(Arrays.asList(1, 2, 3), binary)).isFalse();
+    assertThat(op.execute(Arrays.asList("x", binary), binary)).isTrue();
+  }
+
+  /**
+   * Both left-hand shapes must answer alike: the Collection branch used to compare with strict equals() while the
+   * Iterable branch applied its own comparison, so [1,2,3] CONTAINSANY [2L] depended on the left operand's concrete type.
+   */
+  @Test
+  void numericWideningIsIndependentOfLeftShape() {
+    final ContainsAnyCondition op = new ContainsAnyCondition();
+    final List<Object> collection = Arrays.asList(1, 2, 3);
+    final Iterable<Object> iterable = collection::iterator;
+
+    assertThat(op.execute(collection, Arrays.asList(2L))).isTrue();
+    assertThat(op.execute(iterable, Arrays.asList(2L))).isTrue();
+    assertThat(op.execute(collection, 2L)).isTrue();
+    assertThat(op.execute(iterable, 2L)).isTrue();
+    assertThat(op.execute(collection, 4L)).isFalse();
+    assertThat(op.execute(iterable, 4L)).isFalse();
+  }
+
+  /**
+   * The Iterable branch iterated the left operand only once, so a right-hand item after the first one could never be
+   * found once the left iterator was exhausted.
+   */
+  @Test
+  void iterableLeftIsRescannedForEveryRightItem() {
+    final ContainsAnyCondition op = new ContainsAnyCondition();
+    final Iterable<Object> left = Arrays.<Object>asList(1, 2)::iterator;
+
+    assertThat(op.execute(left, Arrays.asList(9, 1))).isTrue();
+    assertThat(op.execute(left, Arrays.asList(9, 8, 2))).isTrue();
+    assertThat(op.execute(left, Arrays.asList(9, 8))).isFalse();
+    assertThat(op.execute(Arrays.<Object>asList(1, 2).iterator(), Arrays.asList(9, 2))).isTrue();
+  }
+
   @Test
   void issue1785() {
     final ContainsAnyCondition op = new ContainsAnyCondition();

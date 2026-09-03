@@ -43,5 +43,35 @@ public class Selection extends SimpleNode {
   public FieldWithAlias getFieldWithAlias() {
     return fieldWithAlias;
   }
+
+  /**
+   * The field node of this selection whichever way it was written: {@code field} for a plain {@code name}, {@code fieldWithAlias}
+   * for {@code alias: name}. Null for an ellipsis selection (fragment spread / inline fragment). Every consumer that resolves a
+   * selection against the schema must go through this (or the accessors below) rather than through {@link #getField()} alone,
+   * or an aliased selection silently resolves to nothing (issues #6384, #6453, #7036).
+   */
+  public AbstractField getAnyField() {
+    return field != null ? field : fieldWithAlias;
+  }
+
+  /**
+   * The real field name to resolve against the schema: the aliased-away name for {@code alias: name}, otherwise
+   * {@link #getName()}, which for an aliased selection carries the alias instead.
+   */
+  public String getFieldName() {
+    return fieldWithAlias != null ? fieldWithAlias.getName() : getName();
+  }
+
+  public Arguments getArguments() {
+    if (field != null)
+      return field.getArguments();
+    return fieldWithAlias != null ? fieldWithAlias.getArguments() : null;
+  }
+
+  public SelectionSet getSelectionSet() {
+    if (field != null)
+      return field.getSelectionSet();
+    return fieldWithAlias != null ? fieldWithAlias.getSelectionSet() : null;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=aac9a2d576730b830f5ef7c02bdf7951 (do not edit this line) */
