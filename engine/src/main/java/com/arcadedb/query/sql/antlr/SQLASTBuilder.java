@@ -3861,8 +3861,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     // Process modifiers if present (e.g., (SELECT ...).name or (SELECT ...)[0])
-    if (CollectionUtils.isNotEmpty(ctx.modifier()))
-      result.setModifier(buildModifierChain(ctx.modifier()));
+    result.setModifier(buildModifierChain(ctx.modifier()));
 
     return result;
   }
@@ -3882,8 +3881,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     baseExpr.parenthesized = true;
 
     // Process modifiers if present
-    if (CollectionUtils.isNotEmpty(ctx.modifier()))
-      baseExpr.setModifier(buildModifierChain(ctx.modifier()));
+    baseExpr.setModifier(buildModifierChain(ctx.modifier()));
 
     return baseExpr;
   }
