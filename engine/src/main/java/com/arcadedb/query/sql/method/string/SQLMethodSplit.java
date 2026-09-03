@@ -50,6 +50,9 @@ public class SQLMethodSplit extends AbstractSQLMethod {
     // A List, not the String[] String.split() hands back (issue #7027): the SQL split() function, the Cypher split()
     // function and the documentation of this very method all answer a list, and this was the only one of the four
     // that leaked the raw Java array - the one receiver shape most of the collection methods then mishandled.
+    // Immutable on purpose (and safe: String.split() never yields a null element, which List.of() would reject). A
+    // consumer that needs to mutate the result copies it first, as every collection method does through
+    // AbstractSQLMethod.listReceiverOrNull().
     return List.of(value.toString().split(Pattern.quote(params[0].toString())));
   }
 }
