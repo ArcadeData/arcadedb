@@ -89,6 +89,14 @@ import java.util.logging.Level;
  * the query result will be the TreeMap ordered by score, so if the query has a limit, only the first X items will be returned ordered by score desc
  */
 public class LSMTreeFullTextIndex implements Index, IndexInternal {
+  /**
+   * The Lucene field name every stored token is analyzed under, whatever property it comes from. A field-aware analyzer
+   * decides how to fold text by this name, so the query side normalizes a non-exact term under the same one (see
+   * {@code FullTextQueryExecutor.normalizeText}) rather than under the query's own qualifier, or the two sides would fold
+   * differently (issue #7000).
+   */
+  static final String ANALYZED_FIELD = "contents";
+
   /** Max query terms detailed in an EXPLAIN/PROFILE scoring breakdown (each costs one posting scan); beyond it the output is truncated. */
   private static final int MAX_EXPLAIN_TERMS = 64;
 
@@ -1595,7 +1603,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * Tokenizes a single non-null value with the analyzer and appends the resulting tokens to {@code tokens}.
    */
   private static void tokenize(final Analyzer analyzer, final Object value, final List<String> tokens) {
-    final TokenStream tokenizer = analyzer.tokenStream("contents", value.toString());
+    final TokenStream tokenizer = analyzer.tokenStream(ANALYZED_FIELD, value.toString());
     try {
       tokenizer.reset();
       final CharTermAttribute termAttribute = tokenizer.getAttribute(CharTermAttribute.class);
