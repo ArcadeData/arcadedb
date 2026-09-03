@@ -57,6 +57,7 @@ import com.arcadedb.schema.TypeLSMSparseVectorIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.serializer.json.NonFiniteNumbers;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -529,27 +530,21 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   }
 
   /**
-   * Reverses {@code JsonlExporterFormat.encodeSampleValue}: the non-finite doubles travel as string markers
+   * Reverses the exporter's {@link NonFiniteNumbers#encode}: the non-finite doubles travel as string markers
    * because {@code JSONArray.put(Number)} would otherwise rewrite them to 0, turning "no measurement" into a
    * measurement of zero. Every other value passes through - {@code ObjectColumnsRowSource} accepts any
    * {@link Number} for a numeric column, so JSON's widening does no harm.
    */
   private static Object decodeSampleValue(final Object value, final Type dataType) {
     if (value instanceof String text && (dataType == Type.DOUBLE || dataType == Type.FLOAT)) {
-      switch (text) {
-      case "NaN":
-        return Double.NaN;
-      case "PosInfinity":
-        return Double.POSITIVE_INFINITY;
-      case "NegInfinity":
-        return Double.NEGATIVE_INFINITY;
-      default:
-        // Not reachable from an export this build wrote - encodeSampleValue only ever emits the three markers
-        // above. Kept as a tolerant parse for a hand-written or foreign-tool file that quoted a plain number,
-        // which is otherwise a perfectly well-formed sample; a genuinely unparseable token still fails loudly,
-        // through the same per-line row-error policy as anything else on the line.
-        return Double.parseDouble(text);
-      }
+      final Double marker = NonFiniteNumbers.decode(text);
+      if (marker != null)
+        return marker;
+      // Not reachable from an export this build wrote - the exporter only ever emits the three markers. Kept as
+      // a tolerant parse for a hand-written or foreign-tool file that quoted a plain number, which is otherwise
+      // a perfectly well-formed sample; a genuinely unparseable token still fails loudly, through the same
+      // per-line row-error policy as anything else on the line.
+      return Double.parseDouble(text);
     }
     return value;
   }

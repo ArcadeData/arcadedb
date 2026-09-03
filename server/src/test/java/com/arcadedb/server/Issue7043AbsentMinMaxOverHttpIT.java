@@ -86,6 +86,44 @@ class Issue7043AbsentMinMaxOverHttpIT extends BaseGraphServerTest {
   }
 
   /**
+   * The RAW (non-aggregated) branches carry the same exposure: a NaN sample there means the same "no
+   * measurement", and JSON has no literal for it either way.
+   */
+  @Test
+  void aRawNaNSampleIsNullNotZeroOnBothEndpoints() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeWithOnlyNaNSamples(serverIndex);
+
+      // --- /ts/<db>/query, raw branch: rows of [ts, value] ---
+      final JSONObject raw = new JSONObject();
+      raw.put("type", TYPE);
+      raw.put("from", 0L);
+      raw.put("to", 10_000L);
+      final JSONArray rows = postJson(serverIndex, "/api/v1/ts/graph/query", raw).getJSONArray("rows");
+      assertThat(rows.length()).isEqualTo(2);
+      assertThat(rows.getJSONArray(0).isNull(1)).as("a raw NaN sample must be JSON null, not 0").isTrue();
+
+      // --- /ts/<db>/grafana/query, raw branch: columnar, value column last ---
+      final JSONArray targets = new JSONArray();
+      final JSONObject target = new JSONObject();
+      target.put("refId", "A");
+      target.put("type", TYPE);
+      targets.put(target);
+
+      final JSONObject grafana = new JSONObject();
+      grafana.put("from", 0L);
+      grafana.put("to", 10_000L);
+      grafana.put("targets", targets);
+
+      final JSONArray columns = postJson(serverIndex, "/api/v1/ts/graph/grafana/query", grafana)
+          .getJSONObject("results").getJSONObject("A").getJSONArray("frames")
+          .getJSONObject(0).getJSONObject("data").getJSONArray("values");
+      final JSONArray valueColumn = columns.getJSONArray(columns.length() - 1);
+      assertThat(valueColumn.isNull(0)).as("Grafana raw column must carry a gap, not a zero").isTrue();
+    });
+  }
+
+  /**
    * The same endpoint must still return real numbers: the null is the absent marker, not a blanket rule.
    */
   @Test

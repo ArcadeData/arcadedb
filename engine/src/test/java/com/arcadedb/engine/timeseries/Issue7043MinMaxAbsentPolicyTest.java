@@ -143,6 +143,12 @@ class Issue7043MinMaxAbsentPolicyTest extends TestHelper {
       final long bucketTs = multi.getBucketTimestamps().getFirst();
       assertThat(multi.getValue(bucketTs, 0)).as("sealed-block MIN over an all-NaN column").isNaN();
       assertThat(multi.getValue(bucketTs, 1)).as("sealed-block MAX over an all-NaN column").isNaN();
+
+      // The DEEP check reconciles the declared statistics against the decoded values, and NaN is now a
+      // legitimate declaration: a plain '!=' there would report this healthy block as damaged, because
+      // NaN != NaN.
+      assertThat(engine.checkIntegrity(TimeSeriesIntegrity.Options.deepOnly()).problems())
+          .as("an all-NaN block declares NaN statistics and that is correct, not damage").isEmpty();
       database.commit();
     } finally {
       engine.drop();
@@ -188,6 +194,9 @@ class Issue7043MinMaxAbsentPolicyTest extends TestHelper {
       final long bucketTs = multi.getBucketTimestamps().getFirst();
       assertThat(multi.getValue(bucketTs, 0)).isEqualTo(10.0);
       assertThat(multi.getValue(bucketTs, 1)).isEqualTo(41.0);
+
+      // The same misalignment would make the DEEP check reconcile a column against another column's statistics.
+      assertThat(engine.checkIntegrity(TimeSeriesIntegrity.Options.deepOnly()).problems()).isEmpty();
       database.commit();
     } finally {
       engine.drop();
