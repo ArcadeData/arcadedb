@@ -58,15 +58,12 @@
             (TruffleBaseFeature.afterRegistration) fails at build time with NoSuchMethodError
             OptimizedTruffleRuntime.getLoopNodeFactory(), because the SVM Truffle runtime bundled in
             the builder is compiled against a different Truffle API than the one the engine pulls
-            transitively. Pinning here (native module only) leaves the JVM engine build untouched
-            while letting the JS language embed into the image: engine/pom.xml's own
-            graalvm.version tracks the latest independently and is 25.2.4 as of this commit, and
-            the dependencyManagement block below is what insulates the image from it - every
-            org.graalvm.* coordinate resolves at THIS version regardless of what engine asks for.
-            Verified by building the image with the two at 25.0.2 and 25.2.4 and running
-            native/src/test/scripts/smoke.sh against it, JS round-trip included. The one constraint
-            that arrangement creates runs one way: the image resolves the older of the two, so
-            engine code must stay within the API of whatever is pinned here.
+            transitively. engine/pom.xml's graalvm.version is held at this SAME version rather
+            than tracking the latest independently: the dependencyManagement block below would
+            insulate the image either way, but a split means engine bytecode compiled against one
+            Truffle API runs against another inside the image, and the only thing between that and
+            a NoSuchMethodError is nobody having reached for the newer API yet. One version
+            everywhere costs nothing and removes the question.
 
             WHY A MAINLINE VERSION, AND WHY THIS ONE. The pin has to be a build a contributor can
             actually install, because the builder is not optional: without a matching GRAALVM_HOME

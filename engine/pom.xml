@@ -39,28 +39,32 @@
         <lz4-java.version>1.11.2</lz4-java.version>
         <lucene.version>10.5.1</lucene.version>
         <!--
-            This does NOT have to equal native/pom.xml's native.graalvm.version, and as of this
-            commit it does not: that property is 25.0.2 while this one is 25.2.4. The pair that
-            must move in lockstep is native.graalvm.version and native-image.yml's setup-graalvm
-            input - a skew between THOSE two breaks the image build at feature registration (see
-            native/pom.xml's native.graalvm.version comment for the failure mode). This property
-            governs the JVM-side JS engine only and tracks the latest independently, which is also
-            what .github/dependabot.yml says when it explains why the org.graalvm.* coordinates
-            are not ignored wholesale.
+            ONE GraalVM version, everywhere. This property, native/pom.xml's
+            native.graalvm.version and native-image.yml's setup-graalvm java-version are all
+            25.0.2 and must be changed together, in one commit, or not at all.
 
-            The independence is structural, not luck: native/pom.xml declares dependencyManagement
-            entries for every org.graalvm.* coordinate at ${native.graalvm.version}, so the native
-            image resolves those rather than the versions this module asks for. Verified by
-            building the image with the two at 25.0.2 and 25.2.4 respectively and running
-            native/src/test/scripts/smoke.sh against it - the JS round-trip, which is the polyglot
-            path this property feeds, passes.
+            Why they are kept equal rather than allowed to drift apart: they were 25.2.4 here and
+            25.0.2 in the native module for a while, which technically works - native/pom.xml's
+            dependencyManagement pins the org.graalvm.* coordinates for the image - but it means
+            engine bytecode compiled against one Truffle API runs against another inside the
+            image, and the only thing standing between that and a NoSuchMethodError is nobody
+            having reached for the newer API yet. Aligning them removes the whole question.
 
-            There is one real constraint in that arrangement, and it is one-way: the image resolves
-            the OLDER of the two, so engine code must stay within the API of
-            native.graalvm.version. Reaching for something added after it compiles fine here and
-            fails in the native build.
+            Why 25.0.2 specifically: it is the newest MAINLINE GraalVM CE release that exists as a
+            distribution, so it is the one every consumer can actually install - graalvm/setup-graalvm
+            fetches jdk-25.0.2 in CI, and Homebrew's graalvm-community-jdk25 cask is 25.0.2. The
+            intermediate line (25.1.x/25.2.x) ships tarballs from the graalvm-ce-builds releases
+            page and nowhere else, so pinning it makes a local native build start with a hand
+            download. See native/pom.xml's native.graalvm.version comment for the full table,
+            including why 25.0.3 and 25.0.4 look pinnable and are not.
+
+            A builder/artifact skew fails the native build at feature registration with
+            NoSuchMethodError OptimizedTruffleRuntime.getLoopNodeFactory(), which names neither
+            side of the mismatch; it has shipped to main twice.
+            .github/scripts/check-native-graalvm-pin.py fails the always-on `lint` job whenever
+            native.graalvm.version and native-image.yml disagree.
         -->
-        <graalvm.version>25.2.4</graalvm.version>
+        <graalvm.version>25.0.2</graalvm.version>
         <!--
             Bumping this requires re-checking several things LSMVectorIndex relies on that jvector does not
             contractually guarantee across versions:
