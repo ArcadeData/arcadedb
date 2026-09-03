@@ -775,10 +775,17 @@ public class FullTextQueryExecutor {
    * property is kept verbatim, and matches nothing, as before.
    */
   private String fieldPrefix(final String field) {
-    if (isUnqualified(field))
-      return "";
+    return isUnqualified(field) ? "" : storedField(field) + ":";
+  }
+
+  /**
+   * The spelling of a qualified field the postings use, or the qualifier itself when it names no indexed property. The
+   * one resolution shared by key building and analyzer normalization, so the two cannot disagree on which field a
+   * clause is about.
+   */
+  private String storedField(final String field) {
     final String storedField = storedFieldFor(propertyNames, field);
-    return (storedField != null ? storedField : field) + ":";
+    return storedField != null ? storedField : field;
   }
 
   /**
@@ -812,7 +819,9 @@ public class FullTextQueryExecutor {
   private String normalizeText(final String field, final String text) {
     if (text == null || text.isEmpty())
       return "";
-    return analyzer.normalize(isUnqualified(field) ? DEFAULT_FIELD : field, text).utf8ToString();
+    // The field is resolved to its stored spelling, like the key prefix is: an analyzer that folds per field has to be
+    // asked about the same field the write path tokenized under, or the two sides drift apart again.
+    return analyzer.normalize(isUnqualified(field) ? DEFAULT_FIELD : storedField(field), text).utf8ToString();
   }
 
   /**
