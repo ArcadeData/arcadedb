@@ -58,6 +58,20 @@ treat it as best-effort outside Linux.
 ## Building locally
 
 ```bash
+./native/scripts/build-native.sh              # host binary, with preflight checks
+./native/scripts/build-native.sh --smoke      # ... and run the smoke test against it
+```
+
+`native/scripts/build-native.sh` wraps the raw Maven command below with the three checks that turn
+this build's cryptic failures into an immediate, named error: that `JAVA_HOME`/`GRAALVM_HOME`
+really point at a GraalVM home with `bin/native-image`; that the builder is the version
+`native/pom.xml` pins its Truffle artifacts to (the `getLoopNodeFactory()` skew below, which has
+shipped to main twice); and, for a musl-static build, that the musl toolchain and its static
+`libz.a` are in place before the link step rather than after several minutes of compilation. It
+also picks the link mode CI uses for the host platform, and locates the produced binary the same
+way the workflow does. Pass `--` to forward extra arguments to Maven, or use the raw command:
+
+```bash
 mvn -Pnative -pl native -am -DskipTests package
 ```
 
@@ -222,6 +236,41 @@ reaches the Docker jobs. A manual `workflow_dispatch` run still builds and smoke
 (`--load` into the runner's local Docker daemon) without logging into Docker Hub or pushing anything,
 so the Dockerfiles can be validated end to end from any branch without publishing under
 `arcadedata/arcadedb`.
+
+### Building the images locally
+
+```bash
+./native/scripts/build-native-docker.sh                    # host arch, build + smoke, no push
+./native/scripts/build-native-docker.sh --port 2481        # ... if something already holds 2480
+./native/scripts/build-native-docker.sh --skip-binary-build  # iterate on the Dockerfiles only
+```
+
+`native/scripts/build-native-docker.sh` produces the same per-arch image the workflow publishes,
+from your working tree, without a registry. It does in one pass what CI splits across the `build`
+and `docker` jobs: build a throwaway builder image
+(`native/src/main/docker/Dockerfile.native-builder`) carrying the pinned GraalVM CE builder and -
+for amd64 - the musl toolchain with its musl-built static zlib; run the ordinary Maven native
+build **inside** it with the repository bind-mounted, so the Linux binary lands in `native/target`
+on the host; stage the build context the way the workflow's "Stage build context" step does; build
+the runtime image with `buildx --load`; then run `exercise.sh` against the container and scan its
+startup log, the same two assertions the workflow's "Smoke the container" step makes.
+
+The container step is what makes this work on a machine that is not Linux at all. Native Image
+cannot cross-compile, so a macOS host has no other way to produce the Linux binary these images
+need. Both **runtime** Dockerfiles are used unmodified, so what you get is the shipped image
+rather than a local approximation; only the builder image is local-only, and it is never published.
+
+The GraalVM download URL is resolved at build time from the `graal-<version>` release matching
+`native/pom.xml`'s `native.graalvm.version`, so the builder cannot drift from the pin the way a
+hardcoded URL would - see that property's comment for why that matters. The Maven repository and
+the `./mvnw` distribution are cached in `~/.cache/arcadedb-native-m2` (override with
+`ARCADEDB_NATIVE_M2`), so only the first run pays for populating them.
+
+The default architecture is the host's. Building the other one needs `--allow-emulation` and runs
+the entire native-image build under QEMU, which takes hours and often runs out of memory - that is
+why CI's `docker` job gives each architecture its own native runner instead of one runner with
+`buildx --platform`. The image is tagged `arcadedb:<version>-native-<arch>-local` by default, which
+deliberately is not a publishable `arcadedata/arcadedb` name.
 
 ## Running the container
 

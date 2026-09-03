@@ -1,0 +1,123 @@
+# syntax=docker/dockerfile:1
+#
+# Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+# SPDX-License-Identifier: Apache-2.0
+#
+# BUILD-TIME TOOLCHAIN ONLY - this image is never published and never runs ArcadeDB. It exists so
+# `native/scripts/build-native-docker.sh` can produce the LINUX native binary on a machine that is
+# not Linux: GraalVM Native Image cannot cross-compile, so a macOS host has no other way to build
+# the binary that goes into Dockerfile.native.scratch / Dockerfile.native.distroless. The script
+# builds this image, then runs the ordinary Maven native build inside it with the repository
+# bind-mounted, so the binary lands in native/target on the host exactly as a Linux host build
+# would leave it. The two runtime Dockerfiles are untouched by this and stay the artifacts CI
+# publishes.
+#
+# It reproduces what .github/workflows/native-image.yml's build job sets up on its runners:
+# the pinned GraalVM CE builder, and - for the amd64 leg only - the musl toolchain plus a
+# musl-built static zlib.
+#
+# Pinned by manifest-list digest (resolves per-architecture, so one digest serves both the amd64
+# and arm64 builds) to match this repo's other base-image pins. Refresh with:
+#   docker buildx imagetools inspect ubuntu:24.04 --format '{{.Manifest.Digest}}'
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+
+# GRAALVM_URL / GRAALVM_SHA256 are resolved by build-native-docker.sh from the GitHub release for
+# tag graal-<native.graalvm.version>, reading that version out of native/pom.xml. They are NOT
+# defaulted here on purpose: a default would be a second place the GraalVM version is written
+# down, and a stale one would reintroduce exactly the builder/Truffle skew that
+# native/pom.xml's native.graalvm.version comment documents (it has shipped to main twice). The
+# asset name cannot be derived from the version either - the pinned 25.2.4 publishes as
+# graalvm-community-jdk-25i2-25.0.4_linux-<arch>_bin.tar.gz - so the script asks the release API
+# rather than constructing it.
+ARG GRAALVM_URL
+ARG GRAALVM_SHA256
+# amd64 | arm64. Selects whether the musl toolchain below is installed; see that step.
+ARG TARGET_ARCH
+ARG ZLIB_VERSION=1.3.2
+
+# build-essential/zlib1g-dev are what native-image's link step needs for the default (glibc) and
+# mostly-static builds. curl+unzip are for the GraalVM download and for ./mvnw, which is
+# configured as distributionType=only-script and fetches Maven itself on first use. git is here
+# because a Maven build in a git checkout can invoke plugins that shell out to it.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        unzip \
+        git \
+        build-essential \
+        zlib1g-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    test -n "$GRAALVM_URL"; \
+    test -n "$GRAALVM_SHA256"; \
+    curl -fsSL "$GRAALVM_URL" -o /tmp/graalvm.tar.gz; \
+    echo "${GRAALVM_SHA256}  /tmp/graalvm.tar.gz" | sha256sum -c -; \
+    mkdir -p /opt/graalvm; \
+    tar xzf /tmp/graalvm.tar.gz -C /opt/graalvm --strip-components=1; \
+    rm -f /tmp/graalvm.tar.gz; \
+    /opt/graalvm/bin/native-image --version
+
+# musl toolchain, amd64 ONLY, mirroring native-image.yml's "Set up musl toolchain" step - both
+# what it installs and why:
+#   - musl-dev provides the arch-prefixed wrapper native-image's musl probe looks for
+#     (x86_64-linux-musl-gcc, oracle/graal#7103) plus musl's static libc.a and headers under
+#     /usr/{include,lib}/x86_64-linux-musl/; musl-tools adds the unprefixed musl-gcc wrapper.
+#   - zlib is rebuilt from source against musl because native-image links libz for the JDK's
+#     zip/net code. It MUST be installed into that same triplet directory: musl-gcc's generated
+#     specs file passes -nostdinc/-nostdlib and restricts search to it, with no fallback to
+#     /usr/include or /usr/lib, so a plain --prefix=/usr install stays invisible and the -lz link
+#     step fails.
+# arm64 deliberately skips all of this: GraalVM CE ships no static musl JDK libraries for
+# aarch64 (oracle/graal#4645, closed not-planned), so --static --libc=musl can never link there
+# regardless of toolchain. That leg builds -Dnative.mostlystatic=true instead, which needs no
+# musl at all. Same split as the CI matrix.
+RUN set -eux; \
+    if [ "$TARGET_ARCH" = "amd64" ]; then \
+        apt-get update; \
+        apt-get install -y --no-install-recommends musl-tools musl-dev; \
+        rm -rf /var/lib/apt/lists/*; \
+        TRIPLET="$(uname -m)-linux-musl"; \
+        MUSL_GCC="${TRIPLET}-gcc"; \
+        command -v "$MUSL_GCC" >/dev/null; \
+        curl -fsSL "https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz" -o /tmp/zlib.tar.gz; \
+        tar xzf /tmp/zlib.tar.gz -C /tmp; \
+        cd "/tmp/zlib-${ZLIB_VERSION}"; \
+        CC="$MUSL_GCC" ./configure --static --prefix=/usr \
+            --includedir="/usr/include/${TRIPLET}" --libdir="/usr/lib/${TRIPLET}"; \
+        make -j"$(nproc)"; \
+        make install; \
+        cd /; \
+        rm -rf "/tmp/zlib-${ZLIB_VERSION}" /tmp/zlib.tar.gz; \
+        "$MUSL_GCC" -print-file-name=libz.a; \
+    else \
+        echo "TARGET_ARCH=${TARGET_ARCH}: skipping musl toolchain (mostly-static build needs none)"; \
+    fi
+
+# native-maven-plugin resolves the builder from GRAALVM_HOME/JAVA_HOME, never from PATH, so both
+# are set - see docs/native-image.md "Prerequisites".
+ENV JAVA_HOME=/opt/graalvm \
+    GRAALVM_HOME=/opt/graalvm \
+    PATH=/opt/graalvm/bin:$PATH
+
+# The script bind-mounts the repository here and runs as the HOST's uid:gid, so everything the
+# build writes (target/ trees, the binary) is owned by the invoking user rather than by root.
+# That means no HOME and no /etc/passwd entry for that uid inside the container: the script
+# passes HOME explicitly, pointing at a cache directory it creates on the host, so ./mvnw and the
+# local Maven repository have somewhere writable to live and stay warm between runs.
+WORKDIR /workspace
