@@ -144,6 +144,24 @@ class JavaFunctionTest extends TestHelper {
     }
   }
 
+  public static class VarargsUnsuppliedComponent {
+    public static String narrow(final int... values) {
+      return "ints";
+    }
+
+    public static String narrow(final long first, final short... rest) {
+      return "long+shorts";
+    }
+
+    public static String widen(final long... values) {
+      return "longs";
+    }
+
+    public static String widen(final int first, final long... rest) {
+      return "int+longs";
+    }
+  }
+
   public static class VarargsOverloaded {
     public static String join(final String sep, final String... parts) {
       return "strs:" + String.join(sep, parts);
@@ -508,6 +526,28 @@ class JavaFunctionTest extends TestHelper {
           .hasMessageContaining("cannot resolve which overload");
     } finally {
       database.getSchema().unregisterFunctionLibrary("tie");
+    }
+  }
+
+  @Test
+  void unsuppliedVarargComponentTakesPartInSpecificity()
+    throws Exception {
+    // JLS 15.12.2.5 compares the expanded signatures, including the vararg component the call never supplied: for one
+    // int, narrow(int...) is narrower than narrow(long, short...) in the first position but not in the second (int does
+    // not widen into short), so javac reports the call ambiguous; widen(int, long...) beats widen(long...) in the first
+    // position and ties in the second, so it wins.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("vac", JavaFunctionTest.VarargsUnsuppliedComponent.class));
+    try {
+      final var narrow = database.getSchema().getFunction("vac", "narrow");
+      assertThatThrownBy(() -> narrow.execute(1))
+          .isInstanceOf(FunctionExecutionException.class)
+          .hasMessageContaining("cannot resolve which overload");
+
+      final var widen = database.getSchema().getFunction("vac", "widen");
+      assertThat(widen.execute(1)).isEqualTo("int+longs");
+      assertThat(widen.execute(1L)).isEqualTo("longs");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("vac");
     }
   }
 

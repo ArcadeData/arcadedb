@@ -271,7 +271,7 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     if (applicable == null)
       return match;
 
-    final Method mostSpecific = mostSpecific(applicable, args.length);
+    final Method mostSpecific = mostSpecific(applicable, args.length, prePacked(applicable, args));
     if (mostSpecific == null)
       throw ambiguousOverloadException(allCandidates, args);
     return mostSpecific;
@@ -283,9 +283,18 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
    * overload exists and the call is genuinely ambiguous (issue #7110). Requiring strictness keeps a tie ambiguous, as
    * javac does: {@code f(String...)} and {@code f(String, String...)} see the same parameter type in every position of a
    * two-argument call, and neither may silently win.
+   * <p>
+   * The comparison spans the longest applicable signature, not only the positions the call supplied: JLS 15.12.2.5
+   * also weighs the vararg component an overload with one more parameter than the call did not receive, which is what
+   * keeps {@code f(int...)} against {@code f(long, short...)} ambiguous for a single {@code int} ({@code int} narrows
+   * into {@code long} but not into {@code short}) while {@code f(int...)} beats {@code f(int, long...)}.
    */
-  private static Method mostSpecific(final List<Method> applicable, final int argCount) {
+  private static Method mostSpecific(final List<Method> applicable, final int argCount, final boolean prePacked) {
     final int size = applicable.size();
+    int positions = argCount;
+    for (final Method m : applicable)
+      positions = Math.max(positions, m.getParameterCount());
+
     for (int i = 0; i < size; i++) {
       final Method candidate = applicable.get(i);
       boolean dominates = true;
@@ -293,7 +302,7 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
         if (j == i)
           continue;
         final Method other = applicable.get(j);
-        if (!isAtLeastAsSpecific(candidate, other, argCount) || isAtLeastAsSpecific(other, candidate, argCount))
+        if (!isAtLeastAsSpecific(candidate, other, positions, prePacked) || isAtLeastAsSpecific(other, candidate, positions, prePacked))
           dominates = false;
       }
       if (dominates)
@@ -303,14 +312,28 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
   }
 
   /**
-   * True when, in every argument position, {@code m1}'s parameter type is the same as {@code m2}'s or a primitive that
-   * widens into it (JLS 15.12.2.5 restricted to primitive parameters). Two reference parameter types that differ are
-   * deliberately not ranked (see the class Javadoc), so they make the pair incomparable.
+   * True when the vararg part was passed pre-packed (see {@link #isPrePacked}) to every applicable overload: the
+   * pre-packed array is then compared as the array type itself, exactly as {@link #acceptsArgumentTypes} matched it.
+   * The applicable set is uniform here - either the trailing argument is an array instance of every candidate's vararg
+   * type or of none - so one flag describes them all.
    */
-  private static boolean isAtLeastAsSpecific(final Method m1, final Method m2, final int argCount) {
-    for (int i = 0; i < argCount; i++) {
-      final Class<?> p1 = parameterTypeAt(m1, i);
-      final Class<?> p2 = parameterTypeAt(m2, i);
+  private static boolean prePacked(final List<Method> applicable, final Object[] args) {
+    for (final Method m : applicable)
+      if (m.isVarArgs() && isPrePacked(m, args))
+        return true;
+    return false;
+  }
+
+  /**
+   * True when, in every position up to {@code positions}, {@code m1}'s parameter type is the same as {@code m2}'s or a
+   * primitive that widens into it (JLS 15.12.2.5 restricted to primitive parameters). Two reference parameter types that
+   * differ are deliberately not ranked (see the class Javadoc), so they make the pair incomparable; a pre-packed vararg
+   * array compares as the array type, and two different array types are reference types that differ.
+   */
+  private static boolean isAtLeastAsSpecific(final Method m1, final Method m2, final int positions, final boolean prePacked) {
+    for (int i = 0; i < positions; i++) {
+      final Class<?> p1 = parameterTypeAt(m1, i, prePacked);
+      final Class<?> p2 = parameterTypeAt(m2, i, prePacked);
       if (p1 != p2 && !(p1.isPrimitive() && WIDENING_CONVERSIONS.getOrDefault(p1, Set.of()).contains(p2)))
         return false;
     }
@@ -319,12 +342,15 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
 
   /**
    * The parameter type an argument at position {@code i} is matched against: for a varargs method, positions past the
-   * fixed parameters map to the vararg component type.
+   * fixed parameters map to the vararg component type, or to the vararg array type itself when the call passed the
+   * vararg part pre-packed.
    */
-  private static Class<?> parameterTypeAt(final Method method, final int i) {
+  private static Class<?> parameterTypeAt(final Method method, final int i, final boolean prePacked) {
     final Class<?>[] paramTypes = method.getParameterTypes();
-    if (method.isVarArgs() && i >= paramTypes.length - 1)
-      return paramTypes[paramTypes.length - 1].getComponentType();
+    if (method.isVarArgs() && i >= paramTypes.length - 1) {
+      final Class<?> varargsType = paramTypes[paramTypes.length - 1];
+      return prePacked ? varargsType : varargsType.getComponentType();
+    }
     return paramTypes[i];
   }
 
