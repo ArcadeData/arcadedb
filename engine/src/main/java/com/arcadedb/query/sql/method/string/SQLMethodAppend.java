@@ -48,7 +48,7 @@ public class SQLMethodAppend extends AbstractSQLMethod {
     if (value == null)
       return null;
     if (params == null)
-      return value.toString();
+      return value;
 
     // A null argument is skipped, wherever it appears. A leading null used to return the receiver untouched, dropping
     // every argument after it - so 'x'.append(null, 'A', 'B') answered "x" while 'x'.append('A', null, 'B') answered
