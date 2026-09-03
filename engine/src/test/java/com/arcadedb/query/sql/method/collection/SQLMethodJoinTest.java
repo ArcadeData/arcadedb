@@ -97,4 +97,9 @@ class SQLMethodJoinTest {
         final Iterable<String> iterable = () -> List.of("a", "b").iterator();
         assertThat(method.execute(iterable, null, null, new Object[] { "|" })).isEqualTo("a|b");
     }
+
+    @Test
+    void joinAnIteratorReceiver() {
+        assertThat(method.execute(List.of("a", "b").iterator(), null, null, new Object[] { "|" })).isEqualTo("a|b");
+    }
 }
