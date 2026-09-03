@@ -18,10 +18,13 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -51,10 +54,21 @@ public class FetchFromSchemaBucketsStep extends AbstractExecutionStep {
       try {
         final Schema schema = context.getDatabase().getSchema();
 
+        final SecurityDatabaseUser currentUser = currentUser(context);
+
         final List<String> orderedBuckets = schema.getBuckets().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase)
             .collect(Collectors.toList());
         for (final String bucketName : orderedBuckets) {
           final Bucket bucket = schema.getBucketByName(bucketName);
+
+          // Hide buckets the current user cannot read instead of throwing, the same way schema:types hides
+          // restricted types (issue #4238): countBucket() below checks the same permission and throws on the
+          // first denied bucket, which aborted the whole listing - and with it every remote-client call that
+          // goes through it - for a user allowed to see all the others. A null user (embedded usage, or no
+          // security context) sees everything, and so does a bucket the security map does not cover.
+          if (currentUser != null && !currentUser.requestAccessOnFile(bucket.getFileId(),
+              SecurityDatabaseUser.ACCESS.READ_RECORD))
+            continue;
 
           final ResultInternal r = new ResultInternal(context.getDatabase());
           result.add(r);
@@ -96,6 +110,12 @@ public class FetchFromSchemaBucketsStep extends AbstractExecutionStep {
         cursor = 0;
       }
     };
+  }
+
+  private static SecurityDatabaseUser currentUser(final CommandContext context) {
+    final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    return dbContext != null ? dbContext.getCurrentUser() : null;
   }
 
   @Override
