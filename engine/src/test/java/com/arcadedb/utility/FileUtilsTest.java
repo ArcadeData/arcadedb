@@ -269,7 +269,10 @@ class FileUtilsTest {
     for (int i = 0; i < content.length; i++)
       content[i] = (byte) (i * 31);
     Files.write(source, content);
-    Files.writeString(dest, "stale content that is longer than nothing");
+    // Longer than the source, so a copy that failed to truncate would leave stale trailing bytes behind
+    final byte[] stale = new byte[content.length + FileUtils.MEGABYTE];
+    Arrays.fill(stale, (byte) 0x5A);
+    Files.write(dest, stale);
 
     FileUtils.copyFile(source.toFile(), dest.toFile());
 
