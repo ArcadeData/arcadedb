@@ -78,6 +78,11 @@ public class RemoteGraphBatch implements AutoCloseable {
   private         int                 itemsInBuffer;
   protected       boolean             hasEdges;
   protected       boolean             closed;
+  /**
+   * Raised while a flush is in flight and left raised if that flush does not complete, so the payload of a failed
+   * flush is never re-sent on this class' own initiative (issue #7031).
+   */
+  protected       boolean             failed;
 
   // --- Aggregated result across all flushes ---
   protected long totalVerticesCreated;
@@ -198,10 +203,31 @@ public class RemoteGraphBatch implements AutoCloseable {
    * any flushed vertices is stored for resolving future edge references.
    * This method can be called explicitly; it is also called automatically
    * when the buffer reaches the {@code flushEvery} threshold.
+   * <p>
+   * A flush that does not complete leaves the batch failed: the payload it was carrying is dropped rather than
+   * kept for the next flush, and every later flush on this instance - including the implicit one from
+   * {@link #close()}, which runs during exception unwinding when the batch is used in a try-with-resources -
+   * refuses to run. Re-sending would be a decision this class cannot make: each flush is an independent request
+   * the server does not remember, so a failure that is a response the client never saw (a socket reset after the
+   * server committed, a proxy timeout) is indistinguishable here from a server-side rejection, and re-sending
+   * the first kind creates every record of that payload a second time. Only the caller knows whether its load is
+   * idempotent, so only the caller can retry - by building a new batch and replaying the records itself
+   * (issue #7031).
+   *
+   * @throws IllegalStateException if a previous flush on this batch failed
    */
   public void flush() {
+    if (failed)
+      throw new IllegalStateException(
+          "Batch cannot be flushed because a previous flush failed: its payload was dropped and this batch cannot "
+              + "be reused. Retrying the load, if it is safe to repeat, requires a new batch");
+
     if (buffer.isEmpty())
       return;
+
+    // Raised BEFORE the request and lowered only once the payload is fully accounted for: anything thrown in
+    // between - by the send, or by the response handling below - leaves the batch failed.
+    failed = true;
 
     queryParams.put("ordinalBase", Integer.toString(bufferOrdinalBase));
 
@@ -239,6 +265,7 @@ public class RemoteGraphBatch implements AutoCloseable {
     buffer.setLength(0);
     itemsInBuffer = 0;
     bufferOrdinalBase = vertexCounter;
+    failed = false;
   }
 
   /**
@@ -253,12 +280,23 @@ public class RemoteGraphBatch implements AutoCloseable {
   /**
    * Flushes any remaining buffered records to the server.
    * This method is idempotent - calling it multiple times has no additional effect.
+   * <p>
+   * A batch whose flush failed closes without sending anything: the payload of the failed flush was already
+   * dropped, and the exception the caller is unwinding with is the one it has to see, not a second one raised
+   * from here (issue #7031).
    */
   @Override
   public void close() {
     if (closed)
       return;
     closed = true;
+    if (failed) {
+      // Release the payload the failed flush was carrying: nothing can send it any more.
+      buffer.setLength(0);
+      buffer.trimToSize();
+      itemsInBuffer = 0;
+      return;
+    }
     flush();
   }
 

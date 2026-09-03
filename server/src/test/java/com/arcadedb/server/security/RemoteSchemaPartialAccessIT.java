@@ -117,6 +117,46 @@ class RemoteSchemaPartialAccessIT {
     }
   }
 
+  /**
+   * Issue #7031: {@code existsBucket()} now answers from {@code schema:buckets}, which walks every bucket of the
+   * database and counts its records - and so threw {@link SecurityException} on the first bucket the user cannot
+   * read, failing the call instead of answering it. Buckets the caller cannot read are hidden from that listing,
+   * exactly as restricted types are hidden from {@code schema:types} (issue #4238).
+   */
+  @Test
+  void existsBucketAnswersWhenUserLacksReadRecordOnSomeBuckets() {
+    SECURITY.createUser(new JSONObject().put("name", USER).put("password", SECURITY.encodePassword(PWD))
+        .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocuments" }))));
+
+    try {
+      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      database.getSchema().getOrCreateVertexType("AllowedDocument");
+      database.getSchema().getOrCreateVertexType("RestrictedVertex");
+
+      final String[] address = HostUtil.parseHostAddress(SERVER.getHttpServer().getListeningAddress(),
+          HostUtil.CLIENT_DEFAULT_PORT);
+
+      final RemoteDatabase remote = new RemoteDatabase(address[0], Integer.parseInt(address[1]), DATABASE_NAME, USER, PWD);
+
+      assertThat(remote.getSchema().existsBucket("AllowedDocument_0")).isTrue();
+      assertThat(remote.getSchema().existsBucket("RestrictedVertex_0")).isFalse();
+      assertThat(remote.getSchema().existsBucket("NotThere")).isFalse();
+
+      // Sanity: root continues to see every bucket.
+      final RemoteDatabase rootRemote = new RemoteDatabase(address[0], Integer.parseInt(address[1]), DATABASE_NAME, "root",
+          "dD5ed08c");
+      assertThat(rootRemote.getSchema().existsBucket("AllowedDocument_0")).isTrue();
+      assertThat(rootRemote.getSchema().existsBucket("RestrictedVertex_0")).isTrue();
+    } finally {
+      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      if (database.getSchema().existsType("RestrictedVertex"))
+        database.getSchema().dropType("RestrictedVertex");
+      if (database.getSchema().existsType("AllowedDocument"))
+        database.getSchema().dropType("AllowedDocument");
+      SECURITY.dropUser(USER);
+    }
+  }
+
   @BeforeAll
   static void beforeAll() {
     FileUtils.deleteRecursively(new File("./target/config"));
