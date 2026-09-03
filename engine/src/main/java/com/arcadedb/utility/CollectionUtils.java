@@ -83,10 +83,11 @@ public class CollectionUtils {
    * any key), and two keys of unrelated classes are distinct map entries whichever way they are ordered, so grouping them
    * by class keeps the order total without asking {@code compareTo} to relate e.g. a String to an Integer.
    * <p>
-   * The order is strict: two keys answer {@code 0} only when they are {@link Object#equals equal}, i.e. the same map
-   * entry. Keys the comparator ranks equal but the map keeps distinct ({@code BigDecimal} {@code 1.0} and {@code 1.00})
-   * are broken by their string form, so their position in the sorted key array does not depend on insertion order and
-   * {@link #compare(Map, Map)} pairs each key with its own counterpart.
+   * Two {@link Object#equals equal} keys are the same map entry and answer {@code 0}. Keys the comparator ranks equal but
+   * the map keeps distinct ({@code BigDecimal} {@code 1.0} and {@code 1.00}) are broken by their string form and then
+   * their hash, so their position in the sorted key array does not depend on insertion order and
+   * {@link #compare(Map, Map)} pairs each key with its own counterpart. Only a custom key type whose distinct instances
+   * share {@code compareTo}, {@code toString()} and {@code hashCode()} while differing in {@code equals()} can still tie.
    */
   private static int compareKeys(final Object k1, final Object k2) {
     if (k1 == null || k2 == null)
