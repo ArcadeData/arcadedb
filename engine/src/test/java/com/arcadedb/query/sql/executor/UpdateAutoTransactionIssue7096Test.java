@@ -164,6 +164,33 @@ class UpdateAutoTransactionIssue7096Test extends TestHelper {
     }
   }
 
+  /**
+   * {@code BATCH n} is the statement asking for chunked commits, so it is the one shape autocommit does not make atomic:
+   * every chunk committed before the failure stays. With a per-record implicit transaction the clause had nothing to
+   * chunk; now it commits the statement's transaction every {@code n} records, as it always did inside a caller's.
+   */
+  @Test
+  void anAutoCommittedUpdateWithBatchCommitsEveryChunk() {
+    database.transaction(() -> {
+      final VertexType type = (VertexType) database.getSchema().getType("Character");
+      type.createProperty("name", Type.STRING);
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+      database.command("sql", "CREATE VERTEX Character SET name = 'Myriel'").close();
+    });
+
+    // Chunk 1 (the first record) is committed before chunk 2 collides with it on the unique index.
+    assertThatThrownBy(() -> database.command("sql", "UPDATE Character SET name = 'Anonymous' BATCH 1").close())
+        .isInstanceOf(DuplicatedKeyException.class);
+    assertThat(database.isTransactionActive()).as("the failed chunk's transaction is rolled back").isFalse();
+
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Character WHERE name = 'Anonymous'")) {
+      assertThat(rs.next().<Long>getProperty("c")).as("the chunk committed before the failure survives").isEqualTo(1L);
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Character")) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(2L);
+    }
+  }
+
   @Test
   void deleteAndInsertRunUnderAutoTransactionToo() {
     database.command("sql", "INSERT INTO Character SET name = 'Myriel'").close();
