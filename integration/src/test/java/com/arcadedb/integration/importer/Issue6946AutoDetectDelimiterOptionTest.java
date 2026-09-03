@@ -121,6 +121,50 @@ class Issue6946AutoDetectDelimiterOptionTest {
   }
 
   /**
+   * The same leak with nothing explicit at all: a separator sniffed for the documents file (',') must not be mistaken for
+   * a user choice when the vertices file ('|') is sniffed next.
+   */
+  @Test
+  void aDelimiterSniffedForOneEntityDoesNotLeakIntoTheNext() throws Exception {
+    final String databasePath = "target/databases/test-import-6946-sniffed-entities";
+    final File documents = new File("target/importer-6946-sniffed-documents.txt");
+    try (final FileWriter writer = new FileWriter(documents)) {
+      writer.write("id,name,age\n");
+      writer.write("1,Alice,30\n");
+      writer.write("2,Bob,25\n");
+    }
+    final File vertices = new File("target/importer-6946-sniffed-vertices.txt");
+    try (final FileWriter writer = new FileWriter(vertices)) {
+      writer.write("id|label|weight\n");
+      writer.write("1|first|10\n");
+      writer.write("2|second|20\n");
+    }
+
+    try {
+      new Importer(new String[] { "-documents", "file://" + documents.getAbsolutePath(), "-vertices",
+          "file://" + vertices.getAbsolutePath(), "-database", databasePath, "-forceDatabaseCreate", "true" }).load();
+
+      try (final Database db = new DatabaseFactory(databasePath).open()) {
+        assertThat(db.countType("Document", true)).isEqualTo(2);
+        final Document document = db.iterateType("Document", true).next().asDocument(true);
+        assertThat(document.getPropertyNames()).contains("id", "name", "age");
+
+        assertThat(db.countType("Node", true)).isEqualTo(2);
+        final Document node = db.iterateType("Node", true).next().asDocument(true);
+        assertThat(node.getPropertyNames()).as("the vertices file is sniffed on its own, not parsed with the documents' ','")
+            .contains("id", "label", "weight").doesNotContain("id|label|weight");
+      }
+    } finally {
+      final DatabaseFactory factory = new DatabaseFactory(databasePath);
+      if (factory.exists())
+        factory.open().drop();
+      documents.delete();
+      vertices.delete();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
+  /**
    * Guard against over-fixing: with nothing supplied by the user the sniffed separator is still what drives the import.
    */
   @Test
