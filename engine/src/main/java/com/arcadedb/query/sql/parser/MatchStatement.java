@@ -324,6 +324,15 @@ public class MatchStatement extends Statement {
       expr.toString(params, builder);
       first = false;
     }
+    // THE NEGATIVE PATTERNS ARE RENDERED TOO, EACH PREFIXED WITH ", NOT ": THE GRAMMAR ACCEPTS THEM ANYWHERE AFTER THE
+    // FIRST PATTERN AND THE BUILDER SPLITS THEM INTO THEIR OWN LIST, SO EMITTING THEM AFTER THE POSITIVE ONES IS THE
+    // SAME STATEMENT. LEAVING THEM OUT SILENTLY WIDENED ANYTHING THAT ROUND-TRIPS A MATCH THROUGH ITS TEXT, SUCH AS A
+    // MATERIALIZED VIEW (ISSUE #6999)
+    if (notMatchExpressions != null)
+      for (final MatchExpression expr : this.notMatchExpressions) {
+        builder.append(", NOT ");
+        expr.toString(params, builder);
+      }
     builder.append(" RETURN ");
     if (returnDistinct) {
       builder.append("DISTINCT ");

@@ -292,24 +292,6 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
-   * Answers the indexed property a query qualifier names, in the spelling the POSTINGS use, or {@code null} when the
-   * qualifier names no indexed property.
-   * <p>
-   * The two spellings differ for a property indexed with a modifier: {@link #put} prefixes tokens with the index's own
-   * property name ({@code obj.hd by item}) while a query can only write the base name ({@code obj.hd}) - the modified one
-   * carries spaces and would not survive the whitespace split. Matching on the base name and answering with the stored one
-   * is what lets a field-qualified lookup reach those postings at all.
-   */
-  private static String storedFieldFor(final List<String> propertyNames, final String qualifier) {
-    if (propertyNames == null || qualifier == null)
-      return null;
-    for (final String property : propertyNames)
-      if (property.equals(qualifier) || Index.basePropertyName(property).equals(qualifier))
-        return property;
-    return null;
-  }
-
-  /**
    * Prefixes every whitespace-separated part of {@code text} with {@code field:}, the form {@link #parseQueryTerms}
    * recognises as a field qualifier. A part that already carries a colon keeps it as literal text: only the FIRST colon
    * separates the qualifier, so {@code jira:1234} under field {@code title} becomes {@code title:jira:1234} and is
@@ -1002,7 +984,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       // Check for field:value pattern
       final int colonIdx = part.indexOf(':');
       final String storedField = colonIdx > 0 && colonIdx < part.length() - 1 ?
-          storedFieldFor(propertyNames, part.substring(0, colonIdx)) :
+          FullTextQueryExecutor.storedFieldFor(propertyNames, part.substring(0, colonIdx)) :
           null;
       if (storedField != null) {
         // Field-prefixed term: qualified only where qualified keys are stored, i.e. on a multi-property index
