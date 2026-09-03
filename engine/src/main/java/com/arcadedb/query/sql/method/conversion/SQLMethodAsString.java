@@ -67,7 +67,8 @@ public class SQLMethodAsString extends AbstractSQLMethod {
     if (value.getClass().isArray())
       // A NON-NUMERIC ARRAY HAS NO NATURAL STRING FORM OF ITS OWN: Object.toString() IS THE JVM IDENTITY
       // ("[Ljava.lang.String;@7a8fa663"), WHICH USED TO REACH THE CLIENT AS DATA (ISSUE #7027). RENDER IT AS THE
-      // LIST OF ITS ELEMENTS, EXACTLY AS THE SAME VALUES IN A List WOULD BE.
+      // LIST OF ITS ELEMENTS, EXACTLY AS THE SAME VALUES IN A List WOULD BE. NEVER NULL FOR AN ARRAY: EVERY ARRAY IS
+      // A MultiValue, SO THE HELPER ALWAYS ANSWERS A LIST HERE.
       return listReceiverOrNull(value).toString();
 
     return value.toString();
