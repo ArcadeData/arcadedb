@@ -619,7 +619,7 @@ public class FullTextQueryExecutor {
 
   private void collectPrefixMatches(final PrefixQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getPrefix().field();
-    final String prefix = normalizeText(field, query.getPrefix().text());
+    final String prefix = normalizeText(query.getPrefix().text());
     if (prefix.isEmpty())
       return;
 
@@ -629,7 +629,7 @@ public class FullTextQueryExecutor {
 
   private void collectWildcardMatches(final WildcardQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getTerm().field();
-    final String pattern = normalizeText(field, query.getTerm().text());
+    final String pattern = normalizeText(query.getTerm().text());
     if (pattern.isEmpty())
       return;
 
@@ -669,7 +669,7 @@ public class FullTextQueryExecutor {
 
   private void collectFuzzyMatches(final FuzzyQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getTerm().field();
-    final String term = normalizeText(field, query.getTerm().text());
+    final String term = normalizeText(query.getTerm().text());
     if (term.isEmpty())
       return;
 
@@ -691,7 +691,7 @@ public class FullTextQueryExecutor {
 
   private void collectRegexpMatches(final RegexpQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getRegexp().field();
-    final String regexText = normalizeText(field, query.getRegexp().text());
+    final String regexText = normalizeText(query.getRegexp().text());
     if (regexText.isEmpty())
       return;
 
@@ -820,12 +820,13 @@ public class FullTextQueryExecutor {
    * {@code Fo*} into a prefix the stored {@code Foo} could never match (issue #7000). This is also what the Lucene
    * QueryParser itself does for the prefix, wildcard and fuzzy forms; the regexp form it hands over untouched.
    */
-  private String normalizeText(final String field, final String text) {
+  private String normalizeText(final String text) {
     if (text == null || text.isEmpty())
       return "";
-    // The field is resolved to its stored spelling, like the key prefix is: an analyzer that folds per field has to be
-    // asked about the same field the write path tokenized under, or the two sides drift apart again.
-    return analyzer.normalize(isUnqualified(field) ? DEFAULT_FIELD : storedField(field), text).utf8ToString();
+    // Normalized under the one field name the write path tokenizes every property under (LSMTreeFullTextIndex.tokenize),
+    // not under the query's qualifier: a field-aware analyzer folds by that name, and the stored tokens are what the
+    // pattern has to match.
+    return analyzer.normalize(LSMTreeFullTextIndex.ANALYZED_FIELD, text).utf8ToString();
   }
 
   /**

@@ -65,6 +65,27 @@ import java.util.logging.Level;
  * transaction-ownership contract this and {@code JSONImporterFormat} both satisfy, by different means.
  */
 public class CSVImporterFormat extends AbstractImporterFormat {
+  /**
+   * The delimiter resolved for the entity this format was created for - the user's own, else the one content sniffing
+   * found - or null when the format was created without one, in which case the generic {@code delimiter} option and
+   * then a comma apply. Carried here rather than read back from {@code settings.options}: that map is shared by every
+   * entity of one import, so a delimiter written there for the documents file stood in for the vertices file's own
+   * (issue #6946).
+   */
+  private final String delimiter;
+
+  public CSVImporterFormat() {
+    this(null);
+  }
+
+  public CSVImporterFormat(final String delimiter) {
+    this.delimiter = delimiter;
+  }
+
+  private String delimiterFor(final ImporterSettings settings) {
+    return delimiter != null ? delimiter : settings.getValue("delimiter", ",");
+  }
+
   private static final Object[] NO_PARAMS = new Object[] {};
   public static final  int      _32MB     = 32 * 1024 * 1024;
 
@@ -702,7 +723,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       final AnalyzedSchema analyzedSchema) throws IOException {
     parser.reset();
 
-    final String delimiter = settings.getValue("delimiter", ",");
+    final String delimiter = delimiterFor(settings);
 
     final CsvParserSettings csvParserSettings;
     final TsvParserSettings tsvParserSettings;
@@ -834,9 +855,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   }
 
   protected AbstractParser createCSVParser(final ImporterSettings settings) {
-    String delimiter = ",";
-    if (settings.options.containsKey("delimiter"))
-      delimiter = settings.getValue("delimiter", ",");
+    final String delimiter = delimiterFor(settings);
 
     if ("\t".equals(delimiter) || "\\t".equals(delimiter)) {
       final TsvParserSettings tsvParserSettings = new TsvParserSettings();

@@ -82,6 +82,45 @@ class Issue6946AutoDetectDelimiterOptionTest {
   }
 
   /**
+   * One import walks its documents, vertices and edges files against one shared settings instance. A delimiter settled
+   * for the documents file (explicit ';') must not stand in for the vertices file, which supplies none and has to be
+   * sniffed on its own ('|'): the delimiter is resolved per entity and handed to the format, never parked in the shared
+   * options map.
+   */
+  @Test
+  void aDelimiterSettledForOneEntityDoesNotLeakIntoTheNext() throws Exception {
+    final String databasePath = "target/databases/test-import-6946-entities";
+    final File documents = writeFile("importer-6946-documents.txt");
+    final File vertices = new File("target/importer-6946-vertices.txt");
+    try (final FileWriter writer = new FileWriter(vertices)) {
+      writer.write("id|label|weight\n");
+      writer.write("1|first|10\n");
+      writer.write("2|second|20\n");
+    }
+
+    try {
+      new Importer(new String[] { "-documents", "file://" + documents.getAbsolutePath(), "-documentsDelimiter", ";", "-vertices",
+          "file://" + vertices.getAbsolutePath(), "-database", databasePath, "-forceDatabaseCreate", "true" }).load();
+
+      try (final Database db = new DatabaseFactory(databasePath).open()) {
+        assertImportedColumns(db);
+
+        assertThat(db.countType("Node", true)).isEqualTo(2);
+        final Document node = db.iterateType("Node", true).next().asDocument(true);
+        assertThat(node.getPropertyNames()).as("the vertices file is parsed with its own, sniffed, separator")
+            .contains("id", "label", "weight").doesNotContain("id|label|weight");
+      }
+    } finally {
+      final DatabaseFactory factory = new DatabaseFactory(databasePath);
+      if (factory.exists())
+        factory.open().drop();
+      documents.delete();
+      vertices.delete();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
+  /**
    * Guard against over-fixing: with nothing supplied by the user the sniffed separator is still what drives the import.
    */
   @Test

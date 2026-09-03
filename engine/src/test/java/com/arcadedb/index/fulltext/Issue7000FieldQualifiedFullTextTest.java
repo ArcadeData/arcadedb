@@ -23,6 +23,11 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
+import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.LowerCaseFilter;
+import org.apache.lucene.analysis.TokenStream;
+import org.apache.lucene.analysis.Tokenizer;
+import org.apache.lucene.analysis.core.WhitespaceTokenizer;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -186,6 +191,54 @@ class Issue7000FieldQualifiedFullTextTest extends TestHelper {
       assertThat(rs.hasNext()).isFalse();
       return ((Number) result.getProperty("$score")).floatValue();
     }
+  }
+
+  /**
+   * Folds every token it stores (lower case), but only normalizes a query pattern the same way when asked under the field
+   * the write path tokenizes under: under any other field name the pattern is left as it is.
+   */
+  public static final class FieldAwareAnalyzer extends Analyzer {
+    @Override
+    protected TokenStreamComponents createComponents(final String fieldName) {
+      final Tokenizer source = new WhitespaceTokenizer();
+      return new TokenStreamComponents(source, new LowerCaseFilter(source));
+    }
+
+    @Override
+    protected TokenStream normalize(final String fieldName, final TokenStream in) {
+      return LSMTreeFullTextIndex.ANALYZED_FIELD.equals(fieldName) ? new LowerCaseFilter(in) : in;
+    }
+  }
+
+  /**
+   * The write path analyzes every property under one Lucene field name. A field-aware analyzer folds by that name, so
+   * the query side has to normalize a non-exact term under the same one rather than under the query's own qualifier, or
+   * the pattern is folded differently from the tokens it has to match.
+   */
+  @Test
+  void nonExactTermsAreNormalizedUnderTheFieldTheWritePathTokenizesUnder() {
+    final DocumentType doc = database.getSchema().createDocumentType("Doc");
+    doc.createProperty("content", Type.STRING);
+    doc.createProperty("extra", Type.STRING);
+    database.command("sql", "CREATE INDEX Doc_ft ON Doc (content, extra) FULL_TEXT METADATA {\"analyzer\": \""
+        + FieldAwareAnalyzer.class.getName() + "\"}");
+
+    database.transaction(() -> database.newDocument("Doc").set("content", "Foo Bar").set("extra", "none").save());
+
+    // THE STORED TOKENS ARE LOWER CASE, WHATEVER THE PROPERTY
+    assertThat(contents("SELECT content FROM Doc WHERE SEARCH_INDEX('Doc_ft', 'content:foo') = true")).containsExactly("Foo Bar");
+
+    // A MIXED-CASE PATTERN REACHES THEM ONLY IF IT IS FOLDED UNDER THE FIELD THE WRITE PATH USED
+    assertThat(contents("SELECT content FROM Doc WHERE SEARCH_INDEX('Doc_ft', 'content:Fo*') = true")).as("prefix")
+        .containsExactly("Foo Bar");
+    assertThat(contents("SELECT content FROM Doc WHERE SEARCH_INDEX('Doc_ft', 'content:F?o') = true")).as("wildcard")
+        .containsExactly("Foo Bar");
+    assertThat(contents("SELECT content FROM Doc WHERE SEARCH_INDEX('Doc_ft', 'content:Fooo~1') = true")).as("fuzzy")
+        .containsExactly("Foo Bar");
+    assertThat(contents("SELECT content FROM Doc WHERE SEARCH_INDEX('Doc_ft', 'content:/Fo+/') = true")).as("regexp")
+        .containsExactly("Foo Bar");
+    assertThat(contents("SELECT content FROM Doc WHERE SEARCH_INDEX('Doc_ft', 'Fo*') = true")).as("unqualified prefix")
+        .containsExactly("Foo Bar");
   }
 
   private List<String> titles(final String query) {
