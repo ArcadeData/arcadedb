@@ -544,6 +544,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       case "NegInfinity":
         return Double.NEGATIVE_INFINITY;
       default:
+        // Not reachable from an export this build wrote - encodeSampleValue only ever emits the three markers
+        // above. Kept as a tolerant parse for a hand-written or foreign-tool file that quoted a plain number,
+        // which is otherwise a perfectly well-formed sample; a genuinely unparseable token still fails loudly,
+        // through the same per-line row-error policy as anything else on the line.
         return Double.parseDouble(text);
       }
     }
