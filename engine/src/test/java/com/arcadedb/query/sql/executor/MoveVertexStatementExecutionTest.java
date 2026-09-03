@@ -19,11 +19,16 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * original @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdatabase.com)
@@ -350,6 +355,34 @@ class MoveVertexStatementExecutionTest extends TestHelper {
       assertThat(moved.<Integer>getProperty("newfield")).isEqualTo(7);
       assertThat(moved.hasProperty("somefield")).isFalse();
     }
+  }
+
+  /**
+   * Issue #7096: the auto-transaction a MOVE VERTEX opens for itself is rolled back when the statement fails, instead of
+   * being committed from the {@code finally} with whatever the statement had moved before failing. The second vertex
+   * collides with the first on the target type's unique index, so without the rollback the first would have been
+   * moved and the source left with one vertex.
+   */
+  @Test
+  void aFailedMoveVertexRollsBackItsAutoTransaction() {
+    final String typeA = "testMoveRollbackA";
+    final String typeB = "testMoveRollbackB";
+    database.transaction(() -> {
+      database.getSchema().createVertexType(typeA);
+      final VertexType target = database.getSchema().createVertexType(typeB);
+      target.createProperty("name", Type.STRING);
+      target.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+      database.command("sql", "create vertex " + typeA + " set name = 'same'").close();
+      database.command("sql", "create vertex " + typeA + " set name = 'same'").close();
+    });
+    database.setAutoTransaction(true);
+
+    assertThatThrownBy(() -> database.command("sql", "MOVE VERTEX (SELECT FROM " + typeA + ") TO TYPE:" + typeB).close())
+        .isInstanceOf(DuplicatedKeyException.class);
+    assertThat(database.isTransactionActive()).isFalse();
+
+    assertThat(database.countType(typeA, true)).as("nothing moved out of the source").isEqualTo(2);
+    assertThat(database.countType(typeB, true)).as("nothing landed in the target").isEqualTo(0);
   }
 
   /**
