@@ -3,6 +3,54 @@
 This is a living document: fixes, improvements, new features, and breaking changes are collected here as
 they land during the 26.9.1 development cycle, so the release notes are ready at tag time.
 
+## Four values that were wrong or lost in silence: CONTAINS against an array, an embedding read over Bolt, a paged gRPC stream's ordering, and two BinaryComparator corners (#6995, #7056, #7029, #6998)
+
+Four independent defects, one thing in common: each returned a wrong answer with no error to say so.
+
+**`CONTAINS` with an array on the right never matched (#6995).** `ContainsCondition` normalizes an array
+left-hand side to a `List` - that is what #6984 fixed, so `txt.split(' ') CONTAINS 'a'` works. The right-hand
+side got no such treatment, and an array satisfies neither `instanceof Collection` nor `instanceof Iterable`,
+so `'a b c'.split(' ') CONTAINS 'a'.split(' ')` skipped every branch of the operator and compared the whole
+`String[]` object against each left-hand item: false, always, whatever the content. The same happened to any
+parameter bound to a Java array. The right-hand side is now normalized exactly as the left one is, so an array
+answers precisely what the identical `List` answers - no more, and no less: a single-item collection is
+unwrapped to its item (the one-row sub-query case), and a longer one is looked for as one element of the
+left-hand collection, which is what `test CONTAINS [1]` has always meant for a row holding `test = [[1]]`.
+The one array kept out of this is `byte[]`, and only on the right: it is the BINARY *scalar* type, so expanding it
+would turn `list CONTAINS :binary` into a search for a list of numbers. The asymmetry is the point rather than an
+oversight - the two operands play different roles. The left-hand side is the container being searched, so expanding
+an array into its items is exactly what it means there, and a `byte[]` on the left keeps behaving as it did.
+
+**A declared `ARRAY_OF_FLOATS` read back over Bolt as `[F@294b13ce` (#7056).** Declaring the property is what
+triggered it: a declared array property is stored as the matching Java primitive array, and the Bolt value
+mapper tested for `Object[]`, which a `float[]` never is. The value fell past every branch to the `toString()`
+default and reached the client as an 11-character string, while the same row read over HTTP/SQL returned the
+values - so a client hydrating embeddings got a corrupted value with nothing to indicate it. Every array now
+maps to a PackStream list through the engine's existing `CollectionUtils.arrayToList`, `byte[]` still travels
+as PackStream Bytes, a `Set` no longer stringifies either, and the PackStream writer grew the same handling as
+a last line of defense, so a multi-value that reaches it unconverted goes out as a list rather than as an
+identity string.
+
+**A paged gRPC stream discarded the caller's ORDER BY (#7029).** `StreamQuery`'s PAGED mode wraps the caller's
+SQL as `SELECT FROM ( ... ) ORDER BY @rid SKIP :_skip LIMIT :_limit`, so `SELECT FROM Doc ORDER BY createdAt
+DESC` came back in RID order - and because the pages were cut by SKIP/LIMIT over that rewritten order, the
+caller could not restore the intended order client-side without pulling every page. The stable `@rid` order is
+deliberate, since paging without a total order is unsound, so it stays - but only when the caller expressed no
+order of its own. When the caller's statement carries its own ORDER BY, the sub-query already emits its rows
+sorted and the wrapper preserves that by adding no ORDER BY of its own. Re-stating the caller's terms on the
+outside would not have worked: a projection (`SELECT name FROM Doc ORDER BY createdAt`) leaves neither the
+sort key nor `@rid` visible to the outer statement.
+
+**Two corners of `BinaryComparator` (#6998).** `equalsBytes` applied a "compare the last byte first" fast path
+with no empty-array guard, so two empty `byte[]` read index -1 and threw `ArrayIndexOutOfBoundsException`
+instead of comparing equal - reachable from SQL as `WHERE bin = :p` against an empty BINARY property, which
+failed the query rather than matching the row. And `compareTo` encoded its left String operand with the JVM
+default charset and its right one with the configured charset; on a JVM started with a non-UTF-8
+`-Dfile.encoding` the two disagree, so an equal pair of non-ASCII strings compared as less-than and `ORDER BY`
+and range predicates answered wrongly on non-ASCII data. Both operands now use the configured charset, and the
+case is covered by a test that forks a JVM with `-Dfile.encoding=ISO-8859-1`, since a default charset is fixed
+at startup and cannot be varied from inside a running suite.
+
 ## Vector index: opening a database no longer parses every index page to rebuild the location map (#6722)
 
 Opening a database walked every page of every `LSM_VECTOR` index and rebuilt the in-memory location map, whether

@@ -100,7 +100,11 @@ public class SQLLocalExporterTest {
 
       final File exportFile = new File("./exports/export.jsonl.tgz");
       assertThat(exportFile.exists()).isTrue();
-      assertThat(exportFile.length()).isGreaterThan(40_000);
+      // A Person-only export is 500 vertex lines and nothing else. The bound used to be 40 KB, which only held
+      // because every vertex also carried the RIDs of its ~40 Friend edges in both directions - 20,000 RIDs that
+      // no import path ever read, and the bulk of this file (issue #7032). What the bound is here for is to catch
+      // an export that wrote no records at all.
+      assertThat(exportFile.length()).isGreaterThan(1_000);
     }
 
   }

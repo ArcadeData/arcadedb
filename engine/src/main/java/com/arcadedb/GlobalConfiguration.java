@@ -710,6 +710,18 @@ public enum GlobalConfiguration {
       Higher values improve performance but consume more memory. Default: 20000. Recommended range: 10000-100000. Set to 0 to disable batching.""",
       Integer.class, 20_000),
 
+  OPENCYPHER_FOREACH_EAGER_READ("arcadedb.opencypher.foreachEagerRead", SCOPE.DATABASE,
+      """
+      Make FOREACH eager when a later clause in the same query reads the graph (MATCH, MERGE, CALL, a CALL {} subquery, \
+      or a later FOREACH whose own body contains a MERGE). Eager means the FOREACH body runs for every input row before \
+      the first row reaches that reader, so every row sees the same, complete post-FOREACH graph instead of whichever \
+      writes happened to land inside the pull batch it was produced in. The cost is that the FOREACH input rows are held \
+      in memory until the last write is applied. Set to false to restore the streaming, batch-at-a-time behaviour for a \
+      bulk query whose input does not fit in memory, at the price of the following read observing a partially applied \
+      FOREACH. Read when the execution plan is built, so a change takes effect for statements planned afterwards \
+      (see arcadedb.opencypher.planCache).""",
+      Boolean.class, true),
+
   OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS("arcadedb.opencypher.loadCsv.allowFileUrls", SCOPE.DATABASE,
       """
       Allow LOAD CSV to access local files via file:/// URLs and bare file paths. \
@@ -1315,11 +1327,15 @@ public enum GlobalConfiguration {
   SERVER_SHUTDOWN_TIMEOUT("arcadedb.server.shutdownTimeout", SCOPE.SERVER,
       """
       Milliseconds the JVM shutdown hook waits for the server lifecycle lock before giving up and letting \
-      the JVM exit WITHOUT a graceful stop. It only matters when another thread is inside start()/stop() \
-      when the shutdown signal arrives: normally the hook takes the lock immediately and this value is \
-      never reached. Giving up leaves databases as a kill would - the next open replays the WAL - which is \
-      the lesser evil, because a hook that waits forever can make the process unkillable (issue #5418). \
-      Raise it if a legitimate shutdown of very large databases needs longer than the default.""",
+      the JVM exit WITHOUT a graceful stop. It only matters when another thread holds the lifecycle lock \
+      when the shutdown signal arrives - a stop() in progress, a start() that has already opened its \
+      databases (they open long before the HTTP service, the plugins and HA come up), or the tail of \
+      start() after the status has already turned ONLINE: normally the hook takes the lock immediately \
+      and this value is never reached, and while the server is still STARTING with no database open yet \
+      the hook uses a fixed 2000ms bound instead, which this setting does not govern. Giving up leaves \
+      databases as a kill would - the next open replays the WAL - which is the lesser evil, because a hook \
+      that waits forever can make the process unkillable (issue #5418). Raise it if a legitimate shutdown \
+      of very large databases needs longer than the default.""",
       Long.class, 60_000L),
 
   // Metrics
@@ -2147,14 +2163,15 @@ public enum GlobalConfiguration {
       "Maximum size in bytes accepted for a single bind-message parameter value on the Postgres wire protocol. Values declaring a larger size are rejected before allocation. Default is 16MB",
       Integer.class, 16 * 1024 * 1024),
 
-  POSTGRES_SIMPLE_QUERY_MAX_ROWS("arcadedb.postgres.simpleQueryMaxRows", SCOPE.SERVER, """
-      Maximum number of rows a simple-query protocol ('Q' message) SELECT is allowed to buffer server-side before \
-      the first row is sent. Unlike the extended query protocol, the simple-query protocol has no client-driven \
-      cursor/max-rows mechanism and always expects the complete result set in one response, so the server has to \
-      hold it in memory to determine the row description (column set and types) before streaming it. A SELECT whose \
-      result exceeds this limit is refused with an error instead of risking an OutOfMemoryError; the client should \
-      use the extended query protocol with a bounded portal fetch size for very large result sets. Default is \
-      1000000""", Integer.class, 1_000_000),
+  POSTGRES_QUERY_MAX_ROWS("arcadedb.postgres.queryMaxRows", SCOPE.SERVER, """
+      Maximum number of rows the result of one statement is allowed to occupy server-side before the first row is \
+      sent to a Postgres wire protocol client, on the simple-query ('Q') and the extended-query (Parse/Bind/\
+      Describe/Execute) protocol alike. Postgres fixes the column set in the RowDescription that precedes every \
+      DataRow, and a schemaless document can carry a property no earlier row had, so the server has to see the \
+      whole result before it can announce it: on the extended protocol the portal's row limit bounds what each \
+      Execute sends, not what the server holds. A statement whose result exceeds this limit is refused with an \
+      error instead of risking an OutOfMemoryError; narrow it with a WHERE or LIMIT clause or raise the limit. \
+      0 means unlimited. Default is 1000000""", Integer.class, 1_000_000),
 
   // BOLT (Neo4j)
   BOLT_PORT("arcadedb.bolt.port", SCOPE.SERVER,

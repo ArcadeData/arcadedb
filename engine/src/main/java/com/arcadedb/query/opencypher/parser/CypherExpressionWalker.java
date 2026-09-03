@@ -383,6 +383,9 @@ public final class CypherExpressionWalker {
       walk(item.getTargetExpression(), visitor);
       walk(item.getKeyExpression(), visitor);
       walk(item.getValueExpression(), visitor);
+      // A Cypher 25 dynamic label - SET n:$(expr) - is a read of the row like any other right-hand side, so every
+      // visitor that reasons about what a SET reads has to see it too (issue #7059).
+      walkAll(item.getLabelExpressions(), visitor);
     }
   }
 

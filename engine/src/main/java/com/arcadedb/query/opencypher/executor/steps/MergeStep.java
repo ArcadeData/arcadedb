@@ -100,8 +100,9 @@ public class MergeStep extends AbstractExecutionStep {
       private boolean mergedStandalone = false;
       // Tracks the vertices an ON CREATE/ON MATCH SET n:Label replaced, so a node relabelled while processing one
       // row is not still the deleted original when a later row - or a second alias of the same row - reaches it.
-      // Same reasoning, and same class, as SetStep and RemoveStep (issues #6312, #6313).
-      private final LabelReplacements labelReplacements = new LabelReplacements();
+      // Same reasoning, same class and same statement-wide scope as SetStep and RemoveStep (issues #6312, #6313,
+      // #6977).
+      private final LabelReplacements labelReplacements = LabelReplacements.of(context);
 
       @Override
       public boolean hasNext() {
@@ -212,9 +213,10 @@ public class MergeStep extends AbstractExecutionStep {
     final Database database = context.getDatabase();
     final QueryStatistics stats = context.getStatistics();
     final QueryStatistics statsSnapshot = stats.copy();
-    // labelReplacements is step-wide (shared across every row this MergeStep processes, see the field
-    // Javadoc), so only the entries a FAILED attempt of THIS row added must be undone on retry - entries
-    // an earlier, already-committed row recorded are still live and must survive. Snapshotting here,
+    // labelReplacements is statement-wide (shared across every row this MergeStep processes and with every
+    // other label write of the same statement, see the field Javadoc), so only the entries a FAILED attempt
+    // of THIS row added must be undone on retry - entries an earlier, already-committed row recorded, here
+    // or in another step, are still live and must survive. Snapshotting here,
     // once per row before the first attempt, and restoring it at the top of every attempt (including the
     // first, a no-op there) does exactly that.
     final LabelReplacements.Snapshot labelReplacementsSnapshot = labelReplacements.copy();
@@ -1002,7 +1004,11 @@ public class MergeStep extends AbstractExecutionStep {
     int bestMatchCount = 0;
     List<String> bestMatchedProperties = null;
 
-    for (final TypeIndex index : type.getAllIndexes(false)) {
+    // Polymorphic: an index declared on a supertype is inherited by this type and is just as seekable from it
+    // (issue #7021). The cursor it opens is filtered by label below, since it also carries the parent's own
+    // records and every sibling child's - and findAllNodes(), unlike the anchor walk, re-verifies only the
+    // properties, so a MERGE could otherwise match a record of the wrong type and skip the creation.
+    for (final TypeIndex index : type.getAllIndexes(true)) {
       final List<String> indexProperties = index.getPropertyNames();
       int matchCount = 0;
       final List<String> matchedProperties = new ArrayList<>();
@@ -1031,8 +1037,10 @@ public class MergeStep extends AbstractExecutionStep {
     for (int i = 0; i < propertyNames.length; i++)
       propertyValues[i] = evaluatedProperties.get(propertyNames[i]);
 
-    final Iterator<Identifiable> iter = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
-    return iter;
+    final Iterator<Identifiable> cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+    return Labels.isInheritedIndex(bestIndex, label) ?
+        Labels.filterByLabel(cursor, context.getDatabase(), label) :
+        cursor;
   }
 
   /**

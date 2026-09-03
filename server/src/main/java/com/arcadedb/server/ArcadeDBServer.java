@@ -107,13 +107,33 @@ public class ArcadeDBServer {
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
 
   /**
-   * How long the shutdown hook waits for the lifecycle lock when the server is still {@code STARTING}
-   * (issue #5418). Short on purpose: a server that never came up has nothing worth flushing, and the
-   * most likely holder of the lock is the starting thread that triggered this shutdown by calling
-   * {@code System.exit()} - which will never release it. Long enough only to lose a benign race with a
-   * start that is about to complete.
+   * How long the shutdown hook waits for the lifecycle lock when the server is still {@code STARTING} and has not
+   * opened any database yet (issues #5418, #7025). Short on purpose: with no database open there is nothing worth
+   * flushing, so the wait only has to be long enough to lose a benign race with a start that is about to complete.
+   * Once {@code loadDatabases()} has run - which happens well before the status turns {@code ONLINE}, ahead of the
+   * HTTP service and every plugin phase - the bound is {@code arcadedb.server.shutdownTimeout} instead, because
+   * cutting the wait short then leaves every open database to a WAL replay on the next start.
    */
-  private static final long                                 SHUTDOWN_HOOK_STARTING_TIMEOUT_MS    = 2_000;
+  // @VisibleForTesting
+  static final         long                                 SHUTDOWN_HOOK_STARTING_TIMEOUT_MS    = 2_000;
+
+  /**
+   * Which bound the shutdown hook applies while waiting for the lifecycle lock (issue #7025). Chosen by
+   * {@link #chooseShutdownHookBound}, and reported by name in the WARNING the hook emits when the wait expires, so
+   * the operator is told which setting - if any - governs the wait they just saw.
+   */
+  enum ShutdownHookBound {
+    /**
+     * The thread holding the lock is itself parked inside {@code System.exit()}, waiting for this very hook to
+     * finish (issue #5418: Apache Ratis exits from inside {@code start()} on a port conflict). It can never release
+     * the lock, so waiting any time at all only delays the exit.
+     */
+    HOLDER_EXITING,
+    /** {@code STARTING} with no database open yet: nothing to flush, wait only {@link #SHUTDOWN_HOOK_STARTING_TIMEOUT_MS}. */
+    STARTING_NO_DATABASES,
+    /** Databases are open, or the status left {@code STARTING}: wait up to {@code arcadedb.server.shutdownTimeout}. */
+    CONFIGURED
+  }
   private final       ContextConfiguration                  configuration;
   private final       String                                serverName;
   private             String                                hostAddress;
@@ -149,6 +169,12 @@ public class ArcadeDBServer {
   // startup failure that calls System.exit() from inside start() would otherwise deadlock the JVM
   // permanently (issue #5418). Reentrant because start() calls stop() on its failure path.
   private final       ReentrantLock                         lifecycleLock                        = new ReentrantLock();
+  /**
+   * The thread currently holding {@link #lifecycleLock} through {@link #start()} or {@link #stop()}, or null. Read
+   * by the shutdown hook (issue #7025): when that thread is parked inside {@code System.exit()} it is waiting for the
+   * hook itself and will never release the lock, so the hook does not wait for it at all.
+   */
+  private volatile    Thread                                lifecycleOwner;
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
   private final       AtomicBoolean snapshotInstallInProgress            = new AtomicBoolean(false);
@@ -228,6 +254,7 @@ public class ArcadeDBServer {
     // Reentrant because start() calls stop() on its own failure path.
     lifecycleLock.lock();
     try {
+      recordLifecycleOwner();
       startInternal();
     } catch (final RuntimeException | Error e) {
       // A start that fails after the metrics install (a plugin, the HTTP service, the databases) does not
@@ -239,8 +266,21 @@ public class ArcadeDBServer {
       CodeUtils.executeIgnoringExceptions(this::stopMetrics, "Error on stopping the metrics collection", false);
       throw e;
     } finally {
+      clearLifecycleOwner();
       lifecycleLock.unlock();
     }
+  }
+
+  /** Publishes the current thread as {@link #lifecycleOwner} on the outermost acquisition of the lifecycle lock. */
+  private void recordLifecycleOwner() {
+    if (lifecycleLock.getHoldCount() == 1)
+      lifecycleOwner = Thread.currentThread();
+  }
+
+  /** Counterpart of {@link #recordLifecycleOwner()}, called before the outermost release. */
+  private void clearLifecycleOwner() {
+    if (lifecycleLock.getHoldCount() == 1)
+      lifecycleOwner = null;
   }
 
   private void startInternal() {
@@ -512,8 +552,10 @@ public class ArcadeDBServer {
   public void stop() {
     lifecycleLock.lock();
     try {
+      recordLifecycleOwner();
       stopInternal();
     } finally {
+      clearLifecycleOwner();
       lifecycleLock.unlock();
     }
   }
@@ -529,32 +571,38 @@ public class ArcadeDBServer {
    * that can never be released - a deadlock in which the JVM cannot exit and only SIGKILL ends it. Any
    * startup port conflict was enough to trigger it.
    * <p>
-   * So the wait is bounded, and the bound depends on what the mutex holder is likely doing:
+   * So the wait is bounded, and the bound depends on what the mutex holder is likely doing - see
+   * {@link ShutdownHookBound} and {@link #chooseShutdownHookBound} (issue #7025):
    * <ul>
-   *   <li>{@code STARTING}: the server never came up, so there is nothing worth flushing and the holder
-   *       is very likely the thread that triggered this shutdown. Wait only briefly, for the benign race
-   *       where a concurrent start is about to finish.</li>
-   *   <li>anything else: a legitimate concurrent {@code stop()} may be flushing databases, and cutting
-   *       that short would cost a WAL recovery on the next open. Wait up to
-   *       {@code arcadedb.server.shutdownTimeout}.</li>
+   *   <li>the holder is parked inside {@code System.exit()}: it is waiting for this hook and can never
+   *       release the mutex, so there is nothing to wait for at all;</li>
+   *   <li>{@code STARTING} with no database open yet: nothing worth flushing, so wait only briefly, for
+   *       the benign race where a concurrent start is about to finish;</li>
+   *   <li>anything else - databases are open, even though the status may still read {@code STARTING}
+   *       because {@code loadDatabases()} runs long before the HTTP service, the plugins and the HA
+   *       bring-up - a legitimate concurrent {@code stop()} may be flushing them, and so may the tail of a
+   *       {@code start()} that has not released the mutex yet. Cutting that short would cost a WAL
+   *       recovery on every open database at the next start (the #7025 report: a liveness probe killing
+   *       a pod mid-start left three databases to replay their WAL on every restart, each one slower than
+   *       the last). Wait up to {@code arcadedb.server.shutdownTimeout}.</li>
    * </ul>
    * If the mutex never arrives, the databases are left as they are: the next open replays the WAL,
    * exactly as after a kill. That is strictly better than a process that cannot be stopped.
    */
-  private void stopFromShutdownHook() {
-    final long timeout = status == STATUS.STARTING
-        ? SHUTDOWN_HOOK_STARTING_TIMEOUT_MS
-        : configuration.getValueAsLong(GlobalConfiguration.SERVER_SHUTDOWN_TIMEOUT);
+  // @VisibleForTesting
+  void stopFromShutdownHook() {
+    // Snapshot the status once: start() can flip it STARTING -> ONLINE while still holding the
+    // lifecycle lock, so re-reading it after the bounded wait could describe a bound that was not
+    // the one actually applied. The warning must be built from the same snapshot that chose the bound.
+    final STATUS observedStatus = status;
+    final Thread owner = lifecycleOwner;
+    final boolean holderExiting =
+        owner != null && !owner.equals(Thread.currentThread()) && isRunningShutdownHooks(owner.getStackTrace());
+    final ShutdownHookBound bound = chooseShutdownHookBound(observedStatus, !databases.isEmpty(), holderExiting);
+    final long timeout = shutdownHookTimeoutMs(bound);
 
     if (!awaitLifecycleLock(lifecycleLock, timeout)) {
-      LogManager.instance().log(this, Level.WARNING,
-          """
-          Could not acquire the server lifecycle lock within %dms while status is %s, so the shutdown hook is \
-          returning WITHOUT a graceful stop and the JVM will exit. Another thread is inside start()/stop() and \
-          did not release it - typically a startup failure that called System.exit() from inside start() (e.g. a \
-          port already in use). Open databases were not closed cleanly; the next open replays the WAL. Raise \
-          arcadedb.server.shutdownTimeout if a legitimate shutdown needs longer.""",
-          timeout, status);
+      LogManager.instance().log(this, Level.WARNING, shutdownHookLockTimeoutWarning(timeout, observedStatus, bound));
       return;
     }
 
@@ -563,6 +611,80 @@ public class ArcadeDBServer {
     } finally {
       lifecycleLock.unlock();
     }
+  }
+
+  /**
+   * Picks the bound the shutdown hook waits under (issue #7025). The question that decides it is not "is the
+   * status {@code STARTING}?" but "is there an open database to flush?": databases open at the start of
+   * {@code startInternal()}, long before the status turns {@code ONLINE}, so a status-only rule applied the short
+   * fixed bound to a server that had everything worth flushing already open. Static and side-effect free so every
+   * cell of the decision can be pinned without driving a real JVM shutdown.
+   *
+   * @param status        the server status observed when the hook started
+   * @param databasesOpen whether at least one database is registered
+   * @param holderExiting whether the lifecycle lock holder is parked in {@code System.exit()} - see
+   *                      {@link #isRunningShutdownHooks}
+   */
+  // @VisibleForTesting
+  static ShutdownHookBound chooseShutdownHookBound(final STATUS status, final boolean databasesOpen,
+      final boolean holderExiting) {
+    if (holderExiting)
+      return ShutdownHookBound.HOLDER_EXITING;
+    if (status == STATUS.STARTING && !databasesOpen)
+      return ShutdownHookBound.STARTING_NO_DATABASES;
+    return ShutdownHookBound.CONFIGURED;
+  }
+
+  private long shutdownHookTimeoutMs(final ShutdownHookBound bound) {
+    return switch (bound) {
+      case HOLDER_EXITING -> 0;
+      case STARTING_NO_DATABASES -> SHUTDOWN_HOOK_STARTING_TIMEOUT_MS;
+      case CONFIGURED -> configuration.getValueAsLong(GlobalConfiguration.SERVER_SHUTDOWN_TIMEOUT);
+    };
+  }
+
+  /**
+   * Whether the given stack belongs to a thread that is running the JVM shutdown hooks, i.e. one parked inside
+   * {@code System.exit()} / {@code Runtime.exit()} / {@code Shutdown.exit()} waiting for the hooks - this one
+   * included - to finish. Such a thread holding the lifecycle lock is the #5418 deadlock shape, and it will never
+   * release the lock however long the hook waits.
+   */
+  // @VisibleForTesting
+  static boolean isRunningShutdownHooks(final StackTraceElement[] stack) {
+    for (final StackTraceElement frame : stack) {
+      final String className = frame.getClassName();
+      if ("java.lang.Shutdown".equals(className))
+        return true;
+      if ("exit".equals(frame.getMethodName()) && ("java.lang.Runtime".equals(className) || "java.lang.System".equals(
+          className)))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * Builds the WARNING for a shutdown hook that could not acquire the lifecycle lock. The advice depends
+   * on which bound was in effect: under {@link ShutdownHookBound#STARTING_NO_DATABASES} the wait is the fixed
+   * {@link #SHUTDOWN_HOOK_STARTING_TIMEOUT_MS}, so pointing the operator at
+   * {@code arcadedb.server.shutdownTimeout} would name the one setting that provably had no effect on
+   * that branch (issue #6981); under {@link ShutdownHookBound#HOLDER_EXITING} no wait could have helped at all.
+   * Extracted so the message can be tested without driving a real JVM shutdown.
+   */
+  // @VisibleForTesting
+  static String shutdownHookLockTimeoutWarning(final long timeout, final STATUS status, final ShutdownHookBound bound) {
+    final String hint = switch (bound) {
+      case HOLDER_EXITING -> "The thread holding the lock is itself inside System.exit() waiting for this hook, so no "
+          + "wait could have acquired it: the hook did not wait.";
+      case STARTING_NO_DATABASES -> "This wait during STARTING with no database open yet is a fixed "
+          + SHUTDOWN_HOOK_STARTING_TIMEOUT_MS + "ms bound not governed by arcadedb.server.shutdownTimeout.";
+      case CONFIGURED -> "Raise arcadedb.server.shutdownTimeout if a legitimate shutdown needs longer.";
+    };
+    return """
+        Could not acquire the server lifecycle lock within %dms while status is %s, so the shutdown hook is \
+        returning WITHOUT a graceful stop and the JVM will exit. Another thread is inside start()/stop() and \
+        did not release it - typically a startup failure that called System.exit() from inside start() (e.g. a \
+        port already in use). Open databases were not closed cleanly; the next open replays the WAL. %s""".formatted(
+        timeout, status, hint);
   }
 
   /**

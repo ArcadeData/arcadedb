@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 
 import java.util.ArrayList;
@@ -64,7 +65,8 @@ class LSMVectorIndexPageParser {
   }
 
   /**
-   * Parse all vector entries from a range of pages in a file.
+   * Parse all vector entries from a range of pages in a file, leniently: a page that cannot be parsed to the end is
+   * logged and cut short, and the parse moves on to the next page. See the strict overload for what that costs.
    *
    * @param database    The database instance
    * @param fileId      The file ID to read from
@@ -72,14 +74,41 @@ class LSMVectorIndexPageParser {
    * @param pageSize    Page size in bytes
    * @param isCompacted Whether this is a compacted index file
    * @param consumer    Consumer to process each parsed entry
+   *
    * @return Number of entries parsed
    */
   static int parsePages(final DatabaseInternal database, final int fileId, final int totalPages,
       final int pageSize, final boolean isCompacted, final Consumer<VectorEntry> consumer) {
+    return parsePages(database, fileId, totalPages, pageSize, isCompacted, false, consumer);
+  }
+
+  /**
+   * Parse all vector entries from a range of pages in a file.
+   *
+   * @param database    The database instance
+   * @param fileId      The file ID to read from
+   * @param totalPages  Number of pages to read
+   * @param pageSize    Page size in bytes
+   * @param isCompacted Whether this is a compacted index file
+   * @param strict      When true, a page that cannot be parsed to the end fails the whole parse with an
+   *                    {@link IndexException} instead of being cut short. A parse failure at entry {@code i} of a page
+   *                    leaves entries {@code i..n} of that page out of the result, and nothing downstream can tell a
+   *                    truncated result from a complete one - so a caller about to treat it as the complete live set
+   *                    (compaction, which reclaims the source file right after) must not get one (issue #7045). The
+   *                    lenient mode is for the load and rebuild paths, which have recovery fallbacks of their own
+   * @param consumer    Consumer to process each parsed entry
+   *
+   * @return Number of entries parsed
+   */
+  static int parsePages(final DatabaseInternal database, final int fileId, final int totalPages,
+      final int pageSize, final boolean isCompacted, final boolean strict, final Consumer<VectorEntry> consumer) {
 
     int entriesRead = 0;
 
     for (int pageNum = 0; pageNum < totalPages; pageNum++) {
+      // Declared outside the try so the failure report can say which entry stopped the parse and how many were lost.
+      int numberOfEntries = 0;
+      int entryIndex = 0;
       try {
         final PageId pageId = new PageId(database, fileId, pageNum);
         final BasePage page = database.getPageManager().getImmutablePage(pageId, pageSize, false, false);
@@ -87,7 +116,7 @@ class LSMVectorIndexPageParser {
         if (page == null)
           continue;
 
-        final int numberOfEntries = page.readInt(LSMVectorIndex.OFFSET_NUM_ENTRIES);
+        numberOfEntries = page.readInt(LSMVectorIndex.OFFSET_NUM_ENTRIES);
         if (numberOfEntries == 0)
           continue;
 
@@ -99,7 +128,7 @@ class LSMVectorIndexPageParser {
 
         // Parse entries
         int currentOffset = headerSize;
-        for (int i = 0; i < numberOfEntries; i++) {
+        for (; entryIndex < numberOfEntries; entryIndex++) {
           final int entryStartOffset = currentOffset;
           final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
 
@@ -136,8 +165,14 @@ class LSMVectorIndexPageParser {
           entriesRead++;
         }
       } catch (final Exception e) {
-        LogManager.instance().log(LSMVectorIndexPageParser.class, Level.WARNING,
-            "Error parsing page %d in file %d: %s", pageNum, fileId, e.getMessage());
+        // Entries entryIndex..numberOfEntries-1 of this page are not in the result: say so, because a caller that
+        // only sees the count has no way to tell a page cut short from a page that was complete.
+        final String message = String.format(
+            "Error parsing page %d in file %d at entry %d of %d (entries %d to %d of the page not read): %s", pageNum,
+            fileId, entryIndex, numberOfEntries, entryIndex, numberOfEntries - 1, e.getMessage());
+        if (strict)
+          throw new IndexException(message, e);
+        LogManager.instance().log(LSMVectorIndexPageParser.class, Level.WARNING, message);
       }
     }
 

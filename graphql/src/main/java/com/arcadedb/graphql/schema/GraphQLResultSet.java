@@ -27,9 +27,7 @@ import com.arcadedb.graphql.parser.AbstractField;
 import com.arcadedb.graphql.parser.Argument;
 import com.arcadedb.graphql.parser.Directive;
 import com.arcadedb.graphql.parser.Directives;
-import com.arcadedb.graphql.parser.Field;
 import com.arcadedb.graphql.parser.FieldDefinition;
-import com.arcadedb.graphql.parser.FieldWithAlias;
 import com.arcadedb.graphql.parser.ObjectTypeDefinition;
 import com.arcadedb.graphql.parser.Selection;
 import com.arcadedb.graphql.parser.SelectionSet;
@@ -138,15 +136,9 @@ public class GraphQLResultSet implements ResultSet {
       // A selection written as `alias: field` parses into fieldWithAlias (name = the real field,
       // alias carried by Selection.getName()); an unaliased selection parses into field instead.
       // Neither is set for an ellipsis selection (fragment spread / inline fragment).
-      final FieldWithAlias aliasedField = selection.getFieldWithAlias();
-      final Field          plainField = selection.getField();
-      final AbstractField  field = aliasedField != null ? aliasedField : plainField;
-      final String         fieldName = aliasedField != null ? aliasedField.getName() : selection.getName();
-      final SelectionSet   set;
-      if (aliasedField != null)
-        set = aliasedField.getSelectionSet();
-      else
-        set = plainField != null ? plainField.getSelectionSet() : null;
+      final AbstractField field = selection.getAnyField();
+      final String        fieldName = selection.getFieldName();
+      final SelectionSet  set = selection.getSelectionSet();
 
       final FieldDefinition schemaField = parentType != null ? parentType.getFieldDefinitionByName(fieldName) : null;
       final ObjectTypeDefinition subType = schemaField != null ? schema.getTypeFromField(schemaField) : null;

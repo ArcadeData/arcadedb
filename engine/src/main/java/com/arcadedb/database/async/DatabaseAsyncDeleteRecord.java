@@ -19,13 +19,20 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
-import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.log.LogManager;
 
 import java.util.logging.Level;
 
+/**
+ * Asynchronous delete of one record.
+ * <p>
+ * The before/after-delete listeners are NOT dispatched here: {@code deleteRecordNoLock} owns that dispatch, exactly
+ * as it does for the synchronous {@code deleteRecord()}. This task used to dispatch them as well, so every listener
+ * fired twice per asynchronous delete - a counter double-counted, an audit log got two entries, a cascade ran twice
+ * (issue #7003). A veto is learnt from the delegate's return value instead, so a vetoed delete still skips the
+ * success callback as it always did.
+ */
 public class DatabaseAsyncDeleteRecord implements DatabaseAsyncTask {
   public final Record                record;
   public final DeletedRecordCallback onOkCallback;
@@ -40,21 +47,9 @@ public class DatabaseAsyncDeleteRecord implements DatabaseAsyncTask {
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
-      if (record instanceof Document document) {
-        // INVOKE EVENT CALLBACKS
-        if (!((RecordEventsRegistry) database.getEvents()).onBeforeDelete(document))
-          return;
-        if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeDelete(document))
-          return;
-      }
-
-      database.deleteRecordNoLock(record);
-
-      if (record instanceof Document document) {
-        // INVOKE EVENT CALLBACKS
-        ((RecordEventsRegistry) database.getEvents()).onAfterDelete(document);
-        ((RecordEventsRegistry) document.getType().getEvents()).onAfterDelete(document);
-      }
+      if (!database.deleteRecordNoLock(record))
+        // VETOED BY A BEFORE-DELETE LISTENER
+        return;
 
       if (onOkCallback != null)
         onOkCallback.call(record);

@@ -42,8 +42,11 @@ public class SQLMethodSort extends AbstractSQLMethod {
   public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
       final Object[] params) {
 
-    if (value instanceof List list) {
-      List<Object> result = new ArrayList(list);
+    // ANY COLLECTION, NOT ONLY A List: A SET OR AN ARRAY RECEIVER USED TO COME BACK UNSORTED WITH NO ERROR, WHICH IS
+    // WORSE THAN A FAILURE BECAUSE IT LOOKS LIKE IT WORKED (ISSUE #7027). SCALARS STAY AN IDENTITY.
+    final List<Object> list = listReceiverOrNull(value);
+    if (list != null) {
+      final List<Object> result = new ArrayList<>(list);
       if (params != null && params.length > 0 && params[0] instanceof Boolean bool && !bool)
         result.sort((left, right) -> BinaryComparator.compareTo(right, left));
       else

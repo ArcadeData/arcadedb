@@ -20,12 +20,22 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.log.LogManager;
 
 import java.util.logging.Level;
 
+/**
+ * Asynchronous update of one record. Mirrors the preconditions of the synchronous {@code updateRecord()}: the record
+ * must be persistent and, when it is a document, it must satisfy its schema. The validation used to be missing here,
+ * so an asynchronous update persisted a record violating a MANDATORY/NOTNULL constraint with no error anywhere - not
+ * to the caller, not to the error callback (issue #7002). A violation now takes the same route as any other failure of
+ * this task: the worker's transaction is rolled back and the error callback is invoked.
+ */
 public class DatabaseAsyncUpdateRecord implements DatabaseAsyncTask {
   public final Record                record;
   public final UpdatedRecordCallback onOkCallback;
@@ -40,6 +50,15 @@ public class DatabaseAsyncUpdateRecord implements DatabaseAsyncTask {
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
+      if (record.getIdentity() == null)
+        throw new IllegalArgumentException("Cannot update the record because it is not persistent");
+
+      if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+        throw new DatabaseIsReadOnlyException("Cannot update a record");
+
+      if (record instanceof MutableDocument document)
+        document.validate();
+
       // INVOKE EVENT CALLBACKS
       if (!((RecordEventsRegistry) database.getEvents()).onBeforeUpdate(record))
         return;

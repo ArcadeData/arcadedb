@@ -312,40 +312,37 @@ public final class MultiColumnAggregationResult {
     return orderedBuckets;
   }
 
+  /**
+   * The MIN/MAX accumulator is returned as it stands: {@link TimeSeriesNaN#ABSENT} when no non-NaN sample ever
+   * reached this request in this bucket, and the real extreme otherwise. There is deliberately no
+   * "was the accumulator ever touched" guard here any more - the seed carries that answer itself, which is what
+   * issues #4596 and #7043 needed and what a count-based guard could not give (a NaN sample increments the count
+   * without contributing a value).
+   */
   public double getValue(final long bucketTs, final int requestIndex) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      if (idx >= 0 && idx < maxBuckets && bucketUsed[idx]) {
-        if (isUnusedMinMax(flatCounts[idx], requestIndex))
-          return Double.NaN;
+      if (idx >= 0 && idx < maxBuckets && bucketUsed[idx])
         return flatValues[idx][requestIndex];
-      }
       final double[] overflow = overflowValues != null ? overflowValues.get(bucketTs) : null;
-      if (overflow != null) {
-        if (isUnusedMinMax(overflowCounts.get(bucketTs), requestIndex))
-          return Double.NaN;
+      if (overflow != null)
         return overflow[requestIndex];
-      }
       return 0.0;
     }
     final double[] vals = valuesByBucket.get(bucketTs);
     if (vals == null)
       return 0.0;
-    if (isUnusedMinMax(countsByBucket.get(bucketTs), requestIndex))
-      return Double.NaN;
     return vals[requestIndex];
   }
 
   /**
-   * A bucket is flagged used as soon as any request touches it, but a MIN/MAX request that received
-   * no data keeps its {@code Double.MAX_VALUE} / {@code -Double.MAX_VALUE} init sentinel. Surface that
-   * as NaN (the absent marker, issue #4596) instead of leaking the sentinel as if it were data.
+   * The number of samples that REACHED this request in this bucket, NaN ones included.
+   * <p>
+   * It is deliberately not a "has this request any real data" test, and must not be used as one: that a NaN
+   * sample increments this counter is precisely what made the old {@code counts[i] == 0} guard miss an all-NaN
+   * bucket and leak the MIN/MAX sentinel (issue #7043). For MIN/MAX, ask the value:
+   * {@code TimeSeriesNaN.isAbsent(getValue(bucketTs, requestIndex))}.
    */
-  private boolean isUnusedMinMax(final long[] counts, final int requestIndex) {
-    final AggregationType type = types[requestIndex];
-    return (type == AggregationType.MIN || type == AggregationType.MAX) && counts != null && counts[requestIndex] == 0;
-  }
-
   public long getCount(final long bucketTs, final int requestIndex) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
@@ -391,12 +388,10 @@ public final class MultiColumnAggregationResult {
         for (int i = 0; i < requestCount; i++) {
           switch (types[i]) {
           case MIN:
-            if (oVals[i] < tVals[i])
-              tVals[i] = oVals[i];
+            tVals[i] = TimeSeriesNaN.min(tVals[i], oVals[i]);
             break;
           case MAX:
-            if (oVals[i] > tVals[i])
-              tVals[i] = oVals[i];
+            tVals[i] = TimeSeriesNaN.max(tVals[i], oVals[i]);
             break;
           case SUM:
           case AVG:
@@ -493,15 +488,23 @@ public final class MultiColumnAggregationResult {
     return true;
   }
 
+  /**
+   * MIN/MAX accumulators start at {@link TimeSeriesNaN#ABSENT}, not at a {@code ±Double.MAX_VALUE} sentinel.
+   * <p>
+   * The sentinel was the whole defect of issue #7043: it is a finite double, so nothing downstream could tell an
+   * untouched accumulator from a real extreme, and the guard that tried to (a {@code counts[i] == 0} test) keyed
+   * off the raw sample count - which a NaN sample increments. An all-NaN bucket therefore looked touched and
+   * handed {@code Double.MAX_VALUE} back as data. With the absent marker as the seed and
+   * {@link TimeSeriesNaN#min}/{@link TimeSeriesNaN#max} as the fold, "nothing real arrived" IS the value, and no
+   * side-channel is needed to recover it.
+   */
   private double[] newInitializedValues() {
     final double[] vals = new double[requestCount];
     for (int i = 0; i < requestCount; i++) {
       switch (types[i]) {
       case MIN:
-        vals[i] = Double.MAX_VALUE;
-        break;
       case MAX:
-        vals[i] = -Double.MAX_VALUE;
+        vals[i] = TimeSeriesNaN.ABSENT;
         break;
       default:
         vals[i] = 0.0;
@@ -521,12 +524,10 @@ public final class MultiColumnAggregationResult {
       vals[idx] += 1;
       break;
     case MIN:
-      if (value < vals[idx])
-        vals[idx] = value;
+      vals[idx] = TimeSeriesNaN.min(vals[idx], value);
       break;
     case MAX:
-      if (value > vals[idx])
-        vals[idx] = value;
+      vals[idx] = TimeSeriesNaN.max(vals[idx], value);
       break;
     }
     counts[idx]++;
@@ -537,12 +538,10 @@ public final class MultiColumnAggregationResult {
     for (int i = 0; i < requestCount; i++) {
       switch (types[i]) {
       case MIN:
-        if (values[i] < vals[i])
-          vals[i] = values[i];
+        vals[i] = TimeSeriesNaN.min(vals[i], values[i]);
         break;
       case MAX:
-        if (values[i] > vals[i])
-          vals[i] = values[i];
+        vals[i] = TimeSeriesNaN.max(vals[i], values[i]);
         break;
       case SUM:
       case AVG:
@@ -560,12 +559,10 @@ public final class MultiColumnAggregationResult {
       final int requestIndex, final double value, final long count) {
     switch (types[requestIndex]) {
     case MIN:
-      if (value < vals[requestIndex])
-        vals[requestIndex] = value;
+      vals[requestIndex] = TimeSeriesNaN.min(vals[requestIndex], value);
       break;
     case MAX:
-      if (value > vals[requestIndex])
-        vals[requestIndex] = value;
+      vals[requestIndex] = TimeSeriesNaN.max(vals[requestIndex], value);
       break;
     case SUM:
     case AVG:

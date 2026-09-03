@@ -19,9 +19,11 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
@@ -431,6 +433,71 @@ public final class Labels {
   }
 
   /**
+   * Whether an index resolved for {@code label} can hand back records that do not carry it: true exactly when the
+   * index is declared on a supertype. An inherited index is a single logical index over the whole hierarchy - the
+   * schema gives it a sub-index for every bucket of every subtype - so a seek on it from a child type also walks
+   * the parent's own records and every sibling child's, and has to filter them out. That filter is what the SQL
+   * plan for the same query spells as {@code FILTER ITEMS BY TYPE} (issue #7021).
+   * <p>
+   * A seek on the type's own index needs no filter, which is why this is asked before wrapping a cursor rather
+   * than filtering unconditionally.
+   */
+  public static boolean isInheritedIndex(final Index index, final String label) {
+    return index != null && label != null && !label.equals(index.getTypeName());
+  }
+
+  /**
+   * Whether the record {@code identifiable} names carries {@code label}, answered from the bucket its RID names
+   * so a record of another type in the hierarchy is rejected without ever being loaded. This is the row-level
+   * form of the filter an inherited-index seek owes (see {@link #isInheritedIndex}); a cursor that can be walked
+   * as a plain iterator gets it applied by {@link #filterByLabel} instead.
+   */
+  public static boolean carriesLabel(final Schema schema, final Identifiable identifiable, final String label) {
+    final DocumentType type = schema.getTypeByBucketId(identifiable.getIdentity().getBucketId());
+    return type != null && type.instanceOf(label);
+  }
+
+  /**
+   * Filters an index cursor down to the records that carry {@code label}, for the seeks that read an inherited
+   * index (see {@link #isInheritedIndex}).
+   * <p>
+   * The wrapper is a plain {@link Iterator}, so it does NOT forward {@code close()} to a source that has one.
+   * That is safe for its callers, which all wrap a full-key {@code Database.lookupByKey()} - an already-drained
+   * collection holding no file open - but it is the thing to fix first if this is ever pointed at a live range
+   * cursor, which does hold its file's retire guard until closed (issue #5635).
+   */
+  public static Iterator<Identifiable> filterByLabel(final Iterator<Identifiable> source, final Database database,
+      final String label) {
+    final Schema schema = database.getSchema();
+    return new Iterator<>() {
+      private Identifiable next = advance();
+
+      private Identifiable advance() {
+        while (source.hasNext()) {
+          final Identifiable candidate = source.next();
+          if (carriesLabel(schema, candidate, label))
+            return candidate;
+        }
+        return null;
+      }
+
+      @Override
+      public boolean hasNext() {
+        return next != null;
+      }
+
+      @Override
+      public Identifiable next() {
+        if (next == null)
+          throw new NoSuchElementException();
+        final Identifiable current = next;
+        next = advance();
+        return current;
+      }
+    };
+  }
+
+  /**
    * Whether the schema can still produce a record satisfying the label constraint, used to skip work rather than to
    * decide a row: a conjunction needs every label to name an existing type, a disjunction only needs one of them.
    * An alternative naming a type nobody ever created is an alternative that matches nothing, not a filter that
@@ -544,6 +611,61 @@ public final class Labels {
         throw new NoSuchElementException();
       return current.next();
     }
+  }
+
+  /**
+   * Appends the label(s) a Cypher 25 dynamic label expression - {@code SET n:$(expr)}, {@code REMOVE n:$(expr)} -
+   * evaluated to, validating each one as a name a type can actually be created under.
+   * <p>
+   * The contract on the value follows Neo4j: a string is one label, a list (or array) of strings is that many
+   * labels, and {@code null} contributes nothing. Anything else is refused rather than coerced.
+   * <p>
+   * The write clauses validate where the read clauses ({@code MatchNodeStep} and friends) deliberately do not:
+   * a nonsense label in a pattern matches nothing and is harmless, whereas the same value on a write path becomes
+   * a <i>vertex type</i>. Issue #7059 is what happens without the check - the source text {@code $(node.labels)}
+   * was itself turned into a type, and the schema corruption only surfaced when a client read those nodes back.
+   * {@code toString()}-ing a number or a map into a type name would land in exactly the same place, so the value
+   * has to be a usable label or the statement fails.
+   *
+   * @param target the list to append to
+   * @param value  the value the dynamic label expression evaluated to
+   * @param clause the clause name to name in the error message, e.g. {@code "SET"}
+   *
+   * @throws CommandSemanticException when the value, or an entry of it, cannot be used as a label
+   */
+  public static void appendDynamicLabels(final List<String> target, final Object value, final String clause) {
+    if (value == null)
+      return;
+
+    if (value instanceof Iterable<?> iterable) {
+      for (final Object item : iterable)
+        if (item != null)
+          target.add(requireUsableLabel(item, clause));
+      return;
+    }
+
+    if (value instanceof Object[] array) {
+      for (final Object item : array)
+        if (item != null)
+          target.add(requireUsableLabel(item, clause));
+      return;
+    }
+
+    target.add(requireUsableLabel(value, clause));
+  }
+
+  private static String requireUsableLabel(final Object value, final String clause) {
+    if (!(value instanceof String label))
+      throw new CommandSemanticException("A dynamic label expression in " + clause + " must evaluate to a string or a "
+          + "list of strings, but it evaluated to " + value.getClass().getSimpleName() + " (" + value + ")");
+    if (label.isBlank())
+      throw new CommandSemanticException(
+          "A dynamic label expression in " + clause + " evaluated to a blank label, which is not a usable type name");
+    if (label.contains(LABEL_SEPARATOR))
+      throw new CommandSemanticException("A dynamic label expression in " + clause + " evaluated to '" + label
+          + "', but '" + LABEL_SEPARATOR + "' is reserved as the separator between the labels of a composite type "
+          + "and cannot appear inside a single label");
+    return label;
   }
 
   /**

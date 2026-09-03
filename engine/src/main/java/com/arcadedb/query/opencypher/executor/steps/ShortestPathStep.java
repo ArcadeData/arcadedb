@@ -60,9 +60,11 @@ import java.util.Set;
  * <p>
  * Uses the existing SQLFunctionShortestPath for path computation.
  * <p>
- * Relationship constraints honoured on every hop: the type list, the direction, the inline property map
- * and the inline WHERE predicate. The {@code *min..max} hop bounds are NOT enforced - every traversal here
- * runs unbounded until it reaches the target - so {@code [:LINK*1..3]} currently behaves as {@code [:LINK*]}.
+ * Relationship constraints honoured on every hop: the type list, the direction, the inline property map,
+ * the inline WHERE predicate and the {@code *min..max} hop bounds. The bounds both prune the search (an
+ * upper bound stops the traversal from expanding a layer that could only produce longer paths) and filter
+ * the answer, so {@code [:LINK*..2]} returns nothing when the shortest path is 4 hops instead of behaving
+ * like {@code [:LINK*]} - issue #7009.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -214,9 +216,12 @@ public class ShortestPathStep extends AbstractExecutionStep {
     // inline WHERE in shortestPath((a)-[r:LINK* WHERE r.tag = 'ok']->(b))) are not honoured by
     // SQLFunctionShortestPath, which only sees vertices. Route through an edge-aware BFS that walks
     // matching edges only.
+    final HopBounds bounds = patternHopBounds();
+
     final EdgeConstraint constraint = edgeConstraint(inputResult, context);
     if (constraint != null)
-      return computeFilteredShortestPath(source, target, patternDirection(), patternEdgeTypesArray(), constraint, context);
+      return computeFilteredShortestPath(source, target, patternDirection(), patternEdgeTypesArray(), constraint, bounds,
+          context);
 
     // Collect every relationship type declared in the pattern. Variable-length type alternation
     // (e.g. [:R1|R2*]) is expressed as a single relationship with multiple types - all of them
@@ -258,12 +263,16 @@ public class ShortestPathStep extends AbstractExecutionStep {
     else
       edgeTypeParam = edgeTypes;
 
-    final Object[] params = edgeTypeParam != null ?
-        new Object[] { source, target, direction, edgeTypeParam } :
-        new Object[] { source, target, direction };
-
-    final List<RID> pathRids = shortestPathFunction.execute(null, null, null, params, context);
+    final List<RID> pathRids = shortestPathFunction.execute(null, null, null,
+        shortestPathArguments(source, target, direction, edgeTypeParam, bounds), context);
     if (pathRids == null || pathRids.isEmpty())
+      return null;
+
+    // A source that already is the target yields the zero-length path, whose admissibility is
+    // HopBounds.acceptsSelfPath()'s call rather than accepts(0)'s (issue #7017); every longer answer is
+    // checked against both declared bounds.
+    final int hops = pathRids.size() - 1;
+    if (hops == 0 ? !bounds.acceptsSelfPath() : !bounds.accepts(hops))
       return null;
 
     // Build a proper path with alternating Vertex and Edge objects
@@ -287,10 +296,12 @@ public class ShortestPathStep extends AbstractExecutionStep {
       final CommandContext context) {
     // Inline edge constraints must be enforced on every hop; the vertex-only BFS below cannot see edge
     // properties, so delegate to the edge-aware variant when a property map or inline WHERE is declared.
+    final HopBounds bounds = patternHopBounds();
+
     final EdgeConstraint constraint = edgeConstraint(inputResult, context);
     if (constraint != null)
       return computeFilteredAllShortestPaths(source, target, patternDirection(), patternEdgeTypesArray(), constraint,
-          context.getDatabase(), context);
+          bounds, context.getDatabase(), context);
 
     final List<String> edgeTypes;
     if (pattern.getRelationshipCount() > 0 && pattern.getRelationship(0).hasTypes())
@@ -318,6 +329,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
     final RID targetRid = target.getIdentity();
 
     if (sourceRid.equals(targetRid)) {
+      // The zero-length path is the only shortest path between a vertex and itself; a declared minimum of
+      // more than one hop rejects it (issue #7017).
+      if (!bounds.acceptsSelfPath())
+        return Collections.emptyList();
       final List<Object> singleNode = new ArrayList<>(1);
       singleNode.add(source);
       return Collections.singletonList(singleNode);
@@ -348,6 +363,11 @@ public class ShortestPathStep extends AbstractExecutionStep {
       if (foundDepth >= 0 && currentDepth >= foundDepth)
         break;
 
+      // Same reasoning for the declared upper bound: the next layer can only reach vertices more than
+      // maxHops hops away, and no path through them could satisfy the pattern (issue #7009).
+      if (currentDepth >= bounds.getMax())
+        break;
+
       final Deque<Vertex> nextLayer = new ArrayDeque<>();
       final Set<RID> nextLayerSeen = new HashSet<>();
 
@@ -376,7 +396,8 @@ public class ShortestPathStep extends AbstractExecutionStep {
       currentDepth++;
     }
 
-    if (foundDepth < 0)
+    // Every path returned here has length foundDepth, so one bound check answers for all of them.
+    if (foundDepth < 0 || !bounds.accepts(foundDepth))
       return Collections.emptyList();
 
     // Backtrack from target through every predecessor chain to produce every path of length foundDepth.
@@ -413,6 +434,13 @@ public class ShortestPathStep extends AbstractExecutionStep {
       }
     }
     return Vertex.DIRECTION.BOTH;
+  }
+
+  /**
+   * Returns the {@code *min..max} hop bounds declared on the pattern relationship.
+   */
+  private HopBounds patternHopBounds() {
+    return HopBounds.from(pattern.getRelationshipCount() > 0 ? pattern.getRelationship(0) : null);
   }
 
   private String[] patternEdgeTypesArray() {
@@ -526,16 +554,21 @@ public class ShortestPathStep extends AbstractExecutionStep {
    * with different property values are disambiguated correctly.
    *
    * @param edgeTypes restrict edges to these types, or null/empty to allow any type
+   * @param bounds    the {@code *min..max} hop bounds declared on the pattern relationship (issue #7009)
    * @param context   the command context the deadline is read from; {@code null} leaves only the interrupt check
    *                  (issue #6459 - this constrained BFS previously consulted neither, unlike the unconstrained
    *                  frontier walk it falls back from)
    */
   public static List<Object> computeFilteredShortestPath(final Vertex source, final Vertex target,
       final Vertex.DIRECTION direction, final String[] edgeTypes, final EdgeConstraint constraint,
-      final CommandContext context) {
+      final HopBounds bounds, final CommandContext context) {
     final RID sourceRid = source.getIdentity();
     final RID targetRid = target.getIdentity();
     if (sourceRid.equals(targetRid)) {
+      // The zero-length path is the only shortest path between a vertex and itself; a declared minimum of
+      // more than one hop rejects it (issue #7017).
+      if (!bounds.acceptsSelfPath())
+        return null;
       final List<Object> single = new ArrayList<>(1);
       single.add(source);
       return single;
@@ -554,7 +587,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
-    while (!frontier.isEmpty()) {
+    // Hops already walked to reach the current frontier, so the layer expanded below lands at depth + 1.
+    int depth = 0;
+
+    while (!frontier.isEmpty() && depth < bounds.getMax()) {
       if (Thread.interrupted())
         throw new CommandExecutionException("The shortestPath() function has been interrupted");
       guard.check();
@@ -579,12 +615,17 @@ public class ShortestPathStep extends AbstractExecutionStep {
             parentVertex.put(neighborRid, v);
             incomingEdge.put(neighborRid, edge);
             if (neighborRid.equals(targetRid))
-              return reconstructFilteredPath(source, target, parentVertex, incomingEdge);
+              // A level-order walk reaches the target on its shortest layer first, so a length below the
+              // declared minimum cannot be improved on by carrying the search further.
+              return bounds.accepts(depth + 1) ?
+                  reconstructFilteredPath(source, target, parentVertex, incomingEdge) :
+                  null;
             next.add(neighbor);
           }
         }
       }
       frontier = next;
+      depth++;
     }
     return null;
   }
@@ -613,16 +654,21 @@ public class ShortestPathStep extends AbstractExecutionStep {
    * distinct paths OpenCypher requires.
    *
    * @param edgeTypes restrict edges to these types, or null/empty to allow any type
+   * @param bounds    the {@code *min..max} hop bounds declared on the pattern relationship (issue #7009)
    * @param context   the command context the deadline is read from; {@code null} leaves only the interrupt check
    *                  (issue #6459 - this constrained BFS previously consulted neither, unlike the unconstrained
    *                  layered BFS it falls back from)
    */
   public static List<List<Object>> computeFilteredAllShortestPaths(final Vertex source, final Vertex target,
       final Vertex.DIRECTION direction, final String[] edgeTypes, final EdgeConstraint constraint,
-      final Database database, final CommandContext context) {
+      final HopBounds bounds, final Database database, final CommandContext context) {
     final RID sourceRid = source.getIdentity();
     final RID targetRid = target.getIdentity();
     if (sourceRid.equals(targetRid)) {
+      // The zero-length path is the only shortest path between a vertex and itself; a declared minimum of
+      // more than one hop rejects it (issue #7017).
+      if (!bounds.acceptsSelfPath())
+        return Collections.emptyList();
       final List<Object> single = new ArrayList<>(1);
       single.add(source);
       return Collections.singletonList(single);
@@ -648,6 +694,11 @@ public class ShortestPathStep extends AbstractExecutionStep {
       guard.check();
 
       if (foundDepth >= 0 && currentDepth >= foundDepth)
+        break;
+
+      // The next layer lands beyond the declared upper bound, so nothing it reaches can satisfy the
+      // pattern (issue #7009).
+      if (currentDepth >= bounds.getMax())
         break;
 
       final Deque<Vertex> nextLayer = new ArrayDeque<>();
@@ -690,7 +741,8 @@ public class ShortestPathStep extends AbstractExecutionStep {
       currentDepth++;
     }
 
-    if (foundDepth < 0)
+    // Every path returned here has length foundDepth, so one bound check answers for all of them.
+    if (foundDepth < 0 || !bounds.accepts(foundDepth))
       return Collections.emptyList();
 
     final List<List<Object>> result = new ArrayList<>();
@@ -719,6 +771,129 @@ public class ShortestPathStep extends AbstractExecutionStep {
       }
     }
     stack.pop();
+  }
+
+  /**
+   * Builds the positional argument list {@link SQLFunctionShortestPath} expects, carrying an upper hop bound
+   * as its {@code maxDepth} option so a bounded pattern also bounds the search. Shared by the two evaluators
+   * that delegate to the function - this step and {@code ShortestPathExpression} - so a bound cannot reach
+   * one of them and not the other, which is how it came to be dropped in the first place.
+   * <p>
+   * The bound is still re-checked on the path that comes back: that check is what guarantees the contract,
+   * and the pruning here only keeps a bounded search cheap.
+   *
+   * @param edgeTypeParam a single type name, a {@link List} of them, or {@code null} to allow any type
+   */
+  public static Object[] shortestPathArguments(final Vertex source, final Vertex target, final String direction,
+      final Object edgeTypeParam, final HopBounds bounds) {
+    // maxDepth counts the vertices on the path rather than the relationships between them, hence maxHops + 1.
+    final Integer maxDepth = bounds.maxDepthParameter();
+    if (maxDepth != null)
+      return new Object[] { source, target, direction, edgeTypeParam,
+          Map.of(SQLFunctionShortestPath.PARAM_MAX_DEPTH, maxDepth) };
+    if (edgeTypeParam != null)
+      return new Object[] { source, target, direction, edgeTypeParam };
+    return new Object[] { source, target, direction };
+  }
+
+  /**
+   * The {@code *min..max} hop bounds declared on a pattern relationship, resolved once so every
+   * shortestPath()/allShortestPaths() evaluator applies the same rule to the path it found.
+   * <p>
+   * Both spellings of a missing bound are folded in here: {@code [:R*]} and {@code [:R*..2]} carry an
+   * implicit minimum of one hop, and a relationship written without {@code *} at all is a single hop.
+   * <p>
+   * Only the upper bound can prune a breadth-first search, because a level-order walk reaches the target
+   * on its shortest layer first. A shortest path below the declared minimum therefore yields no row
+   * rather than a longer path satisfying it: finding that path is a different (non-shortest, simple-path
+   * enumerating) search, and Neo4j rejects such a pattern outright.
+   * <p>
+   * Endpoints resolving to the same vertex are the one shape that does not go through {@link #accepts}:
+   * the only shortest path from a vertex to itself is the zero-length one, and whether that is an answer is
+   * {@link #acceptsSelfPath}'s call - see there for why it is not simply {@code accepts(0)} (issue #7017).
+   */
+  public static final class HopBounds {
+    /** No bound at all: accepts every path length. */
+    public static final HopBounds UNBOUNDED = new HopBounds(0, Integer.MAX_VALUE);
+
+    private final int min;
+    private final int max;
+
+    private HopBounds(final int min, final int max) {
+      this.min = min;
+      this.max = max;
+    }
+
+    /**
+     * Reads the bounds off {@code rel}, or returns {@link #UNBOUNDED} when there is no relationship.
+     */
+    public static HopBounds from(final RelationshipPattern rel) {
+      if (rel == null)
+        return UNBOUNDED;
+      final int min = rel.getEffectiveMinHops();
+      final int max = rel.getEffectiveMaxHops();
+      return min <= 0 && max == Integer.MAX_VALUE ? UNBOUNDED : new HopBounds(min, max);
+    }
+
+    /**
+     * The largest number of relationships a path may carry; {@link Integer#MAX_VALUE} when unbounded.
+     */
+    public int getMax() {
+      return max;
+    }
+
+    /**
+     * Returns true when a path of {@code hops} relationships satisfies both bounds.
+     */
+    public boolean accepts(final int hops) {
+      return hops >= min && hops <= max;
+    }
+
+    /**
+     * Whether the zero-length path - the only shortest path from a vertex to itself - answers this pattern.
+     * <p>
+     * Deliberately not {@code accepts(0)}. Neo4j accepts a {@code shortestPath()} pattern only with a minimum
+     * of 0 or 1 hops, rejecting anything else outright, and answers both of those spellings for identical
+     * endpoints with the zero-length path; the parser here lowers a bare {@code [*]} to {@code minHops = 1},
+     * so an implicit minimum is indistinguishable from an explicitly written {@code [*1..]} and treating
+     * either as a rejection would change the answer to {@code shortestPath((a)-[:R*]-(a))}, which
+     * {@code CypherReduceAndShortestPathTest.shortestPathSameNode} pins to that same zero-length path.
+     * <p>
+     * A minimum above one hop is a pattern Neo4j would not have accepted at all, so nothing is owed to it
+     * beyond reading it literally: zero hops is not in {@code [min, max]}, so the pattern has no answer here.
+     * Only the minimum decides this - an upper bound cannot exclude a zero-length path, since it is at least
+     * zero hops long - so an exact quantifier answers by its minimum like any other: {@code [*1..1]}, and the
+     * unquantified {@code -[:R]-} that means the same thing, keep the zero-length self path, {@code [*2..2]}
+     * rejects it.
+     * Answering it with a cycle back to the source instead - the shortest path of at least {@code min} hops
+     * that leaves and returns - would be the same substitution {@link #accepts} already refuses for distinct
+     * endpoints, where a shortest path below the declared minimum yields no row rather than a longer one
+     * (issue #7017).
+     */
+    public boolean acceptsSelfPath() {
+      return min <= 1;
+    }
+
+    /**
+     * The upper bound expressed as {@code SQLFunctionShortestPath}'s {@code maxDepth}, which counts the
+     * vertices on the path rather than the relationships between them, or {@code null} when unbounded.
+     */
+    public Integer maxDepthParameter() {
+      return max == Integer.MAX_VALUE ? null : max + 1;
+    }
+
+    @Override
+    public String toString() {
+      // "*", not "*1..": the parser lowers a bare [*] to minHops = 1, so an EXPLAIN that spelled it out
+      // would render the commonest pattern of all under a name nobody writes it by. Exactly one, though -
+      // a written [*0..] is a different pattern (it is the one spelling that admits the zero-length path
+      // outright, see acceptsSelfPath) and keeps its lower bound on show.
+      if (min == 1 && max == Integer.MAX_VALUE)
+        return "*";
+      if (min == max)
+        return "*" + min;
+      return "*" + min + ".." + (max == Integer.MAX_VALUE ? "" : max);
+    }
   }
 
   private static Vertex.DIRECTION[] expandDirections(final Vertex.DIRECTION direction) {
@@ -832,11 +1007,16 @@ public class ShortestPathStep extends AbstractExecutionStep {
     builder.append("+ SHORTEST PATH ");
     builder.append("(").append(sourceVariable).append(")");
     if (pattern.getRelationshipCount() > 0) {
+      final RelationshipPattern rel = pattern.getRelationship(0);
       builder.append("-[");
-      if (pattern.getRelationship(0).hasTypes()) {
-        builder.append(":").append(String.join("|", pattern.getRelationship(0).getTypes()));
+      if (rel.hasTypes()) {
+        builder.append(":").append(String.join("|", rel.getTypes()));
       }
-      builder.append("*]-");
+      // Render the quantifier only when the pattern actually carries one: a plain -[:LINK]- is a single hop
+      // and spelling it "*1..1" (or, as this line used to, a bare "*") describes a pattern nobody wrote.
+      if (rel.isVariableLength())
+        builder.append(patternHopBounds().toString());
+      builder.append("]-");
     }
     builder.append("(").append(targetVariable).append(")");
     if (pattern.isAllPaths()) {

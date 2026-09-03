@@ -75,7 +75,14 @@ public class LSMTreeIndexCursor implements IndexCursor {
   private       RID[]                                  currentValues;
   private       int                                    currentValueIndex = 0;
   private       TempIndexCursor                        txCursor;
+  /** Key of the in-tx overlay batch currently held: non-null exactly while a batch is pending, whether it carries
+   *  live ADDs ({@link #txCursor}), pending REMOVEs (#6927), or both. */
   private       Object[]                               txCursorKeys;
+  /** #6927: RIDs the pending overlay batch DELETES from the disk entry at {@link #txCursorKeys}. */
+  private       Set<RID>                               txRemovedRIDs;
+  /** #6927: the pending batch removes the WHOLE key - a {@code remove(keys)} carrying no RID, or any REMOVE on a
+   *  unique index, where the key can hold at most one RID. */
+  private       boolean                                txKeyWideRemove;
   /** Dead (tombstone-resolved) keys skipped by this scan; flushed to the main index stats at scan end. */
   private       long                                   deadEntriesSkipped = 0;
   /** Prefetched entry (#5635): produced by {@link #fetchNext()}, drained by {@link #next()}. Never a tombstone. */
@@ -404,7 +411,9 @@ public class LSMTreeIndexCursor implements IndexCursor {
    * by data, so this walk is short and bounded - it runs once per merge round, not once per row.
    */
   private boolean hasMoreSources() {
-    if ((currentValues != null && currentValueIndex < currentValues.length) || txCursor != null)
+    // #6927: txCursorKeys, not txCursor: a pending batch made only of REMOVEs carries no TempIndexCursor, yet the
+    // overlay walk must still reach the live keys sitting behind it.
+    if ((currentValues != null && currentValueIndex < currentValues.length) || txCursorKeys != null)
       return true;
     for (final LSMTreeIndexUnderlyingAbstractCursor pageCursor : pageCursors)
       if (pageCursor != null)
@@ -481,7 +490,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
       // record sharing the same non-unique key), and so a tx key strictly greater than the disk minor key is
       // left for a later round instead of being consumed and dropped.
       boolean includeTx = false;
-      if (txCursor != null && txCursor.hasNext() && txCursorKeys != null) {
+      if (txCursorKeys != null) {
         if (minorKey == null) {
           minorKey = txCursorKeys;
           includeTx = true;
@@ -582,10 +591,29 @@ public class LSMTreeIndexCursor implements IndexCursor {
         }
       }
 
-      // #5055: drain ALL overlay RIDs sharing this key (the whole txCursor batch) and merge them in.
-      if (includeTx)
-        while (txCursor.hasNext())
-          mergedRIDs.add((RID) txCursor.next());
+      if (includeTx) {
+        // #6927: SUBTRACT the overlay's pending REMOVEs from the disk RIDs before the overlay ADDs are merged in.
+        // This is the range-scan half of the filter LSMTreeIndex.get() has always applied to a point lookup
+        // (its removedRids set): without it a key deleted - or re-keyed by an UPDATE, which DocumentIndexer turns
+        // into REMOVE(oldKey,rid) + ADD(newKey,rid) - is still read straight off the page, because the removal
+        // only reaches the pages at commit time. Subtracting BEFORE the ADDs keeps a re-insert at the same key
+        // winning over the removal that preceded it.
+        if (txKeyWideRemove)
+          mergedRIDs.clear();
+        else if (txRemovedRIDs != null)
+          mergedRIDs.removeAll(txRemovedRIDs);
+
+        // #5055: drain ALL overlay RIDs sharing this key (the whole txCursor batch) and merge them in.
+        if (txCursor != null)
+          while (txCursor.hasNext())
+            mergedRIDs.add((RID) txCursor.next());
+
+        // BATCH CONSUMED: drop it so the tail below navigates to the NEXT overlay key
+        txCursor = null;
+        txCursorKeys = null;
+        txRemovedRIDs = null;
+        txKeyWideRemove = false;
+      }
 
       // a consumed key with no surviving RID is pure skip work caused by tombstone build-up:
       // account it so operators can see when a delete-heavy index needs a full compaction
@@ -594,7 +622,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
       currentValues = mergedRIDs.isEmpty() ? null : mergedRIDs.toArray(new RID[0]);
 
-      if (txCursor == null || !txCursor.hasNext())
+      // A batch left pending (its key sorts after this round's) must survive to the round that consumes it.
+      if (txCursorKeys == null)
         getClosestEntryInTx(currentKeys != null ? currentKeys : typedFromKeys, false);
     }
   }
@@ -647,6 +676,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
   private void getClosestEntryInTx(final Object[] keys, final boolean inclusive) {
     txCursor = null;
     txCursorKeys = null;
+    txRemovedRIDs = null;
+    txKeyWideRemove = false;
     if (index.getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
 
@@ -700,29 +731,57 @@ public class LSMTreeIndexCursor implements IndexCursor {
           }
 
           final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values = entry.getValue();
+          // #6927: a key whose only pending changes are REMOVEs is NOT nothing - it still has to suppress the
+          // matching disk RIDs downstream in fetchNext(), so it counts as a contributing candidate just like a
+          // live ADD does. Skipping it here (the previous behaviour) is what let a deleted or re-keyed row be
+          // emitted straight off the page.
+          boolean keyContributes = false;
           if (values != null) {
             for (final TransactionIndexContext.IndexKey value : values.values()) {
-              if (value == null || value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE)
-                // REMOVED: A NON-UNIQUE KEY CAN STILL HOLD OTHER LIVE VALUES, SO SKIP JUST THIS ONE RATHER THAN
-                // THE WHOLE KEY
+              if (value == null)
                 continue;
 
-              if (txChanges == null) {
-                txChanges = new HashSet<>();
-                // All entries of this batch share the single overlay key just navigated to; cache it so
-                // next() can peek the batch key without consuming an entry (#5055).
-                txCursorKeys = tmpKeys;
+              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE) {
+                keyContributes = true;
+                if (value.rid == null || index.isUnique())
+                  // remove(keys) carries no RID and kills the whole key. On a unique index every REMOVE does:
+                  // the key holds at most one RID, which is exactly why LSMTreeIndex.get() answers a pending
+                  // REMOVE with EMPTY_CURSOR there.
+                  txKeyWideRemove = true;
+                else {
+                  // NON-UNIQUE: A KEY CAN STILL HOLD OTHER LIVE VALUES, SO REMOVE JUST THIS RID
+                  if (txRemovedRIDs == null)
+                    txRemovedRIDs = new HashSet<>();
+                  txRemovedRIDs.add(value.rid);
+                }
+                continue;
               }
 
+              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REPLACE && value.oldRid != null) {
+                // REPLACE is a same-key REMOVE(oldRid) + ADD(rid) merged into one entry, and commit does replay
+                // the removal of oldRid (TransactionIndexContext.commit): the scan must not emit it either.
+                if (txRemovedRIDs == null)
+                  txRemovedRIDs = new HashSet<>();
+                txRemovedRIDs.add(value.oldRid);
+              }
+
+              if (txChanges == null)
+                txChanges = new HashSet<>();
+
+              keyContributes = true;
               txChanges.add(new IndexCursorEntry(tmpKeys, value.rid, 1));
             }
           }
 
-          if (txChanges != null)
-            // FOUND A LIVE CANDIDATE
+          if (keyContributes) {
+            // FOUND A CANDIDATE (LIVE ADDS, PENDING REMOVES, OR BOTH). All entries of this batch share the single
+            // overlay key just navigated to; cache it so fetchNext() can peek the batch key without consuming an
+            // entry (#5055), and so a REMOVE-only batch is still visible to it at all (#6927).
+            txCursorKeys = tmpKeys;
             break;
+          }
 
-          // THIS KEY HAD NOTHING LIVE: TRY THE NEXT ONE IN THE SAME DIRECTION
+          // THIS KEY HAD NOTHING AT ALL: TRY THE NEXT ONE IN THE SAME DIRECTION
           entry = ascendingOrder ? indexChanges.higherEntry(entry.getKey()) : indexChanges.lowerEntry(entry.getKey());
         }
       }
@@ -756,6 +815,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
     // a closed cursor is exhausted: drop the prefetched entry and the merge state so hasNext() cannot resurrect it
     txCursor = null;
     txCursorKeys = null;
+    txRemovedRIDs = null;
+    txKeyWideRemove = false;
     currentValues = null;
     currentValueIndex = 0;
     nextValue = null;

@@ -30,6 +30,11 @@ public class ExporterContext {
    * surfaces a non-zero count as a failing outcome once the export completes.
    */
   public final AtomicLong skippedRecords = new AtomicLong();
+  /**
+   * TIMESERIES samples written to the export (issue #7032). A TimeSeries type owns no record bucket, so its rows
+   * are counted here rather than under {@link #documents}.
+   */
+  public final AtomicLong timeSeriesSamples = new AtomicLong();
   public       long       startedOn;
   public       long       lastLapOn;
   public       long       lastDocuments;

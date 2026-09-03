@@ -160,6 +160,31 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private volatile ArcadeDBServer server;
   private volatile RaftHAServer   raftHAServer;
 
+  /**
+   * The first persistent Raft log write failure Ratis reported through {@link #notifyLogFailed}, or {@code null}
+   * while the log writer is healthy (issue #7037). Once the segmented log worker hits an I/O error - {@code No
+   * space left on device} being the reported one - Ratis marks the log failed at that index and fails every later
+   * append with {@code RaftLogIOException: Log already failed at index N}, while the division stays {@code RUNNING}:
+   * no lifecycle state, lag or divergence check can see it, so the state machine keeps the mark and the
+   * {@link HealthMonitor} restarts the server in place once the volume has room again. Set once per state-machine
+   * lifetime: a restart builds a fresh state machine, which is what clears it.
+   */
+  private volatile RaftLogFailure raftLogFailure;
+  /**
+   * The Ratis {@code StateMachineUpdater} thread, recorded on every apply so callers that reach
+   * {@link SnapshotInstaller} from an entry apply can tell they are on it (issue #7037): a snapshot request
+   * blocks until that same thread takes it, so it must not be issued from there.
+   */
+  private volatile Thread         applyThread;
+
+  /** A persistent Raft log write failure: the failed entry's index ({@code -1} for a whole segment) and the cause. */
+  public record RaftLogFailure(long index, String cause, long timestamp) {
+    /** One-line description for logs and the health monitor. */
+    public String describe() {
+      return (index >= 0 ? "at index " + index : "on a log segment") + ": " + cause;
+    }
+  }
+
   /** Multiplier applied to HA_ELECTION_TIMEOUT_MAX when flooring the watchdog timeout. */
   static final int WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER = 4;
 
@@ -800,12 +825,46 @@ public class ArcadeStateMachine extends BaseStateMachine {
         .build();
   }
 
+  /**
+   * Ratis reports a log write failure here from the segmented log worker thread. Cheap and non-blocking by
+   * contract; the recovery runs on the {@link HealthMonitor} thread, driven by {@link #getRaftLogFailure()}.
+   * <p>
+   * The check-then-set on {@link #raftLogFailure} is not atomic and does not need to be: Ratis runs one
+   * {@code SegmentedRaftLogWorker} thread per division and every {@code notifyLogFailed} call for this state
+   * machine comes from it, in order. The field is volatile only so the monitor thread sees the mark promptly.
+   */
+  @Override
+  public void notifyLogFailed(final Throwable cause, final LogEntryProto failedEntry) {
+    super.notifyLogFailed(cause, failedEntry);
+    // Ratis reports every later task against the same pinned exception: the first failure is the one that matters.
+    if (raftLogFailure != null)
+      return;
+    final long index = failedEntry != null ? failedEntry.getIndex() : -1L;
+    final String message = cause != null ? cause.toString() : "unknown cause";
+    raftLogFailure = new RaftLogFailure(index, message, System.currentTimeMillis());
+    LogManager.instance().log(this, Level.SEVERE,
+        "Raft log write failed %s. Ratis has marked the log failed: every later append is rejected until the server "
+            + "is restarted. The health monitor will restart it in place once the Raft storage volume has room "
+            + "again (issue #7037)", cause, index >= 0 ? "at index " + index : "on a log segment");
+  }
+
+  /** The first persistent Raft log write failure, or {@code null} while the log writer is healthy (issue #7037). */
+  public RaftLogFailure getRaftLogFailure() {
+    return raftLogFailure;
+  }
+
+  /** Whether the current thread is the Ratis apply thread this state machine last applied an entry on. */
+  boolean isApplyThread() {
+    return Thread.currentThread() == applyThread;
+  }
+
   @Override
   public CompletableFuture<Message> applyTransaction(final TransactionContext trx) {
     final LogEntryProto entry = trx.getLogEntry();
     final ByteString data = entry.getStateMachineLogEntry().getLogData();
     final TermIndex termIndex = TermIndex.valueOf(entry);
     final long index = termIndex.getIndex();
+    applyThread = Thread.currentThread();
 
     // Refuse to apply once a prior entry tripped the critical-error halt. Continuing would
     // operate on the inconsistent in-memory state left behind by the failed apply and cascade
@@ -847,7 +906,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
         case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
         case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
-        case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index);
+        case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index, originatedLocally);
         }
       });
 
@@ -2569,11 +2628,38 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * </ul>
    * The committed baseline is recorded in {@link #bootstrapBaselines} for status export and tests.
    * <p>
+   * Two rules keep the protocol honest on a cluster that starts taking writes while it is being born (issue
+   * #7011: the formation-time election samples whatever local databases exist at collect time, and the
+   * application typically creates and seeds its databases right after leader election):
+   * <ul>
+   *   <li><b>Superseded baseline.</b> A database that an application entry earlier in the log already
+   *       created or mutated on this node has its whole history inside the Raft log: the baseline sampled for
+   *       it is stale by construction and replication, not bootstrap, is what keeps the copies in step. The
+   *       entry is ignored for that database. The decision keys on this database's persisted applied index
+   *       being below the entry's index, which is the same on every peer because the log order is, so every
+   *       peer ignores or honours the same entry.</li>
+   *   <li><b>Bootstrap source.</b> The peer that committed the entry sampled the baseline from its own copy,
+   *       which is the copy the snapshot ships to everyone else. Its copy advancing past the sampled
+   *       {@code lastTxId} between the sample and the local apply (18 ms in the report) is the expected
+   *       outcome, not a fresher stray copy, so the overwrite refusal does not apply to it: the refusal is
+   *       only meaningful on a peer that did not source the baseline.</li>
+   * </ul>
+   * Neither rule is reachable on a genuine first formation - no application entry precedes the baseline
+   * there, and the source's copy equals the baseline - so the #4800 and #6124 guarantees are unchanged.
+   * <p>
    * Package-private (not private) so ArcadeStateMachineBootstrapMismatchTest can exercise the
    * install-failure recovery path directly instead of via reflection.
+   *
+   * @param originatedLocally whether this node submitted the entry, i.e. is the elected bootstrap source
+   *                          (see {@link #startTransaction}); {@code false} on replay, where the
+   *                          per-database replay-skip below settles the question instead. The marker is set
+   *                          only on the node whose own client submitted the request, which is always the
+   *                          source: {@code BootstrapElection} never commits on behalf of a remote source -
+   *                          it transfers leadership to it and that node commits the entry once it leads
    */
   // @VisibleForTesting
-  void applyBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
+  void applyBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index,
+      final boolean originatedLocally) {
     final String dbName = decoded.databaseName();
     final String chosenFingerprint = decoded.bootstrapFingerprint();
     final long chosenLastTxId = decoded.bootstrapLastTxId();
@@ -2583,6 +2669,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
           dbName, chosenFingerprint);
       return;
     }
+
+    final long persistedApplied = readPersistedAppliedIndex(dbName);
+    if (persistedApplied >= 0 && persistedApplied < index) {
+      // Superseded (issue #7011): an application entry for this database was applied before this baseline was
+      // committed, so the database was created or mutated through Raft on this cluster and its copies are
+      // kept in step by replication. Honouring the baseline would either refuse the copy as "fresher" (it is
+      // not: it is the replicated state) or reinstall it from a snapshot the following entries then re-apply.
+      // The baseline is not recorded: it describes a state this cluster never adopted.
+      LogManager.instance().log(this, Level.INFO,
+          "Bootstrap baseline for '%s' (lastTxId=%d) ignored: the database already has Raft history on this node "
+              + "(applied index %d precedes the baseline at index %d), so replication keeps it in step",
+          dbName, chosenLastTxId, persistedApplied, index);
+      return;
+    }
+
     recordBootstrapBaseline(dbName, new BootstrapBaseline(chosenFingerprint, chosenLastTxId));
 
     // Re-application during log replay on restart: if we've persisted an applied index at or
@@ -2605,7 +2706,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // data loss, just a SEVERE log line); a genuinely-behind copy re-installs from the leader, which
     // is the correct action anyway. From the first post-upgrade apply onwards the per-database map is
     // authoritative.
-    final long persistedApplied = readPersistedAppliedIndex(dbName);
     if (persistedApplied >= index) {
       HALog.log(this, HALog.BASIC,
           "Bootstrap baseline for '%s' already applied (persistedAppliedIndex=%d >= entryIndex=%d); skipping verification",
@@ -2650,6 +2750,28 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.INFO,
           "Database '%s' bootstrapped locally (lastTxId=%d, fingerprint matches cluster baseline)",
           dbName, chosenLastTxId);
+      return;
+    }
+
+    // The bootstrap source (issue #7011): this node committed the entry, so the baseline IS its own copy as it
+    // stood at sampling time, and everyone else's snapshot comes from this copy. Writes accepted between the
+    // sample and this apply legitimately move it past the baseline; refusing it here poisoned the leader of a
+    // cluster that seeded its databases right after election, and the cluster never converged.
+    if (originatedLocally) {
+      if (localLastTxId >= chosenLastTxId)
+        LogManager.instance().log(this, Level.INFO,
+            "Database '%s' is the bootstrap source on this node (local lastTxId=%d, baseline lastTxId=%d): the local copy "
+                + "is the baseline, nothing to verify",
+            dbName, localLastTxId, chosenLastTxId);
+      else
+        // A committed transaction id never moves backwards, so the source's copy cannot sit behind the baseline it
+        // sampled from that same copy. Should it ever happen (a database replaced under the running server), the
+        // copy is still the one every other peer installs from: keep it and say so, rather than fall through to
+        // the mismatch branch and have this node reinstall from itself.
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s' is the bootstrap source on this node but its local lastTxId=%d is BELOW the baseline "
+                + "lastTxId=%d it sampled; keeping the local copy, which is what the other peers install from",
+            dbName, localLastTxId, chosenLastTxId);
       return;
     }
 
@@ -2737,6 +2859,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 + "the HealthMonitor backstop will retry once the server is available", null, dbName);
       }
     }
+  }
+
+  /** Test convenience: applies the entry as a peer that did not source the baseline. */
+  // @VisibleForTesting
+  void applyBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
+    applyBootstrapFingerprintEntry(decoded, index, false);
   }
 
   /**

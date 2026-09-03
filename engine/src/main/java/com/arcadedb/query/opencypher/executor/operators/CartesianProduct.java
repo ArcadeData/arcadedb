@@ -35,8 +35,14 @@ import java.util.function.BiPredicate;
  * Used for multi-MATCH queries where each MATCH has independent single-node patterns
  * (e.g., MATCH (a:T) WHERE a.id=$x MATCH (b:T) WHERE b.id=$y CREATE ...).
  * <p>
- * For point lookups (index seeks returning 1 row each), this is O(1) — it simply
+ * For point lookups (index seeks returning 1 row each), this is O(1) - it simply
  * merges the properties of both results into a single row.
+ * <p>
+ * The right input is pulled lazily and buffered as it is consumed, so the first row costs one right
+ * row rather than the whole right side, and a consumer that stops early (a LIMIT above this operator)
+ * never pays for the rows it did not ask for. The buffer is what lets the second and later left rows
+ * replay the right side without re-executing it. Both children are closed once - on exhaustion, or on
+ * {@code close()}, whichever comes first (issue #7010).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -70,9 +76,11 @@ public class CartesianProduct extends AbstractPhysicalOperator {
 
     return new ResultSet() {
       private ResultSet leftResults = null;
-      private List<Result> rightResultsCache = null;
+      private ResultSet rightResults = null;
+      private List<Result> rightBuffer = null;
       private Result currentLeft = null;
       private int rightIndex = 0;
+      private boolean rightExhausted = false;
       private boolean finished = false;
       private boolean initialized = false;
       private Result pendingRight;
@@ -109,50 +117,108 @@ public class CartesianProduct extends AbstractPhysicalOperator {
       // leaving it in pendingRight without merging it - a rejected pair never allocates a merged row.
       private boolean advance() {
         while (currentLeft != null) {
-          while (rightIndex < rightResultsCache.size()) {
+          Result candidate;
+          while ((candidate = nextRight()) != null) {
             guard.check();
-            final Result candidate = rightResultsCache.get(rightIndex++);
             if (pairFilter == null || pairFilter.test(currentLeft, candidate)) {
               pendingRight = candidate;
               return true;
             }
           }
-          if (leftResults.hasNext()) {
+          // An empty right side crosses to nothing, so there is no point walking the remaining left rows.
+          if (rightExhausted && rightBuffer.isEmpty())
+            break;
+          if (leftResults != null && leftResults.hasNext()) {
             currentLeft = leftResults.next();
             rightIndex = 0;
           } else
             currentLeft = null;
         }
         finished = true;
+        // Nothing more will be pulled from either side: release both cursors now rather than waiting
+        // for a close() the consumer may never call.
+        closeChildren();
         return false;
       }
 
+      /**
+       * Returns the next right row for the current left row, or null once the right side is exhausted.
+       * <p>
+       * Issue #7010: the right input used to be drained into a list in full before the first row was
+       * emitted, so a LIMIT above this operator paid for the whole right side in scan work and in heap.
+       * It is now pulled one row at a time and buffered as it goes - a consumer that stops early never
+       * touches the rows it did not ask for, while the buffer is what replays the right side for the
+       * second and later left rows.
+       */
+      private Result nextRight() {
+        if (rightIndex < rightBuffer.size())
+          return rightBuffer.get(rightIndex++);
+        if (rightExhausted)
+          return null;
+
+        // No guard.check() here: advance() checks every candidate this returns, buffered or freshly pulled.
+        if (rightResults != null && rightResults.hasNext()) {
+          final Result row = rightResults.next();
+          rightBuffer.add(row);
+          ++rightIndex;
+          return row;
+        }
+
+        rightExhausted = true;
+        // The right cursor has nothing left to give and the buffer replays it from here on.
+        closeRight();
+        return null;
+      }
+
       private void ensureInitialized(final CommandContext ctx, final int n) {
-        if (initialized)
+        // "finished" covers close(): a closed result set must never execute its children again, or a
+        // close() before the first pull would open two cursors that nothing then closes.
+        if (initialized || finished)
           return;
         initialized = true;
 
-        // Execute left and right operators
+        // Execute left and right operators. The right side is NOT drained here (issue #7010).
         leftResults = child.execute(ctx, n);
-        final ResultSet rightResults = right.execute(ctx, n);
-
-        // Materialize right side for reuse across left rows
-        rightResultsCache = new ArrayList<>();
-        while (rightResults.hasNext()) {
-          guard.check();
-          rightResultsCache.add(rightResults.next());
-        }
+        rightResults = right.execute(ctx, n);
+        rightBuffer = new ArrayList<>();
 
         // Get first left row
         if (leftResults.hasNext())
           currentLeft = leftResults.next();
-        else
+        else {
           finished = true;
+          closeChildren();
+        }
       }
 
+      private void closeRight() {
+        if (rightResults != null) {
+          rightResults.close();
+          rightResults = null;
+        }
+      }
+
+      // Idempotent: a child is closed at most once, whether the release comes from exhaustion or from close().
+      private void closeChildren() {
+        closeRight();
+        if (leftResults != null) {
+          leftResults.close();
+          leftResults = null;
+        }
+      }
+
+      /**
+       * Issue #7010: this was an empty method, so the close() chain stopped here and an index-backed
+       * child kept its cursor open for as long as the plan was retained (see #5635).
+       */
       @Override
       public void close() {
-        // nothing to close
+        finished = true;
+        pendingRight = null;
+        currentLeft = null;
+        closeChildren();
+        if (rightBuffer != null)
+          rightBuffer.clear();
       }
     };
   }

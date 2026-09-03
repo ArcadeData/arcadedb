@@ -28,6 +28,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -94,15 +95,19 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
         results.put(refId, buildErrorFrame("Type '" + typeName + "' is not a TimeSeries type"));
         continue;
       }
-      if (!tsType.isEngineAvailable()) {
+      // Gated accessor (per-type ACL): a denial fails the whole request with 403 rather than being folded into
+      // an error frame, which a Grafana panel would render as a data problem instead of an access problem. Placed
+      // before the availability branch below because that frame carries getEngineUnavailableReason(), i.e. a path
+      // on disk, which a caller denied on this type must not receive; the accessor returns null in exactly the
+      // cases isEngineAvailable() was false, so it replaces that test rather than following it.
+      final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
+      if (engine == null) {
         // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS
         // one, its storage just failed to load - the old shared message sent an operator chasing the wrong cause.
         results.put(refId, buildErrorFrame(
             "TimeSeries type '" + typeName + "' has no storage engine available: " + tsType.getEngineUnavailableReason()));
         continue;
       }
-
-      final TimeSeriesEngine engine = tsType.getEngine();
       final List<ColumnDefinition> columns = tsType.getTsColumns();
 
       // Build tag filter
@@ -159,7 +164,9 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
 
     for (final Object[] row : rows) {
       for (int c = 0; c < numCols; c++)
-        columnArrays[c].put(row[c]);
+        // Same treatment as the aggregation branch below: a non-finite raw sample is a gap, and it must not
+        // reach a dashboard as a number - nor as a JSON literal the response writer refuses to emit.
+        putSampleValue(columnArrays[c], row[c]);
     }
 
     final JSONArray valuesArray = new JSONArray();
@@ -230,7 +237,9 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
 
     for (final long ts : timestamps) {
       for (int r = 0; r < requests.size(); r++)
-        aggColumns[r].put(aggResult.getValue(ts, r));
+        // NOT put(double): an absent MIN/MAX answers NaN, which that overload rewrites to 0 - and a dashboard
+        // draws a dip to zero instead of the gap the data actually has.
+        putSampleValue(aggColumns[r], aggResult.getValue(ts, r));
     }
 
     final JSONArray valuesArray = new JSONArray();

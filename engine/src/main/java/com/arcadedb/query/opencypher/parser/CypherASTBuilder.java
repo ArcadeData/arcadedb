@@ -52,6 +52,7 @@ import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.RegexExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
@@ -725,27 +726,17 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         final Expression valueExpr = expressionBuilder.parseExpression(addCtx.expression());
         items.add(new SetClause.SetItem(variable, valueExpr, SetClause.SetType.MERGE_MAP));
       } else if (itemCtx instanceof Cypher25Parser.SetLabelsContext labelsCtx) {
-        // SET n:Label — add labels
-        final String variable = labelsCtx.variable().getText();
-        final String labelsText = labelsCtx.nodeLabels().getText();
-        final String cleanText = labelsText.replaceAll("^:+", "");
-        final String[] parts = cleanText.split("[:&|]+");
+        // SET n:Label / SET n:$(expr) — add labels
         final List<String> labelList = new ArrayList<>();
-        for (final String part : parts)
-          if (!part.isEmpty())
-            labelList.add(stripBackticks(part));
-        items.add(new SetClause.SetItem(variable, labelList));
+        final List<Expression> labelExpressions = new ArrayList<>();
+        collectNodeLabels(labelsCtx.nodeLabels(), labelList, labelExpressions);
+        items.add(new SetClause.SetItem(stripBackticks(labelsCtx.variable().getText()), labelList, labelExpressions));
       } else if (itemCtx instanceof Cypher25Parser.SetLabelsIsContext labelsIsCtx) {
-        // SET n IS Label — add labels (IS syntax)
-        final String variable = labelsIsCtx.variable().getText();
-        final String labelsText = labelsIsCtx.nodeLabelsIs().getText();
-        final String cleanText = labelsText.replaceAll("^\\s*IS\\s+", "").replaceAll("^:+", "");
-        final String[] parts = cleanText.split("[:&|]+");
+        // SET n IS Label / SET n IS $(expr) — add labels (IS syntax)
         final List<String> labelList = new ArrayList<>();
-        for (final String part : parts)
-          if (!part.isEmpty())
-            labelList.add(stripBackticks(part));
-        items.add(new SetClause.SetItem(variable, labelList));
+        final List<Expression> labelExpressions = new ArrayList<>();
+        collectNodeLabelsIs(labelsIsCtx.nodeLabelsIs(), labelList, labelExpressions);
+        items.add(new SetClause.SetItem(stripBackticks(labelsIsCtx.variable().getText()), labelList, labelExpressions));
       }
     }
 
@@ -763,6 +754,45 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return new DeleteClause(variables, expressions, detach);
+  }
+
+  /**
+   * Splits a {@code nodeLabels} subtree - the label list of a {@code SET n:...} or {@code REMOVE n:...} item - into
+   * the statically written label names and the Cypher 25 {@code $(expression)} labels that have to be resolved per
+   * row.
+   * <p>
+   * Both clauses used to reduce this whole subtree to {@code getText()} and split the result on {@code [:&|]},
+   * which turned the source text of a dynamic label into a label of its own: {@code SET n:$(node.labels)} created a
+   * vertex type literally named {@code $(node.labels)} and attached it to the node, corrupting schema and data with
+   * no error at write time (issue #7059). {@code REMOVE} had the mirror-image defect - it read {@code labelType()}
+   * alone, so a dynamic label was dropped from the AST and the clause silently did nothing.
+   * <p>
+   * Static and dynamic labels are collected into two lists rather than one interleaved sequence because labels are
+   * a set: the composite type name is built from the sorted union either way.
+   */
+  private void collectNodeLabels(final Cypher25Parser.NodeLabelsContext ctx, final List<String> labels,
+      final List<Expression> labelExpressions) {
+    for (final Cypher25Parser.LabelTypeContext labelType : ctx.labelType())
+      labels.add(stripBackticks(labelType.symbolicNameString().getText()));
+    for (final Cypher25Parser.DynamicLabelTypeContext dynamicLabel : ctx.dynamicLabelType())
+      labelExpressions.add(expressionBuilder.parseExpression(dynamicLabel.dynamicExpression().expression()));
+  }
+
+  /**
+   * The {@code IS} spelling of {@link #collectNodeLabels}: {@code SET n IS Label:Other} / {@code SET n IS $(expr)}.
+   * The grammar puts the first label outside the repetition ({@code IS (symbolicNameString | dynamicExpression)
+   * (labelType | dynamicLabelType)*}), so it is read separately.
+   */
+  private void collectNodeLabelsIs(final Cypher25Parser.NodeLabelsIsContext ctx, final List<String> labels,
+      final List<Expression> labelExpressions) {
+    if (ctx.symbolicNameString() != null)
+      labels.add(stripBackticks(ctx.symbolicNameString().getText()));
+    if (ctx.dynamicExpression() != null)
+      labelExpressions.add(expressionBuilder.parseExpression(ctx.dynamicExpression().expression()));
+    for (final Cypher25Parser.LabelTypeContext labelType : ctx.labelType())
+      labels.add(stripBackticks(labelType.symbolicNameString().getText()));
+    for (final Cypher25Parser.DynamicLabelTypeContext dynamicLabel : ctx.dynamicLabelType())
+      labelExpressions.add(expressionBuilder.parseExpression(dynamicLabel.dynamicExpression().expression()));
   }
 
   public RemoveClause visitRemoveClause(final Cypher25Parser.RemoveClauseContext ctx) {
@@ -785,15 +815,21 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         final String variable = dynPropExpr.expression1().getText();
         final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
         items.add(new RemoveClause.RemoveItem(variable, keyExpr));
-      } else if (itemCtx instanceof Cypher25Parser.RemoveLabelsContext) {
-        final Cypher25Parser.RemoveLabelsContext labelsCtx = (Cypher25Parser.RemoveLabelsContext) itemCtx;
-        final String variable = stripBackticks(labelsCtx.variable().getText());
+      } else if (itemCtx instanceof Cypher25Parser.RemoveLabelsContext labelsCtx) {
+        // REMOVE n:Label / REMOVE n:$(expr)
         final List<String> labels = new ArrayList<>();
-        for (final Cypher25Parser.LabelTypeContext lt : labelsCtx.nodeLabels().labelType())
-          labels.add(stripBackticks(lt.symbolicNameString().getText()));
-        items.add(new RemoveClause.RemoveItem(variable, labels));
+        final List<Expression> labelExpressions = new ArrayList<>();
+        collectNodeLabels(labelsCtx.nodeLabels(), labels, labelExpressions);
+        items.add(new RemoveClause.RemoveItem(stripBackticks(labelsCtx.variable().getText()), labels, labelExpressions));
+      } else if (itemCtx instanceof Cypher25Parser.RemoveLabelsIsContext labelsIsCtx) {
+        // REMOVE n IS Label / REMOVE n IS $(expr) — the IS spelling was previously dropped on the floor, so the
+        // whole clause silently did nothing.
+        final List<String> labels = new ArrayList<>();
+        final List<Expression> labelExpressions = new ArrayList<>();
+        collectNodeLabelsIs(labelsIsCtx.nodeLabelsIs(), labels, labelExpressions);
+        items.add(
+            new RemoveClause.RemoveItem(stripBackticks(labelsIsCtx.variable().getText()), labels, labelExpressions));
       }
-      // TODO: Handle RemoveLabelsIs
     }
 
     return new RemoveClause(items);
@@ -1686,34 +1722,33 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   /**
-   * Absorbs a GQL Quantified Path Pattern (parenthesized inner pattern + optional quantifier)
-   * into the surrounding node/relationship lists by lowering it to existing variable-length
-   * relationship infrastructure (issue #3365 sections 1.4 and 1.5, Phase A).
+   * Absorbs a GQL Quantified Path Pattern (parenthesized inner pattern + optional quantifier) into the
+   * surrounding node/relationship lists (ISO/IEC 39075:2024 §15.4).
    *
-   * <p>Phase A constraints (rejected with {@link CommandParsingException} when violated):
+   * <p>Two lowerings exist, and the shape of the inner pattern picks between them:
    * <ul>
-   *   <li>The inner pattern must be a single triplet {@code (a)-[r]->(b)}; multi-rel inner
-   *       patterns are deferred to Phase B.</li>
-   *   <li>Inner {@code WHERE} predicates are deferred to Phase B.</li>
-   *   <li>Quantifier values must be positive (zero quantifier is meaningless).</li>
+   *   <li><b>Phase A</b> (issue #3365) - a single-relationship inner pattern with anonymous endpoints
+   *       and no inner {@code WHERE} is rewritten to a plain variable-length relationship, which the
+   *       existing traversal machinery executes. A one-edge group is functionally identical to
+   *       {@code -[:R*]->}, so this loses nothing and keeps the faster path.</li>
+   *   <li><b>Phase B</b> (issue #4531) - everything else becomes a {@link QuantifiedPathPattern}
+   *       occupying one hop of the outer chain, executed by {@code QuantifiedPathStep}: multi-hop
+   *       inner patterns, inner {@code WHERE} predicates evaluated per repetition, and inner
+   *       variables that surface outside the group as {@code LIST<NODE>} / {@code LIST<RELATIONSHIP>}
+   *       group variables.</li>
    * </ul>
-   * Inner relationship variables become {@code LIST<EDGE>} (existing var-length behavior).
-   * Intermediate-node variable bindings outside the group are not yet supported.
+   *
+   * <p>Quantifier bounds are validated identically for both: an upper bound of zero, or a lower bound
+   * above the upper bound, is a syntax error.
    */
   private void absorbParenthesizedPath(final Cypher25Parser.ParenthesizedPathContext pCtx,
       final List<NodePattern> outerNodes, final List<RelationshipPattern> outerRels, final boolean nextIsOuterNode) {
-    if (pCtx.WHERE() != null)
-      throw new CommandParsingException(
-          "FeatureNotImplemented: WHERE inside a quantified path pattern is not yet supported (issue #3365 Phase B)");
-
     final PathPattern inner = visitPattern(pCtx.pattern());
-    if (inner.getRelationshipCount() != 1)
+    if (inner.getRelationshipCount() < 1)
       throw new CommandParsingException(
-          "FeatureNotImplemented: only single-relationship inner patterns are supported in quantified path patterns (issue #3365 Phase B will add multi-relationship)");
+          "InvalidSyntax: a quantified path pattern must contain at least one relationship");
 
-    final NodePattern innerStart = inner.getFirstNode();
-    final NodePattern innerEnd = inner.getLastNode();
-    final RelationshipPattern innerRel = inner.getRelationship(0);
+    final BooleanExpression innerWhere = pCtx.WHERE() != null ? parseBooleanExpression(pCtx.expression()) : null;
 
     // Determine quantifier (defaults to 1..1 when absent, which collapses to a plain triplet)
     final Integer min;
@@ -1737,29 +1772,132 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       max = null;
     }
 
-    // Splice the inner endpoints into the outer chain. When this is the first child in the
-    // pattern, the inner start becomes the leading boundary; otherwise the previous outer
-    // node already serves that role.
+    final NodePattern innerStart = inner.getFirstNode();
+    final NodePattern innerEnd = inner.getLastNode();
+
+    if (canLowerToVariableLengthRelationship(inner, innerWhere)) {
+      final RelationshipPattern innerRel = inner.getRelationship(0);
+
+      // Splice the inner endpoints into the outer chain. When this is the first child in the
+      // pattern, the inner start becomes the leading boundary; otherwise the previous outer
+      // node already serves that role.
+      if (outerNodes.isEmpty())
+        outerNodes.add(innerStart);
+
+      // Build a new variable-length relationship pattern that subsumes the grouped repetition.
+      outerRels.add(new RelationshipPattern(
+          innerRel.getVariable(),
+          innerRel.getTypes(),
+          innerRel.getDirection(),
+          innerRel.getProperties().isEmpty() ? null : innerRel.getProperties(),
+          innerRel.getPropertiesParameterName(),
+          min,
+          max,
+          innerRel.getWhereExpression()));
+
+      // Append the inner end node only when no outer nodePattern follows. If an outer
+      // nodePattern comes next, it will play the role of the trailing boundary itself,
+      // keeping the (nodes.size == relationships.size + 1) invariant intact.
+      if (!nextIsOuterNode)
+        outerNodes.add(innerEnd);
+      return;
+    }
+
+    rejectUnsupportedInnerPattern(inner);
+
+    // Phase B. The group becomes one hop; its boundary nodes carry the inner endpoints' label and
+    // property constraints so the enclosing scan stays selective, but never their variables - those
+    // bind to per-repetition lists inside the group, not to a single boundary vertex. The executor
+    // re-checks the inner endpoint constraints for every repetition regardless.
     if (outerNodes.isEmpty())
-      outerNodes.add(innerStart);
+      outerNodes.add(toBoundaryNode(innerStart));
 
-    // Build a new variable-length relationship pattern that subsumes the grouped repetition.
-    final RelationshipPattern lowered = new RelationshipPattern(
-        innerRel.getVariable(),
-        innerRel.getTypes(),
-        innerRel.getDirection(),
-        innerRel.getProperties().isEmpty() ? null : innerRel.getProperties(),
-        innerRel.getPropertiesParameterName(),
-        min,
-        max,
-        innerRel.getWhereExpression());
-    outerRels.add(lowered);
+    outerRels.add(new QuantifiedPathPattern(inner, innerWhere, min, max));
 
-    // Append the inner end node only when no outer nodePattern follows. If an outer
-    // nodePattern comes next, it will play the role of the trailing boundary itself,
-    // keeping the (nodes.size == relationships.size + 1) invariant intact.
     if (!nextIsOuterNode)
-      outerNodes.add(innerEnd);
+      outerNodes.add(toBoundaryNode(innerEnd));
+  }
+
+  /**
+   * Returns true when the group is the Phase A shape that a plain variable-length relationship
+   * already expresses exactly: one relationship, no inner {@code WHERE}, and endpoints that bind
+   * nothing and constrain nothing at all.
+   * <p>
+   * Every endpoint attribute forces Phase B, each for its own reason:
+   * <ul>
+   *   <li>a <b>variable</b> - GQL binds it to one list element per repetition, which a variable-length
+   *       relationship has no way to express;</li>
+   *   <li>a <b>label, dynamic label or property map</b> - the constraint holds for every repetition,
+   *       including the vertices <i>between</i> two repetitions, and a variable-length relationship
+   *       constrains only its two ends. Lowering {@code ((:P)-[:R]->(:P))+} to {@code -[:R*]->} does not
+   *       weaken the constraint, it <i>deletes</i> it: the outer boundary nodes take over both ends and
+   *       the inner labels are never spliced into the chain at all;</li>
+   *   <li>an inline <b>{@code WHERE}</b> - same reasoning as a property map.</li>
+   * </ul>
+   * What is left for Phase A is the genuinely unconstrained spelling, {@code (()-[:R]->())+}, for which
+   * the two forms are interchangeable.
+   */
+  private static boolean canLowerToVariableLengthRelationship(final PathPattern inner, final BooleanExpression innerWhere) {
+    if (innerWhere != null || inner.getRelationshipCount() != 1)
+      return false;
+    for (int i = 0; i < inner.getNodeCount(); i++) {
+      final NodePattern node = inner.getNode(i);
+      if (node.getVariable() != null && !node.getVariable().isEmpty())
+        return false;
+      if (node.hasWhereExpression())
+        return false;
+      if (node.hasLabels() || node.hasDynamicLabels() || node.hasProperties())
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Rejects the inner shapes the repeated-subpattern executor cannot run. Both would otherwise be
+   * silently mis-executed rather than reported, so they fail at parse time with the feature named.
+   */
+  private static void rejectUnsupportedInnerPattern(final PathPattern inner) {
+    for (int i = 0; i < inner.getRelationshipCount(); i++) {
+      final RelationshipPattern rel = inner.getRelationship(i);
+      if (rel instanceof QuantifiedPathPattern)
+        throw new CommandParsingException(
+            "FeatureNotImplemented: nesting a quantified path pattern inside another one is not supported (issue #4531)");
+      if (rel.isVariableLength())
+        throw new CommandParsingException(
+            "FeatureNotImplemented: a variable-length relationship inside a quantified path pattern is not supported (issue #4531)");
+    }
+    if (inner.hasPathVariable())
+      throw new CommandParsingException(
+          "FeatureNotImplemented: a path variable inside a quantified path pattern is not supported (issue #4531)");
+    // A whole-map parameter, (n $props), is not a set of equality predicates the per-repetition matcher
+    // can check, and a dynamic $(expression) label resolves per row rather than per repetition. Both
+    // would be silently dropped rather than applied, so name them instead.
+    for (int i = 0; i < inner.getNodeCount(); i++) {
+      final NodePattern node = inner.getNode(i);
+      if (node.getPropertiesParameterName() != null)
+        throw new CommandParsingException(
+            "FeatureNotImplemented: a parameterised property map on a node inside a quantified path pattern is not supported (issue #4531)");
+      if (node.hasDynamicLabels())
+        throw new CommandParsingException(
+            "FeatureNotImplemented: dynamic labels on a node inside a quantified path pattern are not supported (issue #4531)");
+    }
+    for (int i = 0; i < inner.getRelationshipCount(); i++)
+      if (inner.getRelationship(i).getPropertiesParameterName() != null)
+        throw new CommandParsingException(
+            "FeatureNotImplemented: a parameterised property map on a relationship inside a quantified path pattern is not supported (issue #4531)");
+  }
+
+  /**
+   * Derives the outer boundary node for a group endpoint: the endpoint's labels and inline properties
+   * are kept so the enclosing scan can use them, its variable and inline {@code WHERE} are dropped so
+   * the group variable is not also bound to a single vertex.
+   */
+  private static NodePattern toBoundaryNode(final NodePattern innerEndpoint) {
+    if (innerEndpoint.getVariable() == null && !innerEndpoint.hasWhereExpression())
+      return innerEndpoint;
+    return new NodePattern(null, innerEndpoint.getLabels(), innerEndpoint.getDynamicLabels(),
+        innerEndpoint.hasExplicitProperties() ? innerEndpoint.getProperties() : null,
+        innerEndpoint.getPropertiesParameterName(), innerEndpoint.isLabelDisjunction(), null);
   }
 
   /**

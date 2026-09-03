@@ -28,9 +28,7 @@ import com.arcadedb.graphql.parser.Definition;
 import com.arcadedb.graphql.parser.Directive;
 import com.arcadedb.graphql.parser.Directives;
 import com.arcadedb.graphql.parser.Document;
-import com.arcadedb.graphql.parser.Field;
 import com.arcadedb.graphql.parser.FieldDefinition;
-import com.arcadedb.graphql.parser.FieldWithAlias;
 import com.arcadedb.graphql.parser.GraphQLParser;
 import com.arcadedb.graphql.parser.InputValueDefinition;
 import com.arcadedb.graphql.parser.ObjectTypeDefinition;
@@ -126,8 +124,7 @@ public class GraphQLSchema {
       final Map<String, Object> variables = resolveVariables(op, parameters);
 
       final Selection selection = op.getSelectionSet().getSelections().getFirst();
-      final FieldWithAlias aliasField = selection.getFieldWithAlias();
-      queryName = aliasField != null ? aliasField.getName() : selection.getName();
+      queryName = selection.getFieldName();
 
       // HANDLE INTROSPECTION QUERIES
       if ("__schema".equals(queryName))
@@ -170,9 +167,8 @@ public class GraphQLSchema {
         }
       }
 
-      final Field field = selection.getField();
-      final Arguments queryArguments = field != null ? field.getArguments() : aliasField != null ? aliasField.getArguments() : null;
-      projection = field != null ? field.getSelectionSet() : aliasField != null ? aliasField.getSelectionSet() : null;
+      final Arguments queryArguments = selection.getArguments();
+      projection = selection.getSelectionSet();
 
       final Map<String, Object> boundParameters = new HashMap<>();
       final String where = buildWhereClause(queryArguments, typeArgumentNames, variables, boundParameters);
@@ -404,22 +400,14 @@ public class GraphQLSchema {
     Map<String, Object> arguments = null;
     SelectionSet projection = null;
 
-    final Field field = selection.getField();
-    final FieldWithAlias aliasField = selection.getFieldWithAlias();
-
     for (final Argument argument : directive.getArguments().getList()) {
       if ("statement".equals(argument.getName())) {
         // THE DIRECTIVE IS PART OF THE SCHEMA, NOT OF THE OPERATION: NO VARIABLE CAN BE BOUND IN IT
         final Object statementValue = resolveValue(argument.getValueWithVariable(), null);
         statement = statementValue != null ? statementValue.toString() : null;
 
-        if (field != null) {
-          arguments = getArguments(field.getArguments(), variables);
-          projection = field.getSelectionSet();
-        } else if (aliasField != null) {
-          arguments = getArguments(aliasField.getArguments(), variables);
-          projection = aliasField.getSelectionSet();
-        }
+        arguments = getArguments(selection.getArguments(), variables);
+        projection = selection.getSelectionSet();
       }
     }
 
@@ -453,22 +441,25 @@ public class GraphQLSchema {
     final InternalResultSet resultSet = new InternalResultSet();
     final ResultInternal schemaResult = new ResultInternal();
 
-    final Field field = selection.getField();
-    final SelectionSet selectionSet = field != null ? field.getSelectionSet() : null;
+    // Resolved through Selection.getSelectionSet()/getFieldName() so an aliased selection (`s: __schema { ... }`,
+    // `t: types { ... }`) is served exactly as the plain one, and the result is keyed by the alias the client wrote,
+    // as the GraphQL spec requires for response keys (issue #7036)
+    final SelectionSet selectionSet = selection.getSelectionSet();
 
     if (selectionSet != null) {
       for (final Selection sub : selectionSet.getSelections()) {
-        final String fieldName = sub.getName();
+        final String fieldName = sub.getFieldName();
+        final String responseKey = sub.getName();
         if ("types".equals(fieldName))
-          schemaResult.setProperty("types", buildTypeList(sub));
+          schemaResult.setProperty(responseKey, buildTypeList(sub));
         else if ("queryType".equals(fieldName))
-          schemaResult.setProperty("queryType", buildNameResult("Query"));
+          schemaResult.setProperty(responseKey, buildNameResult("Query"));
         else if ("mutationType".equals(fieldName))
-          schemaResult.setProperty("mutationType", null);
+          schemaResult.setProperty(responseKey, null);
         else if ("subscriptionType".equals(fieldName))
-          schemaResult.setProperty("subscriptionType", null);
+          schemaResult.setProperty(responseKey, null);
         else if ("directives".equals(fieldName))
-          schemaResult.setProperty("directives", Collections.emptyList());
+          schemaResult.setProperty(responseKey, Collections.emptyList());
       }
     }
 
@@ -477,11 +468,11 @@ public class GraphQLSchema {
   }
 
   private ResultSet executeIntrospectionType(final Selection selection, final Map<String, Object> variables) {
-    final Field field = selection.getField();
+    final Arguments arguments = selection.getArguments();
     String typeName = null;
 
-    if (field != null && field.getArguments() != null)
-      for (final Argument arg : field.getArguments().getList())
+    if (arguments != null)
+      for (final Argument arg : arguments.getList())
         if ("name".equals(arg.getName())) {
           final Object nameValue = resolveValue(arg.getValueWithVariable(), variables);
           typeName = nameValue != null ? nameValue.toString() : null;
@@ -490,8 +481,7 @@ public class GraphQLSchema {
     if (typeName == null)
       throw new CommandParsingException("__type query requires a 'name' argument");
 
-    final SelectionSet selectionSet = field != null ? field.getSelectionSet() : null;
-    final ResultInternal typeResult = buildTypeResult(typeName, selectionSet);
+    final ResultInternal typeResult = buildTypeResult(typeName, selection.getSelectionSet());
 
     if (typeResult == null)
       throw new CommandParsingException("Type '" + typeName + "' not found");
@@ -513,8 +503,7 @@ public class GraphQLSchema {
     final List<ResultInternal> types = new ArrayList<>();
     final Set<String> addedTypes = new HashSet<>();
 
-    final Field field = selection.getField();
-    final SelectionSet selectionSet = field != null ? field.getSelectionSet() : null;
+    final SelectionSet selectionSet = selection.getSelectionSet();
 
     // Add GraphQL-defined types
     for (final Map.Entry<String, ObjectTypeDefinition> entry : objectTypeDefinitionMap.entrySet()) {
@@ -570,24 +559,23 @@ public class GraphQLSchema {
 
     if (selectionSet != null) {
       for (final Selection sub : selectionSet.getSelections()) {
-        if ("fields".equals(sub.getName())) {
+        if ("fields".equals(sub.getFieldName())) {
           final List<ResultInternal> fields = new ArrayList<>();
           for (final FieldDefinition fd : objType.getFieldDefinitions()) {
             final ResultInternal fieldResult = new ResultInternal();
             fieldResult.setProperty("name", fd.getName());
 
-            final Field subField = sub.getField();
-            final SelectionSet fieldSelectionSet = subField != null ? subField.getSelectionSet() : null;
+            final SelectionSet fieldSelectionSet = sub.getSelectionSet();
             if (fieldSelectionSet != null) {
               for (final Selection fieldSub : fieldSelectionSet.getSelections()) {
-                if ("type".equals(fieldSub.getName()))
-                  fieldResult.setProperty("type", buildFieldTypeInfo(fd));
+                if ("type".equals(fieldSub.getFieldName()))
+                  fieldResult.setProperty(fieldSub.getName(), buildFieldTypeInfo(fd));
               }
             }
 
             fields.add(fieldResult);
           }
-          result.setProperty("fields", fields);
+          result.setProperty(sub.getName(), fields);
         }
       }
     }
@@ -602,28 +590,27 @@ public class GraphQLSchema {
 
     if (selectionSet != null) {
       for (final Selection sub : selectionSet.getSelections()) {
-        if ("fields".equals(sub.getName())) {
+        if ("fields".equals(sub.getFieldName())) {
           final List<ResultInternal> fields = new ArrayList<>();
           for (final Property prop : dbType.getProperties()) {
             final ResultInternal fieldResult = new ResultInternal();
             fieldResult.setProperty("name", prop.getName());
 
-            final Field subField = sub.getField();
-            final SelectionSet fieldSelectionSet = subField != null ? subField.getSelectionSet() : null;
+            final SelectionSet fieldSelectionSet = sub.getSelectionSet();
             if (fieldSelectionSet != null) {
               for (final Selection fieldSub : fieldSelectionSet.getSelections()) {
-                if ("type".equals(fieldSub.getName())) {
+                if ("type".equals(fieldSub.getFieldName())) {
                   final ResultInternal typeInfo = new ResultInternal();
                   typeInfo.setProperty("name", mapDatabaseTypeToGraphQL(prop.getType()));
                   typeInfo.setProperty("kind", "SCALAR");
-                  fieldResult.setProperty("type", typeInfo);
+                  fieldResult.setProperty(fieldSub.getName(), typeInfo);
                 }
               }
             }
 
             fields.add(fieldResult);
           }
-          result.setProperty("fields", fields);
+          result.setProperty(sub.getName(), fields);
         }
       }
     }

@@ -92,7 +92,12 @@ public class BinaryComparator {
         return -compare(value2, type2, value1, type1);
 
       default:
-        return ((String) value1).compareTo(value2.toString());
+        // TWO STRINGS ARE ORDERED THE WAY THE PAGES ORDER THEM - BY UNSIGNED UTF-8 BYTES, NOT BY UTF-16 CODE UNITS.
+        // String.compareTo() disagrees with the page order for any non-BMP character (a surrogate pair, 0xD800-0xDBFF
+        // lead unit, but a 0xF0-0xF4 lead byte) against a BMP character above U+E000, so the range cursor's stop
+        // condition, which compares the un-encoded bounds through here, ended a scan before emitting anything
+        // (issue #6997)
+        return compareStrings((String) value1, value2.toString());
       }
     }
 
@@ -420,6 +425,10 @@ public class BinaryComparator {
     if (buffer1.length != buffer2.length)
       return false;
 
+    if (buffer1.length == 0)
+      // BOTH EMPTY, SO EQUAL: THE FAST PATH BELOW WOULD READ INDEX -1 (ISSUE #6998)
+      return true;
+
     if (buffer1[buffer1.length - 1] != buffer2[buffer2.length - 1])
       // OPTIMIZATION: CHECK THE LAST BYTE IF IT'S THE SAME FIRST
       return false;
@@ -452,7 +461,7 @@ public class BinaryComparator {
     else if (a == null)
       return -1;
     else if (a instanceof String string && b instanceof String string1)
-      return compareBytes(string.getBytes(), string1.getBytes(DatabaseFactory.getDefaultCharset()));
+      return compareStrings(string, string1);
     else if (a instanceof byte[] bytes && b instanceof byte[] bytes1)
       return compareBytes(bytes, bytes1);
     else if (a instanceof Map map && b instanceof Map map1)
@@ -465,6 +474,61 @@ public class BinaryComparator {
       return DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS)
           .compareTo(DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS));
     return ((Comparable<Object>) a).compareTo(b);
+  }
+
+  /**
+   * Orders two strings exactly as the unsigned UTF-8 encodings the LSM pages hold would order them, without encoding
+   * either: UTF-8 byte order is Unicode code point order, and the only place UTF-16 code unit order departs from it is
+   * the surrogate block ({@code 0xD800-0xDFFF}), which UTF-16 places BELOW {@code 0xE000-0xFFFF} while the code points
+   * it encodes ({@code U+10000} and above) sort ABOVE every BMP character. The first differing pair of units is
+   * therefore remapped so that the two blocks swap places, which is all it takes to sort UTF-16 as UTF-8.
+   * <p>
+   * This is the one ordering for a String pair, shared by {@link #compare(Object, byte, Object, byte)} and
+   * {@link #compareTo(Object, Object)} so the two entry points cannot answer differently again (issue #6997). It also
+   * sidesteps the two {@code byte[]} allocations that encoding both operands cost on every comparison, which the index
+   * cursor pays once per key while it walks a range. Both sides used to encode with
+   * {@link DatabaseFactory#getDefaultCharset()}, which is UTF-8 (issue #6998): the invariant this relies on.
+   * <p>
+   * The remap is only right for well-formed UTF-16. An isolated surrogate has no code point: the encoder writes the
+   * replacement byte {@code '?'} for it, which sorts below almost everything, while the remap would sort it above the
+   * whole BMP. So when the first difference sits on or right after a surrogate that is not part of a pair, the pages'
+   * own encoding is compared instead - the rare path, and the only one that allocates.
+   */
+  public static int compareStrings(final String a, final String b) {
+    final int aLength = a.length();
+    final int bLength = b.length();
+    final int length = Math.min(aLength, bLength);
+    for (int i = 0; i < length; i++) {
+      int ca = a.charAt(i);
+      int cb = b.charAt(i);
+      if (ca != cb) {
+        if (isolatedSurrogateAround(a, i) || isolatedSurrogateAround(b, i))
+          return compareBytes(a.getBytes(DatabaseFactory.getDefaultCharset()), b.getBytes(DatabaseFactory.getDefaultCharset()));
+
+        if (ca >= 0xD800 && cb >= 0xD800) {
+          // BOTH UNITS ARE IN THE SURROGATE-OR-ABOVE REGION, THE ONLY PLACE THE TWO ORDERS DISAGREE: MOVE THE SURROGATE
+          // BLOCK ABOVE THE REST OF THE BMP, WHERE THE 4-BYTE UTF-8 FORM OF WHAT IT ENCODES SORTS
+          ca += ca >= 0xE000 ? -0x800 : 0x2000;
+          cb += cb >= 0xE000 ? -0x800 : 0x2000;
+        }
+        return ca - cb;
+      }
+    }
+    return aLength - bLength;
+  }
+
+  /**
+   * True when the unit at {@code i} is a surrogate without its partner, or when the unit before it is a high surrogate
+   * that this unit does not complete: both shapes are encoded as a replacement byte rather than as the code point the
+   * UTF-16-as-UTF-8 remap assumes.
+   */
+  private static boolean isolatedSurrogateAround(final String s, final int i) {
+    final char c = s.charAt(i);
+    if (Character.isHighSurrogate(c))
+      return i + 1 >= s.length() || !Character.isLowSurrogate(s.charAt(i + 1));
+    if (Character.isLowSurrogate(c))
+      return i == 0 || !Character.isHighSurrogate(s.charAt(i - 1));
+    return i > 0 && Character.isHighSurrogate(s.charAt(i - 1));
   }
 
   public static int compareBytes(final byte[] buffer1, final byte[] buffer2) {

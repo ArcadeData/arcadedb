@@ -19,8 +19,14 @@
 package com.arcadedb.query.sql.method;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.utility.NumberUtils;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 
 /**
  * @author Johann Sorel (Geomatys)
@@ -147,6 +153,50 @@ public abstract class AbstractSQLMethod implements SQLMethod {
       return null;
     final String text = value.toString().trim();
     return text.isEmpty() ? null : text;
+  }
+
+  /**
+   * Reads the receiver of a collection method ({@code join()}, {@code sort()}, {@code transform()}, ...) as a
+   * {@link List}, answering {@code null} when the value is not a collection at all: {@code null}, a scalar, or a map.
+   * <p>
+   * Every collection method used to type-test its receiver for {@code List} (or {@code Collection}) on its own and
+   * fall through to {@code toString()} or to an identity return on anything else. A {@code String[]} - what
+   * {@code split()} produced, and what a JSON array parameter still arrives as - therefore met a different failure in
+   * every method: {@code join()} and {@code asString()} leaked the array's identity {@code toString()}
+   * ({@code "[Ljava.lang.String;@7a8fa663"}) into the result set, {@code sort()} returned it unsorted with no error,
+   * {@code asList()} wrapped the whole array as a single element (issue #7027). One helper is what keeps the next
+   * hardening from reaching only one of them, the same move {@link #numericTextOrNull} made for the conversion
+   * methods in #6825.
+   * <p>
+   * A {@code List} is answered as is, so the read-only methods pay nothing for it; an {@code Object[]} is answered as
+   * a fixed-size view of the array; every other collection, primitive array, iterable or iterator is materialised
+   * into a new list. Callers that mutate the result must copy it first.
+   *
+   * @param value the value the method was invoked on
+   *
+   * @return the receiver as a list, or {@code null} when it is not a collection
+   */
+  @SuppressWarnings("unchecked")
+  protected static List<Object> listReceiverOrNull(final Object value) {
+    // THE COMMON CASE FIRST, AHEAD OF THE REFLECTIVE isMultiValue() TEST: A List IS ANSWERED AS IS AT THE COST OF ONE
+    // instanceof
+    if (value instanceof List)
+      return (List<Object>) value;
+
+    // A BARE Iterator IS NOT A MultiValue.isMultiValue() (THAT TEST COVERS Iterable, NOT Iterator), SO IT IS ADMITTED
+    // EXPLICITLY OR THE MATERIALISATION BELOW WOULD NEVER SEE ONE
+    if (value == null || value instanceof Map || !(MultiValue.isMultiValue(value) || value instanceof Iterator))
+      return null;
+
+    final List<Object> list = MultiValue.getMultiValueAsList(value);
+    if (list != null)
+      return list;
+
+    // AN ITERABLE, AN ITERATOR OR A RESULT SET: MATERIALISE IT ONCE
+    final List<Object> materialised = new ArrayList<>();
+    for (final Iterator<?> iterator = MultiValue.getMultiValueIterator(value); iterator.hasNext(); )
+      materialised.add(iterator.next());
+    return materialised;
   }
 
   protected Object getParameterValue(final Identifiable iRecord, final String iValue) {

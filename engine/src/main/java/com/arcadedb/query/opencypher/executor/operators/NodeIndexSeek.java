@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
@@ -96,6 +97,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     return new ResultSet() {
       private TypeIndex index = null;
+      /** The index is declared on a supertype, so its cursor carries records that are not of {@link #label}. */
+      private boolean inheritedIndex = false;
       private List<Object[]> seekKeys = null; // one key per value to seek (IN-list expands to N keys)
       private int seekIndex = 0;
       private boolean wholeKey = false;        // the key covers every index property: single-entry lookup
@@ -149,6 +152,11 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           // set here would silently drop rows the query must return, so fail instead.
           throw new CommandExecutionException(
               "Index '" + indexName + "' on type '" + label + "' is no longer available: re-plan the query");
+
+        // An index inherited from a supertype spans every bucket in the hierarchy, so its cursor also yields
+        // the parent's own records and every sibling child's. Those are not answers to (n:label) and are
+        // dropped below - the same thing the SQL plan for this query spells as FILTER ITEMS BY TYPE (#7021).
+        inheritedIndex = Labels.isInheritedIndex(index, label);
 
         // The prefix values are shared by every seek; only the leading value varies over an IN-list.
         final List<Object> trailing = new ArrayList<>(keyValues.size() - 1);
@@ -243,6 +251,11 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
 
           // Skip already-emitted vertices when seeking multiple IN-list values (set semantics).
           if (seen != null && !seen.add(identifiable.getIdentity()))
+            continue;
+
+          // Reject a record of another type in the hierarchy without loading it: the bucket the RID names
+          // already says which type it belongs to (issue #7021).
+          if (inheritedIndex && !Labels.carriesLabel(context.getDatabase().getSchema(), identifiable, label))
             continue;
 
           // Load the actual record from the identifiable (may be RID)

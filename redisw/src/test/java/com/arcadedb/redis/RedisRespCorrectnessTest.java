@@ -397,6 +397,201 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
+  void pingWithoutArgumentRepliesAsSimpleString() throws Exception {
+    // Real Redis: PING with no argument is +PONG, not a bulk string.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "PING");
+      assertThat(readReply(socket)).isEqualTo("+PONG");
+    }
+  }
+
+  @Test
+  void pingWithMessageRepliesAsBulkString() throws Exception {
+    // (issue #6942): PING <message> replied with a RESP simple string ("+hello\r\n") instead of a bulk
+    // string ("$5\r\nhello\r\n"). Real Redis always echoes the PING argument as a bulk string.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "PING", "hello");
+      assertThat(readReply(socket)).isEqualTo("$5\r\nhello");
+    }
+  }
+
+  @Test
+  void pingWithCrLfInMessageDoesNotDesyncConnection() throws Exception {
+    // (issue #6942): a simple-string PING reply is CRLF-terminated, so a message containing "\r\n" split
+    // the reply into two frames and desynchronized the connection permanently - every later reply on that
+    // connection was read one frame early. A length-prefixed bulk-string reply carries the CRLF as payload
+    // instead of treating it as a frame terminator, so the next command's reply must still line up.
+    final String payload = "a\r\n+INJECTED";
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "PING", payload);
+      assertThat(readReply(socket)).isEqualTo("$" + payload.length() + "\r\n" + payload);
+
+      // If the parser had desynced, this PING's reply would actually be leftover bytes from the previous
+      // frame instead of a fresh +PONG.
+      sendCommand(socket, "PING");
+      assertThat(readReply(socket)).isEqualTo("+PONG");
+    }
+  }
+
+  @Test
+  void decrOnFloatKeyReturnsErrorInsteadOfInvalidIntegerReply() throws Exception {
+    // (issue #6942): once INCRBYFLOAT turns a key into a Double, DECR blindly wrote a `:`-prefixed
+    // (RESP integer) header in front of a floating-point value, which is not a valid RESP integer. Real
+    // Redis rejects DECR/INCR on a non-integer value with "-ERR value is not an integer or out of range".
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "decrFloatKey", "0");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCRBYFLOAT", "decrFloatKey", "3.3");
+      readReply(socket); // $3\r\n3.3
+
+      sendCommand(socket, "DECR", "decrFloatKey");
+      assertThat(readReply(socket)).isEqualTo("-ERR value is not an integer or out of range");
+
+      // A rejected DECR must be a no-op: the stored value stays untouched.
+      sendCommand(socket, "GET", "decrFloatKey");
+      assertThat(readReply(socket)).isEqualTo("$3\r\n3.3");
+    }
+  }
+
+  @Test
+  void incrOnFloatKeyReturnsErrorInsteadOfInvalidIntegerReply() throws Exception {
+    // (issue #6942): the mirror case for INCR - incrBy's non-decimal branch answered with a RESP simple
+    // string ("+3.3") rather than rejecting the non-integer value the way real Redis does.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "incrFloatKey", "0");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCRBYFLOAT", "incrFloatKey", "3.3");
+      readReply(socket); // $3\r\n3.3
+
+      sendCommand(socket, "INCR", "incrFloatKey");
+      assertThat(readReply(socket)).isEqualTo("-ERR value is not an integer or out of range");
+
+      sendCommand(socket, "GET", "incrFloatKey");
+      assertThat(readReply(socket)).isEqualTo("$3\r\n3.3");
+    }
+  }
+
+  @Test
+  void incrOnDirectlySetFractionalStringReturnsIntegerTypeError() throws Exception {
+    // (issue #6942 code review): a key set directly to a fractional string via SET (never touched by
+    // INCRBYFLOAT) hit a different code path than the Double-typed case above and answered with the
+    // generic "Key 'x' is not a number" instead of Redis' exact integer-command error. Same fix, same
+    // message, for INCR/INCRBY/DECR/DECRBY, whichever way the non-integral value got there.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "fractionalStringKey", "3.3");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCR", "fractionalStringKey");
+      assertThat(readReply(socket)).isEqualTo("-ERR value is not an integer or out of range");
+
+      sendCommand(socket, "DECR", "fractionalStringKey");
+      assertThat(readReply(socket)).isEqualTo("-ERR value is not an integer or out of range");
+
+      // Neither rejected command touched the stored value.
+      sendCommand(socket, "GET", "fractionalStringKey");
+      assertThat(readReply(socket)).isEqualTo("$3\r\n3.3");
+    }
+  }
+
+  @Test
+  void incrByFloatOnDirectlySetFractionalStringSucceeds() throws Exception {
+    // (issue #6942 code review): INCRBYFLOAT has no integer restriction - it must accept a fractional
+    // string exactly like real Redis, not reject it the way INCR/DECR correctly do.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "incrByFloatStringKey", "3.3");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCRBYFLOAT", "incrByFloatStringKey", "1.0");
+      assertThat(readReply(socket)).isEqualTo("$3\r\n4.3");
+    }
+  }
+
+  @Test
+  void incrByAndDecrByWithExplicitAmountRejectFractionalValueTheSameWayAsIncrAndDecr() throws Exception {
+    // (issue #6942 code review): INCRBY/DECRBY dispatch through the same incrBy()/decrBy() as INCR/DECR
+    // (RedisNetworkExecutor's INCR/INCRBY and DECR/DECRBY cases both call the same method), so this locks
+    // in that the explicit-amount form goes through requireIntegralValue() exactly like the no-amount form.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "incrByDecrByFloatKey", "3.3");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCRBY", "incrByDecrByFloatKey", "5");
+      assertThat(readReply(socket)).isEqualTo("-ERR value is not an integer or out of range");
+
+      sendCommand(socket, "DECRBY", "incrByDecrByFloatKey", "5");
+      assertThat(readReply(socket)).isEqualTo("-ERR value is not an integer or out of range");
+
+      sendCommand(socket, "GET", "incrByDecrByFloatKey");
+      assertThat(readReply(socket)).isEqualTo("$3\r\n3.3");
+    }
+  }
+
+  @Test
+  void incrByOverflowStillReturnsOverflowErrorAfterIntegralValueRefactor() throws Exception {
+    // (issue #6942 code review): confirms Math.addExact's ArithmeticException -> "increment or decrement
+    // would overflow" still fires for INCRBY after routing the stored value through requireIntegralValue().
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "incrByOverflowKey", "9223372036854775807"); // Long.MAX_VALUE
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCRBY", "incrByOverflowKey", "1");
+      final String reply = readReply(socket);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("overflow");
+
+      sendCommand(socket, "GET", "incrByOverflowKey");
+      assertThat(readReply(socket)).isEqualTo("$19\r\n9223372036854775807");
+    }
+  }
+
+  @Test
   void concurrentSetNxOnSharedDatabaseKeyOnlyLetsOneWinnerThrough() throws Exception {
     // (issue #6466 follow-up): the initial fix evaluated NX as "does the key exist?" then "write it" as two
     // separate calls. That is only safe when the key lives in a per-connection bucket; once a key is backed

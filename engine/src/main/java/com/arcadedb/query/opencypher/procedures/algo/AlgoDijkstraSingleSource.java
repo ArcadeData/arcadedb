@@ -115,15 +115,16 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     // Not the coarser hasEdgeProperties(): the CSR kernel below reads the weight column directly and falls back
     // to a unit weight when it is missing, so a view materialising some OTHER property would silently answer an
     // unweighted shortest path to a weighted question (issue #6301).
-    // Only while the view is not serving pending changes: the GraphAlgorithms kernel below reads its base CSR
-    // arrays directly and sizes its result from the base node mapping, which is neither the current graph nor
-    // as wide as the id space the view now reports - see GraphTraversalProvider#hasPendingChanges (issue #6792).
-    if (provider instanceof GraphAnalyticalView gav && !gav.hasPendingChanges()
-        && gav.servesEdgeProperty(weightProperty, relTypes)) {
+    // Unlike the topology-only kernels (algo.bfs, algo.pagerank, ...), which stay overlay-blind and refuse
+    // outright via hasPendingChanges(), GraphAlgorithms.dijkstraSingleSource resolves an active overlay itself -
+    // through GraphTraversalProvider#edgeWeightsOf per popped node, sized against the overlay's own id-space
+    // upper bound rather than the base node mapping (issue #6792) - so this procedure no longer has to refuse
+    // the whole call just because a commit landed since the view was last built (issue #6791).
+    if (provider instanceof GraphAnalyticalView gav && gav.servesEdgeProperty(weightProperty, relTypes)) {
       final Stream<Result> accelerated = executeWithCSR(context, gav, startNode.getIdentity(), relTypes, weightProperty, dir);
-      // Null means the kernel refused: it reads the CSR arrays directly, and a delta overlay holds edges those
-      // arrays do not have (issue #6315). Serving edge properties and being readable array-by-array are two
-      // different claims, and this one is the second.
+      // Null means the kernel refused outright: a node it popped could not be answered exactly even through
+      // the overlay-aware fallback GraphAlgorithms.dijkstraSingleSource takes while an overlay is active
+      // (issue #6791) - an ambiguous parallel-edge deletion is the one case that can still happen.
       if (accelerated != null) {
         context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
         return accelerated;
@@ -136,7 +137,10 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
 
   private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav, final RID startRid,
       final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir) {
-    final int n = gav.getNodeCount();
+    // The exclusive bound of the dense id space, not the live node count: while an overlay is active the two
+    // diverge (issue #6792) - an added node's id sits above the base mapping regardless of how many nodes are
+    // currently live, and enumerating only up to the live count would silently drop it from the results below.
+    final int n = gav.getNodeIdUpperBound();
     if (n == 0)
       return Stream.empty();
 
@@ -147,7 +151,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     final double[] dist = GraphAlgorithms.dijkstraSingleSource(
         gav, src, weightProperty, dir, relTypes);
     if (dist == null)
-      return null; // the CSR arrays are not the whole graph right now; the caller reads the edges instead
+      return null; // a popped node could not be answered exactly; the caller reads the edges instead
     long reachable = 0;
     for (int i = 0; i < n; i++)
       if (i != src && dist[i] < Double.POSITIVE_INFINITY) reachable++;

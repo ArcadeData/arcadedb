@@ -144,6 +144,33 @@ public class CSRAdjacencyIndex {
   }
 
   /**
+   * Returns how many forward (outgoing) edges {@code src -> tgt} this base CSR holds, i.e. the length of the
+   * run of parallel edges between the pair. Each node's neighbour slice is stored sorted, so the run is
+   * contiguous: a binary search followed by a walk to both of its ends.
+   * <p>
+   * Unlike {@link #hasForwardEdge}, which only answers "is the pair present at all", this is the multiplicity
+   * the post-compaction delta re-application needs to tell a deletion the freshly built CSR has ALREADY
+   * absorbed apart from one it has not: the two differ only in how many occurrences of the pair survived the
+   * scan, never in whether the pair is present. See issue #7042.
+   */
+  public int forwardEdgeCount(final int src, final int tgt) {
+    if (src < 0 || src >= nodeCount)
+      return 0;
+    final int from = fwdOffsets[src];
+    final int to = fwdOffsets[src + 1];
+    final int hit = Arrays.binarySearch(fwdNeighbors, from, to, tgt);
+    if (hit < 0)
+      return 0;
+    int start = hit;
+    while (start > from && fwdNeighbors[start - 1] == tgt)
+      --start;
+    int end = hit + 1;
+    while (end < to && fwdNeighbors[end] == tgt)
+      ++end;
+    return end - start;
+  }
+
+  /**
    * Direct access to the forward neighbors array for vectorized batch processing.
    * The array is the internal buffer — do NOT modify it.
    * Package-private: callers outside the package should use offset-based access methods.

@@ -37,6 +37,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -173,15 +174,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
     }
 
-    // Filter bucket indexes if a specific type was requested
-    final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
-    for (final IndexInternal bucketIndex : bucketIndexes) {
-      if (bucketIndex instanceof LSMVectorIndex lsmIndex) {
-        if (allowedBucketIds == null || allowedBucketIds.contains(bucketIndex.getAssociatedBucketId())) {
-          vectorIndexes.add(lsmIndex);
-        }
-      }
-    }
+    // Filter bucket indexes if a specific type was requested, and visit each sub-index at most once. See
+    // VectorUtils.collectSubIndexesOnce for why the same sub-index can be listed twice (issue #7057).
+    final List<LSMVectorIndex> vectorIndexes = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMVectorIndex.class,
+        allowedBucketIds == null ? null : allowedBucketIds::contains);
 
     if (vectorIndexes.isEmpty()) {
       if (allowedBucketIds != null) {
@@ -272,6 +268,18 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
     final ArrayList<Object> result = new ArrayList<>();
     final GroupAdmissionState groups = groupBy != null ? new GroupAdmissionState(limit, groupSize) : null;
+    // One record, one row. This list is the concatenation of one search per index, so a record offered by more than
+    // one of them would otherwise take two of the caller's `limit` slots - and, under groupBy, two slots of its own
+    // group's cap (issue #7057). The list is already sorted, so the sighting kept is the nearest one.
+    //
+    // Sized from the candidates actually fetched, never from `limit`. On the non-grouped path `limit` is the raw
+    // caller-supplied k, checked only for `<= 0` - the MAX_FETCH_CANDIDATES budget above guards the grouped path
+    // alone. RidHashSet allocates an int[] and a long[] of the next power of two up front, so sizing off k would
+    // let `vector.neighbors(idx, v, 100000000)` claim ~1.5GB before looking at a single record, and a k near
+    // Integer.MAX_VALUE would overflow the rounding to a negative capacity and throw NegativeArraySizeException.
+    // That is the hazard issue #5924 already closed one layer down, where findNeighborsFromVector clamps k against
+    // the real candidate count; allNeighbors.size() is that clamp having already happened, per index and summed.
+    final RidHashSet emitted = new RidHashSet(Math.min(limit, allNeighbors.size()));
 
     for (final Pair<RID, Float> neighbor : allNeighbors) {
       // Stop conditions:
@@ -291,6 +299,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         break;
 
       final RID rid = neighbor.getFirst();
+      if (!emitted.add(rid))
+        continue;
+
       final Document record;
       try {
         record = (Document) db.lookupByRID(rid, true);

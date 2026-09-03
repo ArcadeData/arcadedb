@@ -27,6 +27,8 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.HashSet;
 
+import java.util.Set;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -140,5 +142,12 @@ class SQLMethodAsSetTest {
     final HashSet<Object> expected = new HashSet<Object>();
     expected.add(Integer.valueOf(4));
     assertThat(expected).isEqualTo(result);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void arrayIsConvertedToASetOfItsElements() {
+    // Issue #7027: an array used to come back as a one-element set holding the whole array
+    assertThat((Set<Object>) function.execute(new String[] { "a", "b", "a" }, null, null, null)).containsExactlyInAnyOrder("a", "b");
   }
 }

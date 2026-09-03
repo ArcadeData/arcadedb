@@ -18,10 +18,14 @@
  */
 package com.arcadedb.bolt.packstream;
 
+import com.arcadedb.utility.CollectionUtils;
+
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -294,6 +298,13 @@ public class PackStreamWriter {
       writeMap((Map<String, Object>) value);
     } else if (value instanceof PackStreamStructure) {
       ((PackStreamStructure) value).writeTo(this);
+    } else if (value instanceof Collection) {
+      writeList(new ArrayList<>((Collection<?>) value));
+    } else if (value.getClass().isArray()) {
+      // Last line of defense for a multi-value that reached the writer unconverted: without this, a Set or an
+      // array (a primitive one in particular, which `instanceof List` never matches) fell into the toString()
+      // default below and the client silently received "[F@294b13ce" instead of the values - issue #7056.
+      writeList(CollectionUtils.arrayToList(value));
     } else {
       // Default: convert to string
       writeString(value.toString());

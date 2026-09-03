@@ -87,4 +87,113 @@ class ContainsConditionTest {
 
     assertThat(op.execute(nullList, nullList)).isTrue();
   }
+
+  /**
+   * Regression test for issue #6984: a String[] left-hand side - such as the result of split() - satisfies
+   * neither `instanceof Collection` nor `instanceof Iterable` (arrays don't implement Iterable), so it used
+   * to fall through to the final `return false` instead of being matched against the scalar/collection on
+   * the right.
+   */
+  @Test
+  void issue6984ArrayLeftHandSide() {
+    final ContainsCondition op = new ContainsCondition();
+
+    final String[] left = "a b c".split(" ");
+
+    assertThat(op.execute(left, "a")).isTrue();
+    assertThat(op.execute(left, "z")).isFalse();
+
+    final int[] primitiveLeft = { 1, 2, 3 };
+    assertThat(op.execute(primitiveLeft, 2)).isTrue();
+    assertThat(op.execute(primitiveLeft, 5)).isFalse();
+  }
+
+  /**
+   * Regression test for issue #6995: the same blind spot as #6984, but on the other side of the operator. An array
+   * right-hand side - the result of a second split(), a parameter bound to a Java array - satisfies neither
+   * {@code instanceof Collection} nor {@code instanceof Iterable}, so it used to skip every branch of the operator
+   * and be compared as one opaque object against each left-hand item: the condition was effectively always false.
+   * <p>
+   * The fix is a normalization, not a change of meaning: an array right-hand side now answers exactly what the
+   * equivalent List right-hand side answers, which is the operator's established semantics - a single-item
+   * collection is unwrapped to its item (the one-row sub-query case), and a longer one is looked for as one element
+   * of the left-hand collection, as {@code SelectStatementExecutionTest.containsCollection} pins down.
+   */
+  @Test
+  void issue6995ArrayRightHandSide() {
+    final ContainsCondition op = new ContainsCondition();
+
+    final String[] left = "a b c".split(" ");
+
+    // Single-item array: unwrapped to its item, so the item is looked for among the left-hand values. This is the
+    // case that used to be false for an array and true for the identical List.
+    assertThat(op.execute(left, "a".split(" "))).isTrue();
+    assertThat(op.execute(left, "z".split(" "))).isFalse();
+    assertThat(op.execute(new int[] { 1, 2, 3 }, new int[] { 2 })).isTrue();
+    assertThat(op.execute(new int[] { 1, 2, 3 }, new int[] { 9 })).isFalse();
+
+    // Longer array: looked for as one element of the left-hand collection, so it matches a nested value.
+    assertThat(op.execute(List.of(List.of("a", "b")), "a b".split(" "))).isTrue();
+    assertThat(op.execute(List.of(List.of("a", "b")), "a z".split(" "))).isFalse();
+  }
+
+  /**
+   * The point of the #6995 fix: an array right-hand side must answer whatever the identical List right-hand side
+   * answers. Anything else leaves the operator's meaning depending on how the value happened to be produced.
+   */
+  @Test
+  void anArrayRightHandSideAnswersTheSameAsTheEquivalentList() {
+    final ContainsCondition op = new ContainsCondition();
+
+    final List<Object> flat = Arrays.asList("a", "b", "c");
+    final List<Object> nested = List.of(List.of("a", "b"), List.of("z"));
+
+    for (final Object left : List.of(flat, nested)) {
+      for (final List<String> right : List.of(List.of("a"), List.of("z"), List.of("a", "b"), List.of("b", "c"))) {
+        final String[] asArray = right.toArray(new String[0]);
+        assertThat(op.execute(left, asArray))
+            .as("CONTAINS %s must answer the same for the array and for the List", right)
+            .isEqualTo(op.execute(left, right));
+      }
+    }
+  }
+
+  /**
+   * A byte[] is the BINARY scalar type, so on the right-hand side - the value being searched FOR -
+   * {@code list CONTAINS :binary} must keep looking for that one binary value among the list items rather than
+   * degenerating into a search for a list of numbers (issue #6995).
+   */
+  @Test
+  void binaryRightHandSideStaysAScalar() {
+    final ContainsCondition op = new ContainsCondition();
+
+    final List<Object> left = new ArrayList<>();
+    left.add(new byte[] { 1, 2, 3 });
+
+    assertThat(op.execute(left, new byte[] { 1, 2, 3 })).isTrue();
+    assertThat(op.execute(left, new byte[] { 1, 2 })).isFalse();
+    // Proof it is not being expanded: a single byte of the stored value is not "contained" in the list.
+    assertThat(op.execute(left, (byte) 1)).isFalse();
+  }
+
+  /**
+   * The byte[] carve-out is right-hand-side only. On the left the operand is the container being searched, so it is
+   * expanded like any other array - the behaviour #6984 shipped, which the #6995 fix must not disturb.
+   */
+  @Test
+  void binaryLeftHandSideIsStillExpanded() {
+    final ContainsCondition op = new ContainsCondition();
+
+    final byte[] left = { 1, 2, 3 };
+
+    assertThat(op.execute(left, (byte) 2)).isTrue();
+    assertThat(op.execute(left, (byte) 9)).isFalse();
+    // The items are matched with the operator's loose equality, so a widened literal finds them too.
+    assertThat(op.execute(left, 2)).isTrue();
+
+    // The corner where the two rules meet: the left side expands to its bytes, the right side stays one BINARY
+    // value, so no item can equal it. That follows from the two rules rather than being a rule of its own, and it is
+    // pinned here so a later change to either side cannot alter it unnoticed.
+    assertThat(op.execute(left, new byte[] { 1, 2, 3 })).isFalse();
+  }
 }

@@ -44,10 +44,20 @@ import java.util.Map;
  */
 public class SubQueryCollector {
 
-  protected static final String GENERATED_ALIAS_PREFIX = "_$$$SUBQUERY$$$_";
+  protected static final String GENERATED_ALIAS_PREFIX = GeneratedAlias.PREFIX + "SUBQUERY$$$_";
   protected              int    nextAliasId            = 0;
 
   protected final Map<Identifier, Statement> subQueries = new LinkedHashMap<>();
+
+  /**
+   * Tells whether {@code name} is one of the aliases this collector generates when it lifts a sub-query out of an
+   * expression and into a LET clause. Such an alias is not a user-visible variable: it holds a value only once the
+   * LET step that computes it has run, so a planner that evaluates it earlier than that must not read the resulting
+   * {@code null} as "the sub-query returned nothing" (issue #7054).
+   */
+  public static boolean isGeneratedAlias(final String name) {
+    return name != null && name.startsWith(GENERATED_ALIAS_PREFIX);
+  }
 
   protected Identifier getNextAlias() {
     final Identifier result = new Identifier(GENERATED_ALIAS_PREFIX + (nextAliasId++));

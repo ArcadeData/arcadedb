@@ -71,12 +71,14 @@ public class LocalDocumentType implements DocumentType {
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
   protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
   protected final Map<String, Object>               custom                       = new HashMap<>();
-  protected       List<Bucket>                      buckets                      = new ArrayList<>();
-  // Copy-on-write reassigned under schema mutation and read lock-free by query planning (getBuckets(true)/
-  // getBucketIds(true)): volatile so a planning thread has a happens-before edge against a concurrent
-  // ALTER TYPE ... BUCKET, matching the LocalSchema.bucketId2TypeMap publication pattern (issue #6678).
+  // The four bucket lists are copy-on-write: reassigned under the schema mutation lock and read lock-free by query
+  // planning through getBuckets(polymorphic)/getBucketIds(polymorphic), both branches of the ternary - the
+  // non-polymorphic pair feeds SelectExecutionPlanner's partition pruning and FetchFromSchemaTypesStep exactly as the
+  // polymorphic pair does. All four are volatile so a planning thread has a happens-before edge against a concurrent
+  // ALTER TYPE ... BUCKET, matching the LocalSchema.bucketId2TypeMap publication pattern (issues #6678 and #7033).
+  protected volatile List<Bucket>                   buckets                      = new ArrayList<>();
   protected volatile List<Bucket>                   cachedPolymorphicBuckets     = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
-  protected       List<Integer>                     bucketIds                    = new ArrayList<>();
+  protected volatile List<Integer>                  bucketIds                    = new ArrayList<>();
   protected volatile List<Integer>                  cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
   protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
   // Names of the OWN properties that declare a DEFAULT. A cache: the authority is the per-property default value, but
@@ -203,16 +205,11 @@ public class LocalDocumentType implements DocumentType {
   public DocumentType removeSuperType(final DocumentType superType) {
     checkForSchemaMutation();
     recordFileChanges(() -> {
-      if (!superTypes.remove(superType))
+      if (!superTypes.contains(superType))
         // ALREADY REMOVED SUPER TYPE
         return null;
 
-      ((LocalDocumentType) superType).subTypes.remove(this);
-
-      // TODO: CHECK THE EDGE CASE WHERE THE SAME TYPE IS INHERITED ON MULTIPLE LEVEL AND YOU DON'T NEED TO REMOVE THE BUCKETS
-      // UPDATE THE LIST OF POLYMORPHIC BUCKETS TREE
-      ((LocalDocumentType) superType).updatePolymorphicBucketsCache(false, buckets, bucketIds);
-
+      unlinkSuperType((LocalDocumentType) superType);
       return null;
     });
     return this;
@@ -2006,18 +2003,51 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * Undoes the in-memory linkage {@link #addSuperType(DocumentType, boolean)} applies before it propagates the super
-   * type's indexes, so a propagation that fails leaves the type exactly as unlinked as it found it and the next
-   * attempt is a real attempt rather than an early return.
-   *
-   * @param linkedBuckets   the very lists handed to {@code updatePolymorphicBucketsCache} on the way in - the caches
-   *                        are replaced rather than mutated, so removing anything else would not be symmetric
+   * The mirror image of {@link #linkSuperType}: severs the link in both directions, then has the former super type
+   * rebuild its polymorphic bucket caches from what is still linked to it. Used by {@link #removeSuperType(DocumentType)}
+   * and by {@link #addSuperTypeInternal} to hand a failed linkage back, so the two cannot drift apart.
+   * <p>
+   * The caches are REBUILT rather than subtracted from. Linking contributed this type's whole polymorphic subtree, so a
+   * subtraction has to withdraw the same subtree, and withdrawing only the type's own buckets left every grandchild
+   * visible in {@code SELECT FROM <ancestor>} after the link was gone (issue #6935). A subtraction of the subtree is not
+   * right either: a bucket the former super type still reaches through another path (a diamond, where the subtree is
+   * also linked to it directly or through a sibling) would be withdrawn although it still belongs there. Recomputing
+   * from the surviving links is the only answer that is correct in both shapes, and a schema change is rare enough that
+   * its O(tree) cost is not worth a cheaper rule that is wrong in one of them.
    */
-  private void unlinkSuperType(final LocalDocumentType superType, final List<Bucket> linkedBuckets,
-      final List<Integer> linkedBucketIds) {
+  private void unlinkSuperType(final LocalDocumentType superType) {
     superTypes.remove(superType);
     superType.subTypes.remove(this);
-    superType.updatePolymorphicBucketsCache(false, linkedBuckets, linkedBucketIds);
+    superType.rebuildPolymorphicBucketsCache();
+  }
+
+  /**
+   * Recomputes {@link #cachedPolymorphicBuckets} and {@link #cachedPolymorphicBucketIds} from this type's own buckets and
+   * the polymorphic caches of its sub types, in that order, then does the same up every super type, whose caches are
+   * derived from this one. Each list is published as a fresh unmodifiable copy, the same copy-on-write contract the
+   * lock-free readers of the two volatile fields rely on (issue #6678).
+   * <p>
+   * The order is load-bearing: a type's cache is read by its super types and never by its sub types, so this type is
+   * rebuilt BEFORE the walk goes up, and the sub types' caches it reads are already final because the change that
+   * triggered the rebuild happened above them. Rebuilding a super type first would read this type's stale cache.
+   */
+  private void rebuildPolymorphicBucketsCache() {
+    final List<Bucket> polymorphicBuckets = new ArrayList<>(buckets);
+    final List<Integer> polymorphicBucketIds = new ArrayList<>(bucketIds);
+    // A DIAMOND HANDS THE SAME BUCKET OVER THROUGH MORE THAN ONE SUB TYPE: IT IS LISTED ONCE
+    final Set<Bucket> seen = new HashSet<>(buckets);
+    for (final LocalDocumentType subType : subTypes)
+      for (final Bucket bucket : subType.cachedPolymorphicBuckets)
+        if (seen.add(bucket)) {
+          polymorphicBuckets.add(bucket);
+          polymorphicBucketIds.add(bucket.getFileId());
+        }
+
+    cachedPolymorphicBuckets = Collections.unmodifiableList(polymorphicBuckets);
+    cachedPolymorphicBucketIds = Collections.unmodifiableList(polymorphicBucketIds);
+
+    for (final LocalDocumentType superType : superTypes)
+      superType.rebuildPolymorphicBucketsCache();
   }
 
   DocumentType addSuperType(final DocumentType superType, final boolean createIndexes) {
@@ -2075,12 +2105,7 @@ public class LocalDocumentType implements DocumentType {
     recordFileChanges(() -> {
       final LocalDocumentType embeddedSuperType = (LocalDocumentType) superType;
 
-      // The lists are captured because the fields are REPLACED rather than mutated, and unlinkSuperType has to hand
-      // back exactly what was handed over.
-      final List<Bucket>  linkedBuckets   = cachedPolymorphicBuckets;
-      final List<Integer> linkedBucketIds = cachedPolymorphicBucketIds;
-
-      linkSuperType(embeddedSuperType, linkedBuckets, linkedBucketIds);
+      linkSuperType(embeddedSuperType);
 
       // EVERYTHING THAT FOLLOWS THE LINKAGE IS GUARDED BY IT. Every step below can still refuse - a paired external
       // bucket that cannot be created, an index propagation that hits a duplicate, an inherited partition the
@@ -2110,7 +2135,7 @@ public class LocalDocumentType implements DocumentType {
         //
         // The paired external buckets ensureExternalBucketsRecursive may have created are deliberately left: they are
         // additive, idempotent, and reused by the next attempt.
-        unlinkSuperType(embeddedSuperType, linkedBuckets, linkedBucketIds);
+        unlinkSuperType(embeddedSuperType);
         throw e;
       }
 
@@ -2120,17 +2145,13 @@ public class LocalDocumentType implements DocumentType {
 
   /**
    * The in-memory linkage, and nothing else: the three lines {@link #unlinkSuperType} undoes, kept next to it so the
-   * two stay symmetric.
-   *
-   * @param linkedBuckets the caches captured by the caller, which are the very lists {@code unlinkSuperType} has to
-   *                      hand back - the fields are replaced rather than mutated, so re-reading them later would
-   *                      remove something else
+   * two stay symmetric. The super type receives this type's whole polymorphic subtree, which is what a polymorphic read
+   * on it has to reach from now on.
    */
-  private void linkSuperType(final LocalDocumentType superType, final List<Bucket> linkedBuckets,
-      final List<Integer> linkedBucketIds) {
+  private void linkSuperType(final LocalDocumentType superType) {
     superTypes.add(superType);
     superType.subTypes.add(this);
-    superType.updatePolymorphicBucketsCache(true, linkedBuckets, linkedBucketIds);
+    superType.updatePolymorphicBucketsCache(true, cachedPolymorphicBuckets, cachedPolymorphicBucketIds);
   }
 
   /**

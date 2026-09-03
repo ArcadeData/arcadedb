@@ -49,8 +49,22 @@ updates:
       # JVM-side JS engine. A coordinate-wide ignore would freeze the engine
       # along with the native pin. A GraalVM PR is therefore reviewed by hand:
       # merge it only together with a matching java-version bump in
-      # native-image.yml, otherwise close it. Bump 3fecba4bf did exactly this
-      # wrong and broke all four native legs.
+      # native-image.yml, otherwise close it. Bumps 3fecba4bf (-> 25.2.4) and
+      # b53c48c1e2 (-> 25.3.4.1) both did exactly this wrong and broke every
+      # native leg.
+      #
+      # A bump is not impossible, just not a one-line edit. native-image.yml
+      # pins the builder through setup-graalvm's `version` input precisely so
+      # it can address the intermediate release graal-25.2.4; the
+      # `java-version` input reaches jdk-* releases only. Whatever the new
+      # version is, its tag must parse as three-component semver -
+      # graal-25.3.4.1 is reachable through neither input, because node-semver
+      # rejects its four numeric components.
+      #
+      # Two guards now back that up, because "reviewed by hand" was not one:
+      # .github/scripts/check-native-graalvm-pin.py fails the always-on `lint`
+      # job on any skew, and .mergify.yml no longer auto-merges a Dependabot PR
+      # that touches native/pom.xml.
       - dependency-name: "org.apache.groovy:*"
         update-types: ["version-update:semver-major"]
 

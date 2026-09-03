@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.opencypher.Labels;
+
 import java.util.List;
 
 /**
@@ -29,6 +31,7 @@ import java.util.List;
  * - SET n = {name: 'Alice', age: 30}
  * - SET n += {name: 'Alice'}
  * - SET n:Label
+ * - SET n:$(expr)   (Cypher 25 dynamic label)
  */
 public class SetClause {
   private final List<SetItem> items;
@@ -63,6 +66,7 @@ public class SetClause {
     private final Expression targetExpression;
     private final SetType type;
     private final List<String> labels;
+    private final List<Expression> labelExpressions;
 
     /** Property assignment: SET n.prop = value */
     public SetItem(final String variable, final String property, final Expression valueExpression) {
@@ -73,6 +77,7 @@ public class SetClause {
       this.targetExpression = null;
       this.type = SetType.PROPERTY;
       this.labels = null;
+      this.labelExpressions = List.of();
     }
 
     /** Property assignment with expression target: SET (CASE ... THEN n END).prop = value */
@@ -84,6 +89,7 @@ public class SetClause {
       this.valueExpression = valueExpression;
       this.type = SetType.PROPERTY;
       this.labels = null;
+      this.labelExpressions = List.of();
     }
 
     /** Map replacement (SET n = expr) or map merge (SET n += expr) */
@@ -95,10 +101,21 @@ public class SetClause {
       this.targetExpression = null;
       this.type = type;
       this.labels = null;
+      this.labelExpressions = List.of();
     }
 
     /** Label assignment: SET n:Label */
     public SetItem(final String variable, final List<String> labels) {
+      this(variable, labels, List.of());
+    }
+
+    /**
+     * Label assignment with Cypher 25 dynamic labels: {@code SET n:Static:$(expr)}. The static labels are known at
+     * parse time; each expression in {@code labelExpressions} is evaluated per row and contributes the label (or
+     * list of labels) it yields. Labels are a set, so the two lists are merged without preserving the order they
+     * were written in - {@link Labels#ensureCompositeType} sorts them anyway.
+     */
+    public SetItem(final String variable, final List<String> labels, final List<Expression> labelExpressions) {
       this.variable = variable;
       this.property = null;
       this.keyExpression = null;
@@ -106,6 +123,7 @@ public class SetClause {
       this.targetExpression = null;
       this.type = SetType.LABELS;
       this.labels = labels;
+      this.labelExpressions = labelExpressions != null ? labelExpressions : List.of();
     }
 
     /**
@@ -123,6 +141,7 @@ public class SetClause {
       this.targetExpression = targetExpression;
       this.type = SetType.PROPERTY;
       this.labels = null;
+      this.labelExpressions = List.of();
     }
 
     public String getVariable() {
@@ -151,6 +170,15 @@ public class SetClause {
 
     public List<String> getLabels() {
       return labels;
+    }
+
+    /** The Cypher 25 {@code $(expr)} labels of this item, evaluated per row. Never null; empty when there are none. */
+    public List<Expression> getLabelExpressions() {
+      return labelExpressions;
+    }
+
+    public boolean hasLabelExpressions() {
+      return !labelExpressions.isEmpty();
     }
   }
 }

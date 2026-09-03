@@ -29,6 +29,10 @@ import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.DownsamplingTier;
+import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.index.CompressedRID2RIDIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.integration.importer.AnalyzedEntity.EntityType;
@@ -42,15 +46,18 @@ import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeLSMSparseVectorIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.serializer.json.NonFiniteNumbers;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -84,6 +91,19 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   // Recording the specific old-source RIDs left unresolved lets reconciliation touch only those elements.
   private final Map<RID, Map<String, Set<RID>>> pendingLinkReconciliation = new HashMap<>();
 
+  /**
+   * Records - or TIMESERIES samples - accumulated before the periodic commit in {@link #load} fires.
+   */
+  private static final int COMMIT_EVERY = 1_000;
+
+  /**
+   * TIMESERIES samples appended since the last commit. One {@code "ts"} line carries a whole chunk of samples
+   * (up to {@code JsonlExporterFormat}'s own chunk size), so counting LINES the way {@code context.parsed} does
+   * would let a thousand such lines - a million samples - pile into a single transaction's WAL and dirty pages
+   * before it commits. Counted apart, so a chunk weighs what it actually costs.
+   */
+  private int timeSeriesSamplesSinceCommit;
+
   @Override
   public void load(SourceSchema sourceSchema,
       EntityType entityType,
@@ -114,6 +134,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
       ridIndex = new CompressedRID2RIDIndex(database, 1000, 1000);
       pendingLinkReconciliation.clear();
+      timeSeriesSamplesSinceCommit = 0;
 
       if (!database.isTransactionActive())
         database.begin();
@@ -130,6 +151,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           case "d" -> loadDocument(database, context, jsonLine.getJSONObject("c"));
           case "v" -> loadVertex(database, context, jsonLine.getJSONObject("c"));
           case "e" -> loadEdge(database, context, jsonLine.getJSONObject("c"));
+          case "ts" -> loadTimeSeriesSamples(database, context, jsonLine.getJSONObject("c"));
           }
         } catch (final Exception e) {
           // Every per-record failure (document/vertex/edge, and a broken schema entry too) funnels through here,
@@ -148,6 +170,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           if (database.isTransactionActive())
             database.rollback();
           database.begin();
+          timeSeriesSamplesSinceCommit = 0;
           continue;
         }
 
@@ -159,9 +182,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         // all when the caller already owns the active transaction (skip mode never reaches here - see the guard
         // above): a caller-managed transaction is never ours to commit piecemeal, only to accumulate into and hand
         // back to whoever owns it (issue #6561).
-        if (!context.callerTransactionActiveOnEntry && (skipOnRowError || context.parsed.get() % 1000 == 0)) {
+        if (!context.callerTransactionActiveOnEntry && (skipOnRowError || context.parsed.get() % COMMIT_EVERY == 0
+            || timeSeriesSamplesSinceCommit >= COMMIT_EVERY)) {
           database.commit();
           database.begin();
+          timeSeriesSamplesSinceCommit = 0;
         }
       }
 
@@ -221,6 +246,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
                 .withLightweight(type.getBoolean("lightweight", false))
                 .create();
             case "d" -> databaseSchema.createDocumentType(typeName);
+            // A TIMESERIES type is exported as "t" and had no case here at all, so the switch's default threw and
+            // the whole import aborted at the schema line - not a partial restore, no restore (issue #7032).
+            case "t" -> createTimeSeriesType(databaseSchema, typeName, type);
             default -> throw new IllegalStateException("Unexpected value: " + typeType);
           };
 
@@ -236,6 +264,17 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           properties.keySet()
               .forEach(propertyName -> {
                 var property = properties.getJSONObject(propertyName);
+                if (docType.existsProperty(propertyName)) {
+                  // A TIMESERIES type's columns are registered as properties by its own builder, so they already
+                  // exist by the time this pass runs and createProperty() would throw. Their CUSTOM metadata is
+                  // still the export's to restore - it is not something the builder can know.
+                  if (property.has("custom")) {
+                    final JSONObject custom = property.getJSONObject("custom");
+                    for (final String key : custom.keySet())
+                      docType.getProperty(propertyName).setCustomValue(key, custom.get(key));
+                  }
+                  return;
+                }
                 docType.createProperty(propertyName, property);
               });
 
@@ -309,9 +348,205 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
             edgeType.setUnique(true);
         });
 
+    // Type-level ALIASES and CUSTOM metadata (issue #7032). The export has always carried both, and the import
+    // restored neither, while property-level CUSTOM - handled a few lines up, by the same JSON, in adjacent code -
+    // was restored. A restored type silently lost every alias queries referred to it by and every custom key an
+    // application read back.
+    types.keySet()
+        .forEach(typeName -> {
+          final JSONObject type = types.getJSONObject(typeName);
+          final DocumentType docType = databaseSchema.getType(typeName);
+
+          if (!type.isNull("aliases")) {
+            final Set<String> aliases = new HashSet<>(type.getJSONArray("aliases").toListOfStrings());
+            if (!aliases.isEmpty())
+              try {
+                docType.setAliases(aliases);
+              } catch (final Exception e) {
+                // setAliases() refuses an alias another type already answers to, which an import into a
+                // NON-EMPTY target reaches without anything being wrong with the export. Same trade-off as the
+                // strategy restore below: the type keeps its own name, the import keeps going, and the log says
+                // what was dropped - aborting here would discard every record the file has not reached yet.
+                context.warnings.incrementAndGet();
+                LogManager.instance().log(this, Level.WARNING,
+                    "Cannot restore the aliases %s on type '%s': %s. The type is reachable by its own name only",
+                    e, aliases, typeName, e.getMessage() != null ? e.getMessage() : e.toString());
+              }
+          }
+
+          if (type.has("custom")) {
+            final JSONObject custom = type.getJSONObject("custom");
+            for (final String key : custom.keySet())
+              docType.setCustomValue(key, custom.get(key));
+          }
+        });
+
+    // The bucket-selection strategy goes LAST, for the reason LocalSchema's own loader puts it last: a
+    // PARTITIONED strategy binds to an index, so it can only be restored once the indexes above exist. Losing it
+    // is not cosmetic - the strategy is what spreads writes across buckets, and `thread` is the documented remedy
+    // for the single-bucket write contention the server warns about (issue #7032).
+    types.keySet()
+        .forEach(typeName -> {
+          final JSONObject type = types.getJSONObject(typeName);
+          if (!type.has("bucketSelectionStrategy"))
+            return;
+
+          final JSONObject strategy = type.getJSONObject("bucketSelectionStrategy");
+          final Object[] properties = strategy.has("properties") ?
+              strategy.getJSONArray("properties").toList().toArray() :
+              new Object[0];
+          try {
+            databaseSchema.getType(typeName).setBucketSelectionStrategy(strategy.getString("name"), properties);
+          } catch (final Exception e) {
+            // One type declining its strategy must not abort an import that has already recreated the schema and
+            // is about to load the records - same trade-off LocalSchema makes on open. The type falls back to
+            // round-robin, which costs the partition pruning and keeps the data.
+            context.warnings.incrementAndGet();
+            LogManager.instance().log(this, Level.WARNING,
+                "Cannot restore the '%s' bucket selection strategy on type '%s': %s. The type falls back to round-robin",
+                e, strategy.getString("name"), typeName, e.getMessage() != null ? e.getMessage() : e.toString());
+          }
+        });
+
     // final report
     databaseSchema.getTypes()
         .forEach(type -> logger.logLine(2, " - Created type %s: %s", type.getName(), type.toJSON()));
+  }
+
+  /**
+   * Recreates a TIMESERIES type from its exported schema definition (issue #7032).
+   * <p>
+   * Everything the type's identity depends on comes out of the export: the column list WITH the per-column codec
+   * (which is not re-derivable - see {@link TimeSeriesTypeBuilder#withColumn}), the shard count, the retention and
+   * compaction settings, and the downsampling tiers. What is deliberately NOT carried over is the format versions:
+   * this build writes its own current formats into a type it is creating now, and the exported
+   * {@code sealedFormatVersion}/{@code mutableFormatVersion} describe the pages of the SOURCE database, which the
+   * target does not have.
+   */
+  private DocumentType createTimeSeriesType(final Schema databaseSchema, final String typeName, final JSONObject type) {
+    final TimeSeriesTypeBuilder builder = databaseSchema.buildTimeSeriesType().withName(typeName);
+
+    final JSONArray columns = type.getJSONArray("tsColumns", null);
+    if (columns == null || columns.length() == 0)
+      throw new ImportException("TIMESERIES type '" + typeName + "' carries no column definition in the export");
+
+    for (int i = 0; i < columns.length(); i++) {
+      final JSONObject column = columns.getJSONObject(i);
+      final String columnName = column.getString("name");
+      // The three enums are parsed inside one try: a hand-edited or foreign-tool-generated export reaches them
+      // with a value none of them knows, and the raw IllegalArgumentException they raise names the bad token and
+      // nothing else - not the column it came from, not the type, not even that this was a schema line.
+      try {
+        final Type dataType = Type.getTypeByName(column.getString("dataType"));
+        final ColumnDefinition.ColumnRole role = ColumnDefinition.ColumnRole.valueOf(column.getString("role"));
+        final String compression = column.getString("compression", null);
+        builder.withColumn(compression != null ?
+            new ColumnDefinition(columnName, dataType, role, TimeSeriesCodec.valueOf(compression)) :
+            new ColumnDefinition(columnName, dataType, role));
+      } catch (final IllegalArgumentException | NullPointerException e) {
+        throw new ImportException(
+            "Column '" + columnName + "' of TIMESERIES type '" + typeName + "' declares a data type, role or "
+                + "compression this build does not know: " + e.getMessage(), e);
+      }
+    }
+
+    if (type.has("precision"))
+      builder.withPrecision(type.getString("precision"));
+    // 0 is the builder's own "use the default" (it resolves to ASYNC_WORKER_THREADS), which is the right answer
+    // for an export written before the count was persisted.
+    builder.withShards(type.getInt("shardCount", 0));
+    builder.withRetention(type.getLong("retentionMs", 0L));
+    builder.withCompactionBucketInterval(type.getLong("compactionBucketIntervalMs", 0L));
+
+    final JSONArray tiers = type.getJSONArray("downsamplingTiers", null);
+    if (tiers != null) {
+      final List<DownsamplingTier> parsed = new ArrayList<>(tiers.length());
+      for (int i = 0; i < tiers.length(); i++) {
+        final JSONObject tier = tiers.getJSONObject(i);
+        parsed.add(new DownsamplingTier(tier.getLong("afterMs"), tier.getLong("granularityMs")));
+      }
+      builder.withDownsamplingTiers(parsed);
+    }
+
+    return builder.create();
+  }
+
+  /**
+   * Appends one chunk of TIMESERIES samples, as written by {@code JsonlExporterFormat.exportTimeSeries} (issue
+   * #7032). Each sample is the type's columns in schema order, timestamp first - a TimeSeries row has no RID, so
+   * there is nothing to remap and nothing to record in {@code ridIndex}.
+   */
+  private void loadTimeSeriesSamples(final DatabaseInternal database, final ImporterContext context,
+      final JSONObject chunk) throws IOException {
+    final String typeName = chunk.getString("t");
+    if (!(database.getSchema().getType(typeName) instanceof LocalTimeSeriesType tsType))
+      throw new ImportException("Type '" + typeName + "' is not a TIMESERIES type, cannot import its samples");
+
+    final TimeSeriesEngine engine = tsType.getEngine();
+    if (engine == null)
+      throw new ImportException("TimeSeries engine for type '" + typeName + "' is not initialized");
+
+    final List<ColumnDefinition> columns = tsType.getTsColumns();
+    int timestampIdx = 0;
+    for (int i = 0; i < columns.size(); i++)
+      if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
+        timestampIdx = i;
+        break;
+      }
+
+    final JSONArray samples = chunk.getJSONArray("s");
+    final int rows = samples.length();
+
+    // Arity is checked for the WHOLE chunk before a single value is decoded, so a malformed chunk is refused by
+    // the caller's row-error policy (abort or skip) rather than half-applied. A sample SHORTER than the schema
+    // used to fail mid-decode, and a LONGER one was silently truncated to the columns this type declares - which
+    // is the worse of the two, because it discards data without saying so.
+    for (int r = 0; r < rows; r++) {
+      final int arity = samples.getJSONArray(r).length();
+      if (arity != columns.size())
+        throw new ImportException("TIMESERIES sample " + r + " of type '" + typeName + "' has " + arity
+            + " value(s) but the type declares " + columns.size() + " column(s)");
+    }
+
+    final long[] timestamps = new long[rows];
+    // appendBatch indexes the value columns, skipping the timestamp - see ObjectColumnsRowSource.
+    final Object[][] values = new Object[columns.size() - 1][rows];
+
+    for (int r = 0; r < rows; r++) {
+      final JSONArray sample = samples.getJSONArray(r);
+      timestamps[r] = ((Number) sample.get(timestampIdx)).longValue();
+      int valueIdx = 0;
+      for (int c = 0; c < columns.size(); c++) {
+        if (c == timestampIdx)
+          continue;
+        values[valueIdx][r] = decodeSampleValue(sample.get(c), columns.get(c).getDataType());
+        valueIdx++;
+      }
+    }
+
+    engine.appendBatch(timestamps, values);
+    context.createdTimeSeriesSamples.addAndGet(rows);
+    timeSeriesSamplesSinceCommit += rows;
+  }
+
+  /**
+   * Reverses the exporter's {@link NonFiniteNumbers#encode}: the non-finite doubles travel as string markers
+   * because {@code JSONArray.put(Number)} would otherwise rewrite them to 0, turning "no measurement" into a
+   * measurement of zero. Every other value passes through - {@code ObjectColumnsRowSource} accepts any
+   * {@link Number} for a numeric column, so JSON's widening does no harm.
+   */
+  private static Object decodeSampleValue(final Object value, final Type dataType) {
+    if (value instanceof String text && (dataType == Type.DOUBLE || dataType == Type.FLOAT)) {
+      final Double marker = NonFiniteNumbers.decode(text);
+      if (marker != null)
+        return marker;
+      // Not reachable from an export this build wrote - the exporter only ever emits the three markers. Kept as
+      // a tolerant parse for a hand-written or foreign-tool file that quoted a plain number, which is otherwise
+      // a perfectly well-formed sample; a genuinely unparseable token still fails loudly, through the same
+      // per-line row-error policy as anything else on the line.
+      return Double.parseDouble(text);
+    }
+    return value;
   }
 
   /**

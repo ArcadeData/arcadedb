@@ -18,14 +18,17 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.vector.VectorUtil;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.IntPredicate;
 import java.util.logging.Level;
 
 import static io.github.jbellis.jvector.vector.VectorUtil.cosine;
@@ -568,5 +571,53 @@ public final class VectorUtils {
   public static void validateSameDimension(final float[] v1, final float[] v2) {
     if (v1.length != v2.length)
       throw new IllegalArgumentException("Vectors must have the same dimension, found: " + v1.length + " and " + v2.length);
+  }
+  /**
+   * Collects the sub-indexes of a type index that a search should visit, each one at most once.
+   * <p>
+   * All three vector entry points - {@code db.index.vector.queryNodes}, {@code vector.neighbors} and
+   * {@code vector.sparseNeighbors} - run one search per sub-index and merge the answers, so a sub-index reached
+   * twice contributes its records twice (issue #7057). {@link com.arcadedb.index.TypeIndex#addIndexOnBucket}
+   * appends without checking, so the same sub-index really can appear twice in {@code bucketIndexes}.
+   * </p>
+   * <p>
+   * The guard is deliberately on the sub-index <em>identity</em> rather than on its bucket id. Dropping a repeat of
+   * an index already collected cannot change the answer - it is the same object, searched with the same arguments.
+   * Dropping a <em>different</em> index that happens to share a bucket id could: nothing orders
+   * {@code indexesOnBuckets}, so "keep the first" would be "keep whichever the schema file listed first", and if
+   * that one were the stale half of a duplicated schema entry the search would silently answer from stale data.
+   * Two different indexes on one bucket are therefore both searched, and the caller's own per-record deduplication
+   * reduces them to one row apiece - which returns the union at its nearest distance and hides nothing.
+   * </p>
+   *
+   * @param bucketIndexes the type index's sub-indexes, as returned by {@code TypeIndex.getIndexesOnBuckets()}
+   * @param indexType     the sub-index implementation to collect; anything else is ignored
+   * @param bucketAllowed tests a sub-index's associated bucket id; {@code null} accepts every bucket
+   *
+   * @return the sub-indexes to search, in the order given, with no index listed twice
+   */
+  public static <T extends IndexInternal> List<T> collectSubIndexesOnce(final IndexInternal[] bucketIndexes,
+      final Class<T> indexType, final IntPredicate bucketAllowed) {
+    final List<T> subIndexes = new ArrayList<>(bucketIndexes.length);
+    for (final IndexInternal bucketIndex : bucketIndexes) {
+      if (!indexType.isInstance(bucketIndex))
+        continue;
+      if (bucketAllowed != null && !bucketAllowed.test(bucketIndex.getAssociatedBucketId()))
+        continue;
+      // A linear scan, not a hash set: this list holds one entry per bucket of one type - a handful - on a path that
+      // is about to run a whole index search per entry. A type with a bucket fan-out large enough to make the scan
+      // matter would make the searches themselves matter far more first.
+      if (containsSame(subIndexes, bucketIndex))
+        continue;
+      subIndexes.add(indexType.cast(bucketIndex));
+    }
+    return subIndexes;
+  }
+
+  private static boolean containsSame(final List<? extends IndexInternal> collected, final IndexInternal candidate) {
+    for (int i = 0; i < collected.size(); i++)
+      if (collected.get(i) == candidate)
+        return true;
+    return false;
   }
 }

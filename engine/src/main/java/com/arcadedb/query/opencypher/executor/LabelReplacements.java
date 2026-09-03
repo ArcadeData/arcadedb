@@ -28,6 +28,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -50,18 +51,72 @@ import java.util.logging.Level;
  * as an "edge list not fully visible" complaint from the vertex delete that follows its dangling edge-list chunk
  * (issues #6312 and #6313).
  * <p>
- * One instance is held per running {@code SET}/{@code REMOVE} step, so a node replaced while processing one row is
- * redirected to its live replacement on every later row, and the write becomes idempotent instead of fatal. The
- * edges re-attached on the way are tracked the same, lightweight ones included: they have no record to address, but
- * their identity is the (type, out vertex, in vertex) triple, and that is what moved.
+ * One instance is held per running <b>statement</b> - {@link #of(CommandContext)} keeps it on the command context -
+ * so a node replaced while processing one row is redirected to its live replacement on every later row, and the write
+ * becomes idempotent instead of fatal. The edges re-attached on the way are tracked the same, lightweight ones
+ * included: they have no record to address, but their identity is the (type, out vertex, in vertex) triple, and that
+ * is what moved.
+ * <p>
+ * The scope is the statement and not the step because a {@code CALL { }} body is <b>re-planned for every outer
+ * row</b> ({@code SubqueryStep.executeInnerQuery} builds a fresh {@code CypherExecutionPlan} each time): a per-step
+ * instance there lives for exactly one row, so the second outer row met the vertex the first one had deleted and the
+ * label write followed a RID that was gone (issue #6977). {@link #inherit} is what carries the enclosing statement's
+ * map into such a nested plan's own context.
+ * <p>
+ * <b>What the wider scope costs.</b> The map is keyed by RID, and a RID is a physical position, so a slot freed
+ * by the delete inside {@link #replace} can in principle be handed to a record created later in the same
+ * statement - which {@link #resolve} would then answer for with the replacement of the record that used to live
+ * there. The window was one step's rows before and is the statement's now, so the scope change widens it rather
+ * than opening it, and nothing here has been observed to reach it: {@link #replace} creates the replacement
+ * before deleting the original, so the two can never collide, and only a separate later insert landing on the
+ * exact freed slot could. Recorded because it is the one thing the wider scope makes more likely, not because
+ * a reproduction exists.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class LabelReplacements {
   private static final Object[] NO_PROPERTIES = new Object[0];
+  /**
+   * Where {@link #of} parks the statement-wide instance. Held as a context <i>cached value</i> rather than as a
+   * context variable: cached values are engine-internal, while variables are reachable from a query through
+   * {@code $CONTEXT} and fall back to the database's global variables when missing.
+   */
+  private static final String   CONTEXT_KEY   = "$cypher.labelReplacements";
 
   private final Map<RID, Vertex> vertices = new HashMap<>();
   private final Map<RID, Edge>   edges    = new HashMap<>();
+
+  /**
+   * The replacement map of the statement {@code context} belongs to, created on first use.
+   * <p>
+   * Every label write of one statement shares it: the three steps that perform one ({@code SET}, {@code REMOVE} and
+   * {@code MERGE}'s {@code ON CREATE}/{@code ON MATCH SET}) and, through {@link #inherit}, every plan nested inside
+   * it. Allocated only when a write step actually asks for it, so a read-only statement never builds one.
+   * <p>
+   * A {@code null} context has no statement to share through, so the caller gets a private map rather than an
+   * exception: it is still correct for a single step, only unshared. No call site passes one today - every step
+   * that asks is constructed with the plan's context - and a new one that did would get the pre-#6977 behaviour
+   * back for itself, which is why the fallback is spelled out here rather than left to be inferred.
+   */
+  public static LabelReplacements of(final CommandContext context) {
+    if (context == null)
+      return new LabelReplacements();
+    if (context.getCachedValue(CONTEXT_KEY) instanceof LabelReplacements existing)
+      return existing;
+    final LabelReplacements created = new LabelReplacements();
+    context.setCachedValue(CONTEXT_KEY, created);
+    return created;
+  }
+
+  /**
+   * Makes a nested plan's context answer {@link #of} with the enclosing statement's map, so a label write inside a
+   * {@code CALL { }} body is seen by the next outer row even though the body is re-planned for each one.
+   */
+  public static void inherit(final CommandContext inner, final CommandContext outer) {
+    if (inner == null || outer == null)
+      return;
+    inner.setCachedValue(CONTEXT_KEY, of(outer));
+  }
 
   public boolean isEmpty() {
     return vertices.isEmpty();
@@ -146,6 +201,14 @@ public final class LabelReplacements {
   public void redirect(final Result row) {
     if (row == null || vertices.isEmpty())
       return;
+    // The ResultInternal cast below is unguarded where SubqueryStep.refreshDocumentBindings guards its own, and
+    // deliberately so rather than by oversight. Both plan shapes feed the write steps ResultInternal rows -
+    // the optimizer is not disabled by a REMOVE/SET after the MATCH, but its NodeByLabelScan/ExpandAll chain
+    // materializes ResultInternal, and the one Result that is not (GAVResult, from the fused GAV chain) has
+    // no path into a label write today. Should one appear, failing loudly is the answer that matches what
+    // this method is for: skipping silently would leave the row pointing at the record the write deleted,
+    // which is the defect the class exists to prevent, whereas the refresh next door is an optimisation that
+    // is allowed to decline.
     for (final String name : row.getPropertyNames()) {
       final Object value = row.getProperty(name);
       final Object live = redirectValue(value);

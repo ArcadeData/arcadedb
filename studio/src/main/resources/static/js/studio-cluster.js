@@ -29,12 +29,18 @@ function renderClusterData(data) {
   var leaderId = data.leaderId;
   var localPeerId = data.localPeerId;
 
-  // Determine local role
-  var localRole = isLeader ? "LEADER" : "FOLLOWER";
+  // Determine local role from the local peer's own entry, so a node the live Raft configuration no longer
+  // contains reads NOT IN CONFIGURATION here as well as on its card (issue #7040).
+  var localPeer = null;
+  for (var p = 0; p < (data.peers || []).length; p++)
+    if (data.peers[p].id === localPeerId)
+      localPeer = data.peers[p];
+  var localOutOfConfiguration = !isLeader && localPeer != null && localPeer.inConfiguration === false;
+  var localRole = isLeader ? "LEADER" : (localOutOfConfiguration ? "NOT IN CONFIGURATION" : "FOLLOWER");
   $("#clusterRoleBadge")
     .text(localRole)
-    .removeClass("bg-success bg-warning bg-secondary bg-primary")
-    .addClass(isLeader ? "bg-success" : "bg-primary");
+    .removeClass("bg-success bg-warning bg-secondary bg-primary bg-danger")
+    .addClass(isLeader ? "bg-success" : (localOutOfConfiguration ? "bg-danger" : "bg-primary"));
 
   var healthy = leaderId != null && leaderId !== "";
   $("#clusterHealthBadge")
@@ -498,9 +504,13 @@ function renderNodeCards(data) {
     var isLocal = peer.id === data.localPeerId;
 
     var borderColor = isLeader ? "var(--color-brand)" : "var(--border-light)";
+    // A declared peer the live Raft configuration no longer contains is not a follower: the leader does not
+    // replicate to it and it cannot vote (issue #7040). Show it as such instead of as a healthy member.
     var roleBadge = isLeader
       ? '<span class="badge bg-success">LEADER</span>'
-      : '<span class="badge bg-secondary">FOLLOWER</span>';
+      : (peer.inConfiguration === false
+        ? '<span class="badge bg-danger">NOT IN CONFIGURATION</span>'
+        : '<span class="badge bg-secondary">FOLLOWER</span>');
     var localBadge = isLocal ? ' <span class="badge bg-info" style="font-size:0.6rem;">LOCAL</span>' : '';
 
     // replicaStatus is only sent for followers and only by a leader's status export.
@@ -583,9 +593,12 @@ function renderPeerManagement(data) {
     var peer = peers[i];
     var isLeader = peer.role === "LEADER";
     var isLocal = peer.id === data.localPeerId;
+    var inConfiguration = peer.inConfiguration !== false;
     var roleBadge = isLeader
       ? '<span class="badge bg-success" style="font-size:0.65rem;">LEADER</span>'
-      : '<span class="badge bg-secondary" style="font-size:0.65rem;">FOLLOWER</span>';
+      : (inConfiguration
+        ? '<span class="badge bg-secondary" style="font-size:0.65rem;">FOLLOWER</span>'
+        : '<span class="badge bg-danger" style="font-size:0.65rem;">NOT IN CONFIGURATION</span>');
     var localTag = isLocal ? ' <span class="badge bg-info" style="font-size:0.6rem;">LOCAL</span>' : '';
     var statusBadge = (!isLeader && peer.replicaStatus)
       ? ' <span class="badge ' + replicaStatusStyle(peer.replicaStatus).badge + '" style="font-size:0.6rem;">' + escapeHtml(peer.replicaStatus) + '</span>'
@@ -594,8 +607,9 @@ function renderPeerManagement(data) {
     // Remove button only when local is leader and target is a follower. The leader cannot remove
     // itself: it must step down (or use Leave Cluster) so the resulting Raft config is valid.
     // JSON.stringify + &quot; escaping keeps any characters in peer.id safe inside the attribute.
+    // A peer already outside the configuration has nothing left to remove (issue #7040).
     var removeBtn = "";
-    if (canManage && !isLeader) {
+    if (canManage && !isLeader && inConfiguration) {
       var idAttr = JSON.stringify(peer.id).replace(/"/g, "&quot;");
       removeBtn = '<button class="btn btn-sm btn-outline-danger" style="font-size:0.7rem; padding:1px 8px;" '
         + 'onclick="removePeer(' + idAttr + ')" title="Remove peer from the cluster">'

@@ -28,6 +28,11 @@ import java.util.stream.Collectors;
 
 /**
  * Joins a list of objects using a delimiter.
+ * <p>
+ * The receiver is any collection: a list, a set, an array (what a JSON array parameter arrives as), an iterable. It
+ * used to accept a {@code List} only, so {@code 'a,b'.split(',').join('-')} answered the array's identity
+ * {@code toString()} and {@code ['b','a'].asSet().join('-')} answered the set's own {@code toString()} with the
+ * separator ignored (issue #7027).
  */
 public class SQLMethodJoin extends AbstractSQLMethod {
 
@@ -47,7 +52,8 @@ public class SQLMethodJoin extends AbstractSQLMethod {
       return null;
     }
 
-    if (value instanceof List<?> list) {
+    final List<Object> list = listReceiverOrNull(value);
+    if (list != null) {
 
       final String separator = Optional.ofNullable(params)
           .filter(p -> p.length > 0)

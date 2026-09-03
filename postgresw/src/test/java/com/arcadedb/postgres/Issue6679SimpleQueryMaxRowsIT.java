@@ -46,9 +46,10 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  * SELECT} risked an {@code OutOfMemoryError}. The simple-query protocol has no client-driven cursor/max-rows
  * mechanism (unlike the extended protocol's portal {@code Execute}), so buffering could not simply be turned
  * into a silent {@code PortalSuspended} truncation without misreporting a partial result as the whole answer.
- * The fix instead bounds the buffer with {@link GlobalConfiguration#POSTGRES_SIMPLE_QUERY_MAX_ROWS} and refuses
+ * The fix instead bounds the buffer with {@link GlobalConfiguration#POSTGRES_QUERY_MAX_ROWS} and refuses
  * a SELECT whose result exceeds it with a clear {@code ErrorResponse}, protecting server memory without
- * silently returning wrong (truncated) data.
+ * silently returning wrong (truncated) data. The same knob caps the extended-protocol portal since issue #7034
+ * ({@link Issue7034PortalMaxRowsIT}).
  * <p>
  * This test speaks the wire protocol directly over a raw socket (rather than through the JDBC driver) so the
  * exact byte-level response - an {@code ErrorResponse} versus a normal {@code RowDescription}/{@code DataRow}
@@ -63,13 +64,13 @@ class Issue6679SimpleQueryMaxRowsIT extends PostgresWireProtocolTestBase {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
-    GlobalConfiguration.POSTGRES_SIMPLE_QUERY_MAX_ROWS.setValue(ROW_CAP);
+    GlobalConfiguration.POSTGRES_QUERY_MAX_ROWS.setValue(ROW_CAP);
   }
 
   @AfterEach
   @Override
   public void endTest() {
-    GlobalConfiguration.POSTGRES_SIMPLE_QUERY_MAX_ROWS.reset();
+    GlobalConfiguration.POSTGRES_QUERY_MAX_ROWS.reset();
     super.endTest();
   }
 

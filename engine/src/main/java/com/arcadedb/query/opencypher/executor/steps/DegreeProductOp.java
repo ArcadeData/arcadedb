@@ -92,7 +92,7 @@ public final class DegreeProductOp implements CountOp {
     if (!hasMandatoryArm())
       return executeOLTP(db, guard);
 
-    final int nodeCount = provider.getNodeCount();
+    final int nodeIdUpperBound = provider.getNodeIdUpperBound();
 
     // Fast path: when all arms are single-hop, pre-fetch NeighborViews and scan
     // degree offset arrays directly. This is pure array arithmetic — no method dispatch,
@@ -114,10 +114,10 @@ public final class DegreeProductOp implements CountOp {
     }
 
     if (allSingleHopViews)
-      return executeFastScan(armViews, nodeCount, guard);
+      return executeFastScan(provider, armViews, nodeIdUpperBound, guard);
 
     // Slow path: per-node CSR lookup (fallback for multi-hop arms or missing views)
-    return executePerNode(provider, db, nodeCount, guard);
+    return executePerNode(provider, db, nodeIdUpperBound, guard);
   }
 
   /**
@@ -127,7 +127,8 @@ public final class DegreeProductOp implements CountOp {
    * For Q4/Q7 with ~5M CSR nodes and 4 arms: ~40M array reads at ~1ns = ~40ms.
    * Compared to per-node countEdges: ~20M method calls at ~150ns = ~3s (75x slower).
    */
-  private long executeFastScan(final NeighborView[] armViews, final int nodeCount, final WorkGuard guard) {
+  private long executeFastScan(final GraphTraversalProvider provider, final NeighborView[] armViews,
+      final int nodeIdUpperBound, final WorkGuard guard) {
     // Reorder: check mandatory arms first for early exit, optional arms last
     final int[] mandatoryIdx = new int[arms.length];
     final int[] optionalIdx = new int[arms.length];
@@ -140,8 +141,10 @@ public final class DegreeProductOp implements CountOp {
     }
 
     long total = 0;
-    for (int v = 0; v < nodeCount; v++) {
+    for (int v = 0; v < nodeIdUpperBound; v++) {
       guard.checkPeriodically(v);
+      if (!provider.isNodeLive(v))
+        continue;
       // Mandatory arms: skip if any degree is 0
       long product = 1;
       boolean skip = false;
@@ -175,17 +178,19 @@ public final class DegreeProductOp implements CountOp {
    * Per-node countEdges: 20M method calls × 150ns ≈ 3s.
    */
   private long executePerNode(final GraphTraversalProvider provider, final Database db,
-      final int nodeCount, final WorkGuard guard) {
+      final int nodeIdUpperBound, final WorkGuard guard) {
     // Pre-compute degree arrays: one int[] per arm, indexed by nodeId
     final int[][] armDegrees = new int[arms.length][];
     for (int a = 0; a < arms.length; a++) {
-      final int[] degrees = new int[nodeCount];
+      final int[] degrees = new int[nodeIdUpperBound];
       if (arms[a].edgeTypes.length == 1) {
         // Bulk degree computation — single pass over CSR offset arrays
         provider.getDegrees(degrees, arms[a].directions[0], arms[a].edgeTypes[0]);
       } else {
-        for (int v = 0; v < nodeCount; v++) {
+        for (int v = 0; v < nodeIdUpperBound; v++) {
           guard.checkPeriodically(v);
+          if (!provider.isNodeLive(v))
+            continue;
           degrees[v] = CSRCountUtils.walkArm(provider, v, arms[a].edgeTypes, arms[a].directions).length;
         }
       }
@@ -205,8 +210,10 @@ public final class DegreeProductOp implements CountOp {
 
     // Tight scan loop: pure array arithmetic, no method calls
     long total = 0;
-    for (int v = 0; v < nodeCount; v++) {
+    for (int v = 0; v < nodeIdUpperBound; v++) {
       guard.checkPeriodically(v);
+      if (!provider.isNodeLive(v))
+        continue;
       long product = 1;
       boolean skip = false;
       for (int i = 0; i < mandatoryCount; i++) {

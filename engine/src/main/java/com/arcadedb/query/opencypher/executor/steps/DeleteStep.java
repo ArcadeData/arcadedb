@@ -70,18 +70,28 @@ public class DeleteStep extends AbstractExecutionStep {
 
   /**
    * When true, the whole upstream row set is read to completion before the first DELETE is applied.
-   * Needed only when the MATCH feeding this DELETE has disconnected path patterns (see
-   * {@link com.arcadedb.query.opencypher.ast.MatchClause#hasDisconnectedPathPatterns()}): such a MATCH
-   * can bind the same underlying vertex/edge across more than one output row, and deleting it while a
-   * later row is still being produced makes that row dereference an already-removed record
-   * (issue #6491). Ordinary connected patterns bind each row's variables independently, so they are
-   * left on the cheaper streaming path.
+   * Needed when the MATCH feeding this DELETE can let a later row observe what an earlier row's DELETE
+   * already removed, which happens in two independent shapes:
+   * <ul>
+   *   <li>disconnected path patterns (see
+   *       {@link com.arcadedb.query.opencypher.ast.MatchClause#hasDisconnectedPathPatterns()}): such a
+   *       MATCH re-enumerates one component per row of the other, so it can bind the same underlying
+   *       vertex/edge across more than one output row, and deleting it while a later row is still being
+   *       produced makes that row dereference an already-removed record (issue #6491);</li>
+   *   <li>a variable-length or quantified relationship (see
+   *       {@link com.arcadedb.query.opencypher.ast.MatchClause#hasVariableLengthRelationships(java.util.List)}):
+   *       its depth-first traverser keeps edge-segment cursors open across the rows it is still
+   *       producing, so a {@code DETACH DELETE} of a bound node unlinks the edge chunks that same cursor
+   *       is about to follow and the next {@code hasNext()} dereferences a removed segment record
+   *       (issue #7023).</li>
+   * </ul>
+   * Ordinary fixed-length connected patterns bind each row's variables independently and keep no cursor
+   * open across rows, so they are left on the cheaper streaming path.
    * <p>
    * The cost of this path is the whole upstream row set held in memory at once (see
-   * {@code materializedInput} below) rather than streamed - acceptable for the disconnected-pattern
-   * shapes this guards (rare, and typically a deliberate, bounded cross join), but a disconnected
-   * pattern deliberately combined with a very large cartesian product feeding a DELETE would still pay
-   * that memory cost in full.
+   * {@code materializedInput} below) rather than streamed - acceptable for the shapes this guards, but a
+   * disconnected pattern deliberately combined with a very large cartesian product, or an unbounded
+   * {@code -[*]->} over a dense graph, would still pay that memory cost in full.
    */
   private final boolean eagerMaterialize;
 

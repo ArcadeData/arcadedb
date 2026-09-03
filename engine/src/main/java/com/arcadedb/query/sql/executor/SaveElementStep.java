@@ -37,6 +37,7 @@ import com.arcadedb.schema.ContinuousAggregateRefresher;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -116,7 +117,9 @@ public class SaveElementStep extends AbstractExecutionStep {
             // requireEngine() fails loudly - naming the type and, when known, why - instead of silently falling
             // through to the generic document save below, which a TimeSeries type with no record bucket of its
             // own cannot serve correctly either (issue #6356).
-            saveToTimeSeries(tsType, tsType.requireEngine(), doc, context);
+            // Gated accessor: appending a sample is a record creation on a type that owns no bucket, so the
+            // per-type check is the only thing that can enforce a "createRecord" denial on it.
+            saveToTimeSeries(tsType, tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD), doc, context);
             scheduleContinuousAggregateRefresh(context, tsType);
             return result;
           }

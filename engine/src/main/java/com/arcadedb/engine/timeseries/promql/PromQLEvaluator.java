@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries.promql;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.TimeSeriesNaN;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.TimeBoundRegex;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -46,6 +47,7 @@ import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.UnaryExpr;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -228,10 +230,15 @@ public class PromQLEvaluator {
       return new InstantVector(List.of());
 
     final DocumentType docType = database.getSchema().getType(typeName);
-    if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
+    if (!(docType instanceof LocalTimeSeriesType tsType))
       return new InstantVector(List.of());
 
-    final TimeSeriesEngine engine = tsType.getEngine();
+    // Gated accessor: PromQL reads the same samples a SELECT would, so a metric the caller is denied must fail
+    // loudly here rather than be served through this side door. Checked before the engine-availability test so a
+    // denied caller learns nothing about the type's storage state.
+    final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
+    if (engine == null)
+      return new InstantVector(List.of());
     final List<ColumnDefinition> columns = tsType.getTsColumns();
 
     warnIfMultipleFields(columns, vs.metricName());
@@ -281,10 +288,13 @@ public class PromQLEvaluator {
       return new RangeVector(List.of());
 
     final DocumentType docType = database.getSchema().getType(typeName);
-    if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
+    if (!(docType instanceof LocalTimeSeriesType tsType))
       return new RangeVector(List.of());
 
-    final TimeSeriesEngine engine = tsType.getEngine();
+    // Same per-type read check as the instant-vector selector above.
+    final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
+    if (engine == null)
+      return new RangeVector(List.of());
     final List<ColumnDefinition> columns = tsType.getTsColumns();
 
     warnIfMultipleFields(columns, vs.metricName());
@@ -357,14 +367,17 @@ public class PromQLEvaluator {
           for (final VectorSample s : group) sum += s.value();
           yield sum / group.size();
         }
+        // Same NaN policy as every other MIN/MAX in the time-series stack (issue #7039): a group whose samples
+        // are all NaN yields NaN, not the seed. Seeding +/-Infinity and relying on `<`/`>` to displace it returned
+        // the sentinel as data, because a NaN sample never wins either comparison.
         case MIN -> {
-          double min = Double.POSITIVE_INFINITY;
-          for (final VectorSample s : group) if (s.value() < min) min = s.value();
+          double min = TimeSeriesNaN.ABSENT;
+          for (final VectorSample s : group) min = TimeSeriesNaN.min(min, s.value());
           yield min;
         }
         case MAX -> {
-          double max = Double.NEGATIVE_INFINITY;
-          for (final VectorSample s : group) if (s.value() > max) max = s.value();
+          double max = TimeSeriesNaN.ABSENT;
+          for (final VectorSample s : group) max = TimeSeriesNaN.max(max, s.value());
           yield max;
         }
         case COUNT -> (double) group.size();

@@ -35,6 +35,7 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -456,8 +457,14 @@ public class SubqueryStep extends AbstractExecutionStep {
       // for a LATER row then shows through the binding of an EARLIER one. That is issue #6362: inserting the
       // identity subquery CALL (*) { RETURN 0 AS barrier } after MERGE ... ON MATCH SET turned [10, 99] into
       // [99, 99]. The refresh itself is still required for the writing case it was added for (issue #4182).
-      if (innerMayWrite)
+      if (innerMayWrite) {
+        // A label write inside the body rewrote the node under a new type, which means a new record and a new RID:
+        // the outer row is still holding the one the body deleted, and refreshing it by RID can only fail. Point it
+        // at the replacement first, so the merged output row - and every clause reading through it - answers with a
+        // live record instead of a gone one (issue #6977).
+        LabelReplacements.of(context).redirect(outerRow);
         refreshDocumentBindings(outerRow);
+      }
     }
   }
 

@@ -23,6 +23,8 @@ import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -70,12 +72,17 @@ public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
     if ("__name__".equals(labelName)) {
       // Return all TimeSeries type names
       for (final DocumentType type : database.getSchema().getTypes())
-        if (type instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null)
+        if (type instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null
+            && SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD))
+          // A metric the caller cannot read must not be named back to it.
           values.add(type.getName());
     } else {
       // Scan types that have this TAG column, query distinct values
       for (final DocumentType type : database.getSchema().getTypes()) {
         if (!(type instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
+          continue;
+        // Same filter for the value scan below, which reads the samples themselves.
+        if (!SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD))
           continue;
         final List<ColumnDefinition> columns = tsType.getTsColumns();
         final int colIdx = findColumnIndex(labelName, columns);

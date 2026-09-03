@@ -664,8 +664,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // Before the NeedRetryException arm below, which it extends: the refusal names the leader the caller has to
     // dial instead of merely saying "try again", and the forwarding peer rebuilds the typed exception from it
     // (issue #6191).
+    //
+    // Only when it CAN name one. A refusal issued mid-election carries a null leader address - that is what
+    // this exception already means by "retry, destination unknown" everywhere else it is read (see
+    // GrpcClientErrorMapper#leaderAddress and the load-test retry loops). A 400 there names nothing the caller
+    // can act on and tells every client, driver and load balancer "your request was malformed, do not retry"
+    // about a condition that clears itself in milliseconds. So the unnamed case falls through to the
+    // NeedRetryException arm below and answers 503, which is what it always meant.
     final ServerIsNotTheLeaderException notTheLeader = firstOf(e, cause, ServerIsNotTheLeaderException.class);
-    if (notTheLeader != null) {
+    if (notTheLeader != null && notTheLeader.getLeaderAddress() != null && !notTheLeader.getLeaderAddress().isBlank()) {
       logUserError(notTheLeader);
       sendErrorResponse(exchange, 400, "Cannot execute command", notTheLeader, notTheLeader.getLeaderAddress());
       return;
@@ -1435,5 +1442,23 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       current = current.getCause();
     }
     return buffer.toString();
+  }
+
+  /**
+   * Appends a TimeSeries value to a JSON response array, emitting JSON {@code null} for a non-finite one.
+   * <p>
+   * NaN is the absent marker of the time-series stack (see {@code TimeSeriesNaN}): a MIN/MAX over a window with
+   * no real sample legitimately answers NaN. JSON has no NaN literal, and {@link JSONArray#put(Number)} resolves
+   * that by rewriting NaN and ±Infinity to {@code 0} - which is indistinguishable from a genuine measurement of
+   * zero and, for a Grafana dashboard, draws a dip to zero where the series actually has a gap. {@code null} is
+   * the encoding both consumers already understand as "no value here".
+   *
+   * @param array the response array to append to
+   * @param value the value; anything that is not a non-finite double or float is appended unchanged
+   */
+  protected static void putSampleValue(final JSONArray array, final Object value) {
+    final boolean absent = (value instanceof Double d && !Double.isFinite(d))
+        || (value instanceof Float f && !Float.isFinite(f));
+    array.put(absent ? JSONObject.NULL : value);
   }
 }

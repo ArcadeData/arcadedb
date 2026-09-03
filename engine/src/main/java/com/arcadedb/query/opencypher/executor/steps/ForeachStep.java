@@ -57,28 +57,59 @@ public class ForeachStep extends AbstractExecutionStep {
 
   /**
    * When true, the whole upstream row set is read to completion before the first FOREACH iteration
-   * runs. Needed only when the MATCH feeding this FOREACH has disconnected path patterns (see
-   * {@link com.arcadedb.query.opencypher.ast.MatchClause#hasDisconnectedPathPatterns(java.util.List)})
-   * AND this FOREACH's body contains a DELETE ({@link ForeachClause#containsDelete()}): such a MATCH
-   * can bind the same underlying vertex/edge across more than one output row, and a DELETE inside one
-   * iteration's body removing it while a later row is still being produced makes that row dereference
-   * an already-removed record (issue #6491) - the identical hazard {@code DeleteStep} guards against,
-   * just reached through FOREACH's own row-by-row loop instead.
+   * runs. Needed only when this FOREACH's body contains a DELETE ({@link ForeachClause#containsDelete()})
+   * AND the MATCH feeding this FOREACH can let a later row observe what an earlier row's DELETE already
+   * removed - either because it has disconnected path patterns (see
+   * {@link com.arcadedb.query.opencypher.ast.MatchClause#hasDisconnectedPathPatterns(java.util.List)}),
+   * which can bind the same underlying vertex/edge across more than one output row (issue #6491), or
+   * because it has a variable-length/quantified relationship (see
+   * {@link com.arcadedb.query.opencypher.ast.MatchClause#hasVariableLengthRelationships(java.util.List)}),
+   * whose traverser keeps edge-segment cursors open across the rows it is still producing (issue #7023).
+   * Either way, a DELETE inside one iteration's body removing an entity while a later row is still being
+   * produced makes that row dereference an already-removed record - the identical hazard
+   * {@code DeleteStep} guards against, just reached through FOREACH's own row-by-row loop instead.
    */
   private final boolean eagerMaterialize;
 
+  /**
+   * When true, the FOREACH body is executed for every upstream row before the first output row is
+   * emitted, instead of one {@code nRecords}-sized batch at a time.
+   * <p>
+   * The pull model hands {@code nRecords} (100, see {@code CypherExecutionPlan}) down the pipeline,
+   * so without this flag a FOREACH followed by a clause that reads the graph applies the writes of a
+   * whole batch of rows and only then lets the reader see the first of them. The reader therefore
+   * observes neither the pre-FOREACH state nor the post-FOREACH state but a snapshot taken at an
+   * arbitrary batch boundary: {@code UNWIND range(0, 100) AS i FOREACH (j IN range(0, 9) | CREATE
+   * (:L1)) CALL meta.stats() YIELD value AS stats RETURN stats.nodeCount} reported 1000 for the
+   * first 100 rows and 1010 for the 101st, purely because 100 is the batch size (issue #6922).
+   * <p>
+   * openCypher makes an updating clause eager with respect to a following read for exactly this
+   * reason, so the fix is to finish all the writes first: every downstream row then sees the same,
+   * complete post-FOREACH graph. The flag is set by the planner only when a later clause actually
+   * reads the graph, so the streaming {@code MATCH ... FOREACH ... RETURN} bulk-update shape keeps
+   * its bounded memory profile.
+   * <p>
+   * What eagerness costs is memory: the input rows are held until the last write is applied. A bulk
+   * query whose input does not fit in memory can trade the guarantee back for streaming by setting
+   * {@code arcadedb.opencypher.foreachEagerRead} to false. Chunking instead of streaming would not
+   * be a fix - a smaller chunk only moves the boundary the reader sees the writes at.
+   */
+  private final boolean eagerExecution;
+
   public ForeachStep(final ForeachClause foreachClause, final CommandContext context,
                      final CypherFunctionFactory functionFactory) {
-    this(foreachClause, context, functionFactory, false);
+    this(foreachClause, context, functionFactory, false, false);
   }
 
   public ForeachStep(final ForeachClause foreachClause, final CommandContext context,
-                     final CypherFunctionFactory functionFactory, final boolean eagerMaterialize) {
+                     final CypherFunctionFactory functionFactory, final boolean eagerMaterialize,
+                     final boolean eagerExecution) {
     super(context);
     this.foreachClause = foreachClause;
     this.functionFactory = functionFactory;
     this.evaluator = new ExpressionEvaluator(functionFactory);
     this.eagerMaterialize = eagerMaterialize;
+    this.eagerExecution = eagerExecution;
   }
 
   @Override
@@ -141,7 +172,7 @@ public class ForeachStep extends AbstractExecutionStep {
           }
         }
 
-        while (buffer.size() < n && hasMoreInput()) {
+        while ((eagerExecution || buffer.size() < n) && hasMoreInput()) {
           final Result inputRow = nextInput();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
@@ -324,6 +355,9 @@ public class ForeachStep extends AbstractExecutionStep {
         final RemoveClause removeClause = clauseEntry.getTypedClause();
         return new RemoveStep(removeClause, context, functionFactory);
       case FOREACH:
+        // eagerExecution is deliberately left off for a nested FOREACH rather than forgotten: the
+        // chain built here is drained to exhaustion by executeInnerClauses() once per outer iteration,
+        // so the nRecords cap never splits a nested body across two pulls in the first place.
         final ForeachClause nestedForeach = clauseEntry.getTypedClause();
         return new ForeachStep(nestedForeach, context, functionFactory);
       default:

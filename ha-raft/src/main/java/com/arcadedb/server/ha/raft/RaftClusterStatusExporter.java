@@ -44,6 +44,14 @@ class RaftClusterStatusExporter {
   private static final int LAG_MONITOR_INITIAL_DELAY_SECS = 5;
   private static final int LAG_MONITOR_INTERVAL_SECS      = 5;
 
+  /**
+   * LAG column value for a follower whose match index could not be read consistently on this tick (issue
+   * #7041). Distinct from {@code "0"} and from the blank the leader row carries: the operator is told the
+   * number is unavailable rather than shown a fabricated one. Excluded from the stable signature like every
+   * other LAG value, so a transient unknown never re-emits the table.
+   */
+  static final String LAG_UNKNOWN = "?";
+
   private final    RaftHAServer   haServer;
   private final    ClusterMonitor clusterMonitor;
   private volatile int            lastStableSignature;
@@ -51,6 +59,30 @@ class RaftClusterStatusExporter {
   RaftClusterStatusExporter(final RaftHAServer haServer, final ClusterMonitor clusterMonitor) {
     this.haServer = haServer;
     this.clusterMonitor = clusterMonitor;
+  }
+
+  /**
+   * One follower's replication state as read from a {@link RaftHAServer#getFollowerStates()} entry. The
+   * match index is optional: a degraded entry (membership changed while the indices were being read, issue
+   * #4842) carries none, and {@code matchIndexKnown} says so, because Ratis's own {@code -1} means
+   * "never appended" and cannot double as "unknown".
+   */
+  static final class FollowerReplicationState {
+    final long    matchIndex;
+    final boolean matchIndexKnown;
+    final long    lastRpcMs;
+
+    FollowerReplicationState(final long matchIndex, final boolean matchIndexKnown, final long lastRpcMs) {
+      this.matchIndex = matchIndex;
+      this.matchIndexKnown = matchIndexKnown;
+      this.lastRpcMs = lastRpcMs;
+    }
+
+    static FollowerReplicationState of(final Map<String, Object> state) {
+      return new FollowerReplicationState(RaftHAServer.followerStateIndex(state, "matchIndex"),
+          RaftHAServer.hasFollowerStateIndex(state, "matchIndex"),
+          RaftHAServer.followerStateIndex(state, "lastRpcElapsedMs"));
+    }
   }
 
   // -- Cluster Configuration Printing --
@@ -141,14 +173,13 @@ class RaftClusterStatusExporter {
     if (peers.isEmpty())
       return null;
 
-    // Collect follower replication state (only available on leader)
-    final Map<String, long[]> followerState = new HashMap<>();
-    for (final Map<String, Object> f : haServer.getFollowerStates()) {
-      final String peerId = (String) f.get("peerId");
-      final long matchIndex = (Long) f.get("matchIndex");
-      final long lastRpcMs = (Long) f.get("lastRpcElapsedMs");
-      followerState.put(peerId, new long[] { matchIndex, lastRpcMs });
-    }
+    // Collect follower replication state (only available on leader). The entries are read defensively
+    // (issue #7041): while membership is changing, getFollowerStates() degrades to entries without a
+    // match index rather than misattributing one, and a raw cast on that entry used to throw inside the
+    // catch-all above and suppress the whole table. Such a peer keeps its row, with the lag marked unknown.
+    final Map<String, FollowerReplicationState> followerState = new HashMap<>();
+    for (final Map<String, Object> f : haServer.getFollowerStates())
+      followerState.put((String) f.get("peerId"), FollowerReplicationState.of(f));
 
     // Measured leader->follower replication RTT per follower (issue #5314): the real appendEntries/
     // heartbeat round-trip, load-independent, distinct from the LAST CONTACT staleness figure below.
@@ -167,15 +198,18 @@ class RaftClusterStatusExporter {
       String lastContactStr = "";
       String statusStr = "";
       if (!isPeerLeader) {
-        final long[] state = followerState.get(peerId);
+        final FollowerReplicationState state = followerState.get(peerId);
         if (state != null) {
-          final long lag = commitIndex - state[0];
-          lagStr = lag > 0 ? String.valueOf(lag) : "0";
+          if (state.matchIndexKnown) {
+            final long lag = commitIndex - state.matchIndex;
+            lagStr = lag > 0 ? String.valueOf(lag) : "0";
+          } else
+            lagStr = LAG_UNKNOWN;
           // LAST CONTACT = time since the leader last heard from this follower (issue #5314). On an idle
           // cluster it just tracks the heartbeat cadence, and it is most useful precisely when it grows
           // large (an election is imminent as it nears electionTimeoutMin), so it is always shown - it is
           // not, and never was, the network latency the old "LATENCY" header implied.
-          lastContactStr = state[1] + " ms";
+          lastContactStr = state.lastRpcMs + " ms";
         }
         final RaftHAServer.ReplicationLatency rtt = rttByPeer.get(peerId);
         if (rtt != null)
@@ -315,9 +349,20 @@ class RaftClusterStatusExporter {
       if (!haServer.isLeader())
         return;
       clusterMonitor.updateLeaderCommitIndex(haServer.getCommitIndex());
-      for (final var fs : haServer.getFollowerStates())
-        clusterMonitor.updateReplicaMatchIndex((String) fs.get("peerId"), (Long) fs.get("matchIndex"),
-            (Long) fs.get("lastRpcElapsedMs"));
+      for (final Map<String, Object> fs : haServer.getFollowerStates()) {
+        final FollowerReplicationState state = FollowerReplicationState.of(fs);
+        // A degraded entry (issue #4842) carries no match index. Feeding the monitor a placeholder would
+        // classify the peer from a number Ratis never reported - -1 is its never-appended sentinel and would
+        // read as a dead replication path - and the raw cast it replaces aborted the whole tick (issue
+        // #7041). Leave this peer's classification as it was and carry on with the others.
+        if (!state.matchIndexKnown) {
+          LogManager.instance().log(this, Level.FINE,
+              "Replica lag tick: match index of '%s' unavailable while membership is changing; keeping its last classification",
+              fs.get("peerId"));
+          continue;
+        }
+        clusterMonitor.updateReplicaMatchIndex((String) fs.get("peerId"), state.matchIndex, state.lastRpcMs);
+      }
       // Issue #5304: with the per-replica classifications refreshed, re-emit the CLUSTER CONFIGURATION
       // table when the stable picture (membership, roles, statuses, term) changed since the last
       // emission, so the logged view converges instead of freezing on the election-time snapshot.

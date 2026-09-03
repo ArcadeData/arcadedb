@@ -58,6 +58,12 @@ import java.util.NoSuchElementException;
  * key values. The MATCH clause's {@code WHERE} filter is still applied above this step, so any predicate
  * not part of the index key (or any looser interpretation) is re-validated - this step is only ever a
  * selective prefilter, never the final word on membership.
+ * <p>
+ * The one constraint the {@code WHERE} filter above cannot re-validate is the one the <em>pattern</em>
+ * carries rather than the predicate: writing the same variable at both endpoints, as in
+ * {@code (a)-[t:TYPE]->(a)}, asks for self-loops only. Binding both endpoints under one name would let the
+ * second {@code setProperty} silently overwrite the first and pass a non-self-loop edge off as a match
+ * (issue #7008), so this step enforces {@code out == in} itself for that shape and keeps the index seek.
  */
 public class MatchEdgeByIndexStep extends AbstractExecutionStep {
   private final String       edgeType;
@@ -68,6 +74,9 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
   private final String       sourceVariable;
   private final String       relationshipVariable; // may be null when the edge is anonymous
   private final String       targetVariable;
+  // True when the pattern repeats one variable at both endpoints - (a)-[t:TYPE]->(a) - which constrains the
+  // hop to self-loops. Anonymous endpoints get distinct generated names, so only an explicit repeat sets it.
+  private final boolean      selfLoopOnly;
 
   private final ExpressionEvaluator evaluator;
 
@@ -95,6 +104,7 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
     this.sourceVariable = sourceVariable;
     this.relationshipVariable = relationshipVariable;
     this.targetVariable = targetVariable;
+    this.selfLoopOnly = sourceVariable != null && sourceVariable.equals(targetVariable);
     this.evaluator = new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
   }
 
@@ -153,10 +163,29 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
               if (!(record instanceof Edge))
                 continue;
               edge = (Edge) record;
+
+              // A repeated endpoint variable constrains the hop to self-loops. This reads the two RIDs the
+              // edge carries rather than resolving the vertex records, so a rejected edge costs no extra
+              // load - but getOut()/getIn() still lazy-load the EDGE's own content, so the comparison has to
+              // sit under the same dangling-entry guard as the resolution above.
+              if (selfLoopOnly && !edge.getOut().equals(edge.getIn()))
+                continue;
             } catch (final RecordNotFoundException e) {
               // Dangling index entry pointing at a removed edge: skip it, like every other RID resolver.
               continue;
             }
+
+            // An index inherited from a parent edge type spans the whole hierarchy, so its cursor also
+            // carries the parent's own edges and every sibling's. A relationship pattern matches a type and
+            // its subtypes, never its ancestors, so those are not answers (issue #7021).
+            //
+            // Unconditional, unlike the equivalent in NodeIndexSeek/MatchNodeStep, which skip the check
+            // entirely for an index the queried type owns: those pay a bucket-id lookup per row to learn the
+            // type, while the record here is already loaded (the Edge cast above needs it), so the check is
+            // one instanceOf on a type reference already in hand and a flag to skip it would cost more to
+            // carry than to ignore.
+            if (!edge.getType().instanceOf(edgeType))
+              continue;
 
             final ResultInternal result = new ResultInternal();
             if (relationshipVariable != null && !relationshipVariable.isEmpty())

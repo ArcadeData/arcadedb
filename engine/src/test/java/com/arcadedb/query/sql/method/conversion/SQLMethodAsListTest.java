@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -139,5 +140,12 @@ class SQLMethodAsListTest {
     expected.add(Integer.valueOf(4));
     assertThat(result).isEqualTo(expected);
 
+  }
+
+  @Test
+  void arrayIsConvertedToAListOfItsElements() {
+    // Issue #7027: an array used to come back as a one-element list holding the whole array
+    assertThat(function.execute(new String[] { "a", "b" }, null, null, null)).isEqualTo(List.of("a", "b"));
+    assertThat(function.execute(new int[] { 1, 2 }, null, null, null)).isEqualTo(List.of(1, 2));
   }
 }

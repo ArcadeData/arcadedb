@@ -23,6 +23,7 @@ import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
@@ -102,6 +103,19 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     // TimeSeriesShard.appendSamples commits its own shard transaction per series, so a series already
     // appended before a later one throws is durable regardless of how this request rolls back (issue #5866).
     final HAReplicatedDatabase haDb = resolveHAReplicatedDatabase(database);
+
+    // Per-type ACL preflight, before the first append and before getOrCreateType() can mutate the schema:
+    // TimeSeriesShard.appendSamples commits its own shard transaction, so a denial discovered mid-loop would
+    // return 403 with the earlier series already durable. Checked by NAME so a denied metric is refused without
+    // its type being auto-created first; an unknown name has no entry in the permission map and stays allowed,
+    // which is what keeps auto-create working for a brand-new metric.
+    for (final TimeSeries ts : writeRequest.getTimeSeries()) {
+      final String metricName = ts.getMetricName();
+      if (metricName == null || metricName.isEmpty())
+        continue;
+      database.checkPermissionsOnType(sanitizeTypeName(metricName), SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    }
+
     try {
       // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
       // begin/commit on getWrappedDatabaseInstance(), so every appendBatch below has already committed its
@@ -123,7 +137,7 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
           // state its storage is in, so this is where a missing engine is reported - naming the type and why the
           // engine never started, rather than letting a null reach an NPE (issue #6356) or, as before, a phantom
           // "already exists" from the auto-create branch (issue #6839).
-          final TimeSeriesEngine engine = tsType.requireEngine();
+          final TimeSeriesEngine engine = tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
           final List<ColumnDefinition> columns = tsType.getTsColumns();
 
           // Append this series' samples as ONE batch. All samples of a remote-write TimeSeries share the

@@ -1,0 +1,326 @@
+name: Classify Issues and Label Sponsors
+
+on:
+  issues:
+    types: [opened, reopened]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to evaluate (manual dry-run)"
+        required: true
+        type: number
+      dry_run:
+        description: "If true, log the decision without applying the label"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  label-sponsor-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate sponsorship and label
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SPONSORABLE_LOGIN: ArcadeData
+          LABEL_NAME: high_priority
+          # 6-char hex without the leading '#'; that's the form the REST labels API expects.
+          LABEL_COLOR: B60205
+          LABEL_DESCRIPTION: Issue opened by a GitHub Sponsor of ArcadeData
+        with:
+          script: |
+            const sponsorable = process.env.SPONSORABLE_LOGIN;
+            const labelName = process.env.LABEL_NAME;
+            const labelColor = process.env.LABEL_COLOR;
+            const labelDescription = process.env.LABEL_DESCRIPTION;
+
+            // Resolve the target issue. For issues events, use the payload directly.
+            // For workflow_dispatch, fetch the issue specified by the input.
+            let issue;
+            let dryRun = false;
+            if (context.eventName === "workflow_dispatch") {
+              dryRun = context.payload.inputs.dry_run !== "false";
+              const issueNumber = Number(context.payload.inputs.issue_number);
+              try {
+                const { data } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                });
+                issue = data;
+              } catch (err) {
+                // audit() needs the issue user/association; on dispatch fetch failure we don't
+                // have those yet, so emit a substitute info line keyed by issue_number instead.
+                core.warning(`sponsor-priority: dispatch issues.get failed: ${err.message}`);
+                core.info(
+                  `sponsor-priority: issue_number=${context.payload.inputs.issue_number}, ` +
+                  `isSponsor=unknown, action=errored` +
+                  (dryRun ? " (dry_run)" : "")
+                );
+                return;
+              }
+            } else {
+              issue = context.payload.issue;
+            }
+
+            const login = issue.user.login;
+            const userType = issue.user.type;
+            const association = issue.author_association;
+
+            const audit = (isSponsor, action) => {
+              core.info(
+                `sponsor-priority: user=${login}, association=${association}, ` +
+                `isSponsor=${isSponsor}, action=${action}` +
+                (dryRun ? " (dry_run)" : "")
+              );
+            };
+
+            // Skip bots and internal contributors before any external call.
+            const isBot = userType === "Bot" || login.endsWith("[bot]");
+            const isInternal =
+              association === "OWNER" ||
+              association === "MEMBER" ||
+              association === "COLLABORATOR";
+            if (isBot || isInternal) {
+              audit("n/a", "skipped");
+              return;
+            }
+
+            // Probe sponsorship.
+            let isSponsor = null;
+            try {
+              const result = await github.graphql(
+                `query($login: String!, $sponsorable: String!) {
+                   organization(login: $sponsorable) {
+                     isSponsoredBy(accountLogin: $login)
+                   }
+                 }`,
+                { login, sponsorable }
+              );
+              isSponsor = Boolean(result?.organization?.isSponsoredBy);
+            } catch (err) {
+              core.warning(`sponsor-priority: graphql failed: ${err.message}`);
+              audit("unknown", "errored");
+              return;
+            }
+
+            if (!isSponsor) {
+              audit(false, "skipped");
+              return;
+            }
+
+            if (dryRun) {
+              audit(true, "dry_run");
+              return;
+            }
+
+            // Ensure the label exists, then apply it.
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: labelName,
+              });
+            } catch (err) {
+              if (err.status === 404) {
+                try {
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: labelName,
+                    color: labelColor,
+                    description: labelDescription,
+                  });
+                } catch (createErr) {
+                  // 422 = lost the race to a concurrent run; the label now exists, fall through.
+                  if (createErr.status !== 422) {
+                    core.warning(`sponsor-priority: createLabel failed: ${createErr.message}`);
+                    audit(true, "errored");
+                    return;
+                  }
+                }
+              } else {
+                core.warning(`sponsor-priority: getLabel failed: ${err.message}`);
+                audit(true, "errored");
+                return;
+              }
+            }
+
+            try {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: [labelName],
+              });
+              audit(true, "labeled");
+            } catch (err) {
+              core.warning(`sponsor-priority: addLabels failed: ${err.message}`);
+              audit(true, "errored");
+            }
+
+  classify-issue:
+    # Only new issues get auto-classified; a reopen keeps whatever labels it already has,
+    # and workflow_dispatch is the sponsor-label dry-run entry point, not a classifier run.
+    # Bot-opened issues are excluded because the action's own checkHumanActor() rejects them,
+    # which would fail the job rather than skip it.
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'opened' &&
+      github.event.issue.user.type == 'User'
+    runs-on: ubuntu-latest
+    # No id-token: write here. Supplying github_token below makes the action use this
+    # token directly instead of exchanging an OIDC token for a Claude App token, and that
+    # exchange rejects issues opened by anyone without write access on the repo, i.e. every
+    # external reporter (401 "User does not have write access on this repository").
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Decide which labels fit
+        id: classify
+        uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1.0.210
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Issue reporters are external users with read access, and the action refuses to run
+          # for them unless they are allow-listed here. This is the case the input documents
+          # ("workflows with very limited permissions, e.g. issue labeling"), and it is only
+          # honoured because github_token above is set. The issue body is untrusted input, so
+          # the tool allow-list below is the containment: read this one issue and read the
+          # label list. Nothing else - the labelling itself is a separate step that only ever
+          # adds labels which already exist, to this one issue.
+          allowed_non_write_users: "*"
+          prompt: |
+            REPO: ${{ github.repository }}
+
+            Classify GitHub issue ${{ github.event.issue.number }} of that repository.
+
+            Read the issue with `gh issue view ${{ github.event.issue.number }}` and list the
+            labels that already exist in the repository with `gh label list`. Decide which of
+            the existing labels fit the issue. Never invent a label that does not already
+            exist, and never pick `high_priority`, which the sponsor job owns.
+
+            Do not try to edit the issue: you have no permission to do so, and another step
+            applies your decision. Instead, end your reply with one final line, exactly:
+
+            LABELS: <comma-separated label names>
+
+            Use `LABELS: none` if no existing label fits. That line must be the last line of
+            your reply and must contain nothing else.
+          # Read-only, and both patterns are pinned: this issue's number, and the repository
+          # label list. Claude gets no write tool at all, so an injected instruction in the
+          # issue body cannot retitle, close, reassign, or relabel anything. Note the pin has
+          # to sit at the very end of the allowed prefix, because Claude routinely appends
+          # flags of its own (`--repo <owner/name>`, `--json ...`) and any pattern that pins
+          # something *after* the issue number stops matching when it does.
+          claude_args: '--model claude-sonnet-5 --allowed-tools "Bash(gh issue view ${{ github.event.issue.number }}:*),Bash(gh label list:*)"'
+
+      - name: Apply the labels Claude chose
+        if: steps.classify.outputs.execution_file != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          EXECUTION_FILE: ${{ steps.classify.outputs.execution_file }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          RESERVED_LABEL: high_priority
+        with:
+          script: |
+            const fs = require("fs");
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const reserved = process.env.RESERVED_LABEL.toLowerCase();
+
+            const audit = (msg) => core.info(`classify-issue: issue=${issueNumber}, ${msg}`);
+
+            // The execution log is the JSON array of SDK messages. The final `result` message
+            // carries Claude's last reply; fall back to the last assistant text block.
+            let text = "";
+            try {
+              const raw = JSON.parse(fs.readFileSync(process.env.EXECUTION_FILE, "utf8"));
+              const messages = Array.isArray(raw) ? raw : [raw];
+              for (const m of messages) {
+                if (m?.type === "result" && typeof m.result === "string") text = m.result;
+                else if (m?.type === "assistant" && Array.isArray(m.message?.content)) {
+                  for (const c of m.message.content)
+                    if (c?.type === "text" && typeof c.text === "string") text = c.text;
+                }
+              }
+            } catch (err) {
+              core.warning(`classify-issue: unreadable execution file: ${err.message}`);
+              audit("action=errored");
+              return;
+            }
+
+            // Last LABELS: line wins, so a line quoted from the issue body earlier in the
+            // reply cannot outrank the decision Claude ends on.
+            const matches = [...text.matchAll(/^\s*LABELS:\s*(.*)$/gim)];
+            if (matches.length === 0) {
+              audit("action=no_decision");
+              return;
+            }
+            const requested = matches[matches.length - 1][1]
+              .split(",")
+              .map((s) => s.trim().replace(/^[`"']|[`"']$/g, ""))
+              .filter((s) => s.length > 0 && s.toLowerCase() !== "none");
+            if (requested.length === 0) {
+              audit("action=none_chosen");
+              return;
+            }
+
+            // Only labels that already exist may be applied, matched case-insensitively and
+            // mapped back to their canonical name. This is what keeps a hallucinated or
+            // injected name from reaching the API at all.
+            let existing;
+            try {
+              existing = await github.paginate(github.rest.issues.listLabelsForRepo, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              });
+            } catch (err) {
+              core.warning(`classify-issue: listLabelsForRepo failed: ${err.message}`);
+              audit(`requested=${requested.join("|")}, action=errored`);
+              return;
+            }
+            const canonical = new Map(existing.map((l) => [l.name.toLowerCase(), l.name]));
+
+            const seen = new Set();
+            const labels = [];
+            const dropped = [];
+            for (const name of requested) {
+              const key = name.toLowerCase();
+              if (key === reserved || !canonical.has(key) || seen.has(key)) {
+                dropped.push(name);
+                continue;
+              }
+              seen.add(key);
+              labels.push(canonical.get(key));
+            }
+
+            const tail =
+              `requested=${requested.join("|")}, applied=${labels.join("|") || "-"}, ` +
+              `dropped=${dropped.join("|") || "-"}`;
+            if (labels.length === 0) {
+              audit(`${tail}, action=skipped`);
+              return;
+            }
+
+            try {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                labels,
+              });
+              audit(`${tail}, action=labeled`);
+            } catch (err) {
+              core.warning(`classify-issue: addLabels failed: ${err.message}`);
+              audit(`${tail}, action=errored`);
+            }
