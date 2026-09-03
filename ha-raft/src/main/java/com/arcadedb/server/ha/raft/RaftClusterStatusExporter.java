@@ -44,6 +44,14 @@ class RaftClusterStatusExporter {
   private static final int LAG_MONITOR_INITIAL_DELAY_SECS = 5;
   private static final int LAG_MONITOR_INTERVAL_SECS      = 5;
 
+  /**
+   * LAG column value for a follower whose match index could not be read consistently on this tick (issue
+   * #7041). Distinct from {@code "0"} and from the blank the leader row carries: the operator is told the
+   * number is unavailable rather than shown a fabricated one. Excluded from the stable signature like every
+   * other LAG value, so a transient unknown never re-emits the table.
+   */
+  static final String LAG_UNKNOWN = "?";
+
   private final    RaftHAServer   haServer;
   private final    ClusterMonitor clusterMonitor;
   private volatile int            lastStableSignature;
@@ -52,14 +60,6 @@ class RaftClusterStatusExporter {
     this.haServer = haServer;
     this.clusterMonitor = clusterMonitor;
   }
-
-  /**
-   * LAG column value for a follower whose match index could not be read consistently on this tick (issue
-   * #7041). Distinct from {@code "0"} and from the blank the leader row carries: the operator is told the
-   * number is unavailable rather than shown a fabricated one. Excluded from the stable signature like every
-   * other LAG value, so a transient unknown never re-emits the table.
-   */
-  static final String LAG_UNKNOWN = "?";
 
   /**
    * One follower's replication state as read from a {@link RaftHAServer#getFollowerStates()} entry. The

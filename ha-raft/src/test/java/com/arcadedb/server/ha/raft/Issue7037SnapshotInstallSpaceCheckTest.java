@@ -86,6 +86,14 @@ class Issue7037SnapshotInstallSpaceCheckTest {
   }
 
   @Test
+  void theReserveCoversAllocationOverheadAndSaturates() {
+    assertThat(SnapshotInstaller.withAllocationReserve(1L)).isEqualTo(1L + SnapshotInstaller.SPACE_RESERVE_MIN_BYTES);
+    final long oneGb = 1L << 30;
+    assertThat(SnapshotInstaller.withAllocationReserve(oneGb)).isEqualTo(oneGb + oneGb / 100L * SnapshotInstaller.SPACE_RESERVE_PERCENT);
+    assertThat(SnapshotInstaller.withAllocationReserve(Long.MAX_VALUE)).isEqualTo(Long.MAX_VALUE);
+  }
+
+  @Test
   void headerParsingTreatsAbsentOrMalformedAsUnknown() {
     assertThat(SnapshotInstaller.parseUncompressedBytes(null)).isEqualTo(-1L);
     assertThat(SnapshotInstaller.parseUncompressedBytes("")).isEqualTo(-1L);
