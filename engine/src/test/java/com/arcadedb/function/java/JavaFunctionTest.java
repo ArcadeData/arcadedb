@@ -134,6 +134,16 @@ class JavaFunctionTest extends TestHelper {
     }
   }
 
+  public static class VarargsFixedArityTie {
+    public static String tie(final String... parts) {
+      return "all:" + parts.length;
+    }
+
+    public static String tie(final String first, final String... rest) {
+      return "first+rest:" + rest.length;
+    }
+  }
+
   public static class VarargsOverloaded {
     public static String join(final String sep, final String... parts) {
       return "strs:" + String.join(sep, parts);
@@ -481,6 +491,23 @@ class JavaFunctionTest extends TestHelper {
       assertThat(pair.execute(1L, 2.0)).isEqualTo("long-double");
     } finally {
       database.getSchema().unregisterFunctionLibrary("width");
+    }
+  }
+
+  @Test
+  void varargsOverloadsSeeingTheSameParameterTypesStayAmbiguous()
+    throws Exception {
+    // tie(String...) and tie(String, String...) both see String in every position of a two-argument call, so neither is
+    // more specific than the other: the specificity ranking added for issue #7110 must not silently pick the first one
+    // where javac reports the call as ambiguous.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("tie", JavaFunctionTest.VarargsFixedArityTie.class));
+    try {
+      final var function = database.getSchema().getFunction("tie", "tie");
+      assertThatThrownBy(() -> function.execute("a", "b"))
+          .isInstanceOf(FunctionExecutionException.class)
+          .hasMessageContaining("cannot resolve which overload");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("tie");
     }
   }
 
