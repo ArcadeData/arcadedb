@@ -597,7 +597,7 @@ public class ArcadeDBServer {
     final STATUS observedStatus = status;
     final Thread owner = lifecycleOwner;
     final boolean holderExiting =
-        owner != null && owner != Thread.currentThread() && isRunningShutdownHooks(owner.getStackTrace());
+        owner != null && !owner.equals(Thread.currentThread()) && isRunningShutdownHooks(owner.getStackTrace());
     final ShutdownHookBound bound = chooseShutdownHookBound(observedStatus, !databases.isEmpty(), holderExiting);
     final long timeout = shutdownHookTimeoutMs(bound);
 
