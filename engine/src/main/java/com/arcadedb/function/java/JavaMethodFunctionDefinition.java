@@ -271,7 +271,7 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     if (applicable == null)
       return match;
 
-    final Method mostSpecific = mostSpecific(applicable, args.length, prePacked(applicable, args));
+    final Method mostSpecific = mostSpecific(applicable, args);
     if (mostSpecific == null)
       throw ambiguousOverloadException(allCandidates, args);
     return mostSpecific;
@@ -289,9 +289,9 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
    * keeps {@code f(int...)} against {@code f(long, short...)} ambiguous for a single {@code int} ({@code int} narrows
    * into {@code long} but not into {@code short}) while {@code f(int...)} beats {@code f(int, long...)}.
    */
-  private static Method mostSpecific(final List<Method> applicable, final int argCount, final boolean prePacked) {
+  private static Method mostSpecific(final List<Method> applicable, final Object[] args) {
     final int size = applicable.size();
-    int positions = argCount;
+    int positions = args.length;
     for (final Method m : applicable)
       positions = Math.max(positions, m.getParameterCount());
 
@@ -302,7 +302,7 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
         if (j == i)
           continue;
         final Method other = applicable.get(j);
-        if (!isAtLeastAsSpecific(candidate, other, positions, prePacked) || isAtLeastAsSpecific(other, candidate, positions, prePacked))
+        if (!isAtLeastAsSpecific(candidate, other, positions, args) || isAtLeastAsSpecific(other, candidate, positions, args))
           dominates = false;
       }
       if (dominates)
@@ -312,28 +312,19 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
   }
 
   /**
-   * True when the vararg part was passed pre-packed (see {@link #isPrePacked}) to every applicable overload: the
-   * pre-packed array is then compared as the array type itself, exactly as {@link #acceptsArgumentTypes} matched it.
-   * The applicable set is uniform here - either the trailing argument is an array instance of every candidate's vararg
-   * type or of none - so one flag describes them all.
-   */
-  private static boolean prePacked(final List<Method> applicable, final Object[] args) {
-    for (final Method m : applicable)
-      if (m.isVarArgs() && isPrePacked(m, args))
-        return true;
-    return false;
-  }
-
-  /**
    * True when, in every position up to {@code positions}, {@code m1}'s parameter type is the same as {@code m2}'s or a
    * primitive that widens into it (JLS 15.12.2.5 restricted to primitive parameters). Two reference parameter types that
-   * differ are deliberately not ranked (see the class Javadoc), so they make the pair incomparable; a pre-packed vararg
-   * array compares as the array type, and two different array types are reference types that differ.
+   * differ are deliberately not ranked (see the class Javadoc), so they make the pair incomparable. Each method sees
+   * the vararg part the way {@link #acceptsArgumentTypes} matched it for that method: as the array type when the call
+   * passed it pre-packed for that overload, as the component type otherwise - the same trailing {@code String[]} is a
+   * pre-packed vararg for {@code f(int, String...)} and one flat element for {@code f(long, String[]...)}.
    */
-  private static boolean isAtLeastAsSpecific(final Method m1, final Method m2, final int positions, final boolean prePacked) {
+  private static boolean isAtLeastAsSpecific(final Method m1, final Method m2, final int positions, final Object[] args) {
+    final boolean prePacked1 = m1.isVarArgs() && isPrePacked(m1, args);
+    final boolean prePacked2 = m2.isVarArgs() && isPrePacked(m2, args);
     for (int i = 0; i < positions; i++) {
-      final Class<?> p1 = parameterTypeAt(m1, i, prePacked);
-      final Class<?> p2 = parameterTypeAt(m2, i, prePacked);
+      final Class<?> p1 = parameterTypeAt(m1, i, prePacked1);
+      final Class<?> p2 = parameterTypeAt(m2, i, prePacked2);
       if (p1 != p2 && !(p1.isPrimitive() && WIDENING_CONVERSIONS.getOrDefault(p1, Set.of()).contains(p2)))
         return false;
     }
@@ -343,7 +334,7 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
   /**
    * The parameter type an argument at position {@code i} is matched against: for a varargs method, positions past the
    * fixed parameters map to the vararg component type, or to the vararg array type itself when the call passed the
-   * vararg part pre-packed.
+   * vararg part pre-packed for this method.
    */
   private static Class<?> parameterTypeAt(final Method method, final int i, final boolean prePacked) {
     final Class<?>[] paramTypes = method.getParameterTypes();
