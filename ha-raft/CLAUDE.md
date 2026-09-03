@@ -40,7 +40,7 @@ The shutdown trigger has a counterintuitive consequence when reproducing durabil
 
 ## Peer-list filtering is duplicated across three methods
 
-`RaftHAServer` iterates `raftGroup.getPeers()` and applies its own copy of the leader-exclusion criterion in three places:
+`RaftHAServer` applies its own copy of the leader-exclusion criterion in three places:
 
 - `getStats()` - feeds `ha.network.replicas` in `/api/v1/server?mode=cluster`
 - `getReplicaAddresses()` - feeds `ha.replicaAddresses` in the same response
@@ -48,7 +48,7 @@ The shutdown trigger has a counterintuitive consequence when reproducing durabil
 
 Each has its own local `excludeId` derivation (`leaderId != null ? leaderId : localPeerId`, or the leader directly). They are not factored into a shared helper, so a fix applied to one silently leaves the others wrong and the cluster API response internally inconsistent.
 
-**Any change to what "replica" means must be applied to all three.** Grep `RaftHAServer.java` for `getPeers()` before claiming such a fix is complete. This has already caused one incomplete fix that review caught.
+**Any change to what "replica" means must be applied to all three.** This has already caused one incomplete fix that review caught, twice: the second time (#7040) `/api/v1/cluster` learned to tell a declared peer from a member of the live Raft configuration while these three still iterated the static `raftGroup.getPeers()`. Since then the membership itself comes from one place - `ClusterMembership.of(raftGroup.getPeers(), getLivePeers()).configuredPeers()`, read through `RaftHAServer.configuredPeers()` - and `GetClusterHandler` reads the same reconciliation. Grep `RaftHAServer.java` for `raftGroup.getPeers()` before claiming such a fix is complete: the only legitimate direct readers left are the ones that want the *declared* list on purpose (`getConfiguredServers()`, the presence matrix, the membership reconciliation itself).
 
 ## Anything that commits must hold the WRAPPED database instance, not the inner one
 

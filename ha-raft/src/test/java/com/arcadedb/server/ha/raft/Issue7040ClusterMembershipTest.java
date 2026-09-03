@@ -78,6 +78,26 @@ class Issue7040ClusterMembershipTest {
   }
 
   @Test
+  void configuredPeersDropTheRemovedAndKeepTheRuntimeAdded() {
+    final ClusterMembership membership = ClusterMembership.of(List.of(A, B, C), List.of(A, D, B));
+
+    assertThat(membership.configuredPeers()).as("declared order first, runtime-added last, removed dropped")
+        .containsExactly(A, B, D);
+    assertThat(membership.peers()).containsExactly(A, B, C, D);
+  }
+
+  @Test
+  void theLiveEntryWinsForAPeerPresentInBothLists() {
+    final RaftPeer rejoined = RaftPeer.newBuilder().setId(B.getId()).setAddress("b-new:2434").build();
+    final ClusterMembership membership = ClusterMembership.of(List.of(A, B), List.of(A, rejoined));
+
+    assertThat(membership.peers()).containsExactly(A, rejoined);
+    assertThat(membership.peers().get(1).getAddress()).as("the address the cluster committed, not the declared one")
+        .isEqualTo("b-new:2434");
+    assertThat(membership.diverged()).isFalse();
+  }
+
+  @Test
   void alertNamesTheDeclaredPeersMissingFromTheConfiguration() {
     final JSONArray alerts = new JSONArray();
     ClusterAlerts.addMembershipDivergenceAlert(List.of("c"), List.of(), "a", alerts);

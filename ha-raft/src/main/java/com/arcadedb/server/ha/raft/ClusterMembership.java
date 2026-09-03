@@ -42,7 +42,14 @@ import java.util.Set;
  * operator declared plus every peer the cluster committed - and says for each whether it is in the configuration.
  * <p>
  * Pure value: the order of {@link #peers()} is the static order first (stable across polls, the order the operator
- * wrote), then the live-only peers in configuration order.
+ * wrote), then the live-only peers in configuration order. For an id present in both lists the <b>live</b> entry
+ * is kept: its address is the one the cluster committed and dials, and a peer that rejoined at a new address under
+ * its old id would otherwise be reported at the declared, stale one.
+ * <p>
+ * {@link #configuredPeers()} is the view every "which peers are members" consumer in {@link RaftHAServer} reads -
+ * the server stats, the replica address list and the client routing table - so a peer the configuration dropped
+ * disappears from all of them at once instead of from the one that happened to be fixed (see the module's
+ * {@code CLAUDE.md}, "Peer-list filtering").
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -75,7 +82,8 @@ final class ClusterMembership {
     final List<String> notInServerList = new ArrayList<>();
     for (final RaftPeer peer : livePeers) {
       configured.add(peer.getId());
-      if (byId.putIfAbsent(peer.getId(), peer) == null)
+      // put() keeps the declared position (LinkedHashMap does not reorder on replace) and takes the live entry.
+      if (byId.put(peer.getId(), peer) == null)
         notInServerList.add(peer.getId().toString());
     }
 
@@ -91,6 +99,15 @@ final class ClusterMembership {
   /** Every peer known to this node: the static list first, then the peers only the live configuration holds. */
   List<RaftPeer> peers() {
     return peers;
+  }
+
+  /** The members of the live Raft configuration, in the order of {@link #peers()}. */
+  List<RaftPeer> configuredPeers() {
+    final List<RaftPeer> result = new ArrayList<>(configured.size());
+    for (final RaftPeer peer : peers)
+      if (configured.contains(peer.getId()))
+        result.add(peer);
+    return result;
   }
 
   /** Whether {@code peerId} is a member of the live Raft configuration. */
