@@ -431,16 +431,28 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     for (int i = 0; i < columns.length(); i++) {
       final JSONObject column = columns.getJSONObject(i);
-      final Type dataType = Type.getTypeByName(column.getString("dataType"));
-      final ColumnDefinition.ColumnRole role = ColumnDefinition.ColumnRole.valueOf(column.getString("role"));
-      final String compression = column.getString("compression", null);
-      builder.withColumn(compression != null ?
-          new ColumnDefinition(column.getString("name"), dataType, role, TimeSeriesCodec.valueOf(compression)) :
-          new ColumnDefinition(column.getString("name"), dataType, role));
+      final String columnName = column.getString("name");
+      // The three enums are parsed inside one try: a hand-edited or foreign-tool-generated export reaches them
+      // with a value none of them knows, and the raw IllegalArgumentException they raise names the bad token and
+      // nothing else - not the column it came from, not the type, not even that this was a schema line.
+      try {
+        final Type dataType = Type.getTypeByName(column.getString("dataType"));
+        final ColumnDefinition.ColumnRole role = ColumnDefinition.ColumnRole.valueOf(column.getString("role"));
+        final String compression = column.getString("compression", null);
+        builder.withColumn(compression != null ?
+            new ColumnDefinition(columnName, dataType, role, TimeSeriesCodec.valueOf(compression)) :
+            new ColumnDefinition(columnName, dataType, role));
+      } catch (final IllegalArgumentException | NullPointerException e) {
+        throw new ImportException(
+            "Column '" + columnName + "' of TIMESERIES type '" + typeName + "' declares a data type, role or "
+                + "compression this build does not know: " + e.getMessage(), e);
+      }
     }
 
     if (type.has("precision"))
       builder.withPrecision(type.getString("precision"));
+    // 0 is the builder's own "use the default" (it resolves to ASYNC_WORKER_THREADS), which is the right answer
+    // for an export written before the count was persisted.
     builder.withShards(type.getInt("shardCount", 0));
     builder.withRetention(type.getLong("retentionMs", 0L));
     builder.withCompactionBucketInterval(type.getLong("compactionBucketIntervalMs", 0L));
