@@ -114,6 +114,23 @@ class Issue7011BootstrapSourceRaceTest {
   }
 
   /**
+   * The source never falls through to the mismatch branch, whatever its copy reads: a baseline above the local
+   * transaction id is impossible for the copy it was sampled from, and the answer is still "keep the copy".
+   */
+  @Test
+  void theBootstrapSourceKeepsItsCopyEvenBehindItsOwnBaseline() {
+    final ArcadeStateMachine sm = newStateMachine();
+    final RaftLogEntryCodec.DecodedEntry aheadOfLocal = RaftLogEntryCodec.decode(
+        RaftLogEntryCodec.encodeBootstrapFingerprintEntry(DB, "0".repeat(64), localDb.getLastTransactionId() + 100));
+
+    sm.applyBootstrapFingerprintEntry(aheadOfLocal, 3L, true);
+
+    assertThat(sm.getBootstrapUnreconciledDatabases()).isEmpty();
+    assertThat(localDb.isOpen()).as("the copy is kept open, not closed for a reinstall from itself").isTrue();
+    assertThat(sm.getBootstrapBaseline(DB)).isNotNull();
+  }
+
+  /**
    * Regression guard for the #6124 behaviour this fix must not weaken: a peer that did NOT source the baseline and
    * holds a fresher copy with no Raft history is still refused and marked diverged.
    */
