@@ -256,10 +256,33 @@ class FileUtilsTest {
 
     Files.writeString(source, content);
 
-//    FileUtils.copyFile(source.toFile(), dest.toFile());
+    FileUtils.copyFile(source.toFile(), dest.toFile());
 
-    Files.copy(source,dest);
     assertThat(Files.readString(dest)).isEqualTo(content);
+  }
+
+  /**
+   * Covers the overwrite semantics and a real multi-megabyte transfer. The ~2GB single-call cap of
+   * {@code FileChannel.transferTo} that issue #7112 fixed by delegating to {@code Files.copy} is not exercised here: a
+   * multi-gigabyte payload is not a unit-test-sized fixture, so that boundary rests on the JDK's own contract.
+   */
+  @Test
+  void copyFileOverwritesExistingDestination() throws Exception {
+    final Path source = tempDir.resolve("source.bin");
+    final Path dest = tempDir.resolve("dest.bin");
+    final byte[] content = new byte[3 * FileUtils.MEGABYTE + 17];
+    for (int i = 0; i < content.length; i++)
+      content[i] = (byte) (i * 31);
+    Files.write(source, content);
+    // Longer than the source, so a copy that failed to truncate would leave stale trailing bytes behind
+    final byte[] stale = new byte[content.length + FileUtils.MEGABYTE];
+    Arrays.fill(stale, (byte) 0x5A);
+    Files.write(dest, stale);
+
+    FileUtils.copyFile(source.toFile(), dest.toFile());
+
+    assertThat(Files.size(dest)).isEqualTo(content.length);
+    assertThat(Files.readAllBytes(dest)).isEqualTo(content);
   }
 
   @Test

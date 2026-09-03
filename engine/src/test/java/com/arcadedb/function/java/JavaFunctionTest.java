@@ -108,6 +108,70 @@ class JavaFunctionTest extends TestHelper {
     }
   }
 
+  public static class WidthOverloaded {
+    public static long twice(final long v) {
+      return v * 2;
+    }
+
+    public static int twice(final int v) {
+      return v * 2;
+    }
+
+    public static String scale(final long v) {
+      return "long:" + v;
+    }
+
+    public static String scale(final double v) {
+      return "double:" + v;
+    }
+
+    public static String pair(final long a, final double b) {
+      return "long-double";
+    }
+
+    public static String pair(final double a, final long b) {
+      return "double-long";
+    }
+  }
+
+  public static class VarargsFixedArityTie {
+    public static String tie(final String... parts) {
+      return "all:" + parts.length;
+    }
+
+    public static String tie(final String first, final String... rest) {
+      return "first+rest:" + rest.length;
+    }
+  }
+
+  public static class VarargsUnsuppliedComponent {
+    public static String narrow(final int... values) {
+      return "ints";
+    }
+
+    public static String narrow(final long first, final short... rest) {
+      return "long+shorts";
+    }
+
+    public static String widen(final long... values) {
+      return "longs";
+    }
+
+    public static String widen(final int first, final long... rest) {
+      return "int+longs";
+    }
+  }
+
+  public static class MixedPackedVarargs {
+    public static String pick(final int value, final String... parts) {
+      return "narrow:" + parts.length;
+    }
+
+    public static String pick(final long value, final String[]... parts) {
+      return "wide:" + parts.length;
+    }
+  }
+
   public static class VarargsOverloaded {
     public static String join(final String sep, final String... parts) {
       return "strs:" + String.join(sep, parts);
@@ -426,6 +490,101 @@ class JavaFunctionTest extends TestHelper {
       assertThat(function.execute(1)).isEqualTo("longs:1");
     } finally {
       database.getSchema().unregisterFunctionLibrary("wide");
+    }
+  }
+
+  @Test
+  void exactPrimitiveMatchBeatsWideningOverload()
+    throws Exception {
+    // Regression for issue #7110: primitive widening (issue #7007) made an Integer argument applicable to both
+    // twice(int) and twice(long), and the ambiguity check then refused a call the pre-widening exact-match dispatch
+    // resolved without trouble. As in Java, the exact primitive match must win over the widened one.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("width", JavaFunctionTest.WidthOverloaded.class));
+    try {
+      final var twice = database.getSchema().getFunction("width", "twice");
+      assertThat(twice.execute(5)).isEqualTo(10);
+      assertThat(twice.execute(5L)).isEqualTo(10L);
+
+      // Both scale(long) and scale(double) only apply by widening: long is the narrower target, so it is the most
+      // specific applicable overload, again as javac would resolve it.
+      final var scale = database.getSchema().getFunction("width", "scale");
+      assertThat(scale.execute(1)).isEqualTo("long:1");
+      assertThat(scale.execute(1.5f)).isEqualTo("double:1.5");
+
+      // Neither pair(long,double) nor pair(double,long) is more specific than the other for two ints: still ambiguous.
+      final var pair = database.getSchema().getFunction("width", "pair");
+      assertThatThrownBy(() -> pair.execute(1, 2))
+          .isInstanceOf(FunctionExecutionException.class)
+          .hasMessageContaining("cannot resolve which overload");
+      assertThat(pair.execute(1L, 2.0)).isEqualTo("long-double");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("width");
+    }
+  }
+
+  @Test
+  void varargsOverloadsSeeingTheSameParameterTypesStayAmbiguous()
+    throws Exception {
+    // tie(String...) and tie(String, String...) both see String in every position of a two-argument call, so neither is
+    // more specific than the other: the specificity ranking added for issue #7110 must not silently pick the first one
+    // where javac reports the call as ambiguous.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("tie", JavaFunctionTest.VarargsFixedArityTie.class));
+    try {
+      final var function = database.getSchema().getFunction("tie", "tie");
+      assertThatThrownBy(() -> function.execute("a", "b"))
+          .isInstanceOf(FunctionExecutionException.class)
+          .hasMessageContaining("cannot resolve which overload");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("tie");
+    }
+  }
+
+  @Test
+  void unsuppliedVarargComponentTakesPartInSpecificity()
+    throws Exception {
+    // JLS 15.12.2.5 compares the expanded signatures, including the vararg component the call never supplied: for one
+    // int, narrow(int...) is narrower than narrow(long, short...) in the first position but not in the second (int does
+    // not widen into short), so javac reports the call ambiguous; widen(int, long...) beats widen(long...) in the first
+    // position and ties in the second, so it wins.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("vac", JavaFunctionTest.VarargsUnsuppliedComponent.class));
+    try {
+      final var narrow = database.getSchema().getFunction("vac", "narrow");
+      assertThatThrownBy(() -> narrow.execute(1))
+          .isInstanceOf(FunctionExecutionException.class)
+          .hasMessageContaining("cannot resolve which overload");
+
+      final var widen = database.getSchema().getFunction("vac", "widen");
+      assertThat(widen.execute(1)).isEqualTo("int+longs");
+      assertThat(widen.execute(1L)).isEqualTo("longs");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("vac");
+    }
+  }
+
+  @Test
+  void prePackedStatusIsJudgedPerOverload()
+    throws Exception {
+    // The same trailing String[] is a pre-packed vararg for pick(int, String...) and one flat element for
+    // pick(long, String[]...): both overloads apply, and each must be ranked with the vararg view it was matched under,
+    // so the int overload wins on its first parameter exactly as javac resolves pick(1, new String[]{"x"}).
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("mpv", JavaFunctionTest.MixedPackedVarargs.class));
+    try {
+      final var pick = database.getSchema().getFunction("mpv", "pick");
+      assertThat(pick.execute(1, new String[] { "x" })).isEqualTo("narrow:1");
+      assertThat(pick.execute(1L, new String[] { "x" })).isEqualTo("wide:1");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("mpv");
+    }
+  }
+
+  @Test
+  void widthOverloadsAreCallableFromSql()
+    throws Exception {
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("width", JavaFunctionTest.WidthOverloaded.class));
+    try (final ResultSet rs = database.query("sql", "SELECT `width.twice`(5) AS v")) {
+      assertThat(rs.next().<Number>getProperty("v").intValue()).isEqualTo(10);
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("width");
     }
   }
 

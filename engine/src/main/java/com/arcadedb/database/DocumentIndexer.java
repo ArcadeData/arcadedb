@@ -331,7 +331,7 @@ public class DocumentIndexer {
       final Document modifiedRecord, final String[] propertyNames, final KeyExpansion[] expansions) {
     final Object[] oldKey = buildFullTextByItemKey(originalRecord, propertyNames, expansions);
     final Object[] newKey = buildFullTextByItemKey(modifiedRecord, propertyNames, expansions);
-    if (Arrays.equals(oldKey, newKey))
+    if (sameKeyTuple(oldKey, newKey))
       return false;
     if (!isAllEmpty(oldKey))
       index.remove(oldKey, rid);
@@ -536,9 +536,35 @@ public class DocumentIndexer {
 
   private static boolean containsTuple(final List<Object[]> tuples, final Object[] tuple) {
     for (final Object[] t : tuples)
-      if (Arrays.equals(t, tuple))
+      if (sameKeyTuple(t, tuple))
         return true;
     return false;
+  }
+
+  /**
+   * The one equality every "did this key change?" decision in this class goes through: two tuples are the same key when
+   * every element is {@link #sameKeyValue(Object, Object) the same key value}. Kept as the single policy so a new update
+   * path cannot pick a third notion of equality (issue #7109).
+   */
+  private static boolean sameKeyTuple(final Object[] a, final Object[] b) {
+    if (a.length != b.length)
+      return false;
+    for (int i = 0; i < a.length; i++)
+      if (!sameKeyValue(a[i], b[i]))
+        return false;
+    return true;
+  }
+
+  /**
+   * Content-aware equality for a single key value: array-typed keys (the {@code float[]} of a vector index, a
+   * {@code BINARY} property) do not override {@code Object.equals()}, so two independently deserialized-but-identical
+   * arrays would compare unequal and trigger a spurious remove()+put() on every record update (issues #5318 and #7109).
+   * {@link Objects#deepEquals} uses {@code Object.equals()} for scalar keys, the element-wise {@code Arrays.equals()}
+   * overload of the matching primitive array type ({@code float[]}, {@code byte[]}, ...) for primitive arrays, and
+   * {@code Arrays.deepEquals()} for {@code Object[]}.
+   */
+  private static boolean sameKeyValue(final Object a, final Object b) {
+    return Objects.deepEquals(a, b);
   }
 
   /**
@@ -646,11 +672,7 @@ public class DocumentIndexer {
           oldKeyValues[i] = getPropertyValue(originalRecord, propertyNamesArray[i]);
           newKeyValues[i] = getPropertyValue(modifiedRecord, propertyNamesArray[i]);
 
-          // Use content-aware comparison: array-typed keys (e.g. the float[] of a vector index) do not override
-          // Object.equals(), so two independently deserialized-but-identical arrays would compare unequal and
-          // trigger a spurious remove()+put() on every record update (issue #5318). Objects.deepEquals falls back
-          // to Object.equals() for scalar keys and to element-wise Arrays.equals() for array keys.
-          if (!keyValuesAreModified && !Objects.deepEquals(newKeyValues[i], oldKeyValues[i]))
+          if (!keyValuesAreModified && !sameKeyValue(newKeyValues[i], oldKeyValues[i]))
             keyValuesAreModified = true;
         }
 

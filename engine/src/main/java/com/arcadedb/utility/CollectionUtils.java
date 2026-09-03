@@ -42,28 +42,65 @@ public class CollectionUtils {
     return 0;
   }
 
+  /**
+   * Total order over maps, independent of their iteration order: both key sets are sorted and the two maps are compared
+   * as the lexicographic sequence of their (key, value) pairs, a shorter map that is a prefix of a longer one sorting
+   * first. Keys and values are ordered by {@link BinaryComparator#compareTo(Object, Object)}, a {@code null} value
+   * sorting before any non-null one. The result is {@code 0} only when both maps hold the same keys with values that
+   * compare equal, and {@code signum(compare(a, b)) == -signum(compare(b, a))} always holds, which is what
+   * {@link BinaryComparator} needs from it to order MAP-typed index keys the same way on every build (issue #7111: the
+   * former implementation walked only {@code m1}'s keys, answering "greater" in both directions for disjoint key sets,
+   * and stopped at the first key whose value was {@code null} on both sides, declaring the maps equal).
+   */
   public static int compare(final Map<?, Comparable> m1, final Map<?, Comparable> m2) {
-    final Set<? extends Map.Entry<?, Comparable>> entries1 = m1.entrySet();
-    for (Map.Entry<?, Comparable> entry : entries1) {
-      final Comparable value1 = entry.getValue();
-      final Comparable value2 = m2.get(entry.getKey());
-      if (value1 == null) {
-        if (value2 == null)
-          return 0;
-        return -1;
-      } else if (value2 == null)
-        return 1;
+    final Object[] keys1 = sortedKeys(m1);
+    final Object[] keys2 = sortedKeys(m2);
+    final int length = Math.min(keys1.length, keys2.length);
 
-      final int cmp = value1.compareTo(value2);
+    for (int i = 0; i < length; i++) {
+      int cmp = compareKeys(keys1[i], keys2[i]);
+      if (cmp != 0)
+        return cmp;
+
+      cmp = BinaryComparator.compareTo(m1.get(keys1[i]), m2.get(keys2[i]));
       if (cmp != 0)
         return cmp;
     }
 
-    if (m1.size() > m2.size())
-      return 1;
-    else if (m1.size() < m2.size())
-      return -1;
-    return 0;
+    return Integer.compare(keys1.length, keys2.length);
+  }
+
+  private static Object[] sortedKeys(final Map<?, ?> map) {
+    final Object[] keys = map.keySet().toArray();
+    if (keys.length > 1)
+      Arrays.sort(keys, CollectionUtils::compareKeys);
+    return keys;
+  }
+
+  /**
+   * Orders map keys: keys of the same class by {@link BinaryComparator#compareTo(Object, Object)}, keys of different
+   * classes by class name. A map holds keys of any type (a document's MAP property is String-keyed, but the API accepts
+   * any key), and two keys of unrelated classes are distinct map entries whichever way they are ordered, so grouping them
+   * by class keeps the order total without asking {@code compareTo} to relate e.g. a String to an Integer.
+   * <p>
+   * Two {@link Object#equals equal} keys are the same map entry and answer {@code 0}. Keys the comparator ranks equal but
+   * the map keeps distinct ({@code BigDecimal} {@code 1.0} and {@code 1.00}) are broken by their string form and then
+   * their hash, so their position in the sorted key array does not depend on insertion order and
+   * {@link #compare(Map, Map)} pairs each key with its own counterpart. Only a custom key type whose distinct instances
+   * share {@code compareTo}, {@code toString()} and {@code hashCode()} while differing in {@code equals()} can still tie.
+   */
+  private static int compareKeys(final Object k1, final Object k2) {
+    if (k1 == null || k2 == null)
+      return BinaryComparator.compareTo(k1, k2);
+    if (k1.getClass() != k2.getClass())
+      return k1.getClass().getName().compareTo(k2.getClass().getName());
+
+    final int cmp = BinaryComparator.compareTo(k1, k2);
+    if (cmp != 0 || k1.equals(k2))
+      return cmp;
+
+    final int byText = k1.toString().compareTo(k2.toString());
+    return byText != 0 ? byText : Integer.compare(k1.hashCode(), k2.hashCode());
   }
 
   /**

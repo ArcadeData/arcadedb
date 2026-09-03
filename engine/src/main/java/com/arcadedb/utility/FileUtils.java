@@ -37,7 +37,6 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
 import java.net.URLEncoder;
-import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileSystem;
@@ -234,12 +233,13 @@ public class FileUtils {
     return false;
   }
 
+  /**
+   * Copies {@code source} over {@code destination}, replacing it when it exists. Delegates to {@link Files#copy} rather
+   * than a single {@code FileChannel.transferTo}: that call moves at most the count it reports back, which most platforms
+   * cap around 2GB, and the discarded return value used to leave a larger file silently truncated (issue #7112).
+   */
   public static void copyFile(final File source, final File destination) throws IOException {
-    try (final FileInputStream fis = new FileInputStream(source); final FileOutputStream fos = new FileOutputStream(destination)) {
-      final FileChannel sourceChannel = fis.getChannel();
-      final FileChannel targetChannel = fos.getChannel();
-      sourceChannel.transferTo(0, sourceChannel.size(), targetChannel);
-    }
+    Files.copy(source.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING);
   }
 
   public static void copyDirectory(final File source, final File destination) throws IOException {
