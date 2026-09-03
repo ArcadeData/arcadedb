@@ -25,6 +25,7 @@ import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.integration.importer.Importer;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -40,14 +41,19 @@ import org.junit.jupiter.api.Test;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Issue #7032: three defects in the JSONL export/import round trip.
@@ -195,6 +201,36 @@ class Issue7032JsonlRoundTripIT {
     }
   }
 
+  /**
+   * A {@code "ts"} chunk whose samples do not match the type's column count is refused by the caller's row-error
+   * policy, and refused for the WHOLE chunk before any of it is appended. A longer sample is the one that matters:
+   * reading only the schema positions would have truncated it silently, discarding data without saying so.
+   */
+  @Test
+  void aTimeSeriesSampleOfTheWrongArityIsRejectedRatherThanTruncated() throws Exception {
+    createSourceDatabase();
+    new Exporter(("-f " + FILE + " -d " + SOURCE_PATH + " -o -format jsonl").split(" ")).exportDatabase();
+
+    // Give one sample of the "ts" chunk a fifth value the 4-column type does not declare.
+    final List<String> lines = new ArrayList<>();
+    for (final String line : readExportedLines()) {
+      final JSONObject json = new JSONObject(line);
+      if ("ts".equals(json.getString("t"))) {
+        json.getJSONObject("c").getJSONArray("s").getJSONArray(0).put(999.0);
+        lines.add(json.toString());
+      } else
+        lines.add(line);
+    }
+    writeExportedLines(lines);
+
+    final Throwable thrown = catchThrowable(() -> new Importer(
+        ("-url " + new File(FILE).getAbsolutePath() + " -database " + TARGET_PATH + " -forceDatabaseCreate true")
+            .split(" ")).load());
+
+    assertThat(thrown).isNotNull();
+    assertThat(thrown).hasStackTraceContaining("has 5 value(s) but the type declares 4 column(s)");
+  }
+
   private void createSourceDatabase() throws Exception {
     try (final Database source = new DatabaseFactory(SOURCE_PATH).create()) {
       source.transaction(() -> {
@@ -227,6 +263,14 @@ class Issue7032JsonlRoundTripIT {
           new Object[] { 1.5, Double.NaN, 3.5 },
           new Object[] { 0.5f, Float.NaN, Float.POSITIVE_INFINITY });
       source.commit();
+    }
+  }
+
+  private void writeExportedLines(final List<String> lines) throws Exception {
+    try (final Writer writer = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(FILE)),
+        StandardCharsets.UTF_8)) {
+      for (final String line : lines)
+        writer.write(line + "\n");
     }
   }
 
