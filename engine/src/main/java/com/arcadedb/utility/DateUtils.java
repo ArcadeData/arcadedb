@@ -575,9 +575,11 @@ public class DateUtils {
     if (cached != null)
       return cached;
 
+    // A storage format must render and parse the same bytes on every server: the locale is pinned so a textual field
+    // (MMM, EEE) never follows the JVM default, which the cache would otherwise freeze at the first caller's (issue #7112).
     final DateTimeFormatter formatter = new DateTimeFormatterBuilder().appendPattern(format)
         .parseDefaulting(ChronoField.HOUR_OF_DAY, 0).parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0)
-        .parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0).toFormatter();
+        .parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0).toFormatter(Locale.ENGLISH);
 
     // Bounded rather than evicting: the working set is a handful of schema formats that all fit, so an LRU would only
     // add a lock on a hot path to reorder entries nothing ever evicts. A slight overshoot when several threads race

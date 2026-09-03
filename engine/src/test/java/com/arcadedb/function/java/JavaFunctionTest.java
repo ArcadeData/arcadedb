@@ -108,6 +108,32 @@ class JavaFunctionTest extends TestHelper {
     }
   }
 
+  public static class WidthOverloaded {
+    public static long twice(final long v) {
+      return v * 2;
+    }
+
+    public static int twice(final int v) {
+      return v * 2;
+    }
+
+    public static String scale(final long v) {
+      return "long:" + v;
+    }
+
+    public static String scale(final double v) {
+      return "double:" + v;
+    }
+
+    public static String pair(final long a, final double b) {
+      return "long-double";
+    }
+
+    public static String pair(final double a, final long b) {
+      return "double-long";
+    }
+  }
+
   public static class VarargsOverloaded {
     public static String join(final String sep, final String... parts) {
       return "strs:" + String.join(sep, parts);
@@ -426,6 +452,46 @@ class JavaFunctionTest extends TestHelper {
       assertThat(function.execute(1)).isEqualTo("longs:1");
     } finally {
       database.getSchema().unregisterFunctionLibrary("wide");
+    }
+  }
+
+  @Test
+  void exactPrimitiveMatchBeatsWideningOverload()
+    throws Exception {
+    // Regression for issue #7110: primitive widening (issue #7007) made an Integer argument applicable to both
+    // twice(int) and twice(long), and the ambiguity check then refused a call the pre-widening exact-match dispatch
+    // resolved without trouble. As in Java, the exact primitive match must win over the widened one.
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("width", JavaFunctionTest.WidthOverloaded.class));
+    try {
+      final var twice = database.getSchema().getFunction("width", "twice");
+      assertThat(twice.execute(5)).isEqualTo(10);
+      assertThat(twice.execute(5L)).isEqualTo(10L);
+
+      // Both scale(long) and scale(double) only apply by widening: long is the narrower target, so it is the most
+      // specific applicable overload, again as javac would resolve it.
+      final var scale = database.getSchema().getFunction("width", "scale");
+      assertThat(scale.execute(1)).isEqualTo("long:1");
+      assertThat(scale.execute(1.5f)).isEqualTo("double:1.5");
+
+      // Neither pair(long,double) nor pair(double,long) is more specific than the other for two ints: still ambiguous.
+      final var pair = database.getSchema().getFunction("width", "pair");
+      assertThatThrownBy(() -> pair.execute(1, 2))
+          .isInstanceOf(FunctionExecutionException.class)
+          .hasMessageContaining("cannot resolve which overload");
+      assertThat(pair.execute(1L, 2.0)).isEqualTo("long-double");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("width");
+    }
+  }
+
+  @Test
+  void widthOverloadsAreCallableFromSql()
+    throws Exception {
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("width", JavaFunctionTest.WidthOverloaded.class));
+    try (final ResultSet rs = database.query("sql", "SELECT `width.twice`(5) AS v")) {
+      assertThat(rs.next().<Number>getProperty("v").intValue()).isEqualTo(10);
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("width");
     }
   }
 

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.serializer.BinaryComparator;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -73,6 +74,112 @@ class CollectionUtilsTest {
     map2.put("key1", "value2");
 
     assertThat(CollectionUtils.compare(map1, map2)).isNotEqualTo(0);
+  }
+
+  /**
+   * Issue #7111: for maps with disjoint keys the comparison answered "greater" in both directions, because every key of
+   * the first map was missing from the second whichever way round the arguments went.
+   */
+  @Test
+  void compareDisjointKeyMapsIsAntisymmetric() {
+    final Map<String, Comparable> m1 = new HashMap<>(Map.of("a", 1));
+    final Map<String, Comparable> m2 = new HashMap<>(Map.of("b", 1));
+
+    assertThat(CollectionUtils.compare(m1, m2)).isNotZero();
+    assertThat(Integer.signum(CollectionUtils.compare(m1, m2))).isEqualTo(-Integer.signum(CollectionUtils.compare(m2, m1)));
+    // The index-ordering entry point goes through the same comparison
+    assertThat(Integer.signum(BinaryComparator.compareTo(m1, m2))).isEqualTo(-Integer.signum(BinaryComparator.compareTo(m2, m1)));
+  }
+
+  /**
+   * Issue #7111: a null value on both sides of the first shared key declared the whole maps equal, so a later key that
+   * differed was never examined.
+   */
+  @Test
+  void compareMapsSharingNullValueKeepsComparingTheRemainingKeys() {
+    final Map<String, Comparable> m1 = new LinkedHashMap<>();
+    m1.put("k", null);
+    m1.put("z", 1);
+    final Map<String, Comparable> m2 = new LinkedHashMap<>();
+    m2.put("k", null);
+    m2.put("z", 2);
+
+    assertThat(CollectionUtils.compare(m1, m2)).isLessThan(0);
+    assertThat(CollectionUtils.compare(m2, m1)).isGreaterThan(0);
+
+    final Map<String, Comparable> m3 = new LinkedHashMap<>();
+    m3.put("k", null);
+    m3.put("z", 1);
+    assertThat(CollectionUtils.compare(m1, m3)).isZero();
+  }
+
+  @Test
+  void compareMapsIgnoresInsertionOrder() {
+    final Map<String, Comparable> m1 = new LinkedHashMap<>();
+    m1.put("a", 1);
+    m1.put("b", 2);
+    final Map<String, Comparable> m2 = new LinkedHashMap<>();
+    m2.put("b", 2);
+    m2.put("a", 1);
+
+    assertThat(CollectionUtils.compare(m1, m2)).isZero();
+    assertThat(CollectionUtils.compare(m2, m1)).isZero();
+  }
+
+  @Test
+  void compareMapsNullValueSortsBeforeAnyValue() {
+    final Map<String, Comparable> m1 = new HashMap<>();
+    m1.put("a", null);
+    final Map<String, Comparable> m2 = new HashMap<>(Map.of("a", 0));
+
+    assertThat(CollectionUtils.compare(m1, m2)).isLessThan(0);
+    assertThat(CollectionUtils.compare(m2, m1)).isGreaterThan(0);
+  }
+
+  /**
+   * The comparator contract over a handful of maps: antisymmetry and transitivity of the induced order, which is what a
+   * sorted index relies on to place the same entries in the same order on every build.
+   */
+  @Test
+  void compareMapsSatisfiesComparatorContract() {
+    final List<Map<String, Comparable>> maps = new ArrayList<>();
+    maps.add(new HashMap<>(Map.of("a", 1)));
+    maps.add(new HashMap<>(Map.of("b", 1)));
+    maps.add(new HashMap<>(Map.of("a", 1, "b", 1)));
+    maps.add(new HashMap<>(Map.of("a", 2)));
+    maps.add(new HashMap<>(Map.of("c", "x")));
+    maps.add(new HashMap<>());
+    final Map<String, Comparable> withNull = new HashMap<>();
+    withNull.put("a", null);
+    maps.add(withNull);
+    final Map<String, Comparable> withNullAndMore = new HashMap<>();
+    withNullAndMore.put("a", null);
+    withNullAndMore.put("b", 3);
+    maps.add(withNullAndMore);
+
+    for (final Map<String, Comparable> x : maps) {
+      assertThat(CollectionUtils.compare(x, x)).isZero();
+      for (final Map<String, Comparable> y : maps) {
+        final int xy = Integer.signum(CollectionUtils.compare(x, y));
+        assertThat(xy).as("%s vs %s", x, y).isEqualTo(-Integer.signum(CollectionUtils.compare(y, x)));
+        if (x != y)
+          assertThat(xy).as("%s vs %s must not be equal", x, y).isNotZero();
+        for (final Map<String, Comparable> z : maps) {
+          final int yz = Integer.signum(CollectionUtils.compare(y, z));
+          if (xy <= 0 && yz <= 0)
+            assertThat(Integer.signum(CollectionUtils.compare(x, z))).as("%s <= %s <= %s", x, y, z).isLessThanOrEqualTo(0);
+        }
+      }
+    }
+
+    // TimSort's own contract check must stay quiet on every permutation of the sample
+    for (int seed = 0; seed < 50; seed++) {
+      final List<Map<String, Comparable>> shuffled = new ArrayList<>(maps);
+      Collections.shuffle(shuffled, new Random(seed));
+      shuffled.sort(CollectionUtils::compare);
+      for (int i = 1; i < shuffled.size(); i++)
+        assertThat(CollectionUtils.compare(shuffled.get(i - 1), shuffled.get(i))).isLessThan(0);
+    }
   }
 
   @Test

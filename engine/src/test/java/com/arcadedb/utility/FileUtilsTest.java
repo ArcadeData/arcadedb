@@ -256,10 +256,25 @@ class FileUtilsTest {
 
     Files.writeString(source, content);
 
-//    FileUtils.copyFile(source.toFile(), dest.toFile());
+    FileUtils.copyFile(source.toFile(), dest.toFile());
 
-    Files.copy(source,dest);
     assertThat(Files.readString(dest)).isEqualTo(content);
+  }
+
+  @Test
+  void copyFileOverwritesExistingDestination() throws Exception {
+    final Path source = tempDir.resolve("source.bin");
+    final Path dest = tempDir.resolve("dest.bin");
+    final byte[] content = new byte[3 * FileUtils.MEGABYTE + 17];
+    for (int i = 0; i < content.length; i++)
+      content[i] = (byte) (i * 31);
+    Files.write(source, content);
+    Files.writeString(dest, "stale content that is longer than nothing");
+
+    FileUtils.copyFile(source.toFile(), dest.toFile());
+
+    assertThat(Files.size(dest)).isEqualTo(content.length);
+    assertThat(Files.readAllBytes(dest)).isEqualTo(content);
   }
 
   @Test
