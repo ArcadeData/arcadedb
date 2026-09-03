@@ -218,6 +218,22 @@ public class SourceDiscovery {
     return stream;
   }
 
+  /**
+   * The delimiter a CSV source is parsed with when content sniffing found {@code detected}: the user's own delimiter when
+   * there is one, the guess otherwise. A guess never overrides an explicit choice - that is what overwrote the user's
+   * {@code -delimiter} / {@code WITH delimiter = ...} whenever the file extension did not short-circuit detection (issue
+   * #6946, the sibling of #6811) - and a discarded guess is logged so the "best separator candidate" line just above it
+   * does not read as authoritative.
+   */
+  static String resolveDelimiter(final String userDelimiter, final char detected) {
+    if (userDelimiter == null)
+      return String.valueOf(detected);
+    if (!userDelimiter.equals(String.valueOf(detected)))
+      LogManager.instance().log(SourceDiscovery.class, Level.INFO,
+          "Detected separator '%s' discarded: using the delimiter '%s' explicitly set by the user", detected, userDelimiter);
+    return userDelimiter;
+  }
+
   private FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.EntityType entityType,
       final ImporterSettings settings,
       final ConsoleLogger logger) throws IOException {
@@ -258,13 +274,16 @@ public class SourceDiscovery {
       throw new IllegalArgumentException("entityType '" + entityType + "' not supported");
     }
 
+    // THE USER'S DELIMITER FOR THIS ENTITY, RESOLVED ONCE AND KEPT LOCAL: THE PER-ENTITY OVERRIDE FIRST, THEN THE GENERIC
+    // `delimiter` OPTION (-delimiter / IMPORT DATABASE ... WITH delimiter = ';'). AN ABSENT PER-ENTITY DELIMITER IS NOT A
+    // VALUE (CLOBBERING THE OPTION WITH NULL MADE EVERY NON-COMMA CSV UNIMPORTABLE, ISSUE #6811). IT IS HANDED TO THE
+    // FORMAT RATHER THAN WRITTEN INTO settings.options, WHICH ONE IMPORT SHARES ACROSS ITS DOCUMENTS, VERTICES AND EDGES
+    // FILES: A DELIMITER SETTLED OR DETECTED FOR ONE OF THEM MUST NOT STAND IN FOR THE NEXT ONE'S (ISSUE #6946)
+    final String userDelimiter = knownDelimiter != null ? knownDelimiter : settings.getValue("delimiter", null);
+
     if (knownFileType != null) {
       if ("csv".equalsIgnoreCase(knownFileType)) {
-        // NEVER OVERWRITE THE USER'S `delimiter` OPTION WITH NULL: THE PER-ENTITY DELIMITER IS AN OVERRIDE, NOT A
-        // MANDATORY VALUE, AND CLOBBERING IT MADE EVERY NON-COMMA CSV UNIMPORTABLE (ISSUE #6811)
-        if (knownDelimiter != null)
-          settings.options.put("delimiter", knownDelimiter);
-        return new CSVImporterFormat();
+        return new CSVImporterFormat(userDelimiter);
       } else if ("json".equalsIgnoreCase(knownFileType)) {
         return new JSONImporterFormat();
       } else if ("jsonl".equalsIgnoreCase(knownFileType)) {
@@ -305,6 +324,18 @@ public class SourceDiscovery {
     if (format != null)
       return format;
 
+    return analyzeText(parser, settings, logger, userDelimiter);
+  }
+
+  /**
+   * The content sniffing that follows {@link #analyzeChar}: comments are skipped, then the first line is read for a
+   * separator to decide between the delimited-text formats.
+   *
+   * @param userDelimiter the delimiter the user supplied for this entity, or null - a detected one yields to it
+   */
+  private FormatImporter analyzeText(final Parser parser, final ImporterSettings settings, final ConsoleLogger logger,
+      final String userDelimiter) throws IOException {
+    FormatImporter format = null;
     parser.mark();
 
     // SKIP COMMENTS '#' IF ANY
@@ -353,7 +384,10 @@ public class SourceDiscovery {
 
         final Map.Entry<Character, AtomicInteger> bestSeparator = list.getFirst();
 
-        if (bestSeparator.getKey() == ' ') {
+        // A DELIMITER THE USER SUPPLIED SETTLES THE QUESTION THE SNIFFING IS ASKING: THE FILE IS DELIMITED TEXT WITH
+        // THAT DELIMITER, SO THE SPACE-SEPARATED VECTOR FORMATS ARE NOT A CANDIDATE HOWEVER MANY SPACES THE FIRST LINE
+        // CARRIES INSIDE ITS VALUES (ISSUE #6946)
+        if (bestSeparator.getKey() == ' ' && userDelimiter == null) {
           // CHECK IF IS A VECTOR EMBEDDING TEXT FILE
           final StringBuilder line2 = new StringBuilder();
           while (parser.isAvailable() && parser.nextChar() != '\n')
@@ -371,8 +405,7 @@ public class SourceDiscovery {
         if (format == null) {
           LogManager.instance()
               .log(this, Level.INFO, "Best separator candidate='%s' (all candidates=%s)", bestSeparator.getKey(), list);
-          settings.options.put("delimiter", "" + bestSeparator.getKey());
-          format = new CSVImporterFormat();
+          format = new CSVImporterFormat(resolveDelimiter(userDelimiter, bestSeparator.getKey()));
         }
       }
 
@@ -446,9 +479,9 @@ public class SourceDiscovery {
         }
 
         if (allDelimitersAreTheSame) {
-          // RDF
+          // RDF. THE DELIMITER FOUND HERE USED TO BE WRITTEN INTO settings.options ALTHOUGH THE RDF IMPORTER NEVER READS IT,
+          // WHERE IT LEAKED INTO THE NEXT CSV ENTITY OF THE SAME IMPORT (ISSUE #6946)
           settings.typeIdProperty = "id";
-          settings.options.put("delimiter", "" + delimiters.getFirst());
           return new RDFImporterFormat();
         }
       }
