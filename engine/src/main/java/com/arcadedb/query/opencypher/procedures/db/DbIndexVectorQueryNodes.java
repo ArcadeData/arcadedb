@@ -26,6 +26,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -33,6 +34,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.RidHashSet;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.math.BigDecimal;
@@ -130,8 +132,19 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     final int resultCount = Math.min(limit, allNeighbors.size());
     final List<Result> results = new ArrayList<>(resultCount);
 
-    for (int i = 0; i < resultCount; i++) {
-      final Pair<RID, Float> neighbor = allNeighbors.get(i);
+    // One node, one row: the Neo4j procedure this mirrors promises k rows carrying k DISTINCT nodes, and every
+    // consumer taking the top k relies on it. Nothing upstream can promise it on its own - this list is the
+    // concatenation of one search per resolved index, and a single record can be offered by more than one of them
+    // (issue #7057). Deduplicating here, after the sort, keeps each node at its NEAREST distance and lets the walk
+    // continue past a repeat, so a k that was silently halved comes back full instead of merely unduplicated.
+    final RidHashSet emitted = new RidHashSet(resultCount);
+
+    for (final Pair<RID, Float> neighbor : allNeighbors) {
+      if (results.size() == resultCount)
+        break;
+      if (!emitted.add(neighbor.getFirst()))
+        continue;
+
       final Document record = neighbor.getFirst().asDocument();
       final float distance = neighbor.getSecond();
 
@@ -219,17 +232,18 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
             (directIndex != null ? directIndex.getClass().getSimpleName() : "null") + ")");
   }
 
+  /**
+   * Resolves the vector sub-indexes to search. See
+   * {@link VectorUtils#collectSubIndexesOnce(IndexInternal[], Class, java.util.function.IntPredicate)} for why the same
+   * sub-index can be listed twice and why the guard is on identity rather than on the bucket id (issue #7057).
+   */
   private List<LSMVectorIndex> filterVectorIndexes(final TypeIndex typeIndex, final Set<Integer> allowedBucketIds) {
-    final var bucketIndexes = typeIndex.getIndexesOnBuckets();
+    final IndexInternal[] bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null || bucketIndexes.length == 0)
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
 
-    final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
-    for (final IndexInternal bucketIndex : bucketIndexes) {
-      if (bucketIndex instanceof LSMVectorIndex lsmIndex)
-        if (allowedBucketIds == null || allowedBucketIds.contains(bucketIndex.getAssociatedBucketId()))
-          vectorIndexes.add(lsmIndex);
-    }
+    final List<LSMVectorIndex> vectorIndexes = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMVectorIndex.class,
+        allowedBucketIds == null ? null : allowedBucketIds::contains);
 
     if (vectorIndexes.isEmpty())
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' is not a vector index");

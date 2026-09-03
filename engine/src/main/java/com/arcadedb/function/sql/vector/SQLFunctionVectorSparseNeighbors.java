@@ -37,6 +37,7 @@ import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -178,18 +179,15 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     if (specifiedTypeName != null)
       allowedBucketIds = narrowAllowedBucketIdsByPartitionHint(allowedBucketIds, specifiedTypeName, context);
 
-    final var bucketIndexes = typeIndex.getIndexesOnBuckets();
-    final List<LSMSparseVectorIndex> result = new ArrayList<>();
+    final IndexInternal[] bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null)
-      return result;
+      return new ArrayList<>();
 
-    for (final IndexInternal bucketIndex : bucketIndexes) {
-      if (bucketIndex instanceof LSMSparseVectorIndex sparseIndex) {
-        if (allowedBucketIds.isEmpty() || allowedBucketIds.contains(bucketIndex.getAssociatedBucketId()))
-          result.add(sparseIndex);
-      }
-    }
-    return result;
+    // Each sub-index visited at most once. See VectorUtils.collectSubIndexesOnce for why the same sub-index can be
+    // listed twice and why the guard is on identity rather than on the bucket id (issue #7057).
+    final IntHashSet allowed = allowedBucketIds;
+    return VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMSparseVectorIndex.class,
+        allowed.isEmpty() ? null : allowed::contains);
   }
 
   private Object executeWithIndexes(final List<LSMSparseVectorIndex> indexes, final int[] queryIndices,
@@ -320,6 +318,12 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     // per-group constraint and this admission is idempotent. For multi-bucket grouping, per-bucket
     // results may share group keys; this loop collapses them to the global per-group winners.
     final GroupAdmissionState groups = groupBy != null ? new GroupAdmissionState(k, groupSize) : null;
+    // One record, one row. `merged` is the concatenation of one search per sub-index, so a record offered by more
+    // than one of them would otherwise take two of the caller's k slots - and, under groupBy, two slots of its own
+    // group's cap (issue #7057). Sized from the candidates actually fetched, never from k: k is caller-supplied and
+    // RidHashSet allocates its backing arrays up front, so sizing off k would let a huge k claim gigabytes, and one
+    // near Integer.MAX_VALUE overflow the power-of-two rounding to a negative capacity.
+    final RidHashSet emitted = new RidHashSet(Math.min(k, merged.size()));
 
     for (final RidScore neighbor : merged) {
       if (groupBy == null) {
@@ -333,6 +337,9 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       // whose score is below minScore, every subsequent one will too - break out of the loop.
       if (neighbor.score() < minScore)
         break;
+
+      if (!emitted.add(neighbor.rid()))
+        continue;
 
       final Document record;
       try {
