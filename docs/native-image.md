@@ -14,22 +14,41 @@ treat it as best-effort outside Linux.
 
 ## Prerequisites
 
-- **GraalVM CE 25.2.4 (JDK 25.0.4).** The build uses the GraalVM Native Image Community Edition
-  builder pinned by CI to `graal-25.2.4` (assets `graalvm-community-jdk-25i2-25.0.4_*`) via
-  [`graalvm/setup-graalvm`](https://github.com/graalvm/setup-graalvm). `native/pom.xml` pins the
-  GraalVM polyglot/Truffle artifacts (`graal-sdk`, `polyglot`, `js-language`, `truffle-*`, etc.) to
-  the same `25.2.4` to match the builder exactly; a Truffle version skew between the builder and
-  those artifacts fails the build at feature registration (`NoSuchMethodError:
-  OptimizedTruffleRuntime.getLoopNodeFactory()`). That error names neither file, and two Dependabot
-  bumps have shipped the skew, so `.github/scripts/check-native-graalvm-pin.py` enforces the
-  equality in the always-on `lint` job. Move both sides in the same change, or neither.
+- **GraalVM CE 25.0.2.** The build uses the GraalVM Native Image Community Edition builder pinned
+  by CI to `jdk-25.0.2` via [`graalvm/setup-graalvm`](https://github.com/graalvm/setup-graalvm).
+  Install it the easy way - it is a *mainline* release, so the OS packagers carry it:
 
-  **The workflow pins the builder through setup-graalvm's `version` input, not `java-version`, and
-  that is not interchangeable.** The action resolves a CE build two ways: `java-version` fetches a
-  `jdk-<version>` release and requires exactly three dot-components, so it reaches *mainline*
-  builds only; `version` looks up `graal-<version>` first and falls back to `jdk-<version>`.
-  25.2.4 is an *intermediate* release published under the `graal-25.2.4` tag, so only `version`
-  can select it - switching that step back to `java-version` would stop resolving this build.
+  ```bash
+  brew install --cask graalvm-community-jdk25     # macOS: 25.0.2
+  ```
+
+  `native/pom.xml` pins the GraalVM polyglot/Truffle artifacts (`graal-sdk`, `polyglot`,
+  `js-language`, `truffle-*`, etc.) to the same `25.0.2` to match the builder exactly; a Truffle
+  version skew between the builder and those artifacts fails the build at feature registration
+  (`NoSuchMethodError: OptimizedTruffleRuntime.getLoopNodeFactory()`). That error names neither
+  file, and two Dependabot bumps have shipped the skew, so
+  `.github/scripts/check-native-graalvm-pin.py` enforces the equality in the always-on `lint` job.
+  Move both sides in the same change, or neither.
+
+  **Being on Maven Central does not make a version installable.** `25.0.3` and `25.0.4` publish
+  the full set of `org.graalvm.*` artifacts but were never released as CE tarballs, so bumping
+  `native/pom.xml` to either resolves cleanly and then leaves no builder to match, on any platform
+  and through any setup-graalvm input. As of 2026-09-03 the CE distributions are:
+
+  | Version | CE tarball | Maven artifacts | |
+  |---|---|---|---|
+  | 25.0.2 | `jdk-25.0.2` | yes | **pinned** |
+  | 25.0.3 | none | yes | |
+  | 25.0.4 | none | yes | |
+  | 25.1.3 | `graal-25.1.3` | yes | intermediate |
+  | 25.2.4 | `graal-25.2.4` | yes | intermediate, the previous pin |
+
+  The workflow selects the builder with setup-graalvm's `java-version` input, which fetches a
+  `jdk-<version>` release and so reaches mainline builds only - which is the point. The other
+  input, `version`, looks up `graal-<version>` first and falls back to `jdk-<version>`, so it
+  reaches the intermediate line too; the pin used it while it tracked 25.2.4. `version: "25.0.2"`
+  would work here as well, and `java-version` is used to state the intent that the pin stays
+  mainline.
 
   Any future pin must be a version whose tag parses as three-component semver. `graal-25.3.4.1` is
   reachable through **neither** input: node-semver rejects its four numeric components, so
@@ -44,7 +63,7 @@ treat it as best-effort outside Linux.
   JAVA_HOME`. Export both explicitly before building locally, e.g. on macOS:
 
   ```bash
-  export JAVA_HOME=/path/to/graalvm-community-25.2.4/Contents/Home
+  export JAVA_HOME=/path/to/graalvm-community-25.0.2/Contents/Home
   export GRAALVM_HOME=$JAVA_HOME
   ```
 
