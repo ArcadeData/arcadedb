@@ -261,6 +261,11 @@ class FileUtilsTest {
     assertThat(Files.readString(dest)).isEqualTo(content);
   }
 
+  /**
+   * Covers the overwrite semantics and a real multi-megabyte transfer. The ~2GB single-call cap of
+   * {@code FileChannel.transferTo} that issue #7112 fixed by delegating to {@code Files.copy} is not exercised here: a
+   * multi-gigabyte payload is not a unit-test-sized fixture, so that boundary rests on the JDK's own contract.
+   */
   @Test
   void copyFileOverwritesExistingDestination() throws Exception {
     final Path source = tempDir.resolve("source.bin");

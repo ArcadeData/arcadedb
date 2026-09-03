@@ -559,8 +559,9 @@ public class DocumentIndexer {
    * Content-aware equality for a single key value: array-typed keys (the {@code float[]} of a vector index, a
    * {@code BINARY} property) do not override {@code Object.equals()}, so two independently deserialized-but-identical
    * arrays would compare unequal and trigger a spurious remove()+put() on every record update (issues #5318 and #7109).
-   * {@link Objects#deepEquals} falls back to {@code Object.equals()} for scalar keys and to element-wise
-   * {@code Arrays.deepEquals()} for array keys.
+   * {@link Objects#deepEquals} uses {@code Object.equals()} for scalar keys, the element-wise {@code Arrays.equals()}
+   * overload of the matching primitive array type ({@code float[]}, {@code byte[]}, ...) for primitive arrays, and
+   * {@code Arrays.deepEquals()} for {@code Object[]}.
    */
   private static boolean sameKeyValue(final Object a, final Object b) {
     return Objects.deepEquals(a, b);
