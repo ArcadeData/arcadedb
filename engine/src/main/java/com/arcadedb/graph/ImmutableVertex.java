@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.SerializationException;
@@ -83,18 +84,21 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   public MutableVertex modify() {
-    final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
+    final TransactionContext transaction = database.getTransaction();
+    final Record recordInCache = transaction.getRecordFromCache(rid);
     if (recordInCache != null) {
       if (recordInCache instanceof MutableVertex fromCache)
         return fromCache;
-    } else if (!database.getTransaction().hasPageForRecord(rid.getPageId(database))) {
+    } else if (transaction.isActive() && !transaction.hasPageForRecord(rid.getPageId(database))) {
       // THE RECORD IS NOT IN TX, SO IT MUST HAVE BEEN LOADED WITHOUT A TX OR PASSED FROM ANOTHER TX
-      // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD
+      // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD.
+      // With no transaction open there is no page image to pin the record to: the write that follows opens its own
+      // implicit transaction (auto-transaction mode) and verifies there that the record is still the one read (#6950),
+      // so modifying outside a transaction is legitimate for a vertex, as it already was for a document (issue #7096).
       try {
         // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
-        database.getTransaction()
-            .getPageToModify(rid.getPageId(database), ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(),
-                false);
+        transaction.getPageToModify(rid.getPageId(database),
+            ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(), false);
         reload();
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on reloading vertex " + rid, e);
