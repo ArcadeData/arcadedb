@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
 
@@ -40,20 +41,26 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   public boolean execute(final Object left, Object right) {
-    if (left != null && left.getClass().isArray()) {
-      // Normalize an array left-hand side (e.g. the result of split()) to a List so it gets the same
-      // CONTAINS semantics as a Collection below; MultiValue's iterator covers both object and primitive
-      // arrays via reflection, unlike a direct `instanceof Iterable`/`instanceof Collection` check, which
-      // an array never satisfies (issue #6984). Deliberately recurses into the Collection branch rather
-      // than delegating straight to MultiValue.contains(): the Collection branch also unwraps a
-      // single-item Result/Identifiable on the right-hand side (lines below), and a direct delegation
-      // would silently drop that behavior for an array left-hand side.
-      final List<Object> leftAsList = new ArrayList<>(MultiValue.getSize(left));
-      final Iterator<?> leftArrayIterator = MultiValue.getMultiValueIterator(left);
-      while (leftArrayIterator.hasNext())
-        leftAsList.add(leftArrayIterator.next());
-      return execute(leftAsList, right);
-    }
+    if (isArray(right) && !(right instanceof byte[]))
+      // Normalize an array right-hand side - the result of a second split(), a parameter bound to a Java array -
+      // to a List, so it is answered exactly as the equivalent List right-hand side is. An array satisfies neither
+      // `instanceof Collection` nor `instanceof Iterable`, so it used to skip every branch below and be compared as
+      // one opaque object against each left-hand item, which made the condition effectively always false: the same
+      // blind spot as #6984, on the other side of the operator (issue #6995).
+      //
+      // The byte[] carve-out is only on this side, and the asymmetry is the point rather than an oversight: the two
+      // operands play different roles. The left-hand side is the container being searched, so expanding an array
+      // into its items is exactly what it means; the right-hand side is the value being searched FOR, and a byte[]
+      // is ArcadeDB's BINARY scalar, so expanding it would turn `list CONTAINS :binary` from a search for that one
+      // value into a search for a list of numbers.
+      right = CollectionUtils.arrayToList(right);
+
+    if (isArray(left))
+      // Normalize an array left-hand side (e.g. the result of split()) to a List so it gets the same CONTAINS
+      // semantics as a Collection below (issue #6984). Deliberately recurses into the Collection branch rather
+      // than delegating straight to MultiValue.contains(): the Collection branch also unwraps a single-item
+      // Result/Identifiable on the right-hand side, and a direct delegation would silently drop that behavior.
+      return execute(CollectionUtils.arrayToList(left), right);
 
     if (left instanceof Collection) {
       if (right instanceof Collection) {
@@ -74,6 +81,9 @@ public class ContainsCondition extends BooleanExpression {
             return true;
         }
 
+        // A multi-item collection on the right is looked for as ONE element of the left-hand collection, which is
+        // what `test CONTAINS [1]` means for a row holding `test = [[1]]`. The single-item unwrapping above is the
+        // deliberate exception, for the one-row sub-query case.
         return MultiValue.contains(left, right);
       }
 
@@ -142,6 +152,10 @@ public class ContainsCondition extends BooleanExpression {
       return false;
     }
     return condition == null || condition.isCacheable();
+  }
+
+  private static boolean isArray(final Object value) {
+    return value != null && value.getClass().isArray();
   }
 
   private boolean equalsInContainsSpace(final Object left, final Object right) {

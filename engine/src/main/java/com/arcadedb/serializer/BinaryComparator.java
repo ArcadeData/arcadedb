@@ -420,6 +420,10 @@ public class BinaryComparator {
     if (buffer1.length != buffer2.length)
       return false;
 
+    if (buffer1.length == 0)
+      // BOTH EMPTY, SO EQUAL: THE FAST PATH BELOW WOULD READ INDEX -1 (ISSUE #6998)
+      return true;
+
     if (buffer1[buffer1.length - 1] != buffer2[buffer2.length - 1])
       // OPTIMIZATION: CHECK THE LAST BYTE IF IT'S THE SAME FIRST
       return false;
@@ -452,7 +456,9 @@ public class BinaryComparator {
     else if (a == null)
       return -1;
     else if (a instanceof String string && b instanceof String string1)
-      return compareBytes(string.getBytes(), string1.getBytes(DatabaseFactory.getDefaultCharset()));
+      // BOTH OPERANDS MUST BE ENCODED WITH THE SAME CHARSET: A NO-ARG getBytes() ON ONE SIDE FOLLOWS THE JVM
+      // DEFAULT AND MADE AN EQUAL PAIR COMPARE AS LESS-THAN ON A NON-UTF-8 JVM (ISSUE #6998)
+      return compareBytes(string.getBytes(DatabaseFactory.getDefaultCharset()), string1.getBytes(DatabaseFactory.getDefaultCharset()));
     else if (a instanceof byte[] bytes && b instanceof byte[] bytes1)
       return compareBytes(bytes, bytes1);
     else if (a instanceof Map map && b instanceof Map map1)
