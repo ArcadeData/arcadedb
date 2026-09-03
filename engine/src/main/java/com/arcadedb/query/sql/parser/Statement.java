@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
@@ -70,6 +71,38 @@ public class Statement extends SimpleNode {
 
   public void validate() throws CommandSQLParsingException {
     // NO VALIDATION BY DEFAULT
+  }
+
+  /**
+   * Opens the statement-level implicit transaction a write statement runs in when the database is in auto-transaction
+   * mode and the caller did not begin one. Returns {@code true} when a transaction was opened here, so the caller
+   * owns it and must close it with {@link #endImplicitTransaction}; {@code false} when the statement joins the
+   * caller's transaction. Outside auto-transaction mode this opens nothing and refuses nothing: a statement that ends
+   * up writing a record is refused there ("Transaction not begun"), while one that writes nothing - a filter that
+   * matches no record, a validation failure ahead of the first write - keeps behaving as it always did.
+   * <p>
+   * One transaction per statement is what makes autocommit atomic: a multi-record {@code UPDATE} either lands whole
+   * or not at all, instead of committing once per record and stopping halfway on the first failure. Before every write
+   * statement did this (issue #7096) an auto-committed {@code UPDATE} relied on the per-record implicit transaction of
+   * {@code save()}, which a vertex never reached: {@code ImmutableVertex.modify()} pinned the record to the
+   * transaction's page image first and failed with "Transaction not active" when there was none.
+   */
+  protected static boolean beginImplicitTransaction(final Database database) {
+    return database.isAutoTransaction() && ((DatabaseInternal) database).checkTransactionIsActive(true);
+  }
+
+  /**
+   * Closes the implicit transaction {@link #beginImplicitTransaction} opened: committed when the statement completed,
+   * rolled back when it threw. Call from a {@code finally}. A no-op when {@code implicitTransaction} is false.
+   */
+  protected static void endImplicitTransaction(final Database database, final boolean implicitTransaction,
+      final boolean success) {
+    if (!implicitTransaction)
+      return;
+    if (success)
+      database.commit();
+    else
+      database.rollback();
   }
 
   @Override
