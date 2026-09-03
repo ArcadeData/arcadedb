@@ -176,7 +176,13 @@ public abstract class AbstractSQLMethod implements SQLMethod {
    *
    * @return the receiver as a list, or {@code null} when it is not a collection
    */
+  @SuppressWarnings("unchecked")
   protected static List<Object> listReceiverOrNull(final Object value) {
+    // THE COMMON CASE FIRST, AHEAD OF THE REFLECTIVE isMultiValue() TEST: A List IS ANSWERED AS IS AT THE COST OF ONE
+    // instanceof
+    if (value instanceof List)
+      return (List<Object>) value;
+
     // A BARE Iterator IS NOT A MultiValue.isMultiValue() (THAT TEST COVERS Iterable, NOT Iterator), SO IT IS ADMITTED
     // EXPLICITLY OR THE MATERIALISATION BELOW WOULD NEVER SEE ONE
     if (value == null || value instanceof Map || !(MultiValue.isMultiValue(value) || value instanceof Iterator))
