@@ -216,6 +216,12 @@ public final class SnapshotInstaller {
       final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
       final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
 
+      // PHASE 0 - MAKE ROOM (issue #7037). This install is the self-heal for a diverged follower, and the volume
+      // it writes onto may be the one the Raft log just filled: purge the local log first so the segments below
+      // the applied index are reclaimable, then let the download refuse up front (see downloadSnapshot) rather
+      // than fail with "No space left on device" halfway through the extraction.
+      purgeRaftLogBeforeInstall(databaseName, server);
+
       // PHASE 1 - DOWNLOAD into .snapshot-new with the live database STILL OPEN. The historical behaviour
       // closed it up-front, so any download failure (leader unreachable, network blip) left it closed and
       // deregistered with no recovery. Staging first means we touch the live files only on success.
@@ -817,6 +823,13 @@ public final class SnapshotInstaller {
       // acceptance for backward compatibility during a rolling upgrade.
       final boolean manifestRequired = "1".equals(connection.getHeaderField(SnapshotManager.MANIFEST_HEADER));
 
+      // A leader on #7037 or later says how many bytes the archive inflates to. Refuse before reading the body
+      // when the target volume cannot hold them: the extraction would otherwise fail on the last file it could
+      // not fit, after the whole transfer, and leave a follower already short of space with a partial staging
+      // directory to clean up. A leader predating #7037 omits the header and the check is skipped.
+      checkUsableSpace(targetDir, parseUncompressedBytes(connection.getHeaderField(SnapshotManager.UNCOMPRESSED_BYTES_HEADER)),
+          targetDir.getFileName() != null ? targetDir.getFileName().toString() : "snapshot");
+
       final CountingInputStream rawCounter = new CountingInputStream(connection.getInputStream());
       InputStream source = rawCounter;
       final boolean progressLogging = server == null
@@ -832,6 +845,49 @@ public final class SnapshotInstaller {
     } finally {
       connection.disconnect();
     }
+  }
+
+  /**
+   * Asks the local Raft server to snapshot and purge its log before a database snapshot is written (issue #7037).
+   * No-op without Raft HA (unit tests, the non-Raft install callers) and best-effort otherwise: the purge only
+   * makes the space reclaimable, it is not a precondition of the install.
+   */
+  private static void purgeRaftLogBeforeInstall(final String databaseName, final ArcadeDBServer server) {
+    if (server != null && server.getHA() instanceof RaftHAPlugin plugin && plugin.getRaftHAServer() != null)
+      plugin.getRaftHAServer().compactRaftLogBeforeSnapshotInstall(databaseName);
+  }
+
+  /** Parses the {@link SnapshotManager#UNCOMPRESSED_BYTES_HEADER} value; absent or malformed reads as unknown ({@code -1}). */
+  static long parseUncompressedBytes(final String header) {
+    if (header == null || header.isEmpty())
+      return -1L;
+    try {
+      return Long.parseLong(header.trim());
+    } catch (final NumberFormatException e) {
+      return -1L;
+    }
+  }
+
+  /**
+   * Refuses an install whose files cannot fit on the volume hosting {@code targetDir} (issue #7037). The volume is
+   * the target directory or its nearest existing ancestor, because {@code getUsableSpace()} answers 0 for a path
+   * that does not exist yet. An unknown size ({@code <= 0}) or an unresolvable volume never refuses: the check
+   * turns a certain failure into a clear early one, it does not add a new way to fail. Package-private for tests.
+   */
+  static void checkUsableSpace(final Path targetDir, final long requiredBytes, final String databaseName) throws IOException {
+    if (requiredBytes <= 0)
+      return;
+    File volume = targetDir.toAbsolutePath().toFile();
+    while (volume != null && !volume.exists())
+      volume = volume.getParentFile();
+    if (volume == null)
+      return;
+    final long usable = volume.getUsableSpace();
+    if (usable < requiredBytes)
+      throw new IOException("Insufficient space to install the snapshot of '" + databaseName + "': it inflates to "
+          + requiredBytes + " bytes but the volume of '" + volume.getAbsolutePath() + "' has " + usable
+          + " usable. Free space on the volume (the Raft log is purged before every install; see "
+          + "arcadedb.ha.snapshotInterval) and the install is retried");
   }
 
   /**

@@ -139,6 +139,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Generous: the request is served on the state-machine updater thread, which may be busy applying a
   // backlog, and a timeout here only skips one compaction tick.
   private static final long SNAPSHOT_REQUEST_TIMEOUT_MS = 30_000L;
+  /** Budget of the log purge that precedes a database snapshot install (issue #7037): "not now" beats waiting. */
+  private static final long PRE_INSTALL_SNAPSHOT_REQUEST_TIMEOUT_MS = 5_000L;
 
   private final    ArcadeDBServer          arcadeServer;
   private final    ContextConfiguration    configuration;
@@ -1319,6 +1321,58 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   @Override
   public void restartRatisIfNeeded() {
     restartRatis(false);
+  }
+
+  @Override
+  public String getRaftLogFailure() {
+    final ArcadeStateMachine sm = stateMachine;
+    if (sm == null)
+      return null;
+    final ArcadeStateMachine.RaftLogFailure failure = sm.getRaftLogFailure();
+    return failure != null ? failure.describe() : null;
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * "Enough" is two log segments ({@code arcadedb.ha.logSegmentSize}): Ratis rolls the open segment and
+   * preallocates the next on recovery, so with less than that the restarted writer fails at the first append.
+   */
+  @Override
+  public boolean isRaftStorageWritable() {
+    final File volume = raftStorageVolume();
+    if (volume == null)
+      return true; // volume unknown: never guess "full" from it, let the restart budget bound the attempts
+    final RaftProperties properties = raftProperties;
+    final long segmentSize = properties != null ? RaftServerConfigKeys.Log.segmentSizeMax(properties).getSize()
+        : RaftServerConfigKeys.Log.SEGMENT_SIZE_MAX_DEFAULT.getSize();
+    return volume.getUsableSpace() >= 2L * segmentSize;
+  }
+
+  /**
+   * Forces a local Raft snapshot with the smallest creation gap Ratis accepts, so every log segment below the
+   * applied index becomes purgeable before a database snapshot is written onto the same volume (issue #7037).
+   * Best-effort: a refused or timed-out request only means the segments stay until the next periodic tick.
+   * <p>
+   * A snapshot request is fulfilled by the {@code StateMachineUpdater} thread, and only while the state machine is
+   * {@code RUNNING}, so it is skipped when it could not be served promptly: on the apply thread itself (a request
+   * issued from an entry apply would wait on itself), while the state machine is paused or reloading (a
+   * leader-driven install, which purges the log by itself once it lands), and it carries a short budget rather than
+   * the scheduler's 30s one, because the install it precedes must not queue behind a long entry apply.
+   */
+  void compactRaftLogBeforeSnapshotInstall(final String databaseName) {
+    final ArcadeStateMachine sm = stateMachine;
+    if (sm == null || sm.isApplyThread() || sm.getLifeCycleState() != LifeCycle.State.RUNNING) {
+      LogManager.instance().log(this, Level.FINE,
+          "Skipping the Raft log purge before installing '%s': the state machine cannot serve a snapshot request now",
+          databaseName);
+      return;
+    }
+    final long index = takeLocalSnapshot(RaftLogCompactionScheduler.DISK_PRESSURE_CREATION_GAP,
+        PRE_INSTALL_SNAPSHOT_REQUEST_TIMEOUT_MS);
+    if (index >= 0)
+      HALog.log(this, HALog.BASIC, "Raft log purged up to index %d before installing the snapshot of '%s'", index,
+          databaseName);
   }
 
   /**
@@ -3100,9 +3154,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final List<HAReplicationStatsProvider.FollowerSample> samples = new ArrayList<>(followers.size());
     for (final Map<String, Object> follower : followers) {
       final String peerId = (String) follower.get("peerId");
-      final long matchIndex = follower.get("matchIndex") instanceof Number n ? n.longValue() : -1;
-      final long nextIndex = follower.get("nextIndex") instanceof Number n ? n.longValue() : -1;
-      final long lastContactMs = follower.get("lastRpcElapsedMs") instanceof Number n ? n.longValue() : -1;
+      final long matchIndex = followerStateIndex(follower, "matchIndex");
+      final long nextIndex = followerStateIndex(follower, "nextIndex");
+      final long lastContactMs = followerStateIndex(follower, "lastRpcElapsedMs");
       final long lag = commitIndex >= 0 && matchIndex >= 0 ? Math.max(0L, commitIndex - matchIndex) : -1;
       final String status = clusterMonitor != null ? clusterMonitor.getReplicaStatus(peerId).name() : "UNKNOWN";
       final long laggingForMs = clusterMonitor != null ? clusterMonitor.getReplicaLaggingForMs(peerId) : 0;
@@ -3110,6 +3164,27 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           peerId, matchIndex, nextIndex, lag, lastContactMs, status, laggingForMs));
     }
     return samples;
+  }
+
+  /**
+   * Reads one index of a {@link #getFollowerStates()} entry, or {@code -1} when the entry does not carry it.
+   * <p>
+   * The match/next index keys are deliberately absent from the degraded entries
+   * {@link #degradedFollowerStates} builds when membership churned faster than a consistent snapshot could
+   * be taken (issue #4842). Every consumer must therefore read them through this method rather than with a
+   * raw {@code (Long)} cast: the cast unboxes the missing value into a {@code NullPointerException}, and
+   * because the consumers run inside catch-alls the failure did not crash anything - it silently dropped
+   * the whole cluster-configuration table and aborted the lag-monitor tick, precisely while membership was
+   * changing (issue #7041). Callers that need to tell "unknown" from Ratis's own {@code -1} never-appended
+   * sentinel check {@link #hasFollowerStateIndex} first.
+   */
+  static long followerStateIndex(final Map<String, Object> state, final String key) {
+    return state.get(key) instanceof Number n ? n.longValue() : -1L;
+  }
+
+  /** Whether a {@link #getFollowerStates()} entry carries {@code key} at all (see {@link #followerStateIndex}). */
+  static boolean hasFollowerStateIndex(final Map<String, Object> state, final String key) {
+    return state.get(key) instanceof Number;
   }
 
   /**
@@ -3565,26 +3640,28 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return dir != null ? dir.getAbsolutePath() : "<unknown>";
     }
 
-    /**
-     * The Raft storage directory, or its nearest existing ancestor. {@code File.getUsableSpace()}
-     * returns 0 for a path that does not exist, which would otherwise read as "disk full" during the
-     * window between server start and Ratis creating the directory.
-     * <p>
-     * The configured directory itself is resolved once and cached: {@code resolveRaftStorageDir} is
-     * config-derived and constant for the server's lifetime, and re-running its {@code exists()} probes
-     * on every tick is pointless I/O. The ancestor walk stays per-call because its result legitimately
-     * changes once Ratis creates the directory.
-     */
-    private File raftStorageVolume() {
-      File dir = cachedRaftStorageDir;
-      if (dir == null) {
-        dir = getRaftStorageDir();
-        cachedRaftStorageDir = dir;
-      }
-      while (dir != null && !dir.exists())
-        dir = dir.getParentFile();
-      return dir;
+  }
+
+  /**
+   * The Raft storage directory, or its nearest existing ancestor. {@code File.getUsableSpace()}
+   * returns 0 for a path that does not exist, which would otherwise read as "disk full" during the
+   * window between server start and Ratis creating the directory.
+   * <p>
+   * The configured directory itself is resolved once and cached: {@code resolveRaftStorageDir} is
+   * config-derived and constant for the server's lifetime, and re-running its {@code exists()} probes
+   * on every tick is pointless I/O. The ancestor walk stays per-call because its result legitimately
+   * changes once Ratis creates the directory. Shared by the compaction scheduler's disk-pressure probe and
+   * the log-writer recovery's free-space gate (issue #7037), so the two cannot disagree on the volume.
+   */
+  private File raftStorageVolume() {
+    File dir = cachedRaftStorageDir;
+    if (dir == null) {
+      dir = getRaftStorageDir();
+      cachedRaftStorageDir = dir;
     }
+    while (dir != null && !dir.exists())
+      dir = dir.getParentFile();
+    return dir;
   }
 
   /**
@@ -3607,6 +3684,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * @return the resulting snapshot index, or -1 when no snapshot was taken
    */
   long takeLocalSnapshot(final long creationGap) {
+    return takeLocalSnapshot(creationGap, SNAPSHOT_REQUEST_TIMEOUT_MS);
+  }
+
+  /**
+   * {@link #takeLocalSnapshot(long)} with an explicit request timeout. Ratis fulfils the request on its
+   * {@code StateMachineUpdater} thread the next time that thread is free, so a caller that cannot afford to wait
+   * behind a long entry apply passes a short budget and treats the timeout as "not now".
+   */
+  long takeLocalSnapshot(final long creationGap, final long timeoutMs) {
     final RaftServer server = raftServer;
     if (server == null || shutdownRequested)
       return -1L;
@@ -3616,7 +3702,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     try {
       final RaftClientReply reply = server.snapshotManagement(
           SnapshotManagementRequest.newCreate(snapshotClientId, localPeerId, raftGroup.getGroupId(),
-              snapshotCallId.incrementAndGet(), SNAPSHOT_REQUEST_TIMEOUT_MS, creationGap));
+              snapshotCallId.incrementAndGet(), timeoutMs, creationGap));
       if (reply == null || !reply.isSuccess()) {
         LogManager.instance().log(this, Level.FINE, "Local Raft snapshot request was not successful: %s", reply);
         return -1L;
