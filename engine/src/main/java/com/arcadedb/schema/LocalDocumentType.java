@@ -2024,6 +2024,10 @@ public class LocalDocumentType implements DocumentType {
    * the polymorphic caches of its sub types, in that order, then does the same up every super type, whose caches are
    * derived from this one. Each list is published as a fresh unmodifiable copy, the same copy-on-write contract the
    * lock-free readers of the two volatile fields rely on (issue #6678).
+   * <p>
+   * The order is load-bearing: a type's cache is read by its super types and never by its sub types, so this type is
+   * rebuilt BEFORE the walk goes up, and the sub types' caches it reads are already final because the change that
+   * triggered the rebuild happened above them. Rebuilding a super type first would read this type's stale cache.
    */
   private void rebuildPolymorphicBucketsCache() {
     final List<Bucket> polymorphicBuckets = new ArrayList<>(buckets);
