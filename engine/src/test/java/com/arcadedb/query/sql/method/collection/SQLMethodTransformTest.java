@@ -310,7 +310,7 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public boolean deleteRecordNoLock(Record record) {
+      public boolean deleteRecordNoLock(final Record record) {
         return true;
       }
 
