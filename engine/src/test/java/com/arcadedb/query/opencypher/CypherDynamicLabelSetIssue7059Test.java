@@ -252,6 +252,43 @@ class CypherDynamicLabelSetIssue7059Test extends TestHelper {
     assertThat(schemaTypeNames()).doesNotContain("A~B");
   }
 
+  /**
+   * The REMOVE counterpart of {@link #theLabelExpressionReadsThePreClauseState()}. A clause assigns
+   * simultaneously in Cypher, so a label expression reading a property the same clause removes must still
+   * see the pre-clause value - {@code RemoveStep} applied its items in source order, so the property was
+   * already gone and the expression evaluated to null, making the label removal a silent no-op.
+   */
+  @Test
+  void theRemoveLabelExpressionReadsThePreClauseState() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Entity {uuid: 'a', kind: 'Finding'})").close();
+      database.command("opencypher", "MATCH (n:Entity {uuid: 'a'}) SET n:$(n.kind)").close();
+    });
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (n:Entity {uuid: 'a'}) REMOVE n.kind, n:$(n.kind)").close());
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:Entity {uuid: 'a'}) RETURN labels(n) AS l, n.kind AS k");
+    final Result row = rs.next();
+    assertThat(row.<List<String>>getProperty("l")).containsExactly("Entity");
+    assertThat(row.<String>getProperty("k")).isNull();
+  }
+
+  /**
+   * {@code visitNodePattern} strips the backticks off an escaped variable, and so does the REMOVE side of
+   * this clause pair, so a SET that keeps them cannot find the row value and drops the label write.
+   */
+  @Test
+  void aBacktickEscapedVariableAcceptsADynamicLabel() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Entity {uuid: 'a'})").close());
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (`my node`:Entity {uuid: 'a'}) SET `my node`:$($label)", Map.of("label", "Finding")).close());
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:Entity {uuid: 'a'}) RETURN labels(n) AS l");
+    assertThat(rs.next().<List<String>>getProperty("l")).containsExactlyInAnyOrder("Entity", "Finding");
+  }
+
   private List<String> schemaTypeNames() {
     return database.getSchema().getTypes().stream().map(t -> t.getName()).toList();
   }

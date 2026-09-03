@@ -5122,10 +5122,42 @@ public class CypherExecutionPlan {
         if (expressionReadsGraph(((UnwindClause) laterClause.getClause()).getListExpression()))
           return true;
         break;
+      case SET:
+        if (setItemsReadGraph(laterClause.getTypedClause()))
+          return true;
+        break;
+      case REMOVE:
+        if (removeItemsReadGraph(laterClause.getTypedClause()))
+          return true;
+        break;
       default:
         break;
       }
     }
+    return false;
+  }
+
+  /**
+   * Tells whether a SET clause reads the graph. Every right-hand side counts - the assigned value, an expression
+   * target, a dynamic property key, and a Cypher 25 dynamic label ({@code SET n:$(expr)}, issue #7059) - because
+   * each is evaluated per row against the live graph. Shared by {@link #graphReadFollows(List, int)} and
+   * {@link #foreachBodyReadsGraph(ForeachClause)} so a SET is classified the same wherever it sits.
+   */
+  private boolean setItemsReadGraph(final SetClause setClause) {
+    for (final SetClause.SetItem setItem : setClause.getItems())
+      if (expressionReadsGraph(setItem.getValueExpression()) || expressionReadsGraph(setItem.getKeyExpression())
+          || expressionReadsGraph(setItem.getTargetExpression())
+          || expressionsReadGraph(setItem.getLabelExpressions()))
+        return true;
+    return false;
+  }
+
+  /** {@link #setItemsReadGraph(SetClause)}, for the dynamic key and dynamic label of a REMOVE clause. */
+  private boolean removeItemsReadGraph(final RemoveClause removeClause) {
+    for (final RemoveClause.RemoveItem removeItem : removeClause.getItems())
+      if (expressionReadsGraph(removeItem.getKeyExpression())
+          || expressionsReadGraph(removeItem.getLabelExpressions()))
+        return true;
     return false;
   }
 
@@ -5152,19 +5184,12 @@ public class CypherExecutionPlan {
           return true;
         break;
       case SET:
-        // A Cypher 25 dynamic label - SET n:$(expr) - is a right-hand side like any other, so it counts as a read
-        // of the graph when its expression does (issue #7059).
-        for (final SetClause.SetItem setItem : ((SetClause) innerClause.getClause()).getItems())
-          if (expressionReadsGraph(setItem.getValueExpression()) || expressionReadsGraph(setItem.getKeyExpression())
-              || expressionReadsGraph(setItem.getTargetExpression())
-              || expressionsReadGraph(setItem.getLabelExpressions()))
-            return true;
+        if (setItemsReadGraph(innerClause.getTypedClause()))
+          return true;
         break;
       case REMOVE:
-        for (final RemoveClause.RemoveItem removeItem : ((RemoveClause) innerClause.getClause()).getItems())
-          if (expressionReadsGraph(removeItem.getKeyExpression())
-              || expressionsReadGraph(removeItem.getLabelExpressions()))
-            return true;
+        if (removeItemsReadGraph(innerClause.getTypedClause()))
+          return true;
         break;
       case DELETE:
         for (final Expression deleteExpression : ((DeleteClause) innerClause.getClause()).getExpressions())

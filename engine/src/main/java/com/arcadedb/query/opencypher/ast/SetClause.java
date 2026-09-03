@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.opencypher.Labels;
+
 import java.util.List;
 
 /**
@@ -111,7 +113,7 @@ public class SetClause {
      * Label assignment with Cypher 25 dynamic labels: {@code SET n:Static:$(expr)}. The static labels are known at
      * parse time; each expression in {@code labelExpressions} is evaluated per row and contributes the label (or
      * list of labels) it yields. Labels are a set, so the two lists are merged without preserving the order they
-     * were written in - {@link com.arcadedb.query.opencypher.Labels#ensureCompositeType} sorts them anyway.
+     * were written in - {@link Labels#ensureCompositeType} sorts them anyway.
      */
     public SetItem(final String variable, final List<String> labels, final List<Expression> labelExpressions) {
       this.variable = variable;

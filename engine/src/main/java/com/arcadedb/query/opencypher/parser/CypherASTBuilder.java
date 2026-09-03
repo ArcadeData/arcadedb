@@ -730,13 +730,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         final List<String> labelList = new ArrayList<>();
         final List<Expression> labelExpressions = new ArrayList<>();
         collectNodeLabels(labelsCtx.nodeLabels(), labelList, labelExpressions);
-        items.add(new SetClause.SetItem(labelsCtx.variable().getText(), labelList, labelExpressions));
+        items.add(new SetClause.SetItem(stripBackticks(labelsCtx.variable().getText()), labelList, labelExpressions));
       } else if (itemCtx instanceof Cypher25Parser.SetLabelsIsContext labelsIsCtx) {
         // SET n IS Label / SET n IS $(expr) — add labels (IS syntax)
         final List<String> labelList = new ArrayList<>();
         final List<Expression> labelExpressions = new ArrayList<>();
         collectNodeLabelsIs(labelsIsCtx.nodeLabelsIs(), labelList, labelExpressions);
-        items.add(new SetClause.SetItem(labelsIsCtx.variable().getText(), labelList, labelExpressions));
+        items.add(new SetClause.SetItem(stripBackticks(labelsIsCtx.variable().getText()), labelList, labelExpressions));
       }
     }
 
