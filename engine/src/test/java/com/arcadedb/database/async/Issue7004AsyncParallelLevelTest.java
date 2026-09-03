@@ -21,13 +21,19 @@ package com.arcadedb.database.async;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -36,17 +42,23 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ol>
  *   <li>{@code backPressurePercentage} is executor-wide but was (re)read from the configuration inside every
  *   {@code AsyncThread} constructor, so each resize silently reverted whatever {@code setBackPressure()} asked for.</li>
- *   <li>{@code DatabaseAsyncScanBucket} bailed on the worker's {@code shutdown} flag, which a shrinking
- *   {@code setParallelLevel()} sets on the workers it retires while they drain their queues - so a scan task queued on
- *   a retired worker stopped after its first record while {@code scanType()} still reported success.</li>
+ *   <li>{@code DatabaseAsyncScanBucket} (and {@code DatabaseAsyncBrowseIterator}, the same shape) bailed on the
+ *   worker's {@code shutdown} flag, which a shrinking {@code setParallelLevel()} sets on the workers it retires while
+ *   they drain their queues - so a scan task queued on a retired worker stopped after its first record while
+ *   {@code scanType()} still reported success.</li>
  * </ol>
+ * The success-path waits are stall-discounted slices ({@link StallAwareStopwatch#effectiveMs()}), so a JVM-wide pause
+ * late in a long run cannot expire them (#6260); {@code @Timeout} stays as the plain hang detector.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7004AsyncParallelLevelTest extends TestHelper {
 
-  private static final String TYPE    = "Issue7004Doc";
-  private static final int    RECORDS = 500;
+  private static final String TYPE      = "Issue7004Doc";
+  private static final int    RECORDS   = 500;
+  /** Stall-discounted budget of every success-path wait: generous, since a wider bound cannot turn a passing run red. */
+  private static final long   BUDGET_MS = 30_000;
+  private static final long   POLL_MS   = 10;
 
   @Test
   void setParallelLevelKeepsTheBackPressureAskedFor() {
@@ -69,12 +81,7 @@ class Issue7004AsyncParallelLevelTest extends TestHelper {
   void aScanQueuedOnARetiredWorkerRunsToCompletion() throws Exception {
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) ((DatabaseInternal) database).async();
     async.setParallelLevel(2);
-
-    database.getSchema().createDocumentType(TYPE, 2);
-    database.transaction(() -> {
-      for (int i = 0; i < RECORDS; i++)
-        database.newDocument(TYPE).set("id", i).save();
-    });
+    createRecords();
 
     // PARK BOTH WORKERS ON A GATE, SO THE SCAN TASKS SCHEDULED NEXT ARE PROVABLY STILL QUEUED - NOT RUN - WHEN THE
     // SHRINK RETIRES ONE OF THE TWO. WHICH BUCKET LANDS ON WHICH SLOT DOES NOT MATTER: BOTH SLOTS ARE GATED.
@@ -82,7 +89,7 @@ class Issue7004AsyncParallelLevelTest extends TestHelper {
     final CountDownLatch release = new CountDownLatch(1);
     for (int slot = 0; slot < 2; slot++)
       assertThat(async.scheduleTask(slot, AsyncTestTasks.awaitTask(gatesEntered, release), true, 0)).isTrue();
-    assertThat(gatesEntered.await(30, TimeUnit.SECONDS)).as("both workers must be parked on their gate").isTrue();
+    assertThat(awaited(gatesEntered)).as("both workers must be parked on their gate").isTrue();
 
     // THE SCAN, FROM ITS OWN THREAD: scanType() BLOCKS UNTIL EVERY BUCKET TASK HAS COMPLETED
     final AtomicInteger scanned = new AtomicInteger();
@@ -100,14 +107,63 @@ class Issue7004AsyncParallelLevelTest extends TestHelper {
     scanner.start();
 
     // WAIT UNTIL BOTH BUCKET TASKS SIT IN THE QUEUES BEHIND THE GATES
-    final long deadline = System.currentTimeMillis() + 30_000;
-    while (async.getStats().queueSize < 2 && System.currentTimeMillis() < deadline)
-      Thread.sleep(10);
-    assertThat(async.getStats().queueSize).as("the two bucket scans must be queued behind the gates").isEqualTo(2);
+    assertThat(awaited(() -> async.getStats().queueSize >= 2)).as("the two bucket scans must be queued behind the gates")
+        .isTrue();
 
-    // SHRINK TO ONE WORKER, FROM ITS OWN THREAD BECAUSE THE RESIZE WAITS FOR THE RETIRED WORKER TO DRAIN - WHICH IT
-    // CANNOT DO UNTIL THE GATE IS RELEASED. THE RETIRED WORKER NOW CARRIES THE shutdown FLAG WITH THE SCAN OF ONE
-    // BUCKET STILL IN ITS QUEUE: THE SHAPE THE BUG NEEDS.
+    final Thread resizer = shrinkToOneWorkerWhileGated(async);
+
+    release.countDown();
+    assertThat(awaited(resizer)).as("the resize must complete once the gates open").isTrue();
+    assertThat(awaited(scanner)).as("scanType() must have returned").isTrue();
+
+    assertThat(scanFailure.get()).isNull();
+    assertThat(scanned.get())
+        .as("the bucket scan drained by the retired worker must deliver every record, not stop after the first one")
+        .isEqualTo(RECORDS);
+  }
+
+  /**
+   * Same shape for {@link DatabaseAsyncBrowseIterator}, which gated on the same flag: the iterator task is queued
+   * behind a gate on the worker the shrink retires, and every record it holds must reach the callback.
+   */
+  @Test
+  @Timeout(60)
+  void aBrowseIteratorQueuedOnARetiredWorkerDeliversEveryRecord() throws Exception {
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) ((DatabaseInternal) database).async();
+    async.setParallelLevel(2);
+    final List<RID> rids = createRecords();
+
+    // WORKER 1 IS THE ONE THE SHRINK RETIRES. PARK IT ON A GATE AND QUEUE THE ITERATOR TASK BEHIND THE GATE.
+    final CountDownLatch gateEntered = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    assertThat(async.scheduleTask(1, AsyncTestTasks.awaitTask(gateEntered, release), true, 0)).isTrue();
+    assertThat(awaited(gateEntered)).as("worker 1 must be parked on its gate").isTrue();
+
+    final AtomicInteger browsed = new AtomicInteger();
+    final CountDownLatch completed = new CountDownLatch(1);
+    final List<Identifiable> toBrowse = new ArrayList<>(rids);
+    assertThat(async.scheduleTask(1, new DatabaseAsyncBrowseIterator(completed, record -> {
+      browsed.incrementAndGet();
+      return true;
+    }, toBrowse.iterator()), true, 0)).isTrue();
+
+    final Thread resizer = shrinkToOneWorkerWhileGated(async);
+
+    release.countDown();
+    assertThat(awaited(resizer)).as("the resize must complete once the gate opens").isTrue();
+    assertThat(awaited(completed)).as("the iterator task must complete").isTrue();
+
+    assertThat(browsed.get())
+        .as("the iterator drained by the retired worker must deliver every record, not stop after the first one")
+        .isEqualTo(RECORDS);
+  }
+
+  /**
+   * Shrinks the pool to one worker from its own thread, because the resize WAITS for the retired worker to drain -
+   * which it cannot do until the caller releases the gate. Returns once the survivors are published, i.e. once the
+   * retired worker carries the {@code shutdown} flag with the gated task still in its queue: the shape the bug needs.
+   */
+  private Thread shrinkToOneWorkerWhileGated(final DatabaseAsyncExecutorImpl async) throws InterruptedException {
     final AtomicReference<Throwable> resizeFailure = new AtomicReference<>();
     final Thread resizer = new Thread(() -> {
       try {
@@ -117,19 +173,51 @@ class Issue7004AsyncParallelLevelTest extends TestHelper {
       }
     }, "issue7004-resizer");
     resizer.start();
-    while (async.getThreadCount() != 1 && System.currentTimeMillis() < deadline)
-      Thread.sleep(10);
-    assertThat(async.getThreadCount()).as("the survivors must be published before the gates open").isEqualTo(1);
-
-    release.countDown();
-    resizer.join(30_000);
-    scanner.join(30_000);
-
+    assertThat(awaited(() -> async.getThreadCount() == 1)).as("the survivors must be published before the gates open")
+        .isTrue();
     assertThat(resizeFailure.get()).isNull();
-    assertThat(scanFailure.get()).isNull();
-    assertThat(scanner.isAlive()).as("scanType() must have returned").isFalse();
-    assertThat(scanned.get())
-        .as("the bucket scan drained by the retired worker must deliver every record, not stop after the first one")
-        .isEqualTo(RECORDS);
+    return resizer;
+  }
+
+  private List<RID> createRecords() {
+    database.getSchema().createDocumentType(TYPE, 2);
+    final List<RID> rids = new ArrayList<>(RECORDS);
+    database.transaction(() -> {
+      for (int i = 0; i < RECORDS; i++)
+        rids.add(database.newDocument(TYPE).set("id", i).save().getIdentity());
+    });
+    return rids;
+  }
+
+  /** A latch await in stall-discounted slices: a JVM-wide pause inside the wait does not count against the budget. */
+  private static boolean awaited(final CountDownLatch latch) throws InterruptedException {
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    do {
+      if (latch.await(POLL_MS, TimeUnit.MILLISECONDS))
+        return true;
+    } while (watch.effectiveMs() < BUDGET_MS);
+    return false;
+  }
+
+  /** {@link #awaited(CountDownLatch)} for a thread join. */
+  private static boolean awaited(final Thread thread) throws InterruptedException {
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    do {
+      thread.join(POLL_MS);
+      if (!thread.isAlive())
+        return true;
+    } while (watch.effectiveMs() < BUDGET_MS);
+    return false;
+  }
+
+  /** {@link #awaited(CountDownLatch)} for a polled condition. */
+  private static boolean awaited(final BooleanSupplier condition) throws InterruptedException {
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    do {
+      if (condition.getAsBoolean())
+        return true;
+      Thread.sleep(POLL_MS);
+    } while (watch.effectiveMs() < BUDGET_MS);
+    return false;
   }
 }

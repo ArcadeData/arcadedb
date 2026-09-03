@@ -67,10 +67,10 @@ public class SQLMethodTransform extends AbstractSQLMethod {
 
     if (value instanceof Set set) {
       final Set<Object> newSet = new HashSet<>(set.size());
-      for (Object o : set) {
+      for (final Object o : set) {
         Object transformed = o;
 
-        for (SQLMethod m : transformers)
+        for (final SQLMethod m : transformers)
           transformed = m.execute(transformed, null, context, EMPTY_ARGS);
 
         newSet.add(transformed);
@@ -82,10 +82,10 @@ public class SQLMethodTransform extends AbstractSQLMethod {
     final List<Object> list = listReceiverOrNull(value);
     if (list != null) {
       final List<Object> newList = new ArrayList<>(list.size());
-      for (Object o : list) {
+      for (final Object o : list) {
         Object transformed = o;
 
-        for (SQLMethod m : transformers)
+        for (final SQLMethod m : transformers)
           transformed = m.execute(transformed, null, context, EMPTY_ARGS);
 
         newList.add(transformed);
