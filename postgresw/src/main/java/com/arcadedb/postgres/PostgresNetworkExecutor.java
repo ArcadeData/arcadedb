@@ -405,15 +405,31 @@ public class PostgresNetworkExecutor extends Thread {
         // Guarded on !executed so a second Describe('P') on the same portal (or one arriving after an Execute
         // already ran it) reuses the materialized result instead of running it again: issue #6458's follow-up
         // Execute(s) depend on this same fullResultSet being run exactly once.
-        final ResultSet resultSet = runPortalQuery(portal);
-        portal.executed = true;
-        // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just the
-        // first, to catch a property that only shows up on a later row (documents can be sparse) - and the
-        // portal keeps this list so the Execute(s) that follow slice it by their own row-limit instead of
-        // re-running the statement or losing what Describe already had to read.
-        portal.fullResultSet = browseAndCacheResultSet(resultSet, 0);
-        resolvePortalColumns(portal);
-        answerWithColumns(portal);
+        try {
+          final ResultSet resultSet = runPortalQuery(portal);
+          // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just the
+          // first, to catch a property that only shows up on a later row (documents can be sparse) - and the
+          // portal keeps this list so the Execute(s) that follow slice it by their own row-limit instead of
+          // re-running the statement or losing what Describe already had to read. Bounded by the same cap as
+          // the simple-query path (issue #7034): the portal's row limit bounds what each Execute SENDS, not
+          // what is held here. Marked executed only once the rows are held, so a refused portal is not left
+          // looking like a drained one.
+          portal.fullResultSet = browseAndCacheBoundedResultSet(resultSet);
+          portal.executed = true;
+          resolvePortalColumns(portal);
+          answerWithColumns(portal);
+        } catch (final CommandParsingException e) {
+          // The one reply Describe is owed is an ErrorResponse here; the client discards everything up to its
+          // Sync, exactly as after a failed Execute. Without it the refusal (or any other failure of the query)
+          // reached the server log only and the client waited for a RowDescription that never came.
+          setErrorInTx();
+          writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
+        } catch (final PostgresProtocolException e) {
+          throw e;
+        } catch (final Exception e) {
+          setErrorInTx();
+          writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), sqlStateFor(e));
+        }
       } else if (portal.isExpectingResult && portal.columns != null) {
         // Already materialized: a synthetic answer fixed at PARSE (SHOW/system/catalog), or a portal a
         // previous Describe/Execute already ran. Its columns are answered as they stand rather than
@@ -567,13 +583,15 @@ public class PostgresNetworkExecutor extends Thread {
         if (!portal.executed) {
           final long engineStart = System.nanoTime();
           final ResultSet resultSet = runPortalQuery(portal);
-          portal.executed = true;
           if (portal.isExpectingResult) {
             // Materializes the whole result now (issue #6458), the same way Describe('P') does: a client that
             // never Described this portal first (it already knows the row shape) reaches this branch instead,
             // and every Execute on this portal from here on - including this one - slices fullResultSet by its
-            // own row-limit below rather than re-running the statement.
-            portal.fullResultSet = browseAndCacheResultSet(resultSet, 0);
+            // own row-limit below rather than re-running the statement. Bounded by the same cap as the
+            // simple-query path (issue #7034): the Execute's own row limit bounds what is SENT, not what is
+            // held here.
+            portal.fullResultSet = browseAndCacheBoundedResultSet(resultSet);
+            portal.executed = true;
             profile.addEngineNanos(System.nanoTime() - engineStart);
             // Only send RowDescription if not already sent during DESCRIBE
             if (!portal.rowDescriptionSent) {
@@ -593,6 +611,7 @@ public class PostgresNetworkExecutor extends Thread {
               profile.addSerializationNanos(System.nanoTime() - serStart);
             }
           } else {
+            portal.executed = true;
             profile.addEngineNanos(System.nanoTime() - engineStart);
           }
         }
@@ -795,8 +814,7 @@ public class PostgresNetworkExecutor extends Thread {
           resultSet = database.command(query.language, query.query, server.getConfiguration());
         }
       }
-      final List<Result> cachedResultSet = browseAndCacheBoundedResultSet(resultSet,
-          GlobalConfiguration.POSTGRES_SIMPLE_QUERY_MAX_ROWS.getValueAsInteger());
+      final List<Result> cachedResultSet = browseAndCacheBoundedResultSet(resultSet);
       profile.addEngineNanos(System.nanoTime() - engineStart);
 
       final long serStart = System.nanoTime();
@@ -854,63 +872,39 @@ public class PostgresNetworkExecutor extends Thread {
     writeMessage("ready for query", () -> channel.writeByte(transactionStatus), 'Z', 5);
   }
 
-  private List<Result> browseAndCacheResultSet(final ResultSet resultSet, final int limit) {
-    return browseAndCacheResultSet(resultSet, limit, true);
-  }
-
   /**
-   * Browse a result set and cache results up to the limit, then close the source ResultSet.
-   * <p>
-   * <b>Ownership:</b> this method takes ownership of the supplied ResultSet and closes it before returning, in
-   * both the natural-exhaustion and the limit-hit paths. Both callers that matter for issue #6458 - Describe
-   * ('P') and the first Execute of a portal that was never Described - call this with {@code limit=0} to
-   * materialize the whole result into {@link PostgresPortal#fullResultSet}: Describe needs every row to
-   * discover every column (documents can be sparse), and Execute needs the complete list to slice by whatever
-   * row-limit each Execute call declares, including a follow-up one continuing a previously suspended fetch
-   * (see the pagination step in {@code executeCommand()}, which slices {@code fullResultSet} rather than
-   * calling this method again). The {@code limit>0} form remains for the unrelated internal callers that want
-   * a bounded sample and are happy to see the rest of the result set discarded - {@code sendSuspendedOnLimit}
-   * is {@code false} for all of them, so the always-{@code limit=0} callers are the only ones that can still
-   * reach that branch.
+   * Browses a bounded sample of a result set and closes it, discarding whatever is left: for the internal schema
+   * probes that only need to look at a row or so and must not emit any protocol message.
    *
-   * @param resultSet           The result set to browse (this method closes it)
-   * @param limit               Maximum number of results to cache (0 = unlimited)
-   * @param sendSuspendedOnLimit If true and limit is reached, sends PortalSuspended message.
-   *                            Set to false for internal queries (like schema discovery) that
-   *                            should not send protocol messages.
+   * @param resultSet The result set to browse (this method closes it)
+   * @param limit     Maximum number of results to cache
    */
-  private List<Result> browseAndCacheResultSet(final ResultSet resultSet, final int limit, final boolean sendSuspendedOnLimit) {
+  private List<Result> browseSample(final ResultSet resultSet, final int limit) {
     try (resultSet) {
-      final List<Result> cachedResultSet = new ArrayList<>();
-      while (resultSet.hasNext()) {
+      final List<Result> sample = new ArrayList<>(limit);
+      while (sample.size() < limit && resultSet.hasNext()) {
         final Result row = resultSet.next();
-        if (row == null)
-          continue;
-
-        cachedResultSet.add(row);
-
-        if (limit > 0 && cachedResultSet.size() >= limit) {
-          if (sendSuspendedOnLimit)
-            portalSuspendedResponse();
-          break;
-        }
+        if (row != null)
+          sample.add(row);
       }
-      return cachedResultSet;
+      return sample;
     }
   }
 
   /**
-   * Browses and caches a result set for the simple-query ('Q' message) protocol path, refusing (rather than
-   * silently truncating) a result larger than {@code maxRows} - and stopping the scan as soon as that is known,
+   * Materializes a statement's result and closes it, refusing (rather than silently truncating) a result larger
+   * than {@link GlobalConfiguration#POSTGRES_QUERY_MAX_ROWS} - and stopping the scan as soon as that is known,
    * rather than paying to read the rest of an oversized source just to reject it.
    * <p>
-   * Unlike the extended query protocol - where a portal's {@code Execute} message carries its own client-chosen
-   * max-rows and a limit hit is a normal, expected {@code PortalSuspended} the client explicitly asked for by
-   * fetching in batches - the simple-query protocol has no such mechanism: a 'Q' message always means "give me
-   * the complete result". This path is also why the whole result had to be held in memory in the first place:
-   * determining the row description (the union of columns and their types across heterogeneous/schemaless rows)
-   * genuinely requires having seen every row before the first one can be sent, since Postgres's wire protocol
-   * fixes the column set in {@code RowDescription}, sent before any {@code DataRow}.
+   * Every wire path that answers a statement goes through here: the simple-query ('Q') path, and the two
+   * extended-protocol sites that materialize a portal (Describe('P') and the first Execute of a portal that was
+   * never Described - issue #6458). The whole result has to be held in memory before the first row is sent on
+   * either protocol: determining the row description (the union of columns and their types across
+   * heterogeneous/schemaless rows) genuinely requires having seen every row, since Postgres's wire protocol fixes
+   * the column set in {@code RowDescription}, sent before any {@code DataRow}. The portal's client-chosen
+   * max-rows on {@code Execute} bounds how many of the held rows each Execute SENDS (a limit hit there is a
+   * normal {@code PortalSuspended}), not how many the server holds, which is why the extended path is capped by
+   * the same knob rather than left to the client (issue #7034).
    * <p>
    * Aborting the scan early is safe for a write statement too: {@code UpdateExecutionPlan.executeInternal()} (and
    * {@code DeleteExecutionPlan}, which extends it) fully executes every matched row's write and buffers the whole
@@ -921,9 +915,10 @@ public class PostgresNetworkExecutor extends Thread {
    * much of that already-complete result gets copied into {@code cachedResultSet}; it can never leave a write
    * half-done.
    *
-   * @param maxRows the maximum number of rows to buffer, 0 = unlimited (matches {@link GlobalConfiguration#POSTGRES_SIMPLE_QUERY_MAX_ROWS})
+   * @param resultSet The result set to browse (this method closes it)
    */
-  private List<Result> browseAndCacheBoundedResultSet(final ResultSet resultSet, final int maxRows) {
+  private List<Result> browseAndCacheBoundedResultSet(final ResultSet resultSet) {
+    final int maxRows = GlobalConfiguration.POSTGRES_QUERY_MAX_ROWS.getValueAsInteger();
     try (resultSet) {
       final List<Result> cachedResultSet = new ArrayList<>();
       while (resultSet.hasNext()) {
@@ -935,9 +930,9 @@ public class PostgresNetworkExecutor extends Thread {
 
         if (maxRows > 0 && cachedResultSet.size() > maxRows)
           throw new CommandExecutionException(
-              "Result set exceeds the configured limit of " + maxRows + " rows for the Postgres simple-query protocol ("
-                  + GlobalConfiguration.POSTGRES_SIMPLE_QUERY_MAX_ROWS.getKey()
-                  + "); use the extended query protocol with a bounded portal fetch size for large result sets");
+              "Result set exceeds the configured limit of " + maxRows + " rows buffered server-side for the Postgres wire protocol ("
+                  + GlobalConfiguration.POSTGRES_QUERY_MAX_ROWS.getKey()
+                  + "); narrow the statement with a WHERE or LIMIT clause, or raise the limit");
       }
 
       return cachedResultSet;
@@ -1419,7 +1414,7 @@ public class PostgresNetworkExecutor extends Thread {
       // not a client-initiated query that should send protocol messages
       final String sampleQuery = "SELECT FROM `" + typeName + "` LIMIT 1";
       final ResultSet resultSet = database.query("sql", sampleQuery, server.getConfiguration());
-      final List<Result> sampleRows = browseAndCacheResultSet(resultSet, 1, false);
+      final List<Result> sampleRows = browseSample(resultSet, 1);
 
       if (!sampleRows.isEmpty()) {
         // Use the sample row to discover columns
@@ -1646,7 +1641,7 @@ public class PostgresNetworkExecutor extends Thread {
       stripProbe(sample, context);
 
       final ResultSet resultSet = sample.execute(database, parameters != null ? parameters : NO_PARAMETERS, context);
-      final List<Result> sampleRows = browseAndCacheResultSet(resultSet, 1, false);
+      final List<Result> sampleRows = browseSample(resultSet, 1);
       return sampleRows.isEmpty() ? null : getColumns(sampleRows, resolveQueryTargetType(select), resolveAliasToSourceProperty(select));
     } catch (final Exception e) {
       if (DEBUG)

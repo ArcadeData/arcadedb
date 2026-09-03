@@ -37,29 +37,27 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code ALTER TYPE ... BUCKET} - the same publication gap the sibling {@code LocalSchema.bucketId2TypeMap} pattern
  * exists to avoid.
  * <p>
- * The fix makes both fields {@code volatile}. The first test pins the fix itself, so a future edit cannot silently
- * drop the modifier. The second is a functional regression for the concrete scenario: adding/removing a bucket
- * must be reflected by {@code getBuckets(true)}/{@code getBucketIds(true)} immediately afterward.
+ * The fix makes both fields {@code volatile}. Issue #7033 extends it to the non-polymorphic siblings {@code buckets}/
+ * {@code bucketIds}: same copy-on-write reassignment on the adjacent lines, same lock-free accessor (the other branch
+ * of the same ternary), read by {@code SelectExecutionPlanner}'s partition pruning and {@code FetchFromSchemaTypesStep}
+ * through {@code getBuckets(false)}/{@code getBucketIds(false)}. The first test pins the fix itself, so a future edit
+ * cannot silently drop the modifier from any of the four. The second is a functional regression for the concrete
+ * scenario: adding/removing a bucket must be reflected by both branches of {@code getBuckets}/{@code getBucketIds}
+ * immediately afterward.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue6678PolymorphicBucketCacheVisibilityTest extends TestHelper {
 
   @Test
-  void cachedPolymorphicFieldsMustBeVolatileForCrossThreadPlanningReads() throws Exception {
-    final Field buckets = LocalDocumentType.class.getDeclaredField("cachedPolymorphicBuckets");
-    final Field bucketIds = LocalDocumentType.class.getDeclaredField("cachedPolymorphicBucketIds");
-
-    assertThat(Modifier.isVolatile(buckets.getModifiers()))
-        .as("cachedPolymorphicBuckets is copy-on-write reassigned under schema mutation and read lock-free by "
-            + "query planning - it must be volatile so planning threads have a happens-before edge against the "
-            + "writer (issue #6678)")
-        .isTrue();
-    assertThat(Modifier.isVolatile(bucketIds.getModifiers()))
-        .as("cachedPolymorphicBucketIds is copy-on-write reassigned under schema mutation and read lock-free by "
-            + "query planning - it must be volatile so planning threads have a happens-before edge against the "
-            + "writer (issue #6678)")
-        .isTrue();
+  void bucketListFieldsMustBeVolatileForCrossThreadPlanningReads() throws Exception {
+    for (final String fieldName : new String[] { "buckets", "cachedPolymorphicBuckets", "bucketIds", "cachedPolymorphicBucketIds" }) {
+      final Field field = LocalDocumentType.class.getDeclaredField(fieldName);
+      assertThat(Modifier.isVolatile(field.getModifiers()))
+          .as(fieldName + " is copy-on-write reassigned under schema mutation and read lock-free by query planning - it "
+              + "must be volatile so planning threads have a happens-before edge against the writer (issues #6678, #7033)")
+          .isTrue();
+    }
   }
 
   @Test
@@ -75,11 +73,15 @@ class Issue6678PolymorphicBucketCacheVisibilityTest extends TestHelper {
 
       assertThat(type.getBuckets(true)).hasSize(before + 1).contains(newBucket);
       assertThat(type.getBucketIds(true)).contains(newBucket.getFileId());
+      assertThat(type.getBuckets(false)).hasSize(before + 1).contains(newBucket);
+      assertThat(type.getBucketIds(false)).contains(newBucket.getFileId());
 
       type.removeBucket(newBucket);
 
       assertThat(type.getBuckets(true)).hasSize(before).doesNotContain(newBucket);
       assertThat(type.getBucketIds(true)).doesNotContain(newBucket.getFileId());
+      assertThat(type.getBuckets(false)).hasSize(before).doesNotContain(newBucket);
+      assertThat(type.getBucketIds(false)).doesNotContain(newBucket.getFileId());
     });
   }
 }

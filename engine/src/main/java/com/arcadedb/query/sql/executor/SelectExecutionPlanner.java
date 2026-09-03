@@ -2442,10 +2442,12 @@ public class SelectExecutionPlanner {
     for (int i = 0; i < partitionProps.size(); i++)
       partitionPropPositions.put(partitionProps.get(i), i);
 
-    // Cache the bucket list once for the whole derivation. The list is invariant during
-    // planning (schema mutations take the same lock the planner doesn't hold), and the per
-    // AndBlock loop below would otherwise call getBuckets(false) once per block on the planner
-    // hot path.
+    // Cache the bucket list once for the whole derivation, so the per AndBlock loop below does
+    // not call getBuckets(false) once per block on the planner hot path. The planner holds no
+    // schema lock: the list is a copy-on-write snapshot published through a volatile field
+    // (issue #7033), so this read sees a complete list - the one current at this instant - and
+    // the whole derivation works on that same snapshot rather than on whatever a concurrent
+    // ALTER TYPE ... BUCKET publishes halfway through.
     // FQN is intentional: the file's top-level {@code Bucket} import refers to the SQL parser
     // AST node, not the engine type returned here. Using {@code var} would silently rebind to
     // the wrong type if a future edit added an {@code import com.arcadedb.engine.Bucket}.

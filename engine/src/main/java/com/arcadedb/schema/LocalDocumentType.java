@@ -71,12 +71,14 @@ public class LocalDocumentType implements DocumentType {
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
   protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
   protected final Map<String, Object>               custom                       = new HashMap<>();
-  protected       List<Bucket>                      buckets                      = new ArrayList<>();
-  // Copy-on-write reassigned under schema mutation and read lock-free by query planning (getBuckets(true)/
-  // getBucketIds(true)): volatile so a planning thread has a happens-before edge against a concurrent
-  // ALTER TYPE ... BUCKET, matching the LocalSchema.bucketId2TypeMap publication pattern (issue #6678).
+  // The four bucket lists are copy-on-write: reassigned under the schema mutation lock and read lock-free by query
+  // planning through getBuckets(polymorphic)/getBucketIds(polymorphic), both branches of the ternary - the
+  // non-polymorphic pair feeds SelectExecutionPlanner's partition pruning and FetchFromSchemaTypesStep exactly as the
+  // polymorphic pair does. All four are volatile so a planning thread has a happens-before edge against a concurrent
+  // ALTER TYPE ... BUCKET, matching the LocalSchema.bucketId2TypeMap publication pattern (issues #6678 and #7033).
+  protected volatile List<Bucket>                   buckets                      = new ArrayList<>();
   protected volatile List<Bucket>                   cachedPolymorphicBuckets     = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
-  protected       List<Integer>                     bucketIds                    = new ArrayList<>();
+  protected volatile List<Integer>                  bucketIds                    = new ArrayList<>();
   protected volatile List<Integer>                  cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
   protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
   // Names of the OWN properties that declare a DEFAULT. A cache: the authority is the per-property default value, but

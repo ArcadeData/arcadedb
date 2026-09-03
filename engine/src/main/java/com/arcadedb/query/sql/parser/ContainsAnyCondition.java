@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -37,20 +38,9 @@ public class ContainsAnyCondition extends BooleanExpression {
   public ContainsAnyCondition() {
   }
 
-  public boolean execute(Object left, Object right) {
-    if (left instanceof Collection<?> collection) {
-      if (right instanceof Iterable<?> iterable)
-        right = iterable.iterator();
-
-      if (right instanceof Iterator<?> iterator) {
-        while (iterator.hasNext()) {
-          final Object next = iterator.next();
-          if (collection.contains(next))
-            return true;
-        }
-      }
-      return collection.contains(right);
-    }
+  public boolean execute(Object left, final Object right) {
+    if (left instanceof Collection<?> leftCollection)
+      return containsAny(leftCollection, right);
 
     if (left instanceof Iterable<?> iterable)
       left = iterable.iterator();
@@ -58,20 +48,48 @@ public class ContainsAnyCondition extends BooleanExpression {
       left = MultiValue.getMultiValueIterator(left);
 
     if (left instanceof Iterator<?> leftIterator) {
-      if (!(right instanceof Iterable))
-        right = Set.of(right);
+      // Collect into a list so it can be re-scanned for every right-hand item: iterating the left operand only once
+      // used to make any right-hand item after the first one invisible once the left iterator was exhausted
+      final List<Object> leftItems = new ArrayList<>();
+      while (leftIterator.hasNext())
+        leftItems.add(leftIterator.next());
+      return containsAny(leftItems, right);
+    }
+    return false;
+  }
 
-      right = ((Iterable<?>) right).iterator();
+  /**
+   * @return {@code true} when at least one item of the right-hand operand is an element of {@code leftCollection}. A
+   *     right-hand array is expanded into its items exactly as a List is (issue #7084): an array satisfies neither
+   *     {@code instanceof Iterable} nor {@code instanceof Iterator}, so it used to be compared as one opaque object
+   *     against the collection and the condition was always false, e.g. {@code tags CONTAINSANY 'a b'.split(' ')}.
+   *     A {@code byte[]} is ArcadeDB's BINARY scalar and stays a single value being searched for, the same carve-out
+   *     {@link ContainsCondition} applies. Items are compared with {@link QueryOperatorEquals} so
+   *     {@code [1,2,3] CONTAINSANY [2L]} answers the same whatever the concrete type of the left operand, as
+   *     {@link ContainsAllCondition} already does.
+   */
+  private static boolean containsAny(final Collection<?> leftCollection, Object right) {
+    if (right instanceof Iterable<?> iterable)
+      right = iterable.iterator();
+    else if (right != null && right.getClass().isArray() && !(right instanceof byte[]))
+      right = MultiValue.getMultiValueIterator(right);
 
-      final Iterator<?> rightIterator = (Iterator<?>) right;
-      while (rightIterator.hasNext()) {
-        final Object leftItem = rightIterator.next();
-        while (leftIterator.hasNext()) {
-          final Object rightItem = leftIterator.next();
-          if (leftItem != null && leftItem.equals(rightItem))
-            return true;
-        }
-      }
+    if (right instanceof Iterator<?> iterator) {
+      while (iterator.hasNext())
+        if (containsItem(leftCollection, iterator.next()))
+          return true;
+      return false;
+    }
+    return containsItem(leftCollection, right);
+  }
+
+  private static boolean containsItem(final Collection<?> collection, final Object item) {
+    for (final Object o : collection) {
+      if (o == null) {
+        if (item == null)
+          return true;
+      } else if (QueryOperatorEquals.equals(o, item))
+        return true;
     }
     return false;
   }
