@@ -3189,6 +3189,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // The transaction opened here is tracked by identity, and re-tracked after every chunk commit, so the
         // rollback in the catch below can only ever target THIS transaction: a nested commit that failed has
         // already been popped, and rolling back "whatever is current" at that point would roll back the caller's.
+        // Re-tracked rather than assumed stable: with no caller transaction the thread's single TransactionContext
+        // is reused across begin()/commit() cycles (nothing to pop), with one it is a fresh object every time.
         final long chunkSizeMB = getTxChunkSize();
 
         final TransactionContext[] persistTransaction = new TransactionContext[1];
