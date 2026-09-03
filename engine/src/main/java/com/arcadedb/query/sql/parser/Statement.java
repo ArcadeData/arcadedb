@@ -85,10 +85,12 @@ public class Statement extends SimpleNode {
    * or not at all, instead of committing once per record and stopping halfway on the first failure. The one exception
    * is the one the statement asks for: {@code BATCH n} commits the running transaction every {@code n} records
    * ({@code BatchStep}), so a statement carrying it lands in chunks of {@code n} and a failure keeps every chunk already
-   * committed - with a per-record implicit transaction that clause had no transaction to chunk and was a no-op. Before every write
-   * statement did this (issue #7096) an auto-committed {@code UPDATE} relied on the per-record implicit transaction of
-   * {@code save()}, which a vertex never reached: {@code ImmutableVertex.modify()} pinned the record to the
-   * transaction's page image first and failed with "Transaction not active" when there was none.
+   * committed - with a per-record implicit transaction that clause had no transaction to chunk and was a no-op.
+   * <p>
+   * Until issue #7096 only CREATE VERTEX, CREATE EDGE and MOVE VERTEX did this. An auto-committed {@code UPDATE} relied
+   * on the per-record implicit transaction that {@code save()} opens, and a vertex never got that far:
+   * {@code ImmutableVertex.modify()} pinned the record to the transaction's page image first, and with no transaction
+   * open that failed with "Transaction not active".
    */
   protected static boolean beginImplicitTransaction(final Database database) {
     return database.isAutoTransaction() && ((DatabaseInternal) database).checkTransactionIsActive(true);

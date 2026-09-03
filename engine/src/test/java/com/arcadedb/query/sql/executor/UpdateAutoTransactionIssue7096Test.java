@@ -24,6 +24,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
@@ -190,6 +191,45 @@ class UpdateAutoTransactionIssue7096Test extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Character")) {
       assertThat(rs.next().<Long>getProperty("c")).isEqualTo(2L);
     }
+  }
+
+  /**
+   * CREATE VERTEX used to commit its implicit transaction from the {@code finally} even when the statement had thrown,
+   * so the records created before the failure survived it. The second entry collides with the first on the unique
+   * index; nothing of the statement may remain.
+   */
+  @Test
+  void aFailedCreateVertexRollsBackItsAutoTransaction() {
+    database.transaction(() -> {
+      final VertexType type = (VertexType) database.getSchema().getType("Character");
+      type.createProperty("name", Type.STRING);
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+    });
+
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE VERTEX Character CONTENT [{'name':'Myriel'},{'name':'Myriel'}]").close())
+        .isInstanceOf(DuplicatedKeyException.class);
+    assertThat(database.isTransactionActive()).isFalse();
+
+    assertThat(database.countType("Character", true)).as("only the vertex created by the fixture survives").isEqualTo(1);
+  }
+
+  /** The same for CREATE EDGE: the first edge is created, the second one fails, neither survives. */
+  @Test
+  void aFailedCreateEdgeRollsBackItsAutoTransaction() {
+    database.transaction(() -> {
+      final EdgeType type = database.getSchema().createEdgeType("Knows");
+      type.createProperty("since", Type.INTEGER);
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "since");
+      database.command("sql", "CREATE VERTEX Character SET name = 'Myriel'").close();
+    });
+
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE EDGE Knows FROM (SELECT FROM Character) TO (SELECT FROM Character WHERE name = 'Myriel') SET since = 1815").close())
+        .isInstanceOf(DuplicatedKeyException.class);
+    assertThat(database.isTransactionActive()).isFalse();
+
+    assertThat(database.countType("Knows", true)).as("no edge of the failed statement survives").isEqualTo(0);
   }
 
   @Test
