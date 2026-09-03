@@ -154,9 +154,10 @@ public final class HealthMonitor {
   private static final long REFORMAT_EPISODE_RESET_MULTIPLIER = 5L;
 
   /**
-   * Log-writer recovery (issue #7037): restarts fired more than this long after the previous one start a new
-   * episode, so a volume that fills again much later is recovered again instead of hitting a budget spent on an
-   * old incident. Package-private for tests.
+   * Log-writer recovery (issue #7037): once the log writer has been healthy for this long after a recovery, the
+   * incident is over and the restart budget re-arms, so a volume that fills again much later is recovered again
+   * instead of hitting a budget spent on an old incident. A failure that never clears never re-arms it.
+   * Package-private for tests.
    */
   static final long LOG_FAILURE_EPISODE_RESET_MS = 10L * 60_000L;
 
@@ -188,10 +189,11 @@ public final class HealthMonitor {
   private          int                      crashRestartStreak          = 0;
   private          boolean                  crashLoopReformatTried       = false;
   private          boolean                  crashLoopEscalated           = false;
-  // Log-writer recovery (#7037): in-place restarts fired in the current failure episode, when the last one
-  // fired, when the "deferred" line was last logged, and whether the budget for this episode is spent (logged once).
+  // Log-writer recovery (#7037): in-place restarts fired in the current failure episode, since when the writer
+  // has been observed healthy again after them (-1 = not yet, or no episode), when the "deferred" line was last
+  // logged, and whether the budget for this episode is spent (logged once).
   private          int                      logFailureRestarts           = 0;
-  private          long                     lastLogFailureRestartMs      = -1;
+  private          long                     logFailureClearSinceMs       = -1;
   private          long                     lastLogFailureDeferredWarnMs = -1;
   private          boolean                  logFailureEscalated          = false;
   // Injectable for deterministic tests; defaults to the system clock.
@@ -292,7 +294,7 @@ public final class HealthMonitor {
       handleFailedLogWriter(logFailure);
       return;
     }
-    logFailureEscalated = false;
+    noteLogWriterHealthy();
     // checkStaleFollower (lag: commit - applied > threshold) and checkStuckFollower (divergence:
     // commit == applied) are mutually exclusive by construction, so at most one arms per tick.
     checkStaleFollower();
@@ -372,6 +374,7 @@ public final class HealthMonitor {
    */
   private void handleFailedLogWriter(final String failure) {
     final long now = clock.getAsLong();
+    logFailureClearSinceMs = -1; // the incident is ongoing: the healthy streak, if any, is over
 
     if (!target.isRaftStorageWritable()) {
       if (lastLogFailureDeferredWarnMs < 0 || now - lastLogFailureDeferredWarnMs >= LOG_FAILURE_DEFERRED_WARNING_THROTTLE_MS) {
@@ -384,30 +387,44 @@ public final class HealthMonitor {
       return;
     }
 
-    if (logFailureRestarts > 0 && now - lastLogFailureRestartMs >= LOG_FAILURE_EPISODE_RESET_MS) {
-      logFailureRestarts = 0;
-      logFailureEscalated = false;
-    }
-
     if (crashLoopRestartThreshold > 0 && logFailureRestarts >= crashLoopRestartThreshold) {
       if (!logFailureEscalated) {
         logFailureEscalated = true;
         LogManager.instance().log(this, Level.SEVERE,
             "Raft log writer failed again (%s) after %d in-place restarts with free space available; the failure is "
-                + "not about space. Giving up automatic restart for %d minutes - operator intervention required "
-                + "(check the Raft storage volume for I/O errors or permission changes)",
-            failure, logFailureRestarts, LOG_FAILURE_EPISODE_RESET_MS / 60_000L);
+                + "not about space. Giving up automatic restart - operator intervention required (check the Raft "
+                + "storage volume for I/O errors or permission changes)",
+            failure, logFailureRestarts);
       }
       return;
     }
 
     logFailureRestarts++;
-    lastLogFailureRestartMs = now;
     LogManager.instance().log(this, Level.WARNING,
         "Raft log writer failed %s; the Raft storage volume has room again, restarting Ratis in place to resume "
             + "replication (attempt %d, issue #7037)", failure, logFailureRestarts);
     target.restartRatisIfNeeded();
     resetStreaksAfterRestart();
+  }
+
+  /**
+   * Healthy log writer observed. The restart budget of a past incident re-arms only once the writer has stayed
+   * healthy for {@link #LOG_FAILURE_EPISODE_RESET_MS}: a restart clears the mark (fresh state machine), so a
+   * failure that comes straight back is the same incident and keeps consuming the same budget, while one that
+   * returns much later is a new incident. A budget exhausted while the failure persists is never re-armed by
+   * time alone.
+   */
+  private void noteLogWriterHealthy() {
+    if (logFailureRestarts == 0)
+      return;
+    final long now = clock.getAsLong();
+    if (logFailureClearSinceMs < 0)
+      logFailureClearSinceMs = now;
+    else if (now - logFailureClearSinceMs >= LOG_FAILURE_EPISODE_RESET_MS) {
+      logFailureRestarts = 0;
+      logFailureClearSinceMs = -1;
+      logFailureEscalated = false;
+    }
   }
 
   /**

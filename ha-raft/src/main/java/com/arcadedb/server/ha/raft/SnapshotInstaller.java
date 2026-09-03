@@ -883,11 +883,29 @@ public final class SnapshotInstaller {
     if (volume == null)
       return;
     final long usable = volume.getUsableSpace();
-    if (usable < requiredBytes)
+    final long needed = withAllocationReserve(requiredBytes);
+    if (usable < needed)
       throw new IOException("Insufficient space to install the snapshot of '" + databaseName + "': it inflates to "
-          + requiredBytes + " bytes but the volume of '" + volume.getAbsolutePath() + "' has " + usable
-          + " usable. Free space on the volume (the Raft log is purged before every install; see "
-          + "arcadedb.ha.snapshotInterval) and the install is retried");
+          + requiredBytes + " bytes (" + needed + " with the allocation reserve) but the volume of '"
+          + volume.getAbsolutePath() + "' has " + usable + " usable. Free space on the volume (the Raft log is purged "
+          + "before every install; see arcadedb.ha.snapshotInterval) and the install is retried");
+  }
+
+  /**
+   * Reserve added on top of the advertised payload before it is compared with the usable space: the payload is the
+   * logical size, and the extraction also pays per-file block rounding, directory metadata and the durability
+   * markers, and the swap keeps the previous copy in {@code .snapshot-backup} until it is dropped. A payload the
+   * volume can hold only to the byte would still run out mid-extraction, which is the failure the check exists to
+   * turn into an early, clear one. Package-private for tests.
+   */
+  static final int  SPACE_RESERVE_PERCENT   = 5;
+  static final long SPACE_RESERVE_MIN_BYTES = 16L * 1024 * 1024;
+
+  /** {@code requiredBytes} plus the allocation reserve, saturating at {@link Long#MAX_VALUE}. */
+  static long withAllocationReserve(final long requiredBytes) {
+    final long reserve = Math.max(requiredBytes / 100L * SPACE_RESERVE_PERCENT, SPACE_RESERVE_MIN_BYTES);
+    final long needed = requiredBytes + reserve;
+    return needed < requiredBytes ? Long.MAX_VALUE : needed;
   }
 
   /**

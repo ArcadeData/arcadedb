@@ -128,10 +128,44 @@ class Issue7037LogWriterRecoveryTest {
     }
     assertThat(target.restarts.get()).as("the crash-loop budget bounds the in-place restarts").isEqualTo(2);
 
-    // After a quiet window the episode is over and recovery is attempted again.
-    clock.addAndGet(HealthMonitor.LOG_FAILURE_EPISODE_RESET_MS);
+    // Time alone never re-arms an incident that is still going on: the failure is present on every tick.
+    clock.addAndGet(2 * HealthMonitor.LOG_FAILURE_EPISODE_RESET_MS);
+    monitor.tick();
+    monitor.tick();
+    assertThat(target.restarts.get()).as("a persisting failure keeps the exhausted budget exhausted").isEqualTo(2);
+  }
+
+  @Test
+  void budgetReArmsOnlyAfterTheWriterHasBeenHealthyForTheResetWindow() {
+    final FakeTarget target = new FakeTarget();
+    final AtomicLong clock = new AtomicLong(1_000L);
+    final HealthMonitor monitor = monitor(target, 2, clock);
+
+    // Two incidents in quick succession: each restart clears the mark, the disk fills again right away.
+    for (int i = 0; i < 2; i++) {
+      target.logFailure = "at index " + i + ": java.io.IOException: No space left on device";
+      monitor.tick();
+      clock.addAndGet(1_000L);
+    }
+    assertThat(target.restarts.get()).isEqualTo(2);
+
+    // The failure comes back within the window: same incident, budget spent, no restart.
+    target.logFailure = "at index 9: java.io.IOException: No space left on device";
+    monitor.tick();
+    assertThat(target.restarts.get()).isEqualTo(2);
+    target.logFailure = null; // an operator restart cleared it
+
+    // The writer stays healthy for the whole window: the incident is over.
+    for (int i = 0; i < 3; i++) {
+      monitor.tick();
+      clock.addAndGet(HealthMonitor.LOG_FAILURE_EPISODE_RESET_MS / 2);
+    }
+
+    // A new incident much later is recovered again.
+    target.logFailure = "at index 40: java.io.IOException: No space left on device";
     monitor.tick();
     assertThat(target.restarts.get()).isEqualTo(3);
+    assertThat(target.logFailure).isNull();
   }
 
   @Test
