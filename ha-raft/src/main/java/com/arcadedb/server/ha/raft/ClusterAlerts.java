@@ -105,6 +105,8 @@ public class ClusterAlerts {
    */
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final List<FollowerSample> followerSamples, final Set<String> visibleDatabases) {
+    // No membership check here on purpose: reconciling the declared list against the live Raft configuration
+    // needs the RaftHAServer, which only the HA cluster endpoint holds. Callers that have it pass it explicitly.
     return scan(server, stateMachine, followerSamples, visibleDatabases, null, null);
   }
 

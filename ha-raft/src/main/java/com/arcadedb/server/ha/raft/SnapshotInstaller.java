@@ -894,9 +894,11 @@ public final class SnapshotInstaller {
    * {@code File.getUsableSpace()} and {@code getTotalSpace()} answer 0 for a path that does not exist, which would
    * read as "disk full" for a directory that is about to be created (a staging directory, the Raft storage
    * directory before Ratis creates it), so every free-space probe resolves its volume through this one walk.
+   * The walk runs on the absolute form: a relative path's parent chain ends at {@code null} where its components
+   * run out, before ever reaching the working directory that exists.
    */
   static File nearestExistingAncestor(final File path) {
-    File dir = path;
+    File dir = path.getAbsoluteFile();
     while (dir != null && !dir.exists())
       dir = dir.getParentFile();
     return dir;
