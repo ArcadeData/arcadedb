@@ -342,7 +342,18 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           if (!type.isNull("aliases")) {
             final Set<String> aliases = new HashSet<>(type.getJSONArray("aliases").toListOfStrings());
             if (!aliases.isEmpty())
-              docType.setAliases(aliases);
+              try {
+                docType.setAliases(aliases);
+              } catch (final Exception e) {
+                // setAliases() refuses an alias another type already answers to, which an import into a
+                // NON-EMPTY target reaches without anything being wrong with the export. Same trade-off as the
+                // strategy restore below: the type keeps its own name, the import keeps going, and the log says
+                // what was dropped - aborting here would discard every record the file has not reached yet.
+                context.warnings.incrementAndGet();
+                LogManager.instance().log(this, Level.WARNING,
+                    "Cannot restore the aliases %s on type '%s': %s. The type is reachable by its own name only",
+                    e, aliases, typeName, e.getMessage() != null ? e.getMessage() : e.toString());
+              }
           }
 
           if (type.has("custom")) {

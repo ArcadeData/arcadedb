@@ -335,6 +335,14 @@ public final class MultiColumnAggregationResult {
     return vals[requestIndex];
   }
 
+  /**
+   * The number of samples that REACHED this request in this bucket, NaN ones included.
+   * <p>
+   * It is deliberately not a "has this request any real data" test, and must not be used as one: that a NaN
+   * sample increments this counter is precisely what made the old {@code counts[i] == 0} guard miss an all-NaN
+   * bucket and leak the MIN/MAX sentinel (issue #7043). For MIN/MAX, ask the value:
+   * {@code TimeSeriesNaN.isAbsent(getValue(bucketTs, requestIndex))}.
+   */
   public long getCount(final long bucketTs, final int requestIndex) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);

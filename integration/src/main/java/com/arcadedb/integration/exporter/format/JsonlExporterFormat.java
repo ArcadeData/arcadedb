@@ -330,6 +330,8 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
         if (chunk.length() > 0)
           writeJsonLine("ts", new JSONObject().put("t", typeName).put("s", chunk));
       } finally {
+        // Rolled back, never committed, on the success path too: the scan above only reads, so there is nothing
+        // to publish, and a rollback releases the read view without asking the page manager to flush anything.
         if (ownTransaction && database.isTransactionActive())
           database.rollback();
       }
