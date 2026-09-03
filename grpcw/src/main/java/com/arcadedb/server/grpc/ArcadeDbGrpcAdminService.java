@@ -33,6 +33,7 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import io.grpc.Status;
+import io.grpc.StatusException;
 import io.grpc.stub.StreamObserver;
 
 import java.util.ArrayList;
@@ -60,24 +61,18 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   // ------------------------------------------------------------------------------------
 
   @Override
-  public void ping(PingRequest req, StreamObserver<PingResponse> resp) {
-    try {
+  public void ping(final PingRequest req, final StreamObserver<PingResponse> resp) {
+    respond(resp, "ping", () -> {
       // If you want ping to be open, comment out the next line
       authenticate(req.getCredentials());
 
-      PingResponse out = PingResponse.newBuilder().setOk(true).setServerTimeMs(System.currentTimeMillis()).build();
-      resp.onNext(out);
-      resp.onCompleted();
-    } catch (SecurityException se) {
-      resp.onError(Status.UNAUTHENTICATED.withDescription(se.getMessage()).asException());
-    } catch (Exception e) {
-      resp.onError(Status.INTERNAL.withDescription("ping: " + e.getMessage()).asException());
-    }
+      return PingResponse.newBuilder().setOk(true).setServerTimeMs(System.currentTimeMillis()).build();
+    });
   }
 
   @Override
-  public void getServerInfo(GetServerInfoRequest req, StreamObserver<GetServerInfoResponse> resp) {
-    try {
+  public void getServerInfo(final GetServerInfoRequest req, final StreamObserver<GetServerInfoResponse> resp) {
+    respond(resp, "getServerInfo", () -> {
       authenticate(req.getCredentials());
 
       final String version = getServerVersion();
@@ -89,76 +84,48 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       final int binaryPort = getBinaryPort();
 
       final List<String> dbNames = new ArrayList<>(getDatabaseNames());
-      int dbCount = dbNames.size();
+      final int dbCount = dbNames.size();
 
-      GetServerInfoResponse out = GetServerInfoResponse.newBuilder().setVersion(version)
+      return GetServerInfoResponse.newBuilder().setVersion(version)
           .setEdition("CE") // adjust if you expose edition
           .setStartTimeMs(startMs).setUptimeMs(uptime).setHttpPort(httpPort).setGrpcPort(grpcPort).setBinaryPort(binaryPort)
           .setDatabasesCount(dbCount).build();
-
-      resp.onNext(out);
-      resp.onCompleted();
-    } catch (SecurityException se) {
-      resp.onError(Status.UNAUTHENTICATED.withDescription(se.getMessage()).asException());
-    } catch (Exception e) {
-      resp.onError(Status.INTERNAL.withDescription("getServerInfo: " + e.getMessage()).asException());
-    }
+    });
   }
 
   @Override
-  public void listDatabases(ListDatabasesRequest req, StreamObserver<ListDatabasesResponse> resp) {
-
-    try {
-
+  public void listDatabases(final ListDatabasesRequest req, final StreamObserver<ListDatabasesResponse> resp) {
+    respond(resp, "listDatabases", () -> {
       authenticate(req.getCredentials());
 
-      ArrayList<String> names = new ArrayList<>(getDatabaseNames());
+      final ArrayList<String> names = new ArrayList<>(getDatabaseNames());
       names.sort(String.CASE_INSENSITIVE_ORDER);
 
-      resp.onNext(ListDatabasesResponse.newBuilder().addAllDatabases(names).build());
-      resp.onCompleted();
-    } catch (SecurityException se) {
-      resp.onError(Status.UNAUTHENTICATED.withDescription(se.getMessage()).asException());
-    } catch (Exception e) {
-      resp.onError(Status.INTERNAL.withDescription("listDatabases: " + e.getMessage()).asException());
-    }
+      return ListDatabasesResponse.newBuilder().addAllDatabases(names).build();
+    });
   }
 
   @Override
-  public void existsDatabase(ExistsDatabaseRequest req, StreamObserver<ExistsDatabaseResponse> resp) {
-
-    try {
-
+  public void existsDatabase(final ExistsDatabaseRequest req, final StreamObserver<ExistsDatabaseResponse> resp) {
+    respond(resp, "existsDatabase", () -> {
       authenticate(req.getCredentials());
 
       final String name = req.getName(); // proto should define 'name' for the DB
 
-      boolean exists = containsDatabaseIgnoreCase(name);
-
-      resp.onNext(ExistsDatabaseResponse.newBuilder().setExists(exists).build());
-      resp.onCompleted();
-    } catch (SecurityException se) {
-      resp.onError(Status.UNAUTHENTICATED.withDescription(se.getMessage()).asException());
-    } catch (Exception e) {
-      resp.onError(Status.INTERNAL.withDescription("existsDatabase: " + e.getMessage()).asException());
-    }
+      return ExistsDatabaseResponse.newBuilder().setExists(containsDatabaseIgnoreCase(name)).build();
+    });
   }
 
   @Override
-  public void createDatabase(CreateDatabaseRequest req, StreamObserver<CreateDatabaseResponse> resp) {
-
-    try {
+  public void createDatabase(final CreateDatabaseRequest req, final StreamObserver<CreateDatabaseResponse> resp) {
+    respond(resp, "createDatabase", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
 
       final String name = req.getName(); // DB name in proto
       final String type = req.getType(); // "graph" or "document" (logical)
 
-      if (containsDatabaseIgnoreCase(name)) {
-
-        resp.onNext(CreateDatabaseResponse.newBuilder().build());
-        resp.onCompleted();
-        return;
-      }
+      if (containsDatabaseIgnoreCase(name))
+        return CreateDatabaseResponse.newBuilder().build();
 
       // Physical creation (READ_WRITE is the common default)
       createDatabasePhysical(name);
@@ -175,65 +142,38 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
             s.createEdgeType("E");
         });
       }
-      resp.onNext(CreateDatabaseResponse.newBuilder().build());
-      resp.onCompleted();
-    } catch (AdminAuthorizationException ae) {
-      resp.onError(Status.PERMISSION_DENIED.withDescription(ae.getMessage()).asException());
-    } catch (SecurityException se) {
-      resp.onError(Status.UNAUTHENTICATED.withDescription(se.getMessage()).asException());
-    } catch (Exception e) {
-      resp.onError(Status.INTERNAL.withDescription("createDatabase: " + e.getMessage()).asException());
-    }
+      return CreateDatabaseResponse.newBuilder().build();
+    });
   }
 
   @Override
-  public void dropDatabase(DropDatabaseRequest req, StreamObserver<DropDatabaseResponse> resp) {
-
-    try {
-
+  public void dropDatabase(final DropDatabaseRequest req, final StreamObserver<DropDatabaseResponse> resp) {
+    respond(resp, "dropDatabase", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
 
       final String name = req.getName();
 
-      if (!containsDatabaseIgnoreCase(name)) {
-        resp.onNext(DropDatabaseResponse.newBuilder().build());
-        resp.onCompleted();
-        return;
-      }
+      if (containsDatabaseIgnoreCase(name))
+        dropDatabasePhysical(name);
 
-      dropDatabasePhysical(name);
-
-      resp.onNext(DropDatabaseResponse.newBuilder().build());
-      resp.onCompleted();
-    } catch (AdminAuthorizationException ae) {
-      resp.onError(Status.PERMISSION_DENIED.withDescription(ae.getMessage()).asException());
-    } catch (SecurityException se) {
-      resp.onError(Status.UNAUTHENTICATED.withDescription(se.getMessage()).asException());
-    } catch (Exception e) {
-      resp.onError(Status.INTERNAL.withDescription("dropDatabase: " + e.getMessage()).asException());
-    }
+      return DropDatabaseResponse.newBuilder().build();
+    });
   }
 
   @Override
-  public void getDatabaseInfo(GetDatabaseInfoRequest req, StreamObserver<GetDatabaseInfoResponse> resp) {
-
-    try {
-
+  public void getDatabaseInfo(final GetDatabaseInfoRequest req, final StreamObserver<GetDatabaseInfoResponse> resp) {
+    respond(resp, "getDatabaseInfo", () -> {
       authenticate(req.getCredentials());
 
       final String name = req.getName();
 
-      if (!containsDatabaseIgnoreCase(name)) {
-        resp.onError(Status.NOT_FOUND.withDescription("Database not found: " + name).asException());
-        return;
-      }
+      if (!containsDatabaseIgnoreCase(name))
+        throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
       // Use getDatabase which returns a shared ServerDatabase - don't close it
       final Database db = openDatabase(name);
-      if (db == null) {
-        resp.onError(Status.NOT_FOUND.withDescription("Database not found: " + name).asException());
-        return;
-      }
+      if (db == null)
+        throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
       final Schema schema = db.getSchema();
 
@@ -253,7 +193,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       }
 
       // Approximate record count (fast-ish; adjust to your needs)
-      long records = approximateRecordCount(db);
+      final long records = approximateRecordCount(db);
 
       // Infer db kind: "graph" if any vertex type exists
       String type = "document";
@@ -266,18 +206,11 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
         // Keep default "document" type if schema inspection fails
       }
 
-      GetDatabaseInfoResponse out = GetDatabaseInfoResponse.newBuilder()
+      return GetDatabaseInfoResponse.newBuilder()
           .setDatabase(name)
           .setClasses(classes).setIndexes(indexes).setRecords(records).setType(type)
           .build();
-
-      resp.onNext(out);
-      resp.onCompleted();
-    } catch (SecurityException se) {
-      resp.onError(Status.UNAUTHENTICATED.withDescription(se.getMessage()).asException());
-    } catch (Exception e) {
-      resp.onError(Status.INTERNAL.withDescription("getDatabaseInfo: " + e.getMessage()).asException());
-    }
+    });
   }
 
   @Override
@@ -301,6 +234,30 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   // ------------------------------------------------------------------------------------
   // Helpers
   // ------------------------------------------------------------------------------------
+
+  /**
+   * Every unary handler of this service goes through here so the call is terminated exactly once (issue #7035):
+   * the same {@code responded} guard {@link ArcadeDbGrpcService} carries inline, applied by {@link GrpcUnaryCall}.
+   * {@code operation} prefixes the description of an unexpected failure, as the inline catch blocks used to.
+   */
+  private static <T> void respond(final StreamObserver<T> resp, final String operation, final GrpcUnaryCall.Body<T> body) {
+    GrpcUnaryCall.respond(resp, body, e -> toStatus(operation, e));
+  }
+
+  /**
+   * Maps a handler failure to the status the client receives. A {@link StatusException} raised by the body (the
+   * NOT_FOUND of {@code getDatabaseInfo}) is sent as it is; the authorization exception is checked before the
+   * authentication one because it is the more specific outcome, not because of any inheritance between the two.
+   */
+  private static StatusException toStatus(final String operation, final Exception e) {
+    if (e instanceof StatusException se)
+      return se;
+    if (e instanceof AdminAuthorizationException)
+      return Status.PERMISSION_DENIED.withDescription(e.getMessage()).asException();
+    if (e instanceof SecurityException)
+      return Status.UNAUTHENTICATED.withDescription(e.getMessage()).asException();
+    return Status.INTERNAL.withDescription(operation + ": " + e.getMessage()).asException();
+  }
 
   // Defense-in-depth: GrpcAuthInterceptor already authenticates these body credentials centrally
   // before the call reaches this handler. This handler-side check is intentionally kept (do not

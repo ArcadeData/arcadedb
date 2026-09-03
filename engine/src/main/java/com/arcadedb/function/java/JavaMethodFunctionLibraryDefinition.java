@@ -21,10 +21,19 @@ import com.arcadedb.function.FunctionLibraryDefinition;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.Set;
 
 /**
- * Function library that allows invocation of functions written in Java language.
+ * Function library that allows invocation of functions written in Java language: a single method, exposed under the
+ * library name.
+ * <p>
+ * A method that is not static is invoked on an instance. The instance-less constructors create one HERE, at the
+ * registration site, through the public no-arg constructor of the declaring class - the same choice
+ * {@link JavaClassFunctionLibraryDefinition} makes for a whole class - and that is the only place it happens:
+ * {@link JavaMethodFunctionDefinition} itself never instantiates anything (issue #7046). To invoke the method on an
+ * object of the caller's choosing, one that carries state or dependencies, register it through
+ * {@link #JavaMethodFunctionLibraryDefinition(String, Object, Method)}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -33,16 +42,44 @@ public class JavaMethodFunctionLibraryDefinition implements FunctionLibraryDefin
   private final Method                       method;
   private final JavaMethodFunctionDefinition function;
 
+  /**
+   * Exposes a method under a library named after its declaring class and its name. A non-static method is invoked on
+   * a new instance of its declaring class, created through the public no-arg constructor.
+   */
   public JavaMethodFunctionLibraryDefinition(final Method method)
       throws InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
     this(method.getDeclaringClass() + "::" + method.getName(), method);
   }
 
+  /**
+   * Exposes a method under {@code libraryName}. A non-static method is invoked on a new instance of its declaring
+   * class, created through the public no-arg constructor.
+   *
+   * @throws NoSuchMethodException     when the method is not static and its class has no public no-arg constructor
+   * @throws InstantiationException    when the method is not static and its class cannot be instantiated
+   * @throws IllegalAccessException    when the method is not static and its constructor is not accessible
+   * @throws InvocationTargetException when the method is not static and its constructor throws
+   */
   public JavaMethodFunctionLibraryDefinition(final String libraryName, final Method method)
       throws InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
+    this(libraryName, Modifier.isStatic(method.getModifiers()) ? null : method.getDeclaringClass().getConstructor().newInstance(),
+        method);
+  }
+
+  /**
+   * Exposes a method under {@code libraryName}, invoked on {@code instance} when it is not static.
+   *
+   * @param libraryName the library name the function is registered under
+   * @param instance    the object to invoke the method on; required when the method is not static, ignored (may be
+   *                    {@code null}) when it is
+   * @param method      the method to expose
+   *
+   * @throws IllegalArgumentException when {@code method} is not static and {@code instance} is {@code null}
+   */
+  public JavaMethodFunctionLibraryDefinition(final String libraryName, final Object instance, final Method method) {
     this.method = method;
     this.libraryName = libraryName;
-    this.function = new JavaMethodFunctionDefinition(method);
+    this.function = new JavaMethodFunctionDefinition(instance, method);
   }
 
   @Override

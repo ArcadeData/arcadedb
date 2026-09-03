@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -159,6 +161,69 @@ class JavaFunctionTest extends TestHelper {
     database.getSchema().unregisterFunctionLibrary("math");
     database.getSchema()
             .registerFunctionLibrary(new JavaMethodFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class.getMethod("sum", Integer.TYPE, Integer.TYPE)));
+  }
+
+  public static class Counter {
+    private int count = 0;
+
+    public int next() {
+      return ++count;
+    }
+  }
+
+  /**
+   * Issue #7046: {@link JavaMethodFunctionDefinition} refuses a non-static method registered without an instance
+   * rather than instantiating its declaring class behind the registration site's back.
+   */
+  @Test
+  void nonStaticMethodWithoutAnInstanceIsRejected() throws Exception {
+    final Method next = Counter.class.getMethod("next");
+
+    assertThatThrownBy(() -> new JavaMethodFunctionDefinition(next))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("not static");
+    assertThatThrownBy(() -> new JavaMethodFunctionDefinition(null, next))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("not static");
+    assertThatThrownBy(() -> new JavaMethodFunctionDefinition(null, List.of(next)))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("not static");
+    assertThatThrownBy(() -> new JavaMethodFunctionLibraryDefinition("counter", null, next))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("not static");
+  }
+
+  /** Issue #7046: the instance a registration supplies is the one the method is invoked on, and it keeps its state. */
+  @Test
+  void nonStaticMethodIsInvokedOnTheSuppliedInstance() throws Exception {
+    final Counter counter = new Counter();
+    database.getSchema().registerFunctionLibrary(
+        new JavaMethodFunctionLibraryDefinition("counter", counter, Counter.class.getMethod("next")));
+
+    assertThat(database.getSchema().getFunction("counter", "next").execute()).isEqualTo(1);
+    assertThat(database.getSchema().getFunction("counter", "next").execute()).isEqualTo(2);
+    assertThat(counter.count).isEqualTo(2);
+  }
+
+  /**
+   * Issue #7046: the instance-less library form still serves a non-static method, but the instance it invokes it on
+   * is created by the library - the registration site - and not by the function definition.
+   */
+  @Test
+  void instanceLessLibraryFormInstantiatesAtTheRegistrationSite() throws Exception {
+    final JavaMethodFunctionLibraryDefinition library = new JavaMethodFunctionLibraryDefinition("counter",
+        Counter.class.getMethod("next"));
+    assertThat(library.getFunction("next").execute()).isEqualTo(1);
+    assertThat(library.getFunction("next").execute()).isEqualTo(2);
+
+    // Each library gets an instance of its own, so two registrations of the same method never share state.
+    final JavaMethodFunctionLibraryDefinition another = new JavaMethodFunctionLibraryDefinition("counter2",
+        Counter.class.getMethod("next"));
+    assertThat(another.getFunction("next").execute()).isEqualTo(1);
+  }
+
+  /** A static method needs no instance, and one passed anyway is neither required nor an error. */
+  @Test
+  void staticMethodNeedsNoInstance() throws Exception {
+    final Method boom = Sum.class.getMethod("boom");
+    assertThat(new JavaMethodFunctionDefinition(boom).getName()).contains("boom");
+    assertThat(new JavaMethodFunctionDefinition(new Sum(), boom).getName()).contains("boom");
   }
 
   @Test
