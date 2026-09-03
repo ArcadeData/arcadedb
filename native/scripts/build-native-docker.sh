@@ -59,6 +59,10 @@ set -euo pipefail
 #                          already holding 2480 makes `docker run -p 2480:2480` fail, or - worse,
 #                          if it started before the publish - makes exercise.sh assert against
 #                          THAT server and pass while telling you nothing about this image.
+#   --builder-memory <sz>  Cap the native-image builder heap, e.g. 10g, via NATIVE_IMAGE_OPTIONS
+#                          (-J-Xmx). By default native-image sizes its own heap at ~80% of what it
+#                          can see, which is the Docker VM's memory, not the host's.
+#   --allow-low-memory     Proceed even though Docker has less memory than this build needs.
 #   --rebuild-builder      Rebuild the builder image even if it already exists locally.
 #   --allow-emulation      Permit --arch different from the host's (QEMU; expect hours, not minutes).
 #   -h, --help             Print this help.
@@ -83,6 +87,8 @@ SKIP_BINARY=0
 RUN_SMOKE=1
 REBUILD_BUILDER=0
 ALLOW_EMULATION=0
+ALLOW_LOW_MEMORY=0
+BUILDER_MEMORY=""
 HTTP_PORT=2480
 
 log()  { echo "[native-docker] $*"; }
@@ -102,6 +108,9 @@ while [ $# -gt 0 ]; do
     --no-smoke)         RUN_SMOKE=0; shift ;;
     --port)             HTTP_PORT="${2:-}"; shift 2 ;;
     --port=*)           HTTP_PORT="${1#*=}"; shift ;;
+    --builder-memory)   BUILDER_MEMORY="${2:-}"; shift 2 ;;
+    --builder-memory=*) BUILDER_MEMORY="${1#*=}"; shift ;;
+    --allow-low-memory) ALLOW_LOW_MEMORY=1; shift ;;
     --rebuild-builder)  REBUILD_BUILDER=1; shift ;;
     --allow-emulation)  ALLOW_EMULATION=1; shift ;;
     -h|--help)          usage; exit 0 ;;
@@ -128,6 +137,54 @@ if [ "$ARCH" != "$HOST_ARCH" ] && [ "$ALLOW_EMULATION" != "1" ]; then
   emulation, which takes hours and frequently exhausts memory. Pass --allow-emulation if you
   really want that; otherwise build $ARCH on a $ARCH machine (that is why CI's docker job runs
   each arch on its own native runner rather than one runner with buildx --platform)."
+fi
+
+# ---------------------------------------------------------------------------
+# Memory preflight.
+#
+# native-image sizes its build heap at roughly 80% of the memory it can SEE, and inside a
+# container that is the Docker VM's allocation, not the host's. A Mac with 36 GB whose Docker
+# Desktop is left on the 8 GB default therefore OOMs - and it does so ~21 minutes in, after the
+# entire Maven reactor has already built, with "Terminating due to java.lang.OutOfMemoryError:
+# Java heap space" and no hint that the VM setting is the cause. That is an expensive way to
+# learn it, so check up front. This image embeds GraalJS, which is what makes it so hungry:
+# native-image.yml had to move its macOS leg onto a paid larger runner for the same reason,
+# because the free ~7 GB one OOM-thrashed for 40+ minutes.
+#
+# 12 GiB is the floor enforced here and 16 GiB is what CI's Linux runners have; 8 GiB is known
+# to fail. Raise it in Docker Desktop under Settings -> Resources -> Memory.
+# ---------------------------------------------------------------------------
+DOCKER_MEM_BYTES="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
+case "$DOCKER_MEM_BYTES" in
+  ''|*[!0-9]*) DOCKER_MEM_BYTES=0 ;;
+esac
+if [ "$DOCKER_MEM_BYTES" -gt 0 ] && [ "$SKIP_BINARY" = "0" ]; then
+  # Tenths of a GiB, so a 7.6 GiB VM does not print as a flat "7" next to a "needs 12" and read
+  # like a bigger shortfall than it is.
+  DOCKER_MEM_MIB=$(( DOCKER_MEM_BYTES / 1024 / 1024 ))
+  DOCKER_MEM="$(( DOCKER_MEM_MIB / 1024 )).$(( (DOCKER_MEM_MIB % 1024) * 10 / 1024 ))"
+  HOST_MEM_BYTES="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+  HOST_MEM_NOTE=""
+  if [ "$HOST_MEM_BYTES" -gt "$DOCKER_MEM_BYTES" ]; then
+    HOST_MEM_NOTE=" (this machine has $(( HOST_MEM_BYTES / 1024 / 1024 / 1024 )) GiB, but Docker only gets what you allot it)"
+  fi
+  if [ "$DOCKER_MEM_MIB" -lt $(( 12 * 1024 )) ]; then
+    if [ "$ALLOW_LOW_MEMORY" = "1" ]; then
+      log "WARN: Docker has only ${DOCKER_MEM} GiB; proceeding anyway (--allow-low-memory)."
+    else
+      fail "Docker has ${DOCKER_MEM} GiB of memory, which is not enough to link this image${HOST_MEM_NOTE}.
+  native-image sizes its build heap at ~80% of the memory it can see, and inside a container that
+  is the Docker VM's allocation. At ${DOCKER_MEM} GiB it dies with a Java heap OutOfMemoryError
+  about 21 minutes in, once the whole Maven reactor has already built. CI's Linux runners have
+  16 GiB; 12 is the floor checked here.
+  Raise it in Docker Desktop: Settings -> Resources -> Memory, then restart Docker.
+  Or pass --allow-low-memory to try regardless, --builder-memory <size> to cap the builder heap
+  explicitly, or --skip-binary-build if you only need to rebuild the image around an existing
+  binary (that step is cheap and needs none of this)."
+    fi
+  else
+    log "docker memory: ${DOCKER_MEM} GiB"
+  fi
 fi
 
 # amd64 links fully static against musl and runs on scratch; arm64 cannot (GraalVM CE ships no
@@ -218,6 +275,15 @@ if [ -f "$REPO_ROOT/.git" ]; then
   fi
 fi
 
+# native-image reads NATIVE_IMAGE_OPTIONS from the environment and prepends it to its own
+# arguments (it announces "Picked up NATIVE_IMAGE_OPTIONS: ..." when it does), so the builder heap
+# can be capped without touching native/pom.xml's buildArgs, which are shared with CI.
+NI_OPTS=()
+if [ -n "$BUILDER_MEMORY" ]; then
+  NI_OPTS=(-e "NATIVE_IMAGE_OPTIONS=-J-Xmx${BUILDER_MEMORY}")
+  log "capping the native-image builder heap at $BUILDER_MEMORY"
+fi
+
 if [ "$SKIP_BINARY" = "0" ]; then
   mkdir -p "$M2_DIR"
   log "building the linux/$ARCH binary in the container (this is the slow part)"
@@ -228,6 +294,7 @@ if [ "$SKIP_BINARY" = "0" ]; then
     --platform "linux/$ARCH" \
     --user "$(id -u):$(id -g)" \
     -e HOME=/m2 \
+    ${NI_OPTS[@]+"${NI_OPTS[@]}"} \
     -v "$REPO_ROOT:/workspace" \
     -v "$M2_DIR:/m2" \
     ${GIT_MOUNT[@]+"${GIT_MOUNT[@]}"} \

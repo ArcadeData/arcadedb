@@ -260,6 +260,15 @@ cannot cross-compile, so a macOS host has no other way to produce the Linux bina
 need. Both **runtime** Dockerfiles are used unmodified, so what you get is the shipped image
 rather than a local approximation; only the builder image is local-only, and it is never published.
 
+**Give Docker at least 12 GiB of memory** (Docker Desktop: Settings -> Resources -> Memory; CI's
+Linux runners have 16 GiB). `native-image` sizes its build heap at ~80% of the memory it can see,
+and inside a container that is the Docker VM's allocation, not the host's - so a 36 GiB Mac left on
+Docker Desktop's 8 GiB default still fails, with a Java heap `OutOfMemoryError` about 21 minutes in,
+once the whole Maven reactor has already built. This image embeds GraalJS, which is why it is so
+hungry: `native-image.yml` had to move its macOS leg onto a paid larger runner for the same reason.
+The script checks this up front rather than letting you discover it 21 minutes later;
+`--builder-memory <size>` caps the builder heap explicitly, and `--allow-low-memory` skips the check.
+
 The GraalVM download URL is resolved at build time from the `graal-<version>` release matching
 `native/pom.xml`'s `native.graalvm.version`, so the builder cannot drift from the pin the way a
 hardcoded URL would - see that property's comment for why that matters. The Maven repository and
