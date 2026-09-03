@@ -21,7 +21,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.CreateEdgeExecutionPlanner;
@@ -56,14 +55,15 @@ public class CreateEdgeStatement extends Statement {
     context.setDatabase(database);
     context.setInputParameters(args);
 
-    final boolean implicitTransaction = ((DatabaseInternal) database).checkTransactionIsActive(database.isAutoTransaction());
+    final boolean implicitTransaction = beginImplicitTransaction(database);
+    boolean success = false;
     try {
       final InsertExecutionPlan executionPlan = createExecutionPlan(context);
       executionPlan.executeInternal();
+      success = true;
       return new LocalResultSet(executionPlan);
     } finally {
-      if (implicitTransaction)
-        database.commit();
+      endImplicitTransaction(database, implicitTransaction, success);
     }
   }
 
@@ -77,14 +77,15 @@ public class CreateEdgeStatement extends Statement {
     context.setDatabase(database);
     context.setInputParameters(params);
 
-    final boolean implicitTransaction = ((DatabaseInternal) database).checkTransactionIsActive(database.isAutoTransaction());
+    final boolean implicitTransaction = beginImplicitTransaction(database);
+    boolean success = false;
     try {
       final InsertExecutionPlan executionPlan = createExecutionPlan(context);
       executionPlan.executeInternal();
+      success = true;
       return new LocalResultSet(executionPlan);
     } finally {
-      if (implicitTransaction)
-        database.commit();
+      endImplicitTransaction(database, implicitTransaction, success);
     }
   }
 

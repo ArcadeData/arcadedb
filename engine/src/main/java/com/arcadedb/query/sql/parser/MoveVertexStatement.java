@@ -3,7 +3,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
@@ -33,12 +32,14 @@ public class MoveVertexStatement extends Statement {
       for (int i = 0; i < args.length; i++)
         params.put(String.valueOf(i), args[i]);
 
-    final boolean implicitTransaction = ((DatabaseInternal) database).checkTransactionIsActive(database.isAutoTransaction());
+    final boolean implicitTransaction = beginImplicitTransaction(database);
+    boolean success = false;
     try {
-      return execute(database, params, parentCtx, usePlanCache);
+      final ResultSet result = execute(database, params, parentCtx, usePlanCache);
+      success = true;
+      return result;
     } finally {
-      if (implicitTransaction)
-        database.commit();
+      endImplicitTransaction(database, implicitTransaction, success);
     }
   }
 
@@ -52,16 +53,15 @@ public class MoveVertexStatement extends Statement {
     ctx.setDatabase(database);
     ctx.setInputParameters(params);
 
-    final boolean implicitTransaction = ((DatabaseInternal) database).checkTransactionIsActive(database.isAutoTransaction());
+    final boolean implicitTransaction = beginImplicitTransaction(database);
+    boolean success = false;
     try {
       final UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, limit != null ? limit.getValue(ctx) : 0);
-
       executionPlan.executeInternal();
+      success = true;
       return new LocalResultSet(executionPlan);
-
     } finally {
-      if (implicitTransaction)
-        database.commit();
+      endImplicitTransaction(database, implicitTransaction, success);
     }
   }
 

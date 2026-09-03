@@ -90,9 +90,16 @@ public class DeleteStatement extends Statement {
     }
     context.setDatabase(db);
     context.setInputParameters(params);
-    final DeleteExecutionPlan executionPlan = createExecutionPlan(context);
-    executionPlan.executeInternal();
-    return new LocalResultSet(executionPlan);
+    final boolean implicitTransaction = beginImplicitTransaction(db);
+    boolean success = false;
+    try {
+      final DeleteExecutionPlan executionPlan = createExecutionPlan(context);
+      executionPlan.executeInternal();
+      success = true;
+      return new LocalResultSet(executionPlan);
+    } finally {
+      endImplicitTransaction(db, implicitTransaction, success);
+    }
   }
 
   @Override
@@ -103,9 +110,16 @@ public class DeleteStatement extends Statement {
     }
     context.setDatabase(db);
     context.setInputParameters(args);
-    final DeleteExecutionPlan executionPlan = createExecutionPlan(context);
-    executionPlan.executeInternal();
-    return new LocalResultSet(executionPlan);
+    final boolean implicitTransaction = beginImplicitTransaction(db);
+    boolean success = false;
+    try {
+      final DeleteExecutionPlan executionPlan = createExecutionPlan(context);
+      executionPlan.executeInternal();
+      success = true;
+      return new LocalResultSet(executionPlan);
+    } finally {
+      endImplicitTransaction(db, implicitTransaction, success);
+    }
   }
 
   public DeleteExecutionPlan createExecutionPlan(final CommandContext context) {
