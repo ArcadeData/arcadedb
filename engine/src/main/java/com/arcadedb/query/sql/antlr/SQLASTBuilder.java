@@ -3257,7 +3257,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           firstModifier = modifier;
         else
           currentModifier.next = modifier;
+        // A VISITED MODIFIER MAY ALREADY BE A CHAIN (A PARENTHESISED STATEMENT'S MODIFIERS ARE): APPEND AFTER ITS TAIL,
+        // NOT AFTER ITS HEAD, OR THE NEXT ONE WOULD OVERWRITE THE REST OF IT
         currentModifier = modifier;
+        while (currentModifier.next != null)
+          currentModifier = currentModifier.next;
       }
     return firstModifier;
   }
@@ -3857,26 +3861,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     // Process modifiers if present (e.g., (SELECT ...).name or (SELECT ...)[0])
-    if (CollectionUtils.isNotEmpty(ctx.modifier())) {
-      Modifier firstModifier = null;
-      Modifier currentModifier = null;
-
-      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
-        final Modifier modifier = (Modifier) visit(modCtx);
-
-        if (firstModifier == null) {
-          firstModifier = modifier;
-          currentModifier = modifier;
-        } else {
-          // Find the end of the current modifier chain
-          while (currentModifier.next != null)
-            currentModifier = currentModifier.next;
-          currentModifier.next = modifier;
-          currentModifier = modifier;
-        }
-      }
-      result.setModifier(firstModifier);
-    }
+    if (CollectionUtils.isNotEmpty(ctx.modifier()))
+      result.setModifier(buildModifierChain(ctx.modifier()));
 
     return result;
   }
@@ -3896,26 +3882,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     baseExpr.parenthesized = true;
 
     // Process modifiers if present
-    if (CollectionUtils.isNotEmpty(ctx.modifier())) {
-      Modifier firstModifier = null;
-      Modifier currentModifier = null;
-
-      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
-        final Modifier modifier = (Modifier) visit(modCtx);
-
-        if (firstModifier == null) {
-          firstModifier = modifier;
-          currentModifier = modifier;
-        } else {
-          // Find the end of the current modifier chain
-          while (currentModifier.next != null)
-            currentModifier = currentModifier.next;
-          currentModifier.next = modifier;
-          currentModifier = modifier;
-        }
-      }
-      baseExpr.setModifier(firstModifier);
-    }
+    if (CollectionUtils.isNotEmpty(ctx.modifier()))
+      baseExpr.setModifier(buildModifierChain(ctx.modifier()));
 
     return baseExpr;
   }
