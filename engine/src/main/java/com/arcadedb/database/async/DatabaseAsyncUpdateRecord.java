@@ -23,6 +23,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.log.LogManager;
 
 import java.util.logging.Level;
@@ -50,6 +52,9 @@ public class DatabaseAsyncUpdateRecord implements DatabaseAsyncTask {
     try {
       if (record.getIdentity() == null)
         throw new IllegalArgumentException("Cannot update the record because it is not persistent");
+
+      if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+        throw new DatabaseIsReadOnlyException("Cannot update a record");
 
       if (record instanceof MutableDocument document)
         document.validate();
