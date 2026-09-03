@@ -146,6 +146,19 @@ class Issue7032JsonlRoundTripIT {
       assertThat(tsType.getTsColumns().get(2).getCompressionHint()).as("the per-column codec is not re-derivable")
           .isEqualTo(TimeSeriesCodec.GORILLA_XOR);
 
+      // Every non-default TIMESERIES setting the export carries must come back, tiers in order.
+      final LocalTimeSeriesType policy = (LocalTimeSeriesType) target.getSchema().getType("SensorPolicy");
+      assertThat(policy.getTimestampColumn()).isEqualTo("ts");
+      assertThat(policy.getPrecision()).isEqualTo("MICROSECOND");
+      assertThat(policy.getShardCount()).isEqualTo(3);
+      assertThat(policy.getRetentionMs()).isEqualTo(90L * 86_400_000L);
+      assertThat(policy.getCompactionBucketIntervalMs()).isEqualTo(30_000L);
+      assertThat(policy.getDownsamplingTiers()).hasSize(2);
+      assertThat(policy.getDownsamplingTiers().get(0).afterMs()).isEqualTo(7L * 86_400_000L);
+      assertThat(policy.getDownsamplingTiers().get(0).granularityMs()).isEqualTo(3_600_000L);
+      assertThat(policy.getDownsamplingTiers().get(1).afterMs()).isEqualTo(30L * 86_400_000L);
+      assertThat(policy.getDownsamplingTiers().get(1).granularityMs()).isEqualTo(86_400_000L);
+
       final List<Double> values = new ArrayList<>();
       final List<Float> ratios = new ArrayList<>();
       try (final ResultSet rs = target.query("sql", "SELECT value, ratio FROM Sensor ORDER BY ts")) {
@@ -254,6 +267,22 @@ class Issue7032JsonlRoundTripIT {
       // to 0 whatever the width, so both float and double columns need the string markers.
       source.command("sql",
           "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE, ratio FLOAT) SHARDS 2");
+
+      // A second TIMESERIES type whose retention / precision / compaction / downsampling settings are all
+      // NON-default, so the restore of each one is actually pinned. It carries no samples on purpose: a retention
+      // policy would otherwise expire the epoch-1970 timestamps the sample-carrying type uses.
+      source.command("sql", """
+          CREATE TIMESERIES TYPE SensorPolicy
+            TIMESTAMP ts PRECISION MICROSECOND
+            TAGS (host STRING)
+            FIELDS (value DOUBLE)
+            SHARDS 3
+            RETENTION 90 DAYS
+            COMPACTION INTERVAL 30 SECONDS
+          """);
+      source.command("sql",
+          "ALTER TIMESERIES TYPE SensorPolicy ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS "
+              + "AFTER 30 DAYS GRANULARITY 1 DAYS");
 
       // A NaN sample has no SQL literal, so the samples go in through the engine.
       final LocalTimeSeriesType tsType = (LocalTimeSeriesType) source.getSchema().getType("Sensor");
