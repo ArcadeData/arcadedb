@@ -25,6 +25,7 @@ import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -135,14 +136,18 @@ class Issue7032JsonlRoundTripIT {
       final LocalTimeSeriesType tsType = (LocalTimeSeriesType) target.getSchema().getType("Sensor");
       assertThat(tsType.getShardCount()).isEqualTo(2);
       assertThat(tsType.getTsColumns().stream().map(ColumnDefinition::getName).toList())
-          .containsExactly("ts", "host", "value");
+          .containsExactly("ts", "host", "value", "ratio");
       assertThat(tsType.getTsColumns().get(2).getCompressionHint()).as("the per-column codec is not re-derivable")
           .isEqualTo(TimeSeriesCodec.GORILLA_XOR);
 
       final List<Double> values = new ArrayList<>();
-      try (final ResultSet rs = target.query("sql", "SELECT value FROM Sensor ORDER BY ts")) {
-        while (rs.hasNext())
-          values.add(((Number) rs.next().getProperty("value")).doubleValue());
+      final List<Float> ratios = new ArrayList<>();
+      try (final ResultSet rs = target.query("sql", "SELECT value, ratio FROM Sensor ORDER BY ts")) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          values.add(((Number) row.getProperty("value")).doubleValue());
+          ratios.add(((Number) row.getProperty("ratio")).floatValue());
+        }
       }
       assertThat(values).hasSize(3);
       assertThat(values.get(0)).isEqualTo(1.5);
@@ -150,6 +155,43 @@ class Issue7032JsonlRoundTripIT {
       // back as a measurement of zero.
       assertThat(values.get(1)).isNaN();
       assertThat(values.get(2)).isEqualTo(3.5);
+
+      // Same encoding, narrower column: a non-finite FLOAT must not come back as 0 either.
+      assertThat(ratios.get(0)).isEqualTo(0.5f);
+      assertThat(ratios.get(1)).isNaN();
+      assertThat(ratios.get(2)).isEqualTo(Float.POSITIVE_INFINITY);
+    }
+  }
+
+  /**
+   * The alias restore must not be able to abort an import. {@code setAliases} refuses an alias another type
+   * already answers to, which an import into a NON-EMPTY target reaches without anything being wrong with the
+   * export - and aborting there would discard every record the file has not reached yet.
+   */
+  @Test
+  void anAliasAlreadyTakenInTheTargetDowngradesToAWarningInsteadOfAbortingTheImport() throws Exception {
+    createSourceDatabase();
+    new Exporter(("-f " + FILE + " -d " + SOURCE_PATH + " -o -format jsonl").split(" ")).exportDatabase();
+
+    try (final Database target = new DatabaseFactory(TARGET_PATH).create()) {
+      // Claims "Bill" before the import gets there, so Invoice's alias cannot be restored.
+      target.getSchema().createDocumentType("Bill");
+      target.command("sql", "IMPORT DATABASE file://" + new File(FILE).getAbsolutePath());
+    }
+
+    try (final Database target = new DatabaseFactory(TARGET_PATH).open()) {
+      // Every record after the schema line still made it in.
+      assertThat(target.countType("Person", false)).isEqualTo(2);
+      assertThat(target.countType("Friend", false)).isEqualTo(1);
+      assertThat(target.countType("Invoice", false)).isEqualTo(1);
+      assertThat(target.query("sql", "SELECT count(*) AS c FROM Sensor").next().<Number>getProperty("c").longValue())
+          .isEqualTo(3L);
+
+      // The type keeps its own name; the alias it could not take is simply not registered.
+      final DocumentType invoice = target.getSchema().getType("Invoice");
+      assertThat(invoice.getAliases()).doesNotContain("Bill");
+      assertThat(invoice.getCustomValue("retention")).as("the rest of the type metadata is unaffected")
+          .isEqualTo("7y");
     }
   }
 
@@ -172,15 +214,18 @@ class Issue7032JsonlRoundTripIT {
         source.newDocument("Invoice").set("code", "INV-1").save();
       });
 
+      // The FLOAT column is here for the non-finite encoding: JSONArray.put(Number) rewrites NaN and +/-Infinity
+      // to 0 whatever the width, so both float and double columns need the string markers.
       source.command("sql",
-          "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 2");
+          "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE, ratio FLOAT) SHARDS 2");
 
       // A NaN sample has no SQL literal, so the samples go in through the engine.
       final LocalTimeSeriesType tsType = (LocalTimeSeriesType) source.getSchema().getType("Sensor");
       source.begin();
       tsType.getEngine().appendSamples(new long[] { 1_000L, 2_000L, 3_000L },
           new Object[] { "h1", "h1", "h2" },
-          new Object[] { 1.5, Double.NaN, 3.5 });
+          new Object[] { 1.5, Double.NaN, 3.5 },
+          new Object[] { 0.5f, Float.NaN, Float.POSITIVE_INFINITY });
       source.commit();
     }
   }
