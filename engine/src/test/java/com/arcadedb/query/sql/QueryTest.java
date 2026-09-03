@@ -1501,6 +1501,37 @@ class QueryTest extends TestHelper {
     });
   }
 
+  // Issue #7084: CONTAINSANY with an array (not a List) on the RHS - a split() or a bound Java array - never matched anything
+  @Test
+  void containsAnyWithArrayOnRhs() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc7084 IF NOT EXISTS");
+      database.command("sql", "INSERT INTO doc7084 SET tags = ['red','green']");
+      database.command("sql", "INSERT INTO doc7084 SET tags = ['black']");
+
+      final ResultSet split = database.query("sql", "SELECT FROM doc7084 WHERE tags CONTAINSANY 'red blue'.split(' ')");
+      assertThat(split.hasNext()).isTrue();
+      assertThat(split.next().<List<String>>getProperty("tags")).containsExactly("red", "green");
+      assertThat(split.hasNext()).isFalse();
+
+      final ResultSet parameter = database.query("sql", "SELECT FROM doc7084 WHERE tags CONTAINSANY :wanted",
+          Map.of("wanted", new String[] { "blue", "green" }));
+      assertThat(parameter.hasNext()).isTrue();
+      assertThat(parameter.next().<List<String>>getProperty("tags")).containsExactly("red", "green");
+      assertThat(parameter.hasNext()).isFalse();
+
+      // No row holds any of the terms, so the operator is not answering "true" blindly
+      final ResultSet none = database.query("sql", "SELECT FROM doc7084 WHERE tags CONTAINSANY 'blue white'.split(' ')");
+      assertThat(none.hasNext()).isFalse();
+
+      // CONTAINSANY and CONTAINSALL must agree on the same inputs
+      final ResultSet all = database.query("sql", "SELECT FROM doc7084 WHERE tags CONTAINSALL 'red green'.split(' ')");
+      assertThat(all.hasNext()).isTrue();
+      assertThat(all.next().<List<String>>getProperty("tags")).containsExactly("red", "green");
+      assertThat(all.hasNext()).isFalse();
+    });
+  }
+
   // Issue #3583: chained replace().ilike() inside a LET subquery combined with UNIONALL evaluates without $current null
   @Test
   void replaceWithIlikeInLetSubquery() {
