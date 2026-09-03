@@ -186,8 +186,9 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 | org.apache.tinkerpop | gremlin-groovy | 3.8.x | Apache 2.0 | https://tinkerpop.apache.org/ |
 | org.apache.groovy | groovy | ~4.0.x | Apache 2.0 | https://groovy-lang.org/ |
 | org.antlr | antlr4-runtime (shaded, relocated to `com.arcadedb.gremlin.shaded.org.antlr`) | 4.9.1 | BSD 3-Clause | https://www.antlr.org/ |
+| com.fasterxml.jackson.core | jackson-core, jackson-databind, jackson-annotations (shaded, relocated to `org.apache.tinkerpop.shaded.jackson`) | 2.22.x | Apache 2.0 | https://github.com/FasterXML/jackson |
 
-**Note:** Gremlin support is an optional module. These dependencies are only included when the Gremlin module is enabled. The Gremlin module's shaded jar bundles its own relocated copy of `antlr4-runtime` 4.9.1 (required by the TinkerPop/OpenCypher-Gremlin translation layer), independent of the engine's `antlr4-runtime` 4.13.2 listed under Core Dependencies.
+**Note:** Gremlin support is an optional module. These dependencies are only included when the Gremlin module is enabled. The Gremlin module's shaded jar bundles its own relocated copy of `antlr4-runtime` 4.9.1 (required by the TinkerPop/OpenCypher-Gremlin translation layer), independent of the engine's `antlr4-runtime` 4.13.2 listed under Core Dependencies. It also bundles Jackson under TinkerPop's own relocation prefix, in place of the copy that `org.apache.tinkerpop:gremlin-shaded` ships (2.15.2 for TinkerPop 3.8.1), rebuilt from the Jackson version the root BOM manages so that the bundled bytecode and its `META-INF/maven` metadata match the plain Jackson jars in `lib/` (issue #7097).
 
 ### gRPC (Optional Module)
 

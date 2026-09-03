@@ -24,9 +24,13 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.InputStream;
 import java.net.URL;
 import java.util.List;
+import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -152,5 +156,60 @@ class ShadedJarLayoutTest {
         swing.add(name);
     }
     assertThat(swing).isEmpty();
+  }
+
+  /**
+   * Regression test for <a href="https://github.com/ArcadeData/arcadedb/issues/7097">#7097</a>.
+   * TinkerPop's {@code gremlin-shaded} bundles a relocated copy of whatever Jackson TinkerPop was
+   * released with (2.15.2 for 3.8.1) together with Jackson's ORIGINAL {@code META-INF/maven}
+   * metadata, so an SBOM/CVE scanner pointed at the distribution reported jackson-core 2.15.2 while
+   * every plain Jackson jar in {@code lib/} was the BOM-managed version. gremlin/pom.xml now drops
+   * TinkerPop's copy from the shade and rebuilds the same relocation from the BOM version, so this
+   * pins that the bytecode that actually runs, the metadata a scanner reads and the version the
+   * parent pom manages are one and the same.
+   */
+  @Test
+  void bundledJacksonIsTheBomVersionAndItsMetadataSaysSo() throws Exception {
+    final String managed = System.getProperty("jackson.version");
+    assertThat(managed)
+        .as("gremlin-it's surefire configuration passes ${jackson.version} as a system property")
+        .isNotBlank();
+
+    // The bytecode that runs. TinkerPop's own relocation prefix is the target, because gremlin-core
+    // and gremlin-util were compiled against it and are not rewritten by our shade.
+    assertThat(versionOf("org.apache.tinkerpop.shaded.jackson.core.json.PackageVersion"))
+        .as("relocated jackson-core is TinkerPop's 2.15.2 copy, not the BOM version")
+        .isEqualTo(managed);
+    assertThat(versionOf("org.apache.tinkerpop.shaded.jackson.databind.cfg.PackageVersion"))
+        .as("relocated jackson-databind is TinkerPop's 2.15.2 copy, not the BOM version")
+        .isEqualTo(managed);
+
+    // The metadata a scanner reads: one pom.properties per bundled Jackson artifact, each at the
+    // version of the bytecode next to it. A stale copy left behind by gremlin-shaded would show up
+    // here as a second, older jackson-core.
+    final Map<String, String> declared = new TreeMap<>();
+    for (final JarEntry entry : (Iterable<JarEntry>) shadedJar.stream()::iterator) {
+      final String name = entry.getName();
+      if (!name.startsWith("META-INF/maven/com.fasterxml.jackson") || !name.endsWith("/pom.properties"))
+        continue;
+      final Properties properties = new Properties();
+      try (final InputStream in = shadedJar.getInputStream(entry)) {
+        properties.load(in);
+      }
+      final String previous = declared.put(properties.getProperty("artifactId"), properties.getProperty("version"));
+      assertThat(previous).as("two copies of %s in the uber-jar", name).isNull();
+    }
+    assertThat(declared)
+        .containsOnlyKeys("jackson-annotations", "jackson-core", "jackson-databind")
+        .containsEntry("jackson-core", managed)
+        .containsEntry("jackson-databind", managed);
+    // The BOM versions jackson-annotations per minor release (2.22, not 2.22.2).
+    final String[] parts = managed.split("\\.");
+    assertThat(declared.get("jackson-annotations")).startsWith(parts[0] + "." + parts[1]);
+  }
+
+  /** {@code PackageVersion.VERSION} of a relocated Jackson module, loaded by name because the package is a shade target. */
+  private static String versionOf(final String packageVersionClass) throws Exception {
+    return Class.forName(packageVersionClass).getField("VERSION").get(null).toString();
   }
 }
