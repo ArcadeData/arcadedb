@@ -381,6 +381,39 @@ class CypherForeachEagerReadIssue6922Test {
     }
   }
 
+  @Test
+  void aDynamicLabelExpressionInALaterSetArmsEagerness() {
+    // A Cypher 25 dynamic label (issue #7059) is a right-hand side evaluated per row against the live
+    // graph, exactly like the RETURN and WITH expressions above. graphReadFollows() classified a later
+    // clause by its type alone and let SET fall through its default branch, so the FOREACH kept
+    // streaming and each row's label was chosen by the pull batch it was produced in.
+    database.transaction(() -> database.command("opencypher", "UNWIND range(1, 250) AS i CREATE (:Marker {i: i})").close());
+
+    // MATCH precedes the FOREACH, so it is not what arms eagerness here.
+    final List<Object> rows = queryColumn("""
+        MATCH (m:Marker)
+        FOREACH (j IN range(0, 1) | CREATE (:L1 {j: j}))
+        SET m:$('N' + toString(count { MATCH (n:L1) }))
+        RETURN m.i AS value""", "value");
+
+    assertThat(rows).hasSize(250);
+    assertThat(countOf("L1")).isEqualTo(500L);
+    assertThat(dynamicLabelsApplied())
+        .as("every row must name the label from the complete post-FOREACH graph")
+        .containsExactly("N500");
+  }
+
+  /** The {@code N<count>} labels the dynamic-label SET above actually attached, deduplicated. */
+  private List<String> dynamicLabelsApplied() {
+    final List<String> applied = new ArrayList<>();
+    final ResultSet resultSet = database.query("opencypher", "MATCH (m:Marker) RETURN labels(m) AS l");
+    while (resultSet.hasNext())
+      for (final String label : resultSet.next().<List<String>>getProperty("l"))
+        if (label.startsWith("N") && !applied.contains(label))
+          applied.add(label);
+    return applied;
+  }
+
   private List<Object> queryColumn(final String cypher, final String column) {
     final List<Object> values = new ArrayList<>();
     database.transaction(() -> {
