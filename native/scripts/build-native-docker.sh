@@ -312,6 +312,11 @@ if [ "$SKIP_BINARY" = "0" ]; then
   mkdir -p "$M2_DIR"
   log "building the linux/$ARCH binary in the container (this is the slow part)"
   log "  maven cache: $M2_DIR"
+  # -pl :arcadedb-native selects the module by artifactId. A path selector would work here too,
+  # since -w below makes /workspace the execution root, but it is one less thing to get wrong and
+  # it matches build-native.sh, where the path form breaks outright when the caller's cwd is not
+  # the repository root.
+  #
   # ${GIT_MOUNT[@]+...}: the array is empty for a normal checkout, and macOS still ships bash 3.2,
   # where expanding an empty array under `set -u` aborts with "unbound variable".
   docker run --rm \
@@ -324,7 +329,7 @@ if [ "$SKIP_BINARY" = "0" ]; then
     ${GIT_MOUNT[@]+"${GIT_MOUNT[@]}"} \
     -w /workspace \
     "$BUILDER_IMAGE" \
-    ./mvnw -B -ntp -Pnative -pl native -am -DskipTests "$MODE_ARG" package
+    ./mvnw -B -ntp -Pnative -pl :arcadedb-native -am -DskipTests "$MODE_ARG" package
 else
   log "--skip-binary-build: reusing whatever is already in native/target"
 fi

@@ -234,12 +234,23 @@ esac
 #    compile-no-fork goal to it, so `compile` resolves the reactor but produces no binary.
 # ---------------------------------------------------------------------------
 log "building (link mode: $LINK_MODE)"
+# Run from the repository root, and select the module by artifactId rather than by path.
+#
+# `-pl <path>` is resolved relative to Maven's execution root, i.e. the directory Maven was
+# launched from - NOT the directory holding the root pom. So `-pl native` from anywhere other
+# than the repository root looks for <cwd>/native and dies with "Could not find the selected
+# project in the reactor: native", which points at the reactor rather than at the caller's cwd.
+# Running the script from native/ (./scripts/build-native.sh) hits this immediately.
+#
+# `-pl :arcadedb-native` selects by artifactId and is position-independent, so the two together
+# make this work from any working directory.
+cd "$REPO_ROOT"
 set -x
 # ${ARR[@]+"${ARR[@]}"} rather than a plain "${ARR[@]}": both arrays are empty in the common case
 # (dynamic link mode, no forwarded Maven args) and macOS still ships bash 3.2, where expanding an
 # empty array under `set -u` aborts with "unbound variable". native-image.yml carries the same
 # caveat for its macOS leg.
-"$REPO_ROOT/mvnw" -B -ntp -Pnative -pl native -am -DskipTests \
+"$REPO_ROOT/mvnw" -B -ntp -Pnative -pl :arcadedb-native -am -DskipTests \
   ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} ${MVN_EXTRA[@]+"${MVN_EXTRA[@]}"} package
 set +x
 
