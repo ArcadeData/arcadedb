@@ -2404,9 +2404,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // A tombstone carries the SAME id as the entry it kills, which is why ties must go to the later entry: dropping
     // tombstones here (as this loop used to do) left every deleted RID in the live set, so the next rebuild put the
     // deleted vectors back into the graph and into the location index.
+    // Strict when compacting (issue #7045): a page the parser cannot read to the end is cut short - every entry from
+    // the failing one to the end of that page silently missing from the result - and a rebuild survives that thanks
+    // to the recovery fallbacks below. A compaction does not: it rewrites the data file from this very set and then
+    // reclaims the source, so a truncated set here would be shipped as the whole live set and the vectors it lacks
+    // would be gone for good. Fail the compaction instead, before any file is created or replaced.
     if (compactedSubIndex != null) {
       LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(), compactedSubIndex.getTotalPages(),
-          getPageSize(), true, entry -> {
+          getPageSize(), true, compactDataFile, entry -> {
             totalEntriesRead[0]++;
             if (entry.deleted)
               filteredDeletedVectors[0]++;
@@ -2415,7 +2420,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
 
     // Read from mutable index (its entries are newer than the compacted ones)
-    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, entry -> {
+    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, compactDataFile,
+        entry -> {
       totalEntriesRead[0]++;
       if (entry.deleted)
         filteredDeletedVectors[0]++;
@@ -3171,16 +3177,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (effectiveGraphCallback != null)
           effectiveGraphCallback.onGraphBuildProgress("persisting", 0, totalNodes, 0);
 
-        // Start a dedicated transaction for graph persistence with chunked commits
-        long chunkSizeMB = getTxChunkSize();
+        // Start a dedicated transaction for graph persistence with chunked commits. ALWAYS one of its own, nested
+        // when the calling thread already holds one (issue #7058): the graph is derived state computed from
+        // committed pages, so it commits on its own terms, and the transaction a caller opened around the search
+        // (or the DDL) that triggered this rebuild has to be left exactly as it was found - neither committed on
+        // its behalf nor switched to WAL-less. Committing it from here was what turned a similarity search inside
+        // an explicit Bolt transaction into a COMMIT failing with "Transaction not begun": the search rebuilt the
+        // graph synchronously, this step committed the session's transaction, and the client's own COMMIT then
+        // found nothing left to commit.
+        //
+        // The transaction opened here is tracked by identity, and re-tracked after every chunk commit, so the
+        // rollback in the catch below can only ever target THIS transaction: a nested commit that failed has
+        // already been popped, and rolling back "whatever is current" at that point would roll back the caller's.
+        final long chunkSizeMB = getTxChunkSize();
 
-        final boolean startedTransaction = !database.isTransactionActive();
-        if (startedTransaction) {
-          database.begin();
-          database.getTransaction().setUseWAL(false);
-        } else {
-          database.getTransaction().setUseWAL(false);
-        }
+        final TransactionContext[] persistTransaction = new TransactionContext[1];
+        database.begin();
+        persistTransaction[0] = database.getTransaction();
+        persistTransaction[0].setUseWAL(false);
 
         final ChunkCommitCallback chunkCallback = bytesWritten -> {
           LogManager.instance().log(this, Level.INFO,
@@ -3191,7 +3205,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Start new transaction and disable WAL
           database.begin();
-          database.getTransaction().setUseWAL(false);
+          persistTransaction[0] = database.getTransaction();
+          persistTransaction[0].setUseWAL(false);
         };
 
         // Flipped the moment the manifest certifies the committed pages. Everything after that point - the
@@ -3209,16 +3224,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           }
 
           // Commit the transaction to persist graph pages
-          if (startedTransaction) {
-            database.commit();
-            LogManager.instance().log(this, Level.FINE, "Vector graph persisted and committed for index: %s",
-                indexName);
-          } else {
-            database.commit();
-            LogManager.instance()
-                .log(this, Level.FINE, "Vector graph persisted (transaction managed by caller) for index: %s",
-                    indexName);
-          }
+          database.commit();
+          persistTransaction[0] = null;
+          LogManager.instance().log(this, Level.FINE, "Vector graph persisted and committed for index: %s",
+              indexName);
 
           // Only now that the pages are committed may the manifest vouch for them (issue #6106). Written after the
           // commit and never before: a manifest that outlived a persist which did not complete would be the one
@@ -3278,8 +3287,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // so a build that died mid-persist left a dangling transaction and a manifest that still vouched for
           // whatever the pages happened to hold (issue #6503).
           //
-          // Rollback on error
-          if (startedTransaction) {
+          // Rollback on error - the persist transaction only, and only while it is still the current one (see
+          // the begin above): once it is committed, or popped by a commit that failed, "current" is the caller's.
+          final TransactionContext openedHere = persistTransaction[0];
+          if (openedHere != null && openedHere.isActive() && database.getTransaction() == openedHere) {
             try {
               database.rollback();
             } catch (final Exception rollbackEx) {

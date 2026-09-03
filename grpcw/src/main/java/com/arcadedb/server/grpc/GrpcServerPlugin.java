@@ -134,7 +134,7 @@ public class GrpcServerPlugin implements ServerPlugin {
 
       registerShutdownHook();
 
-    } catch (IOException e) {
+    } catch (final IOException | RuntimeException e) {
       LogManager.instance().log(this, Level.SEVERE, "Failed to start gRPC server", e);
       // Issue #6756 (1): ArcadeDBServer.start() deliberately does not call stopService() on a plugin
       // whose startService() threw, so a partially-started server (the service/reaper created by
@@ -142,7 +142,13 @@ public class GrpcServerPlugin implements ServerPlugin {
       // standard server left behind when the xDS server fails afterward) would otherwise leak with no
       // teardown path. stopService() is idempotent (guarded by the "stopped" CAS), so this is safe even
       // when nothing was actually started yet.
+      //
+      // RuntimeException too, not only IOException (issue #7035): a runtime failure out of build() or start(),
+      // or inside startXdsServer() in "both" mode, left the same partially-started server behind with the same
+      // missing teardown. A RuntimeException keeps its own type on the way out; only the checked one is wrapped.
       stopService();
+      if (e instanceof RuntimeException re)
+        throw re;
       throw new RuntimeException("Failed to start gRPC server", e);
     }
   }
