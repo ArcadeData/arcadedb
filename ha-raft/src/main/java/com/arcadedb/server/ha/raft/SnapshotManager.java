@@ -72,6 +72,12 @@ public final class SnapshotManager {
    * skips manifest verification, preserving backward compatibility.
    */
   public static final String MANIFEST_HEADER = "X-ArcadeDB-Snapshot-Manifest";
+  /**
+   * Response header carrying the uncompressed byte count of the files the snapshot ships (issue #7037), so the
+   * follower can refuse the download up front when its volume cannot hold them instead of failing with {@code No
+   * space left on device} halfway through the extraction. A leader predating #7037 omits it and the check is skipped.
+   */
+  public static final String UNCOMPRESSED_BYTES_HEADER = "X-ArcadeDB-Snapshot-Uncompressed-Bytes";
 
   /**
    * One file recorded in a snapshot manifest: the entry name, its uncompressed byte size and its CRC32.

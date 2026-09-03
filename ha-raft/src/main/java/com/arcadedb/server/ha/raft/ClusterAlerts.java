@@ -105,6 +105,20 @@ public class ClusterAlerts {
    */
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final List<FollowerSample> followerSamples, final Set<String> visibleDatabases) {
+    return scan(server, stateMachine, followerSamples, visibleDatabases, null, null);
+  }
+
+  /**
+   * Scan overload that also flags a divergence between the declared peer list and the live Raft configuration
+   * (issue #7040). Pass {@code null} for {@code membership} when HA is unavailable; {@code localPeerId} names
+   * this node so the alert can escalate when it is this node that the configuration no longer contains.
+   * <p>
+   * Node-scoped like the lagging-follower alert: it names peers, never databases, so {@code visibleDatabases}
+   * does not apply to it.
+   */
+  public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
+      final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
+      final ClusterMembership membership, final String localPeerId) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts, visibleDatabases);
     if (stateMachine != null) {
@@ -113,7 +127,65 @@ public class ClusterAlerts {
       checkBootstrapDivergedDatabases(stateMachine, alerts, visibleDatabases);
     }
     addLaggingFollowerAlert(followerSamples, alerts);
+    if (membership != null)
+      addMembershipDivergenceAlert(membership.notInConfiguration(), membership.notInServerList(), localPeerId, alerts);
     return alerts;
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the membership-divergence alert iff the
+   * declared peer list and the live Raft configuration differ (issue #7040).
+   * <p>
+   * A declared peer missing from the configuration is the condition #5275 asked to surface: the leader does not
+   * replicate to it and it cannot vote, so the cluster runs with less failover margin than the operator believes,
+   * and until #5275 a Kubernetes restart could shrink the configuration silently. It is {@code warning} in
+   * general and {@code critical} when the missing peer is this node, which then serves nothing until it rejoins.
+   * A committed member the list does not declare is only {@code info}: it was added deliberately through the
+   * management API, but a restart of this node will not know it, so the operator should update the list.
+   */
+  static void addMembershipDivergenceAlert(final List<String> notInConfiguration, final List<String> notInServerList,
+      final String localPeerId, final JSONArray alerts) {
+    if (notInConfiguration != null && !notInConfiguration.isEmpty()) {
+      final boolean localExcluded = localPeerId != null && notInConfiguration.contains(localPeerId);
+      final JSONArray names = new JSONArray();
+      for (final String name : notInConfiguration)
+        names.put(name);
+
+      alerts.put(new JSONObject()
+          .put("id", "peers-not-in-configuration")
+          .put("severity", localExcluded ? SEVERITY_CRITICAL : SEVERITY_WARNING)
+          .put("title", localExcluded ? "This node is not in the Raft configuration"
+              : "Declared peer(s) are not in the Raft configuration")
+          .put("message", (localExcluded ? "This node (" + localPeerId + ") is declared in arcadedb.ha.serverList but the "
+              + "live Raft configuration does not contain it: it cannot vote, the leader does not replicate to it, and it "
+              + "serves no traffic until it rejoins. "
+              : "")
+              + notInConfiguration.size() + " declared peer(s) are not in the live Raft configuration: " + notInConfiguration
+              + ". They are not replicated to and do not count toward the quorum, so the cluster is running with less "
+              + "failover margin than the server list suggests. Reachable through DELETE /api/v1/cluster/peer/{id}, or on a "
+              + "cluster shrunk by a build predating #5275 before the peer restarted.")
+          .put("recommendation", "Re-add the peer with POST /api/v1/cluster/peer (a peer running with "
+              + "arcadedb.ha.k8s=true re-adds itself on restart), or remove it from arcadedb.ha.serverList on every node "
+              + "if the removal was intended.")
+          .put("details", new JSONObject().put("peers", names)));
+    }
+
+    if (notInServerList != null && !notInServerList.isEmpty()) {
+      final JSONArray names = new JSONArray();
+      for (final String name : notInServerList)
+        names.put(name);
+
+      alerts.put(new JSONObject()
+          .put("id", "peers-not-in-server-list")
+          .put("severity", SEVERITY_INFO)
+          .put("title", "Configuration member(s) not declared in the server list")
+          .put("message", notInServerList.size() + " member(s) of the live Raft configuration are not declared in this "
+              + "node's arcadedb.ha.serverList: " + notInServerList + ". They replicate normally, but this node will not "
+              + "know them after a restart until the configuration is read back from Raft storage.")
+          .put("recommendation", "Add the peer(s) to arcadedb.ha.serverList on every node so the declared list and the "
+              + "cluster agree.")
+          .put("details", new JSONObject().put("peers", names)));
+    }
   }
 
   /**
