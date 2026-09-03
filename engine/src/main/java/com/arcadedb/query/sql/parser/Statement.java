@@ -82,7 +82,10 @@ public class Statement extends SimpleNode {
    * matches no record, a validation failure ahead of the first write - keeps behaving as it always did.
    * <p>
    * One transaction per statement is what makes autocommit atomic: a multi-record {@code UPDATE} either lands whole
-   * or not at all, instead of committing once per record and stopping halfway on the first failure. Before every write
+   * or not at all, instead of committing once per record and stopping halfway on the first failure. The one exception
+   * is the one the statement asks for: {@code BATCH n} commits the running transaction every {@code n} records
+   * ({@code BatchStep}), so a statement carrying it lands in chunks of {@code n} and a failure keeps every chunk already
+   * committed - with a per-record implicit transaction that clause had no transaction to chunk and was a no-op. Before every write
    * statement did this (issue #7096) an auto-committed {@code UPDATE} relied on the per-record implicit transaction of
    * {@code save()}, which a vertex never reached: {@code ImmutableVertex.modify()} pinned the record to the
    * transaction's page image first and failed with "Transaction not active" when there was none.
