@@ -32,6 +32,8 @@ public class MoveVertexStatement extends Statement {
       for (int i = 0; i < args.length; i++)
         params.put(String.valueOf(i), args[i]);
 
+    // The Map overload below begins its own implicit transaction too, but finds this one active and joins it, so only
+    // this outer call commits or rolls back.
     final boolean implicitTransaction = beginImplicitTransaction(database);
     boolean success = false;
     try {
