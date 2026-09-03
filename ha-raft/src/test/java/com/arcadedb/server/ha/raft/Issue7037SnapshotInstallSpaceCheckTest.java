@@ -90,6 +90,10 @@ class Issue7037SnapshotInstallSpaceCheckTest {
     assertThat(SnapshotInstaller.nearestExistingAncestor(tempDir.toFile())).isEqualTo(tempDir.toFile());
     assertThat(SnapshotInstaller.nearestExistingAncestor(tempDir.resolve("db").resolve(".snapshot-new").toFile()))
         .isEqualTo(tempDir.toFile());
+    // A relative path (arcadedb.ha.raftStorageDirectory=raft/storage-n1) must reach the working directory instead
+    // of running out of components and answering "unknown volume".
+    assertThat(SnapshotInstaller.nearestExistingAncestor(new File("issue7037-missing/raft-storage-n1")))
+        .isEqualTo(new File("").getAbsoluteFile());
   }
 
   @Test
