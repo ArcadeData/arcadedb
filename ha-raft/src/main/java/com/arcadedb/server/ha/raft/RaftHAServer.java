@@ -1350,9 +1350,30 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Whether free space on the Raft storage volume is below {@code arcadedb.ha.raftStorageMinFreeSpacePerc}. The
+   * same arithmetic as the compaction scheduler's disk-pressure probe; {@code false} when the check is disabled
+   * (0) or the volume cannot be sized, so pressure is never guessed.
+   */
+  boolean isRaftStorageUnderPressure() {
+    final int minFreeSpacePerc = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_STORAGE_MIN_FREE_SPACE_PERC);
+    if (minFreeSpacePerc <= 0)
+      return false;
+    final File volume = raftStorageVolume();
+    if (volume == null)
+      return false;
+    final long total = volume.getTotalSpace();
+    final long usable = volume.getUsableSpace();
+    return total > 0 && usable >= 0 && (double) usable / (double) total * 100.0 < minFreeSpacePerc;
+  }
+
+  /**
    * Forces a local Raft snapshot with the smallest creation gap Ratis accepts, so every log segment below the
    * applied index becomes purgeable before a database snapshot is written onto the same volume (issue #7037).
    * Best-effort: a refused or timed-out request only means the segments stay until the next periodic tick.
+   * <p>
+   * Only when the Raft storage volume is actually under pressure (below {@code arcadedb.ha.raftStorageMinFreeSpacePerc},
+   * the same threshold the periodic compaction escalates on): an ordinary resync on a volume with room must not pay a
+   * round trip to the {@code StateMachineUpdater} for a purge that has nothing to reclaim.
    * <p>
    * A snapshot request is fulfilled by the {@code StateMachineUpdater} thread, and only while the state machine is
    * {@code RUNNING}, so it is skipped when it could not be served promptly: on the apply thread itself (a request
@@ -1361,6 +1382,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * the scheduler's 30s one, because the install it precedes must not queue behind a long entry apply.
    */
   void compactRaftLogBeforeSnapshotInstall(final String databaseName) {
+    if (!isRaftStorageUnderPressure())
+      return;
     final ArcadeStateMachine sm = stateMachine;
     if (sm == null || sm.isApplyThread() || sm.getLifeCycleState() != LifeCycle.State.RUNNING) {
       LogManager.instance().log(this, Level.FINE,

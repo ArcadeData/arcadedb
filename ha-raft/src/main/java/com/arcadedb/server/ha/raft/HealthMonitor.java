@@ -371,6 +371,9 @@ public final class HealthMonitor {
    *       a failure that is not about space (a dying disk, a permission change) does not restart the server on
    *       every tick forever. The budget re-arms after {@link #LOG_FAILURE_EPISODE_RESET_MS} of quiet.</li>
    * </ul>
+   * The two budgets are deliberately separate counters sharing one threshold: a CLOSED/EXCEPTION lifecycle and a
+   * failed log writer are different incidents with different exits (a reformat escalation for the first, a
+   * free-space gate for the second), and a node that goes through both in a row has had two incidents, not one.
    */
   private void handleFailedLogWriter(final String failure) {
     final long now = clock.getAsLong();

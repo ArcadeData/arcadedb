@@ -2652,7 +2652,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *
    * @param originatedLocally whether this node submitted the entry, i.e. is the elected bootstrap source
    *                          (see {@link #startTransaction}); {@code false} on replay, where the
-   *                          per-database replay-skip below settles the question instead
+   *                          per-database replay-skip below settles the question instead. The marker is set
+   *                          only on the node whose own client submitted the request, which is always the
+   *                          source: {@code BootstrapElection} never commits on behalf of a remote source -
+   *                          it transfers leadership to it and that node commits the entry once it leads
    */
   // @VisibleForTesting
   void applyBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index,

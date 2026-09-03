@@ -217,9 +217,9 @@ public final class SnapshotInstaller {
       final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
 
       // PHASE 0 - MAKE ROOM (issue #7037). This install is the self-heal for a diverged follower, and the volume
-      // it writes onto may be the one the Raft log just filled: purge the local log first so the segments below
-      // the applied index are reclaimable, then let the download refuse up front (see downloadSnapshot) rather
-      // than fail with "No space left on device" halfway through the extraction.
+      // it writes onto may be the one the Raft log just filled: when that volume is under pressure, purge the local
+      // log first so the segments below the applied index are reclaimable, then let the download refuse up front
+      // (see downloadSnapshot) rather than fail with "No space left on device" halfway through the extraction.
       purgeRaftLogBeforeInstall(databaseName, server);
 
       // PHASE 1 - DOWNLOAD into .snapshot-new with the live database STILL OPEN. The historical behaviour
@@ -848,9 +848,9 @@ public final class SnapshotInstaller {
   }
 
   /**
-   * Asks the local Raft server to snapshot and purge its log before a database snapshot is written (issue #7037).
-   * No-op without Raft HA (unit tests, the non-Raft install callers) and best-effort otherwise: the purge only
-   * makes the space reclaimable, it is not a precondition of the install.
+   * Asks the local Raft server to snapshot and purge its log before a database snapshot is written (issue #7037),
+   * when its storage volume is under pressure. No-op without Raft HA (unit tests, the non-Raft install callers) and
+   * best-effort otherwise: the purge only makes the space reclaimable, it is not a precondition of the install.
    */
   private static void purgeRaftLogBeforeInstall(final String databaseName, final ArcadeDBServer server) {
     if (server != null && server.getHA() instanceof RaftHAPlugin plugin && plugin.getRaftHAServer() != null)
@@ -886,7 +886,8 @@ public final class SnapshotInstaller {
       throw new IOException("Insufficient space to install the snapshot of '" + databaseName + "': it inflates to "
           + requiredBytes + " bytes (" + needed + " with the allocation reserve) but the volume of '"
           + volume.getAbsolutePath() + "' has " + usable + " usable. Free space on the volume (the Raft log is purged "
-          + "before every install; see arcadedb.ha.snapshotInterval) and the install is retried");
+          + "before an install when its volume is under pressure; see arcadedb.ha.snapshotInterval and "
+          + "arcadedb.ha.raftStorageMinFreeSpacePerc) and the install is retried");
   }
 
   /**
