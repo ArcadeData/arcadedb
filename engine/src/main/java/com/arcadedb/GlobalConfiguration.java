@@ -1034,18 +1034,19 @@ public enum GlobalConfiguration {
       Maximum number of vectors to cache in memory during HNSW graph building. \
       Higher values speed up construction but use more RAM. \
       RAM usage = cacheSize * (dimensions * 4 + 64) bytes. \
-      0 (default) sizes it automatically: an index whose vectors live in the documents (no quantization, or \
-      PRODUCT) caches the whole set when it fits arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent, because \
-      every miss costs a record read; an inline-quantized index (INT8/BINARY) reads a miss straight from an \
-      index page and keeps a small bound instead.""",
+      0 (default) sizes it automatically: the cache holds the whole corpus when it fits \
+      arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent, for document-backed indexes (no quantization, or \
+      PRODUCT) and for inline-quantized indexes (INT8/BINARY). An explicit positive size still wins.""",
       Integer.class, 0),
 
   VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent", SCOPE.DATABASE,
       """
-      Maximum share of the JVM heap (percentage) the auto-sized graph-build cache may use. Only applies when \
-      arcadedb.vectorIndex.graphBuildCacheSize is left at 0. A corpus larger than this budget still builds: \
-      the cache evicts instead of holding everything. Measured against the heap currently AVAILABLE rather than \
-      against the ceiling, so a rebuild that is holding the old graph resident asks for less (issue #6503). \
+      Maximum share of the JVM heap ceiling (percentage) the auto-sized graph-build cache may use. Only applies \
+      when arcadedb.vectorIndex.graphBuildCacheSize is left at 0. A corpus larger than this budget still builds: \
+      the cache evicts instead of holding everything. Taken as this percent of -Xmx, then capped at 90% of the \
+      heap currently AVAILABLE: a served ingest that already holds the corpus in this JVM must not get a third \
+      of the cache an embedded build of the same corpus would get (issue #7146), and an online rebuild that is \
+      holding the old graph must still ask for less (issue #6503). Applies to INT8/BINARY as well as fp32. \
       Values above 90 are clamped to 90: no cache is allowed to plan on the whole heap.""",
       Integer.class, 25),
 
