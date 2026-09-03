@@ -82,11 +82,24 @@ public class CollectionUtils {
    * classes by class name. A map holds keys of any type (a document's MAP property is String-keyed, but the API accepts
    * any key), and two keys of unrelated classes are distinct map entries whichever way they are ordered, so grouping them
    * by class keeps the order total without asking {@code compareTo} to relate e.g. a String to an Integer.
+   * <p>
+   * The order is strict: two keys answer {@code 0} only when they are {@link Object#equals equal}, i.e. the same map
+   * entry. Keys the comparator ranks equal but the map keeps distinct ({@code BigDecimal} {@code 1.0} and {@code 1.00})
+   * are broken by their string form, so their position in the sorted key array does not depend on insertion order and
+   * {@link #compare(Map, Map)} pairs each key with its own counterpart.
    */
   private static int compareKeys(final Object k1, final Object k2) {
-    if (k1 == null || k2 == null || k1.getClass() == k2.getClass())
+    if (k1 == null || k2 == null)
       return BinaryComparator.compareTo(k1, k2);
-    return k1.getClass().getName().compareTo(k2.getClass().getName());
+    if (k1.getClass() != k2.getClass())
+      return k1.getClass().getName().compareTo(k2.getClass().getName());
+
+    final int cmp = BinaryComparator.compareTo(k1, k2);
+    if (cmp != 0 || k1.equals(k2))
+      return cmp;
+
+    final int byText = k1.toString().compareTo(k2.toString());
+    return byText != 0 ? byText : Integer.compare(k1.hashCode(), k2.hashCode());
   }
 
   /**

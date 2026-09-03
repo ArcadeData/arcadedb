@@ -21,6 +21,7 @@ package com.arcadedb.utility;
 import com.arcadedb.serializer.BinaryComparator;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -145,6 +146,32 @@ class CollectionUtilsTest {
     assertThat(CollectionUtils.compare(m1, m2)).isLessThan(0);
     assertThat(CollectionUtils.compare(m2, m1)).isGreaterThan(0);
     assertThat(CollectionUtils.compare(m1, m3)).isZero();
+  }
+
+  /**
+   * BigDecimal 1.0 and 1.00 are distinct map keys that the comparator ranks equal: their position in the sorted key
+   * sequence must not follow insertion order, or equal maps built in a different order compare unequal and maps that
+   * swap the two values compare equal.
+   */
+  @Test
+  void compareMapsWithComparatorEqualButDistinctKeys() {
+    final BigDecimal k1 = new BigDecimal("1.0");
+    final BigDecimal k2 = new BigDecimal("1.00");
+
+    final Map<Object, Comparable> m1 = new LinkedHashMap<>();
+    m1.put(k1, "a");
+    m1.put(k2, "b");
+    final Map<Object, Comparable> m2 = new LinkedHashMap<>();
+    m2.put(k2, "b");
+    m2.put(k1, "a");
+    assertThat(CollectionUtils.compare(m1, m2)).isZero();
+    assertThat(CollectionUtils.compare(m2, m1)).isZero();
+
+    final Map<Object, Comparable> swapped = new LinkedHashMap<>();
+    swapped.put(k2, "a");
+    swapped.put(k1, "b");
+    assertThat(CollectionUtils.compare(m1, swapped)).isNotZero();
+    assertThat(Integer.signum(CollectionUtils.compare(m1, swapped))).isEqualTo(-Integer.signum(CollectionUtils.compare(swapped, m1)));
   }
 
   /**
