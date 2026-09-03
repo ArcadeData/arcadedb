@@ -268,8 +268,22 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         return createdNewTx;
 
       } catch (final NeedRetryException | DuplicatedKeyException e) {
+        // #661 (issue #7030 ported the guard here from LocalDatabase.transaction()): when we joined a
+        // transaction owned by the caller (createdNewTx == false) we must NOT retry here. The retry would
+        // re-run the block inside the caller's still-open transaction, which then accumulates the partial
+        // effects of the failed attempt on top of the ones the caller made before the call, without ever
+        // being told; and re-running against the same conflicted state cannot succeed anyway. Propagate the
+        // exception so the real transaction owner retries the whole logical unit with fresh bindings.
+        if (!createdNewTx)
+          throw e;
+
         // RETRY
         lastException = e;
+        // Close the server-side transaction before the next attempt: leaving it open keeps its locks until the
+        // server times it out, so attempt N+1 would contend with the locks of attempt N and be MORE likely to
+        // need a retry, not less (issue #7030). A failure raised by commit() has already ended the session
+        // (commit() clears the session id in its finally), so this only fires when the block itself failed.
+        rollbackQuietly();
         setSessionId(null);
         // The tx (server-side) is gone: reset records created in it so a retry/re-save inserts cleanly (issue #4562)
         resetCreatedRecordsIdentity();
@@ -278,6 +292,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           error.call(e);
 
       } catch (final Exception e) {
+        // Same as above: the transaction this attempt left open on the server is never going to be committed,
+        // so release it now instead of holding its locks until the server-side timeout (issue #7030).
+        rollbackQuietly();
         setSessionId(null);
         resetCreatedRecordsIdentity();
 
@@ -438,6 +455,25 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } finally {
       resetCreatedRecordsIdentity();
       setSessionId(null);
+    }
+  }
+
+  /**
+   * Rolls back the server-side transaction, if one is still open, without ever throwing. Used on the failure paths
+   * of {@link #transaction(TransactionScope, boolean, int, OkCallback, ErrorCallback)}, where the exception being
+   * handled is the one the caller has to see: a rollback that fails on its way out (the session is already gone
+   * server-side, the connection is broken) must not replace it, and there is nothing left to do about it anyway
+   * since the server releases the transaction on its own timeout. Issue #7030.
+   */
+  private void rollbackQuietly() {
+    if (!isTransactionActive())
+      return;
+
+    try {
+      rollback();
+    } catch (final Exception e) {
+      LogManager.instance()
+          .log(this, Level.FINE, "Error on rolling back the transaction of a failed attempt (ignored)", e);
     }
   }
 

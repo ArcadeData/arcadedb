@@ -92,9 +92,15 @@ public class RemoteSchema implements Schema {
     return found;
   }
 
+  /**
+   * Answers from {@code schema:buckets}, the database's bucket list, and not from the buckets attached to the types
+   * in {@code schema:types}: a bucket exists as soon as it is created, whether or not any type uses it, so asking the
+   * type list answered {@code false} for a standalone bucket - including one the caller had just created through this
+   * same API (issue #7031).
+   */
   @Override
   public boolean existsBucket(final String bucketName) {
-    return remoteDatabase.command("sql", "select from schema:types where :name IN buckets", Map.of("name", bucketName)).hasNext();
+    return remoteDatabase.command("sql", "select from schema:buckets where name = :name", Map.of("name", bucketName)).hasNext();
   }
 
   @Override
