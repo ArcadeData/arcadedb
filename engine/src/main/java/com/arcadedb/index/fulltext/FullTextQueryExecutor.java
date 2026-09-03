@@ -49,7 +49,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -543,9 +542,8 @@ public class FullTextQueryExecutor {
     final String field = query.getTerm().field();
     final String text = query.getTerm().text();
 
-    // For field-specific queries (e.g., "title:java"), prepend field name
-    // Multi-property indexes store tokens as "fieldName:token"
-    final String searchKey = isUnqualified(field) ? text : field + ":" + text;
+    // For field-specific queries (e.g., "title:java"), prepend the stored field name (see buildSearchKey)
+    final String searchKey = buildSearchKey(field, text);
 
     recordScoringToken(searchKey, boostFor(field));
     if (tokensOnly)
@@ -569,25 +567,28 @@ public class FullTextQueryExecutor {
   private void collectPhraseMatches(final PhraseQuery query, final Map<RID, AtomicInteger> scoreMap) {
     // For phrase queries, all terms must match in the same document
     // Note: We can't verify word order without position indexing, so we just require all terms.
-    // Phrase terms are matched/scored against the unprefixed token, so the configured per-field boost is NOT applied to phrase
-    // terms (an enclosing caret boost still applies via currentBoost). They are recorded with boost 1.0 accordingly.
+    // Every phrase term is looked up under the SAME key a single-term query would use (buildSearchKey), so a phrase
+    // qualified to a field stays within that field and takes that field's boost; looking the terms up by their bare
+    // text matched the phrase across every indexed property while the single-term form of the same query was correctly
+    // restricted (issue #7000).
     final Term[] terms = query.getTerms();
     if (terms.length == 0)
       return;
 
     if (tokensOnly) {
       for (final Term term : terms)
-        recordScoringToken(term.text(), 1.0f);
+        recordScoringToken(buildSearchKey(term.field(), term.text()), boostFor(term.field()));
       return;
     }
 
     Map<RID, AtomicInteger> intersection = null;
 
     for (final Term term : terms) {
-      recordScoringToken(term.text(), 1.0f);
+      final String searchKey = buildSearchKey(term.field(), term.text());
+      recordScoringToken(searchKey, boostFor(term.field()));
       final Map<RID, AtomicInteger> termMatches = new HashMap<>();
       long df = 0L;
-      try (final IndexCursor cursor = index.getPostings(term.text())) {
+      try (final IndexCursor cursor = index.getPostings(searchKey)) {
         while (cursor.hasNext()) {
           final RID rid = cursor.next().getIdentity();
           // Deletion markers carry a negative bucket id and must not inflate the document frequency.
@@ -596,7 +597,7 @@ public class FullTextQueryExecutor {
           termMatches.put(rid, new AtomicInteger(1));
         }
       }
-      recordDocumentFrequency(term.text(), df);
+      recordDocumentFrequency(searchKey, df);
 
       if (intersection == null) {
         intersection = termMatches;
@@ -614,7 +615,7 @@ public class FullTextQueryExecutor {
 
   private void collectPrefixMatches(final PrefixQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getPrefix().field();
-    final String prefix = normalizeText(query.getPrefix().text());
+    final String prefix = normalizeText(field, query.getPrefix().text());
     if (prefix.isEmpty())
       return;
 
@@ -624,14 +625,14 @@ public class FullTextQueryExecutor {
 
   private void collectWildcardMatches(final WildcardQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getTerm().field();
-    final String pattern = normalizeText(query.getTerm().text());
+    final String pattern = normalizeText(field, query.getTerm().text());
     if (pattern.isEmpty())
       return;
 
     // Compute the literal prefix (everything up to the first wildcard char)
     final String literalPrefix = extractLiteralPrefix(pattern);
     final String searchPrefix = buildSearchKey(field, literalPrefix);
-    final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
+    final String fieldPrefix = fieldPrefix(field);
     final Pattern regex = wildcardToRegex(pattern);
     // A sequence of several *'s (translated to .* by wildcardToRegex, same shape as %  in SQL LIKE) reproduces
     // catastrophic backtracking without needing grouping/alternation/nested quantifiers - issue #5886 follow-up.
@@ -664,14 +665,14 @@ public class FullTextQueryExecutor {
 
   private void collectFuzzyMatches(final FuzzyQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getTerm().field();
-    final String term = normalizeText(query.getTerm().text());
+    final String term = normalizeText(field, query.getTerm().text());
     if (term.isEmpty())
       return;
 
     final int maxEdits = query.getMaxEdits();
     final int prefixLen = Math.min(query.getPrefixLength(), term.length());
     final String requiredPrefix = term.substring(0, prefixLen);
-    final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
+    final String fieldPrefix = fieldPrefix(field);
     final String searchPrefix = fieldPrefix + requiredPrefix;
 
     iterateAndMatch(searchPrefix.isEmpty() ? null : searchPrefix, key -> {
@@ -686,7 +687,7 @@ public class FullTextQueryExecutor {
 
   private void collectRegexpMatches(final RegexpQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getRegexp().field();
-    final String regexText = normalizeText(query.getRegexp().text());
+    final String regexText = normalizeText(field, query.getRegexp().text());
     if (regexText.isEmpty())
       return;
 
@@ -697,7 +698,7 @@ public class FullTextQueryExecutor {
       return;
     }
 
-    final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
+    final String fieldPrefix = fieldPrefix(field);
     // A user-supplied regexp query (/pattern/ syntax) is matched against every token in what is, absent a literal
     // prefix, a full index scan (issue #5886) - one shared deadline for the whole scan, not a fresh one per token,
     // otherwise a crafted index could still tie the thread up for token count * regexTimeout.
@@ -757,19 +758,61 @@ public class FullTextQueryExecutor {
 
   /**
    * Builds the index search key by prefixing the field name when needed. Multi-property indexes store entries as
-   * {@code fieldName:token}; unqualified terms (see {@link #isUnqualified(String)}) target the unprefixed tokens.
+   * {@code fieldName:token}; unqualified terms (see {@link #isUnqualified(String)}) target the unprefixed tokens. The
+   * prefix is the field name in the spelling the postings use (see {@link #fieldPrefix(String)}), which is the ONLY way
+   * a key may be built on the query side: every collector goes through here or through {@code fieldPrefix}, so the
+   * read path cannot derive a key the write path never stored (issue #7000).
    */
   private String buildSearchKey(final String field, final String text) {
-    return isUnqualified(field) ? text : field + ":" + text;
+    return fieldPrefix(field) + text;
   }
 
   /**
-   * Normalizes a wildcard / fuzzy / regex term to lowercase to match how the analyzer stored the tokens.
-   * The Lucene QueryParser does not pass these terms through the analyzer; without normalization, queries
-   * like {@code Hell*} would never match the lower-cased indexed tokens.
+   * The {@code fieldName:} prefix a qualified clause has to match, or the empty string for an unqualified one. The name
+   * is resolved to the spelling {@link LSMTreeFullTextIndex#put} used, which for a property indexed with a modifier is
+   * the modifier-qualified one ({@code keywords by item}) rather than the base name a query can write ({@code keywords}),
+   * so a {@code BY ITEM} property is reachable by its declared name (issue #7000). A qualifier that names no indexed
+   * property is kept verbatim, and matches nothing, as before.
    */
-  private static String normalizeText(final String text) {
-    return text == null ? "" : text.toLowerCase(Locale.ROOT);
+  private String fieldPrefix(final String field) {
+    if (isUnqualified(field))
+      return "";
+    final String storedField = storedFieldFor(propertyNames, field);
+    return (storedField != null ? storedField : field) + ":";
+  }
+
+  /**
+   * Answers the indexed property a query qualifier names, in the spelling the POSTINGS use, or {@code null} when the
+   * qualifier names no indexed property. Kept next to {@link #isUnqualified(List, String)} because it is the other half
+   * of the same rule, consulted by both full-text query paths: this executor and the direct {@code get()} lookup in
+   * {@link LSMTreeFullTextIndex#parseQueryTerms}.
+   * <p>
+   * The two spellings differ for a property indexed with a modifier: {@link LSMTreeFullTextIndex#put} prefixes tokens
+   * with the index's own property name ({@code obj.hd by item}) while a query can only write the base name
+   * ({@code obj.hd}) - the modified one carries spaces and would not survive the parser. Matching on the base name and
+   * answering with the stored one is what lets a field-qualified lookup reach those postings at all. The direct path
+   * had this rule and the executor did not, which is issue #7000's second defect.
+   */
+  static String storedFieldFor(final List<String> propertyNames, final String qualifier) {
+    if (propertyNames == null || qualifier == null)
+      return null;
+    for (final String property : propertyNames)
+      if (property.equals(qualifier) || Index.basePropertyName(property).equals(qualifier))
+        return property;
+    return null;
+  }
+
+  /**
+   * Normalizes a wildcard / fuzzy / regexp term the way the analyzer normalizes the tokens it stores, so both sides
+   * fold identically whatever the analyzer: lower-casing for the standard analyzer, nothing at all for a
+   * case-preserving one such as {@code WhitespaceAnalyzer}, where an unconditional {@code toLowerCase} turned
+   * {@code Fo*} into a prefix the stored {@code Foo} could never match (issue #7000). This is also what the Lucene
+   * QueryParser itself does for the prefix, wildcard and fuzzy forms; the regexp form it hands over untouched.
+   */
+  private String normalizeText(final String field, final String text) {
+    if (text == null || text.isEmpty())
+      return "";
+    return analyzer.normalize(isUnqualified(field) ? DEFAULT_FIELD : field, text).utf8ToString();
   }
 
   /**

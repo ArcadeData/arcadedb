@@ -218,6 +218,24 @@ public class SourceDiscovery {
     return stream;
   }
 
+  /**
+   * Records a separator detected by sniffing the source content, unless the user already supplied a delimiter: a guess
+   * never overrides an explicit choice. The one place every detection site goes through, so a new site cannot fall
+   * back to the unconditional write that overwrote the user's {@code -delimiter} / {@code WITH delimiter = ...} whenever
+   * the file extension did not short-circuit detection (issue #6946, the sibling of #6811). A discarded guess is logged
+   * so the "best separator candidate" line just above it does not read as authoritative.
+   */
+  static void applyDetectedDelimiter(final ImporterSettings settings, final char detected) {
+    final Object userDelimiter = settings.options.get("delimiter");
+    if (userDelimiter != null) {
+      if (!userDelimiter.toString().equals(String.valueOf(detected)))
+        LogManager.instance().log(SourceDiscovery.class, Level.INFO,
+            "Detected separator '%s' discarded: using the delimiter '%s' explicitly set by the user", detected, userDelimiter);
+      return;
+    }
+    settings.options.put("delimiter", String.valueOf(detected));
+  }
+
   private FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.EntityType entityType,
       final ImporterSettings settings,
       final ConsoleLogger logger) throws IOException {
@@ -258,12 +276,15 @@ public class SourceDiscovery {
       throw new IllegalArgumentException("entityType '" + entityType + "' not supported");
     }
 
+    // THE USER'S DELIMITER IS SETTLED HERE, ONCE, BEFORE ANY DETECTION RUNS: THE PER-ENTITY DELIMITER IS AN OVERRIDE
+    // OF THE GENERIC `delimiter` OPTION, NOT A MANDATORY VALUE, SO AN ABSENT ONE LEAVES THE OPTION ALONE (CLOBBERING IT
+    // WITH NULL MADE EVERY NON-COMMA CSV UNIMPORTABLE, ISSUE #6811). FROM HERE ON `settings.options` HOLDS THE USER'S
+    // CHOICE, WHICH EVERY DETECTED SEPARATOR BELOW HAS TO YIELD TO THROUGH applyDetectedDelimiter() (ISSUE #6946)
+    if (knownDelimiter != null)
+      settings.options.put("delimiter", knownDelimiter);
+
     if (knownFileType != null) {
       if ("csv".equalsIgnoreCase(knownFileType)) {
-        // NEVER OVERWRITE THE USER'S `delimiter` OPTION WITH NULL: THE PER-ENTITY DELIMITER IS AN OVERRIDE, NOT A
-        // MANDATORY VALUE, AND CLOBBERING IT MADE EVERY NON-COMMA CSV UNIMPORTABLE (ISSUE #6811)
-        if (knownDelimiter != null)
-          settings.options.put("delimiter", knownDelimiter);
         return new CSVImporterFormat();
       } else if ("json".equalsIgnoreCase(knownFileType)) {
         return new JSONImporterFormat();
@@ -353,7 +374,10 @@ public class SourceDiscovery {
 
         final Map.Entry<Character, AtomicInteger> bestSeparator = list.getFirst();
 
-        if (bestSeparator.getKey() == ' ') {
+        // A DELIMITER THE USER SUPPLIED SETTLES THE QUESTION THE SNIFFING IS ASKING: THE FILE IS DELIMITED TEXT WITH
+        // THAT DELIMITER, SO THE SPACE-SEPARATED VECTOR FORMATS ARE NOT A CANDIDATE HOWEVER MANY SPACES THE FIRST LINE
+        // CARRIES INSIDE ITS VALUES (ISSUE #6946)
+        if (bestSeparator.getKey() == ' ' && settings.options.get("delimiter") == null) {
           // CHECK IF IS A VECTOR EMBEDDING TEXT FILE
           final StringBuilder line2 = new StringBuilder();
           while (parser.isAvailable() && parser.nextChar() != '\n')
@@ -371,7 +395,7 @@ public class SourceDiscovery {
         if (format == null) {
           LogManager.instance()
               .log(this, Level.INFO, "Best separator candidate='%s' (all candidates=%s)", bestSeparator.getKey(), list);
-          settings.options.put("delimiter", "" + bestSeparator.getKey());
+          applyDetectedDelimiter(settings, bestSeparator.getKey());
           format = new CSVImporterFormat();
         }
       }
@@ -448,7 +472,7 @@ public class SourceDiscovery {
         if (allDelimitersAreTheSame) {
           // RDF
           settings.typeIdProperty = "id";
-          settings.options.put("delimiter", "" + delimiters.getFirst());
+          applyDetectedDelimiter(settings, delimiters.getFirst());
           return new RDFImporterFormat();
         }
       }

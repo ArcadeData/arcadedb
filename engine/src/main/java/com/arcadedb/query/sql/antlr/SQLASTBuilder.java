@@ -407,6 +407,33 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Splits the patterns of a MATCH statement into the positive ones and those a {@code NOT} keyword precedes, by walking
+   * the parse tree in order and letting a {@code NOT} token flag the pattern that follows it.
+   * <p>
+   * The grammar is {@code MATCH matchExpression (COMMA NOT? matchExpression)*}, so the {@code NOT} tokens form a
+   * sparse list: the i-th {@code NOT} is not the one that precedes the i-th pattern unless every negative pattern
+   * comes last. Indexing {@code NOT(i - 1)} flagged the wrong pattern as soon as a negative pattern was followed by a
+   * positive one ({@code MATCH {as:a}, NOT {as:a}-X->{}, {as:a}-Y->{as:b} RETURN a} negated the Y hop instead of the X
+   * hop), and made the rendered text (issue #6999) a different statement from the one that was parsed.
+   */
+  private void collectMatchExpressions(final SQLParser.MatchStatementContext ctx, final List<MatchExpression> matchExpressions,
+      final List<MatchExpression> notMatchExpressions) {
+    if (ctx.children == null)
+      return;
+
+    boolean negated = false;
+    for (final ParseTree child : ctx.children) {
+      if (child instanceof TerminalNode terminal) {
+        if (terminal.getSymbol().getType() == SQLParser.NOT)
+          negated = true;
+      } else if (child instanceof SQLParser.MatchExpressionContext exprCtx) {
+        (negated ? notMatchExpressions : matchExpressions).add((MatchExpression) visit(exprCtx));
+        negated = false;
+      }
+    }
+  }
+
+  /**
    * MATCH statement rule visitor (for matchStatement grammar rule).
    * This is called when visiting a matchStatement rule directly (e.g., from subqueries).
    */
@@ -417,20 +444,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Parse match expressions (both positive and negative patterns)
     final List<MatchExpression> matchExpressions = new ArrayList<>();
     final List<MatchExpression> notMatchExpressions = new ArrayList<>();
-
-    if (CollectionUtils.isNotEmpty(ctx.matchExpression())) {
-      for (int i = 0; i < ctx.matchExpression().size(); i++) {
-        final SQLParser.MatchExpressionContext exprCtx = ctx.matchExpression(i);
-        final MatchExpression matchExpr = (MatchExpression) visit(exprCtx);
-
-        // Check if this is a NOT expression (only possible for non-first expressions)
-        if (i > 0 && ctx.NOT(i - 1) != null) {
-          notMatchExpressions.add(matchExpr);
-        } else {
-          matchExpressions.add(matchExpr);
-        }
-      }
-    }
+    collectMatchExpressions(ctx, matchExpressions, notMatchExpressions);
 
     stmt.setMatchExpressions(matchExpressions);
     stmt.setNotMatchExpressions(notMatchExpressions);
@@ -516,20 +530,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Parse match expressions (both positive and negative patterns)
     final List<MatchExpression> matchExpressions = new ArrayList<>();
     final List<MatchExpression> notMatchExpressions = new ArrayList<>();
-
-    if (CollectionUtils.isNotEmpty(matchCtx.matchExpression())) {
-      for (int i = 0; i < matchCtx.matchExpression().size(); i++) {
-        final SQLParser.MatchExpressionContext exprCtx = matchCtx.matchExpression(i);
-        final MatchExpression matchExpr = (MatchExpression) visit(exprCtx);
-
-        // Check if this is a NOT expression (only possible for non-first expressions)
-        if (i > 0 && matchCtx.NOT(i - 1) != null) {
-          notMatchExpressions.add(matchExpr);
-        } else {
-          matchExpressions.add(matchExpr);
-        }
-      }
-    }
+    collectMatchExpressions(matchCtx, matchExpressions, notMatchExpressions);
 
     stmt.setMatchExpressions(matchExpressions);
     stmt.setNotMatchExpressions(notMatchExpressions);
