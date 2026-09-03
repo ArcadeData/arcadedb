@@ -42,28 +42,42 @@ public class CollectionUtils {
     return 0;
   }
 
+  /**
+   * Total order over maps, independent of their iteration order: both key sets are sorted and the two maps are compared
+   * as the lexicographic sequence of their (key, value) pairs, a shorter map that is a prefix of a longer one sorting
+   * first. Keys and values are ordered by {@link BinaryComparator#compareTo(Object, Object)}, a {@code null} value
+   * sorting before any non-null one. The result is {@code 0} only when both maps hold the same keys with values that
+   * compare equal, and {@code signum(compare(a, b)) == -signum(compare(b, a))} always holds, which is what
+   * {@link BinaryComparator} needs from it to order MAP-typed index keys the same way on every build (issue #7111: the
+   * former implementation walked only {@code m1}'s keys, answering "greater" in both directions for disjoint key sets,
+   * and stopped at the first key whose value was {@code null} on both sides, declaring the maps equal).
+   */
   public static int compare(final Map<?, Comparable> m1, final Map<?, Comparable> m2) {
-    final Set<? extends Map.Entry<?, Comparable>> entries1 = m1.entrySet();
-    for (Map.Entry<?, Comparable> entry : entries1) {
-      final Comparable value1 = entry.getValue();
-      final Comparable value2 = m2.get(entry.getKey());
-      if (value1 == null) {
-        if (value2 == null)
-          return 0;
-        return -1;
-      } else if (value2 == null)
-        return 1;
+    if (m1 == m2)
+      return 0;
 
-      final int cmp = value1.compareTo(value2);
+    final Object[] keys1 = sortedKeys(m1);
+    final Object[] keys2 = sortedKeys(m2);
+    final int length = Math.min(keys1.length, keys2.length);
+
+    for (int i = 0; i < length; i++) {
+      int cmp = BinaryComparator.compareTo(keys1[i], keys2[i]);
+      if (cmp != 0)
+        return cmp;
+
+      cmp = BinaryComparator.compareTo(m1.get(keys1[i]), m2.get(keys2[i]));
       if (cmp != 0)
         return cmp;
     }
 
-    if (m1.size() > m2.size())
-      return 1;
-    else if (m1.size() < m2.size())
-      return -1;
-    return 0;
+    return Integer.compare(keys1.length, keys2.length);
+  }
+
+  private static Object[] sortedKeys(final Map<?, ?> map) {
+    final Object[] keys = map.keySet().toArray();
+    if (keys.length > 1)
+      Arrays.sort(keys, BinaryComparator::compareTo);
+    return keys;
   }
 
   /**

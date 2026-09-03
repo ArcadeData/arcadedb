@@ -38,9 +38,14 @@ import java.util.Set;
  * selected on every {@link #execute(Object...)} call, instead of registering only one of them depending on the
  * JVM's unspecified {@link Class#getDeclaredMethods()} order.
  * <p>
- * Unlike the Java compiler, this does not rank overloads by specificity: if more than one overload's parameter
- * types accept the arguments (e.g. {@code foo(Object)} and {@code foo(String)} both called with a {@code String}),
- * the call is rejected as ambiguous rather than silently picking the most specific match.
+ * Unlike the Java compiler, this does not rank overloads by reference-type specificity: if more than one overload's
+ * parameter types accept the arguments (e.g. {@code foo(Object)} and {@code foo(String)} both called with a
+ * {@code String}), the call is rejected as ambiguous rather than silently picking the most specific match. Primitive
+ * parameters are the exception: since a boxed numeric argument is accepted by every wider primitive too (JLS 5.1.2,
+ * issue #7007), overloads differing only in numeric width would all apply, so among them the narrowest one that still
+ * accepts the argument wins - {@code twice(int)} over {@code twice(long)} for an {@code Integer}, and
+ * {@code scale(long)} over {@code scale(double)} for the same argument - exactly as javac resolves the call
+ * (issue #7110). Only when no candidate is at least as narrow as every other in every position is the call ambiguous.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -249,14 +254,71 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
 
   private Method matchByType(final List<Method> allCandidates, final List<Method> pool, final Object[] args) {
     Method match = null;
+    List<Method> applicable = null;
     for (final Method m : pool) {
       if (acceptsArgumentTypes(m, args)) {
-        if (match != null)
-          throw ambiguousOverloadException(allCandidates, args);
-        match = m;
+        if (match == null)
+          match = m;
+        else {
+          if (applicable == null) {
+            applicable = new ArrayList<>(pool.size());
+            applicable.add(match);
+          }
+          applicable.add(m);
+        }
       }
     }
-    return match;
+    if (applicable == null)
+      return match;
+
+    final Method mostSpecific = mostSpecific(applicable, args.length);
+    if (mostSpecific == null)
+      throw ambiguousOverloadException(allCandidates, args);
+    return mostSpecific;
+  }
+
+  /**
+   * The single applicable overload that is {@link #isAtLeastAsSpecific at least as specific} as every other one, or
+   * {@code null} when no such overload exists and the call is genuinely ambiguous (issue #7110).
+   */
+  private static Method mostSpecific(final List<Method> applicable, final int argCount) {
+    for (final Method candidate : applicable) {
+      boolean dominates = true;
+      for (final Method other : applicable)
+        if (other != candidate && !isAtLeastAsSpecific(candidate, other, argCount)) {
+          dominates = false;
+          break;
+        }
+      if (dominates)
+        return candidate;
+    }
+    return null;
+  }
+
+  /**
+   * True when, in every argument position, {@code m1}'s parameter type is the same as {@code m2}'s or a primitive that
+   * widens into it (JLS 15.12.2.5 restricted to primitive parameters). Two reference parameter types that differ are
+   * deliberately not ranked (see the class Javadoc), so they make the pair incomparable.
+   */
+  private static boolean isAtLeastAsSpecific(final Method m1, final Method m2, final int argCount) {
+    for (int i = 0; i < argCount; i++) {
+      final Class<?> p1 = parameterTypeAt(m1, i);
+      final Class<?> p2 = parameterTypeAt(m2, i);
+      if (p1 != p2 && !(p1.isPrimitive() && WIDENING_CONVERSIONS.getOrDefault(p1, Set.of()).contains(p2)))
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * The parameter type an argument at position {@code i} is matched against: for a varargs method, positions past the
+   * fixed parameters map to the vararg component type.
+   */
+  private static Class<?> parameterTypeAt(final Method method, final int i) {
+    final Class<?>[] paramTypes = method.getParameterTypes();
+    if (method.isVarArgs() && i >= paramTypes.length - 1)
+      return paramTypes[paramTypes.length - 1].getComponentType();
+    return paramTypes[i];
   }
 
   private static boolean acceptsArgumentTypes(final Method method, final Object[] args) {

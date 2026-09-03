@@ -27,6 +27,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -259,5 +260,27 @@ class DateUtilsTest {
     assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(microsAboveNanosRange, ChronoUnit.NANOS))
         .as("must saturate to Long.MAX_VALUE instead of silently wrapping to a negative number")
         .isEqualTo(Long.MAX_VALUE);
+  }
+
+  /**
+   * Issue #7112: the statically cached storage formatter was built with {@code toFormatter()}, which binds the JVM
+   * default locale. A textual pattern field (month or day name) then rendered and parsed differently on two servers
+   * with different locales, and the first caller's locale stuck to the process through the cache.
+   */
+  @Test
+  void formatterIsLocaleIndependent() {
+    final Locale saved = Locale.getDefault(Locale.Category.FORMAT);
+    // A pattern no other test uses, so it is guaranteed to be built (and cached) under the Italian locale
+    final String pattern = "dd MMMM yyyy EEEE";
+    final LocalDateTime dateTime = LocalDateTime.of(2026, 3, 4, 0, 0);
+    Locale.setDefault(Locale.Category.FORMAT, Locale.ITALIAN);
+    try {
+      assertThat(DateUtils.format(dateTime, pattern)).isEqualTo("04 March 2026 Wednesday");
+      assertThat(DateUtils.parse("04 March 2026 Wednesday", pattern)).isEqualTo(dateTime);
+    } finally {
+      Locale.setDefault(Locale.Category.FORMAT, saved);
+    }
+    // Same answer now that the default locale is back: the cached formatter did not capture the Italian one
+    assertThat(DateUtils.format(dateTime, pattern)).isEqualTo("04 March 2026 Wednesday");
   }
 }
