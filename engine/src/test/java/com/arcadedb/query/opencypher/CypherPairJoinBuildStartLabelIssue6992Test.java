@@ -113,15 +113,54 @@ class CypherPairJoinBuildStartLabelIssue6992Test extends TestHelper {
     assertCountWithHiddenView("ARM_1");
   }
 
+  /**
+   * The filter must not be narrower than the label either: a subtype of the build label is an anchor on every
+   * path, exactly as OLTP's polymorphic type iteration already treats it.
+   */
+  @Test
+  void buildStartLabelKeepsSubtypeAnchorsOnEveryCsrPath() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("SubBuild").addSuperType("Build");
+      final MutableVertex subBuild = database.newVertex("SubBuild").save();
+      final Vertex left = database.query("sql", "SELECT FROM Endpoint WHERE out('PROBE').size() > 0").next()
+          .getElement().get().asVertex();
+      final Vertex right = left.getVertices(Vertex.DIRECTION.OUT, "PROBE").iterator().next();
+      final Vertex middle = database.query("sql", "SELECT FROM Intermediate").next().getElement().get().asVertex();
+      subBuild.newEdge("ARM_1", left).save();
+      subBuild.newEdge("ARM_2", right).save();
+      subBuild.newEdge("ARM_2_FIRST", middle).save();
+    });
+
+    for (final String matchClause : new String[] { MATCH, TWO_HOP_MATCH }) {
+      assertThat(rowCountOf(matchClause + " RETURN build")).as("materialized pipeline").isEqualTo(2);
+      assertThat(scalarOf(matchClause + " RETURN count(*) AS c")).as("OLTP").isEqualTo(2L);
+      final GraphAnalyticalView view = newViewOverFixture("SubBuild");
+      try {
+        assertThat(scalarOf(matchClause + " RETURN count(*) AS c")).as("CSR").isEqualTo(2L);
+      } finally {
+        view.drop();
+      }
+    }
+
+    assertCountWithHiddenView("PROBE", 2L, "SubBuild");
+    assertCountWithHiddenView("ARM_2", 2L, "SubBuild");
+    assertCountWithHiddenView("ARM_1", 2L, "SubBuild");
+  }
+
   private void assertCountWithHiddenView(final String hiddenEdgeType) {
-    final GraphAnalyticalView view = newViewOverFixture();
+    assertCountWithHiddenView(hiddenEdgeType, 1L);
+  }
+
+  private void assertCountWithHiddenView(final String hiddenEdgeType, final long expected,
+      final String... extraVertexTypes) {
+    final GraphAnalyticalView view = newViewOverFixture(extraVertexTypes);
     final GraphTraversalProvider hiddenView = new ViewHidingProvider(view, hiddenEdgeType);
     try {
       GraphTraversalProviderRegistry.unregister(database, view);
       GraphTraversalProviderRegistry.register(database, hiddenView);
       assertThat(scalarOf(MATCH + " RETURN count(*) AS c"))
           .as("CSR without %s NeighborView", hiddenEdgeType)
-          .isEqualTo(1L);
+          .isEqualTo(expected);
     } finally {
       GraphTraversalProviderRegistry.unregister(database, hiddenView);
       GraphTraversalProviderRegistry.register(database, view);
@@ -129,10 +168,12 @@ class CypherPairJoinBuildStartLabelIssue6992Test extends TestHelper {
     }
   }
 
-  private GraphAnalyticalView newViewOverFixture() {
+  private GraphAnalyticalView newViewOverFixture(final String... extraVertexTypes) {
+    final List<String> vertexTypes = new ArrayList<>(List.of("Build", "Other", "Endpoint", "Intermediate"));
+    vertexTypes.addAll(List.of(extraVertexTypes));
     final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
         .withName("issue-6992")
-        .withVertexTypes("Build", "Other", "Endpoint", "Intermediate")
+        .withVertexTypes(vertexTypes.toArray(new String[0]))
         .withEdgeTypes("ARM_1", "ARM_2", "ARM_2_FIRST", "ARM_2_SECOND", "PROBE")
         .build();
     assertThat(GraphTraversalProviderRegistry.awaitAll(database, 30, TimeUnit.SECONDS)).isTrue();
