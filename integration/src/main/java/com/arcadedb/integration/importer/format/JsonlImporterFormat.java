@@ -90,6 +90,19 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   // Recording the specific old-source RIDs left unresolved lets reconciliation touch only those elements.
   private final Map<RID, Map<String, Set<RID>>> pendingLinkReconciliation = new HashMap<>();
 
+  /**
+   * Records - or TIMESERIES samples - accumulated before the periodic commit in {@link #load} fires.
+   */
+  private static final int COMMIT_EVERY = 1_000;
+
+  /**
+   * TIMESERIES samples appended since the last commit. One {@code "ts"} line carries a whole chunk of samples
+   * (up to {@code JsonlExporterFormat}'s own chunk size), so counting LINES the way {@code context.parsed} does
+   * would let a thousand such lines - a million samples - pile into a single transaction's WAL and dirty pages
+   * before it commits. Counted apart, so a chunk weighs what it actually costs.
+   */
+  private int timeSeriesSamplesSinceCommit;
+
   @Override
   public void load(SourceSchema sourceSchema,
       EntityType entityType,
@@ -120,6 +133,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
       ridIndex = new CompressedRID2RIDIndex(database, 1000, 1000);
       pendingLinkReconciliation.clear();
+      timeSeriesSamplesSinceCommit = 0;
 
       if (!database.isTransactionActive())
         database.begin();
@@ -155,6 +169,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           if (database.isTransactionActive())
             database.rollback();
           database.begin();
+          timeSeriesSamplesSinceCommit = 0;
           continue;
         }
 
@@ -166,9 +181,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         // all when the caller already owns the active transaction (skip mode never reaches here - see the guard
         // above): a caller-managed transaction is never ours to commit piecemeal, only to accumulate into and hand
         // back to whoever owns it (issue #6561).
-        if (!context.callerTransactionActiveOnEntry && (skipOnRowError || context.parsed.get() % 1000 == 0)) {
+        if (!context.callerTransactionActiveOnEntry && (skipOnRowError || context.parsed.get() % COMMIT_EVERY == 0
+            || timeSeriesSamplesSinceCommit >= COMMIT_EVERY)) {
           database.commit();
           database.begin();
+          timeSeriesSamplesSinceCommit = 0;
         }
       }
 
@@ -466,6 +483,18 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     final JSONArray samples = chunk.getJSONArray("s");
     final int rows = samples.length();
+
+    // Arity is checked for the WHOLE chunk before a single value is decoded, so a malformed chunk is refused by
+    // the caller's row-error policy (abort or skip) rather than half-applied. A sample SHORTER than the schema
+    // used to fail mid-decode, and a LONGER one was silently truncated to the columns this type declares - which
+    // is the worse of the two, because it discards data without saying so.
+    for (int r = 0; r < rows; r++) {
+      final int arity = samples.getJSONArray(r).length();
+      if (arity != columns.size())
+        throw new ImportException("TIMESERIES sample " + r + " of type '" + typeName + "' has " + arity
+            + " value(s) but the type declares " + columns.size() + " column(s)");
+    }
+
     final long[] timestamps = new long[rows];
     // appendBatch indexes the value columns, skipping the timestamp - see ObjectColumnsRowSource.
     final Object[][] values = new Object[columns.size() - 1][rows];
@@ -484,6 +513,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     engine.appendBatch(timestamps, values);
     context.createdTimeSeriesSamples.addAndGet(rows);
+    timeSeriesSamplesSinceCommit += rows;
   }
 
   /**
