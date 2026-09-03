@@ -31,6 +31,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -79,7 +80,7 @@ class UpdateAutoTransactionIssue7096Test extends TestHelper {
       final Result row = rs.next();
       assertThat(row.<String>getProperty("name")).isEqualTo("Bonaparte");
       assertThat(row.<Iterable<String>>getProperty("aliases")).containsExactly("Emperor");
-      assertThat(row.<java.util.Map<String, Object>>getProperty("attrs")).containsEntry("nation", "France");
+      assertThat(row.<Map<String, Object>>getProperty("attrs")).containsEntry("nation", "France");
       assertThat(rs.hasNext()).isFalse();
     }
   }
