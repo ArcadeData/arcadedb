@@ -212,7 +212,8 @@ class Issue7025ShutdownHookOpenDatabasesBoundTest extends StaticBaseServerTest {
       thread.start();
 
       try {
-        hookStarted.await(30, TimeUnit.SECONDS);
+        if (!hookStarted.await(30, TimeUnit.SECONDS))
+          hookFailure.compareAndSet(null, new IllegalStateException("the hook thread never reached the lifecycle lock"));
         // THE HOOK IS NOW WAITING FOR THE LIFECYCLE LOCK THIS start() HOLDS: OUTLAST THE OLD FIXED BOUND
         Thread.sleep(START_HOLD_MS);
       } catch (final InterruptedException e) {
