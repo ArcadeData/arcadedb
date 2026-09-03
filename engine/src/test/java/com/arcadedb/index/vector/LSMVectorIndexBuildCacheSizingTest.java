@@ -21,11 +21,15 @@ package com.arcadedb.index.vector;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.WarningCapture;
+import com.arcadedb.log.WarningCapture.LogLine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Random;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -34,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * document-backed indexes, where a miss costs a record lookup plus a full property deserialization. The
  * validation phase read every vector and then dropped everything past the bound, so a from-scratch build of a
  * corpus larger than the cache re-read almost every vector, hundreds of times each. The cache is now sized from
- * the corpus and the heap for document-backed indexes, and keeps the small bound only where misses are cheap.
+ * the corpus and a share of the heap ceiling (issue #7146) for both document-backed and inline-quantized indexes.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -77,15 +81,40 @@ class LSMVectorIndexBuildCacheSizingTest extends TestHelper {
     }
   }
 
-  // Inline-quantized indexes resolve a miss from an index page, so they keep the small bound instead of
-  // spending heap on full residency.
+  // Inline-quantized indexes resolve a miss from an index page, but the heap-percent knob must still move
+  // the cache (issue #7146). Only percent=0 (or an explicit graphBuildCacheSize) keeps the flat bound.
   @Test
-  void inlineQuantizedBuildKeepsTheSmallBound() {
+  void inlineQuantizedBuildHonoursTheHeapPercentKnob() {
     createIndex(VectorQuantizationType.INT8);
     final LSMVectorIndex index = index();
 
-    assertThat(index.computeGraphBuildCacheCapacity(50_000_000, true))
-        .isEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+    final int auto = index.computeGraphBuildCacheCapacity(50_000_000, true);
+    assertThat(auto)
+        .as("INT8 and fp32 share the same heap-budgeted auto size; INT8 must not stay at 100,000 while fp32 grows")
+        .isEqualTo(index.computeGraphBuildCacheCapacity(50_000_000, false));
+    assertThat(auto).isLessThan(50_000_000);
+    assertThat(auto).isGreaterThanOrEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+
+    final int previous = GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getValueAsInteger();
+    GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(0);
+    try {
+      assertThat(index.computeGraphBuildCacheCapacity(50_000_000, true))
+          .isEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+    } finally {
+      GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(previous);
+    }
+  }
+
+  @Test
+  void aFromScratchBuildLogsCacheCapacityNextToTheCorpusSize() {
+    createIndex(null);
+    final LSMVectorIndex index = index();
+
+    final List<LogLine> lines = WarningCapture.capture(Level.INFO, index::buildVectorGraphNow);
+
+    assertThat(lines.stream().map(LogLine::message))
+        .as("the chosen cache size next to the corpus is what makes a too-small default a one-line diagnosis")
+        .anyMatch(message -> message.contains("cache enabled: size=" + NUM_VECTORS + " of " + NUM_VECTORS));
   }
 
   // A corpus too large for the heap budget must still build: the cache is capped, not the corpus.

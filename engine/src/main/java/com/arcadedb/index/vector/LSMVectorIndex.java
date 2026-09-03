@@ -2581,18 +2581,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final VectorLocationIndex vectorLocationSnapshot = new VectorLocationIndex(Math.max(16, expectedSize));
 
       // Issue #3144: for inline-quantized indexes (INT8/BINARY) the graph builder reads vectors
-      // straight from index pages on any thread (getImmutablePage needs no DatabaseContext), so we
-      // only warm the bounded build cache instead of holding a full second on-heap copy of the whole
-      // vector set. Document-based indexes (NONE/PRODUCT) still need a full preload because JVector's
-      // worker threads cannot lookupByRID without a transaction context bound to the thread.
+      // straight from index pages on any thread (getImmutablePage needs no DatabaseContext). Document-based
+      // indexes (NONE/PRODUCT) still need a full preload because JVector's worker threads cannot lookupByRID
+      // without a transaction context bound to the thread. Both kinds of index now share the same heap-percent
+      // cache budget (issue #7146); this flag only changes how a miss is resolved, not how large the cache is.
       final boolean inlineQuantization = metadata.quantizationType == VectorQuantizationType.INT8
           || metadata.quantizationType == VectorQuantizationType.BINARY;
-      // ORDERING: this now budgets off AVAILABLE heap (issue #6503), so it must stay AFTER the
-      // releaseResidentGraphFirst block at the top of this method. On the close path that block has already
-      // dropped the old graph, the search cache and the pooled searchers, so this sizes against a heap that no
-      // longer counts them. Move this call above that block - or that block below this call - and the close-path
-      // rebuild would shrink its own build cache to make room for memory it is in the act of freeing, which is
-      // the slow-build failure mode this change exists to avoid rather than cause.
+      // ORDERING: the budget is a share of the heap ceiling, then capped at currently AVAILABLE heap
+      // (issues #6503 / #7146), so this must stay AFTER the releaseResidentGraphFirst block at the top of this
+      // method. On the close path that block has already dropped the old graph, the search cache and the pooled
+      // searchers, so the available-heap cap no longer counts them. Move this call above that block - or that
+      // block below this call - and the close-path rebuild would shrink its own build cache to make room for
+      // memory it is in the act of freeing.
       final int graphBuildCacheSize = computeGraphBuildCacheCapacity(expectedSize, inlineQuantization);
       // Never preload more than the cache can hold: the surplus used to be read, boxed and then dropped.
       final int preloadBudget = Math.min(expectedSize, graphBuildCacheSize);
@@ -2760,8 +2760,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return;
       }
 
-      LogManager.instance().log(this, Level.INFO, "Building graph with %d vectors using property '%s' (cache enabled: size=%d)",
-          filteredVectorIds.length, vectorProp, graphBuildCacheSize);
+      LogManager.instance().log(this, Level.INFO,
+          "Building graph with %d vectors using property '%s' (cache enabled: size=%d of %d)",
+          filteredVectorIds.length, vectorProp, graphBuildCacheSize, filteredVectorIds.length);
 
       // Create lazy-loading vector values that reads vectors from documents or index pages (if quantized)
       final ArcadePageVectorValues pageVectors = ArcadePageVectorValues.forGraphBuild(database, metadata.dimensions,
@@ -8383,22 +8384,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Computes how many vectors the graph-build cache should hold.
    * <p>
    * An explicit {@code arcadedb.vectorIndex.graphBuildCacheSize} (or the per-index metadata) wins. Otherwise the
-   * capacity depends on what a cache miss costs during the build:
-   * <ul>
-   *   <li>inline-quantized indexes (INT8/BINARY) read a miss straight from an index page on any thread, so a
-   *       small bound is enough and the heap is better spent elsewhere;</li>
-   *   <li>document-based indexes (NONE/PRODUCT) pay a record lookup plus a full property deserialization on
-   *       every miss, so the whole corpus is cached when the heap allows it. This is what the validation phase
-   *       materializes anyway: bounding the cache below it (issue #3144) threw the vectors away right after
-   *       reading them and made a from-scratch fp32 build re-read almost every vector, hundreds of times each.</li>
-   * </ul>
-   * The budget is a share of the heap actually AVAILABLE, not of the whole heap (issue #6503): a rebuild keeps the
-   * old graph and its search cache resident for its whole duration, and sizing off the ceiling made the cache ask
-   * for the same amount whether that headroom existed or not - which is also why raising {@code -Xmx} did not help,
-   * since it grew the cache proportionally. See {@link VectorHeapBudget} for how availability is measured.
+   * cache holds the whole corpus when it fits {@code arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent}, for both
+   * document-backed indexes (NONE/PRODUCT) and inline-quantized indexes (INT8/BINARY). Document-backed misses still
+   * cost a record lookup plus a full property deserialization, which is why a bound below the corpus (issue #3144)
+   * made a from-scratch fp32 build re-read almost every vector, hundreds of times each; INT8/BINARY misses are
+   * cheaper (an index page) but the percent knob used to skip them entirely (issue #7146).
+   * <p>
+   * The budget is a share of the heap ceiling, then capped at 90% of the heap currently AVAILABLE: taking the
+   * percent of leftover heap made a served ingest of the same corpus choose a third of the cache an embedded
+   * build would get (issue #7146), while sizing off the ceiling with no available-heap cap made an online rebuild
+   * holding the old graph ask for the same amount whether that headroom existed or not (issue #6503). See
+   * {@link VectorHeapBudget#buildCacheBudgetBytes(int)}.
    *
    * @param expectedSize        number of vectors the build will walk
-   * @param inlineQuantization  whether vectors are readable from index pages without a record lookup
+   * @param inlineQuantization  whether vectors are readable from index pages without a record lookup; no longer
+   *                            changes the capacity (issue #7146), kept so callers keep declaring which kind of
+   *                            index they have
    *
    * @return the number of vectors to hold, always positive
    */
@@ -8407,15 +8408,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (configured > 0)
       return configured;
 
-    if (inlineQuantization)
-      return ArcadePageVectorValues.DEFAULT_CACHE_SIZE;
+    // `inlineQuantization` used to return DEFAULT_CACHE_SIZE here (issue #3144). The percent knob must
+    // apply to INT8/BINARY as well (issue #7146), so both kinds of index share the heap-budgeted path below.
 
     final int heapPercent = mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT);
     if (heapPercent <= 0)
       return ArcadePageVectorValues.DEFAULT_CACHE_SIZE;
 
-    final long heapBudget = VectorHeapBudget.budgetBytes(heapPercent);
+    final long heapBudget = VectorHeapBudget.buildCacheBudgetBytes(heapPercent);
     final long affordable = Math.max(ArcadePageVectorValues.DEFAULT_CACHE_SIZE,
         heapBudget / VectorHeapBudget.bytesPerCachedVector(metadata.dimensions));
     final long wanted = Math.max(1, expectedSize);
