@@ -400,15 +400,12 @@
                              2.15.2 copy used to be. That copy is dropped by the gremlin-shaded filter below.
                              The multi-release overlays need their own patterns because shade rewrites the class
                              bodies under META-INF/versions but not their paths; the levels listed are the ones
-                             jackson-core ships today, and everyBundledThirdPartyPackageIsRelocated fails on a
+                             jackson-core ships classes at today (its versions/9 holds only the module-info that
+                             the filter below drops), and everyBundledThirdPartyPackageIsRelocated fails on a
                              new one, since com/fasterxml is not on its allow-list. -->
                         <relocation>
                             <pattern>com.fasterxml.jackson</pattern>
                             <shadedPattern>org.apache.tinkerpop.shaded.jackson</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>META-INF/versions/9/com.fasterxml.jackson</pattern>
-                            <shadedPattern>META-INF/versions/9/org.apache.tinkerpop.shaded.jackson</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>META-INF/versions/11/com.fasterxml.jackson</pattern>
