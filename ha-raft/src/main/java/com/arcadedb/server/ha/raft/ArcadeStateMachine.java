@@ -828,6 +828,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Ratis reports a log write failure here from the segmented log worker thread. Cheap and non-blocking by
    * contract; the recovery runs on the {@link HealthMonitor} thread, driven by {@link #getRaftLogFailure()}.
+   * <p>
+   * The check-then-set on {@link #raftLogFailure} is not atomic and does not need to be: Ratis runs one
+   * {@code SegmentedRaftLogWorker} thread per division and every {@code notifyLogFailed} call for this state
+   * machine comes from it, in order. The field is volatile only so the monitor thread sees the mark promptly.
    */
   @Override
   public void notifyLogFailed(final Throwable cause, final LogEntryProto failedEntry) {
@@ -2750,11 +2754,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // stood at sampling time, and everyone else's snapshot comes from this copy. Writes accepted between the
     // sample and this apply legitimately move it past the baseline; refusing it here poisoned the leader of a
     // cluster that seeded its databases right after election, and the cluster never converged.
-    if (originatedLocally && localLastTxId >= chosenLastTxId) {
-      LogManager.instance().log(this, Level.INFO,
-          "Database '%s' is the bootstrap source on this node (local lastTxId=%d, baseline lastTxId=%d): the local copy "
-              + "is the baseline, nothing to verify",
-          dbName, localLastTxId, chosenLastTxId);
+    if (originatedLocally) {
+      if (localLastTxId >= chosenLastTxId)
+        LogManager.instance().log(this, Level.INFO,
+            "Database '%s' is the bootstrap source on this node (local lastTxId=%d, baseline lastTxId=%d): the local copy "
+                + "is the baseline, nothing to verify",
+            dbName, localLastTxId, chosenLastTxId);
+      else
+        // A committed transaction id never moves backwards, so the source's copy cannot sit behind the baseline it
+        // sampled from that same copy. Should it ever happen (a database replaced under the running server), the
+        // copy is still the one every other peer installs from: keep it and say so, rather than fall through to
+        // the mismatch branch and have this node reinstall from itself.
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s' is the bootstrap source on this node but its local lastTxId=%d is BELOW the baseline "
+                + "lastTxId=%d it sampled; keeping the local copy, which is what the other peers install from",
+            dbName, localLastTxId, chosenLastTxId);
       return;
     }
 
