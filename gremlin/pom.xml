@@ -117,6 +117,22 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Jackson, bundled+relocated in the shaded jar in place of TinkerPop's own copy (issue #7097).
+             org.apache.tinkerpop:gremlin-shaded carries a relocated Jackson at whatever version TinkerPop
+             was released with (2.15.2 for 3.8.1) TOGETHER WITH Jackson's original META-INF/maven metadata,
+             so every SBOM/CVE scanner pointed at the distribution reports jackson-core 2.15.2 against
+             arcadedb-gremlin-*-shaded.jar while lib/ ships the BOM-managed version. The shade below drops
+             TinkerPop's copy and rebuilds the very same relocation from this dependency, so the bytecode
+             that runs, the metadata a scanner reads and the plain Jackson next to it are one version.
+             Optional for the same reason as antlr4-runtime above: bundled+relocated only, never leaked to
+             Maven consumers, for whom gremlin-shaded still provides org.apache.tinkerpop.shaded.jackson.
+             ShadedJarLayoutTest.bundledJacksonIsTheBomVersionAndItsMetadataSaysSo is the guard. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-all</artifactId>
@@ -378,7 +394,31 @@
                             <pattern>com.squareup.javapoet</pattern>
                             <shadedPattern>com.arcadedb.gremlin.shaded.com.squareup.javapoet</shadedPattern>
                         </relocation>
-
+                        <!-- Jackson at the BOM version, rebuilt onto TinkerPop's OWN relocation prefix (issue #7097):
+                             gremlin-core and gremlin-util were compiled against org.apache.tinkerpop.shaded.jackson
+                             and are not rewritten here, so the replacement must land exactly where TinkerPop's
+                             2.15.2 copy used to be. That copy is dropped by the gremlin-shaded filter below.
+                             The multi-release overlays need their own patterns because shade rewrites the class
+                             bodies under META-INF/versions but not their paths; the levels listed are the ones
+                             jackson-core ships classes at today (its versions/9 holds only the module-info that
+                             the filter below drops), and everyBundledThirdPartyPackageIsRelocated fails on a
+                             new one, since com/fasterxml is not on its allow-list. -->
+                        <relocation>
+                            <pattern>com.fasterxml.jackson</pattern>
+                            <shadedPattern>org.apache.tinkerpop.shaded.jackson</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>META-INF/versions/11/com.fasterxml.jackson</pattern>
+                            <shadedPattern>META-INF/versions/11/org.apache.tinkerpop.shaded.jackson</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>META-INF/versions/17/com.fasterxml.jackson</pattern>
+                            <shadedPattern>META-INF/versions/17/org.apache.tinkerpop.shaded.jackson</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>META-INF/versions/21/com.fasterxml.jackson</pattern>
+                            <shadedPattern>META-INF/versions/21/org.apache.tinkerpop.shaded.jackson</shadedPattern>
+                        </relocation>
                     </relocations>
                     <!-- Groovy's extension-module descriptor is a SINGLE-module properties file at a
                          fixed path, so it cannot be merged: of the modules bundled here only one
@@ -407,6 +447,20 @@
                                 <exclude>META-INF/versions/*/org/yaml/**</exclude>
                                 <exclude>META-INF/versions/*/module-info.class</exclude>
                                 <exclude>module-info.class</exclude>
+                            </excludes>
+                        </filter>
+                        <!-- TinkerPop's bundled Jackson (2.15.2 for 3.8.1) and the Maven metadata that made every
+                             scanner report it (issue #7097): both are rebuilt from the BOM-managed jackson-databind
+                             dependency by the relocation above, so nothing of TinkerPop's copy may survive, or
+                             shade keeps whichever class it met first and the uber-jar runs a mix of two Jacksons.
+                             Kryo, minlog and objenesis stay: TinkerPop relocates those into the same jar and no
+                             scanner has anything to say about them. -->
+                        <filter>
+                            <artifact>org.apache.tinkerpop:gremlin-shaded</artifact>
+                            <excludes>
+                                <exclude>org/apache/tinkerpop/shaded/jackson/**</exclude>
+                                <exclude>META-INF/versions/*/org/apache/tinkerpop/shaded/jackson/**</exclude>
+                                <exclude>META-INF/maven/com.fasterxml.jackson.core/**</exclude>
                             </excludes>
                         </filter>
                     </filters>
