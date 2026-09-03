@@ -61,18 +61,18 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
   /**
    * Creates a function bound to a single Java method.
    *
-   * @param instance Java object against where to invoke the method
+   * @param instance Java object against where to invoke the method; required when the method is not static, ignored
+   *                 (may be {@code null}) when it is
    * @param method   Java Method object to invoke
    *
-   * @throws NoSuchMethodException
-   * @throws InvocationTargetException
-   * @throws InstantiationException
-   * @throws IllegalAccessException
+   * @throws IllegalArgumentException when {@code method} is not static and no instance is supplied. The declaring
+   *                                  class is never instantiated on the caller's behalf (issue #7046): whether a
+   *                                  class gets constructed, and how, is the registration site's decision, as
+   *                                  {@link JavaClassFunctionLibraryDefinition} makes it for a whole class
    */
-  public JavaMethodFunctionDefinition(final Object instance, final Method method)
-      throws NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
-    this.instance = Modifier.isStatic(method.getModifiers()) ? null : instance != null ? instance : method.getDeclaringClass().getConstructor().newInstance();
+  public JavaMethodFunctionDefinition(final Object instance, final Method method) {
     this.methods = List.of(method);
+    this.instance = instanceFor(instance, this.methods);
   }
 
   /**
@@ -80,13 +80,11 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
    *
    * @param method static method to execute
    *
-   * @throws NoSuchMethodException
-   * @throws InvocationTargetException
-   * @throws InstantiationException
-   * @throws IllegalAccessException
+   * @throws IllegalArgumentException when {@code method} is not static: see
+   *                                  {@link #JavaMethodFunctionDefinition(Object, Method)} for the form that takes
+   *                                  the instance to invoke it on
    */
-  public JavaMethodFunctionDefinition(final Method method)
-      throws NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
+  public JavaMethodFunctionDefinition(final Method method) {
     this(null, method);
   }
 
@@ -97,16 +95,37 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
    *
    * @param instance Java object against where to invoke the non-static overloads, or {@code null} if all of them are static
    * @param methods  the overloads, all sharing the same method name
+   *
+   * @throws IllegalArgumentException when an overload is not static and no instance is supplied
    */
   public JavaMethodFunctionDefinition(final Object instance, final List<Method> methods) {
     if (methods.isEmpty())
       throw new IllegalArgumentException("At least one method is required");
-    this.instance = instance;
+    this.instance = instanceFor(instance, methods);
     // Sorted so which overload names an error message (getName(), or the "expected/received" and ambiguity
     // messages) is deterministic, rather than depending on the JVM's unspecified getDeclaredMethods() order.
     this.methods = methods.stream()
         .sorted(Comparator.<Method>comparingInt(Method::getParameterCount).thenComparing(m -> Arrays.toString(m.getParameterTypes())))
         .toList();
+  }
+
+  /**
+   * The receiver the methods are invoked on: {@code instance} when any of them needs one, {@code null} when all of
+   * them are static (a receiver is ignored by {@link Method#invoke} for a static method, so there is no point in
+   * holding on to one). A non-static method with no instance is refused here rather than served by instantiating
+   * its declaring class: constructing an arbitrary class as a side effect of registering a function is not a
+   * contract a registration site can be expected to know about (issue #7046).
+   */
+  private static Object instanceFor(final Object instance, final List<Method> methods) {
+    boolean needsInstance = false;
+    for (final Method method : methods)
+      if (!Modifier.isStatic(method.getModifiers())) {
+        if (instance == null)
+          throw new IllegalArgumentException(
+              "Method '" + method + "' is not static: an instance to invoke it on is required");
+        needsInstance = true;
+      }
+    return needsInstance ? instance : null;
   }
 
   @Override
