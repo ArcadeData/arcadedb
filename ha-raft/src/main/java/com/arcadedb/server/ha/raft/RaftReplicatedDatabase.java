@@ -1184,8 +1184,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
-  public void deleteRecordNoLock(final Record record) {
-    proxied.deleteRecordNoLock(record);
+  public boolean deleteRecordNoLock(final Record record) {
+    return proxied.deleteRecordNoLock(record);
   }
 
   @Override

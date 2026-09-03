@@ -43,7 +43,8 @@ public class DatabaseAsyncBrowseIterator implements DatabaseAsyncTask {
       if (!callback.onRecord(iterator.next().asDocument()))
         break;
 
-      if (async.isShutdown())
+      // isAborting(), not isShutdown(): same silent truncation on a retired worker as DatabaseAsyncScanBucket (#7004)
+      if (async.isAborting())
         break;
     }
   }

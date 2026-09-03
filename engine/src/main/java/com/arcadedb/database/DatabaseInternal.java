@@ -225,7 +225,14 @@ public interface DatabaseInternal extends Database {
 
   void updateRecordNoLock(Record record, boolean discardRecordAfter);
 
-  void deleteRecordNoLock(Record record);
+  /**
+   * Deletes the record without taking the database read lock, dispatching the before/after-delete listeners itself.
+   *
+   * @return {@code true} when the record was deleted, {@code false} when a before-delete listener vetoed it. The
+   * asynchronous delete task relies on this to skip its success callback on a veto without dispatching the listeners
+   * a second time (issue #7003).
+   */
+  boolean deleteRecordNoLock(Record record);
 
   /**
    * Deletes an edge record the way {@code edge.delete()} does - index cleanup, external values, delete events and

@@ -20,45 +20,31 @@ package com.arcadedb.query.sql.method.collection;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
-import com.arcadedb.serializer.BinaryComparator;
-
-import java.util.ArrayList;
-import java.util.List;
 
 /**
- * @author Christian Himpe
- * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
+ * Returns the first item of a collection (list, set, array, map values), or the value itself when it is not a
+ * collection: the method form of the `first()` SQL function, so it can be chained after any method that produces a
+ * collection - `'a,b'.split(',').first()` used to fail with "Unknown method name: first" (issue #7027).
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ * @see com.arcadedb.function.sql.coll.SQLFunctionFirst
  */
-public class SQLMethodSort extends AbstractSQLMethod {
+public class SQLMethodFirst extends AbstractSQLMethod {
 
-  public static final String NAME = "sort";
+  public static final String NAME = "first";
 
-  public SQLMethodSort() {
-    super(NAME, 0, 1);
+  public SQLMethodFirst() {
+    super(NAME);
   }
 
   @Override
   public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
       final Object[] params) {
+    if (MultiValue.isMultiValue(value))
+      return MultiValue.getFirstValue(value);
 
-    // ANY COLLECTION, NOT ONLY A List: A SET OR AN ARRAY RECEIVER USED TO COME BACK UNSORTED WITH NO ERROR, WHICH IS
-    // WORSE THAN A FAILURE BECAUSE IT LOOKS LIKE IT WORKED (ISSUE #7027). SCALARS STAY AN IDENTITY.
-    final List<Object> list = listReceiverOrNull(value);
-    if (list != null) {
-      final List<Object> result = new ArrayList<>(list);
-      if (params != null && params.length > 0 && params[0] instanceof Boolean bool && !bool)
-        result.sort((left, right) -> BinaryComparator.compareTo(right, left));
-      else
-        result.sort((left, right) -> BinaryComparator.compareTo(left, right));
-      return result;
-    } else {
-      return value;
-    }
-  }
-
-  @Override
-  public String getSyntax() {
-    return "sort(<bool>)";
+    return value;
   }
 }
