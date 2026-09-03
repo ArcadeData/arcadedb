@@ -509,7 +509,10 @@ public class FullTextQueryExecutor {
    */
   private float boostFor(final String field) {
     if (!isUnqualified(field) && metadata != null)
-      return metadata.getFieldBoost(field);
+      // A per-field boost is declared under the property name the index carries ({@code keywords by item_boost}), the
+      // same spelling the direct get() path looks up: the qualifier has to be resolved here too or a BY ITEM property's
+      // boost is silently dropped by SEARCH_INDEX while CONTAINSTEXT applies it (issue #7000 review follow-up)
+      return metadata.getFieldBoost(storedField(field));
     return 1.0f;
   }
 

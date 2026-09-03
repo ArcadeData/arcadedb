@@ -19,6 +19,7 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -106,6 +107,33 @@ class Issue7000FieldQualifiedFullTextTest extends TestHelper {
     assertThat(titles("SELECT title FROM Metadata WHERE keywords CONTAINSTEXT 'graph'")).containsExactly("First");
   }
 
+  /**
+   * A per-field boost is declared under the property name the index carries, which for a BY ITEM property is the
+   * modifier-qualified one: the executor has to look the boost up under that spelling too, or SEARCH_INDEX drops it
+   * while the direct CONTAINSTEXT path applies it.
+   */
+  @Test
+  void aBoostOnAByItemPropertyReachesTheFieldQualifiedQuery() {
+    final DocumentType metadata = database.getSchema().createDocumentType("Metadata");
+    metadata.createProperty("name", Type.STRING);
+    metadata.createProperty("title", Type.STRING);
+    metadata.createProperty("keywords", Type.LIST);
+    database.command("sql", "CREATE INDEX Metadata_ft ON Metadata (title, keywords BY ITEM) FULL_TEXT METADATA "
+        + "{\"similarity\": \"BM25\", \"keywords by item_boost\": 5.0}");
+
+    // THE TWO DOCUMENTS ARE SYMMETRIC (ONE TOKEN PER FIELD), SO ONLY THE BOOST CAN TELL THEIR SCORES APART
+    database.transaction(() -> {
+      database.newDocument("Metadata").set("name", "inTitle").set("title", "java").set("keywords", List.of("other")).save();
+      database.newDocument("Metadata").set("name", "inKeywords").set("title", "other").set("keywords", List.of("java")).save();
+    });
+
+    final float keywordScore = score("SELECT name, $score FROM Metadata WHERE SEARCH_INDEX('Metadata_ft', 'keywords:java') = true",
+        "inKeywords");
+    final float titleScore = score("SELECT name, $score FROM Metadata WHERE SEARCH_INDEX('Metadata_ft', 'title:java') = true",
+        "inTitle");
+    assertThat(keywordScore).as("the boosted BY ITEM field must outscore the unboosted one").isGreaterThan(titleScore);
+  }
+
   @Test
   void nonExactTermsAreNormalizedByTheAnalyzerNotLowerCased() {
     final DocumentType doc = database.getSchema().createDocumentType("Doc");
@@ -148,6 +176,16 @@ class Issue7000FieldQualifiedFullTextTest extends TestHelper {
     assertThat(contents("SELECT content FROM Doc WHERE SEARCH_INDEX('Doc_ft', 'F?o') = true")).containsExactly("Foo Bar");
     assertThat(contents("SELECT content FROM Doc WHERE SEARCH_INDEX('Doc_ft', 'Fooo~1') = true")).containsExactly("Foo Bar");
     assertThat(contents("SELECT content FROM Doc WHERE SEARCH_INDEX('Doc_ft', '/Fo+/') = true")).containsExactly("Foo Bar");
+  }
+
+  private float score(final String query, final String expectedName) {
+    try (final ResultSet rs = database.query("sql", query)) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.<String>getProperty("name")).isEqualTo(expectedName);
+      assertThat(rs.hasNext()).isFalse();
+      return ((Number) result.getProperty("$score")).floatValue();
+    }
   }
 
   private List<String> titles(final String query) {

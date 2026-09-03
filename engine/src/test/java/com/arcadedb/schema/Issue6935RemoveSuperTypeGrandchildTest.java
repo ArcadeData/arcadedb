@@ -113,9 +113,10 @@ class Issue6935RemoveSuperTypeGrandchildTest extends TestHelper {
     assertThat(count("B4")).isEqualTo(1);
   }
 
+  /** Enumerates the rows a polymorphic scan of the type returns, so the assertion sees the bucket list and not a counter. */
   private long count(final String typeName) {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + typeName)) {
-      return ((Number) rs.next().getProperty("c")).longValue();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM " + typeName)) {
+      return rs.stream().count();
     }
   }
 }
