@@ -27,7 +27,8 @@ import java.util.List;
  * <p>
  * Examples:
  * - REMOVE n.property - removes a property from a node
- * - REMOVE n:Label - removes a label from a node (not yet supported)
+ * - REMOVE n:Label - removes a label from a node
+ * - REMOVE n:$(expr) - removes the label(s) the expression yields (Cypher 25 dynamic label)
  */
 public class RemoveClause {
   private final List<RemoveItem> items;
@@ -53,7 +54,7 @@ public class RemoveClause {
      */
     public enum RemoveType {
       PROPERTY,   // Remove a property from node/edge
-      LABELS      // Remove labels from a node (not yet implemented)
+      LABELS      // Remove labels from a node
     }
 
     private final RemoveType type;
@@ -61,6 +62,7 @@ public class RemoveClause {
     private final String property;  // For PROPERTY type
     private final Expression keyExpression;  // For dynamic PROPERTY type: REMOVE n[keyExpr]
     private final List<String> labels;  // For LABELS type
+    private final List<Expression> labelExpressions;  // For LABELS type: REMOVE n:$(expr)
 
     /**
      * Constructor for property removal.
@@ -74,6 +76,7 @@ public class RemoveClause {
       this.property = property;
       this.keyExpression = null;
       this.labels = null;
+      this.labelExpressions = List.of();
     }
 
     /**
@@ -89,6 +92,7 @@ public class RemoveClause {
       this.property = null;
       this.keyExpression = keyExpression;
       this.labels = null;
+      this.labelExpressions = List.of();
     }
 
     /**
@@ -98,11 +102,24 @@ public class RemoveClause {
      * @param labels   the labels to remove
      */
     public RemoveItem(final String variable, final List<String> labels) {
+      this(variable, labels, List.of());
+    }
+
+    /**
+     * Constructor for label removal with Cypher 25 dynamic labels: {@code REMOVE n:Static:$(expr)}. Each expression
+     * in {@code labelExpressions} is evaluated per row and contributes the label (or list of labels) it yields.
+     *
+     * @param variable         the variable name (node)
+     * @param labels           the statically written labels to remove
+     * @param labelExpressions the {@code $(expr)} labels to resolve per row
+     */
+    public RemoveItem(final String variable, final List<String> labels, final List<Expression> labelExpressions) {
       this.type = RemoveType.LABELS;
       this.variable = variable;
       this.property = null;
       this.keyExpression = null;
       this.labels = labels;
+      this.labelExpressions = labelExpressions != null ? labelExpressions : List.of();
     }
 
     public RemoveType getType() {
@@ -125,12 +142,26 @@ public class RemoveClause {
       return labels;
     }
 
+    /** The Cypher 25 {@code $(expr)} labels of this item, evaluated per row. Never null; empty when there are none. */
+    public List<Expression> getLabelExpressions() {
+      return labelExpressions;
+    }
+
+    public boolean hasLabelExpressions() {
+      return !labelExpressions.isEmpty();
+    }
+
     @Override
     public String toString() {
       if (type == RemoveType.PROPERTY) {
         return keyExpression != null ? variable + "[" + keyExpression + "]" : variable + "." + property;
       } else {
-        return variable + ":" + String.join(":", labels);
+        final StringBuilder sb = new StringBuilder(variable);
+        for (final String label : labels)
+          sb.append(':').append(label);
+        for (final Expression labelExpression : labelExpressions)
+          sb.append(":$(").append(labelExpression).append(')');
+        return sb.toString();
       }
     }
   }

@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
@@ -164,11 +165,30 @@ public class RemoveStep extends AbstractExecutionStep {
         context.getDatabase().begin();
       }
 
-      for (final RemoveClause.RemoveItem item : removeClause.getItems()) {
+      // Phase 1: read every right-hand side against the pre-clause state, before any write of this clause
+      // lands. A clause assigns simultaneously in Cypher, so `REMOVE n.kind, n:$(n.kind)` must name the label
+      // from the property value the clause is about to remove, not from the hole it leaves. This mirrors the
+      // phase-1/phase-2 split SetClauseApplier already performs (issue #5190).
+      final List<RemoveClause.RemoveItem> items = removeClause.getItems();
+      // Allocated only for a clause that actually names a label: the overwhelmingly common REMOVE is
+      // property-only, and this runs once per row.
+      Object[] labels = null;
+      for (int i = 0; i < items.size(); i++) {
+        final RemoveClause.RemoveItem item = items.get(i);
+        if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS) {
+          if (labels == null)
+            labels = new Object[items.size()];
+          labels[i] = resolveLabels(item, result);
+        }
+      }
+
+      // Phase 2: apply in source order, each label removal working off its phase-1 list.
+      for (int i = 0; i < items.size(); i++) {
+        final RemoveClause.RemoveItem item = items.get(i);
         if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY)
           removeProperty(item, result);
         else if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS)
-          removeLabels(item, result, replacements);
+          removeLabels(item, result, replacements, asLabelList(labels[i]));
       }
 
       // Commit transaction if we started it
@@ -245,12 +265,34 @@ public class RemoveStep extends AbstractExecutionStep {
     RowAliases.propagateUpdate(result, doc, mutableDoc);
   }
 
+  /** The phase-1 label list, cast back from the {@code Object[]} the snapshot is held in. */
+  @SuppressWarnings("unchecked")
+  private static List<String> asLabelList(final Object phase1Value) {
+    return (List<String>) phase1Value;
+  }
+
+  /**
+   * Resolves the labels this item removes: the statically written ones, plus whatever each Cypher 25
+   * {@code $(expression)} label evaluates to against the current row. Before issue #7059 the parser dropped the
+   * dynamic labels entirely, so {@code REMOVE n:$(x)} was a silent no-op.
+   */
+  private List<String> resolveLabels(final RemoveClause.RemoveItem item, final Result result) {
+    if (!item.hasLabelExpressions())
+      return item.getLabels();
+
+    final List<String> resolved = new ArrayList<>(item.getLabels().size() + item.getLabelExpressions().size());
+    resolved.addAll(item.getLabels());
+    for (final Expression labelExpression : item.getLabelExpressions())
+      Labels.appendDynamicLabels(resolved, evaluator.evaluate(labelExpression, result, context), "REMOVE");
+    return resolved;
+  }
+
   /**
    * Removes labels from a vertex by changing its type.
    * Creates a new vertex with the reduced label set and migrates properties/edges.
    */
   private void removeLabels(final RemoveClause.RemoveItem item, final Result result,
-      final LabelReplacements replacements) {
+      final LabelReplacements replacements, final List<String> labelsToRemove) {
     final String variable = item.getVariable();
     final Object obj = result.getProperty(variable);
     // #5795: reject a label removal targeting a node deleted earlier in the same query instead
@@ -271,7 +313,8 @@ public class RemoveStep extends AbstractExecutionStep {
     // instead of with Entity), while keeping every implied label would flatten the hierarchy (issue #6363).
     final DocumentType currentType = vertex.getType();
     final Schema schema = context.getDatabase().getSchema();
-    final List<String> labelsToRemove = item.getLabels();
+    if (labelsToRemove.isEmpty())
+      return;
     final List<String> remainingLabels = Labels.remainingLabels(schema, vertex, labelsToRemove);
 
     // Count the labels the vertex actually carries - a label it does not have is a no-op, exactly as in Neo4j, and

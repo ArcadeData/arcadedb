@@ -23,6 +23,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
@@ -177,6 +178,10 @@ public final class SetClauseApplier {
             item.getType() == SetClause.SetType.REPLACE_MAP ? "=" : "+=");
         break;
       case LABELS:
+        // A Cypher 25 dynamic label - SET n:$(expr) - is a read of the row, so it is answered from the pre-clause
+        // state like every other right-hand side, and it is validated here so an unusable label rejects the clause
+        // before any of it has been written (issue #7059).
+        values[i] = resolveLabels(item, result);
         break;
       }
     }
@@ -195,7 +200,7 @@ public final class SetClauseApplier {
         applyMergeMap(item, result, writtenDocs, asPropertyMap(values[i]));
         break;
       case LABELS:
-        applyLabels(item, result, writtenDocs, labelReplacements);
+        applyLabels(item, result, writtenDocs, labelReplacements, asLabelList(values[i]));
         break;
       }
     }
@@ -447,8 +452,31 @@ public final class SetClauseApplier {
       ((ResultInternal) result).setProperty(variable, mutable);
   }
 
+  /**
+   * Resolves the labels this item writes: the statically written ones, plus whatever each Cypher 25
+   * {@code $(expression)} label evaluates to against the current row. A dynamic expression may yield a single label
+   * or a list of them, and a value that is not usable as a type name is refused rather than {@code toString()}-ed
+   * into one - see {@link Labels#appendDynamicLabels}.
+   */
+  private List<String> resolveLabels(final SetClause.SetItem item, final Result result) {
+    if (!item.hasLabelExpressions())
+      return item.getLabels();
+
+    final List<String> resolved = new ArrayList<>(item.getLabels().size() + item.getLabelExpressions().size());
+    resolved.addAll(item.getLabels());
+    for (final Expression labelExpression : item.getLabelExpressions())
+      Labels.appendDynamicLabels(resolved, evaluator.evaluate(labelExpression, result, context), "SET");
+    return resolved;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<String> asLabelList(final Object value) {
+    return (List<String>) value;
+  }
+
   private void applyLabels(final SetClause.SetItem item, final Result result,
-      final Map<RID, MutableDocument> writtenDocs, final LabelReplacements labelReplacements) {
+      final Map<RID, MutableDocument> writtenDocs, final LabelReplacements labelReplacements,
+      final List<String> labelsToAdd) {
     final Object obj = result.getProperty(item.getVariable());
     // #5795: reject a label write targeting a node deleted earlier in the same query instead of silently no-op'ing.
     DeletedEntityMarker.checkNotDeleted(obj);
@@ -475,7 +503,7 @@ public final class SetClauseApplier {
     final DocumentType currentType = vertex.getType();
     final List<String> allLabels = new ArrayList<>(Labels.getOwnLabels(vertex));
     int newLabelsCount = 0;
-    for (final String label : item.getLabels())
+    for (final String label : labelsToAdd)
       if (!currentType.instanceOf(label) && !allLabels.contains(label)) {
         allLabels.add(label);
         newLabelsCount++;

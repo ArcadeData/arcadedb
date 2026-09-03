@@ -174,6 +174,8 @@ public final class CypherVariableUsage {
             if (item.getTargetExpression() != null
                 && expressionReferencesVariable(item.getTargetExpression(), variable))
               return true;
+            if (labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
+              return true;
           }
           break;
         }
@@ -183,7 +185,8 @@ public final class CypherVariableUsage {
           // and became a no-op unless the edge was also projected through WITH (issue #5013).
           final RemoveClause rc = entry.getTypedClause();
           for (final RemoveClause.RemoveItem item : rc.getItems())
-            if (variable.equals(item.getVariable()))
+            if (variable.equals(item.getVariable())
+                || labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
               return true;
           break;
         }
@@ -287,13 +290,16 @@ public final class CypherVariableUsage {
             if (item.getTargetExpression() != null
                 && expressionReferencesVariable(item.getTargetExpression(), variable))
               return true;
+            if (labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
+              return true;
           }
           break;
         }
         case REMOVE: {
           final RemoveClause rc = inner.getTypedClause();
           for (final RemoveClause.RemoveItem item : rc.getItems())
-            if (variable.equals(item.getVariable()))
+            if (variable.equals(item.getVariable())
+                || labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
               return true;
           break;
         }
@@ -376,13 +382,16 @@ public final class CypherVariableUsage {
           if (item.getTargetExpression() != null
               && expressionReferencesVariable(item.getTargetExpression(), variable))
             return true;
+          if (labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
+            return true;
         }
         break;
       }
       case REMOVE: {
         final RemoveClause rc = entry.getTypedClause();
         for (final RemoveClause.RemoveItem item : rc.getItems())
-          if (variable.equals(item.getVariable()))
+          if (variable.equals(item.getVariable())
+              || labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
             return true;
         break;
       }
@@ -467,6 +476,20 @@ public final class CypherVariableUsage {
     final VariableReferenceFinder finder = new VariableReferenceFinder(variable);
     CypherExpressionWalker.walk(expression, finder);
     return finder.found;
+  }
+
+  /**
+   * A Cypher 25 dynamic label - {@code SET n:$(r.kind)} / {@code REMOVE n:$(r.kind)} - can be the only place a
+   * binding is read. Missing it here would drop that binding exactly the way issues #5137 and #5013 dropped an edge
+   * read solely from a SET value or a REMOVE target, and the label expression would then quietly evaluate to null
+   * instead of naming a label (issue #7059).
+   */
+  private static boolean labelExpressionsReferenceVariable(final List<Expression> labelExpressions,
+      final String variable) {
+    for (int i = 0; i < labelExpressions.size(); i++)
+      if (expressionReferencesVariable(labelExpressions.get(i), variable))
+        return true;
+    return false;
   }
 
   /** {@link #expressionReferencesVariable(Expression, String)}, for a WHERE-clause predicate. */

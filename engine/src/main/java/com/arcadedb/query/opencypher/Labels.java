@@ -614,6 +614,61 @@ public final class Labels {
   }
 
   /**
+   * Appends the label(s) a Cypher 25 dynamic label expression - {@code SET n:$(expr)}, {@code REMOVE n:$(expr)} -
+   * evaluated to, validating each one as a name a type can actually be created under.
+   * <p>
+   * The contract on the value follows Neo4j: a string is one label, a list (or array) of strings is that many
+   * labels, and {@code null} contributes nothing. Anything else is refused rather than coerced.
+   * <p>
+   * The write clauses validate where the read clauses ({@code MatchNodeStep} and friends) deliberately do not:
+   * a nonsense label in a pattern matches nothing and is harmless, whereas the same value on a write path becomes
+   * a <i>vertex type</i>. Issue #7059 is what happens without the check - the source text {@code $(node.labels)}
+   * was itself turned into a type, and the schema corruption only surfaced when a client read those nodes back.
+   * {@code toString()}-ing a number or a map into a type name would land in exactly the same place, so the value
+   * has to be a usable label or the statement fails.
+   *
+   * @param target the list to append to
+   * @param value  the value the dynamic label expression evaluated to
+   * @param clause the clause name to name in the error message, e.g. {@code "SET"}
+   *
+   * @throws CommandSemanticException when the value, or an entry of it, cannot be used as a label
+   */
+  public static void appendDynamicLabels(final List<String> target, final Object value, final String clause) {
+    if (value == null)
+      return;
+
+    if (value instanceof Iterable<?> iterable) {
+      for (final Object item : iterable)
+        if (item != null)
+          target.add(requireUsableLabel(item, clause));
+      return;
+    }
+
+    if (value instanceof Object[] array) {
+      for (final Object item : array)
+        if (item != null)
+          target.add(requireUsableLabel(item, clause));
+      return;
+    }
+
+    target.add(requireUsableLabel(value, clause));
+  }
+
+  private static String requireUsableLabel(final Object value, final String clause) {
+    if (!(value instanceof String label))
+      throw new CommandSemanticException("A dynamic label expression in " + clause + " must evaluate to a string or a "
+          + "list of strings, but it evaluated to " + value.getClass().getSimpleName() + " (" + value + ")");
+    if (label.isBlank())
+      throw new CommandSemanticException(
+          "A dynamic label expression in " + clause + " evaluated to a blank label, which is not a usable type name");
+    if (label.contains(LABEL_SEPARATOR))
+      throw new CommandSemanticException("A dynamic label expression in " + clause + " evaluated to '" + label
+          + "', but '" + LABEL_SEPARATOR + "' is reserved as the separator between the labels of a composite type "
+          + "and cannot appear inside a single label");
+    return label;
+  }
+
+  /**
    * Ensures composite type exists, creating it if necessary.
    * Returns the type name to use for creating vertices.
    * <p>
