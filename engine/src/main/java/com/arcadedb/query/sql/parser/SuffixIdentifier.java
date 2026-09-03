@@ -72,14 +72,35 @@ public class SuffixIdentifier extends SimpleNode {
     }
   }
 
+  /**
+   * Whether {@code name} names a context variable rather than a property of the value being evaluated: a user-visible
+   * {@code $variable}, or a {@link GeneratedAlias} the planner invented for itself.
+   * <p>
+   * Every overload of {@code execute()} has to agree on this, or the same condition answers differently depending on
+   * the shape the value reaching it happens to have. Both directions have already gone wrong (issue #7054):
+   * <ul>
+   * <li>the {@link Identifiable} overload asked the context only about {@code $} names, so a lifted sub-query's alias
+   * resolved to null and {@code $nested CONTAINS (@rid IN (SELECT ...))} was never true - {@code CONTAINS} hands each
+   * item over as an Identifiable when the collection holds records;
+   * <li>the {@link Map} overload asked the context about EVERY name, so a plain map key was shadowed by any context
+   * variable that happened to share it.
+   * </ul>
+   */
+  private static boolean isContextVariable(final String name) {
+    return name.startsWith("$") || GeneratedAlias.is(name);
+  }
+
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
     if (star) {
       return currentRecord;
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && varName.startsWith("$") && context.getVariable(varName) != null)
-        return context.getVariable(varName);
+      if (context != null && isContextVariable(varName)) {
+        final Object ctxVar = context.getVariable(varName);
+        if (ctxVar != null)
+          return ctxVar;
+      }
 
       if (currentRecord != null) {
         final Record record = currentRecord.getRecord();
@@ -130,7 +151,7 @@ public class SuffixIdentifier extends SimpleNode {
       if (currentRecord != null && varName.startsWith("$") && currentRecord.getMetadataKeys().contains(varName)) {
         return currentRecord.getMetadata(varName);
       }
-      if (context != null && (varName.startsWith("$") || varName.startsWith("_$$$"))) {
+      if (context != null && isContextVariable(varName)) {
         final Object ctxVar = context.getVariable(varName);
         if (ctxVar != null) {
           return ctxVar;
@@ -173,8 +194,15 @@ public class SuffixIdentifier extends SimpleNode {
       if (context != null && "$parent".equalsIgnoreCase(varName))
         return context.getParent();
 
-      if (context != null && context.getVariable(varName) != null)
-        return context.getVariable(varName);
+      // Same predicate as the other two overloads, and for the same reason. Without it this one asked the context about
+      // EVERY name, so a plain map key was shadowed by any context variable that happened to share it: `$m.name` with a
+      // `LET $name = ...` in scope answered the variable instead of the map entry, and a database global variable could
+      // shadow a key with no LET involved at all.
+      if (context != null && isContextVariable(varName)) {
+        final Object ctxVar = context.getVariable(varName);
+        if (ctxVar != null)
+          return ctxVar;
+      }
 
       if (currentRecord != null)
         return currentRecord.get(varName);
