@@ -162,6 +162,16 @@ class JavaFunctionTest extends TestHelper {
     }
   }
 
+  public static class MixedPackedVarargs {
+    public static String pick(final int value, final String... parts) {
+      return "narrow:" + parts.length;
+    }
+
+    public static String pick(final long value, final String[]... parts) {
+      return "wide:" + parts.length;
+    }
+  }
+
   public static class VarargsOverloaded {
     public static String join(final String sep, final String... parts) {
       return "strs:" + String.join(sep, parts);
@@ -548,6 +558,22 @@ class JavaFunctionTest extends TestHelper {
       assertThat(widen.execute(1L)).isEqualTo("longs");
     } finally {
       database.getSchema().unregisterFunctionLibrary("vac");
+    }
+  }
+
+  @Test
+  void prePackedStatusIsJudgedPerOverload()
+    throws Exception {
+    // The same trailing String[] is a pre-packed vararg for pick(int, String...) and one flat element for
+    // pick(long, String[]...): both overloads apply, and each must be ranked with the vararg view it was matched under,
+    // so the int overload wins on its first parameter exactly as javac resolves pick(1, new String[]{"x"}).
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("mpv", JavaFunctionTest.MixedPackedVarargs.class));
+    try {
+      final var pick = database.getSchema().getFunction("mpv", "pick");
+      assertThat(pick.execute(1, new String[] { "x" })).isEqualTo("narrow:1");
+      assertThat(pick.execute(1L, new String[] { "x" })).isEqualTo("wide:1");
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("mpv");
     }
   }
 
