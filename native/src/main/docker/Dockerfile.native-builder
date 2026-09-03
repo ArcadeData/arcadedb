@@ -40,8 +40,9 @@ FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a
 # defaulted here on purpose: a default would be a second place the GraalVM version is written
 # down, and a stale one would reintroduce exactly the builder/Truffle skew that
 # native/pom.xml's native.graalvm.version comment documents (it has shipped to main twice). The
-# asset name cannot be derived from the version either - the pinned 25.2.4 publishes as
-# graalvm-community-jdk-25i2-25.0.4_linux-<arch>_bin.tar.gz - so the script asks the release API
+# asset name cannot be derived from the version either, and its shape differs per release line
+# (mainline 25.0.2 -> graalvm-community-jdk-25.0.2_linux-<arch>_bin.tar.gz; intermediate 25.2.4 ->
+# graalvm-community-jdk-25i2-25.0.4_linux-<arch>_bin.tar.gz), so the script asks the release API
 # rather than constructing it.
 ARG GRAALVM_URL
 ARG GRAALVM_SHA256

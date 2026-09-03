@@ -142,15 +142,15 @@ log "GraalVM home: $GVM"
 # exact release the builder must be. Read the pin from the pom (single source of truth - the lint
 # job already enforces that it matches native-image.yml) and look for it in the builder's own
 # --version banner, which prints e.g.
-#   GraalVM Runtime Environment GraalVM CE 25.2.4+9.1 (build ...)
+#   GraalVM Runtime Environment GraalVM CE 25.0.2+10.1 (build ...)
 # ---------------------------------------------------------------------------
 PIN="$(sed -n 's:.*<native\.graalvm\.version>\(.*\)</native\.graalvm\.version>.*:\1:p' "$NATIVE_POM" | head -1)"
 [ -n "$PIN" ] || fail "could not read <native.graalvm.version> from $NATIVE_POM"
 
 NI_VERSION="$("$GVM/bin/native-image" --version 2>&1 || true)"
-# The banner carries a build suffix - the pinned 25.2.4 reports "GraalVM CE 25.2.4+7.1" - so match
-# the pin followed by a non-digit rather than the bare string, which would also accept a future
-# "25.2.40". Dots in the pin are escaped so they cannot match an arbitrary character.
+# The banner carries a build suffix - 25.0.2 reports "GraalVM CE 25.0.2+10.1", 25.2.4 reports
+# "GraalVM CE 25.2.4+7.1" - so match the pin followed by a non-digit rather than the bare string,
+# which would also accept a "25.0.20". Dots are escaped so they cannot match an arbitrary character.
 if grep -qE "GraalVM CE ${PIN//./\\.}([^0-9]|\$)" <<<"$NI_VERSION"; then
   log "builder matches native/pom.xml pin (GraalVM CE $PIN)"
 else

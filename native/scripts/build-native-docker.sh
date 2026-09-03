@@ -207,7 +207,9 @@ fi
 # The GraalVM version comes out of native/pom.xml, the one place it is written down (the lint job
 # already enforces that native-image.yml agrees with it). The download URL is then asked of the
 # GitHub release API rather than constructed, because the asset name is not derivable from the
-# version: the pinned 25.2.4 publishes as graalvm-community-jdk-25i2-25.0.4_linux-<arch>_bin.tar.gz.
+# version, and the shape differs per release line: mainline 25.0.2 publishes as
+# graalvm-community-jdk-25.0.2_linux-<arch>_bin.tar.gz, intermediate 25.2.4 as
+# graalvm-community-jdk-25i2-25.0.4_linux-<arch>_bin.tar.gz.
 # ---------------------------------------------------------------------------
 PIN="$(sed -n 's:.*<native\.graalvm\.version>\(.*\)</native\.graalvm\.version>.*:\1:p' "$NATIVE_POM" | head -1)"
 [ -n "$PIN" ] || fail "could not read <native.graalvm.version> from $NATIVE_POM"
@@ -215,17 +217,39 @@ BUILDER_IMAGE="arcadedb-native-builder:${PIN}-${ARCH}"
 
 if [ "$REBUILD_BUILDER" = "1" ] || ! docker image inspect "$BUILDER_IMAGE" >/dev/null 2>&1; then
   log "resolving GraalVM CE $PIN ($GRAALVM_ASSET_ARCH) from the graalvm-ce-builds releases"
-  RELEASE_API="https://api.github.com/repos/graalvm/graalvm-ce-builds/releases/tags/graal-${PIN}"
-  if command -v gh >/dev/null 2>&1; then
-    RELEASE_JSON="$(gh api "repos/graalvm/graalvm-ce-builds/releases/tags/graal-${PIN}")"
-  else
-    RELEASE_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$RELEASE_API")"
-  fi
-  # Plain grep rather than jq/python: neither is guaranteed present, and the field is unambiguous.
-  GRAALVM_URL="$(grep -o "https://[^\"]*graalvm-community[^\"]*_${GRAALVM_ASSET_ARCH}_bin\.tar\.gz" <<<"$RELEASE_JSON" | head -1)"
-  [ -n "$GRAALVM_URL" ] || fail "no ${GRAALVM_ASSET_ARCH} asset in the graal-${PIN} release.
-  Every GraalVM version reachable here must be published under a graal-<version> tag - see the
-  <native.graalvm.version> comment in native/pom.xml for which versions are and are not."
+
+  # Fetches one release by tag; empty output (and success) when that tag does not exist, so the
+  # caller can fall through to the next candidate rather than aborting under `set -e`.
+  fetch_release() {
+    if command -v gh >/dev/null 2>&1; then
+      gh api "repos/graalvm/graalvm-ce-builds/releases/tags/$1" 2>/dev/null || true
+    else
+      curl -fsSL -H 'Accept: application/vnd.github+json' \
+        "https://api.github.com/repos/graalvm/graalvm-ce-builds/releases/tags/$1" 2>/dev/null || true
+    fi
+  }
+
+  # graal-<version> FIRST, jdk-<version> second - the same order setup-graalvm's own findReleaseTag
+  # uses, so this resolves whichever release the workflow would install. The two tags are not
+  # interchangeable and which one exists depends on the line the pin tracks: intermediate releases
+  # publish graal-* (graal-25.2.4), mainline ones publish jdk-* (jdk-25.0.2). Trying only one
+  # breaks the moment native/pom.xml's pin moves between the two lines.
+  RELEASE_JSON=""
+  RESOLVED_TAG=""
+  for candidate in "graal-${PIN}" "jdk-${PIN}"; do
+    RELEASE_JSON="$(fetch_release "$candidate")"
+    # Plain grep rather than jq/python: neither is guaranteed present, and the field is unambiguous.
+    GRAALVM_URL="$(grep -o "https://[^\"]*graalvm-community[^\"]*_${GRAALVM_ASSET_ARCH}_bin\.tar\.gz" <<<"$RELEASE_JSON" | head -1 || true)"
+    if [ -n "$GRAALVM_URL" ]; then
+      RESOLVED_TAG="$candidate"
+      break
+    fi
+  done
+  [ -n "$GRAALVM_URL" ] || fail "no ${GRAALVM_ASSET_ARCH} asset under either graal-${PIN} or jdk-${PIN}.
+  A version has to be published as a CE tarball to be usable here, and being on Maven Central is
+  not the same thing: 25.0.3 and 25.0.4 have full org.graalvm.* artifacts and no tarball at all.
+  See the <native.graalvm.version> comment in native/pom.xml for which versions do exist."
+  log "  release tag: $RESOLVED_TAG"
   GRAALVM_SHA256="$(curl -fsSL "${GRAALVM_URL}.sha256" | tr -d '[:space:]')"
   [ -n "$GRAALVM_SHA256" ] || fail "could not fetch ${GRAALVM_URL}.sha256"
 
