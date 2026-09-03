@@ -18,6 +18,8 @@
  */
 package com.arcadedb.engine.timeseries.simd;
 
+import com.arcadedb.engine.timeseries.TimeSeriesNaN;
+
 import jdk.incubator.vector.DoubleVector;
 import jdk.incubator.vector.LongVector;
 import jdk.incubator.vector.VectorMask;
@@ -78,8 +80,10 @@ public final class SimdTimeSeriesVectorOps implements TimeSeriesVectorOps {
       if (v < m)
         m = v;
     }
-    // NaN policy (issue #4716): empty or all-NaN range returns NaN, not the +Inf sentinel.
-    return found ? m : Double.NaN;
+    // NaN policy (issues #4716, #7039): empty or all-NaN range returns the absent marker, not the +Inf sentinel.
+    // The vectorized loop keeps the +Inf reduction identity because that is what the hardware MIN reduction needs;
+    // `found` is what converts it back to TimeSeriesNaN's contract, which the scalar sibling folds directly.
+    return found ? m : TimeSeriesNaN.ABSENT;
   }
 
   @Override
@@ -111,8 +115,8 @@ public final class SimdTimeSeriesVectorOps implements TimeSeriesVectorOps {
       if (v > m)
         m = v;
     }
-    // NaN policy (issue #4716): empty or all-NaN range returns NaN, not the -Inf sentinel.
-    return found ? m : Double.NaN;
+    // See min() above: same TimeSeriesNaN contract, -Inf reduction identity.
+    return found ? m : TimeSeriesNaN.ABSENT;
   }
 
   @Override

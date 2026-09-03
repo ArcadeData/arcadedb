@@ -39,6 +39,14 @@ import java.util.Map;
 public class JsonGraphSerializer extends JsonSerializer {
 
   private boolean    expandVertexEdges       = false;
+  /**
+   * Whether a vertex line carries its edge metadata at all. The RID lists {@link #expandVertexEdges} produces are
+   * a diagnostic view, not part of a graph's definition: every importer rebuilds the edges from the edge records
+   * themselves, and a RID does not survive a re-import into a differently laid-out database anyway - so a consumer
+   * that writes them for a machine to read back is paying 2 x average-degree RIDs per vertex for something nothing
+   * reads, and implying a guarantee the format cannot make (issue #7032).
+   */
+  private boolean    includeVertexEdgeMetadata = true;
   private JSONObject sharedJson              = null;
   private boolean    includeMetadata         = true;
   private boolean    precisionAwareTemporals = false;
@@ -114,6 +122,9 @@ public class JsonGraphSerializer extends JsonSerializer {
     if (document instanceof Vertex vertex1) {
       final Vertex vertex = vertex1;
 
+      if (!includeVertexEdgeMetadata)
+        return;
+
       if (expandVertexEdges) {
         final JSONArray outEdges = new JSONArray();
         for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
@@ -134,6 +145,18 @@ public class JsonGraphSerializer extends JsonSerializer {
       object.put("i", edge.getIn().toString());
       object.put("o", edge.getOut().toString());
     }
+  }
+
+  public boolean isIncludeVertexEdgeMetadata() {
+    return includeVertexEdgeMetadata;
+  }
+
+  /**
+   * See {@link #includeVertexEdgeMetadata}. Edges keep their endpoint RIDs either way - those ARE the edge.
+   */
+  public JsonGraphSerializer setIncludeVertexEdgeMetadata(final boolean includeVertexEdgeMetadata) {
+    this.includeVertexEdgeMetadata = includeVertexEdgeMetadata;
+    return this;
   }
 
   public boolean isExpandVertexEdges() {

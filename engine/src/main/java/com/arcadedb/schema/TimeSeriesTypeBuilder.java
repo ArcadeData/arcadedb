@@ -74,6 +74,24 @@ public class TimeSeriesTypeBuilder {
     return this;
   }
 
+  /**
+   * Adds an already-resolved column, codec included.
+   * <p>
+   * {@link #withTimestamp}/{@link #withTag}/{@link #withField} build the {@link ColumnDefinition} from the name and
+   * the type alone, which leaves the codec at the current default table's choice. That is right for a user creating
+   * a type, and wrong for anything RESTORING one - a logical restore (the JSONL importer) has the exported schema in
+   * hand, where the codec is recorded per column precisely because it is not re-derivable (issue #5475), and
+   * re-deriving it would silently re-encode the restored type differently from the one it came from.
+   *
+   * @param column the column to add; a TIMESTAMP-role column also becomes the type's timestamp column
+   */
+  public TimeSeriesTypeBuilder withColumn(final ColumnDefinition column) {
+    if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+      this.timestampColumn = column.getName();
+    this.columns.add(column);
+    return this;
+  }
+
   public TimeSeriesTypeBuilder withShards(final int shards) {
     this.shards = shards;
     return this;

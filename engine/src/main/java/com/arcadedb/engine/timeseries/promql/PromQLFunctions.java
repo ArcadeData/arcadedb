@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine.timeseries.promql;
 
+import com.arcadedb.engine.timeseries.TimeSeriesNaN;
 import com.arcadedb.engine.timeseries.promql.PromQLResult.RangeSeries;
 
 import java.util.List;
@@ -158,19 +159,25 @@ public final class PromQLFunctions {
     return sumOverTime(series) / series.values().size();
   }
 
+  /**
+   * Prometheus answers NaN for {@code min_over_time} over a window with no real sample, so the fold goes through
+   * {@link TimeSeriesNaN} - the one NaN policy of the time-series stack - instead of seeding {@code +Infinity} and
+   * returning that sentinel as data when nothing displaced it (issue #7039).
+   */
   public static double minOverTime(final RangeSeries series) {
-    double min = Double.POSITIVE_INFINITY;
+    double min = TimeSeriesNaN.ABSENT;
     for (final double[] v : series.values())
-      if (v[1] < min)
-        min = v[1];
+      min = TimeSeriesNaN.min(min, v[1]);
     return min;
   }
 
+  /**
+   * See {@link #minOverTime(RangeSeries)}.
+   */
   public static double maxOverTime(final RangeSeries series) {
-    double max = Double.NEGATIVE_INFINITY;
+    double max = TimeSeriesNaN.ABSENT;
     for (final double[] v : series.values())
-      if (v[1] > max)
-        max = v[1];
+      max = TimeSeriesNaN.max(max, v[1]);
     return max;
   }
 
