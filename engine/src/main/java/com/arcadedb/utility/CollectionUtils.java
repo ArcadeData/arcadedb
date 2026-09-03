@@ -53,15 +53,12 @@ public class CollectionUtils {
    * and stopped at the first key whose value was {@code null} on both sides, declaring the maps equal).
    */
   public static int compare(final Map<?, Comparable> m1, final Map<?, Comparable> m2) {
-    if (m1 == m2)
-      return 0;
-
     final Object[] keys1 = sortedKeys(m1);
     final Object[] keys2 = sortedKeys(m2);
     final int length = Math.min(keys1.length, keys2.length);
 
     for (int i = 0; i < length; i++) {
-      int cmp = BinaryComparator.compareTo(keys1[i], keys2[i]);
+      int cmp = compareKeys(keys1[i], keys2[i]);
       if (cmp != 0)
         return cmp;
 
@@ -76,8 +73,20 @@ public class CollectionUtils {
   private static Object[] sortedKeys(final Map<?, ?> map) {
     final Object[] keys = map.keySet().toArray();
     if (keys.length > 1)
-      Arrays.sort(keys, BinaryComparator::compareTo);
+      Arrays.sort(keys, CollectionUtils::compareKeys);
     return keys;
+  }
+
+  /**
+   * Orders map keys: keys of the same class by {@link BinaryComparator#compareTo(Object, Object)}, keys of different
+   * classes by class name. A map holds keys of any type (a document's MAP property is String-keyed, but the API accepts
+   * any key), and two keys of unrelated classes are distinct map entries whichever way they are ordered, so grouping them
+   * by class keeps the order total without asking {@code compareTo} to relate e.g. a String to an Integer.
+   */
+  private static int compareKeys(final Object k1, final Object k2) {
+    if (k1 == null || k2 == null || k1.getClass() == k2.getClass())
+      return BinaryComparator.compareTo(k1, k2);
+    return k1.getClass().getName().compareTo(k2.getClass().getName());
   }
 
   /**
