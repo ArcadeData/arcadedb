@@ -19,15 +19,20 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.RangeIndex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
@@ -35,29 +40,41 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Leading (seed) execution step that drives a single-hop relationship pattern from the edge type's own
  * index, instead of scanning every vertex and expanding every edge.
  * <p>
- * It serves the shape {@code MATCH (a)-[t:TYPE]->(b) WHERE t.k1 = v1 AND t.k2 = v2 ...} where the
- * endpoints carry no selective constraint and the edge type has an index whose key is fully covered by
- * the equality predicates. Mirrors the SQL {@code FETCH FROM INDEX} path (issue #740): OpenCypher's
- * planner otherwise only ever uses an index to anchor a <em>vertex</em> scan, never an edge.
+ * It serves the shape {@code MATCH (a)-[t:TYPE]->(b) WHERE t.k1 = v1 AND t.k2 IN [v2, v3] ...} where the
+ * endpoints carry no selective constraint and the edge type has an index whose key - or a leading prefix
+ * of it - is covered by equality or {@code IN}-list predicates on the edge. Mirrors the SQL
+ * {@code FETCH FROM INDEX} path (issue #740): OpenCypher's planner otherwise only ever uses an index to
+ * anchor a <em>vertex</em> scan, never an edge.
  * <p>
- * The lookup is an equality seek on the full index key, so it returns exactly the edges carrying those
- * key values. The MATCH clause's {@code WHERE} filter is still applied above this step, so any predicate
- * not part of the index key (or any looser interpretation) is re-validated - this step is only ever a
- * selective prefilter, never the final word on membership.
+ * Each key column carries either one value expression (an equality) or an {@link InListValues} (an
+ * {@code IN}-list, or an {@code OR} of equalities on the same property). The seek keys are the cartesian
+ * product of the resolved column values: a key covering every index column is an exact lookup, a shorter
+ * one walks the contiguous range of the ordered index sharing that prefix - the same two shapes
+ * {@code NodeIndexSeek} answers for a vertex anchor. Several seek keys are chained one after the other,
+ * with result RIDs de-duplicated so set membership is honoured whatever the list repeats.
+ * <p>
+ * The MATCH clause's {@code WHERE} filter is still applied above this step, so any predicate not part of
+ * the index key (or any looser interpretation) is re-validated - this step is only ever a selective
+ * prefilter, never the final word on membership.
  * <p>
  * The one constraint the {@code WHERE} filter above cannot re-validate is the one the <em>pattern</em>
  * carries rather than the predicate: writing the same variable at both endpoints, as in
@@ -66,39 +83,54 @@ import java.util.NoSuchElementException;
  * (issue #7008), so this step enforces {@code out == in} itself for that shape and keeps the index seek.
  */
 public class MatchEdgeByIndexStep extends AbstractExecutionStep {
-  private final String       edgeType;
-  private final String[]     propertyNames;
-  private final Expression[] valueExpressions;
-  private final String       indexName;
-  private final Direction    direction;
-  private final String       sourceVariable;
-  private final String       relationshipVariable; // may be null when the edge is anonymous
-  private final String       targetVariable;
+  private final String    edgeType;
+  /** The leading index columns the seek resolves, in key order; may be shorter than the index key. */
+  private final String[]  propertyNames;
+  /** One entry per {@link #propertyNames}: an {@link Expression} (equality) or an {@link InListValues}. */
+  private final Object[]  keyValues;
+  private final String    indexName;
+  private final Direction direction;
+  private final String    sourceVariable;
+  private final String    relationshipVariable; // may be null when the edge is anonymous
+  private final String    targetVariable;
   // True when the pattern repeats one variable at both endpoints - (a)-[t:TYPE]->(a) - which constrains the
   // hop to self-loops. Anonymous endpoints get distinct generated names, so only an explicit repeat sets it.
-  private final boolean      selfLoopOnly;
+  private final boolean   selfLoopOnly;
 
   private final ExpressionEvaluator evaluator;
 
   // Held at the step level (not local to the syncPull() ResultSet) so close() can release it, matching the
   // AutoCloseable contract on IndexCursor and this codebase's convention for any step holding one (see
-  // FetchFromIndexStep). openCursor() always resolves through a full-key equality lookupByKey(), which today
-  // returns an already fully-drained IndexCursorCollection - so this is a robustness/consistency measure, not
-  // a fix for a reproducible leak: nothing here can hold a live LSM series cursor open across pulls.
+  // FetchFromIndexStep). A prefix seek opens a live range cursor over the ordered index, so unlike the
+  // full-key lookup (which returns an already-drained collection) it can hold LSM resources across pulls.
   private IndexCursor cursor;
 
   // Read-only empty row used to evaluate the (row-independent) key value expressions - literals,
   // parameters and functions such as date('...'). Mirrors MatchNodeStep.EMPTY_RESULT.
   private static final Result EMPTY_RESULT = new ResultInternal(Collections.emptyMap());
 
+  /** Full-key equality form: one value expression per index column. */
   public MatchEdgeByIndexStep(final String edgeType, final String[] propertyNames,
       final Expression[] valueExpressions, final String indexName, final Direction direction,
       final String sourceVariable, final String relationshipVariable, final String targetVariable,
       final CommandContext context) {
+    this(edgeType, propertyNames, (Object[]) valueExpressions, indexName, direction, sourceVariable,
+        relationshipVariable, targetVariable, context);
+  }
+
+  /**
+   * @param propertyNames the leading index columns covered by the predicates, in key order
+   * @param keyValues     one per column: an {@link Expression} for an equality, an {@link InListValues} for a list
+   */
+  public MatchEdgeByIndexStep(final String edgeType, final String[] propertyNames, final Object[] keyValues,
+      final String indexName, final Direction direction, final String sourceVariable,
+      final String relationshipVariable, final String targetVariable, final CommandContext context) {
     super(context);
+    if (propertyNames.length != keyValues.length)
+      throw new IllegalArgumentException("One key value per covered index column is required");
     this.edgeType = edgeType;
     this.propertyNames = propertyNames;
-    this.valueExpressions = valueExpressions;
+    this.keyValues = keyValues;
     this.indexName = indexName;
     this.direction = direction;
     this.sourceVariable = sourceVariable;
@@ -110,14 +142,20 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    // A key that cannot be resolved (should not happen for literal/parameter keys) yields no rows.
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {
       private boolean            initialized = false;
-      private final List<Result> buffer = new ArrayList<>();
+      private final List<Result> buffer      = new ArrayList<>();
       private int                bufferIndex = 0;
-      private boolean            finished = false;
+      private boolean            finished    = false;
+
+      private Index          index;
+      private boolean        wholeKey;
+      private List<Object[]> seekKeys;
+      private int            seekIndex = 0;
+      /** RIDs already emitted, kept only when more than one seek key could yield the same edge. */
+      private Set<RID>       seen;
 
       @Override
       public boolean hasNext() {
@@ -136,27 +174,69 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
         return buffer.get(bufferIndex++);
       }
 
+      private void initialize() {
+        initialized = true;
+
+        index = context.getDatabase().getSchema().getIndexByName(indexName);
+        if (index == null)
+          // The planner picked an index that the schema no longer offers. Returning an empty result set
+          // here would silently drop rows the query must return, so fail instead (as NodeIndexSeek does).
+          throw new CommandExecutionException(
+              "Index '" + indexName + "' on type '" + edgeType + "' is no longer available: re-plan the query");
+
+        seekKeys = resolveSeekKeys();
+        wholeKey = !seekKeys.isEmpty() && seekKeys.getFirst().length == index.getPropertyNames().size();
+        if (seekKeys.size() > 1)
+          seen = new HashSet<>();
+      }
+
+      /** Opens the cursor for the next seek key, or returns false when every key has been walked. */
+      private boolean openNextCursor() {
+        releaseCursor();
+        if (seekIndex >= seekKeys.size())
+          return false;
+
+        final Object[] key = seekKeys.get(seekIndex++);
+        // A key covering every index column identifies at most one entry per RID; a shorter one matches a
+        // contiguous range of the ordered index, which only the range cursor can walk.
+        cursor = wholeKey ? index.get(key) : ((RangeIndex) index).range(true, key, true, key, true);
+        return true;
+      }
+
       private void fetchMore(final int n) {
         buffer.clear();
         bufferIndex = 0;
 
         if (!initialized) {
-          initialized = true;
-          cursor = openCursor();
-          if (cursor == null) {
+          initialize();
+          if (!openNextCursor()) {
             finished = true;
             return;
           }
         }
 
-        while (buffer.size() < n && cursor.hasNext()) {
+        while (buffer.size() < n) {
           guard.check();
+
+          if (!cursor.hasNext()) {
+            if (!openNextCursor()) {
+              finished = true;
+              return;
+            }
+            continue;
+          }
+
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (context.isProfiling())
               rowCount++;
 
             final Identifiable identifiable = cursor.next();
+
+            // Set semantics over several seek keys: an edge reached through two of them is one answer.
+            if (seen != null && !seen.add(identifiable.getIdentity()))
+              continue;
+
             final Edge edge;
             try {
               final var record = identifiable.getRecord();
@@ -213,9 +293,6 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
               cost += System.nanoTime() - begin;
           }
         }
-
-        if (!cursor.hasNext())
-          finished = true;
       }
 
       @Override
@@ -232,8 +309,8 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
   }
 
   /**
-   * Releases whatever {@link #openCursor()} returned, honouring the {@code IndexCursor} contract regardless of
-   * how the current or a future {@code lookupByKey()} implementation backs it.
+   * Releases whatever the current seek opened, honouring the {@code IndexCursor} contract regardless of how the
+   * current or a future index implementation backs it.
    */
   private void releaseCursor() {
     if (cursor != null) {
@@ -242,15 +319,63 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
     }
   }
 
-  private IndexCursor openCursor() {
-    final Object[] keyValues = new Object[propertyNames.length];
-    for (int i = 0; i < propertyNames.length; i++) {
-      final Object resolved = coerceForIndexKey(evaluator.evaluate(valueExpressions[i], EMPTY_RESULT, context));
-      if (resolved == null)
-        return null; // an unresolved key cannot seek; caller-side WHERE filter still runs on the fallback
-      keyValues[i] = resolved;
+  /**
+   * Resolves the key values at execution time (parameters change per execution) and expands them into the seek
+   * keys: one per combination of the per-column values. A column whose values all resolve to {@code null} - an
+   * unbound parameter, an empty list - truncates the key there, degrading the seek to the shorter prefix the
+   * {@code WHERE} filter above re-validates; a leading column with no value yields no seek at all, as no edge
+   * can equal {@code null}.
+   */
+  private List<Object[]> resolveSeekKeys() {
+    final List<List<Object>> columns = new ArrayList<>(keyValues.length);
+    for (final Object keyValue : keyValues) {
+      final List<Object> values = resolveColumnValues(keyValue);
+      if (values.isEmpty())
+        break;
+      columns.add(values);
     }
-    return context.getDatabase().lookupByKey(edgeType, propertyNames, keyValues);
+    if (columns.isEmpty())
+      return Collections.emptyList();
+
+    List<Object[]> keys = new ArrayList<>();
+    keys.add(new Object[0]);
+    for (final List<Object> values : columns) {
+      final List<Object[]> expanded = new ArrayList<>(keys.size() * values.size());
+      for (final Object[] prefix : keys)
+        for (final Object value : values) {
+          final Object[] key = new Object[prefix.length + 1];
+          System.arraycopy(prefix, 0, key, 0, prefix.length);
+          key[prefix.length] = value;
+          expanded.add(key);
+        }
+      keys = expanded;
+    }
+    return keys;
+  }
+
+  private List<Object> resolveColumnValues(final Object keyValue) {
+    final Set<Object> values = new LinkedHashSet<>();
+    if (keyValue instanceof InListValues inList) {
+      for (final Expression element : inList.getValues()) {
+        final Object resolved = coerceForIndexKey(evaluator.evaluate(element, EMPTY_RESULT, context));
+        // A single parameter may stand for the whole list (t.k IN $ids), so a multi-value element expands.
+        if (resolved instanceof Collection<?> collection) {
+          for (final Object v : collection)
+            addValue(values, coerceForIndexKey(v));
+        } else if (resolved != null && resolved.getClass().isArray()) {
+          for (final Object v : MultiValue.getMultiValueAsList(resolved))
+            addValue(values, coerceForIndexKey(v));
+        } else
+          addValue(values, resolved);
+      }
+    } else
+      addValue(values, coerceForIndexKey(evaluator.evaluate((Expression) keyValue, EMPTY_RESULT, context)));
+    return new ArrayList<>(values);
+  }
+
+  private static void addValue(final Set<Object> values, final Object value) {
+    if (value != null)
+      values.add(value);
   }
 
   /**
@@ -285,7 +410,28 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
     else
       builder.append("-[").append(arrowRel).append(":").append(edgeType).append("]->");
     builder.append("(").append(targetVariable).append(")");
-    builder.append(" [index: ").append(indexName).append(" on ").append(String.join(",", propertyNames)).append("]");
+    // The whole index key, then every column the seek resolves, so a prefix seek or an IN-list on a composite
+    // index is recognizable at a glance. A dropped index falls back to the covered columns.
+    final Index index = context.getDatabase().getSchema().getIndexByName(indexName);
+    final List<String> indexKey = index != null ? index.getPropertyNames() : List.of(propertyNames);
+    builder.append(" [index: ").append(indexName).append(" on ").append(String.join(",", indexKey)).append("]");
+    builder.append(" [key: ");
+    for (int i = 0; i < propertyNames.length; i++) {
+      if (i > 0)
+        builder.append(", ");
+      builder.append(propertyNames[i]);
+      if (keyValues[i] instanceof InListValues inList) {
+        builder.append(" IN [");
+        for (int j = 0; j < inList.getValues().size(); j++) {
+          if (j > 0)
+            builder.append(", ");
+          builder.append(inList.getValues().get(j).getText());
+        }
+        builder.append("]");
+      } else
+        builder.append(" = ").append(((Expression) keyValues[i]).getText());
+    }
+    builder.append("]");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)

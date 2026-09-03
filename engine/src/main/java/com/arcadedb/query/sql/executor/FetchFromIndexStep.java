@@ -43,10 +43,12 @@ import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.PCollection;
 import com.arcadedb.query.sql.parser.ValueExpression;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
@@ -491,6 +493,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final List<PCollection> secondValueCombinations = cartesianProduct(fromKey);
     final List<PCollection> thirdValueCombinations = cartesianProduct(toKey);
 
+    final List<Object[][]> seeks = new ArrayList<>(secondValueCombinations.size());
     for (int i = 0; i < secondValueCombinations.size(); i++) {
 
       Object secondValue = secondValueCombinations.get(i).execute((Result) null, context);
@@ -498,7 +501,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
       secondValue = convertToIndexDefinitionTypes(secondValue);
       thirdValue = convertToIndexDefinitionTypes(thirdValue);
-      final IndexCursor cursor;
 
       Object[] convertedFrom = convertToObjectArray(secondValue);
       if (convertedFrom.length == 0)
@@ -511,6 +513,17 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         // This combination's bound has no defined ordering against the index's declared key type: it matches no
         // indexed row, consistent with the row-scan operators (#5900). Skip it rather than aborting the whole scan.
         continue;
+
+      seeks.add(new Object[][] { convertedFrom, convertedTo });
+    }
+
+    if (seeks.size() > 1)
+      sortSeeksInIndexOrder(seeks);
+
+    for (final Object[][] seek : seeks) {
+      final Object[] convertedFrom = seek[0];
+      final Object[] convertedTo = seek[1];
+      final IndexCursor cursor;
 
       if (Arrays.equals(convertedFrom, convertedTo) && fromKeyIncluded && toKeyIncluded
           && convertedFrom != null && index.getPropertyNames().size() == convertedFrom.length)
@@ -526,12 +539,106 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         throw new UnsupportedOperationException("Cannot evaluate " + this.condition + " on index " + index);
       }
       nextCursors.add(cursor);
-
     }
+
     if (nextCursors.size() > 0) {
       cursor = nextCursors.removeFirst();
       fetchNextEntry();
     }
+  }
+
+  /**
+   * Puts the per-combination seeks a multi-value key expands into ({@code IN}, {@code CONTAINSANY}, a list-valued
+   * parameter) in the order the index itself holds them, honouring {@link #orderAsc}, and drops exact repeats.
+   * <p>
+   * The planner drops the {@code ORDER BY} step whenever the index key covers the sort ({@code fullySorted} in
+   * {@code SelectExecutionPlanner}), on the premise that this step yields entries in key order. That premise held for
+   * a single seek but not for several: the cursors were chained in list order, so {@code WHERE id IN ('b', 'a') ORDER
+   * BY id} answered {@code b} before {@code a} and, with the sort step gone, nothing downstream put them right. The
+   * per-value cursors already walk their own range in key order, so ordering the seeks the same way makes the chain
+   * globally ordered and keeps the planner's optimisation honest instead of giving it up.
+   * <p>
+   * Seeks are compared on the values as the index stores them - narrowed to the declared key types and case-folded
+   * for a case-insensitive key, exactly what {@code LSMTreeIndexAbstract.convertKeysToDeclaredTypes} does before a
+   * lookup - so {@code IN ('10', 9)} on a numeric key and {@code IN ('b', 'A')} on a case-insensitive one sort the way
+   * the pages do. An index that exposes no key types (a non-LSM implementation) is left in list order.
+   */
+  private void sortSeeksInIndexOrder(final List<Object[][]> seeks) {
+    if (!(index instanceof IndexInternal internalIndex))
+      return;
+    final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
+    if (keyTypes == null)
+      return;
+
+    final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
+    final BinaryComparator comparator = database.getSerializer().getComparator();
+    final IndexMetadata metadata = internalIndex.getMetadata();
+
+    // Normalise every bound once up front rather than on each of the O(n log n) comparisons.
+    final Map<Object[], Object[]> normalised = new IdentityHashMap<>(seeks.size() * 2);
+    for (final Object[][] seek : seeks) {
+      for (final Object[] bound : seek)
+        if (bound != null && !normalised.containsKey(bound))
+          normalised.put(bound, normaliseToIndexKey(database, bound, keyTypes, metadata));
+    }
+
+    final Comparator<Object[]> boundComparator = (a, b) -> {
+      if (a == b)
+        return 0;
+      if (a == null)
+        return -1;
+      if (b == null)
+        return 1;
+      final Object[] ka = normalised.get(a);
+      final Object[] kb = normalised.get(b);
+      final int common = Math.min(Math.min(ka.length, kb.length), keyTypes.length);
+      for (int i = 0; i < common; i++) {
+        final int cmp = comparator.compare(ka[i], keyTypes[i], kb[i], keyTypes[i]);
+        if (cmp != 0)
+          return cmp;
+      }
+      // A shorter bound is a wider prefix range: it precedes the longer bounds it contains.
+      return Integer.compare(ka.length, kb.length);
+    };
+
+    Comparator<Object[][]> seekComparator = (x, y) -> {
+      final int cmp = boundComparator.compare(x[0], y[0]);
+      return cmp != 0 ? cmp : boundComparator.compare(x[1], y[1]);
+    };
+    if (!orderAsc)
+      seekComparator = seekComparator.reversed();
+
+    seeks.sort(seekComparator);
+
+    // Repeats - IN (9, 9), or IN ('9', 9) that the index narrows to the same key - would open the same cursor twice;
+    // once sorted they are adjacent, so drop them here.
+    Object[][] previous = null;
+    for (final Iterator<Object[][]> it = seeks.iterator(); it.hasNext(); ) {
+      final Object[][] current = it.next();
+      if (previous != null && seekComparator.compare(previous, current) == 0)
+        it.remove();
+      else
+        previous = current;
+    }
+  }
+
+  private static Object[] normaliseToIndexKey(final DatabaseInternal database, final Object[] bound,
+      final byte[] keyTypes, final IndexMetadata metadata) {
+    final Object[] key = new Object[bound.length];
+    for (int i = 0; i < bound.length; i++) {
+      Object value = bound[i];
+      if (value != null && i < keyTypes.length) {
+        try {
+          value = Type.convert(database, value, BinaryTypes.getClassFromType(keyTypes[i]));
+        } catch (final IllegalArgumentException e) {
+          // Already vetted by valuesConvertToIndexKeyTypes(); compare the raw value if it somehow slipped through.
+        }
+        if (value instanceof String string && metadata != null && metadata.isCaseInsensitive(i))
+          value = string.toLowerCase(Locale.ROOT);
+      }
+      key[i] = value;
+    }
+    return key;
   }
 
   private Object[] convertToObjectArray(final Object value) {
