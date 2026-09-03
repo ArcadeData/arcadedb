@@ -41,13 +41,32 @@
              main's 10.x bump here. See CLAUDE.md's JDK17 adaptation catalog. -->
         <lucene.version>9.12.2</lucene.version>
         <!--
-            If this version changes, native/pom.xml's native.graalvm.version AND the
-            native-image.yml setup-graalvm java-version must move in lockstep: the native-image
-            builder pins a matching GraalVM CE patch release, and a builder/Truffle version skew
-            breaks the native build at feature registration (see native/pom.xml's
-            native.graalvm.version comment for the exact failure mode).
+            ONE GraalVM version, everywhere. This property, native/pom.xml's
+            native.graalvm.version and native-image.yml's setup-graalvm java-version are all
+            25.0.2 and must be changed together, in one commit, or not at all.
+
+            Why they are kept equal rather than allowed to drift apart: they were 25.2.4 here and
+            25.0.2 in the native module for a while, which technically works - native/pom.xml's
+            dependencyManagement pins the org.graalvm.* coordinates for the image - but it means
+            engine bytecode compiled against one Truffle API runs against another inside the
+            image, and the only thing standing between that and a NoSuchMethodError is nobody
+            having reached for the newer API yet. Aligning them removes the whole question.
+
+            Why 25.0.2 specifically: it is the newest MAINLINE GraalVM CE release that exists as a
+            distribution, so it is the one every consumer can actually install - graalvm/setup-graalvm
+            fetches jdk-25.0.2 in CI, and Homebrew's graalvm-community-jdk25 cask is 25.0.2. The
+            intermediate line (25.1.x/25.2.x) ships tarballs from the graalvm-ce-builds releases
+            page and nowhere else, so pinning it makes a local native build start with a hand
+            download. See native/pom.xml's native.graalvm.version comment for the full table,
+            including why 25.0.3 and 25.0.4 look pinnable and are not.
+
+            A builder/artifact skew fails the native build at feature registration with
+            NoSuchMethodError OptimizedTruffleRuntime.getLoopNodeFactory(), which names neither
+            side of the mismatch; it has shipped to main twice.
+            .github/scripts/check-native-graalvm-pin.py fails the always-on `lint` job whenever
+            native.graalvm.version and native-image.yml disagree.
         -->
-        <graalvm.version>25.2.4</graalvm.version>
+        <graalvm.version>25.0.2</graalvm.version>
         <!--
             Bumping this requires re-checking several things LSMVectorIndex relies on that jvector does not
             contractually guarantee across versions:

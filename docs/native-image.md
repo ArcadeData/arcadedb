@@ -14,22 +14,41 @@ treat it as best-effort outside Linux.
 
 ## Prerequisites
 
-- **GraalVM CE 25.2.4 (JDK 25.0.4).** The build uses the GraalVM Native Image Community Edition
-  builder pinned by CI to `graal-25.2.4` (assets `graalvm-community-jdk-25i2-25.0.4_*`) via
-  [`graalvm/setup-graalvm`](https://github.com/graalvm/setup-graalvm). `native/pom.xml` pins the
-  GraalVM polyglot/Truffle artifacts (`graal-sdk`, `polyglot`, `js-language`, `truffle-*`, etc.) to
-  the same `25.2.4` to match the builder exactly; a Truffle version skew between the builder and
-  those artifacts fails the build at feature registration (`NoSuchMethodError:
-  OptimizedTruffleRuntime.getLoopNodeFactory()`). That error names neither file, and two Dependabot
-  bumps have shipped the skew, so `.github/scripts/check-native-graalvm-pin.py` enforces the
-  equality in the always-on `lint` job. Move both sides in the same change, or neither.
+- **GraalVM CE 25.0.2.** The build uses the GraalVM Native Image Community Edition builder pinned
+  by CI to `jdk-25.0.2` via [`graalvm/setup-graalvm`](https://github.com/graalvm/setup-graalvm).
+  Install it the easy way - it is a *mainline* release, so the OS packagers carry it:
 
-  **The workflow pins the builder through setup-graalvm's `version` input, not `java-version`, and
-  that is not interchangeable.** The action resolves a CE build two ways: `java-version` fetches a
-  `jdk-<version>` release and requires exactly three dot-components, so it reaches *mainline*
-  builds only; `version` looks up `graal-<version>` first and falls back to `jdk-<version>`.
-  25.2.4 is an *intermediate* release published under the `graal-25.2.4` tag, so only `version`
-  can select it - switching that step back to `java-version` would stop resolving this build.
+  ```bash
+  brew install --cask graalvm-community-jdk25     # macOS: 25.0.2
+  ```
+
+  `native/pom.xml` pins the GraalVM polyglot/Truffle artifacts (`graal-sdk`, `polyglot`,
+  `js-language`, `truffle-*`, etc.) to the same `25.0.2` to match the builder exactly; a Truffle
+  version skew between the builder and those artifacts fails the build at feature registration
+  (`NoSuchMethodError: OptimizedTruffleRuntime.getLoopNodeFactory()`). That error names neither
+  file, and two Dependabot bumps have shipped the skew, so
+  `.github/scripts/check-native-graalvm-pin.py` enforces the equality in the always-on `lint` job.
+  Move both sides in the same change, or neither.
+
+  **Being on Maven Central does not make a version installable.** `25.0.3` and `25.0.4` publish
+  the full set of `org.graalvm.*` artifacts but were never released as CE tarballs, so bumping
+  `native/pom.xml` to either resolves cleanly and then leaves no builder to match, on any platform
+  and through any setup-graalvm input. As of 2026-09-03 the CE distributions are:
+
+  | Version | CE tarball | Maven artifacts | |
+  |---|---|---|---|
+  | 25.0.2 | `jdk-25.0.2` | yes | **pinned** |
+  | 25.0.3 | none | yes | |
+  | 25.0.4 | none | yes | |
+  | 25.1.3 | `graal-25.1.3` | yes | intermediate |
+  | 25.2.4 | `graal-25.2.4` | yes | intermediate, the previous pin |
+
+  The workflow selects the builder with setup-graalvm's `java-version` input, which fetches a
+  `jdk-<version>` release and so reaches mainline builds only - which is the point. The other
+  input, `version`, looks up `graal-<version>` first and falls back to `jdk-<version>`, so it
+  reaches the intermediate line too; the pin used it while it tracked 25.2.4. `version: "25.0.2"`
+  would work here as well, and `java-version` is used to state the intent that the pin stays
+  mainline.
 
   Any future pin must be a version whose tag parses as three-component semver. `graal-25.3.4.1` is
   reachable through **neither** input: node-semver rejects its four numeric components, so
@@ -44,7 +63,7 @@ treat it as best-effort outside Linux.
   JAVA_HOME`. Export both explicitly before building locally, e.g. on macOS:
 
   ```bash
-  export JAVA_HOME=/path/to/graalvm-community-25.2.4/Contents/Home
+  export JAVA_HOME=/path/to/graalvm-community-25.0.2/Contents/Home
   export GRAALVM_HOME=$JAVA_HOME
   ```
 
@@ -56,6 +75,20 @@ treat it as best-effort outside Linux.
   pass `-Dnative.static=true` - needs no musl toolchain at all.
 
 ## Building locally
+
+```bash
+./native/scripts/build-native.sh              # host binary, with preflight checks
+./native/scripts/build-native.sh --smoke      # ... and run the smoke test against it
+```
+
+`native/scripts/build-native.sh` wraps the raw Maven command below with the three checks that turn
+this build's cryptic failures into an immediate, named error: that `JAVA_HOME`/`GRAALVM_HOME`
+really point at a GraalVM home with `bin/native-image`; that the builder is the version
+`native/pom.xml` pins its Truffle artifacts to (the `getLoopNodeFactory()` skew below, which has
+shipped to main twice); and, for a musl-static build, that the musl toolchain and its static
+`libz.a` are in place before the link step rather than after several minutes of compilation. It
+also picks the link mode CI uses for the host platform, and locates the produced binary the same
+way the workflow does. Pass `--` to forward extra arguments to Maven, or use the raw command:
 
 ```bash
 mvn -Pnative -pl native -am -DskipTests package
@@ -222,6 +255,50 @@ reaches the Docker jobs. A manual `workflow_dispatch` run still builds and smoke
 (`--load` into the runner's local Docker daemon) without logging into Docker Hub or pushing anything,
 so the Dockerfiles can be validated end to end from any branch without publishing under
 `arcadedata/arcadedb`.
+
+### Building the images locally
+
+```bash
+./native/scripts/build-native-docker.sh                    # host arch, build + smoke, no push
+./native/scripts/build-native-docker.sh --port 2481        # ... if something already holds 2480
+./native/scripts/build-native-docker.sh --skip-binary-build  # iterate on the Dockerfiles only
+```
+
+`native/scripts/build-native-docker.sh` produces the same per-arch image the workflow publishes,
+from your working tree, without a registry. It does in one pass what CI splits across the `build`
+and `docker` jobs: build a throwaway builder image
+(`native/src/main/docker/Dockerfile.native-builder`) carrying the pinned GraalVM CE builder and -
+for amd64 - the musl toolchain with its musl-built static zlib; run the ordinary Maven native
+build **inside** it with the repository bind-mounted, so the Linux binary lands in `native/target`
+on the host; stage the build context the way the workflow's "Stage build context" step does; build
+the runtime image with `buildx --load`; then run `exercise.sh` against the container and scan its
+startup log, the same two assertions the workflow's "Smoke the container" step makes.
+
+The container step is what makes this work on a machine that is not Linux at all. Native Image
+cannot cross-compile, so a macOS host has no other way to produce the Linux binary these images
+need. Both **runtime** Dockerfiles are used unmodified, so what you get is the shipped image
+rather than a local approximation; only the builder image is local-only, and it is never published.
+
+**Give Docker at least 12 GiB of memory** (Docker Desktop: Settings -> Resources -> Memory; CI's
+Linux runners have 16 GiB). `native-image` sizes its build heap at ~80% of the memory it can see,
+and inside a container that is the Docker VM's allocation, not the host's - so a 36 GiB Mac left on
+Docker Desktop's 8 GiB default still fails, with a Java heap `OutOfMemoryError` about 21 minutes in,
+once the whole Maven reactor has already built. This image embeds GraalJS, which is why it is so
+hungry: `native-image.yml` had to move its macOS leg onto a paid larger runner for the same reason.
+The script checks this up front rather than letting you discover it 21 minutes later;
+`--builder-memory <size>` caps the builder heap explicitly, and `--allow-low-memory` skips the check.
+
+The GraalVM download URL is resolved at build time from the `graal-<version>` release matching
+`native/pom.xml`'s `native.graalvm.version`, so the builder cannot drift from the pin the way a
+hardcoded URL would - see that property's comment for why that matters. The Maven repository and
+the `./mvnw` distribution are cached in `~/.cache/arcadedb-native-m2` (override with
+`ARCADEDB_NATIVE_M2`), so only the first run pays for populating them.
+
+The default architecture is the host's. Building the other one needs `--allow-emulation` and runs
+the entire native-image build under QEMU, which takes hours and often runs out of memory - that is
+why CI's `docker` job gives each architecture its own native runner instead of one runner with
+`buildx --platform`. The image is tagged `arcadedb:<version>-native-<arch>-local` by default, which
+deliberately is not a publishable `arcadedata/arcadedb` name.
 
 ## Running the container
 

@@ -29,25 +29,31 @@ updates:
       # gremlin ANTLR PR is closed by hand instead.
       #
       # The GraalVM Truffle/polyglot coordinates (org.graalvm.*) are unlisted for
-      # the same reason. They appear with two different intents:
-      # native/pom.xml's native.graalvm.version MUST equal the native-image
-      # builder pinned by native-image.yml's java-version (a mismatch aborts the
-      # image build with NoSuchMethodError getLoopNodeFactory()), while
-      # engine/pom.xml's graalvm.version tracks the latest independently for the
-      # JVM-side JS engine. A coordinate-wide ignore would freeze the engine
-      # along with the native pin. A GraalVM PR is therefore reviewed by hand:
-      # merge it only together with a matching java-version bump in
-      # native-image.yml, otherwise close it. Bumps 3fecba4bf (-> 25.2.4) and
-      # b53c48c1e2 (-> 25.3.4.1) both did exactly this wrong and broke every
-      # native leg.
+      # the same reason. THREE places carry this version and all three must move
+      # in one commit: native/pom.xml's native.graalvm.version,
+      # engine/pom.xml's graalvm.version, and the builder pinned by
+      # native-image.yml's java-version. A mismatch between the artifacts and
+      # the builder aborts the image build with NoSuchMethodError
+      # getLoopNodeFactory(), naming neither side. A GraalVM PR is therefore
+      # reviewed by hand: merge it only when it moves all three, otherwise close
+      # it. Bumps 3fecba4bf (-> 25.2.4) and b53c48c1e2 (-> 25.3.4.1) both did
+      # exactly this wrong and broke every native leg.
       #
       # A bump is not impossible, just not a one-line edit. native-image.yml
-      # pins the builder through setup-graalvm's `version` input precisely so
-      # it can address the intermediate release graal-25.2.4; the
-      # `java-version` input reaches jdk-* releases only. Whatever the new
-      # version is, its tag must parse as three-component semver -
-      # graal-25.3.4.1 is reachable through neither input, because node-semver
-      # rejects its four numeric components.
+      # pins the builder through setup-graalvm's `java-version` input, which
+      # reaches jdk-* releases only - deliberately, because that is GraalVM's
+      # MAINLINE line and the one the OS packagers carry, so a contributor can
+      # install the matching builder and run a local native build. The other
+      # input, `version`, additionally reaches the intermediate graal-* releases;
+      # the pin used it while it tracked graal-25.2.4.
+      #
+      # Two traps for whoever raises the pin next. Its tag must parse as
+      # three-component semver - graal-25.3.4.1 is reachable through neither
+      # input, because node-semver rejects its four numeric components. And the
+      # version must exist as a CE TARBALL, which being on Maven Central does
+      # not imply: 25.0.3 and 25.0.4 publish the full org.graalvm.* set and were
+      # never released as a distribution, so a pin bumped to either resolves
+      # cleanly in Maven and then has no builder to match, on any platform.
       #
       # Two guards now back that up, because "reviewed by hand" was not one:
       # .github/scripts/check-native-graalvm-pin.py fails the always-on `lint`

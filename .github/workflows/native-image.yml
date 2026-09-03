@@ -98,24 +98,32 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      # `version`, NOT `java-version`, and the difference is load-bearing. setup-graalvm resolves a
-      # Community build two ways: `java-version` fetches a `jdk-<version>` release and so can only
-      # ever reach GraalVM's MAINLINE builds, while `version` looks up `graal-<version>` first and
-      # falls back to `jdk-<version>`. 25.2.4 is an intermediate release, published as the tag
-      # graal-25.2.4 (assets graalvm-community-jdk-25i2-25.0.4_*), so it is reachable through
-      # `version` alone. Both paths still go through findLatestGraalVMCEVersion, which skips any
-      # tag node-semver's semver.valid() rejects - which is why the four-component 25.3.4.1 is
-      # reachable through NEITHER input, and must never be pinned in native/pom.xml.
+      # `java-version`, which fetches the `jdk-<version>` release and so reaches GraalVM's MAINLINE
+      # builds only. That is deliberate and is the point of the pin: mainline is the line the OS
+      # packagers carry (`brew install --cask graalvm-community-jdk25` is 25.0.2), so a contributor
+      # can install the matching builder and run a local native build instead of hand-downloading a
+      # tarball. The alternative input, `version`, looks up `graal-<version>` first and falls back
+      # to `jdk-<version>`, so it reaches the intermediate line too - this step used it while the
+      # pin tracked 25.2.4. `version: "25.0.2"` would work here as well; `java-version` is used
+      # because it states the intent that this pin stays mainline.
+      #
+      # Both paths go through findLatestGraalVMCEVersion, which skips any tag node-semver's
+      # semver.valid() rejects - which is why the four-component 25.3.4.1 is reachable through
+      # NEITHER input, and must never be pinned in native/pom.xml.
+      #
+      # Careful with the mainline patch numbers: 25.0.3 and 25.0.4 exist on Maven Central but were
+      # never published as CE tarballs, so neither is installable here even though bumping
+      # native/pom.xml to one of them resolves cleanly. See that property's comment for the table.
       #
       # This is pinned to the EXACT release that native/pom.xml's native.graalvm.version pins the
       # Truffle/polyglot artifacts to. A builder/Truffle version skew fails the native build at
       # feature registration (NoSuchMethodError: OptimizedTruffleRuntime.getLoopNodeFactory()) -
       # see docs/native-image.md "Prerequisites". Move the two together or not at all;
       # .github/scripts/check-native-graalvm-pin.py fails the `lint` job if they disagree.
-      - name: Set up GraalVM (Community 25.2.4, JDK 25.0.4)
+      - name: Set up GraalVM (Community 25.0.2)
         uses: graalvm/setup-graalvm@5298d94fb55a4f185c602eeac5de1b553882abe2 # v1.6.1
         with:
-          version: "25.2.4"
+          java-version: "25.0.2"
           distribution: "graalvm-community"
           github-token: ${{ secrets.GITHUB_TOKEN }}
           native-image-job-reports: "true"
@@ -150,10 +158,11 @@ jobs:
       #     --static --libc=musl, nothing path-related).
       #
       # linux/arm64 (linkmode: mostly-static) deliberately does NOT run this step: GraalVM CE
-      # ships no static musl JDK libraries for aarch64 (the graalvm-community-jdk-25i2-25.0.4
+      # ships no static musl JDK libraries for aarch64 (the graalvm-community-jdk-25.0.2
       # linux-aarch64 release tarball has lib/static/linux-aarch64/glibc but not
       # lib/static/linux-aarch64/musl - linux-amd64 ships both - see oracle/graal#4645, closed
-      # not-planned; re-checked against this tarball when the pin moved off 25.0.2), so --static --libc=musl can never link on that architecture regardless of
+      # not-planned; both halves re-listed out of the 25.0.2 tarballs when the pin moved back to
+      # this release), so --static --libc=musl can never link on that architecture regardless of
       # toolchain setup. Rather than run a toolchain step known to be useless there, the arm64 leg
       # instead builds with -Dnative.mostlystatic=true (native/pom.xml's native-mostly-static
       # profile: -H:+StaticExecutableWithDynamicLibC - static except glibc itself), which needs no
