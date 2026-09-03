@@ -770,7 +770,7 @@ public final class SnapshotInstaller {
 
       final String snapshotUrl = (https ? "https://" : "http://") + endpoint + "/api/v1/ha/snapshot/" + databaseName;
       try {
-        downloadSnapshot(snapshotNewDir, snapshotUrl, clusterToken, https, server);
+        downloadSnapshot(databaseName, snapshotNewDir, snapshotUrl, clusterToken, https, server);
         return; // Success
       } catch (final IOException e) {
         lastException = e;
@@ -784,7 +784,7 @@ public final class SnapshotInstaller {
         lastException);
   }
 
-  private static void downloadSnapshot(final Path targetDir, final String snapshotUrl,
+  private static void downloadSnapshot(final String databaseName, final Path targetDir, final String snapshotUrl,
       final String clusterToken, final boolean https, final ArcadeDBServer server) throws IOException {
 
     HALog.log(SnapshotInstaller.class, HALog.BASIC, "Downloading snapshot from %s", snapshotUrl);
@@ -828,7 +828,7 @@ public final class SnapshotInstaller {
       // not fit, after the whole transfer, and leave a follower already short of space with a partial staging
       // directory to clean up. A leader predating #7037 omits the header and the check is skipped.
       checkUsableSpace(targetDir, parseUncompressedBytes(connection.getHeaderField(SnapshotManager.UNCOMPRESSED_BYTES_HEADER)),
-          targetDir.getFileName() != null ? targetDir.getFileName().toString() : "snapshot");
+          databaseName);
 
       final CountingInputStream rawCounter = new CountingInputStream(connection.getInputStream());
       InputStream source = rawCounter;
@@ -877,9 +877,7 @@ public final class SnapshotInstaller {
   static void checkUsableSpace(final Path targetDir, final long requiredBytes, final String databaseName) throws IOException {
     if (requiredBytes <= 0)
       return;
-    File volume = targetDir.toAbsolutePath().toFile();
-    while (volume != null && !volume.exists())
-      volume = volume.getParentFile();
+    final File volume = nearestExistingAncestor(targetDir.toAbsolutePath().toFile());
     if (volume == null)
       return;
     final long usable = volume.getUsableSpace();
@@ -889,6 +887,19 @@ public final class SnapshotInstaller {
           + requiredBytes + " bytes (" + needed + " with the allocation reserve) but the volume of '"
           + volume.getAbsolutePath() + "' has " + usable + " usable. Free space on the volume (the Raft log is purged "
           + "before every install; see arcadedb.ha.snapshotInterval) and the install is retried");
+  }
+
+  /**
+   * {@code path} itself when it exists, otherwise its nearest existing ancestor, or {@code null} when none does.
+   * {@code File.getUsableSpace()} and {@code getTotalSpace()} answer 0 for a path that does not exist, which would
+   * read as "disk full" for a directory that is about to be created (a staging directory, the Raft storage
+   * directory before Ratis creates it), so every free-space probe resolves its volume through this one walk.
+   */
+  static File nearestExistingAncestor(final File path) {
+    File dir = path;
+    while (dir != null && !dir.exists())
+      dir = dir.getParentFile();
+    return dir;
   }
 
   /**

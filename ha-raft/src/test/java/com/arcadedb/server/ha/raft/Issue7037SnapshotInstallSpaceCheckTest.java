@@ -86,6 +86,13 @@ class Issue7037SnapshotInstallSpaceCheckTest {
   }
 
   @Test
+  void theVolumeIsTheNearestExistingAncestor(@TempDir final Path tempDir) {
+    assertThat(SnapshotInstaller.nearestExistingAncestor(tempDir.toFile())).isEqualTo(tempDir.toFile());
+    assertThat(SnapshotInstaller.nearestExistingAncestor(tempDir.resolve("db").resolve(".snapshot-new").toFile()))
+        .isEqualTo(tempDir.toFile());
+  }
+
+  @Test
   void theReserveCoversAllocationOverheadAndSaturates() {
     assertThat(SnapshotInstaller.withAllocationReserve(1L)).isEqualTo(1L + SnapshotInstaller.SPACE_RESERVE_MIN_BYTES);
     final long oneGb = 1L << 30;
@@ -119,7 +126,7 @@ class Issue7037SnapshotInstallSpaceCheckTest {
 
     assertThatThrownBy(() -> SnapshotInstaller.downloadWithRetry("testdb", snapshotDir, "localhost:" + port, null, 0, 10))
         .isInstanceOf(IOException.class)
-        .rootCause().hasMessageContaining("Insufficient space");
+        .rootCause().hasMessageContaining("Insufficient space to install the snapshot of 'testdb'");
     assertThat(calls.get()).isEqualTo(1);
     assertThat(snapshotDir.resolve("data.dat")).as("nothing was extracted").doesNotExist();
   }

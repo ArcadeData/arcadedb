@@ -195,7 +195,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // still copies it to a local before use so a concurrent reassignment cannot null it mid-method.
   private volatile RaftServer                raftServer;
   private          RaftClient                raftClient;
-  private          RaftProperties            raftProperties;
+  private volatile RaftProperties            raftProperties;
   private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
   private          ScheduledExecutorService  lagMonitorExecutor;
@@ -3651,7 +3651,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * config-derived and constant for the server's lifetime, and re-running its {@code exists()} probes
    * on every tick is pointless I/O. The ancestor walk stays per-call because its result legitimately
    * changes once Ratis creates the directory. Shared by the compaction scheduler's disk-pressure probe and
-   * the log-writer recovery's free-space gate (issue #7037), so the two cannot disagree on the volume.
+   * the log-writer recovery's free-space gate (issue #7037), so the two cannot disagree on the volume; the walk
+   * itself is {@link SnapshotInstaller#nearestExistingAncestor}, the same one the snapshot space check uses.
    */
   private File raftStorageVolume() {
     File dir = cachedRaftStorageDir;
@@ -3659,9 +3660,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       dir = getRaftStorageDir();
       cachedRaftStorageDir = dir;
     }
-    while (dir != null && !dir.exists())
-      dir = dir.getParentFile();
-    return dir;
+    return SnapshotInstaller.nearestExistingAncestor(dir);
   }
 
   /**

@@ -29,12 +29,18 @@ function renderClusterData(data) {
   var leaderId = data.leaderId;
   var localPeerId = data.localPeerId;
 
-  // Determine local role
-  var localRole = isLeader ? "LEADER" : "FOLLOWER";
+  // Determine local role from the local peer's own entry, so a node the live Raft configuration no longer
+  // contains reads NOT IN CONFIGURATION here as well as on its card (issue #7040).
+  var localPeer = null;
+  for (var p = 0; p < (data.peers || []).length; p++)
+    if (data.peers[p].id === localPeerId)
+      localPeer = data.peers[p];
+  var localOutOfConfiguration = !isLeader && localPeer != null && localPeer.inConfiguration === false;
+  var localRole = isLeader ? "LEADER" : (localOutOfConfiguration ? "NOT IN CONFIGURATION" : "FOLLOWER");
   $("#clusterRoleBadge")
     .text(localRole)
-    .removeClass("bg-success bg-warning bg-secondary bg-primary")
-    .addClass(isLeader ? "bg-success" : "bg-primary");
+    .removeClass("bg-success bg-warning bg-secondary bg-primary bg-danger")
+    .addClass(isLeader ? "bg-success" : (localOutOfConfiguration ? "bg-danger" : "bg-primary"));
 
   var healthy = leaderId != null && leaderId !== "";
   $("#clusterHealthBadge")
