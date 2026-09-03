@@ -39,11 +39,26 @@
         <lz4-java.version>1.11.2</lz4-java.version>
         <lucene.version>10.5.1</lucene.version>
         <!--
-            If this version changes, native/pom.xml's native.graalvm.version AND the
-            native-image.yml setup-graalvm java-version must move in lockstep: the native-image
-            builder pins a matching GraalVM CE patch release, and a builder/Truffle version skew
-            breaks the native build at feature registration (see native/pom.xml's
-            native.graalvm.version comment for the exact failure mode).
+            This does NOT have to equal native/pom.xml's native.graalvm.version, and as of this
+            commit it does not: that property is 25.0.2 while this one is 25.2.4. The pair that
+            must move in lockstep is native.graalvm.version and native-image.yml's setup-graalvm
+            input - a skew between THOSE two breaks the image build at feature registration (see
+            native/pom.xml's native.graalvm.version comment for the failure mode). This property
+            governs the JVM-side JS engine only and tracks the latest independently, which is also
+            what .github/dependabot.yml says when it explains why the org.graalvm.* coordinates
+            are not ignored wholesale.
+
+            The independence is structural, not luck: native/pom.xml declares dependencyManagement
+            entries for every org.graalvm.* coordinate at ${native.graalvm.version}, so the native
+            image resolves those rather than the versions this module asks for. Verified by
+            building the image with the two at 25.0.2 and 25.2.4 respectively and running
+            native/src/test/scripts/smoke.sh against it - the JS round-trip, which is the polyglot
+            path this property feeds, passes.
+
+            There is one real constraint in that arrangement, and it is one-way: the image resolves
+            the OLDER of the two, so engine code must stay within the API of
+            native.graalvm.version. Reaching for something added after it compiles fine here and
+            fails in the native build.
         -->
         <graalvm.version>25.2.4</graalvm.version>
         <!--
