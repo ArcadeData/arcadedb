@@ -52,7 +52,8 @@ public class SQLMethodAsList extends AbstractSQLMethod {
       return new ArrayList<>((Collection<Object>) value);
     } else if (value.getClass().isArray()) {
       // AN ARRAY (split(), A JSON ARRAY PARAMETER) USED TO FALL THROUGH TO THE SINGLE-ITEM BRANCH BELOW AND COME
-      // BACK AS A ONE-ELEMENT LIST HOLDING THE WHOLE ARRAY (ISSUE #7027)
+      // BACK AS A ONE-ELEMENT LIST HOLDING THE WHOLE ARRAY (ISSUE #7027). NEVER NULL FOR AN ARRAY: EVERY ARRAY IS A
+      // MultiValue, SO THE HELPER ALWAYS ANSWERS A LIST HERE
       return new ArrayList<>(listReceiverOrNull(value));
     } else if (value instanceof Iterable<?> iterable) {
       value = iterable.iterator();
