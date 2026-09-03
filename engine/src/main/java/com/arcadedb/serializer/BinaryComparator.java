@@ -488,6 +488,11 @@ public class BinaryComparator {
    * sidesteps the two {@code byte[]} allocations that encoding both operands cost on every comparison, which the index
    * cursor pays once per key while it walks a range. Both sides used to encode with
    * {@link DatabaseFactory#getDefaultCharset()}, which is UTF-8 (issue #6998): the invariant this relies on.
+   * <p>
+   * The remap is only right for well-formed UTF-16. An isolated surrogate has no code point: the encoder writes the
+   * replacement byte {@code '?'} for it, which sorts below almost everything, while the remap would sort it above the
+   * whole BMP. So when the first difference sits on or right after a surrogate that is not part of a pair, the pages'
+   * own encoding is compared instead - the rare path, and the only one that allocates.
    */
   public static int compareStrings(final String a, final String b) {
     final int aLength = a.length();
@@ -497,6 +502,9 @@ public class BinaryComparator {
       int ca = a.charAt(i);
       int cb = b.charAt(i);
       if (ca != cb) {
+        if (isolatedSurrogateAround(a, i) || isolatedSurrogateAround(b, i))
+          return compareBytes(a.getBytes(DatabaseFactory.getDefaultCharset()), b.getBytes(DatabaseFactory.getDefaultCharset()));
+
         if (ca >= 0xD800 && cb >= 0xD800) {
           // BOTH UNITS ARE IN THE SURROGATE-OR-ABOVE REGION, THE ONLY PLACE THE TWO ORDERS DISAGREE: MOVE THE SURROGATE
           // BLOCK ABOVE THE REST OF THE BMP, WHERE THE 4-BYTE UTF-8 FORM OF WHAT IT ENCODES SORTS
@@ -507,6 +515,20 @@ public class BinaryComparator {
       }
     }
     return aLength - bLength;
+  }
+
+  /**
+   * True when the unit at {@code i} is a surrogate without its partner, or when the unit before it is a high surrogate
+   * that this unit does not complete: both shapes are encoded as a replacement byte rather than as the code point the
+   * UTF-16-as-UTF-8 remap assumes.
+   */
+  private static boolean isolatedSurrogateAround(final String s, final int i) {
+    final char c = s.charAt(i);
+    if (Character.isHighSurrogate(c))
+      return i + 1 >= s.length() || !Character.isLowSurrogate(s.charAt(i + 1));
+    if (Character.isLowSurrogate(c))
+      return i == 0 || !Character.isHighSurrogate(s.charAt(i - 1));
+    return i > 0 && Character.isHighSurrogate(s.charAt(i - 1));
   }
 
   public static int compareBytes(final byte[] buffer1, final byte[] buffer2) {

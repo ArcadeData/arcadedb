@@ -25,6 +25,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -71,6 +72,36 @@ class Issue6997BinaryComparatorUtf8OrderTest extends TestHelper {
     assertThat(comparator.compare("", BinaryTypes.TYPE_STRING, "퟿", BinaryTypes.TYPE_STRING)).isGreaterThan(0);
     // A NON-STRING type2 STILL FALLS BACK TO ITS toString() FORM
     assertThat(comparator.compare("#1:0", BinaryTypes.TYPE_STRING, "#1:0", BinaryTypes.TYPE_COMPRESSED_RID)).isZero();
+  }
+
+  /**
+   * An isolated surrogate has no code point, so the encoder writes a replacement byte for it and the UTF-16-as-UTF-8
+   * remap no longer describes what the pages hold. Every shape of malformed input must still agree with the encoded
+   * order, which is the order the pages use.
+   */
+  @Test
+  void isolatedSurrogatesFollowTheEncodedOrder() {
+    final String loneHigh = "\uD800";
+    final String loneLow = "\uDC00";
+    final String nonCharacter = "\uFFFE";
+    final String[] samples = { loneHigh, loneLow, nonCharacter, EMOJI, FULLWIDTH_A, "a", "", "a" + loneHigh, loneHigh + "a",
+        loneLow + "a", "a" + loneLow, EMOJI + "a", "a" + EMOJI, loneHigh + EMOJI, EMOJI + loneHigh, loneHigh + loneHigh,
+        loneHigh + nonCharacter, "\uD800\uD800\uDC00", "\uD800\uDC00\uDC00" };
+
+    for (final String a : samples)
+      for (final String b : samples) {
+        final int expected = Integer.signum(BinaryComparator.compareBytes(a.getBytes(StandardCharsets.UTF_8),
+            b.getBytes(StandardCharsets.UTF_8)));
+        assertThat(Integer.signum(BinaryComparator.compareStrings(a, b)))
+            .as("'%s' vs '%s' must follow the unsigned UTF-8 order of the encodings", escape(a), escape(b)).isEqualTo(expected);
+      }
+  }
+
+  private static String escape(final String s) {
+    final StringBuilder out = new StringBuilder();
+    for (final char c : s.toCharArray())
+      out.append(c < 0x80 ? String.valueOf(c) : String.format("\\u%04X", (int) c));
+    return out.toString();
   }
 
   @Test
