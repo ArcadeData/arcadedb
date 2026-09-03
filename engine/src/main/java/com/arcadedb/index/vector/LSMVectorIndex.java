@@ -3290,6 +3290,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Rollback on error - the persist transaction only, and only while it is still the current one (see
           // the begin above): once it is committed, or popped by a commit that failed, "current" is the caller's.
           final TransactionContext openedHere = persistTransaction[0];
+          // Captured before the rollback: afterwards "current" is the caller's transaction, whose status says
+          // nothing about the persist that failed.
+          final TransactionContext.STATUS persistStatus = openedHere != null ? openedHere.getStatus() : null;
           if (openedHere != null && openedHere.isActive() && database.getTransaction() == openedHere) {
             try {
               database.rollback();
@@ -3327,7 +3330,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               indexName,
               totalNodes,
               metadata.storeVectorsInGraph,
-              database.getTransaction().getStatus(),
+              persistStatus,
               e.getClass().getSimpleName(),
               e.getMessage(),
               e);
