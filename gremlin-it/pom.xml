@@ -194,6 +194,12 @@
                          not attached, classifier/coordinate mismatch) instead of silently passing with
                          zero tests. -->
                     <failIfNoTests>true</failIfNoTests>
+                    <!-- ShadedJarLayoutTest checks the Jackson bundled in the uber-jar against the BOM
+                         version the parent pom manages (issue #7097). Appended, so the parent's own
+                         variables survive the merge. -->
+                    <systemPropertyVariables combine.children="append">
+                        <jackson.version>${jackson.version}</jackson.version>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
             <plugin>
