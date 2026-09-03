@@ -19,11 +19,17 @@
 package com.arcadedb.function.temporal;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
  * timestamp() function - returns the current time in milliseconds since the Unix epoch.
- * Compatible with Neo4j's timestamp() behavior.
+ * Compatible with Neo4j's timestamp() behavior: the value comes from the statement clock, frozen once per
+ * statement, so every occurrence in one statement answers the same number rather than re-reading the wall clock
+ * and drifting by a millisecond (issue #7052).
+ * <p>
+ * The function stays non-foldable in {@code ExpressionOptimizer}: the value is per execution, not per plan, and
+ * the plan cache outlives a single execution.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -46,6 +52,6 @@ public class TimestampFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    return System.currentTimeMillis();
+    return CypherFunctionHelper.getStatementTime(context).get(CypherFunctionHelper.TIMESTAMP);
   }
 }
