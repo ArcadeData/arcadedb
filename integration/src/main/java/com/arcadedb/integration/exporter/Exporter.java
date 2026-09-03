@@ -92,10 +92,10 @@ public class Exporter {
             skippedRecords);
       else
         logger.logLine(0,//
-            "Database exported successfully: %,d records exported in %s secs (%,d records/secs %,d documents %,d vertices %,d edges)",
+            "Database exported successfully: %,d records exported in %s secs (%,d records/secs %,d documents %,d vertices %,d edges %,d timeseries samples)",
 //
             totalRecords, elapsedInSecs, totalRecords / elapsedInSecs, context.documents.get(), context.vertices.get(),
-            context.edges.get());
+            context.edges.get(), context.timeSeriesSamples.get());
 
       // RETURN STATISTICS
       final Map<String, Object> result = new LinkedHashMap<>();
@@ -108,6 +108,8 @@ public class Exporter {
         result.put("vertices", context.vertices.get());
       if (context.edges.get() > 0)
         result.put("edges", context.edges.get());
+      if (context.timeSeriesSamples.get() > 0)
+        result.put("timeSeriesSamples", context.timeSeriesSamples.get());
       if (skippedRecords > 0)
         result.put("skippedRecords", skippedRecords);
 

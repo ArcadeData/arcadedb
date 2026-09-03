@@ -238,10 +238,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     try {
       final int colCount = columns.size();
 
-      // Count numeric columns (those with non-NaN stats)
+      // Count the columns that carry a statistics triplet. Keyed off the codec, never off the VALUE of the
+      // declared minimum: a NaN minimum is a legitimate declaration ("this column holds no real sample", the
+      // absent marker of issue #7043), and treating it as "this column has no statistics section" would drop a
+      // triplet the reader still expects and shift every following column's statistics onto the wrong column.
       int numericColCount = 0;
       for (int c = 0; c < colCount; c++)
-        if (!Double.isNaN(columnMins[c]))
+        if (hasNumericStats(c))
           numericColCount++;
 
       // Build tag metadata section
@@ -263,7 +266,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // Write stats section (schema order, no colIdx — iterate columns, skip non-numeric)
       metaBuf.putInt(numericColCount);
       for (int c = 0; c < colCount; c++) {
-        if (!Double.isNaN(columnMins[c])) {
+        if (hasNumericStats(c)) {
           metaBuf.putDouble(columnMins[c]);
           metaBuf.putDouble(columnMaxs[c]);
           metaBuf.putDouble(columnSums[c]);
@@ -1297,9 +1300,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final double[] columnMins, final double[] columnMaxs, final double[] columnSums,
       final int colCount, final String[][] tagDistinctValues) throws IOException {
 
+    // Same codec-keyed rule as writeBlock() - see the comment there.
     int numericColCount = 0;
     for (int c = 0; c < colCount; c++)
-      if (!Double.isNaN(columnMins[c]))
+      if (hasNumericStats(c))
         numericColCount++;
 
     final byte[] tagMeta = buildTagMetadata(tagDistinctValues, colCount);
@@ -1315,7 +1319,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       metaBuf.putInt(col.length);
     metaBuf.putInt(numericColCount);
     for (int c = 0; c < colCount; c++) {
-      if (!Double.isNaN(columnMins[c])) {
+      if (hasNumericStats(c)) {
         metaBuf.putDouble(columnMins[c]);
         metaBuf.putDouble(columnMaxs[c]);
         metaBuf.putDouble(columnSums[c]);
@@ -2062,6 +2066,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * Whether column {@code c} carries a {@code {min, max, sum}} triplet in a block header.
+   * <p>
+   * ONE definition, shared by the two writers and the reader, because the block format stores the triplets
+   * positionally with no column index: the three sites must agree on exactly which columns contribute one or the
+   * statistics land on the wrong columns. The answer is the codec - the two numeric codecs are the ones
+   * {@link #reduceNumericStats} is run for - and deliberately NOT the value of the declared minimum, which since
+   * issue #7043 can legitimately be NaN for a column whose samples are all NaN.
+   */
+  private boolean hasNumericStats(final int c) {
+    final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
+    return codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B;
+  }
+
+  /**
    * Reduces one numeric column to the {@code {min, max, sum}} triple a block declares for it.
    * <p>
    * ONE definition, shared by the two write paths that produce the triple ({@link #downsampleBlocks} and
@@ -2071,14 +2089,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * never do.
    */
   static double[] reduceNumericStats(final double[] values) {
-    double min = Double.MAX_VALUE;
-    double max = -Double.MAX_VALUE;
+    // MIN/MAX follow the one NaN policy of the subsystem (issue #7043): NaN is absent, and a column with no real
+    // value declares NaN statistics - which is already how the format says "this column carries no statistics",
+    // the marker writeBlock() and the DEEP checker both read. The previous +/-Double.MAX_VALUE seed was a finite
+    // double that survived into the block header, and the aggregation push-down answers MIN/MAX straight out of
+    // that header, so an all-NaN column made the fast path return Double.MAX_VALUE as if it were a measurement.
+    double min = TimeSeriesNaN.ABSENT;
+    double max = TimeSeriesNaN.ABSENT;
     double sum = 0;
     for (final double d : values) {
-      if (d < min)
-        min = d;
-      if (d > max)
-        max = d;
+      min = TimeSeriesNaN.min(min, d);
+      max = TimeSeriesNaN.max(max, d);
       sum += d;
     }
     return new double[] { min, max, sum };
@@ -2544,11 +2565,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (indexChannel.read(statsBuf, statsPos) < tripletSize)
           break;
         statsBuf.flip();
-        // Stats are in schema order — iterate columns, populate non-NaN entries
+        // Stats are in schema order — iterate columns, consuming one triplet per column the WRITER emitted one
+        // for. The test has to be the writer's own (hasNumericStats), not "is this column a TIMESTAMP or a TAG":
+        // a FIELD whose codec is DICTIONARY (a STRING measurement) is neither, yet has no triplet, and reading
+        // one for it consumed the next column's statistics and left the last numeric column with none.
         int numericIdx = 0;
         for (int c = 0; c < colCount && numericIdx < numericColCount; c++) {
-          if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP
-              || columns.get(c).getRole() == ColumnDefinition.ColumnRole.TAG)
+          if (!hasNumericStats(c))
             continue;
           mins[c] = statsBuf.getDouble();
           maxs[c] = statsBuf.getDouble();

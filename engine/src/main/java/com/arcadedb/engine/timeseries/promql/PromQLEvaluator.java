@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries.promql;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.TimeSeriesNaN;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.TimeBoundRegex;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -366,14 +367,17 @@ public class PromQLEvaluator {
           for (final VectorSample s : group) sum += s.value();
           yield sum / group.size();
         }
+        // Same NaN policy as every other MIN/MAX in the time-series stack (issue #7039): a group whose samples
+        // are all NaN yields NaN, not the seed. Seeding +/-Infinity and relying on `<`/`>` to displace it returned
+        // the sentinel as data, because a NaN sample never wins either comparison.
         case MIN -> {
-          double min = Double.POSITIVE_INFINITY;
-          for (final VectorSample s : group) if (s.value() < min) min = s.value();
+          double min = TimeSeriesNaN.ABSENT;
+          for (final VectorSample s : group) min = TimeSeriesNaN.min(min, s.value());
           yield min;
         }
         case MAX -> {
-          double max = Double.NEGATIVE_INFINITY;
-          for (final VectorSample s : group) if (s.value() > max) max = s.value();
+          double max = TimeSeriesNaN.ABSENT;
+          for (final VectorSample s : group) max = TimeSeriesNaN.max(max, s.value());
           yield max;
         }
         case COUNT -> (double) group.size();
