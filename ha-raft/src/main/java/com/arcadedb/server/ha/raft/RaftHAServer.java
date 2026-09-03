@@ -1810,6 +1810,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return display != null ? display : leaderId.toString();
   }
 
+  /**
+   * The peers every "who are the members" consumer reports: the declared server list reconciled against the live
+   * Raft configuration (issue #7040). A peer the configuration dropped is not a replica - the leader does not
+   * replicate to it and a client must not be routed to it - and a peer added at runtime is one even though the
+   * server list does not declare it. {@link #getStats()}, {@link #getReplicaAddresses()} and
+   * {@link #routingTableFor} all read this, so the three views cannot disagree about membership.
+   */
+  private List<RaftPeer> configuredPeers() {
+    return ClusterMembership.of(raftGroup.getPeers(), getLivePeers()).configuredPeers();
+  }
+
   public Map<String, Object> getStats() {
     final Map<String, Object> stats = new HashMap<>();
     stats.put("localPeerId", localPeerId.toString());
@@ -1827,7 +1838,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final RaftPeerId statsLeaderId = getLeaderId();
     final RaftPeerId statsExcludeId = statsLeaderId != null ? statsLeaderId : localPeerId;
     final List<Map<String, String>> replicas = new ArrayList<>();
-    for (final RaftPeer peer : raftGroup.getPeers()) {
+    for (final RaftPeer peer : configuredPeers()) {
       if (!peer.getId().equals(statsExcludeId)) {
         final Map<String, String> replicaInfo = new HashMap<>();
         replicaInfo.put("id", peer.getId().toString());
@@ -1846,7 +1857,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final RaftPeerId leaderId = getLeaderId();
     final RaftPeerId excludeId = leaderId != null ? leaderId : localPeerId;
     final StringBuilder sb = new StringBuilder();
-    for (final RaftPeer peer : raftGroup.getPeers()) {
+    for (final RaftPeer peer : configuredPeers()) {
       if (!peer.getId().equals(excludeId)) {
         final String httpAddr = resolveHttpAddress(peer);
         if (httpAddr != null) {
@@ -1864,9 +1875,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * from one {@link #getLeaderId()} read, so a concurrent leader change cannot make the writer and reader sets
    * mutually inconsistent. Returns {@code null} when no leader is known, the leader has no resolvable
    * address for that protocol, or that address cannot be told apart from a follower's (see
-   * {@link #selectUnambiguousRouting}). Readers reflect the configured cluster membership, matching
-   * {@link #getReplicaAddresses()}; peers whose address cannot be resolved, or resolved to an address another
-   * peer claims too, are skipped.
+   * {@link #selectUnambiguousRouting}). Readers reflect the live cluster membership ({@link #configuredPeers()}),
+   * matching {@link #getReplicaAddresses()}: a peer the configuration dropped is never handed to a client as a
+   * read target (issue #7040). Peers whose address cannot be resolved, or resolved to an address another peer
+   * claims too, are skipped.
    * <p>
    * The ambiguity filter is deliberately confined to the client-routing view and is <b>not</b> applied to the
    * HTTP addresses behind {@link #getReplicaAddresses()} or {@code getStats()}: those feed cluster reporting
@@ -1896,15 +1908,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (writer == null)
       return null;
 
-    final Collection<RaftPeer> peers = raftGroup.getPeers();
+    final Collection<RaftPeer> peers = configuredPeers();
 
     // Index 0 is always the writer, so one pair of arrays carries the whole view and the ambiguity check can
     // see the leader and the followers at once. A peer that resolves to nothing is skipped, exactly as before.
     //
-    // The +1 is not slack: raftGroup is final and holds the peers HA_SERVER_LIST was parsed into, while the
-    // leader comes from live Ratis state, so a leader that joined at runtime (addPeer, the Kubernetes
-    // auto-join) is not in getPeers() and the writer occupies a slot beyond it. Sizing to peers.size() would
-    // put an ArrayIndexOutOfBoundsException on the Bolt ROUTE path in exactly that window.
+    // The +1 is not slack: the leader comes from live Ratis state read separately from the membership above,
+    // and getLivePeers() falls back to the declared list when the division cannot be read, so a leader that
+    // joined at runtime (addPeer, the Kubernetes auto-join) can be absent from `peers` and the writer occupies
+    // a slot beyond it. Sizing to peers.size() would put an ArrayIndexOutOfBoundsException on the Bolt ROUTE
+    // path in exactly that window.
     final String[] addresses = new String[peers.size() + 1];
     final boolean[] fromConfig = new boolean[addresses.length];
     // Carried alongside so the warning can name the peers that collided rather than only say that some did

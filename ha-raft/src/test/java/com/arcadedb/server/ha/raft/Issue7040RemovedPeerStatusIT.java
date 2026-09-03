@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -100,6 +101,14 @@ class Issue7040RemovedPeerStatusIT extends BaseRaftHATest {
     assertThat(membershipAlert).as("the divergence is told to the operator, not left to diff by eye").isNotNull();
     assertThat(membershipAlert.getString("severity")).isEqualTo(ClusterAlerts.SEVERITY_WARNING);
     assertThat(membershipAlert.getJSONObject("details").getJSONArray("peers").toList()).containsExactly(removedPeerId);
+
+    // The sibling views agree (module CLAUDE.md, "Peer-list filtering"): the removed peer is no replica in the server
+    // stats, nor in the replica address list a client or a peer-to-peer transfer would dial.
+    final List<?> replicas = (List<?>) leaderRaft.getStats().get("replicas");
+    for (final Object replica : replicas)
+      assertThat(((Map<?, ?>) replica).get("id")).isNotEqualTo(removedPeerId);
+    assertThat(replicas).hasSize(1);
+    assertThat(leaderRaft.getReplicaAddresses()).doesNotContain("localhost:" + (2480 + removedIndex));
 
     // A follower that is still a member sees the same picture: the live configuration is committed cluster-wide.
     final int otherFollower = (leaderIndex + 2) % getServerCount();
