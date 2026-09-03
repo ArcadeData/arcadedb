@@ -186,10 +186,10 @@ class UpdateAutoTransactionIssue7096Test extends TestHelper {
         .isInstanceOf(DuplicatedKeyException.class);
     assertThat(database.isTransactionActive()).as("the failed chunk's transaction is rolled back").isFalse();
 
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Character WHERE name = 'Anonymous'")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM Character WHERE name = 'Anonymous'")) {
       assertThat(rs.next().<Long>getProperty("c")).as("the chunk committed before the failure survives").isEqualTo(1L);
     }
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Character")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM Character")) {
       assertThat(rs.next().<Long>getProperty("c")).isEqualTo(2L);
     }
   }
