@@ -278,17 +278,24 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
   }
 
   /**
-   * The single applicable overload that is {@link #isAtLeastAsSpecific at least as specific} as every other one, or
-   * {@code null} when no such overload exists and the call is genuinely ambiguous (issue #7110).
+   * The single applicable overload that is strictly more specific than every other one - {@link #isAtLeastAsSpecific
+   * at least as specific} as the other while the other is not at least as specific as it - or {@code null} when no such
+   * overload exists and the call is genuinely ambiguous (issue #7110). Requiring strictness keeps a tie ambiguous, as
+   * javac does: {@code f(String...)} and {@code f(String, String...)} see the same parameter type in every position of a
+   * two-argument call, and neither may silently win.
    */
   private static Method mostSpecific(final List<Method> applicable, final int argCount) {
     final int size = applicable.size();
     for (int i = 0; i < size; i++) {
       final Method candidate = applicable.get(i);
       boolean dominates = true;
-      for (int j = 0; j < size && dominates; j++)
-        if (j != i && !isAtLeastAsSpecific(candidate, applicable.get(j), argCount))
+      for (int j = 0; j < size && dominates; j++) {
+        if (j == i)
+          continue;
+        final Method other = applicable.get(j);
+        if (!isAtLeastAsSpecific(candidate, other, argCount) || isAtLeastAsSpecific(other, candidate, argCount))
           dominates = false;
+      }
       if (dominates)
         return candidate;
     }
