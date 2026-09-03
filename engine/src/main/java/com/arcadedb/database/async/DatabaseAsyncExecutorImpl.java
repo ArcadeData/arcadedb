@@ -282,12 +282,25 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
                 cfgQueueImpl);
         this.queue = new ArrayBlockingQueue<>(queueSize);
       }
-
-      backPressurePercentage = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_BACK_PRESSURE);
     }
 
     public boolean isShutdown() {
       return shutdown;
+    }
+
+    /**
+     * Whether a task in flight on this worker must abandon what it is doing: {@link #forceShutdown} is set by
+     * {@code kill()} and by the close path when a worker is asked to exit at once, and the interrupt is the close
+     * path's escalation on a worker that outlived its drain budget.
+     * <p>
+     * Distinct from {@link #isShutdown()} on purpose (issue #7004). {@link #shutdown} also means "this worker is
+     * being replaced": a shrinking {@code setParallelLevel()} retires a worker by setting it and lets the worker
+     * drain its queue, so a scan task already queued on it that bailed on that flag stopped after its first record
+     * while {@code scanType()} still reported success. A drain is exactly the moment such a task must run to
+     * completion.
+     */
+    public boolean isAborting() {
+      return forceShutdown || isInterrupted();
     }
 
     @Override
@@ -575,6 +588,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     this.configuration = configuration;
     // #4961: a non-positive batch size would make every task fail on count % commitEvery.
     this.commitEvery = Math.max(1, database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_TX_BATCH_SIZE));
+    // Read once here, NOT in AsyncThread's constructor (issue #7004): the field is executor-wide, and reading it
+    // per worker meant every setParallelLevel() silently reverted whatever setBackPressure() had been asked for.
+    this.backPressurePercentage = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_BACK_PRESSURE);
     createThreads(database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS));
   }
 

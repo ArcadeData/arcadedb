@@ -3300,7 +3300,31 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public BaseExpression visitInputParam(final SQLParser.InputParamContext ctx) {
     final BaseExpression baseExpr = new BaseExpression();
     baseExpr.inputParam = (InputParameter) visit(ctx.inputParameter());
+    // The grammar accepts `:param.method()` / `:param[0]` and this visitor used to drop the modifiers on the floor,
+    // so `:list.join('-')` silently answered the bare parameter value (found while fixing issue #7027).
+    baseExpr.modifier = buildModifierChain(ctx.modifier());
     return baseExpr;
+  }
+
+  /**
+   * Links the modifiers of a base expression (method calls, suffixes, array selectors) into the singly linked chain
+   * {@link BaseExpression#modifier} expects, in source order.
+   *
+   * @return the head of the chain, or {@code null} when there is no modifier
+   */
+  private Modifier buildModifierChain(final List<SQLParser.ModifierContext> modifierContexts) {
+    Modifier firstModifier = null;
+    Modifier currentModifier = null;
+    if (modifierContexts != null)
+      for (final SQLParser.ModifierContext modCtx : modifierContexts) {
+        final Modifier modifier = (Modifier) visit(modCtx);
+        if (firstModifier == null)
+          firstModifier = modifier;
+        else
+          currentModifier.next = modifier;
+        currentModifier = modifier;
+      }
+    return firstModifier;
   }
 
   /**

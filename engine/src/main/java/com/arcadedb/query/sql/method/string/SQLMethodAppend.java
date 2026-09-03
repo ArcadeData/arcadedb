@@ -45,15 +45,16 @@ public class SQLMethodAppend extends AbstractSQLMethod {
   @Override
   public Object execute( final Object value, final Identifiable currentRecord, final CommandContext context,
       final Object[] params) {
-    if (value == null || params[0] == null)
-      return value;
+    if (value == null)
+      return null;
 
+    // A null argument is skipped, wherever it appears. A leading null used to return the receiver untouched, dropping
+    // every argument after it - so 'x'.append(null, 'A', 'B') answered "x" while 'x'.append('A', null, 'B') answered
+    // "xAB" (issue #7028).
     final StringBuilder buffer = new StringBuilder(value.toString());
-    for (int i = 0; i < params.length; ++i) {
-      if (params[i] != null) {
+    for (int i = 0; i < params.length; ++i)
+      if (params[i] != null)
         buffer.append(FileUtils.getStringContent(params[i]));
-      }
-    }
 
     return buffer.toString();
   }

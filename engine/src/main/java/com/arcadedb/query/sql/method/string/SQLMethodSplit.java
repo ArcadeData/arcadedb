@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
+import java.util.List;
 import java.util.regex.Pattern;
 
 /**
@@ -46,6 +47,9 @@ public class SQLMethodSplit extends AbstractSQLMethod {
     // which all wrap the delimiter in Pattern.quote() for the same reason - this method was the only one of the
     // four that passed the caller-supplied delimiter straight to String.split(regex) unescaped, exposing it to
     // the same catastrophic-backtracking risk as every other regex entry point in that issue).
-    return value.toString().split(Pattern.quote(params[0].toString()));
+    // A List, not the String[] String.split() hands back (issue #7027): the SQL split() function, the Cypher split()
+    // function and the documentation of this very method all answer a list, and this was the only one of the four
+    // that leaked the raw Java array - the one receiver shape most of the collection methods then mishandled.
+    return List.of(value.toString().split(Pattern.quote(params[0].toString())));
   }
 }

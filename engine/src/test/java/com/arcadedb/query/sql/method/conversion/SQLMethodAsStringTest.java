@@ -53,4 +53,11 @@ class SQLMethodAsStringTest {
     result = method.execute(100.0, null, null, null);
     assertThat(result).isEqualTo("100.0");
   }
+
+  @Test
+  void nonNumericArrayIsRenderedAsItsElementsNotAsTheJvmIdentity() {
+    // Issue #7027: "[Ljava.lang.String;@7a8fa663" used to reach the client as data
+    assertThat(method.execute(new String[] { "a", "b" }, null, null, null)).isEqualTo("[a, b]");
+    assertThat(method.execute(new Object[] { "a", 1, null }, null, null, null)).isEqualTo("[a, 1, null]");
+  }
 }
