@@ -466,6 +466,11 @@ public class SnapshotHttpHandler implements HttpHandler {
           }
         });
 
+    // Tell the follower how much it is about to extract (issue #7037) before the response is committed by the
+    // first body byte, so a follower short of space refuses at once instead of failing mid-extraction.
+    exchange.getResponseHeaders().put(new HttpString(SnapshotManager.UNCOMPRESSED_BYTES_HEADER),
+        String.valueOf(estimateUncompressedBytes(db, snapshot)));
+
     try (final OutputStream rawOut = exchange.getOutputStream();
         final OutputStream out = new ProgressTrackingOutputStream(rawOut, lastProgressMs);
         final ZipOutputStream zipOut = new ZipOutputStream(out)) {
@@ -576,6 +581,39 @@ public class SnapshotHttpHandler implements HttpHandler {
    * receives rather than a separate re-read of the file. Skipped files (absent or symlink) contribute no
    * manifest entry, matching what is sent.
    */
+  /**
+   * Uncompressed bytes of the files {@link #serveSnapshotZip} is about to stream: the same file set, sized the same
+   * way (a page-snapshot file is its page count times its page size, everything else its on-disk length). An
+   * estimate rather than a promise - a fallback-path file can still grow before it is read - which is all the
+   * follower's up-front space check needs (issue #7037). Package-private for unit testing.
+   */
+  static long estimateUncompressedBytes(final DatabaseInternal db, final PageSnapshot snapshot) {
+    long total = 0L;
+
+    final File configFile = ((LocalDatabase) db.getEmbedded()).getConfigurationFile();
+    if (configFile.exists())
+      total += configFile.length();
+
+    final File schemaFile = ((LocalSchema) db.getSchema()).getConfigurationFile();
+    if (schemaFile.exists())
+      total += schemaFile.length();
+
+    if (snapshot != null)
+      for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
+        total += file.size();
+    else
+      for (final ComponentFile file : new ArrayList<>(db.getFileManager().getFiles()))
+        if (file != null)
+          total += file.getOSFile().length();
+
+    final File[] sealedFiles = new File(db.getDatabasePath()).listFiles((d, name) -> name.endsWith(".ts.sealed"));
+    if (sealedFiles != null)
+      for (final File sealedFile : sealedFiles)
+        total += sealedFile.length();
+
+    return total + Long.BYTES; // the last-tx-id marker
+  }
+
   private void addFileToZip(final ZipOutputStream zipOut, final File inputFile,
       final List<SnapshotManager.ManifestEntry> manifest) throws Exception {
     if (!inputFile.exists())

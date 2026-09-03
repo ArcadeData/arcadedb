@@ -57,6 +57,12 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
 
   private final RaftHAPlugin plugin;
 
+  /**
+   * {@code role} of a peer that {@code arcadedb.ha.serverList} declares but the live Raft configuration does not
+   * contain (issue #7040). The other two values are {@code LEADER} and {@code FOLLOWER}.
+   */
+  static final String ROLE_NOT_IN_CONFIGURATION = "NOT_IN_CONFIGURATION";
+
   public GetClusterHandler(final HttpServer httpServer, final RaftHAPlugin plugin) {
     super(httpServer);
     this.plugin = plugin;
@@ -126,12 +132,22 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // peer only if no other peer resolves to it, so asking per peer would resolve the group once per peer.
     final Map<RaftPeerId, RaftHAServer.PeerHttpEndpoint> httpEndpoints = raftHAServer.getPeerHttpEndpoints();
 
+    // The static group is what the operator declared; the live configuration is what the cluster committed. A
+    // peer removed from the configuration (DELETE /api/v1/cluster/peer/<id>, or a shrink by a pre-#5275 build)
+    // used to keep reading here as a healthy FOLLOWER with an address, because only the static list was consulted
+    // (issue #7040). Report both: every known peer, each flagged with its membership, so monitoring built on this
+    // endpoint can tell a working member from a peer the cluster no longer counts on.
+    final ClusterMembership membership = ClusterMembership.of(raftHAServer.getRaftGroup().getPeers(),
+        raftHAServer.getLivePeers());
+
     final JSONArray peers = new JSONArray();
-    for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
+    for (final RaftPeer peer : membership.peers()) {
       final JSONObject peerJson = new JSONObject();
       final String peerId = peer.getId().toString();
       peerJson.put("id", peerId);
       peerJson.put("address", peer.getAddress());
+      final boolean inConfiguration = membership.isInConfiguration(peer.getId());
+      peerJson.put("inConfiguration", inConfiguration);
       // Both fields are written only when they have something to say: a peer whose endpoint cannot be resolved
       // carries neither, and a correctly declared cluster carries no flag.
       final RaftHAServer.PeerHttpEndpoint httpEndpoint = httpEndpoints.get(peer.getId());
@@ -142,7 +158,9 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
       }
 
       final boolean peerIsLeader = leaderId != null && peer.getId().equals(leaderId);
-      peerJson.put("role", peerIsLeader ? "LEADER" : "FOLLOWER");
+      // A peer outside the configuration is not a follower: the leader does not replicate to it and it cannot
+      // vote. Naming that state in the role keeps a consumer that only reads roles from mistaking it for one.
+      peerJson.put("role", peerIsLeader ? "LEADER" : inConfiguration ? "FOLLOWER" : ROLE_NOT_IN_CONFIGURATION);
 
       final HAReplicationStatsProvider.FollowerSample health = followerHealth.get(peerId);
       if (!peerIsLeader && health != null) {
@@ -212,8 +230,11 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // leader). Surfaced in Studio's HA panel so operators see actionable warnings without log-grepping.
     // Scoped like the database list above, because the alert payloads name databases and, for the
     // single-bucket check, their type names too.
+    // The membership divergence is a cluster-level condition: the only one on this endpoint that nothing else
+    // flags, and the one an operator most needs told rather than left to diff the peer list by eye (issue #7040).
     response.put("alerts",
-        ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases));
+        ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
+            localPeerId.toString()));
 
     return new ExecutionResponse(200, response.toString());
   }

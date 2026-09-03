@@ -216,6 +216,12 @@ public final class SnapshotInstaller {
       final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
       final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
 
+      // PHASE 0 - MAKE ROOM (issue #7037). This install is the self-heal for a diverged follower, and the volume
+      // it writes onto may be the one the Raft log just filled: when that volume is under pressure, purge the local
+      // log first so the segments below the applied index are reclaimable, then let the download refuse up front
+      // (see downloadSnapshot) rather than fail with "No space left on device" halfway through the extraction.
+      purgeRaftLogBeforeInstall(databaseName, server);
+
       // PHASE 1 - DOWNLOAD into .snapshot-new with the live database STILL OPEN. The historical behaviour
       // closed it up-front, so any download failure (leader unreachable, network blip) left it closed and
       // deregistered with no recovery. Staging first means we touch the live files only on success.
@@ -764,7 +770,7 @@ public final class SnapshotInstaller {
 
       final String snapshotUrl = (https ? "https://" : "http://") + endpoint + "/api/v1/ha/snapshot/" + databaseName;
       try {
-        downloadSnapshot(snapshotNewDir, snapshotUrl, clusterToken, https, server);
+        downloadSnapshot(databaseName, snapshotNewDir, snapshotUrl, clusterToken, https, server);
         return; // Success
       } catch (final IOException e) {
         lastException = e;
@@ -778,7 +784,7 @@ public final class SnapshotInstaller {
         lastException);
   }
 
-  private static void downloadSnapshot(final Path targetDir, final String snapshotUrl,
+  private static void downloadSnapshot(final String databaseName, final Path targetDir, final String snapshotUrl,
       final String clusterToken, final boolean https, final ArcadeDBServer server) throws IOException {
 
     HALog.log(SnapshotInstaller.class, HALog.BASIC, "Downloading snapshot from %s", snapshotUrl);
@@ -817,6 +823,13 @@ public final class SnapshotInstaller {
       // acceptance for backward compatibility during a rolling upgrade.
       final boolean manifestRequired = "1".equals(connection.getHeaderField(SnapshotManager.MANIFEST_HEADER));
 
+      // A leader on #7037 or later says how many bytes the archive inflates to. Refuse before reading the body
+      // when the target volume cannot hold them: the extraction would otherwise fail on the last file it could
+      // not fit, after the whole transfer, and leave a follower already short of space with a partial staging
+      // directory to clean up. A leader predating #7037 omits the header and the check is skipped.
+      checkUsableSpace(targetDir, parseUncompressedBytes(connection.getHeaderField(SnapshotManager.UNCOMPRESSED_BYTES_HEADER)),
+          databaseName);
+
       final CountingInputStream rawCounter = new CountingInputStream(connection.getInputStream());
       InputStream source = rawCounter;
       final boolean progressLogging = server == null
@@ -832,6 +845,81 @@ public final class SnapshotInstaller {
     } finally {
       connection.disconnect();
     }
+  }
+
+  /**
+   * Asks the local Raft server to snapshot and purge its log before a database snapshot is written (issue #7037),
+   * when its storage volume is under pressure. No-op without Raft HA (unit tests, the non-Raft install callers) and
+   * best-effort otherwise: the purge only makes the space reclaimable, it is not a precondition of the install.
+   */
+  private static void purgeRaftLogBeforeInstall(final String databaseName, final ArcadeDBServer server) {
+    if (server != null && server.getHA() instanceof RaftHAPlugin plugin && plugin.getRaftHAServer() != null)
+      plugin.getRaftHAServer().compactRaftLogBeforeSnapshotInstall(databaseName);
+  }
+
+  /** Parses the {@link SnapshotManager#UNCOMPRESSED_BYTES_HEADER} value; absent or malformed reads as unknown ({@code -1}). */
+  static long parseUncompressedBytes(final String header) {
+    if (header == null || header.isEmpty())
+      return -1L;
+    try {
+      return Long.parseLong(header.trim());
+    } catch (final NumberFormatException e) {
+      return -1L;
+    }
+  }
+
+  /**
+   * Refuses an install whose files cannot fit on the volume hosting {@code targetDir} (issue #7037). The volume is
+   * the target directory or its nearest existing ancestor, because {@code getUsableSpace()} answers 0 for a path
+   * that does not exist yet. An unknown size ({@code <= 0}) or an unresolvable volume never refuses: the check
+   * turns a certain failure into a clear early one, it does not add a new way to fail. Package-private for tests.
+   */
+  static void checkUsableSpace(final Path targetDir, final long requiredBytes, final String databaseName) throws IOException {
+    if (requiredBytes <= 0)
+      return;
+    final File volume = nearestExistingAncestor(targetDir.toAbsolutePath().toFile());
+    if (volume == null)
+      return;
+    final long usable = volume.getUsableSpace();
+    final long needed = withAllocationReserve(requiredBytes);
+    if (usable < needed)
+      throw new IOException("Insufficient space to install the snapshot of '" + databaseName + "': it inflates to "
+          + requiredBytes + " bytes (" + needed + " with the allocation reserve) but the volume of '"
+          + volume.getAbsolutePath() + "' has " + usable + " usable. Free space on the volume (the Raft log is purged "
+          + "before an install when its volume is under pressure; see arcadedb.ha.snapshotInterval and "
+          + "arcadedb.ha.raftStorageMinFreeSpacePerc) and the install is retried");
+  }
+
+  /**
+   * {@code path} itself when it exists, otherwise its nearest existing ancestor, or {@code null} when none does.
+   * {@code File.getUsableSpace()} and {@code getTotalSpace()} answer 0 for a path that does not exist, which would
+   * read as "disk full" for a directory that is about to be created (a staging directory, the Raft storage
+   * directory before Ratis creates it), so every free-space probe resolves its volume through this one walk.
+   * The walk runs on the absolute form: a relative path's parent chain ends at {@code null} where its components
+   * run out, before ever reaching the working directory that exists.
+   */
+  static File nearestExistingAncestor(final File path) {
+    File dir = path.getAbsoluteFile();
+    while (dir != null && !dir.exists())
+      dir = dir.getParentFile();
+    return dir;
+  }
+
+  /**
+   * Reserve added on top of the advertised payload before it is compared with the usable space: the payload is the
+   * logical size, and the extraction also pays per-file block rounding, directory metadata and the durability
+   * markers, and the swap keeps the previous copy in {@code .snapshot-backup} until it is dropped. A payload the
+   * volume can hold only to the byte would still run out mid-extraction, which is the failure the check exists to
+   * turn into an early, clear one. Package-private for tests.
+   */
+  static final int  SPACE_RESERVE_PERCENT   = 5;
+  static final long SPACE_RESERVE_MIN_BYTES = 16L * 1024 * 1024;
+
+  /** {@code requiredBytes} plus the allocation reserve, saturating at {@link Long#MAX_VALUE}. */
+  static long withAllocationReserve(final long requiredBytes) {
+    final long reserve = Math.max(requiredBytes / 100L * SPACE_RESERVE_PERCENT, SPACE_RESERVE_MIN_BYTES);
+    final long needed = requiredBytes + reserve;
+    return needed < requiredBytes ? Long.MAX_VALUE : needed;
   }
 
   /**
