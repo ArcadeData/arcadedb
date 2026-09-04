@@ -19,7 +19,6 @@
 package com.arcadedb.mcp.tools;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.mcp.MCPConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -94,15 +93,10 @@ public class SetServerSettingTool {
     final Object coerced = cfg.coerceFromAdminCommand(value);
 
     final Object oldValue = server.getConfiguration().getValue(cfg);
+    // setValue also runs the side effect of a declared SCOPE.SERVER setting, so one whose effect is not a value
+    // somebody later reads - arcadedb.server.logFormat swapping the console formatter - takes effect here too
+    // rather than being stored and ignored (issue #7121).
     server.getConfiguration().setValue(cfg.getKey(), coerced);
-
-    // ContextConfiguration.setValue is a plain map put, so it does not write through to the GlobalConfiguration
-    // enum and the setting's own set-callback never fires from here. A setting whose effect is a side effect
-    // rather than a value someone later reads would therefore be stored and never applied. The console formatter
-    // is chosen once, at logger initialization, so it has to be told (issue #7121) - the same call the HTTP twin
-    // in PostServerCommandHandler.applySetting makes.
-    if (cfg == GlobalConfiguration.SERVER_LOG_FORMAT)
-      DefaultLogger.refreshConsoleFormatter(server.getConfiguration().getValueAsString(cfg));
 
     final JSONObject result = new JSONObject();
     result.put("key", key);

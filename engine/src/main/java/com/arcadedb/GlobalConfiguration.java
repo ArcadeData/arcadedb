@@ -1378,7 +1378,7 @@ public enum GlobalConfiguration {
       "Console log format: 'text' (default, human-readable) or 'json' (one JSON object per line with correlation fields)",
       String.class, "text", //
       value -> {
-        DefaultLogger.refreshConsoleFormatter();
+        DefaultLogger.refreshConsoleFormatter(value != null ? value.toString() : null);
         return value;
       }),
 
@@ -2417,15 +2417,40 @@ public enum GlobalConfiguration {
 
     // Symmetry with setValue: a callback is a side effect that has to follow the value, or a reset would report the
     // default while whatever the callback drives stays on the value that was just discarded (issue #7121).
-    if (callback != null)
-      try {
-        final Object newValue = callback.call(value);
-        if (newValue != value)
-          value = newValue;
-      } catch (final Exception e) {
-        if (LogManager.instance() != null)
-          LogManager.instance().log(this, Level.SEVERE, "Error during resetting property %s", e, key);
-      }
+    value = invokeCallback(value);
+  }
+
+  /**
+   * Runs this setting's callback for {@code newValue} and returns what it makes of it. Shared by
+   * {@link #setValue(Object)}, {@link #reset()} and {@link #applyContextValue(Object)} so the three cannot drift -
+   * which is exactly how {@code SERVER_LOG_FORMAT}'s set and reset paths came apart (issue #7121). A callback that
+   * throws is logged and swallowed: it is a side effect attached to a setting, never a reason to fail the write.
+   */
+  private Object invokeCallback(final Object newValue) {
+    if (callback == null)
+      return newValue;
+    try {
+      return callback.call(newValue);
+    } catch (final Exception e) {
+      if (LogManager.instance() != null)
+        LogManager.instance().log(this, Level.SEVERE, "Error on applying property %s=%s", e, key, newValue);
+      return newValue;
+    }
+  }
+
+  /**
+   * Runs the callback for a value written into a {@link ContextConfiguration} overlay rather than into this enum.
+   * <p>
+   * A SCOPE.SERVER setting is authoritative in the SERVER's own overlay, and that overlay is a plain map: the
+   * server configuration file ({@code fromJSON}), the {@code SET SERVER SETTING} admin command and the MCP
+   * {@code set_server_setting} tool all write into it without ever touching this enum. A setting whose effect is a
+   * SIDE EFFECT rather than a value someone later reads was therefore stored and never applied through any of the
+   * channels its SCOPE advertises (issue #7121). The return value is deliberately dropped - the overlay owns the
+   * stored value, this call is only about running the side effect.
+   */
+  void applyContextValue(final Object newValue) {
+    if (callback != null && scope == SCOPE.SERVER)
+      invokeCallback(newValue);
   }
 
   /**
@@ -2883,16 +2908,7 @@ public enum GlobalConfiguration {
     try {
       value = coerce(iValue);
 
-      if (callback != null)
-        try {
-          final Object newValue = callback.call(value);
-          if (newValue != value)
-            // OVERWRITE IT
-            value = newValue;
-        } catch (final Exception e) {
-          if (LogManager.instance() != null)
-            LogManager.instance().log(this, Level.SEVERE, "Error during setting property %s=%s", e, key, value);
-        }
+      value = invokeCallback(value);
 
       if (allowed != null && value != null)
         if (!allowed.contains(value.toString().toLowerCase(Locale.ENGLISH)))
