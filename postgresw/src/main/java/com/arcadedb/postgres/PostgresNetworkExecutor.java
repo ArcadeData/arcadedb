@@ -1290,7 +1290,7 @@ public class PostgresNetworkExecutor extends Thread {
             LogManager.instance().log(this, Level.INFO, "PSQL: bind reading param %d size (thread=%s)", i, Thread.currentThread().getId());
           final long paramSize = channel.readUnsignedInt();
           if (DEBUG)
-            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().threadId());
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().getId());
 
           if (paramSize == NULL_PARAM_LENGTH) {
             // Postgres protocol NULL sentinel: a declared length of -1 (0xFFFFFFFF unsigned), with no

@@ -163,7 +163,7 @@ class Issue5665GraphBatchAsyncPoolChurnTest extends TestHelper {
     final Set<Long> ids = new HashSet<>();
     for (final Thread t : Thread.getAllStackTraces().keySet())
       if (t.getName().startsWith(prefix))
-        ids.add(t.threadId());
+        ids.add(t.getId());
     return ids;
   }
 }

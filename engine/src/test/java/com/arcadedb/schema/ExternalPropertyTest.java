@@ -1269,7 +1269,7 @@ class ExternalPropertyTest extends TestHelper {
     database.transaction(() -> database.newDocument("Doc").set("name", "original").set("blob", "payload").save());
 
     final Integer extBucketId = ((LocalDocumentType) type).getExternalBucketIdFor(
-        type.getBuckets(false).getFirst().getFileId());
+        type.getBuckets(false).get(0).getFileId());
     final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extBucketId);
     final long extCountBefore = externalBucket.count();
 

@@ -177,7 +177,7 @@ class EdgeUniqueIndexLsmVsHashBenchmark {
       // The guard has to still fire: re-inserting an existing pair must be refused.
       boolean rejected = false;
       try {
-        database.transaction(() -> hub[0].modify().newEdge("INITIATED", leaves.getFirst()).save());
+        database.transaction(() -> hub[0].modify().newEdge("INITIATED", leaves.get(0)).save());
       } catch (final DuplicatedKeyException e) {
         rejected = true;
       }

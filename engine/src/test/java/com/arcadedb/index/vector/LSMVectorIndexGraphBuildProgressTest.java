@@ -132,7 +132,7 @@ class LSMVectorIndexGraphBuildProgressTest {
           assertThat(s.processedNodes()).isGreaterThanOrEqualTo(previous);
           previous = s.processedNodes();
         }
-        assertThat(building.getLast().processedNodes()).isEqualTo(building.getLast().totalNodes());
+        assertThat(building.get(building.size() - 1).processedNodes()).isEqualTo(building.get(building.size() - 1).totalNodes());
 
         // Only the documented phases are reported, and JVector's post-insertion pass is one of them: it used to be
         // invisible, which is what let a phase worth half the wall clock of a large build go unnoticed.

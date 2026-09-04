@@ -126,7 +126,7 @@ class Issue5779MoveEdgeIndexCleanupTest extends TestHelper {
     final List<RID> found = lookup(index, "E1");
 
     assertThat(found).as("the moved edge's key must resolve to exactly one record").hasSize(1);
-    database.transaction(() -> assertThat(found.getFirst().asEdge().getString("code"))
+    database.transaction(() -> assertThat(found.get(0).asEdge().getString("code"))
         .as("a stale entry pointing at a reused slot returns a record carrying somebody else's key").isEqualTo("E1"));
 
     assertIntegrityClean();
@@ -150,7 +150,7 @@ class Issue5779MoveEdgeIndexCleanupTest extends TestHelper {
     assertThat(index.countEntries()).as("a unique index must not hold two entries for one key").isEqualTo(1L);
 
     // Deleting the moved edge frees the key for good; re-inserting it must be accepted.
-    database.transaction(() -> lookup(index, "E1").getFirst().asEdge().delete());
+    database.transaction(() -> lookup(index, "E1").get(0).asEdge().delete());
     database.transaction(() -> nearRID.asVertex().newEdge("Link", farRID.asVertex(), "code", "E1").save());
 
     assertThat(index.countEntries()).isEqualTo(1L);

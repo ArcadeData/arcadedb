@@ -52,7 +52,7 @@ class Issue5932RangeAutoDetectOverloadTest {
       db.commit();
       db.begin();
 
-      final TypeIndex typeIndex = db.getSchema().getType("V").getIndexesByProperties("n").getFirst();
+      final TypeIndex typeIndex = db.getSchema().getType("V").getIndexesByProperties("n").get(0);
 
       for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets()) {
         final LSMTreeIndexMutable mutable = ((LSMTreeIndex) bucketIndex).getMutableIndex();

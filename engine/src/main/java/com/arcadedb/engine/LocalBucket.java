@@ -1076,7 +1076,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       LogManager.instance()
               .log(this, Level.WARNING, "Restoring record %s at its original position (records=%d threadId=%d)", rid,
-                      positionInPage, Thread.currentThread().threadId());
+                      positionInPage, Thread.currentThread().getId());
 
       // Out-of-band write: always poison, never attempt a disjoint-slot-merge replay of this insert (see javadoc).
       final int previousCoverage = selectedPage.beginCoveredWrite(0);

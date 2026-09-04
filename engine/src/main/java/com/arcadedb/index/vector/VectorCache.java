@@ -218,7 +218,7 @@ public class VectorCache {
    * already-approximate counter.
    */
   private void count(final int counter) {
-    final int i = (((int) Thread.currentThread().threadId()) & STRIPE_MASK) * STRIPE_LONGS + counter;
+    final int i = (((int) Thread.currentThread().getId()) & STRIPE_MASK) * STRIPE_LONGS + counter;
     COUNTERS.setOpaque(counters, i, (long) COUNTERS.getOpaque(counters, i) + 1L);
   }
 

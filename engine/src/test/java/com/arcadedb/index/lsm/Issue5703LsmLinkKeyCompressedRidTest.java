@@ -191,7 +191,7 @@ class Issue5703LsmLinkKeyCompressedRidTest extends TestHelper {
   @Test
   void aLinkKeyIsStillCoercedFromItsStringForm() {
     final List<RID> targets = createLinkIndexedDocuments(8);
-    final RID target = targets.getFirst();
+    final RID target = targets.get(0);
 
     // #5677's regression in the sibling implementation: reporting the STORAGE type outward made the engine
     // coerce "#1:0" against TYPE_COMPRESSED_RID, whose class mapping is undefined, and throw.

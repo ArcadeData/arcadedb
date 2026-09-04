@@ -246,10 +246,10 @@ class LSMVectorIndexBruteForceScanTest extends TestHelper {
       for (final Pair<RID, Float> r : results)
         assertThat(whitelist).as("a row outside the allow-list must not survive the scan").contains(
             r.getFirst().getIdentity());
-      assertThat(results.getFirst().getFirst().getIdentity())
+      assertThat(results.get(0).getFirst().getIdentity())
           .as("a self-query must rank its own vertex first, or a RID was paired with another vector's score")
           .isEqualTo(ridByIndex[probe]);
-      assertThat(results.getFirst().getSecond())
+      assertThat(results.get(0).getSecond())
           .as("at ~0 distance, for the same reason").isLessThan(1e-3f);
     } finally {
       LogManager.instance().setLogger(originalLogger);

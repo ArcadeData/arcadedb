@@ -178,7 +178,7 @@ class Issue5761GroupedSearchGroupChoiceTest extends TestHelper {
 
       assertThat(clusters).as("a query at the centre of cluster %d must answer the %d groups nearest to it, got %s",
           cluster, LIMIT, clusters).containsExactlyInAnyOrderElementsOf(expected);
-      assertThat(clusters.getFirst()).as("and the nearest row must belong to cluster %d itself", cluster)
+      assertThat(clusters.get(0)).as("and the nearest row must belong to cluster %d itself", cluster)
           .isEqualTo(cluster);
     }
   }
