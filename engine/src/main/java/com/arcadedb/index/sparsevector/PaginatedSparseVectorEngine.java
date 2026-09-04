@@ -1334,18 +1334,60 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * <b>Total entries across the memtable and all sealed segments, including tombstones.</b>
    * This is the on-disk + in-memory entry count, not the live-document count - a value
    * suitable for sizing/operational metrics ("how big is this index"), not for telling a user
-   * how many documents would match a query that hits this index. Live count would require
-   * either summing per-dim {@code df} across every dim of every segment (an O(total dims) walk)
-   * or persisting a per-segment live aggregate in the segment header (a format change). Neither
-   * has been needed yet; if a caller wants to distinguish, expose {@link #memtableTombstones()}
-   * for the in-memory portion and treat segment {@code totalPostings} as an upper bound until a
-   * persisted live aggregate lands.
+   * how many documents would match a query that hits this index. Use {@link #livePostings()} for
+   * the latter; this stays the cheap upper bound the compaction triggers are sized against.
    */
   public long totalPostings() {
     long total = memtable.get().totalPostings();
     for (final PaginatedSegmentReader r : segments.get())
       total += r.totalPostings();
     return total;
+  }
+
+  /**
+   * Number of distinct LIVE postings across the memtable and every sealed segment: a posting deleted but not yet
+   * purged by a compaction does not count, and a RID present in several sources counts once, under the newest
+   * source that holds it. This is what {@link com.arcadedb.index.Index#countEntries()} promises (#5601) and what
+   * {@link #totalPostings()} - which the index used to answer with - does not give, so the count settled on a
+   * residual after deletions instead of dropping (issue #7140).
+   * <p>
+   * The walk is the per-dim merge {@link #countDim} already performs for IDF, run over the union of the dims held
+   * by the memtable and by each segment, against ONE snapshot of both so a concurrent flush cannot make a posting
+   * be counted twice or missed. Cost is O(total dims x sources), the same order as a compaction: this is exactly
+   * the "every LSM-based implementation walks the whole structure, never call it on a query path" case the
+   * {@code countEntries()} contract warns about, not a cheap accessor.
+   */
+  public long livePostings() throws IOException {
+    final Memtable mtSnapshot = memtable.get();
+    final PaginatedSegmentReader[] segSnapshot = segments.get();
+
+    // The union of the dims any source holds. IntHashSet rather than a boxed Set: a wide corpus reaches millions of
+    // dims, and this would otherwise be one Integer allocation each.
+    final IntHashSet dims = new IntHashSet(mtSnapshot.dimCount() + 16);
+    for (final int dim : mtSnapshot.sortedDims())
+      dims.add(dim);
+    for (final PaginatedSegmentReader r : segSnapshot)
+      for (final int dim : r.dims())
+        dims.add(dim);
+
+    long live = 0L;
+    for (final int dim : dims.toArray()) {
+      final DimCursor c = openMergedCursor(dim, mtSnapshot, segSnapshot);
+      if (c == null)
+        continue;
+      try {
+        c.start();
+        while (!c.isExhausted()) {
+          if (!c.isTombstone())
+            ++live;
+          if (!c.advance())
+            break;
+        }
+      } finally {
+        c.close();
+      }
+    }
+    return live;
   }
 
   /**

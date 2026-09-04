@@ -375,12 +375,12 @@ public class DateUtils {
         return parsed.toLocalDateTime();
       } catch (final DateTimeParseException e2) {
         if (database != null) {
+          // getFormatter(), not DateTimeFormatter.ofPattern(): the latter binds the JVM default locale, so a schema
+          // pattern with a textual field parsed here but not through format()/parse() (issue #7144)
           try {
-            return LocalDateTime.parse(string,
-                DateTimeFormatter.ofPattern(database.getSchema().getDateTimeFormat()));
+            return LocalDateTime.parse(string, getFormatter(database.getSchema().getDateTimeFormat()));
           } catch (final DateTimeParseException ignore) {
-            return LocalDateTime.parse(string,
-                DateTimeFormatter.ofPattern(database.getSchema().getDateFormat()));
+            return LocalDateTime.parse(string, getFormatter(database.getSchema().getDateFormat()));
           }
         }
         throw e2;

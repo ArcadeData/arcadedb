@@ -589,7 +589,9 @@ public class JSONObject implements Map<String, Object> {
   public JSONObject setDateFormat(final String dateFormat) {
     this.dateFormatAsString = dateFormat;
     try {
-      this.dateFormat = DateTimeFormatter.ofPattern(dateFormat);
+      // DateUtils.getFormatter(), not DateTimeFormatter.ofPattern(): these formats come from the schema, and JSON is a
+      // wire and storage format, so a textual field must not follow the JVM default locale (issue #7144)
+      this.dateFormat = DateUtils.getFormatter(dateFormat);
     } catch (IllegalArgumentException e) {
       throw new JSONException("Invalid date format: " + dateFormat, e);
     }
@@ -599,7 +601,7 @@ public class JSONObject implements Map<String, Object> {
   public JSONObject setDateTimeFormat(final String dateFormat) {
     this.dateTimeFormatAsString = dateFormat;
     try {
-      this.dateTimeFormat = DateTimeFormatter.ofPattern(dateFormat);
+      this.dateTimeFormat = DateUtils.getFormatter(dateFormat);
     } catch (IllegalArgumentException e) {
       throw new JSONException("Invalid date format: " + dateFormat, e);
     }

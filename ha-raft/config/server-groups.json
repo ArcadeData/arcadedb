@@ -1,0 +1,38 @@
+{
+  "databases": {
+    "*": {
+      "groups": {
+        "admin": {
+          "resultSetLimit": -1,
+          "readTimeout": -1,
+          "access": [
+            "updateSecurity",
+            "updateSchema",
+            "updateDatabaseSettings"
+          ],
+          "types": {
+            "*": {
+              "access": [
+                "createRecord",
+                "readRecord",
+                "updateRecord",
+                "deleteRecord"
+              ]
+            }
+          }
+        },
+        "*": {
+          "resultSetLimit": -1,
+          "readTimeout": -1,
+          "access": [],
+          "types": {
+            "*": {
+              "access": []
+            }
+          }
+        }
+      }
+    }
+  },
+  "version": 2
+}

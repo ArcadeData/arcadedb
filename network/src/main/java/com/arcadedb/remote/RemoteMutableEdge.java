@@ -33,7 +33,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -94,7 +94,7 @@ public class RemoteMutableEdge extends MutableEdge {
 
   @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
-    final Map<String, Object> result = new HashMap<>(map);
+    final Map<String, Object> result = new LinkedHashMap<>(map);
     if (includeMetadata) {
       result.put(Property.CAT_PROPERTY, "e");
       result.put(Property.TYPE_PROPERTY, getTypeName());

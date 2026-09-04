@@ -2234,7 +2234,11 @@ public class TransactionContext implements Transaction {
     )
       throw new TransactionException("Explicit lock must be acquired before any modification");
 
-    explicitLockedFiles = lockFilesInOrder(filesToLock);
+    // EXPLICIT_LOCK_TIMEOUT, not COMMIT_LOCK_TIMEOUT: an explicit `LOCK` is taken up front, before any work, and an
+    // application that asks for one is telling the engine how long it is prepared to wait for a busy resource. The
+    // setting existed and documented exactly that, but nothing read it and every explicit lock silently used the
+    // commit-time budget instead (issue #7121).
+    explicitLockedFiles = lockFilesInOrder(filesToLock, GlobalConfiguration.EXPLICIT_LOCK_TIMEOUT);
   }
 
   /**
@@ -2267,7 +2271,16 @@ public class TransactionContext implements Transaction {
   }
 
   private List<Integer> lockFilesInOrder(final IntHashSet files) {
-    final long timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
+    return lockFilesInOrder(files, GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
+  }
+
+  /**
+   * @param timeoutSetting which budget bounds the wait: {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT} for the
+   *                       implicit locking commit does on the caller's behalf,
+   *                       {@link GlobalConfiguration#EXPLICIT_LOCK_TIMEOUT} for a lock the application asked for.
+   */
+  private List<Integer> lockFilesInOrder(final IntHashSet files, final GlobalConfiguration timeoutSetting) {
+    final long timeout = database.getConfiguration().getValueAsLong(timeoutSetting);
     final LocalSchema schema = database.getSchema().getEmbedded();
 
     // Work on a private copy so the caller's set is never mutated by the migration re-resolution below

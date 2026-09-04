@@ -41,7 +41,6 @@ import java.math.BigInteger;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.time.*;
-import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
@@ -661,14 +660,14 @@ public enum Type {
             return DateUtils.date(database, Long.parseLong(value.toString()), LocalDate.class);
           else if (database != null)
             try {
-              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateTimeFormat()));
+              return LocalDate.parse(valueAsString, DateUtils.getFormatter(database.getSchema().getDateTimeFormat()));
             } catch (final DateTimeParseException ignore) {
-              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateFormat()));
+              return LocalDate.parse(valueAsString, DateUtils.getFormatter(database.getSchema().getDateFormat()));
             }
           else {
             // GUESS FORMAT BY STRING LENGTH
             if (valueAsString.length() == DATE_FORMAT_DAYS.length())
-              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_DAYS));
+              return LocalDate.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_DAYS));
           }
         }
       } else if (targetClass.equals(LocalDateTime.class)) {
@@ -695,20 +694,20 @@ public enum Type {
                 } catch (DateTimeParseException e2) {
                   try {
                     return LocalDateTime.parse(valueAsString,
-                        DateTimeFormatter.ofPattern(database.getSchema().getDateTimeFormat()));
+                        DateUtils.getFormatter(database.getSchema().getDateTimeFormat()));
                   } catch (final DateTimeParseException ignore) {
-                    return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateFormat()));
+                    return LocalDateTime.parse(valueAsString, DateUtils.getFormatter(database.getSchema().getDateFormat()));
                   }
                 }
               }
             else {
               // GUESS FORMAT BY STRING LENGTH
               if (valueAsString.length() == DATE_FORMAT_DAYS.length())
-                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_DAYS));
+                return LocalDateTime.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_DAYS));
               else if (valueAsString.length() == DATE_FORMAT_SECONDS.length())
-                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_SECONDS));
+                return LocalDateTime.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_SECONDS));
               else if (valueAsString.length() == DATE_FORMAT_MILLIS.length())
-                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_MILLIS));
+                return LocalDateTime.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_MILLIS));
             }
           }
         }
@@ -729,18 +728,18 @@ public enum Type {
           if (!FileUtils.isLong(valueAsString)) {
             if (database != null)
               try {
-                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateTimeFormat()));
+                return ZonedDateTime.parse(valueAsString, DateUtils.getFormatter(database.getSchema().getDateTimeFormat()));
               } catch (final DateTimeParseException ignore) {
-                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateFormat()));
+                return ZonedDateTime.parse(valueAsString, DateUtils.getFormatter(database.getSchema().getDateFormat()));
               }
             else {
               // GUESS FORMAT BY STRING LENGTH
               if (valueAsString.length() == DATE_FORMAT_DAYS.length())
-                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_DAYS));
+                return ZonedDateTime.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_DAYS));
               else if (valueAsString.length() == DATE_FORMAT_SECONDS.length())
-                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_SECONDS));
+                return ZonedDateTime.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_SECONDS));
               else if (valueAsString.length() == DATE_FORMAT_MILLIS.length())
-                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_MILLIS));
+                return ZonedDateTime.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_MILLIS));
             }
           }
         }
@@ -1551,19 +1550,23 @@ public enum Type {
       if (FileUtils.isLong(valueAsString))
         return new Date(Long.parseLong(value.toString()));
       else if (database != null)
+        // Locale.ENGLISH, not the JVM default: a schema pattern with a textual field (MMM, EEE) has to parse the same
+        // on every server, exactly as DateUtils.getFormatter() pins it for the java.time paths (issues #7112, #7144).
+        // SimpleDateFormat rather than a DateTimeFormatter here because this branch keeps SimpleDateFormat's lenient
+        // resolution and its default-time-zone anchoring, which java.time does not reproduce.
         try {
-          return new SimpleDateFormat(database.getSchema().getDateTimeFormat()).parse(valueAsString);
+          return new SimpleDateFormat(database.getSchema().getDateTimeFormat(), Locale.ENGLISH).parse(valueAsString);
         } catch (final ParseException ignore) {
-          return new SimpleDateFormat(database.getSchema().getDateFormat()).parse(valueAsString);
+          return new SimpleDateFormat(database.getSchema().getDateFormat(), Locale.ENGLISH).parse(valueAsString);
         }
       else {
         // GUESS FORMAT BY STRING LENGTH
         if (valueAsString.length() == DATE_FORMAT_DAYS.length())
-          return new SimpleDateFormat(DATE_FORMAT_DAYS).parse(valueAsString);
+          return new SimpleDateFormat(DATE_FORMAT_DAYS, Locale.ENGLISH).parse(valueAsString);
         else if (valueAsString.length() == DATE_FORMAT_SECONDS.length())
-          return new SimpleDateFormat(DATE_FORMAT_SECONDS).parse(valueAsString);
+          return new SimpleDateFormat(DATE_FORMAT_SECONDS, Locale.ENGLISH).parse(valueAsString);
         else if (valueAsString.length() == DATE_FORMAT_MILLIS.length())
-          return new SimpleDateFormat(DATE_FORMAT_MILLIS).parse(valueAsString);
+          return new SimpleDateFormat(DATE_FORMAT_MILLIS, Locale.ENGLISH).parse(valueAsString);
       }
     }
     throw new IllegalArgumentException("Object of class " + value.getClass() + " cannot be converted to Date");
