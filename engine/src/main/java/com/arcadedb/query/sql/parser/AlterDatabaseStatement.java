@@ -107,7 +107,11 @@ public class AlterDatabaseStatement extends DDLStatement {
       try {
         db.saveConfiguration();
       } catch (final IOException e) {
-        throw new CommandExecutionException("Error on saving database configuration");
+        // Chain the cause and name what was being written: without them a read-only filesystem, a permission
+        // problem and a full volume are indistinguishable to the caller (issue #7141).
+        throw new CommandExecutionException(
+            "Error on saving the configuration of database '" + db.getName() + "' after setting '" + settingNameAsString
+                + "' to '" + finalValue + "': " + e.getMessage(), e);
       }
     }
 

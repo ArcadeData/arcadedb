@@ -1368,8 +1368,8 @@ public class ArcadeDBServer {
               break;
 
             default:
-              LogManager.instance().log(this, Level.SEVERE, "Unsupported command %s in startup command: '%s'", null
-                  , commandType);
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Unsupported command '%s' in startup command: '%s'", null, commandType, command);
             }
           }
         } else {

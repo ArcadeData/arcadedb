@@ -2065,9 +2065,13 @@ public enum GlobalConfiguration {
 
   HA_PEER_ALLOWLIST_ENABLED("arcadedb.ha.peerAllowlist.enabled", SCOPE.SERVER,
       """
-      Reject inbound Raft gRPC connections whose remote address does not resolve to a host in \
-      arcadedb.ha.serverList. Loopback is always allowed. Does not provide peer identity or encryption: \
-      use mTLS on untrusted networks.""",
+      Reject inbound Raft gRPC connections whose remote address does not resolve to a cluster peer host. \
+      The hosts are those of arcadedb.ha.serverList (expanded with arcadedb.ha.k8sSuffix when \
+      arcadedb.ha.k8s is set), plus the members of the live Raft configuration, which are picked up on \
+      every health monitor tick so a peer that joined at runtime is admitted; on Kubernetes the headless \
+      service behind arcadedb.ha.k8sSuffix is resolved too, so a StatefulSet scale-up pod can complete its \
+      auto-join. Loopback is always allowed. Does not provide peer identity or encryption: use mTLS on \
+      untrusted networks.""",
       Boolean.class, true),
 
   HA_GRPC_ALLOWLIST_REFRESH_MS("arcadedb.ha.grpcAllowlistRefreshMs", SCOPE.SERVER,
