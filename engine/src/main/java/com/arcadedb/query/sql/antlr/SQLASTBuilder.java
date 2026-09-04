@@ -420,6 +420,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * whose alias is in scope for the duration of this call.
    */
   private void buildSelectClauses(final SelectStatement stmt, final SQLParser.SelectStatementContext ctx) {
+    // A statement resolves names against ITS OWN output columns, never an enclosing statement's, and the enclosing
+    // scope has to come back afterwards: a nested SELECT can sit inside the very ORDER BY whose scope it would
+    // otherwise clear, leaving the items after it - "ORDER BY (SELECT ...), m" - to read m as the target again.
+    final Set<String> enclosingOutputColumnNames = outputColumnNames;
+    outputColumnNames = null;
+    try {
+      buildSelectClausesInScope(stmt, ctx);
+    } finally {
+      outputColumnNames = enclosingOutputColumnNames;
+    }
+  }
+
+  private void buildSelectClausesInScope(final SelectStatement stmt, final SQLParser.SelectStatementContext ctx) {
     // Projection
     if (ctx.projection() != null) {
       stmt.projection = (Projection) visit(ctx.projection());
@@ -446,7 +459,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.orderBy = (OrderBy) visit(ctx.orderBy());
       }
     } finally {
-      outputColumnNames = null;
+      outputColumnNames = null; // no other clause resolves against the output columns
     }
 
     // UNWIND clause
@@ -5038,6 +5051,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Left modifier (optional)
     if (ctx.modifier() != null) {
       item.leftModifier = (Modifier) visit(ctx.modifier());
+    }
+
+    // The assignment target is built from a propertyName rather than an expression, so it does not pass through
+    // visitIdentifierChain() and needs the target alias resolved here. Without it, UPDATE Main m SET m.touched = 1
+    // reads a property named m off the record and writes touched INSIDE that (absent) nested value, silently
+    // setting nothing the statement asked for (issue #7153).
+    if (item.leftModifier != null && item.leftModifier.suffix != null && item.leftModifier.suffix.identifier != null
+        && !item.leftModifier.suffix.star && !item.leftModifier.squareBrackets && item.leftModifier.methodCall == null
+        && item.left.getStringValue().equals(targetAliases.peek())) {
+      item.left = item.leftModifier.suffix.identifier;
+      item.leftModifier = item.leftModifier.next;
     }
 
     // Operator
