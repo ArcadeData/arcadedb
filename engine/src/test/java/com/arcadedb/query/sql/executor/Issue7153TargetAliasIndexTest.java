@@ -259,6 +259,76 @@ class Issue7153TargetAliasIndexTest extends TestHelper {
     }
   }
 
+  /**
+   * The same {@code '$'}-in-a-literal false positive gated two other optimisations, both of which skip when the
+   * WHERE clause "references a LET": the predicate pushed into the type scan, and the vertex-centric lookup that
+   * answers {@code WHERE @out = <RID>} off the vertex's edge list instead of scanning the edge type. Neither was
+   * ever a wrong answer - the condition just fell through to the post-LET filter - but both are lost for a reason
+   * that has nothing to do with the LET.
+   */
+  @Test
+  void aDollarInAStringLiteralKeepsThePushdownAndTheEdgeLookup() {
+    database.transaction(() -> database.command("sql", "UPDATE Main SET currency = 'US$' WHERE code = 'C1'"));
+
+    // predicate pushdown: an unindexed condition is filtered inside the scan, not by a step chained after it
+    try (final ResultSet rs = database.query("sql",
+        "SELECT code FROM Main LET $relation = out('relation') WHERE currency = 'US$'")) {
+      assertThat(plan(rs)).contains("FETCH FROM TYPE Main WITH FILTER");
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // vertex-centric edge lookup
+    final String mainRid = database.query("sql", "SELECT @rid AS r FROM Main WHERE code = 'C1'").next()
+        .<Object>getProperty("r").toString();
+    try (final ResultSet rs = database.query("sql", "SELECT @rid FROM relation LET $x = in() "//
+        + "WHERE @out = " + mainRid + " AND label = 'US$'")) {
+      assertThat(plan(rs)).doesNotContain("FETCH FROM TYPE relation");
+      assertThat(rs.hasNext()).isFalse(); // no edge carries that label - the point is which plan answered
+    }
+  }
+
+  /**
+   * The grammar takes a LET name as a plain identifier, so {@code LET brain = out(...)} declares the variable that
+   * {@code $brain} reads and only the reference carries the sigil. Matching the two spellings against each other is
+   * what tells the planner this residual has to wait for the LET.
+   */
+  @Test
+  void aLetDeclaredWithoutTheSigilIsStillRecognised() {
+    final String query = "SELECT code FROM Main m LET relation = out('relation') "//
+        + "WHERE m.code = 'C1' AND $relation CONTAINS (code = 'D1')";
+
+    try (final ResultSet rs = database.query("sql", query)) {
+      final String plan = plan(rs);
+      assertThat(plan).contains("FETCH FROM INDEX Main[code]");
+      assertThat(plan).contains("LET (for each record)").contains("FILTER ITEMS WHERE");
+      assertThat(plan.indexOf("LET (for each record)")).isLessThan(plan.indexOf("FILTER ITEMS WHERE"));
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * An OR whose branches are answered by an indexed function - {@code search_index()} here - is planned as one
+   * sub-plan per branch. That branch chained its residual filter without the LET guard every sibling branch
+   * applies, so a residual reading a per-record LET was evaluated with the variable unset and answered nothing.
+   */
+  @Test
+  void anIndexedFunctionOrBranchWaitsForThePerRecordLet() {
+    database.command("sql", "CREATE PROPERTY Main.notes STRING");
+    database.command("sql", "CREATE INDEX ON Main (notes) FULL_TEXT");
+    database.transaction(() -> {
+      database.command("sql", "UPDATE Main SET notes = 'linked to data' WHERE code = 'C1'");
+      database.command("sql", "UPDATE Main SET notes = 'nothing here' WHERE code = 'C2'");
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT code FROM Main LET $relation = out('relation') "//
+        + "WHERE (search_index('Main[notes]', 'linked') = true AND $relation.size() = 1) "//
+        + "OR (search_index('Main[notes]', 'nothing') = true AND $relation.size() = 0)")) {
+      assertThat(rs.stream().map(r -> r.<String>getProperty("code"))).containsExactlyInAnyOrder("C1", "C2");
+    }
+  }
+
   private static String plan(final ResultSet rs) {
     return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
   }
