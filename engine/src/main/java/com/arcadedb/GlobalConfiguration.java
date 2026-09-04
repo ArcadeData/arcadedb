@@ -2453,10 +2453,24 @@ public enum GlobalConfiguration {
    * default - would have that normalisation applied on the enum path and silently dropped here, so the same input
    * would be stored one way in the process-wide enum and another way in a server's overlay. Normalise in
    * {@link #coerce(Object)} instead, which both paths go through.
+   * <p>
+   * The callback is handed a COERCED value, as {@link #setValue(Object)} hands it one, so a callback that expects
+   * the setting's declared type (a {@code Boolean}, an {@code Integer}) is not silently given the raw {@code String}
+   * a configuration file or an admin command carried. A value this setting cannot coerce is passed through as-is
+   * rather than failing the write: the overlay has already stored it, and refusing here would leave the side effect
+   * and the stored value disagreeing.
    */
   void applyContextValue(final Object newValue) {
-    if (callback != null && scope == SCOPE.SERVER)
-      invokeCallback(newValue);
+    if (callback == null || scope != SCOPE.SERVER)
+      return;
+
+    Object coerced;
+    try {
+      coerced = coerce(newValue);
+    } catch (final Exception e) {
+      coerced = newValue;
+    }
+    invokeCallback(coerced);
   }
 
   /**
