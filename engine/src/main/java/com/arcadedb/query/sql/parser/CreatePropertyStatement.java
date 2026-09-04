@@ -78,8 +78,12 @@ public class CreatePropertyStatement extends DDLStatement {
       throw new CommandExecutionException("Type '" + typeName.getStringValue() + "' not found");
 
     if (ifNotExists) {
-      if (typez.existsPolymorphicProperty(propertyName.getStringValue()))
+      if (typez.existsPolymorphicProperty(propertyName.getStringValue())) {
+        // Same row as the creating path, with created=false telling the two apart (issue #7143).
+        result.setProperty("created", false);
+        typeName = prevType;
         return;
+      }
     } else if (typez.existsProperty(propertyName.getStringValue()))
       throw new CommandExecutionException("Property '" + typeName.getStringValue() + "." + propertyName.getStringValue() + "' already exists");
 
@@ -88,6 +92,7 @@ public class CreatePropertyStatement extends DDLStatement {
     // CREATE IT LOCALLY
     final String ofTypeAsString = ofType != null ? ofType.getStringValue() : null;
     final Property internalProp = typez.createProperty(propertyName.getStringValue(), type, ofTypeAsString);
+    result.setProperty("created", true);
     for (final CreatePropertyAttributeStatement attr : attributes) {
       final Object val = attr.setOnProperty(internalProp, context);
       result.setProperty(attr.settingName.getStringValue(), val);

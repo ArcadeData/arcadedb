@@ -3816,7 +3816,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final long refreshMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_ALLOWLIST_REFRESH_MS);
     final long startupGraceMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_ALLOWLIST_STARTUP_GRACE_MS);
     final long stickyTtlMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_ALLOWLIST_STICKY_TTL_MS);
-    final List<String> peerHosts = PeerAddressAllowlistFilter.extractPeerHosts(serverList);
+    // The same Kubernetes DNS suffix parsePeerList applies to the peer addresses (issue #7132). Without it the
+    // allowlist tried to resolve the bare pod names written in the server list ("arcadedb-0"), which only
+    // happen to resolve when the pod's DNS search list covers them - i.e. when the namespace and the headless
+    // service share a name. Everywhere else no configured host resolved, the quorum latch never tripped, and
+    // the filter fell open for the whole grace window and then rejected every peer.
+    final String k8sDnsSuffix = configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)
+        ? configuration.getValueAsString(GlobalConfiguration.HA_K8S_DNS_SUFFIX)
+        : "";
+    final List<String> peerHosts = PeerAddressAllowlistFilter.extractPeerHosts(serverList).stream()
+        .map(h -> RaftPeerAddressResolver.applyDnsSuffix(h, k8sDnsSuffix)).toList();
     if (peerHosts.isEmpty()) {
       LogManager.instance().log(this, Level.WARNING,
           "arcadedb.ha.peerAllowlist.enabled=true but arcadedb.ha.serverList is empty; allowlist not installed");
@@ -3824,13 +3833,43 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
     final PeerAddressAllowlistFilter filter = new PeerAddressAllowlistFilter(peerHosts, refreshMs, startupGraceMs,
         stickyTtlMs);
+
+    // Kubernetes scale-up (issue #7132 x #4836). The joiner synthesizes itself into the group and dials the
+    // existing pods, but its host is in nobody's server list, and by then every existing pod has latched
+    // everQuorumResolved - so the join was rejected on the RECEIVING side and the new pod stayed NOT_READY
+    // forever. The headless service domain is the StatefulSet's own membership record: it resolves to the A
+    // records of every pod backing it, at any replica count and without an ordinal to guess, and it covers a
+    // pod that is not Ready yet because the service that publishes it sets publishNotReadyAddresses (which
+    // the shipped manifest documents as required, since a pod is Ready only once it has joined).
+    final String serviceDomain = headlessServiceDomain(k8sDnsSuffix);
+    if (serviceDomain != null)
+      filter.learnPeerHosts(List.of(serviceDomain));
+
     this.allowlistFilter = filter;
     GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(filter));
+  }
+
+  /**
+   * The headless-service FQDN behind {@code arcadedb.ha.k8sSuffix}, i.e. the suffix without its leading dot,
+   * or {@code null} when not running under Kubernetes or when no suffix is configured. Package-private for
+   * testing.
+   */
+  static String headlessServiceDomain(final String k8sDnsSuffix) {
+    if (k8sDnsSuffix == null || k8sDnsSuffix.isBlank())
+      return null;
+    final String trimmed = k8sDnsSuffix.trim();
+    final String domain = trimmed.startsWith(".") ? trimmed.substring(1) : trimmed;
+    return domain.isBlank() ? null : domain;
   }
 
   /** Package-private test hook: the transport configuration the Raft client builders read. */
   Parameters raftParametersForTest() {
     return raftParameters;
+  }
+
+  /** Package-private test hook: the inbound Raft gRPC peer allowlist, or null when disabled. */
+  PeerAddressAllowlistFilter allowlistFilterForTest() {
+    return allowlistFilter;
   }
 
   /**
@@ -3843,8 +3882,37 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   @Override
   public void refreshPeerAllowlist() {
     final PeerAddressAllowlistFilter filter = allowlistFilter;
-    if (filter != null)
-      filter.proactiveRefresh();
+    if (filter == null)
+      return;
+
+    // Reconcile the allowlist with cluster MEMBERSHIP, not with the boot-time configuration (issue #7132).
+    // getLivePeers() reads the committed Raft configuration - the same authority the cluster status endpoint
+    // uses - so a peer added at runtime (addPeer, the Kubernetes auto-join) is admitted from here on instead
+    // of being rejected forever by every node that had already latched everQuorumResolved. A tick that finds
+    // nothing new is a set comparison and does not touch DNS.
+    final List<String> memberHosts = new ArrayList<>();
+    for (final RaftPeer peer : getLivePeers()) {
+      final String host = allowlistHostOf(peer.getAddress());
+      if (host != null)
+        memberHosts.add(host);
+    }
+    filter.learnPeerHosts(memberHosts);
+
+    filter.proactiveRefresh();
+  }
+
+  /**
+   * The host of a Raft peer address in the form the allowlist resolver wants: no port, and no brackets around
+   * an IPv6 literal ({@link InetAddress#getAllByName} rejects those). Returns {@code null} when the address
+   * carries no usable host. Package-private for testing.
+   */
+  static String allowlistHostOf(final String raftAddress) {
+    final String host = extractHost(raftAddress);
+    if (host == null || host.isBlank())
+      return null;
+    if (host.startsWith("[") && host.endsWith("]"))
+      return host.length() > 2 ? host.substring(1, host.length() - 1) : null;
+    return host;
   }
 
   private static void deleteRecursive(final File file) {

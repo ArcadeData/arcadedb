@@ -436,7 +436,11 @@ public class TransactionContext implements Transaction {
             try {
               database.getSchema().getDictionary().reload();
             } catch (final IOException e) {
-              throw new SchemaException("Error on reloading schema dictionary");
+              // Chain the cause: the reason the dictionary could not be re-read is the only thing that tells a
+              // truncated file apart from a permission problem or a closed channel (issue #7141).
+              throw new SchemaException(
+                  "Error on reloading the schema dictionary of database '" + database.getName() + "' while rolling back: "
+                      + e.getMessage(), e);
             }
             break;
           }
