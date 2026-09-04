@@ -554,6 +554,13 @@ public class TransactionContext implements Transaction {
 
   /**
    * Queues a record for the deferred write performed by {@link #commit1stPhase()}.
+   * <p>
+   * A dropped write (see {@code false} below) leaves two traces, both deliberate. {@code onBeforeUpdate} has already
+   * fired by the time {@code LocalDatabase.updateRecord} reaches here, so a listener sees a "before" with no matching
+   * "after" - the write genuinely did not happen, and the caller is told so by the return value rather than by an
+   * exception. And the record keeps its dirty flag, because only the commit clears it, over {@code
+   * modifiedRecordsCache}, which the delete already emptied of this RID. Neither matters for a record that no longer
+   * exists, and clearing the flag would claim a write that was never persisted.
    *
    * @return {@code false} when this same transaction has already deleted the record, so nothing was queued and the
    * caller must skip the rest of the update (index maintenance, after-update events) too; {@code true} otherwise.
