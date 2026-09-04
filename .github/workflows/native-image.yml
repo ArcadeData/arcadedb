@@ -7,6 +7,37 @@ on:
         description: "Also build the macOS arm64 leg (uses a PAID Larger Runner). Off by default; tick it only to validate that leg before a release."
         type: boolean
         default: false
+      # Separates WHICH WORKFLOW runs from WHICH TREE it builds. The workflow definition always
+      # comes from the ref the dispatch was fired on; this input is handed to `actions/checkout`
+      # instead, so a fixed workflow living on a feature branch can rebuild an already-published
+      # tag whose own tree still carries the bug that broke its release.
+      #
+      # That is not hypothetical: it is the only way to recover from a broken publish step. The
+      # `release` event checks out the TAG, so re-firing it re-runs the same broken workflow, and
+      # the alternative - branching off the tag and cherry-picking the fix onto it - leaves a
+      # throwaway branch behind and puts workflow edits on two branches at once. Leave this empty
+      # and checkout behaves exactly as before, which is what `release` and `schedule` runs do
+      # (`inputs` is empty on both).
+      #
+      # Artifacts are named from the CHECKED-OUT tree's pom version, so `ref: 26.9.1` yields
+      # arcadedb-26.9.1-<os>-<arch> even when dispatched from a branch whose pom says
+      # 26.10.1-SNAPSHOT. Never build from main and rename: main carries commits the release
+      # does not.
+      ref:
+        description: "Git ref to BUILD - tag, branch or SHA (e.g. 26.9.1). Empty = the ref this run was dispatched on."
+        type: string
+        default: ""
+      # A dispatch otherwise publishes NOTHING - every outward-facing step here is gated on
+      # `github.event_name == 'release'`. That gate is why "Attach to release" shipped broken from
+      # #5323 and was only discovered when it lost every native asset of the 26.9.1 release: no
+      # dispatch, and no nightly run, could ever execute it. Ticking this runs that step for real,
+      # which both recovers a broken release's assets and makes the step testable before it ships.
+      # Requires `ref` to name the release's tag; uploads are --clobber, so a mistaken run replaces
+      # an asset rather than leaving junk behind.
+      attach_to_release:
+        description: "Upload the built archives to the GitHub release named by `ref`. Off by default. PUBLISHES PUBLICLY."
+        type: boolean
+        default: false
   release:
     types: [published]
   # Daily, because nothing else exercises this workflow. It has no `push`/`pull_request` trigger -
@@ -96,7 +127,11 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
+      # `ref` is empty on `release` and `schedule`, which is checkout's "use the ref that triggered
+      # this run" - so those two behave exactly as they did before the input existed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
 
       # `java-version`, which fetches the `jdk-<version>` release and so reaches GraalVM's MAINLINE
       # builds only. That is deliberate and is the point of the pin: mainline is the line the OS
@@ -335,14 +370,30 @@ jobs:
             native/target/arcadedb-*.zip
             native/target/*.sha256
 
+      # Reachable two ways, and it needs both. A published release attaches automatically, as
+      # before. A dispatch attaches only when `attach_to_release` is ticked, which is what makes
+      # this step recoverable AND testable: before that opt-in existed it could run only during a
+      # real release, so the glob bug above shipped from #5323 and surfaced by losing every native
+      # asset of 26.9.1. RELEASE_TAG follows the same split - the release's own tag on a release,
+      # the `ref` input on a dispatch, since that is the tree whose version the archives are named
+      # for. Uploading elsewhere would attach 26.9.1 binaries to some other release.
       - name: Attach to release
-        if: ${{ github.event_name == 'release' }}
+        if: ${{ github.event_name == 'release' || inputs.attach_to_release }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCHIVE: ${{ steps.package.outputs.archive }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
         shell: bash
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
+          set -euo pipefail
+          # `attach_to_release` with no `ref` has no tag to upload to. Fail here rather than let
+          # `gh` be handed an empty tag argument.
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "::error::attach_to_release is set but 'ref' is empty - there is no release to upload to. Dispatch again with ref set to the release's tag (e.g. 26.9.1)."
+            exit 1
+          fi
+          echo "[attach] uploading $ARCHIVE (+ .sha256) to release $RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" \
             "native/target/$ARCHIVE" "native/target/$ARCHIVE.sha256" \
             --clobber
 
@@ -372,7 +423,11 @@ jobs:
           - { runner: ubuntu-latest,    arch: amd64, dockerfile: native/src/main/docker/Dockerfile.native.scratch }
           - { runner: ubuntu-24.04-arm, arch: arm64, dockerfile: native/src/main/docker/Dockerfile.native.distroless }
     steps:
+      # Same ref as the `build` job: this job's build context and Dockerfiles must come from the
+      # tree the binary was built from, not from whichever branch the run was dispatched on.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Download binary artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
