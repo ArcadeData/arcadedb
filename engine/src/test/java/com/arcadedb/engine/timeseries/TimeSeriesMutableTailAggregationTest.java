@@ -144,7 +144,7 @@ class TimeSeriesMutableTailAggregationTest {
     // bucketIntervalMs = 0 -> map mode, which never had the sizing problem: use it as the oracle.
     final MultiColumnAggregationResult mapMode = engine.aggregateMulti(
         Long.MIN_VALUE, Long.MAX_VALUE, requests, 0L, null);
-    final long mapBucket = mapMode.getBucketTimestamps().getFirst();
+    final long mapBucket = mapMode.getBucketTimestamps().get(0);
 
     final MultiColumnAggregationResult flat = engine.aggregateMulti(
         Long.MIN_VALUE, Long.MAX_VALUE, requests, MINUTE_MS, null);

@@ -88,7 +88,7 @@ class Issue6936SparseGroupedTopKGroupChoiceTest extends TestHelper {
 
         final List<String> groups = got.stream().map(rs -> groupOf.get(rs.rid())).distinct().toList();
         assertThat(groups).as("groups returned for %s", got).contains("Z");
-        assertThat(got.getFirst().rid()).isEqualTo(new RID(0, 1_000L));
+        assertThat(got.get(0).rid()).isEqualTo(new RID(0, 1_000L));
       } finally {
         for (final DimCursor c : cursors)
           if (c != null)

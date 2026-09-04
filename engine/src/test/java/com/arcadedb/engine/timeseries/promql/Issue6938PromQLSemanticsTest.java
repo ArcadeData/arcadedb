@@ -69,7 +69,7 @@ class Issue6938PromQLSemanticsTest extends TestHelper {
     final InstantVector iv = evaluateInstant("sum(promql6938_or_a) or sum(promql6938_or_b)");
 
     assertThat(iv.samples()).hasSize(1);
-    final VectorSample sample = iv.samples().getFirst();
+    final VectorSample sample = iv.samples().get(0);
     assertThat(sample.value()).isNotNaN();
     assertThat(sample.value()).isEqualTo(30.0); // 10 + 20 from the left side, never the right side's 400
     assertThat(sample.labels()).isEmpty();
@@ -205,7 +205,7 @@ class Issue6938PromQLSemanticsTest extends TestHelper {
     final List<MatrixSeries> series = ((MatrixResult) result).series();
     assertThat(series).hasSize(1);
 
-    final List<double[]> points = series.getFirst().values();
+    final List<double[]> points = series.get(0).values();
     assertThat(points).hasSize(5);
     for (int i = 0; i < points.size(); i++)
       assertThat(points.get(i)[0]).as("point %d must sit on the step grid", i).isEqualTo(1000.0 + i * 1000.0);
@@ -225,7 +225,7 @@ class Issue6938PromQLSemanticsTest extends TestHelper {
 
     final List<MatrixSeries> series = ((MatrixResult) result).series();
     assertThat(series).hasSize(1);
-    final List<double[]> points = series.getFirst().values();
+    final List<double[]> points = series.get(0).values();
     assertThat(points).hasSize(3);
     assertThat(points.get(0)[0]).isEqualTo(2000.0);
     assertThat(points.get(1)[0]).isEqualTo(4000.0);

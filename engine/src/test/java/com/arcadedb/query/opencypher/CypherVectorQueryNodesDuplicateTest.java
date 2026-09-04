@@ -192,7 +192,7 @@ class CypherVectorQueryNodesDuplicateTest extends TestHelper {
     final List<String> hits = queryTopK(vector(3), 5);
 
     assertThat(hits).hasSize(5);
-    assertThat(hits.getFirst()).isEqualTo("u3");
+    assertThat(hits.get(0)).isEqualTo("u3");
     assertThat(new LinkedHashSet<>(hits)).hasSize(5);
   }
 

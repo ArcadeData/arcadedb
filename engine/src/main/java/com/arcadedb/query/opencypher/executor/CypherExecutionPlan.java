@@ -2569,7 +2569,7 @@ public class CypherExecutionPlan {
         return;
       List<Expression> list = inExpr.getList();
       // A list literal (x IN [a, b, c]) is parsed as a single ListExpression element: unwrap it to its values.
-      if (list != null && list.size() == 1 && list.getFirst() instanceof ListExpression listExpr)
+      if (list != null && list.size() == 1 && list.get(0) instanceof ListExpression listExpr)
         list = listExpr.getElements();
       if (list == null || list.isEmpty())
         return;

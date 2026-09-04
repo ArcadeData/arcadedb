@@ -1701,7 +1701,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // IMPORTANT: Must match the validation logic used during graph building
       final String vectorProp =
           metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
-              metadata.propertyNames.getFirst() : "vector";
+              metadata.propertyNames.get(0) : "vector";
 
       // One read of the location index for the whole walk, both because a per-element accessor call would
       // re-check the materialisation flag on every live vector and because a compaction swaps the instance

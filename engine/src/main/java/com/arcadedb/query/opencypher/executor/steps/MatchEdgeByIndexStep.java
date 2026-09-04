@@ -185,7 +185,7 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
               "Index '" + indexName + "' on type '" + edgeType + "' is no longer available: re-plan the query");
 
         seekKeys = resolveSeekKeys();
-        wholeKey = !seekKeys.isEmpty() && seekKeys.getFirst().length == index.getPropertyNames().size();
+        wholeKey = !seekKeys.isEmpty() && seekKeys.get(0).length == index.getPropertyNames().size();
         if (seekKeys.size() > 1)
           seen = new HashSet<>();
       }

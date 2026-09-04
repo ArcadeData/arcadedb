@@ -194,7 +194,7 @@ class CypherScopedCallLabelWriteIssue7022Test {
           REMOVE n0:l11
           RETURN collect(toStringOrNull(1)) AS alias3
         }
-        RETURN n0""", false, row -> String.valueOf(row.<Object>getProperty("executionPlanAsString"))).getFirst();
+        RETURN n0""", false, row -> String.valueOf(row.<Object>getProperty("executionPlanAsString"))).get(0);
 
     assertThat(plan)
         .as("CypherOptimizer declines every correlated CALL { } today, so SubqueryStep is the only place the "

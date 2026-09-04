@@ -144,7 +144,7 @@ class Issue6927RangeScanTxRemovesTest extends TestHelper {
       final List<RID> sharing = collectRange("age", 20, 20, true);
       assertThat(sharing).hasSize(2);
 
-      final RID victim = sharing.getFirst();
+      final RID victim = sharing.get(0);
       final RID survivor = sharing.get(1);
       database.lookupByRID(victim, true).asDocument().delete();
 

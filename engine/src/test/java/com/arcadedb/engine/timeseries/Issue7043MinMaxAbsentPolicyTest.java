@@ -67,7 +67,7 @@ class Issue7043MinMaxAbsentPolicyTest extends TestHelper {
           new MultiColumnAggregationRequest(1, AggregationType.MAX, "max"));
       final MultiColumnAggregationResult multi = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE, requests, 0, null);
       assertThat(multi.size()).isEqualTo(1);
-      final long bucketTs = multi.getBucketTimestamps().getFirst();
+      final long bucketTs = multi.getBucketTimestamps().get(0);
 
       // These two were Double.MAX_VALUE and -Double.MAX_VALUE.
       assertThat(multi.getValue(bucketTs, 0)).as("multi-column MIN over an all-NaN window").isNaN();
@@ -96,7 +96,7 @@ class Issue7043MinMaxAbsentPolicyTest extends TestHelper {
           new MultiColumnAggregationRequest(1, AggregationType.MIN, "min"),
           new MultiColumnAggregationRequest(1, AggregationType.MAX, "max"));
       final MultiColumnAggregationResult multi = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE, requests, 0, null);
-      final long bucketTs = multi.getBucketTimestamps().getFirst();
+      final long bucketTs = multi.getBucketTimestamps().get(0);
 
       assertThat(multi.getValue(bucketTs, 0)).isEqualTo(-Double.MAX_VALUE);
       assertThat(multi.getValue(bucketTs, 1)).isEqualTo(Double.MAX_VALUE);
@@ -140,7 +140,7 @@ class Issue7043MinMaxAbsentPolicyTest extends TestHelper {
           new MultiColumnAggregationRequest(1, AggregationType.MIN, "min"),
           new MultiColumnAggregationRequest(1, AggregationType.MAX, "max"));
       final MultiColumnAggregationResult multi = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE, requests, 0, null);
-      final long bucketTs = multi.getBucketTimestamps().getFirst();
+      final long bucketTs = multi.getBucketTimestamps().get(0);
       assertThat(multi.getValue(bucketTs, 0)).as("sealed-block MIN over an all-NaN column").isNaN();
       assertThat(multi.getValue(bucketTs, 1)).as("sealed-block MAX over an all-NaN column").isNaN();
 
@@ -191,7 +191,7 @@ class Issue7043MinMaxAbsentPolicyTest extends TestHelper {
           new MultiColumnAggregationRequest(2, AggregationType.MIN, "min"),
           new MultiColumnAggregationRequest(2, AggregationType.MAX, "max"));
       final MultiColumnAggregationResult multi = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE, requests, 0, null);
-      final long bucketTs = multi.getBucketTimestamps().getFirst();
+      final long bucketTs = multi.getBucketTimestamps().get(0);
       assertThat(multi.getValue(bucketTs, 0)).isEqualTo(10.0);
       assertThat(multi.getValue(bucketTs, 1)).isEqualTo(41.0);
 

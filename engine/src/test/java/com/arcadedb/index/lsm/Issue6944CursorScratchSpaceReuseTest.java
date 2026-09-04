@@ -169,7 +169,7 @@ class Issue6944CursorScratchSpaceReuseTest extends TestHelper {
 
     database.transaction(() -> {
       try {
-        final var typeIndex = database.getSchema().getType("Doc6944d").getIndexesByProperties("a").getFirst();
+        final var typeIndex = database.getSchema().getType("Doc6944d").getIndexesByProperties("a").get(0);
         LSMTreeIndexMutable mutable = null;
         for (final var bucketIndex : typeIndex.getIndexesOnBuckets())
           if (bucketIndex instanceof LSMTreeIndex lsmIndex)

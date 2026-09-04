@@ -111,7 +111,7 @@ class DistinctWithGroupByUnwindExpandTest extends TestHelper {
 
       final List<Result> rows = toList(database.query("SQL", "SELECT DISTINCT expand(out('Knows')) FROM Person"));
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("target");
+      assertThat((String) rows.get(0).getProperty("name")).isEqualTo("target");
     });
   }
 

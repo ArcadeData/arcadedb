@@ -118,8 +118,8 @@ class Issue7036IntrospectionAliasTest extends AbstractGraphQLTest {
         assertThat(record.<String>getProperty("name")).isEqualTo("Shelf");
         final List<Result> fields = record.getProperty("f");
         assertThat(fields).hasSize(1);
-        assertThat(fields.getFirst().<String>getProperty("name")).isEqualTo("position");
-        final Result type = fields.getFirst().getProperty("t");
+        assertThat(fields.get(0).<String>getProperty("name")).isEqualTo("position");
+        final Result type = fields.get(0).getProperty("t");
         assertThat(type.<String>getProperty("name")).isEqualTo("Int");
         assertThat(type.<String>getProperty("kind")).isEqualTo("SCALAR");
         assertThat(resultSet.hasNext()).isFalse();

@@ -123,7 +123,7 @@ public class GraphQLSchema {
     try {
       final Map<String, Object> variables = resolveVariables(op, parameters);
 
-      final Selection selection = op.getSelectionSet().getSelections().getFirst();
+      final Selection selection = op.getSelectionSet().getSelections().get(0);
       queryName = selection.getFieldName();
 
       // HANDLE INTROSPECTION QUERIES

@@ -156,7 +156,7 @@ class Issue6791DijkstraSingleSourceOverlayTest {
           .isNotEqualTo(true);
       assertThat(rows).hasSize(1);
       // The cheapest surviving edge (1.0) must win, not a plausible wrong weight from the ambiguous merge.
-      assertThat(((Number) rows.getFirst().getProperty("cost")).doubleValue()).isEqualTo(1.0);
+      assertThat(((Number) rows.get(0).getProperty("cost")).doubleValue()).isEqualTo(1.0);
     } finally {
       view.drop();
     }

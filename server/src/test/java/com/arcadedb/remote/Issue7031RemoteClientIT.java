@@ -86,7 +86,7 @@ class Issue7031RemoteClientIT extends BaseGraphServerTest {
       }).isInstanceOf(ArcadeDBException.class).hasMessageContaining("simulated");
 
       assertThat(database.sentPayloads).as("the payload of the failed flush must not be sent a second time").hasSize(1);
-      assertThat(database.sentPayloads.getFirst()).contains("Alice").contains("Bob");
+      assertThat(database.sentPayloads.get(0)).contains("Alice").contains("Bob");
     }
   }
 

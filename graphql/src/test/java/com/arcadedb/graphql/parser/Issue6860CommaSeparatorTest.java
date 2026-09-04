@@ -154,7 +154,8 @@ class Issue6860CommaSeparatorTest {
 
     assertThat(findFirst(ast, VariableDefinitions.class).getVariableDefinitions()).hasSize(1);
     assertThat(argumentNames(ast)).containsExactly("id");
-    assertThat(findAll(ast, SelectionSet.class).getLast().getSelections()).hasSize(1);
+    final List<SelectionSet> selectionSets = findAll(ast, SelectionSet.class);
+    assertThat(selectionSets.get(selectionSets.size() - 1).getSelections()).hasSize(1);
   }
 
   @Test
@@ -173,14 +174,14 @@ class Issue6860CommaSeparatorTest {
     // the bare HASH token that was declared before it, and a comment line with nothing on it failed to lex.
     final Document ast = GraphQLParser.parse("query {\n#\n  hero { name }\n}");
 
-    assertThat(findAll(ast, SelectionSet.class).getFirst().getSelections()).hasSize(1);
+    assertThat(findAll(ast, SelectionSet.class).get(0).getSelections()).hasSize(1);
   }
 
   @Test
   void commentsAreStillSkipped() throws Exception {
     final Document ast = GraphQLParser.parse("query { # pick the hero\n  hero { name }\n}");
 
-    assertThat(findAll(ast, SelectionSet.class).getFirst().getSelections()).hasSize(1);
+    assertThat(findAll(ast, SelectionSet.class).get(0).getSelections()).hasSize(1);
   }
 
   @Test
@@ -206,7 +207,7 @@ class Issue6860CommaSeparatorTest {
     // The escape alternatives are untouched: only the alternative that accepted an *unescaped* quote is gone.
     final Document ast = GraphQLParser.parse("{ noteByText(text: \"He said \\\"hi\\\" to me\") { id } }");
 
-    assertThat(stringValueOf(findFirst(ast, Arguments.class).getList().getFirst())).isEqualTo("He said \"hi\" to me");
+    assertThat(stringValueOf(findFirst(ast, Arguments.class).getList().get(0))).isEqualTo("He said \"hi\" to me");
   }
 
   @Test
@@ -223,7 +224,7 @@ class Issue6860CommaSeparatorTest {
   void escapedBackslashInsideAStringLiteralIsKept() throws Exception {
     final Document ast = GraphQLParser.parse("{ noteByText(text: \"C:\\\\temp\") { id } }");
 
-    assertThat(stringValueOf(findFirst(ast, Arguments.class).getList().getFirst())).isEqualTo("C:\\temp");
+    assertThat(stringValueOf(findFirst(ast, Arguments.class).getList().get(0))).isEqualTo("C:\\temp");
   }
 
   private static List<String> argumentNames(final Document ast) {
@@ -237,7 +238,7 @@ class Issue6860CommaSeparatorTest {
   private static <T> T findFirst(final Node node, final Class<T> type) {
     final List<T> found = findAll(node, type);
     assertThat(found).as("no %s node in the parsed document", type.getSimpleName()).isNotEmpty();
-    return found.getFirst();
+    return found.get(0);
   }
 
   private static <T> List<T> findAll(final Node node, final Class<T> type) {

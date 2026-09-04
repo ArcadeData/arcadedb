@@ -58,12 +58,14 @@ public final class NonFiniteNumbers {
    * @return the double the marker stands for, or {@code null} if {@code text} is not one of the three markers
    */
   public static Double decode(final String text) {
-    return switch (text) {
-      case NAN -> Double.NaN;
-      case POSITIVE_INFINITY -> Double.POSITIVE_INFINITY;
-      case NEGATIVE_INFINITY -> Double.NEGATIVE_INFINITY;
-      case null, default -> null;
-    };
+    if (NAN.equals(text))
+      return Double.NaN;
+    if (POSITIVE_INFINITY.equals(text))
+      return Double.POSITIVE_INFINITY;
+    if (NEGATIVE_INFINITY.equals(text))
+      return Double.NEGATIVE_INFINITY;
+    // GENERIC CASE: null, or any token that is not one of the three markers.
+    return null;
   }
 
   private static String markerOf(final double value) {

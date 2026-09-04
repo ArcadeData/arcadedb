@@ -164,8 +164,8 @@ class CypherForeachEagerReadIssue6922Test {
         RETURN i AS value""", "value");
 
     assertThat(rows).hasSize(250);
-    assertThat(rows.getFirst()).isEqualTo(1L);
-    assertThat(rows.getLast()).isEqualTo(250L);
+    assertThat(rows.get(0)).isEqualTo(1L);
+    assertThat(rows.get(rows.size() - 1)).isEqualTo(250L);
   }
 
   @Test
@@ -218,8 +218,8 @@ class CypherForeachEagerReadIssue6922Test {
 
     assertThat(rows).hasSize(250);
     assertThat(rows).containsOnlyOnceElementsOf(rows);
-    assertThat(rows.getFirst()).isEqualTo(1L);
-    assertThat(rows.getLast()).isEqualTo(250L);
+    assertThat(rows.get(0)).isEqualTo(1L);
+    assertThat(rows.get(rows.size() - 1)).isEqualTo(250L);
     assertThat(totalNodes()).isEqualTo(500L);
   }
 

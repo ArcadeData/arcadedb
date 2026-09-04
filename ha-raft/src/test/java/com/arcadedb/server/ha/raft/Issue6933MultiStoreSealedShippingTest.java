@@ -73,8 +73,10 @@ class Issue6933MultiStoreSealedShippingTest {
   @Test
   void threeFullBudgetFinalSlicesCannotShareOnePublishingEntry() {
     final List<TsSealedChunk> finalSlices = new ArrayList<>();
-    for (int shard = 0; shard < 3; shard++)
-      finalSlices.add(RaftReplicatedDatabase.sliceSealedBlob(storeOf(shard, 3), SEALED_BUDGET, DB).getLast());
+    for (int shard = 0; shard < 3; shard++) {
+      final List<TsSealedChunk> sliced = RaftReplicatedDatabase.sliceSealedBlob(storeOf(shard, 3), SEALED_BUDGET, DB);
+      finalSlices.add(sliced.get(sliced.size() - 1));
+    }
 
     assertThatThrownBy(() -> RaftTransactionBroker.splitSchemaEntry(DB, SCHEMA_JSON, Collections.emptyMap(),
         Collections.emptyMap(), List.of(new byte[512]), List.of(Map.of()), Collections.emptyList(), finalSlices,
@@ -120,8 +122,8 @@ class Issue6933MultiStoreSealedShippingTest {
     final List<RaftReplicatedDatabase.SealedSlicePlan> plans = RaftReplicatedDatabase.planSealedShipping(
         List.of(small, big), SEALED_BUDGET, publishingCapacity(), DB);
 
-    assertThat(plans.getFirst().sliced()).as("a 600-byte store needs no slicing").isFalse();
-    assertThat(plans.getLast().sliced()).isTrue();
+    assertThat(plans.get(0).sliced()).as("a 600-byte store needs no slicing").isFalse();
+    assertThat(plans.get(plans.size() - 1).sliced()).isTrue();
     assertThat(encodedPublishingEntrySize(List.of(small, big))).isLessThanOrEqualTo(ENTRY_CAP);
   }
 

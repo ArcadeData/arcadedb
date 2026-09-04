@@ -2350,7 +2350,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // charging it at all would leave the flat reserve as the last unmeasured assumption here - a type name of a
     // few thousand characters really does outgrow it, and nothing caps type-name length.
     long extraFraming = Math.max(0L,
-        sealedSliceFraming(blobs.getFirst()) - GlobalConfiguration.REPLICATED_SEALED_CHUNK_FRAMING_BYTES);
+        sealedSliceFraming(blobs.get(0)) - GlobalConfiguration.REPLICATED_SEALED_CHUNK_FRAMING_BYTES);
     for (int i = 1; i < blobs.size(); i++)
       extraFraming += sealedSliceFraming(blobs.get(i));
 

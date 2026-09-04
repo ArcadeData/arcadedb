@@ -102,7 +102,7 @@ class Issue7039PromQLMinMaxNaNTest extends TestHelper {
 
     final InstantVector iv = (InstantVector) result;
     assertThat(iv.samples()).as("the query must produce exactly one sample: %s", promql).hasSize(1);
-    final VectorSample sample = iv.samples().getFirst();
+    final VectorSample sample = iv.samples().get(0);
     return sample.value();
   }
 }
