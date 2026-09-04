@@ -68,6 +68,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -4125,8 +4126,62 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * and must not advertise itself as ready.
    */
   public boolean isResyncInProgress() {
-    return isSnapshotDownloadPending() || !divergedDatabases.isEmpty() || staleSnapshotAppliedFloor.get() >= 0
-        || !staleDatabaseAppliedFloors.isEmpty();
+    return getLocalResyncState().inProgress();
+  }
+
+  /**
+   * Immutable report of everything {@link #isResyncInProgress()} is made of, so the cluster status document can
+   * publish the local node's own health instead of only the cluster's (issue #7136).
+   * <p>
+   * The invariant this type exists to make checkable: <b>anything that makes readiness return 503 appears in
+   * {@code GET /api/v1/cluster}</b>. {@link #isResyncInProgress()} - the readiness gate - is {@link #inProgress()}
+   * on this very record, so a new resync condition cannot be added to one without appearing in the other. Before
+   * it, a follower that had quarantined a database on a WAL version gap answered that endpoint with
+   * {@code raftState: "RUNNING"} and {@code alerts: []} while Kubernetes was pulling it out of the Service.
+   *
+   * @param snapshotDownloadQueued     a snapshot download is flagged but has not started
+   * @param snapshotDownloadInProgress a snapshot download is running
+   * @param divergedDatabases          databases quarantined on a WAL version gap and awaiting a resync
+   *                                   (issues #4740, #4797), sorted
+   * @param snapshotAppliedFloor       the node-wide stale-snapshot read floor, or {@code -1} when there is none
+   *                                   (issue #6111)
+   * @param databaseAppliedFloors      per-database read floors left by a snapshot install that could not bring
+   *                                   them up to date, keyed by database name (issue #6760)
+   */
+  public record LocalResyncState(boolean snapshotDownloadQueued, boolean snapshotDownloadInProgress,
+                                 List<String> divergedDatabases, long snapshotAppliedFloor,
+                                 Map<String, Long> databaseAppliedFloors) {
+
+    public LocalResyncState {
+      divergedDatabases = List.copyOf(divergedDatabases);
+      databaseAppliedFloors = Map.copyOf(databaseAppliedFloors);
+    }
+
+    /**
+     * Whether this node may hold divergent data pending a resync, and therefore must not advertise itself as
+     * ready. The sole definition of that predicate: {@link ArcadeStateMachine#isResyncInProgress()} delegates
+     * here rather than re-deriving it.
+     */
+    public boolean inProgress() {
+      return snapshotDownloadQueued || snapshotDownloadInProgress || !divergedDatabases.isEmpty()
+          || snapshotAppliedFloor >= 0 || !databaseAppliedFloors.isEmpty();
+    }
+  }
+
+  /**
+   * Snapshots the four components of {@link #isResyncInProgress()} for the cluster status document and the
+   * readiness gate (issue #7136). Copies rather than views: a poll rendering the document must not see the set
+   * change under it, and the caller must not be able to reach into the state machine's own collections.
+   * <p>
+   * Cheap by design - two small copies of collections that are empty on a healthy node - and called only from
+   * the readiness probe, the health tick and the status endpoint, never from an apply path.
+   */
+  public LocalResyncState getLocalResyncState() {
+    final List<String> diverged = new ArrayList<>(divergedDatabases);
+    // Sorted so a status poll payload is stable between ticks on an unchanged node.
+    Collections.sort(diverged);
+    return new LocalResyncState(needsSnapshotDownload.get(), snapshotDownloadInProgress.get(), diverged,
+        staleSnapshotAppliedFloor.get(), new HashMap<>(staleDatabaseAppliedFloors));
   }
 
   /**

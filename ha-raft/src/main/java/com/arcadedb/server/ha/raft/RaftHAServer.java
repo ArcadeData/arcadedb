@@ -1825,6 +1825,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return raftGroup.getPeers().size();
   }
 
+  /**
+   * The peers {@code arcadedb.ha.serverList} declared, as read once at startup - NOT the live Raft
+   * configuration (see {@link #configuredPeers()} for that). One of the few legitimate direct readers of the
+   * static group: {@link RaftClusterStatusExporter} reconciles the two lists itself to decide which declared
+   * peers are still pending a join (issue #7136).
+   */
+  Collection<RaftPeer> getDeclaredPeers() {
+    return raftGroup.getPeers();
+  }
+
   public String getLeaderName() {
     final RaftPeerId leaderId = getLeaderId();
     if (leaderId == null)
@@ -2514,6 +2524,21 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   public Collection<RaftPeer> getLivePeers() {
+    final Collection<RaftPeer> live = getCommittedPeersOrNull();
+    return live != null ? live : raftGroup.getPeers();
+  }
+
+  /**
+   * The peers of the live Raft configuration, or {@code null} when it cannot be read - before the Raft server
+   * starts, or while an in-place restart re-initializes the division (issue #5271).
+   * <p>
+   * {@link #getLivePeers()} substitutes the declared list in that case, which is the right answer for a caller
+   * that just needs a peer list. It is the wrong answer for a caller that must not mistake the declared list for
+   * a committed membership: {@link RaftClusterStatusExporter} records which peers have ever been committed, and
+   * folding the declared list into that record would permanently silence the convergence note (issue #7136).
+   * Such a caller reads this and treats {@code null} as "no information this tick".
+   */
+  Collection<RaftPeer> getCommittedPeersOrNull() {
     if (raftServer != null) {
       try {
         final var division = raftServer.getDivision(raftGroup.getGroupId());
@@ -2524,7 +2549,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         LogManager.instance().log(this, Level.FINE, "Cannot read live peers from Raft server, using static list", e);
       }
     }
-    return raftGroup.getPeers();
+    return null;
   }
 
   /**

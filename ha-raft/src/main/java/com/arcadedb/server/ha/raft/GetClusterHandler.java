@@ -108,6 +108,21 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     response.put("lastElectionTime", stateMachine.getLastElectionTime());
     response.put("uptime", System.currentTimeMillis() - stateMachine.getStartTime());
 
+    // This node's own Raft position (issue #7136). The per-peer lag below comes from getFollowerSamples(),
+    // which is the LEADER's view of its followers, so a follower's own response used to carry no lag figure
+    // about itself at all - the one node an operator polls when that node is the suspect. Both values are -1
+    // when the division cannot be read (an in-place restart, issue #5271), and the lag is -1 rather than a
+    // fabricated difference whenever either side is unknown.
+    // Deliberately the raw Ratis applied index, not getTrustedAppliedIndex(): reporting paths keep the raw
+    // value (see the module's CLAUDE.md). On a node holding a stale snapshot marker that value covers entries
+    // it does not have - which is exactly what localResync.snapshotAppliedFloor below says out loud.
+    final long localAppliedIndex = raftHAServer.getLastAppliedIndex();
+    final long localCommitIndex = raftHAServer.getCommitIndex();
+    response.put("localAppliedIndex", localAppliedIndex);
+    response.put("localCommitIndex", localCommitIndex);
+    response.put("localReplicationLag",
+        localAppliedIndex >= 0 && localCommitIndex >= 0 ? localCommitIndex - localAppliedIndex : -1L);
+
     // Per-follower replication health (leader only): replication lag, classified status, heartbeat
     // latency, and how long the follower has been lagging - so Studio and operators can pinpoint a
     // constantly-slow node instead of grepping logs (issue #4812). Keyed by peer id for the loop below.
@@ -232,11 +247,49 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // single-bucket check, their type names too.
     // The membership divergence is a cluster-level condition: the only one on this endpoint that nothing else
     // flags, and the one an operator most needs told rather than left to diff the peer list by eye (issue #7040).
+    // The local node's resync / WAL-gap quarantine state (issue #7136): the invariant is that anything making
+    // readiness answer 503 is visible here. ArcadeStateMachine.isResyncInProgress() - the readiness gate - is
+    // LocalResyncState.inProgress() on this very object, so the two cannot drift apart. Sampled once and shared
+    // with the alert scan below, so the document cannot report the two halves from different instants.
+    final ArcadeStateMachine.LocalResyncState localResync = stateMachine.getLocalResyncState();
+    response.put("localResync", buildLocalResync(localResync, authorizedDatabases));
+
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
-            localPeerId.toString()));
+            localPeerId.toString(), localResync));
 
     return new ExecutionResponse(200, response.toString());
+  }
+
+  /**
+   * Renders {@link ArcadeStateMachine.LocalResyncState} for the status document (issue #7136).
+   * <p>
+   * {@code inProgress} is the node-level answer and is never suppressed: whether this node serves traffic is not
+   * a per-tenant fact, and it is the field a readiness-aware monitoring rule keys on. The database <em>names</em>
+   * are reduced to {@code visibleDatabases}, exactly like the alert payloads, because a caller scoped to one
+   * database must not learn another tenant's database name from a status poll.
+   * <p>
+   * Package-private so the document's shape and that scoping can be unit-tested without a live cluster.
+   */
+  static JSONObject buildLocalResync(final ArcadeStateMachine.LocalResyncState state,
+      final Set<String> visibleDatabases) {
+    final JSONArray diverged = new JSONArray();
+    for (final String dbName : state.divergedDatabases())
+      if (visibleDatabases == null || visibleDatabases.contains(dbName))
+        diverged.put(dbName);
+
+    final JSONObject floors = new JSONObject();
+    for (final Map.Entry<String, Long> entry : state.databaseAppliedFloors().entrySet())
+      if (visibleDatabases == null || visibleDatabases.contains(entry.getKey()))
+        floors.put(entry.getKey(), entry.getValue());
+
+    return new JSONObject()
+        .put("inProgress", state.inProgress())
+        .put("snapshotDownloadQueued", state.snapshotDownloadQueued())
+        .put("snapshotDownloadInProgress", state.snapshotDownloadInProgress())
+        .put("divergedDatabases", diverged)
+        .put("snapshotAppliedFloor", state.snapshotAppliedFloor())
+        .put("databaseAppliedFloors", floors);
   }
 
   private static boolean isPresenceRequested(final HttpServerExchange exchange) {

@@ -28,6 +28,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -55,6 +57,23 @@ class RaftClusterStatusExporter {
   private final    RaftHAServer   haServer;
   private final    ClusterMonitor clusterMonitor;
   private volatile int            lastStableSignature;
+
+  /**
+   * Every peer id this node has ever seen in the committed membership, so a peer that <b>left</b> the
+   * configuration can be told from one that has <b>not joined yet</b> (issue #7136).
+   * <p>
+   * The convergence note below counts the declared peers ({@code arcadedb.ha.serverList}) that are missing from
+   * the committed membership. Both cases look identical in a single snapshot, and the note used to call both
+   * "not yet converged" - so a peer legitimately removed with {@code DELETE /api/v1/cluster/peer/{id}} was
+   * labelled as pending forever, a convergence that can never happen. A peer that was a member and is not one
+   * now is not pending, and stops being counted.
+   * <p>
+   * Bounded by the size of the cluster's history of members, and never reset: a peer re-added under the same id
+   * is a member again, and the note is driven by the current membership either way. A removal that happened
+   * before this node started is not in here and is still reported as pending - the endpoint's
+   * {@code peers-not-in-configuration} alert is the durable statement of that condition, and it names the peer.
+   */
+  private final Set<String> everCommitted = ConcurrentHashMap.newKeySet();
 
   RaftClusterStatusExporter(final RaftHAServer haServer, final ClusterMonitor clusterMonitor) {
     this.haServer = haServer;
@@ -98,6 +117,10 @@ class RaftClusterStatusExporter {
     final long           commitIndex;
     final List<String[]> rows;
     final List<String[]> baselineRows;
+    /**
+     * How many members the committed membership is expected to reach: the peers already in it, plus the declared
+     * peers that have never been in it. A declared peer that was removed is NOT counted (issue #7136).
+     */
     final int            configuredServers;
 
     ConfigSnapshot(final long term, final long commitIndex, final List<String[]> rows,
@@ -225,7 +248,46 @@ class RaftClusterStatusExporter {
     // not change the stable signature (it would re-emit an identical membership picture).
     rows.sort((a, b) -> a[0].compareTo(b[0]));
 
-    return new ConfigSnapshot(term, commitIndex, rows, collectBootstrapBaselines(), haServer.getConfiguredServers());
+    // Remember this tick's membership before computing the note: a peer present now must not be reported as
+    // pending after it is later removed (issue #7136). Only a membership actually read from Raft counts -
+    // getLivePeers() substitutes the declared list when the division is unreadable, and folding that in would
+    // mark every declared peer as once-committed and silence the note for good.
+    final Collection<RaftPeer> committedPeers = haServer.getCommittedPeersOrNull();
+    if (committedPeers != null)
+      for (final RaftPeer peer : committedPeers)
+        everCommitted.add(peer.getId().toString());
+
+    final List<String> committedIds = new ArrayList<>(peers.size());
+    for (final RaftPeer peer : peers)
+      committedIds.add(peer.getId().toString());
+
+    final List<String> declaredIds = new ArrayList<>();
+    for (final RaftPeer peer : haServer.getDeclaredPeers())
+      declaredIds.add(peer.getId().toString());
+
+    return new ConfigSnapshot(term, commitIndex, rows, collectBootstrapBaselines(),
+        expectedMemberCount(declaredIds, committedIds, everCommitted));
+  }
+
+  /**
+   * How many members the committed membership is expected to reach (issue #7136): the peers in it now, plus the
+   * declared peers that have never been in it on this node's watch.
+   * <p>
+   * The count feeds the "not yet converged" note only. Previously it was the raw size of
+   * {@code arcadedb.ha.serverList}, which never shrinks, so a peer removed from the configuration left the note
+   * standing forever - the #7040 fix converted the readers that matter onto the live configuration and this one
+   * was missed. A committed member the server list never declared (added with {@code POST /api/v1/cluster/peer})
+   * is already in {@code committedIds} and must not be counted twice.
+   * <p>
+   * Pure and package-private for unit testing.
+   */
+  static int expectedMemberCount(final Collection<String> declaredIds, final Collection<String> committedIds,
+      final Set<String> everCommitted) {
+    int pending = 0;
+    for (final String declared : declaredIds)
+      if (!committedIds.contains(declared) && !everCommitted.contains(declared))
+        pending++;
+    return committedIds.size() + pending;
   }
 
   /**
