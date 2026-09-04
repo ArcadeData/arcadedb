@@ -257,6 +257,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   private final Deque<String> targetAliases = new ArrayDeque<>();
 
   /**
+   * The output column names of the SELECT whose ORDER BY or GROUP BY is being built, or {@code null} everywhere
+   * else. A name that appears in this set outranks the target alias for the duration - see
+   * {@link #resolveTargetAlias}.
+   */
+  private Set<String> outputColumnNames;
+
+  /**
    * Opens the alias scope of a statement whose target has just been built. Every {@link #pushTargetAlias} must be
    * paired with a {@link #popTargetAlias} in a finally block, so that a parse error inside one statement cannot
    * leave a stale alias in scope for the next.
@@ -268,6 +275,25 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   private void popTargetAlias() {
     targetAliases.pop();
+  }
+
+  /**
+   * The names the projection gives its columns - the explicit {@code AS} aliases, and the expression's own text
+   * where it has none. {@code null} when there is nothing to shadow the target alias with, so the common case costs
+   * no set at all.
+   */
+  private static Set<String> outputColumnNames(final Projection projection) {
+    if (projection == null || projection.getItems() == null || projection.getItems().isEmpty())
+      return null;
+
+    final Set<String> names = new HashSet<>(projection.getItems().size());
+    for (final ProjectionItem item : projection.getItems()) {
+      final String name = item.getProjectionAliasAsString();
+      if (name != null)
+        names.add(name);
+    }
+
+    return names.isEmpty() ? null : names;
   }
 
   /**
@@ -301,6 +327,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       return expr;
 
     final Modifier first = expr.modifier;
+
+    // ORDER BY and GROUP BY name output columns before they name anything else, which is what SQL says and what
+    // the ORDER BY step does: it resolves a bare name against the projected row. So in
+    // "SELECT code AS m FROM Main m ORDER BY m" the trailing m is the column, not the target - rewriting it to
+    // @this would have sorted by the whole record, silently and in no useful order. Only a bare name is claimed
+    // this way: "ORDER BY m.code" still reads m as the target alias, since a column reference does not need one.
+    if (first == null && outputColumnNames != null && outputColumnNames.contains(alias))
+      return expr;
+
     if (first != null && first.suffix != null && !first.suffix.star && !first.squareBrackets && first.methodCall == null) {
       // "m.code": the qualifier adds nothing, so drop it and let the property address the record directly. This is
       // the shape the index matcher has to see.
@@ -400,14 +435,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.whereClause = (WhereClause) visit(ctx.whereClause());
     }
 
-    // GROUP BY clause
-    if (ctx.groupBy() != null) {
-      stmt.groupBy = (GroupBy) visit(ctx.groupBy());
-    }
+    // GROUP BY and ORDER BY, built with the output column names in scope so that they outrank the target alias
+    outputColumnNames = outputColumnNames(stmt.projection);
+    try {
+      if (ctx.groupBy() != null) {
+        stmt.groupBy = (GroupBy) visit(ctx.groupBy());
+      }
 
-    // ORDER BY clause
-    if (ctx.orderBy() != null) {
-      stmt.orderBy = (OrderBy) visit(ctx.orderBy());
+      if (ctx.orderBy() != null) {
+        stmt.orderBy = (OrderBy) visit(ctx.orderBy());
+      }
+    } finally {
+      outputColumnNames = null;
     }
 
     // UNWIND clause

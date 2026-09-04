@@ -353,6 +353,20 @@ class Issue7153TargetAliasIndexTest extends TestHelper {
         "SELECT code FROM Main m LET $relation = out('relation') WHERE m.code = 'C1' AND note = '$relation'")) {
       final String plan = plan(rs);
       assertThat(plan).contains("FETCH FROM INDEX Main[code]");
+      assertThat(plan).contains("FILTER ITEMS WHERE").contains("LET (for each record)");
+      assertThat(plan.indexOf("FILTER ITEMS WHERE")).isLessThan(plan.indexOf("LET (for each record)"));
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // a backtick-quoted identifier is a property name, even when it opens with the sigil
+    database.transaction(() -> database.command("sql", "UPDATE Main SET `$relation` = 'a property' WHERE code = 'C1'"));
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT code FROM Main m LET $relation = out('relation') WHERE m.code = 'C1' AND `$relation` = 'a property'")) {
+      final String plan = plan(rs);
+      assertThat(plan).contains("FETCH FROM INDEX Main[code]");
+      assertThat(plan).contains("FILTER ITEMS WHERE").contains("LET (for each record)");
       assertThat(plan.indexOf("FILTER ITEMS WHERE")).isLessThan(plan.indexOf("LET (for each record)"));
       assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
       assertThat(rs.hasNext()).isFalse();
@@ -377,6 +391,33 @@ class Issue7153TargetAliasIndexTest extends TestHelper {
         "LET $chosen = (SELECT FROM Main WHERE code = 'C1'); SELECT code FROM $chosen[0] AS c")) {
       assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
       assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * When a column is given the same name as the target, ORDER BY and GROUP BY mean the column - that is what SQL
+   * says, and what the sort step does anyway, since it resolves a bare name against the projected row. Rewriting
+   * the name as the target would sort by the whole record instead, silently and in no useful order.
+   */
+  @Test
+  void anOutputColumnOutranksTheTargetAliasInOrderBy() {
+    // DESC over the whole type, so that the answer differs from the order the rows are stored and read in: sorting
+    // by the record instead of by the column leaves them exactly as the scan produced them, C0 first
+    try (final ResultSet rs = database.query("sql", "SELECT code AS m FROM Main m ORDER BY m DESC")) {
+      assertThat(rs.next().<String>getProperty("m")).isEqualTo("C9");
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT code AS m, count(*) AS c FROM Main m "//
+        + "WHERE m.code = 'C1' GROUP BY m")) {
+      final Result row = rs.next();
+      assertThat(row.<String>getProperty("m")).isEqualTo("C1");
+      assertThat(row.<Long>getProperty("c")).isEqualTo(1L);
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // a qualified reference still reads the alias as the target: a column needs no qualifier
+    try (final ResultSet rs = database.query("sql", "SELECT code AS m FROM Main m WHERE m.code < 'C11' ORDER BY m.code DESC")) {
+      assertThat(rs.stream().map(r -> r.<String>getProperty("m"))).containsExactly("C10", "C1", "C0");
     }
   }
 
