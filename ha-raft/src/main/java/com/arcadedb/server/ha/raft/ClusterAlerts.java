@@ -231,18 +231,8 @@ public class ClusterAlerts {
     if (state == null || !state.inProgress())
       return;
 
-    final List<String> diverged = visible(state.divergedDatabases(), visibleDatabases);
     final boolean holdingStaleData = !state.divergedDatabases().isEmpty() || state.snapshotAppliedFloor() >= 0
         || !state.databaseAppliedFloors().isEmpty();
-
-    final JSONArray divergedNames = new JSONArray();
-    for (final String name : diverged)
-      divergedNames.put(name);
-
-    final JSONObject floors = new JSONObject();
-    for (final Map.Entry<String, Long> entry : state.databaseAppliedFloors().entrySet())
-      if (visibleDatabases == null || visibleDatabases.contains(entry.getKey()))
-        floors.put(entry.getKey(), entry.getValue());
 
     alerts.put(new JSONObject()
         .put("id", "local-resync-in-progress")
@@ -267,22 +257,47 @@ public class ClusterAlerts {
         .put("details", new JSONObject()
             .put("snapshotDownloadQueued", state.snapshotDownloadQueued())
             .put("snapshotDownloadInProgress", state.snapshotDownloadInProgress())
-            .put("divergedDatabases", divergedNames)
+            .put("divergedDatabases", namesArray(visible(state.divergedDatabases(), visibleDatabases)))
             .put("snapshotAppliedFloor", state.snapshotAppliedFloor())
-            .put("databaseAppliedFloors", floors)));
+            .put("databaseAppliedFloors", visibleFloors(state.databaseAppliedFloors(), visibleDatabases))));
   }
 
   /**
    * Reduces a list of database names to the ones the caller may see. A {@code null} filter means the
    * unrestricted operator view and returns {@code names} untouched.
+   * <p>
+   * Package-private because {@link GetClusterHandler} scopes the same names for the {@code localResync} object
+   * it renders from the same {@link ArcadeStateMachine.LocalResyncState} (issue #7136): one predicate for the
+   * whole endpoint, so the alert payload and the document body cannot disagree about what a caller may see.
    */
-  private static List<String> visible(final List<String> names, final Set<String> visibleDatabases) {
+  static List<String> visible(final List<String> names, final Set<String> visibleDatabases) {
     if (visibleDatabases == null || names == null || names.isEmpty())
       return names;
     final List<String> result = new ArrayList<>(names.size());
     for (final String name : names)
       if (visibleDatabases.contains(name))
         result.add(name);
+    return result;
+  }
+
+  /**
+   * Reduces the per-database read floors to the ones the caller may see, rendered as a JSON object keyed by
+   * database name (issue #7136). The map counterpart of {@link #visible(List, Set)}, shared with
+   * {@link GetClusterHandler} for the same reason.
+   */
+  static JSONObject visibleFloors(final Map<String, Long> floors, final Set<String> visibleDatabases) {
+    final JSONObject result = new JSONObject();
+    for (final Map.Entry<String, Long> entry : floors.entrySet())
+      if (visibleDatabases == null || visibleDatabases.contains(entry.getKey()))
+        result.put(entry.getKey(), entry.getValue());
+    return result;
+  }
+
+  /** Renders a list of database names as a JSON array. */
+  static JSONArray namesArray(final List<String> names) {
+    final JSONArray result = new JSONArray();
+    for (final String name : names)
+      result.put(name);
     return result;
   }
 

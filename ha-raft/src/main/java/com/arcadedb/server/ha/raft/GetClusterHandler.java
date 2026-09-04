@@ -273,23 +273,15 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
    */
   static JSONObject buildLocalResync(final ArcadeStateMachine.LocalResyncState state,
       final Set<String> visibleDatabases) {
-    final JSONArray diverged = new JSONArray();
-    for (final String dbName : state.divergedDatabases())
-      if (visibleDatabases == null || visibleDatabases.contains(dbName))
-        diverged.put(dbName);
-
-    final JSONObject floors = new JSONObject();
-    for (final Map.Entry<String, Long> entry : state.databaseAppliedFloors().entrySet())
-      if (visibleDatabases == null || visibleDatabases.contains(entry.getKey()))
-        floors.put(entry.getKey(), entry.getValue());
-
+    // The same scoping predicate the alert payloads use, so the document body and alerts cannot disagree
+    // about which database names this caller may see.
     return new JSONObject()
         .put("inProgress", state.inProgress())
         .put("snapshotDownloadQueued", state.snapshotDownloadQueued())
         .put("snapshotDownloadInProgress", state.snapshotDownloadInProgress())
-        .put("divergedDatabases", diverged)
+        .put("divergedDatabases", ClusterAlerts.namesArray(ClusterAlerts.visible(state.divergedDatabases(), visibleDatabases)))
         .put("snapshotAppliedFloor", state.snapshotAppliedFloor())
-        .put("databaseAppliedFloors", floors);
+        .put("databaseAppliedFloors", ClusterAlerts.visibleFloors(state.databaseAppliedFloors(), visibleDatabases));
   }
 
   private static boolean isPresenceRequested(final HttpServerExchange exchange) {
