@@ -115,11 +115,20 @@ class Issue7146GraphBuildCacheBudgetTest {
         .isEqualTo(VectorHeapBudget.buildCacheBudgetBytes(90, MAX_HEAP, EMBEDDED_AVAILABLE));
   }
 
+  /**
+   * The live overload reads {@link VectorHeapBudget#availableHeapBytes()} itself, and that reading moves whenever
+   * the JVM collects - so comparing it against a second reading taken here would be a coin flip on whether a GC
+   * landed between the two, which in a full-suite run it regularly does. What is invariant, and is the whole
+   * point of the change, is the upper bound: a share of a ceiling that cannot move for the life of the JVM.
+   */
   @Test
-  void theLiveJvmOverloadAgreesWithTheFiguresTheJvmReports() {
+  void theLiveJvmOverloadNeverExceedsTheShareOfTheCeilingItIsGiven() {
     final int percent = 25;
-    assertThat(VectorHeapBudget.buildCacheBudgetBytes(percent))
-        .isEqualTo(VectorHeapBudget.buildCacheBudgetBytes(percent, VectorHeapBudget.maxHeapBytes(),
-            VectorHeapBudget.availableHeapBytes()));
+    final long budget = VectorHeapBudget.buildCacheBudgetBytes(percent);
+
+    assertThat(budget).isNotNegative();
+    assertThat(budget)
+        .as("the share of -Xmx is the most the build cache may claim, whatever the live heap happens to say")
+        .isLessThanOrEqualTo(VectorHeapBudget.maxHeapBytes() / 100 * percent);
   }
 }
