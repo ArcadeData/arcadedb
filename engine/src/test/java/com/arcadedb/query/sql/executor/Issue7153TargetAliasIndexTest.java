@@ -1,0 +1,458 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.sql.executor;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.sql.SQLQueryEngine;
+import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Issue #7153, two faults that the reporter's query hit together.
+ * <p>
+ * A FROM target alias was parsed and thrown away, so {@code SELECT FROM Main m WHERE m.code = 'C1'} was planned as a
+ * filter on a property literally named {@code m}: no index, a full scan, and no rows at all.
+ * <p>
+ * And an index search whose leftover condition read a per-record LET variable spliced the LET steps in AHEAD of the
+ * index fetch, producing a plan whose first step had nothing to pull from ("Cannot execute a local LET on a query
+ * without a target"). Those leftovers now stay in the WHERE clause, which is chained after the LET.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue7153TargetAliasIndexTest extends TestHelper {
+
+  @Override
+  protected void beginTest() {
+    database.command("sql", "CREATE VERTEX TYPE Main");
+    database.command("sql", "CREATE PROPERTY Main.code STRING");
+    database.command("sql", "CREATE INDEX ON Main (code) UNIQUE");
+    database.command("sql", "CREATE VERTEX TYPE Data");
+    database.command("sql", "CREATE PROPERTY Data.code STRING");
+    database.command("sql", "CREATE EDGE TYPE relation");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++)
+        database.command("sql", "CREATE VERTEX Main SET code = 'C" + i + "'");
+
+      database.command("sql", "CREATE VERTEX Data SET code = 'D1'");
+      database.command("sql",
+          "CREATE EDGE relation FROM (SELECT FROM Main WHERE code = 'C1') TO (SELECT FROM Data WHERE code = 'D1')");
+    });
+  }
+
+  @Test
+  void aliasQualifiedFilterUsesTheIndex() {
+    for (final String query : new String[] { //
+        "SELECT FROM Main m WHERE m.code = 'C1'", //
+        "SELECT FROM Main AS m WHERE m.code = 'C1'" }) {
+      try (final ResultSet rs = database.query("sql", query)) {
+        assertThat(plan(rs)).as(query).contains("FETCH FROM INDEX Main[code]");
+        assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+        assertThat(rs.hasNext()).as(query).isFalse();
+      }
+    }
+  }
+
+  @Test
+  void aliasResolvesInEveryClause() {
+    try (final ResultSet rs = database.query("sql",
+        "SELECT m.code AS c FROM Main m LET $upper = m.code.toUpperCase() WHERE m.code = 'C1' ORDER BY m.code")) {
+      final Result row = rs.next();
+      assertThat(row.<String>getProperty("c")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // A bare alias stands for the record itself, whether it is projected or a record attribute is read off it
+    try (final ResultSet rs = database.query("sql", "SELECT m FROM Main m WHERE m.@rid IS NOT NULL AND m.code = 'C2'")) {
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C2");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * {@code m} inside a sub-query is NOT the outer alias: the sub-query has its own target, and the outer record is
+   * reachable only through {@code $parent}. Stripping the outer alias there would silently re-point the reference at
+   * the inner record.
+   */
+  @Test
+  void aliasIsNotInheritedByASubQuery() {
+    // Data carries a property literally named like the outer alias, so the two readings are distinguishable: inside
+    // the sub-query 'm' must stay that property and not become the sub-query's own record.
+    database.transaction(() -> database.command("sql", "UPDATE Data SET m = 'a-property-not-an-alias'"));
+
+    assertThat(rendered("SELECT code FROM Main m WHERE m.code IN (SELECT m FROM Data)"))//
+        .contains("SELECT m FROM Data").doesNotContain("SELECT @this FROM Data");
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT m AS inner FROM Data WHERE code IN (SELECT code FROM Main m WHERE m.code = 'C1')")) {
+      assertThat(rs.hasNext()).isFalse(); // Data has no 'code' equal to a Main code - the point is that it parses and runs
+    }
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT code FROM Main m WHERE m.code IN (SELECT code FROM Data WHERE code = 'D1') OR m.code = 'C3'")) {
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C3");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void aliasWorksOnUpdateAndDelete() {
+    database.transaction(() -> {
+      database.command("sql", "UPDATE Main m SET touched = true WHERE m.code = 'C4'");
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Main WHERE code = 'C4'")) {
+        assertThat(rs.next().<Boolean>getProperty("touched")).isTrue();
+      }
+
+      // the assignment target too: SET m.touched must set the record's own property, not one nested inside a
+      // property named after the alias
+      database.command("sql", "UPDATE Main m SET m.stamped = 'yes' WHERE m.code = 'C4'");
+      try (final ResultSet rs = database.query("sql", "SELECT stamped FROM Main WHERE code = 'C4'")) {
+        assertThat(rs.next().<String>getProperty("stamped")).isEqualTo("yes");
+      }
+
+      database.command("sql", "DELETE FROM Main m WHERE m.code = 'C4'");
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Main WHERE code = 'C4'")) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
+  /**
+   * The rewrite rebuilds the modifier chain by hand, so every shape that is not {@code alias.property} - a method
+   * call, an array selector, {@code .*} - has to keep applying to the record the alias stands for.
+   */
+  @Test
+  void aBareAliasCarriesItsModifierChainOntoTheRecord() {
+    // a method call applies to the record the alias stands for
+    try (final ResultSet rs = database.query("sql", "SELECT m.asJSON() AS j FROM Main m WHERE m.code = 'C1'")) {
+      assertThat(rs.next().<Object>getProperty("j").toString()).contains("\"code\":\"C1\"");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // and an array selector or ".*" keeps its place in the chain, now applied to the record. A string-keyed
+    // selector reads null off a record whatever it is applied to - @this, a $variable - so the shape is pinned on
+    // the statement rather than on a result that would say nothing about the rewrite.
+    assertThat(rendered("SELECT m.* FROM Main m")).contains("@this.*").doesNotContain("m.*");
+    assertThat(rendered("SELECT m[0] FROM Main m")).contains("@this[0]");
+    assertThat(rendered("SELECT m.asJSON() FROM Main m")).contains("@this.asJSON()");
+  }
+
+  /**
+   * The reported query: the index on {@code Main.code} must survive the second AND term, which can only be decided
+   * once the per-record LET has run.
+   */
+  @Test
+  void indexSurvivesAConditionOnAPerRecordLetVariable() {
+    final String query = "SELECT FROM Main m LET $relation = out('relation') "//
+        + "WHERE m.code = 'C1' AND $relation CONTAINS (code = 'D1')";
+
+    try (final ResultSet rs = database.query("sql", query)) {
+      final String plan = plan(rs);
+      assertThat(plan).contains("FETCH FROM INDEX Main[code]");
+      assertThat(plan).doesNotContain("FETCH FROM BUCKET");
+      // the LET must be chained BEFORE the filter that reads the variable it defines. Both markers are asserted
+      // present first: indexOf() answers -1 for a missing step, and -1 is less than anything.
+      assertThat(plan).contains("LET (for each record)").contains("FILTER ITEMS WHERE");
+      assertThat(plan.indexOf("LET (for each record)")).isLessThan(plan.indexOf("FILTER ITEMS WHERE"));
+
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // and the deferred filter really filters: C2 has no relation, so the same shape must answer nothing
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Main LET $relation = out('relation') "//
+        + "WHERE code = 'C2' AND $relation CONTAINS (code = 'D1')")) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * OR branches never reach the deferral above: {@code handleTypeAsTargetWithIndexedFunction} claims a multi-block
+   * WHERE first and plans one indexed sub-plan per branch, each chaining the LET ahead of its own residual filter -
+   * correctly, because that sub-plan is not empty when {@code handleLet()} is handed it. Pinned here because the
+   * deferral must not disturb it: there is one residual per branch and a single WHERE clause to defer into, so this
+   * path has to keep filtering inside the sub-plans.
+   */
+  @Test
+  void everyOrBranchKeepsItsIndexAndItsOwnLet() {
+    final String query = "SELECT code FROM Main LET $relation = out('relation') "//
+        + "WHERE (code = 'C1' AND $relation.size() = 1) OR (code = 'C2' AND $relation.size() = 0)";
+
+    try (final ResultSet rs = database.query("sql", query)) {
+      assertThat(plan(rs)).contains("FETCH FROM INDEX Main[code]").doesNotContain("FETCH FROM BUCKET");
+      assertThat(rs.stream().map(r -> r.<String>getProperty("code"))).containsExactlyInAnyOrder("C1", "C2");
+    }
+  }
+
+  /**
+   * A type with no records of its own is answered by one indexed sub-plan per sub-type. Each sub-plan would need its
+   * own deferred residual and there is a single WHERE clause to hold one, so the statement gives the index up for a
+   * plain scan, which evaluates the filter after the LET by construction. Before issue #7153 this shape built a plan
+   * whose index fetch pulled from a LET step that had no source, and raised at the first row.
+   */
+  @Test
+  void perRecordLetResidualOnASubTypeFallsBackToTheScan() {
+    database.command("sql", "CREATE VERTEX TYPE Base");
+    database.command("sql", "CREATE PROPERTY Base.tag STRING");
+    database.command("sql", "CREATE VERTEX TYPE Sub1 EXTENDS Base");
+    database.command("sql", "CREATE VERTEX TYPE Sub2 EXTENDS Base");
+    database.command("sql", "CREATE INDEX ON Sub1 (tag) UNIQUE");
+    database.command("sql", "CREATE INDEX ON Sub2 (tag) UNIQUE");
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++) {
+        database.newVertex("Sub1").set("tag", "A" + i).save();
+        database.newVertex("Sub2").set("tag", "B" + i).save();
+      }
+    });
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT tag FROM Base b LET $relation = out('relation') WHERE b.tag = 'A1' AND $relation.size() >= 0")) {
+      assertThat(plan(rs)).contains("FETCH FROM TYPE Base");
+      assertThat(rs.next().<String>getProperty("tag")).isEqualTo("A1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * {@code FromItem.toString()} renders the alias back ({@code Main AS m}), and the hardwired {@code count(*)} plan
+   * used to hand that rendering to {@code CountFromTypeStep}, which looks its argument up in the schema.
+   */
+  @Test
+  void countStarOnAnAliasedTargetCountsTheType() {
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Main m")) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(50L);
+    }
+  }
+
+  /**
+   * A nested TRAVERSE or MATCH gets its own alias scope: the enclosing SELECT's alias must not rewrite an identifier
+   * that means something else inside them - a property of the TRAVERSE target's own rows, or a MATCH pattern alias.
+   * <p>
+   * Asserted on the statement the parser built, because that is where the rewrite happens and what it did is visible
+   * there without depending on what the nested statement then computes: an inherited alias would have turned the
+   * nested {@code m} into {@code @this}.
+   */
+  @Test
+  void aNestedStatementDoesNotInheritTheAlias() {
+    assertThat(rendered("SELECT FROM Main m LET $t = (TRAVERSE m FROM Data) WHERE m.code = 'C1'"))//
+        .contains("TRAVERSE m FROM Data").doesNotContain("TRAVERSE @this");
+
+    assertThat(rendered("SELECT FROM Main m LET $x = (MATCH {type: Data, as: m} RETURN m.code AS mc) WHERE m.code = 'C1'"))//
+        .contains("m.code AS mc").doesNotContain("@this");
+
+    // and the enclosing statement's own references are still resolved
+    assertThat(rendered("SELECT FROM Main m LET $t = (TRAVERSE m FROM Data) WHERE m.code = 'C1'"))//
+        .contains("WHERE code = 'C1'");
+  }
+
+  private String rendered(final String query) {
+    return ((SQLQueryEngine) database.getQueryEngine("sql")).parse(query, (DatabaseInternal) database).toString();
+  }
+
+  /**
+   * A dollar sign inside a string literal is not a LET reference. Matching a bare {@code "$"} would defer the
+   * residual - or, on the sub-type path, give the index up altogether - for a condition no LET can influence.
+   */
+  @Test
+  void aDollarInAStringLiteralIsNotALetReference() {
+    database.transaction(() -> database.command("sql", "UPDATE Main SET currency = 'US$' WHERE code = 'C1'"));
+
+    final String query = "SELECT code FROM Main m LET $relation = out('relation') WHERE m.code = 'C1' AND currency = 'US$'";
+    try (final ResultSet rs = database.query("sql", query)) {
+      final String plan = plan(rs);
+      assertThat(plan).contains("FETCH FROM INDEX Main[code]");
+      // the residual mentions no LET variable, so it is filtered inside the fetch plan, ahead of the LET step
+      assertThat(plan.indexOf("FILTER ITEMS WHERE")).isLessThan(plan.indexOf("LET (for each record)"));
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * The same {@code '$'}-in-a-literal false positive gated two other optimisations, both of which skip when the
+   * WHERE clause "references a LET": the predicate pushed into the type scan, and the vertex-centric lookup that
+   * answers {@code WHERE @out = <RID>} off the vertex's edge list instead of scanning the edge type. Neither was
+   * ever a wrong answer - the condition just fell through to the post-LET filter - but both are lost for a reason
+   * that has nothing to do with the LET.
+   */
+  @Test
+  void aDollarInAStringLiteralKeepsThePushdownAndTheEdgeLookup() {
+    database.transaction(() -> database.command("sql", "UPDATE Main SET currency = 'US$' WHERE code = 'C1'"));
+
+    // predicate pushdown: an unindexed condition is filtered inside the scan, not by a step chained after it
+    try (final ResultSet rs = database.query("sql",
+        "SELECT code FROM Main LET $relation = out('relation') WHERE currency = 'US$'")) {
+      assertThat(plan(rs)).contains("FETCH FROM TYPE Main WITH FILTER");
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // vertex-centric edge lookup
+    final String mainRid = database.query("sql", "SELECT @rid AS r FROM Main WHERE code = 'C1'").next()
+        .<Object>getProperty("r").toString();
+    try (final ResultSet rs = database.query("sql", "SELECT @rid FROM relation LET $x = in() "//
+        + "WHERE @out = " + mainRid + " AND label = 'US$'")) {
+      assertThat(plan(rs)).doesNotContain("FETCH FROM TYPE relation");
+      assertThat(rs.hasNext()).isFalse(); // no edge carries that label - the point is which plan answered
+    }
+  }
+
+  /**
+   * The grammar takes a LET name as a plain identifier, so {@code LET brain = out(...)} declares the variable that
+   * {@code $brain} reads and only the reference carries the sigil. Matching the two spellings against each other is
+   * what tells the planner this residual has to wait for the LET.
+   */
+  @Test
+  void aLetDeclaredWithoutTheSigilIsStillRecognised() {
+    final String query = "SELECT code FROM Main m LET relation = out('relation') "//
+        + "WHERE m.code = 'C1' AND $relation CONTAINS (code = 'D1')";
+
+    try (final ResultSet rs = database.query("sql", query)) {
+      final String plan = plan(rs);
+      assertThat(plan).contains("FETCH FROM INDEX Main[code]");
+      assertThat(plan).contains("LET (for each record)").contains("FILTER ITEMS WHERE");
+      assertThat(plan.indexOf("LET (for each record)")).isLessThan(plan.indexOf("FILTER ITEMS WHERE"));
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * An OR whose branches are answered by an indexed function - {@code search_index()} here - is planned as one
+   * sub-plan per branch. That branch chained its residual filter without the LET guard every sibling branch
+   * applies, so a residual reading a per-record LET was evaluated with the variable unset and answered nothing.
+   */
+  @Test
+  void anIndexedFunctionOrBranchWaitsForThePerRecordLet() {
+    database.command("sql", "CREATE PROPERTY Main.notes STRING");
+    database.command("sql", "CREATE INDEX ON Main (notes) FULL_TEXT");
+    database.transaction(() -> {
+      database.command("sql", "UPDATE Main SET notes = 'linked to data' WHERE code = 'C1'");
+      database.command("sql", "UPDATE Main SET notes = 'nothing here' WHERE code = 'C2'");
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT code FROM Main LET $relation = out('relation') "//
+        + "WHERE (search_index('Main[notes]', 'linked') = true AND $relation.size() = 1) "//
+        + "OR (search_index('Main[notes]', 'nothing') = true AND $relation.size() = 0)")) {
+      assertThat(rs.stream().map(r -> r.<String>getProperty("code"))).containsExactlyInAnyOrder("C1", "C2");
+    }
+  }
+
+  /**
+   * A quoted run is data. {@code WHERE note = '$relation'} spells a LET variable's name inside a string literal and
+   * names no variable at all, and a backtick-quoted {@code `$relation`} is a property whose name merely starts with
+   * the character.
+   */
+  @Test
+  void aVariableNameInsideAQuotedRunIsNotAReference() {
+    database.transaction(() -> database.command("sql", "UPDATE Main SET note = '$relation' WHERE code = 'C1'"));
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT code FROM Main LET $relation = out('relation') WHERE note = '$relation'")) {
+      // the residual reads no variable, so it is pushed into the scan rather than deferred past the LET
+      assertThat(plan(rs)).contains("FETCH FROM TYPE Main WITH FILTER");
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // and the index survives the same literal next to an indexed condition
+    try (final ResultSet rs = database.query("sql",
+        "SELECT code FROM Main m LET $relation = out('relation') WHERE m.code = 'C1' AND note = '$relation'")) {
+      final String plan = plan(rs);
+      assertThat(plan).contains("FETCH FROM INDEX Main[code]");
+      assertThat(plan).contains("FILTER ITEMS WHERE").contains("LET (for each record)");
+      assertThat(plan.indexOf("FILTER ITEMS WHERE")).isLessThan(plan.indexOf("LET (for each record)"));
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // a backtick-quoted identifier is a property name, even when it opens with the sigil
+    database.transaction(() -> database.command("sql", "UPDATE Main SET `$relation` = 'a property' WHERE code = 'C1'"));
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT code FROM Main m LET $relation = out('relation') WHERE m.code = 'C1' AND `$relation` = 'a property'")) {
+      final String plan = plan(rs);
+      assertThat(plan).contains("FETCH FROM INDEX Main[code]");
+      assertThat(plan).contains("FILTER ITEMS WHERE").contains("LET (for each record)");
+      assertThat(plan.indexOf("FILTER ITEMS WHERE")).isLessThan(plan.indexOf("LET (for each record)"));
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * A target that is not a type name is resolved out of its rendered text, and an alias is not part of that text.
+   * The contract is asserted on {@code FromItem} directly because the one planner branch that resolves a dotted
+   * variable path this way cannot be reached from SQL today - a bare identifier carrying a modifier is read as a
+   * type name first - while an aliased {@code $var} target, which can, has to keep working.
+   */
+  @Test
+  void anAliasIsNotPartOfTheTargetsName() {
+    final FromItem target = ((SelectStatement) ((SQLQueryEngine) database.getQueryEngine("sql"))//
+        .parse("SELECT FROM Main m", (DatabaseInternal) database)).getTarget().getItem();
+
+    assertThat(target.toString()).isEqualTo("Main AS m");
+    assertThat(target.toStringWithoutAlias()).isEqualTo("Main");
+
+    try (final ResultSet rs = database.command("sqlscript",
+        "LET $chosen = (SELECT FROM Main WHERE code = 'C1'); SELECT code FROM $chosen[0] AS c")) {
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * When a column is given the same name as the target, ORDER BY and GROUP BY mean the column - that is what SQL
+   * says, and what the sort step does anyway, since it resolves a bare name against the projected row. Rewriting
+   * the name as the target would sort by the whole record instead, silently and in no useful order.
+   */
+  @Test
+  void anOutputColumnOutranksTheTargetAliasInOrderBy() {
+    // DESC over the whole type, so that the answer differs from the order the rows are stored and read in: sorting
+    // by the record instead of by the column leaves them exactly as the scan produced them, C0 first
+    try (final ResultSet rs = database.query("sql", "SELECT code AS m FROM Main m ORDER BY m DESC")) {
+      assertThat(rs.next().<String>getProperty("m")).isEqualTo("C9");
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT code AS m, count(*) AS c FROM Main m "//
+        + "WHERE m.code = 'C1' GROUP BY m")) {
+      final Result row = rs.next();
+      assertThat(row.<String>getProperty("m")).isEqualTo("C1");
+      assertThat(row.<Long>getProperty("c")).isEqualTo(1L);
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // a nested SELECT inside the ORDER BY must not take the output-column scope away from the items after it
+    assertThat(rendered("SELECT code AS m FROM Main m ORDER BY (SELECT 1), m DESC"))//
+        .contains(", m DESC").doesNotContain("@this");
+
+    // a qualified reference still reads the alias as the target: a column needs no qualifier
+    try (final ResultSet rs = database.query("sql", "SELECT code AS m FROM Main m WHERE m.code < 'C11' ORDER BY m.code DESC")) {
+      assertThat(rs.stream().map(r -> r.<String>getProperty("m"))).containsExactly("C10", "C1", "C0");
+    }
+  }
+
+  private static String plan(final ResultSet rs) {
+    return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
+  }
+}
