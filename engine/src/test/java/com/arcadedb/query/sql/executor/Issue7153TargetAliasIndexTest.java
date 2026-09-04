@@ -123,11 +123,38 @@ class Issue7153TargetAliasIndexTest extends TestHelper {
         assertThat(rs.next().<Boolean>getProperty("touched")).isTrue();
       }
 
+      // the assignment target too: SET m.touched must set the record's own property, not one nested inside a
+      // property named after the alias
+      database.command("sql", "UPDATE Main m SET m.stamped = 'yes' WHERE m.code = 'C4'");
+      try (final ResultSet rs = database.query("sql", "SELECT stamped FROM Main WHERE code = 'C4'")) {
+        assertThat(rs.next().<String>getProperty("stamped")).isEqualTo("yes");
+      }
+
       database.command("sql", "DELETE FROM Main m WHERE m.code = 'C4'");
       try (final ResultSet rs = database.query("sql", "SELECT FROM Main WHERE code = 'C4'")) {
         assertThat(rs.hasNext()).isFalse();
       }
     });
+  }
+
+  /**
+   * The rewrite rebuilds the modifier chain by hand, so every shape that is not {@code alias.property} - a method
+   * call, an array selector, {@code .*} - has to keep applying to the record the alias stands for.
+   */
+  @Test
+  void aBareAliasCarriesItsModifierChainOntoTheRecord() {
+    // a method call applies to the record the alias stands for
+    try (final ResultSet rs = database.query("sql", "SELECT m.asJSON() AS j FROM Main m WHERE m.code = 'C1'")) {
+      assertThat(rs.next().<Object>getProperty("j").toString()).contains("\"code\":\"C1\"");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // and an array selector or ".*" keeps its place in the chain, now applied to the record. A string-keyed
+    // selector reads null off a record whatever it is applied to - @this, a $variable - so the shape is pinned on
+    // the statement rather than on a result that would say nothing about the rewrite.
+    assertThat(rendered("SELECT m.* FROM Main m")).contains("@this.*").doesNotContain("m.*");
+    assertThat(rendered("SELECT m[0] FROM Main m")).contains("@this[0]");
+    assertThat(rendered("SELECT m.asJSON() FROM Main m")).contains("@this.asJSON()");
   }
 
   /**
@@ -414,6 +441,10 @@ class Issue7153TargetAliasIndexTest extends TestHelper {
       assertThat(row.<Long>getProperty("c")).isEqualTo(1L);
       assertThat(rs.hasNext()).isFalse();
     }
+
+    // a nested SELECT inside the ORDER BY must not take the output-column scope away from the items after it
+    assertThat(rendered("SELECT code AS m FROM Main m ORDER BY (SELECT 1), m DESC"))//
+        .contains(", m DESC").doesNotContain("@this");
 
     // a qualified reference still reads the alias as the target: a column needs no qualifier
     try (final ResultSet rs = database.query("sql", "SELECT code AS m FROM Main m WHERE m.code < 'C11' ORDER BY m.code DESC")) {
