@@ -74,7 +74,9 @@ public class ContextConfiguration implements Serializable {
     for (final String k : cfg.keySet()) {
       final GlobalConfiguration cfgEntry = GlobalConfiguration.findByKey(GlobalConfiguration.PREFIX + k);
       if (cfgEntry != null) {
-        config.put(GlobalConfiguration.PREFIX + k, cfg.get(k));
+        final Object value = cfg.get(k);
+        config.put(GlobalConfiguration.PREFIX + k, value);
+        cfgEntry.applyContextValue(value);
       }
     }
   }
@@ -93,17 +95,32 @@ public class ContextConfiguration implements Serializable {
   }
 
   public Object setValue(final GlobalConfiguration iConfig, final Object iValue) {
-    if (iValue == null)
-      return config.remove(iConfig.getKey());
-
-    return config.put(iConfig.getKey(), iValue);
+    final Object previous = iValue == null ? config.remove(iConfig.getKey()) : config.put(iConfig.getKey(), iValue);
+    iConfig.applyContextValue(iValue);
+    return previous;
   }
 
   public Object setValue(final String iName, final Object iValue) {
-    if (iValue == null)
-      return config.remove(iName);
+    final Object previous = iValue == null ? config.remove(iName) : config.put(iName, iValue);
+    applyDeclaredSideEffect(iName, iValue);
+    return previous;
+  }
 
-    return config.put(iName, iValue);
+  /**
+   * Runs the side effect of a declared SCOPE.SERVER setting written into this overlay.
+   * <p>
+   * This map is where a server's settings actually live: {@link #fromJSON} loads the server configuration file into
+   * it, and both {@code SET SERVER SETTING} and the MCP {@code set_server_setting} tool write through
+   * {@link #setValue}. None of them touches the {@link GlobalConfiguration} enum, so a setting whose effect is a
+   * side effect rather than a value someone later reads used to be stored here and never applied - which is what
+   * made {@code arcadedb.server.logFormat} work only as a raw {@code -D} (issue #7121). Firing it here rather than
+   * at each caller means the next SCOPE.SERVER setting that needs a side effect gets it on every channel by
+   * declaring a callback, instead of relying on someone remembering all three call sites.
+   */
+  private void applyDeclaredSideEffect(final String key, final Object value) {
+    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
+    if (cfg != null)
+      cfg.applyContextValue(value);
   }
 
   public <T> T getValue(final GlobalConfiguration iConfig) {

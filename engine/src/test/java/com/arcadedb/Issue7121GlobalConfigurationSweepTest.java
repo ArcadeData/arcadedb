@@ -128,23 +128,42 @@ class Issue7121GlobalConfigurationSweepTest {
   }
 
   /**
-   * The premise for why the server has to refresh the formatter itself. A SCOPE.SERVER setting is authoritative in
-   * the server's own {@link ContextConfiguration}, and that overlay is a plain map: neither {@code fromJSON} (the
-   * server configuration file) nor {@code setValue} (the {@code SET SERVER SETTING} API) writes through to the
-   * {@link GlobalConfiguration} enum. So the enum's set-callback alone cannot reach either channel, which is what
-   * {@code ArcadeDBServer.loadConfiguration()} and {@code PostServerCommandHandler.applySetting()} compensate for.
+   * The channel that was actually broken. A SCOPE.SERVER setting is authoritative in the server's own
+   * {@link ContextConfiguration}, and that overlay is a plain map that never writes through to the
+   * {@link GlobalConfiguration} enum - so the enum's set-callback alone could not reach the server configuration
+   * file, {@code SET SERVER SETTING}, or the MCP {@code set_server_setting} tool. The overlay now runs a declared
+   * SCOPE.SERVER setting's side effect itself, which is what makes all three take effect.
    */
   @Test
-  void aContextConfigurationOverlayDoesNotWriteThroughToTheEnum() {
-    final ContextConfiguration overlay = new ContextConfiguration();
-    overlay.setValue(GlobalConfiguration.SERVER_LOG_FORMAT, "json");
+  void aWriteIntoTheServersOverlayAppliesTheSettingsSideEffect() {
+    withOwnConsoleHandler(() -> {
+      final ContextConfiguration overlay = new ContextConfiguration();
+      overlay.setValue(GlobalConfiguration.SERVER_LOG_FORMAT, "json");
 
-    assertThat(overlay.getValueAsString(GlobalConfiguration.SERVER_LOG_FORMAT))
-        .as("the overlay holds the server's value")
-        .isEqualTo("json");
-    assertThat(GlobalConfiguration.SERVER_LOG_FORMAT.getValueAsString())
-        .as("but the enum - the only thing the set-callback and selectConsoleFormatter() see - is untouched")
-        .isEqualTo("text");
+      assertThat(consoleFormatterName())
+          .as("a value written only into the overlay must still swap the formatter")
+          .isEqualTo("JsonLogFormatter");
+      assertThat(GlobalConfiguration.SERVER_LOG_FORMAT.getValueAsString())
+          .as("without writing through to the process-wide enum, which the overlay deliberately does not own")
+          .isEqualTo("text");
+
+      overlay.setValue(GlobalConfiguration.SERVER_LOG_FORMAT.getKey(), "text");
+      assertThat(consoleFormatterName()).as("and the by-key overload is the same path").isEqualTo("AnsiLogFormatter");
+    });
+  }
+
+  /** The server configuration file goes through fromJSON, which must run the side effect too. */
+  @Test
+  void loadingAServerConfigurationFileAppliesTheSettingsSideEffect() {
+    withOwnConsoleHandler(() -> {
+      final ContextConfiguration overlay = new ContextConfiguration();
+      overlay.fromJSON("{\"configuration\":{\"server.logFormat\":\"json\"}}");
+
+      assertThat(overlay.getValueAsString(GlobalConfiguration.SERVER_LOG_FORMAT)).isEqualTo("json");
+      assertThat(consoleFormatterName())
+          .as("the formatter is chosen at logger init, long before a configuration file is read")
+          .isEqualTo("JsonLogFormatter");
+    });
   }
 
   /** The mechanism the two server channels use: apply a value the resolver could not have found on its own. */

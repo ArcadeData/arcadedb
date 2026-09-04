@@ -46,6 +46,7 @@ public class DefaultLogger implements Logger {
   private static final String DEFAULT_LOG                  = "com.arcadedb";
   private static final String ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb.installCustomFormatter";
   private static final String FILE_LOG_PROPERTIES          = "arcadedb-log.properties";
+  private static final String SERVER_LOG_FORMAT_KEY         = "arcadedb.server.logFormat";
   // Fallback when ${arcadedb.server.logsDirectory} cannot be resolved (e.g. the first log fires during
   // GlobalConfiguration's own static init, before its values are queryable). Must stay in sync with the
   // default of GlobalConfiguration.SERVER_LOGS_DIRECTORY (asserted by DefaultLoggerLogDirTest).
@@ -324,8 +325,17 @@ public class DefaultLogger implements Logger {
       return;
 
     try {
+      // An explicit -D/env override still outranks a configuration write, which is the order
+      // selectConsoleFormatter()'s resolver already applies and the one an operator debugging a node expects: the
+      // flag they passed on the command line is not silently undone by a file the server reads afterwards.
+      String effective = System.getProperty(SERVER_LOG_FORMAT_KEY);
+      if (effective == null)
+        effective = System.getenv(SERVER_LOG_FORMAT_KEY);
+      if (effective == null)
+        effective = format;
+
       applyConsoleFormatter(java.util.logging.Logger.getLogger(""),
-          format != null ? formatterFor(format) : selectConsoleFormatter());
+          effective != null ? formatterFor(effective) : selectConsoleFormatter());
     } catch (final Exception e) {
       System.err.println("Error while refreshing the console formatter. Cause: " + e);
     }
@@ -350,7 +360,7 @@ public class DefaultLogger implements Logger {
    * explicit {@code -D}/env override, which is the intended precedence and the reason the resolver is used at all.
    */
   static Formatter selectConsoleFormatter() {
-    return formatterFor(SystemVariableResolver.INSTANCE.resolveSystemVariables("${arcadedb.server.logFormat}", "text"));
+    return formatterFor(SystemVariableResolver.INSTANCE.resolveSystemVariables("${" + SERVER_LOG_FORMAT_KEY + "}", "text"));
   }
 
   /** The formatter one {@code arcadedb.server.logFormat} value selects, wherever that value was read from. */
