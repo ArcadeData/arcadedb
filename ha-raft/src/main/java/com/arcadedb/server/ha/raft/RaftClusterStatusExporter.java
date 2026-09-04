@@ -192,14 +192,16 @@ class RaftClusterStatusExporter {
     final RaftPeerId leaderId = haServer.getLeaderId();
     final long term = haServer.getCurrentTerm();
     final long commitIndex = haServer.getCommitIndex();
-    // The rows render from getLivePeers(), which substitutes the declared list when the division cannot be read
-    // (issue #5271) - the right answer for a caller that just needs something to print. The convergence note
-    // below must NOT be computed from that stand-in, so the committed membership is read once, separately and
-    // explicitly, and a null answer means "nothing observed this tick" rather than "the declared list" (#7136).
-    final Collection<RaftPeer> peers = haServer.getLivePeers();
+    // ONE read of the live configuration, so the rows and the convergence note below describe the same instant.
+    // getLivePeers() is consulted only when that read produced nothing: it substitutes the declared list when
+    // the division cannot be read (issue #5271), which is the right answer for a caller that just needs
+    // something to print but must never be mistaken for a committed membership (issue #7136). A live
+    // configuration is never empty, so an empty answer is "nothing observed", not "a cluster of nobody".
+    final Collection<RaftPeer> committedPeers = haServer.getCommittedPeersOrNull();
+    final boolean membershipRead = committedPeers != null && !committedPeers.isEmpty();
+    final Collection<RaftPeer> peers = membershipRead ? committedPeers : haServer.getLivePeers();
     if (peers.isEmpty())
       return null;
-    final Collection<RaftPeer> committedPeers = haServer.getCommittedPeersOrNull();
 
     // Collect follower replication state (only available on leader). The entries are read defensively
     // (issue #7041): while membership is changing, getFollowerStates() degrades to entries without a
@@ -254,11 +256,11 @@ class RaftClusterStatusExporter {
     rows.sort((a, b) -> a[0].compareTo(b[0]));
 
     // Remember this tick's membership before computing the note: a peer present now must not be reported as
-    // pending after it is later removed (issue #7136). Both the record and the count are derived from
-    // committedPeers, never from the rows: the rows may be the declared-list stand-in, and folding that in
-    // would mark every declared peer as once-committed and silence the note for good.
+    // pending after it is later removed (issue #7136). Nothing is recorded on a tick that read no membership:
+    // the rows are then the declared-list stand-in, and folding that in would mark every declared peer as
+    // once-committed and silence the note for good.
     final List<String> committedIds = new ArrayList<>();
-    if (committedPeers != null) {
+    if (membershipRead) {
       for (final RaftPeer peer : committedPeers)
         committedIds.add(peer.getId().toString());
       everCommitted.addAll(committedIds);
@@ -269,7 +271,7 @@ class RaftClusterStatusExporter {
       declaredIds.add(peer.getId().toString());
 
     return new ConfigSnapshot(term, commitIndex, rows, collectBootstrapBaselines(),
-        expectedMemberCount(declaredIds, committedIds, everCommitted, committedPeers != null));
+        expectedMemberCount(declaredIds, committedIds, everCommitted, membershipRead));
   }
 
   /**

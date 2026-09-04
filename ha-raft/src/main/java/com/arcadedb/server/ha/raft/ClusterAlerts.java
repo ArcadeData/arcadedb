@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ha.raft.ArcadeStateMachine.LocalResyncState;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 
 import java.util.ArrayList;
@@ -134,7 +135,7 @@ public class ClusterAlerts {
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
       final ClusterMembership membership, final String localPeerId,
-      final ArcadeStateMachine.LocalResyncState localResyncState) {
+      final LocalResyncState localResyncState) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts, visibleDatabases);
     if (stateMachine != null) {
@@ -226,7 +227,7 @@ public class ClusterAlerts {
    * per-tenant fact - so {@code visibleDatabases} reduces only the database <em>names</em> in the payload, never
    * whether the alert fires. A caller that may see no database at all still learns that the node is resyncing.
    */
-  static void addLocalResyncAlert(final ArcadeStateMachine.LocalResyncState state, final Set<String> visibleDatabases,
+  static void addLocalResyncAlert(final LocalResyncState state, final Set<String> visibleDatabases,
       final JSONArray alerts) {
     if (state == null || !state.inProgress())
       return;
@@ -267,7 +268,7 @@ public class ClusterAlerts {
    * unrestricted operator view and returns {@code names} untouched.
    * <p>
    * Package-private because {@link GetClusterHandler} scopes the same names for the {@code localResync} object
-   * it renders from the same {@link ArcadeStateMachine.LocalResyncState} (issue #7136): one predicate for the
+   * it renders from the same {@link LocalResyncState} (issue #7136): one predicate for the
    * whole endpoint, so the alert payload and the document body cannot disagree about what a caller may see.
    */
   static List<String> visible(final List<String> names, final Set<String> visibleDatabases) {

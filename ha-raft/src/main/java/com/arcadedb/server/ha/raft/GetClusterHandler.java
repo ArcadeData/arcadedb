@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ha.raft.ArcadeStateMachine.LocalResyncState;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
@@ -251,7 +252,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // readiness answer 503 is visible here. ArcadeStateMachine.isResyncInProgress() - the readiness gate - is
     // LocalResyncState.inProgress() on this very object, so the two cannot drift apart. Sampled once and shared
     // with the alert scan below, so the document cannot report the two halves from different instants.
-    final ArcadeStateMachine.LocalResyncState localResync = stateMachine.getLocalResyncState();
+    final LocalResyncState localResync = stateMachine.getLocalResyncState();
     response.put("localResync", buildLocalResync(localResync, authorizedDatabases));
 
     response.put("alerts",
@@ -262,7 +263,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * Renders {@link ArcadeStateMachine.LocalResyncState} for the status document (issue #7136).
+   * Renders {@link LocalResyncState} for the status document (issue #7136).
    * <p>
    * {@code inProgress} is the node-level answer and is never suppressed: whether this node serves traffic is not
    * a per-tenant fact, and it is the field a readiness-aware monitoring rule keys on. The database <em>names</em>
@@ -271,7 +272,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
    * <p>
    * Package-private so the document's shape and that scoping can be unit-tested without a live cluster.
    */
-  static JSONObject buildLocalResync(final ArcadeStateMachine.LocalResyncState state,
+  static JSONObject buildLocalResync(final LocalResyncState state,
       final Set<String> visibleDatabases) {
     // The same scoping predicate the alert payloads use, so the document body and alerts cannot disagree
     // about which database names this caller may see.
