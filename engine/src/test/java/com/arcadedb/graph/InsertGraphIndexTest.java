@@ -24,6 +24,7 @@ import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Tag;
@@ -63,10 +64,34 @@ class InsertGraphIndexTest extends TestHelper {
     database.close();
   }
 
+  /** The process-wide logger this test displaces for its own duration; put back by {@link #endTest()}. */
+  private Logger previousLogger;
+
+  /**
+   * Silences the log for this test only. Moving a million edges logs enough to bury a build, but
+   * {@link LogManager#setLogger} is process-wide and this class used to install {@link NullLogger} from
+   * {@link #getPerformanceProfile()} - a method that is only supposed to name a profile - and never put the
+   * previous one back. Every {@code LogManager.instance().log()} in the fork was then discarded for the rest of
+   * the run, which in the {@code slow} lane silently disarmed later tests asserting on a logged warning:
+   * {@code LSMVectorIndexRebuildTest} captured nothing about 70 classes downstream and failed with no hint that
+   * the cause was here. setLogger()'s own javadoc tells callers to keep what they replace and put it back.
+   */
+  @Override
+  protected void beginTest() {
+    previousLogger = LogManager.instance().getLogger();
+    LogManager.instance().setLogger(NullLogger.INSTANCE);
+  }
+
+  @Override
+  protected void endTest() {
+    if (previousLogger != null) {
+      LogManager.instance().setLogger(previousLogger);
+      previousLogger = null;
+    }
+  }
+
   @Override
   protected String getPerformanceProfile() {
-    LogManager.instance().setLogger(NullLogger.INSTANCE);
-
     return "high-performance";
   }
 
