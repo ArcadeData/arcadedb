@@ -78,6 +78,32 @@ class Issue7121BucketReuseSpaceModeTest {
         .isEqualTo("high");
   }
 
+  /**
+   * The scenario #7121 actually describes: an operator tunes ONE database with {@code ALTER DATABASE} and expects it
+   * to survive a restart. That exercises the {@code configuration.json} round trip - {@code saveConfiguration()} on
+   * the way out, {@code fromJSON()} on the way back in - rather than only the in-memory config object, and it is the
+   * path on which the persisted schema used to record a value the engine then ignored.
+   */
+  @Test
+  void aValuePersistedByAlterDatabaseSurvivesAReopen() {
+    GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.setValue("high");
+
+    try (final Database db = new DatabaseFactory(DB_PATH).create()) {
+      db.transaction(() -> db.getSchema().createDocumentType("Reuse"));
+      db.command("sql", "ALTER DATABASE `arcadedb.bucketReuseSpaceMode` 'low'");
+    }
+
+    // A plain factory: nothing but the persisted configuration can carry the value now
+    try (final Database db = new DatabaseFactory(DB_PATH).open()) {
+      assertThat(db.getConfiguration().getValueAsString(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE))
+          .as("ALTER DATABASE must persist the setting into the database's own configuration")
+          .isEqualTo("low");
+      assertThat(bucketOf(db).reuseSpaceModeName())
+          .as("and the reopened bucket must be built from it, not from the JVM-wide default")
+          .isEqualTo("LOW");
+    }
+  }
+
   private static LocalBucket bucketOf(final Database db) {
     return (LocalBucket) db.getSchema().getType("Reuse").getBuckets(false).getFirst();
   }
