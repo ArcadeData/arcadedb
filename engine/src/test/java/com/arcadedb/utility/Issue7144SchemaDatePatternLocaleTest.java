@@ -30,6 +30,8 @@ import org.junit.jupiter.api.parallel.Isolated;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.Locale;
 
@@ -77,7 +79,7 @@ class Issue7144SchemaDatePatternLocaleTest extends TestHelper {
   /** The premise: an unpinned formatter really would answer in Italian under this locale. */
   @Test
   void localeIsActuallyHostile() {
-    assertThat(java.time.format.DateTimeFormatter.ofPattern(DATE_PATTERN).format(LocalDate.of(2026, 3, 4)))
+    assertThat(DateTimeFormatter.ofPattern(DATE_PATTERN).format(LocalDate.of(2026, 3, 4)))
         .as("otherwise every assertion below would pass with or without the fix")
         .isNotEqualTo(ENGLISH_DATE);
   }
@@ -96,6 +98,22 @@ class Issue7144SchemaDatePatternLocaleTest extends TestHelper {
     final JSONObject json = new JSONObject().setDateFormat(DATE_PATTERN).setDateTimeFormat(DATETIME_PATTERN);
     json.put("when", LocalDateTime.of(2026, 3, 4, 10, 20, 30));
     assertThat(json.getString("when")).isEqualTo(ENGLISH_DATETIME);
+  }
+
+  /**
+   * {@code setDateFormat}'s own javadoc says "Null means using the timestamp", but the setter fed the value straight
+   * to a formatter factory, and both {@code DateTimeFormatter.ofPattern(null)} and {@code DateUtils.getFormatter(null)}
+   * throw {@link NullPointerException}, which the {@link IllegalArgumentException} catch never covered. The mode the
+   * API documented could not actually be entered.
+   */
+  @Test
+  void resettingTheDateFormatsToNullRestoresTimestampMode() {
+    final JSONObject json = new JSONObject().setDateFormat(DATE_PATTERN).setDateTimeFormat(DATETIME_PATTERN);
+    json.setDateFormat(null).setDateTimeFormat(null);
+    json.put("when", LocalDateTime.of(2026, 3, 4, 10, 20, 30));
+    assertThat(json.getLong("when"))
+        .as("with no format the value is serialized as a timestamp")
+        .isEqualTo(LocalDateTime.of(2026, 3, 4, 10, 20, 30).toInstant(ZoneOffset.UTC).toEpochMilli());
   }
 
   @Test

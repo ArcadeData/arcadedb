@@ -21,6 +21,9 @@ package com.arcadedb.index.sparsevector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.index.Index;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -105,9 +108,9 @@ class Issue7140SparseVectorLiveCountTest extends TestHelper {
   @Test
   void countEntriesOnTheIndexDropsWhenRecordsAreDeleted() {
     database.transaction(() -> {
-      final var type = database.getSchema().createDocumentType("Issue7140Sparse");
-      type.createProperty("tokens", com.arcadedb.schema.Type.ARRAY_OF_INTEGERS);
-      type.createProperty("weights", com.arcadedb.schema.Type.ARRAY_OF_FLOATS);
+      final DocumentType type = database.getSchema().createDocumentType("Issue7140Sparse");
+      type.createProperty("tokens", Type.ARRAY_OF_INTEGERS);
+      type.createProperty("weights", Type.ARRAY_OF_FLOATS);
       database.getSchema().buildTypeIndex("Issue7140Sparse", new String[] { "tokens", "weights" })
           .withSparseVectorType().withDimensions(16).create();
     });
@@ -120,7 +123,7 @@ class Issue7140SparseVectorLiveCountTest extends TestHelper {
             .save();
     });
 
-    final var index = database.getSchema().getIndexByName("Issue7140Sparse[tokens,weights]");
+    final Index index = database.getSchema().getIndexByName("Issue7140Sparse[tokens,weights]");
     assertThat(index.countEntries()).as("2 postings per document").isEqualTo(20L);
 
     database.transaction(() -> database.command("sql", "delete from Issue7140Sparse limit 4"));
