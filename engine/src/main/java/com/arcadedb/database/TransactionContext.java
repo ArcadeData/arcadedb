@@ -552,8 +552,25 @@ public class TransactionContext implements Transaction {
           + "its read and its update. Please retry the operation");
   }
 
-  public void addUpdatedRecord(final Record record) throws IOException {
+  /**
+   * Queues a record for the deferred write performed by {@link #commit1stPhase()}.
+   *
+   * @return {@code false} when this same transaction has already deleted the record, so nothing was queued and the
+   * caller must skip the rest of the update (index maintenance, after-update events) too; {@code true} otherwise.
+   */
+  public boolean addUpdatedRecord(final Record record) throws IOException {
     final RID rid = record.getIdentity();
+
+    // #7149: the delete wins. A record this transaction already deleted cannot exist at commit, so a write to it
+    // can never be observed - exactly as the symmetric order already behaves, where removeRecordFromCache() drops
+    // an update queued BEFORE the delete. Queueing it instead makes commit1stPhase find the record missing and
+    // raise a ConcurrentModificationException blaming a concurrent transaction that never existed. That lie is
+    // expensive as well as wrong: it is a NeedRetryException, so the caller re-runs the whole command
+    // 'arcadedb.txRetries' times against a state that can never change, and a Bolt client is finally told
+    // Neo.TransientError.Transaction.DeadlockDetected for a single-client statement. The commit-time arm stays for
+    // what it was written for (#4959): a delete by a genuinely CONCURRENT transaction, which no local state shows.
+    if (deletedRecordsInTx.contains(rid))
+      return false;
 
     if (updatedRecords == null)
       updatedRecords = new HashMap<>();
@@ -583,6 +600,7 @@ public class TransactionContext implements Transaction {
     }
     updateRecordInCache(record);
     removeImmutableRecordsOfSamePage(record.getIdentity());
+    return true;
   }
 
   /**
