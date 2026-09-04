@@ -2715,9 +2715,11 @@ public enum GlobalConfiguration {
    * {@code false}, turning a typo into an unauthenticated metrics endpoint. Every other type already refuses what it
    * cannot read here ({@code abc} for an {@code Integer} throws); {@code Boolean} was the one that did not.
    * <p>
-   * This is the entry point for a value that arrived from an administrative command - {@code SET SERVER SETTING},
-   * {@code SET DATABASE SETTING} and the {@code set_server_setting} MCP tool - where refusing loudly is a 400 the
-   * operator can read and act on. Every other conversion path keeps using {@link #coerce(Object)}.
+   * This is the entry point for a value that arrived from an administrative command, where refusing loudly is an
+   * error the operator can read and act on. All four writers use it: the {@code set server setting} and
+   * {@code set database setting} HTTP commands, the {@code set_server_setting} MCP tool, and
+   * {@code ALTER DATABASE ... SETTING} in SQL. Every other conversion path keeps using {@link #coerce(Object)} -
+   * notably this class's own static initializer, which is the reason the two have to be separate methods.
    *
    * @param iValue the value to convert, or {@code null}
    *

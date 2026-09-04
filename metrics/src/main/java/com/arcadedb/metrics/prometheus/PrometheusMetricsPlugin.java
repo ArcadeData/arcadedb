@@ -107,22 +107,18 @@ public class PrometheusMetricsPlugin implements ServerPlugin {
     if (value == null)
       value = GlobalConfiguration.SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION.getValue();
 
-    if (value instanceof Boolean b)
-      return b;
-
-    if (value != null) {
-      final String text = value.toString().trim();
-      if ("true".equalsIgnoreCase(text))
-        return true;
-      if ("false".equalsIgnoreCase(text))
-        return false;
-
+    // ONE DEFINITION OF WHAT COUNTS AS BOOLEAN TEXT, SHARED WITH THE WRITE SITES: A SECOND COPY HERE COULD DRIFT
+    // FROM THEIRS AND REOPEN THIS BUG ON WHICHEVER SIDE FELL BEHIND. THE ONLY DIFFERENCE IS THE ANSWER TO A VALUE
+    // NEITHER CAN READ - THEY REFUSE THE COMMAND, THIS ONE CANNOT REFUSE A SERVER STARTUP, SO IT FAILS CLOSED.
+    try {
+      final Object coerced = GlobalConfiguration.SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION.coerceFromAdminCommand(value);
+      return !(coerced instanceof Boolean b) || b;
+    } catch (final RuntimeException e) {
       LogManager.instance().log(PrometheusMetricsPlugin.class, Level.WARNING,
           "Invalid value '%s' for setting '%s': only 'true' and 'false' are accepted. Requiring authentication on the /prometheus endpoint",
-          text, key);
+          value, key);
+      return true;
     }
-
-    return true;
   }
 
 }
