@@ -36,6 +36,9 @@ import java.util.zip.GZIPOutputStream;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class UtilCompress extends AbstractUtilFunction {
+  /** Largest payload this function will compress; anything beyond it is refused. */
+  public static final int MAX_INPUT_SIZE = 10 * 1024 * 1024; // 10MB maximum input size
+
   @Override
   protected String getSimpleName() {
     return "compress";
@@ -55,9 +58,6 @@ public class UtilCompress extends AbstractUtilFunction {
   public String getDescription() {
     return "Compress data using the specified algorithm (gzip or deflate), returns base64-encoded string";
   }
-
-  /** Largest payload this function will compress; anything beyond it is refused. */
-  public static final int MAX_INPUT_SIZE = 10 * 1024 * 1024; // 10MB maximum input size
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
