@@ -66,6 +66,11 @@ jobs:
       # now shipped that skew and broken every native leg. This is cheap and runs on every PR.
       - name: Check native image GraalVM pin
         run: ./.github/scripts/check-native-graalvm-pin.py
+      # `gh release upload` hard-errors on an asset pattern that matches nothing, and the release
+      # steps that call it run only on a published release - so a wrong asset list is discovered by
+      # losing the release's assets. Run 33796693420 did exactly that to every 26.9.1 native binary.
+      - name: Check release upload assets
+        run: ./.github/scripts/check-release-upload-assets.py
       - name: Check CI scripts
         run: ./.github/scripts/tests/test-ci-scripts.sh
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
