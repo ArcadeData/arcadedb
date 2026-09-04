@@ -838,29 +838,24 @@ public enum Type {
     if (a == null || b == null)
       throw new IllegalArgumentException("Cannot increment a null value");
 
-    switch (a) {
-    case Integer i -> {
-      switch (b) {
-      case Integer integer -> {
+    if (a instanceof Integer) {
+      if (b instanceof Integer) {
         try {
           return Math.addExact(a.intValue(), b.intValue());
         } catch (final ArithmeticException e) {
           // SPECIAL CASE: UPGRADE TO LONG
           return (long) a.intValue() + (long) b.intValue();
         }
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return a.intValue() + b.longValue();
-      }
-      case Short aShort -> {
+      } else if (b instanceof Short) {
         try {
           return Math.addExact(a.intValue(), b.shortValue());
         } catch (final ArithmeticException e) {
           // SPECIAL CASE: UPGRADE TO LONG
           return (long) a.intValue() + (long) b.shortValue();
         }
-      }
-      case Float v -> {
+      } else if (b instanceof Float) {
         return a.intValue() + b.floatValue();
       } else if (b instanceof Double) {
         return a.intValue() + b.doubleValue();
@@ -881,28 +876,20 @@ public enum Type {
       } else if (b instanceof BigDecimal decimal) {
         return new BigDecimal(a.longValue()).add(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    case Short i -> {
-      switch (b) {
-      case Integer integer -> {
+    } else if (a instanceof Short) {
+      if (b instanceof Integer) {
         try {
           return Math.addExact(a.shortValue(), b.intValue());
         } catch (final ArithmeticException e) {
           // SPECIAL CASE: UPGRADE TO LONG
           return (long) a.shortValue() + (long) b.intValue();
         }
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return Long.valueOf(a.shortValue() + b.longValue());
-      }
-      case Short aShort -> {
+      } else if (b instanceof Short) {
         // A SHORT + SHORT SUM CAN NEVER OVERFLOW int (MAGNITUDE <= 2 * 32768), SO int ARITHMETIC IS ALWAYS EXACT HERE
         return a.shortValue() + b.shortValue();
-      }
-      case Float v -> {
+      } else if (b instanceof Float) {
         return a.shortValue() + b.floatValue();
       } else if (b instanceof Double) {
         return a.shortValue() + b.doubleValue();
@@ -961,29 +948,24 @@ public enum Type {
     if (a == null || b == null)
       throw new IllegalArgumentException("Cannot decrement a null value");
 
-    switch (a) {
-    case Integer i -> {
-      switch (b) {
-      case Integer integer -> {
+    if (a instanceof Integer) {
+      if (b instanceof Integer) {
         try {
           return Math.subtractExact(a.intValue(), b.intValue());
         } catch (final ArithmeticException e) {
           // SPECIAL CASE: UPGRADE TO LONG
           return (long) a.intValue() - (long) b.intValue();
         }
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return a.intValue() - b.longValue();
-      }
-      case Short aShort -> {
+      } else if (b instanceof Short) {
         try {
           return Math.subtractExact(a.intValue(), b.shortValue());
         } catch (final ArithmeticException e) {
           // SPECIAL CASE: UPGRADE TO LONG
           return (long) a.intValue() - (long) b.shortValue();
         }
-      }
-      case Float v -> {
+      } else if (b instanceof Float) {
         return a.intValue() - b.floatValue();
       } else if (b instanceof Double) {
         return a.intValue() - b.doubleValue();
@@ -1004,28 +986,20 @@ public enum Type {
       } else if (b instanceof BigDecimal decimal) {
         return new BigDecimal(a.longValue()).subtract(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    case Short i -> {
-      switch (b) {
-      case Integer integer -> {
+    } else if (a instanceof Short) {
+      if (b instanceof Integer) {
         try {
           return Math.subtractExact(a.shortValue(), b.intValue());
         } catch (final ArithmeticException e) {
           // SPECIAL CASE: UPGRADE TO LONG
           return (long) a.shortValue() - (long) b.intValue();
         }
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return a.shortValue() - b.longValue();
-      }
-      case Short aShort -> {
+      } else if (b instanceof Short) {
         // A SHORT - SHORT DIFFERENCE CAN NEVER OVERFLOW int (MAGNITUDE <= 2 * 32768), SO int ARITHMETIC IS ALWAYS EXACT HERE
         return a.shortValue() - b.shortValue();
-      }
-      case Float v -> {
+      } else if (b instanceof Float) {
         return a.shortValue() - b.floatValue();
       } else if (b instanceof Double) {
         return a.shortValue() - b.doubleValue();
