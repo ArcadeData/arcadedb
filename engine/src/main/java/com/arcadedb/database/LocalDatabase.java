@@ -1370,7 +1370,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // RECORD
         try {
           final TransactionContext tx = getTransaction();
-          tx.addUpdatedRecord(record);
+          // #7149: false means this transaction has already deleted the record, so there is nothing to write and
+          // nothing to index - the delete wins, and the index entries went with it. Returning here also keeps the
+          // after-update events from firing for a write that never happened.
+          if (!tx.addUpdatedRecord(record))
+            return null;
 
           if (record instanceof Document document) {
             // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
