@@ -6288,99 +6288,120 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return Collections.emptyList();
         }
 
-        // Convert query vector to VectorFloat
-        final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
+        // Pin BOTH halves of the pair the beam walks, and refuse the pair if they disagree. graphIndex is
+        // published under the write lock this read lock excludes, so it cannot move underneath us - but pqVectors
+        // is republished LATER and outside that lock (see buildAndPersistPQ), so a rebuild that has already
+        // installed its new, larger graph but not yet its new codes leaves the two sized differently. Walking that
+        // graph through those codes asks PQVectors for an ordinal it was never sized for, and JVector throws
+        // IndexOutOfBoundsException from inside GraphSearcher.initializeInternal - before any Bits filter can
+        // exclude the entry point, so a filter cannot close this. The ordinal map is checked too because the
+        // pre-filter branch scores ordinals from it rather than from the beam.
+        //
+        // Any state where this fires is a state the PQ path cannot serve at all, so nothing that works today is
+        // being turned off: in the steady state the codes cover exactly the graph they were built from. The exact
+        // path needs no codes, so it answers correctly throughout the window, and the fast path resumes by itself
+        // on the next query once the codes are republished. Falling back has to happen after this lock is
+        // released - findNeighborsFromVector can take the WRITE lock to rebuild, and this thread holds the read
+        // lock, which ReentrantReadWriteLock cannot upgrade.
+        final PQVectors           pinnedPq         = pqVectors;
+        final ImmutableGraphIndex pinnedGraph      = graphIndex;
+        final int[]               pinnedOrdinalMap = this.ordinalToVectorId;
+        if (pinnedPq != null && pinnedGraph.size() <= pinnedPq.count()
+            && pinnedOrdinalMap.length <= pinnedPq.count()) {
+          // Convert query vector to VectorFloat
+          final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
-        // Build the memory-resident PQ score function (uses SIMD/Panama if available)
-        // This is the key to zero-disk-I/O: we use PQ scores for BOTH navigation AND final scoring
-        final ScoreFunction.ApproximateScoreFunction scoreFunction =
-            pqVectors.precomputedScoreFunctionFor(queryVectorFloat, metadata.similarityFunction);
+          // Build the memory-resident PQ score function (uses SIMD/Panama if available)
+          // This is the key to zero-disk-I/O: we use PQ scores for BOTH navigation AND final scoring
+          final ScoreFunction.ApproximateScoreFunction scoreFunction =
+              pinnedPq.precomputedScoreFunctionFor(queryVectorFloat, metadata.similarityFunction);
 
-        // Create a ReRanker that does NOT pull from disk - just returns PQ similarity
-        // This is the critical optimization: we bypass RandomAccessVectorValues entirely
-        final ScoreFunction.ExactScoreFunction approxReranker = ordinal -> scoreFunction.similarityTo(ordinal);
+          // Create a ReRanker that does NOT pull from disk - just returns PQ similarity
+          // This is the critical optimization: we bypass RandomAccessVectorValues entirely
+          final ScoreFunction.ExactScoreFunction approxReranker = ordinal -> scoreFunction.similarityTo(ordinal);
 
-        // Wrap in a DefaultSearchScoreProvider (concrete implementation)
-        final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(scoreFunction, approxReranker);
+          // Wrap in a DefaultSearchScoreProvider (concrete implementation)
+          final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(scoreFunction, approxReranker);
 
-        // Snapshot the volatile ordinal map once, the way the exact path does: the filter and the result loop below
-        // must resolve an ordinal through the same array, or a concurrent rebuild between the two reads would pair
-        // an ordinal's RID with a vector from a different mapping (issue #4581).
-        final int[] ordinalMap = this.ordinalToVectorId;
+          // Snapshot the volatile ordinal map once, the way the exact path does: the filter and the result loop below
+          // must resolve an ordinal through the same array, or a concurrent rebuild between the two reads would pair
+          // an ordinal's RID with a vector from a different mapping (issue #4581).
+          final int[] ordinalMap = pinnedOrdinalMap;
 
-        // Issue #6514 pre-filter plan: the PQ-scored counterpart of the issue #6502 plan in findNeighborsFromVector -
-        // see preFilterApproximate's javadoc for why it cannot simply call bruteForceScan. Gated by its own
-        // selectivity threshold, not VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY: Issue6514ApproximatePrefilterBenchmark
-        // measured this path's crossover at roughly 6-7% selectivity, well below the exact path's 20% default -
-        // see VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY's javadoc for why the two cannot share one knob.
-        if (allowedRIDs != null && !allowedRIDs.isEmpty() && allowListQualifiesForPreFilter(allowedRIDs, ordinalMap,
-            GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY)) {
-          metrics.incrementPreFilterSearches();
+          // Issue #6514 pre-filter plan: the PQ-scored counterpart of the issue #6502 plan in findNeighborsFromVector -
+          // see preFilterApproximate's javadoc for why it cannot simply call bruteForceScan. Gated by its own
+          // selectivity threshold, not VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY: Issue6514ApproximatePrefilterBenchmark
+          // measured this path's crossover at roughly 6-7% selectivity, well below the exact path's 20% default -
+          // see VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY's javadoc for why the two cannot share one knob.
+          if (allowedRIDs != null && !allowedRIDs.isEmpty() && allowListQualifiesForPreFilter(allowedRIDs, ordinalMap,
+              GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY)) {
+            metrics.incrementPreFilterSearches();
+            final List<Pair<RID, Float>> results = new ArrayList<>(k);
+            // PQ-scaled, not exact (issue #6559 item 2): preFilterApproximate scores its ordinals from the PQ codes,
+            // so delta rows merged here are ranked against - and returned alongside - approximate scores.
+            mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results);
+            preFilterApproximate(scoreFunction, k, allowedRIDs, results, ordinalMap);
+            return results;
+          }
+
+          // Live-only (plus the optional RID allow-list): PQ scores a tombstone as happily as a live vector, so
+          // without this the beam fills with nodes the post-filter below then drops (issue #5558).
+          final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex());
+
+          // Execute search using the PQ-based score provider
+          // The graph structure is typically small enough to stay in OS page cache
+          // Note: JVector 4.0's search method uses (scoreProvider, topK, Bits) signature
+          final SearchResult searchResult;
+          final GraphSearcherPool pool = getSearcherPool();
+          final long poolEpoch = searcherPoolEpoch();
+          // Pin the graph reference: a concurrent rebuild may swap the volatile field, and borrow/release must
+          // agree on which graph the searcher belongs to.
+          final ImmutableGraphIndex pooledGraph = pinnedGraph;
+          final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
+          try {
+            searchResult = searcher.search(ssp, k, bitsFilter);
+          } finally {
+            pool.release(searcher, pooledGraph, poolEpoch);
+          }
+
+          recordGraphWalkCost(searchResult.getVisitedCount());
+
+          // Extract RIDs and scores from search results
           final List<Pair<RID, Float>> results = new ArrayList<>(k);
-          // PQ-scaled, not exact (issue #6559 item 2): preFilterApproximate scores its ordinals from the PQ codes,
-          // so delta rows merged here are ranked against - and returned alongside - approximate scores.
+          int skippedOutOfBounds = 0;
+          int skippedDeletedOrNull = 0;
+          for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
+            final int ordinal = nodeScore.node;
+            if (ordinal >= 0 && ordinal < ordinalMap.length) {
+              final int vectorId = ordinalMap[ordinal];
+              final RID rid = vectorIndex().getRid(vectorId);
+              if (rid != null) {
+                final float distance = scoreToDistance(metadata.similarityFunction, nodeScore.score);
+                results.add(new Pair<>(bindRid(rid), distance));
+              } else {
+                skippedDeletedOrNull++;
+              }
+            } else {
+              skippedOutOfBounds++;
+            }
+          }
+
+          // Merge with delta vectors inserted since last graph rebuild, scored on the same PQ scale as the graph rows
+          // above rather than exactly (issue #6559 item 2) - see mergeWithDeltaScanApproximate for why ranking the two
+          // against each other on different scales let quantization error, not the data, decide which row won.
           mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results);
-          preFilterApproximate(scoreFunction, k, allowedRIDs, results, ordinalMap);
+
+          // Log performance metrics. FINE, not INFO (issue #6559 item 3): this path's entire reason to exist is
+          // microsecond latency, so an unconditional per-query INFO line - on the query rate this path is built for -
+          // costs more to format and write than the search itself reports, and floods the log. Every comparable
+          // per-query summary on the neighbouring search paths is already FINE.
+          final long elapsedNanos = System.nanoTime() - startTime;
+          LogManager.instance().log(this, Level.FINE,
+              "Zero-disk-I/O PQ search returned %d results in %.2f µs (skipped: %d out of bounds, %d deleted/null)",
+              results.size(), elapsedNanos / 1000.0, skippedOutOfBounds, skippedDeletedOrNull);
+
           return results;
         }
-
-        // Live-only (plus the optional RID allow-list): PQ scores a tombstone as happily as a live vector, so
-        // without this the beam fills with nodes the post-filter below then drops (issue #5558).
-        final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex());
-
-        // Execute search using the PQ-based score provider
-        // The graph structure is typically small enough to stay in OS page cache
-        // Note: JVector 4.0's search method uses (scoreProvider, topK, Bits) signature
-        final SearchResult searchResult;
-        final GraphSearcherPool pool = getSearcherPool();
-        final long poolEpoch = searcherPoolEpoch();
-        // Pin the graph reference: a concurrent rebuild may swap the volatile field, and borrow/release must
-        // agree on which graph the searcher belongs to.
-        final ImmutableGraphIndex pooledGraph = graphIndex;
-        final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
-        try {
-          searchResult = searcher.search(ssp, k, bitsFilter);
-        } finally {
-          pool.release(searcher, pooledGraph, poolEpoch);
-        }
-
-        recordGraphWalkCost(searchResult.getVisitedCount());
-
-        // Extract RIDs and scores from search results
-        final List<Pair<RID, Float>> results = new ArrayList<>(k);
-        int skippedOutOfBounds = 0;
-        int skippedDeletedOrNull = 0;
-        for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
-          final int ordinal = nodeScore.node;
-          if (ordinal >= 0 && ordinal < ordinalMap.length) {
-            final int vectorId = ordinalMap[ordinal];
-            final RID rid = vectorIndex().getRid(vectorId);
-            if (rid != null) {
-              final float distance = scoreToDistance(metadata.similarityFunction, nodeScore.score);
-              results.add(new Pair<>(bindRid(rid), distance));
-            } else {
-              skippedDeletedOrNull++;
-            }
-          } else {
-            skippedOutOfBounds++;
-          }
-        }
-
-        // Merge with delta vectors inserted since last graph rebuild, scored on the same PQ scale as the graph rows
-        // above rather than exactly (issue #6559 item 2) - see mergeWithDeltaScanApproximate for why ranking the two
-        // against each other on different scales let quantization error, not the data, decide which row won.
-        mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results);
-
-        // Log performance metrics. FINE, not INFO (issue #6559 item 3): this path's entire reason to exist is
-        // microsecond latency, so an unconditional per-query INFO line - on the query rate this path is built for -
-        // costs more to format and write than the search itself reports, and floods the log. Every comparable
-        // per-query summary on the neighbouring search paths is already FINE.
-        final long elapsedNanos = System.nanoTime() - startTime;
-        LogManager.instance().log(this, Level.FINE,
-            "Zero-disk-I/O PQ search returned %d results in %.2f µs (skipped: %d out of bounds, %d deleted/null)",
-            results.size(), elapsedNanos / 1000.0, skippedOutOfBounds, skippedDeletedOrNull);
-
-        return results;
 
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error performing PQ approximate search", e);
@@ -6388,6 +6409,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       } finally {
         lock.readLock().unlock();
       }
+
+      // Reached only when the guard above refused the graph/PQ pair - every other path returns from inside the
+      // block. Outside the read lock on purpose: this can rebuild, which takes the write lock.
+      return findNeighborsFromVector(queryVector, k, allowedRIDs);
     } finally {
       // Track search latency (convert nanos to ms for consistency)
       final long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
