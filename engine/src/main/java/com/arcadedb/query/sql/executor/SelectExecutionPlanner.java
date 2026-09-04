@@ -450,7 +450,9 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info))
       return false;
 
-    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().getFirst(), context));
+    // The type name, not the rendered target: FromItem.toString() appends " AS <alias>" when the statement declared
+    // one, and CountFromTypeStep looks its argument up in the schema (issue #7153).
+    result.chain(new CountFromTypeStep(targetClass.getStringValue(), info.projection.getAllAliases().getFirst(), context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -1191,8 +1193,8 @@ public class SelectExecutionPlanner {
           return;
         }
       } else {
-        final String targetStr = target.toString();
-        variableValue = context.getVariablePath(targetStr);
+        // without the alias: this is resolved as a variable path, and " AS <alias>" is not part of one
+        variableValue = context.getVariablePath(target.toStringWithoutAlias());
       }
       if (variableValue != null) {
         // Handle single Result object (e.g., from $parent.$current)
@@ -3226,7 +3228,7 @@ public class SelectExecutionPlanner {
           // a different evaluation than the full-text index semantics.
           final BooleanExpression remaining = bestIndex.getRemainingCondition();
           if (remaining != null && !remaining.isEmpty()) {
-            if (info.perRecordLetClause != null && refersToLet(Collections.singletonList(remaining))) {
+            if (refersToLet(Collections.singletonList(remaining), info.perRecordLetClause)) {
               handleLet(subPlan, info, context);
             }
             subPlan.chain(new FilterStep(createWhereFrom(remaining), context));
@@ -3238,7 +3240,7 @@ public class SelectExecutionPlanner {
               statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
-            if (info.perRecordLetClause != null && refersToLet(block.getSubBlocks())) {
+            if (refersToLet(block.getSubBlocks(), info.perRecordLetClause)) {
               handleLet(subPlan, info, context);
             }
             subPlan.chain(new FilterStep(createWhereFrom(block), context));
@@ -3286,7 +3288,7 @@ public class SelectExecutionPlanner {
           plan.chain(step);
           plan.chain(new FilterByClustersStep(filterClusters, context));
           if (!block.getSubBlocks().isEmpty()) {
-            if (info.perRecordLetClause != null && refersToLet(block.getSubBlocks())) {
+            if (refersToLet(block.getSubBlocks(), info.perRecordLetClause)) {
               handleLet(plan, info, context);
             }
             plan.chain(new FilterStep(createWhereFrom(block), context));
@@ -3321,15 +3323,27 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private static boolean refersToLet(final List<BooleanExpression> subBlocks) {
-    if (subBlocks == null)
+  /**
+   * Whether any of {@code subBlocks} reads one of the variables {@code letClause} declares.
+   * <p>
+   * Matched by name, on the rendered condition: a variable reference is not always the whole expression
+   * ({@code #X:Y IN $brain} reads one), and there is no generic walker over the expression AST to ask instead.
+   * Matching the declared names rather than a bare {@code "$"} keeps a string literal that merely contains the
+   * character ({@code WHERE currency = 'US$'}) from counting as a reference, which would cost the statement an
+   * index it could have used (issue #7153).
+   */
+  private static boolean refersToLet(final List<BooleanExpression> subBlocks, final LetClause letClause) {
+    if (subBlocks == null || letClause == null || letClause.getItems() == null)
       return false;
 
-    for (BooleanExpression exp : subBlocks) {
-      // Check if expression contains a variable reference (starts with or contains "$")
-      // An expression like "#X:Y IN $brain" doesn't start with "$" but contains a variable reference
-      if (exp.toString().contains("$"))
-        return true;
+    for (final BooleanExpression exp : subBlocks) {
+      final String rendered = exp.toString();
+      if (rendered.indexOf('$') < 0)
+        continue;
+
+      for (final LetItem item : letClause.getItems())
+        if (rendered.contains(item.getVarName().getStringValue()))
+          return true;
     }
     return false;
   }
@@ -3558,8 +3572,8 @@ public class SelectExecutionPlanner {
   /**
    * @param allowDeferredLetFilter whether a residual condition that reads a per-record LET variable may be deferred to
    *                               the statement's WHERE clause. Only the single, top-level target can do that: there
-   *                               is one WHERE clause to defer into, so a per-sub-type or per-OR-branch residual has
-   *                               to give the index up instead (issue #7153).
+   *                               is one WHERE clause to defer into, so a per-sub-type residual has to give the
+   *                               index up instead (issue #7153).
    */
   private List<ExecutionStepInternal> handleTypeAsTargetWithIndex(final String targetType, final Set<String> filterBuckets,
       final QueryPlanningInfo info, final CommandContext context, final boolean allowDeferredLetFilter) {
@@ -3624,9 +3638,8 @@ public class SelectExecutionPlanner {
       if (needsFilterStep(desc.getRemainingCondition(), context)) {
         if (refersToPerRecordLet(info, desc.getRemainingCondition())) {
           if (!allowDeferredLetFilter)
-            // A sub-type or OR branch: the residual would have to be deferred per branch, and there is only one
-            // WHERE clause to defer it into. Give the whole statement up to the plain scan, which evaluates the
-            // filter after the LET by construction.
+            // One sub-plan per sub-type, each with its own residual, and a single WHERE clause to defer into. Give
+            // the whole statement up to the plain scan, which evaluates the filter after the LET by construction.
             return null;
 
           // The residual reads a variable the per-record LET computes, and the LET steps run downstream of this
@@ -3639,10 +3652,14 @@ public class SelectExecutionPlanner {
           result.add(new FilterStep(createWhereFrom(desc.getRemainingCondition()), context));
       }
     } else {
+      // Defensive, and not reachable through a SELECT today: handleTypeAsTargetWithIndexedFunction() runs first at
+      // both call sites and claims every multi-block WHERE, so an OR reaches its own per-branch planning - which
+      // chains the LET into each sub-plan correctly, because that sub-plan is not empty by then. Kept because this
+      // branch chains residual filters of its own, and one reading a per-record LET would be evaluated with the
+      // variable unset, which is a wrong answer rather than a lost optimisation.
       for (final IndexSearchDescriptor desc : optimumIndexSearchDescriptors)
         if (needsFilterStep(desc.getRemainingCondition(), context) && refersToPerRecordLet(info,
             desc.getRemainingCondition()))
-          // One OR branch per sub-plan, each with its own residual: see above.
           return null;
 
       result = new ArrayList<>();
@@ -3660,7 +3677,7 @@ public class SelectExecutionPlanner {
    * is not set yet) or has to wait for the LET steps downstream of it.
    */
   private static boolean refersToPerRecordLet(final QueryPlanningInfo info, final BooleanExpression condition) {
-    return info.perRecordLetClause != null && refersToLet(Collections.singletonList(condition));
+    return refersToLet(Collections.singletonList(condition), info.perRecordLetClause);
   }
 
   private boolean fullySorted(final OrderBy orderBy, final AndBlock conditions, final Index idx) {

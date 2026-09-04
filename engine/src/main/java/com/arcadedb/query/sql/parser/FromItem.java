@@ -48,6 +48,22 @@ public class FromItem extends SimpleNode {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    toString(params, builder, true);
+  }
+
+  /**
+   * The target as it was written, WITHOUT the alias that {@link #toString()} renders after it. Callers that resolve
+   * the rendered text as a name - a schema type for {@code CountFromTypeStep}, a context variable path - must use
+   * this: an alias names the rows the target yields, and is never part of the target's own name. Looking up
+   * {@code "Main AS m"} as a type finds nothing (issue #7153).
+   */
+  public String toStringWithoutAlias() {
+    final StringBuilder builder = new StringBuilder();
+    toString(null, builder, false);
+    return builder.toString();
+  }
+
+  private void toString(final Map<String, Object> params, final StringBuilder builder, final boolean withAlias) {
     if (rids != null && rids.size() > 0) {
       if (rids.size() == 1) {
         rids.getFirst().toString(params, builder);
@@ -113,7 +129,7 @@ public class FromItem extends SimpleNode {
     if (modifier != null)
       modifier.toString(params, builder);
 
-    if (alias != null) {
+    if (withAlias && alias != null) {
       builder.append(" AS ");
       alias.toString(params, builder);
     }
