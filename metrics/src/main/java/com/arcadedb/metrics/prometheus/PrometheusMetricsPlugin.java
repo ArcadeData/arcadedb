@@ -88,6 +88,13 @@ public class PrometheusMetricsPlugin implements ServerPlugin {
    * purpose: it runs inside that class's static initializer over every system property and environment variable, so
    * a throw there becomes an {@code ExceptionInInitializerError} that takes the whole engine down instead of the
    * setting. An authentication switch is worth the extra care at the one site that reads it.
+   * <p>
+   * A value that arrives ALREADY a {@link Boolean} is trusted, and that is only sound because the two paths that
+   * store one - {@code SET SERVER SETTING} and the {@code set_server_setting} MCP tool - both go through
+   * {@link GlobalConfiguration#coerceFromAdminCommand(Object)}, which refuses a boolean it cannot read rather than
+   * folding it to {@code false}. Were either to fall back to the permissive {@code coerce}, a typo would reach here
+   * as {@code Boolean.FALSE} with the text that produced it already lost, and no parse at this end could tell it
+   * from a deliberate {@code false}.
    *
    * @return {@code true} unless the configured value is unambiguously {@code false}
    */

@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for the fourth finding of issue #7124: {@code /prometheus} used to read its
@@ -98,6 +99,25 @@ class Issue7124PrometheusRequireAuthenticationTest {
       assertThat(PrometheusMetricsPlugin.isAuthenticationRequired(configuration)).as(
           "'%s' is not a boolean: the endpoint must stay authenticated rather than silently open", typo).isTrue();
     }
+  }
+
+  @Test
+  void theAdminCommandPathCannotSlipAPreCoercedTypoPast() {
+    // THE GAP THE FIRST ROUND OF REVIEW FOUND. `SET SERVER SETTING <key> ture` AND THE set_server_setting MCP TOOL
+    // BOTH CONVERT BEFORE STORING, SO A TYPO USED TO ARRIVE HERE AS Boolean.FALSE - INDISTINGUISHABLE FROM A
+    // DELIBERATE false, WITH THE TEXT THAT PRODUCED IT ALREADY LOST. NO PARSE AT THIS END COULD HAVE CAUGHT IT;
+    // THE REFUSAL HAS TO HAPPEN WHERE THE TEXT STILL EXISTS.
+    final GlobalConfiguration setting = GlobalConfiguration.SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION;
+
+    assertThatThrownBy(() -> setting.coerceFromAdminCommand("ture")).isInstanceOf(IllegalArgumentException.class);
+
+    // AND WHAT THAT PATH DOES STORE IS ALWAYS A VALUE THIS READER MAY TRUST.
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(KEY, setting.coerceFromAdminCommand("false"));
+    assertThat(PrometheusMetricsPlugin.isAuthenticationRequired(configuration)).isFalse();
+
+    configuration.setValue(KEY, setting.coerceFromAdminCommand("true"));
+    assertThat(PrometheusMetricsPlugin.isAuthenticationRequired(configuration)).isTrue();
   }
 
   @Test

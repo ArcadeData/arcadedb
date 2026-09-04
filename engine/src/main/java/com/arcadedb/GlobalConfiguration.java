@@ -2703,6 +2703,38 @@ public enum GlobalConfiguration {
    *
    * @throws IllegalArgumentException if {@code iValue} cannot be represented as this setting's type
    */
+  /**
+   * The conversion {@link #coerce(Object)} performs, but STRICT about a {@code Boolean} setting: a text value that is
+   * neither {@code true} nor {@code false} is refused instead of silently reading as {@code false}.
+   * <p>
+   * Issue #7124: {@code coerce} cannot be tightened, and its own javadoc says why - it runs inside this class's
+   * static initializer over every system property and environment variable, so a boolean typo would become an
+   * {@code ExceptionInInitializerError} that takes the engine down instead of the setting. That leniency is safe for
+   * a value the process configured itself with, and unsafe for one an administrator just typed: {@code SET SERVER
+   * SETTING arcadedb.serverMetrics.prometheus.requireAuthentication ture} used to be answered with a 200 and store
+   * {@code false}, turning a typo into an unauthenticated metrics endpoint. Every other type already refuses what it
+   * cannot read here ({@code abc} for an {@code Integer} throws); {@code Boolean} was the one that did not.
+   * <p>
+   * This is the entry point for a value that arrived from an administrative command - {@code SET SERVER SETTING},
+   * {@code SET DATABASE SETTING} and the {@code set_server_setting} MCP tool - where refusing loudly is a 400 the
+   * operator can read and act on. Every other conversion path keeps using {@link #coerce(Object)}.
+   *
+   * @param iValue the value to convert, or {@code null}
+   *
+   * @return the value as an instance of {@link #getType()}, or {@code null} when {@code iValue} is {@code null}
+   *
+   * @throws IllegalArgumentException if {@code iValue} cannot be represented as this setting's type
+   */
+  public Object coerceFromAdminCommand(final Object iValue) {
+    if (type == Boolean.class && iValue != null && !(iValue instanceof Boolean)) {
+      final String text = iValue.toString().trim();
+      if (!"true".equalsIgnoreCase(text) && !"false".equalsIgnoreCase(text))
+        throw invalidValue(iValue, new IllegalArgumentException("only 'true' and 'false' are accepted"));
+    }
+
+    return coerce(iValue);
+  }
+
   public Object coerce(final Object iValue) {
     if (iValue == null)
       return null;
