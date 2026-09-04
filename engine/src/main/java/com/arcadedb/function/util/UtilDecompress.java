@@ -37,6 +37,9 @@ import java.util.zip.InflaterInputStream;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class UtilDecompress extends AbstractUtilFunction {
+  /** Largest decompressed payload this function will buffer; anything beyond it is refused as a zip bomb. */
+  public static final int MAX_OUTPUT_SIZE = 100 * 1024 * 1024; // 100MB maximum output size
+
   @Override
   protected String getSimpleName() {
     return "decompress";
@@ -56,9 +59,6 @@ public class UtilDecompress extends AbstractUtilFunction {
   public String getDescription() {
     return "Decompress base64-encoded data using the specified algorithm (gzip or deflate)";
   }
-
-  /** Largest decompressed payload this function will buffer; anything beyond it is refused as a zip bomb. */
-  public static final int MAX_OUTPUT_SIZE = 100 * 1024 * 1024; // 100MB maximum output size
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
