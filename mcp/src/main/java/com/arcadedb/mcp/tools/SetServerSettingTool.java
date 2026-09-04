@@ -83,9 +83,14 @@ public class SetServerSettingTool {
     // put, so before this coercion "arcadedb.asyncWorkerThreads"="abc" was answered with isError:false and the
     // NumberFormatException surfaced later, inside whichever component read the setting next. Coercing here also
     // means the map holds a typed value, which both GlobalConfiguration's and ContextConfiguration's accessors
-    // return without re-parsing. GlobalConfiguration.coerce is the same parse the global setter uses, so this tool
-    // and its HTTP twin refuse exactly what setValue refuses.
-    final Object coerced = cfg.coerce(value);
+    // return without re-parsing. coerceFromAdminCommand is the same parse the HTTP twin uses, so this tool and it
+    // refuse exactly the same values.
+    //
+    // Issue #7124: the "FromAdminCommand" half is what makes it STRICT about a boolean. GlobalConfiguration.coerce
+    // reads anything unparseable as false - it has to, it runs in that class's static initializer - so
+    // "requireAuthentication"="ture" arrived here, became Boolean.FALSE and was reported back as a success that had
+    // just opened the metrics endpoint. A value an administrator typed is refused instead.
+    final Object coerced = cfg.coerceFromAdminCommand(value);
 
     final Object oldValue = server.getConfiguration().getValue(cfg);
     server.getConfiguration().setValue(cfg.getKey(), coerced);

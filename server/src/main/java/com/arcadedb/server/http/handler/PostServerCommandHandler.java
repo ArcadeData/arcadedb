@@ -887,7 +887,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * A key that names no declared setting is still stored verbatim, as it always has been: it carries no type to
    * validate against, and rejecting it would change behaviour this endpoint has long allowed. The {@code
    * set_server_setting} MCP tool is stricter on that point only - for a DECLARED setting the two now accept and
-   * refuse exactly the same values, both through {@link GlobalConfiguration#coerce(Object)}.
+   * refuse exactly the same values, both through {@link GlobalConfiguration#coerceFromAdminCommand(Object)}.
+   * <p>
+   * Issue #7124: that conversion is the STRICT one. A typo in a {@code Boolean} value used to reach
+   * {@code Boolean.parseBoolean} and read as {@code false}, so {@code ... requireAuthentication ture} was answered
+   * with a 200 and quietly published the metrics endpoint unauthenticated. Every other type already refused what it
+   * could not read; a boolean now does too, with the same 400.
    * <p>
    * The command is still tokenized on the first space(s) BEFORE the quotes are stripped, so quoting does not make a
    * space part of a token: a database name or a setting key containing one would split wrong. That is unchanged
@@ -909,7 +914,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       throw new IllegalArgumentException(
           "'value' must not be empty for setting '" + setting.getKey() + "' of type " + setting.getType().getSimpleName());
 
-    configuration.setValue(setting.getKey(), setting.coerce(value));
+    configuration.setValue(setting.getKey(), setting.coerceFromAdminCommand(value));
   }
 
   private JSONObject getServerEvents(final String fileName) {

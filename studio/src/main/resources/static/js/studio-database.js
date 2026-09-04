@@ -3461,6 +3461,9 @@ $(document).ready(function () {
 });
 
 function displaySchema(onReady) {
+  // The schema is being rebuilt and the pane may be reset: stop a materialized view polling into it (issue #7124).
+  stopMaterializedViewAutoRefresh();
+
   fetchSchemaTypes(function (types) {
     // Build sub-types map
     let subTypes = {};
@@ -3544,6 +3547,9 @@ function displaySchema(onReady) {
 }
 
 function showTypeDetail(typeName) {
+  // The detail pane is about to belong to this type: stop a materialized view still polling into it (issue #7124).
+  stopMaterializedViewAutoRefresh();
+
   let types = window._schemaTypes;
   let subTypes = window._schemaSubTypes;
   if (!types) return;
@@ -4388,6 +4394,16 @@ $(document).ready(function () {
 
 var _mvAutoRefreshInterval = null;
 
+// Issue #7124: the BUILDING poller writes into #dbTypeDetail, so every function that takes that pane over has to
+// cancel it first - otherwise the old view's status keeps overwriting the type the user has just selected. Same
+// shape as stopDbMetricsAutoRefresh(): clearing the handle as well is what makes a second call a no-op.
+function stopMaterializedViewAutoRefresh() {
+  if (_mvAutoRefreshInterval) {
+    clearInterval(_mvAutoRefreshInterval);
+    _mvAutoRefreshInterval = null;
+  }
+}
+
 function fetchMaterializedViews(callback) {
   let database = getCurrentDatabase();
   if (database == null || database == "") {
@@ -4546,6 +4562,9 @@ function renderGavSidebarBadges(gavs, isQuerySidebar) {
 }
 
 function showGavDetail(gavName) {
+  // The detail pane is about to belong to this view: stop a materialized view still polling into it (issue #7124).
+  stopMaterializedViewAutoRefresh();
+
   let gavs = window._schemaGraphAnalyticalViews;
   if (!gavs) return;
 
@@ -5150,10 +5169,7 @@ function mvFormatInterval(ms) {
 
 function showMaterializedViewDetail(viewName) {
   // Clear any existing auto-refresh
-  if (_mvAutoRefreshInterval) {
-    clearInterval(_mvAutoRefreshInterval);
-    _mvAutoRefreshInterval = null;
-  }
+  stopMaterializedViewAutoRefresh();
 
   let views = window._schemaMaterializedViews;
   if (!views) return;
