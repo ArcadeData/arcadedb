@@ -1451,8 +1451,10 @@ public class ArcadeDBServer {
       try {
         final String content = FileUtils.readFileAsString(file);
         configuration.reset();
+        // fromJSON runs the side effect of every declared SCOPE.SERVER setting it loads, so a setting like
+        // arcadedb.server.logFormat - whose effect is swapping the console formatter chosen at logger init, long
+        // before this file is read - takes effect from the configuration file too (issue #7121).
         configuration.fromJSON(content);
-
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e, file);
       }

@@ -31,7 +31,8 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -44,12 +45,17 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 public class RemoteImmutableDocument extends ImmutableDocument {
   protected final RemoteDatabase      remoteDatabase;
   protected final Map<String, Object> map;
+  /** Snapshot handed out by {@link #getPropertyNames()}; see there for why it is computed once. */
+  private final   Set<String>         propertyNames;
 
   public RemoteImmutableDocument(final RemoteDatabase remoteDatabase, final Map<String, Object> attributes) {
     super(null, remoteDatabase.getSchema().getType((String) attributes.get(Property.TYPE_PROPERTY)), null, null);
     this.remoteDatabase = remoteDatabase;
 
-    this.map = new HashMap<>(attributes.size());
+    // LinkedHashMap, not HashMap: Document.getPropertyNames() promises the order the properties were set in, and
+    // the JSON the server sends preserves it (JSONObject.toMap() is itself a LinkedHashMap). Re-hashing it here is
+    // the only place the order was lost, so the same record read remotely and embedded disagreed (issue #7140).
+    this.map = new LinkedHashMap<>(attributes.size());
 
     final Map<String, Type> propTypes = parsePropertyTypes((String) attributes.get(Property.PROPERTY_TYPES_PROPERTY));
 
@@ -81,6 +87,8 @@ public class RemoteImmutableDocument extends ImmutableDocument {
       }
     }
 
+    this.propertyNames = Collections.unmodifiableSet(new LinkedHashSet<>(map.keySet()));
+
     final String ridAsString = (String) attributes.get(RID_PROPERTY);
     if (ridAsString != null)
       this.rid = remoteDatabase.newRID(ridAsString);
@@ -95,12 +103,33 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
   @Override
   public synchronized Set<String> getPropertyNames() {
-    return Collections.unmodifiableSet(map.keySet());
+    // A snapshot in insertion order, exactly as MutableDocument.getPropertyNames() returns: the contract on
+    // Document.getPropertyNames() asks for both, and a keySet() view is neither (issue #7140).
+    //
+    // Built once in the constructor rather than copied per call: `map` is populated there and never written again -
+    // this class is the IMMUTABLE record - so one unmodifiable set is already a valid snapshot for every caller and
+    // repeating the copy would only be garbage. RemoteMutableDocument, which can change, inherits MutableDocument's
+    // per-call copy instead.
+    return propertyNames;
   }
 
   @Override
   public synchronized boolean has(final String propertyName) {
     return map.containsKey(propertyName);
+  }
+
+  /**
+   * The inherited {@link com.arcadedb.database.ImmutableDocument#propertiesAsMap()} deserializes from a binary buffer
+   * and answers an empty map when there is no database to load one from - which is always the case here. Reading the
+   * properties this record already holds, in the order the server sent them, keeps the same answer as
+   * {@link #toMap(boolean)} and {@link #getPropertyNames()} (issue #7140).
+   */
+  @Override
+  public synchronized Map<String, Object> propertiesAsMap() {
+    // A copy, like RemoteImmutableVertex's override: `map` is not written after construction today, so a view would
+    // be correct, but two siblings answering the same call with a view and with a copy is the kind of difference
+    // that only shows up once one of them starts mutating.
+    return new LinkedHashMap<>(map);
   }
 
   public synchronized Object get(final String propertyName) {
@@ -115,7 +144,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
   @Override
   public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
-    final HashMap<String, Object> result = new HashMap<>(map);
+    final Map<String, Object> result = new LinkedHashMap<>(map);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
       result.put(TYPE_PROPERTY, getTypeName());
@@ -182,7 +211,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
       javaType = remoteDatabase.getSerializer().getDateTimeImplementation();
 
     if (value instanceof Map<?, ?> mapValue) {
-      final Map<Object, Object> converted = new HashMap<>(mapValue.size());
+      final Map<Object, Object> converted = new LinkedHashMap<>(mapValue.size());
       for (final Map.Entry<?, ?> entry : mapValue.entrySet())
         converted.put(entry.getKey(), Type.convert(null, entry.getValue(), javaType));
       return converted;

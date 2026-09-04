@@ -93,6 +93,9 @@ public class SetServerSettingTool {
     final Object coerced = cfg.coerceFromAdminCommand(value);
 
     final Object oldValue = server.getConfiguration().getValue(cfg);
+    // setValue also runs the side effect of a declared SCOPE.SERVER setting, so one whose effect is not a value
+    // somebody later reads - arcadedb.server.logFormat swapping the console formatter - takes effect here too
+    // rather than being stored and ignored (issue #7121).
     server.getConfiguration().setValue(cfg.getKey(), coerced);
 
     final JSONObject result = new JSONObject();

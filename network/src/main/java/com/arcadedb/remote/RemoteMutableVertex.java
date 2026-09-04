@@ -35,7 +35,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
@@ -88,12 +88,12 @@ public class RemoteMutableVertex extends MutableVertex {
 
   @Override
   public Map<String, Object> propertiesAsMap() {
-    return new HashMap<>(map);
+    return new LinkedHashMap<>(map);
   }
 
   @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
-    final Map<String, Object> result = new HashMap<>(map);
+    final Map<String, Object> result = new LinkedHashMap<>(map);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "v");
       result.put(TYPE_PROPERTY, getTypeName());

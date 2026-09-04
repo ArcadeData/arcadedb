@@ -914,6 +914,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       throw new IllegalArgumentException(
           "'value' must not be empty for setting '" + setting.getKey() + "' of type " + setting.getType().getSimpleName());
 
+    // setValue also runs the side effect of a declared SCOPE.SERVER setting, so one whose effect is not a value
+    // somebody later reads - arcadedb.server.logFormat swapping the console formatter - takes effect here too
+    // rather than being stored and ignored (issue #7121).
     configuration.setValue(setting.getKey(), setting.coerceFromAdminCommand(value));
   }
 

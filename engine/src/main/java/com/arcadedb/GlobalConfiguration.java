@@ -21,6 +21,7 @@ package com.arcadedb;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
@@ -235,8 +236,8 @@ public enum GlobalConfiguration {
       Integer.class, 0),
 
   TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,
-      "Number of concurrent files to use for tx log. 0 (default) = available cores", Integer.class,
-      Math.max(Runtime.getRuntime().availableProcessors(), 1)),
+      "Number of concurrent files to use for tx log. 0 or a negative value = available cores, which is also the default",
+      Integer.class, Math.max(Runtime.getRuntime().availableProcessors(), 1)),
 
   FREE_PAGE_RAM("arcadedb.freePageRAM", SCOPE.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,
       50),
@@ -888,10 +889,10 @@ public enum GlobalConfiguration {
       Integer.class, 2),
 
   // CYPHER
-  CYPHER_STATEMENT_CACHE("arcadedb.cypher.statementCache", SCOPE.DATABASE,
-      "Max number of entries in the cypher statement cache. Use 0 to disable. Caching statements speeds up execution of the same cypher queries",
-      Integer.class, 1000),
-
+  // `arcadedb.cypher.statementCache` used to be declared here. It had no reader anywhere in the tree and was a
+  // duplicate of OPENCYPHER_STATEMENT_CACHE, which is the one LocalDatabase actually sizes the parsed-statement
+  // cache from - so a user tuning Cypher plan caching through it changed nothing (issue #7121). Removed rather
+  // than wired up: two settings for one cache is the defect, and the surviving one already works.
   CYPHER_MAX_EXPRESSION_DEPTH("arcadedb.cypher.maxExpressionDepth", SCOPE.DATABASE,
       """
       Maximum nesting depth allowed for a single Cypher expression, for example parentheses, list/map literals \
@@ -1368,9 +1369,18 @@ public enum GlobalConfiguration {
       "When SERVER_READINESS_REQUIRES_HA is true, the maximum number of Raft log entries a follower may lag behind the commit index (commitIndex - lastAppliedIndex) and still report Ready. Keeps /api/v1/ready returning 503 until a (re)joined follower has replayed the committed log, so a rolling restart does not drop the write quorum.",
       Long.class, 100L),
 
+  // The console formatter is chosen once, on the first log record the JVM emits, which is almost always before a
+  // server configuration file, a fromJSON, or the settings API has had a chance to speak. Without this callback the
+  // setting only ever worked as a raw -D/env system property and every supported channel silently kept the default
+  // formatter (issue #7121). Re-selecting on set is enough: DefaultLogger swaps the formatter on the console handler
+  // it already installed, and is a no-op before the logger is initialized (init() then picks the value up itself).
   SERVER_LOG_FORMAT("arcadedb.server.logFormat", SCOPE.SERVER,
       "Console log format: 'text' (default, human-readable) or 'json' (one JSON object per line with correlation fields)",
-      String.class, "text"),
+      String.class, "text", //
+      value -> {
+        DefaultLogger.refreshConsoleFormatter(value != null ? value.toString() : null);
+        return value;
+      }),
 
   SERVER_LOG_INCLUDE_TRACE("arcadedb.server.logIncludeTrace", SCOPE.SERVER,
       "In text log mode, append [traceId=...] to each line while a trace is active. Default false preserves current text output.",
@@ -2408,6 +2418,69 @@ public enum GlobalConfiguration {
     else
       value = defValue;
     explicitlySet = false;
+
+    // Symmetry with setValue: a callback is a side effect that has to follow the value, or a reset would report the
+    // default while whatever the callback drives stays on the value that was just discarded (issue #7121).
+    value = invokeCallback(value);
+  }
+
+  /**
+   * Runs this setting's callback for {@code newValue} and returns what it makes of it. Shared by
+   * {@link #setValue(Object)}, {@link #reset()} and {@link #applyContextValue(Object)} so the three cannot drift -
+   * which is exactly how {@code SERVER_LOG_FORMAT}'s set and reset paths came apart (issue #7121). A callback that
+   * throws is logged and swallowed: it is a side effect attached to a setting, never a reason to fail the write.
+   */
+  private Object invokeCallback(final Object newValue) {
+    if (callback == null)
+      return newValue;
+    try {
+      return callback.call(newValue);
+    } catch (final Exception e) {
+      if (LogManager.instance() != null)
+        LogManager.instance().log(this, Level.SEVERE, "Error on applying property %s=%s", e, key, newValue);
+      return newValue;
+    }
+  }
+
+  /**
+   * Runs the callback for a value written into a {@link ContextConfiguration} overlay rather than into this enum.
+   * <p>
+   * A SCOPE.SERVER setting is authoritative in the SERVER's own overlay, and that overlay is a plain map: the
+   * server configuration file ({@code fromJSON}), the {@code SET SERVER SETTING} admin command and the MCP
+   * {@code set_server_setting} tool all write into it without ever touching this enum. A setting whose effect is a
+   * SIDE EFFECT rather than a value someone later reads was therefore stored and never applied through any of the
+   * channels its SCOPE advertises (issue #7121). The return value is deliberately dropped - the overlay owns the
+   * stored value, this call is only about running the side effect.
+   * <p>
+   * <b>That makes a contract on the callback of any SCOPE.SERVER setting: it must be a pure side effect and return
+   * its argument unchanged.</b> A callback that NORMALISES the value - case-folds it, clamps it, substitutes a
+   * default - would have that normalisation applied on the enum path and silently dropped here, so the same input
+   * would be stored one way in the process-wide enum and another way in a server's overlay. Normalise in
+   * {@link #coerce(Object)} instead, which both paths go through.
+   * <p>
+   * The callback is handed a COERCED value, as {@link #setValue(Object)} hands it one, so a callback that expects
+   * the setting's declared type (a {@code Boolean}, an {@code Integer}) is not silently given the raw {@code String}
+   * a configuration file or an admin command carried. A value this setting cannot coerce is passed through as-is
+   * rather than failing the write: the overlay has already stored it, and refusing here would leave the side effect
+   * and the stored value disagreeing.
+   */
+  void applyContextValue(final Object newValue) {
+    if (callback == null || scope != SCOPE.SERVER)
+      return;
+
+    Object coerced;
+    try {
+      coerced = coerce(newValue);
+    } catch (final Exception e) {
+      // Logged, not swallowed silently: the callback is about to be handed a value of a type it may not expect, and
+      // the failure it then throws would otherwise point at the callback instead of at the value that caused it.
+      if (LogManager.instance() != null)
+        LogManager.instance()
+            .log(this, Level.WARNING, "Value %s for property %s could not be coerced to %s; the setting's side effect "
+                + "runs with the raw value", e, newValue, key, type.getSimpleName());
+      coerced = newValue;
+    }
+    invokeCallback(coerced);
   }
 
   /**
@@ -2865,16 +2938,7 @@ public enum GlobalConfiguration {
     try {
       value = coerce(iValue);
 
-      if (callback != null)
-        try {
-          final Object newValue = callback.call(value);
-          if (newValue != value)
-            // OVERWRITE IT
-            value = newValue;
-        } catch (final Exception e) {
-          if (LogManager.instance() != null)
-            LogManager.instance().log(this, Level.SEVERE, "Error during setting property %s=%s", e, key, value);
-        }
+      value = invokeCallback(value);
 
       if (allowed != null && value != null)
         if (!allowed.contains(value.toString().toLowerCase(Locale.ENGLISH)))

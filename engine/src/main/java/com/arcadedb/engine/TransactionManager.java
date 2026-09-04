@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
@@ -1010,6 +1011,20 @@ public class TransactionManager {
     fileIdsLockManager.unlock(fileId, requester);
   }
 
+  /**
+   * Resolves {@link GlobalConfiguration#TX_WAL_FILES} into an actual pool size. The setting documents {@code 0 =
+   * available cores}, but nothing translated it, so an operator who set the value the description advertises got a
+   * zero-length pool and every commit then died on {@code threadId() % 0} - an {@code ArithmeticException} out of
+   * {@link #writeTransactionToWAL}, on the first write, for the life of the database (issue #7121). Translating at
+   * the read site is the idiom the other "0 = auto" settings already use (see {@code QueryEngineManager}'s
+   * {@code autoSizeThreads} for {@code QUERY_PARALLELISM_POOL_THREADS}). A negative value resolves the same way
+   * rather than throwing {@code NegativeArraySizeException} deeper in.
+   */
+  static int walFilePoolSize(final ContextConfiguration configuration) {
+    final int configured = configuration.getValueAsInteger(GlobalConfiguration.TX_WAL_FILES);
+    return configured > 0 ? configured : Math.max(Runtime.getRuntime().availableProcessors(), 1);
+  }
+
   private void createWALFilePool() {
     // #4958: seed the counter PAST any existing txlog_<n>.wal. WALFile opens its path in "rw" mode
     // without truncation, so restarting the counter from 0 while preserved WAL files are still on disk
@@ -1029,7 +1044,7 @@ public class TransactionManager {
           }
       }
 
-    activeWALFilePool = new WALFile[database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FILES)];
+    activeWALFilePool = new WALFile[walFilePoolSize(database.getConfiguration())];
     for (int i = 0; i < activeWALFilePool.length; ++i) {
       final long counter = logFileCounter.getAndIncrement();
       try {
