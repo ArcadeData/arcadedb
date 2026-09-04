@@ -2917,7 +2917,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (retryDelayCap > 0) {
       LogManager.instance()
           .log(this, Level.FINE, "Wait up to %d ms before the next retry for transaction commit (attempt=%d, threadId=%d)",
-              RetryBackoff.windowMs(attempt, retryDelayBase, retryDelayCap), attempt + 1, Thread.currentThread().threadId());
+              RetryBackoff.windowMs(attempt, retryDelayBase, retryDelayCap), attempt + 1, Thread.currentThread().getId());
 
       RetryBackoff.sleep(attempt, retryDelayBase, retryDelayCap);
     }

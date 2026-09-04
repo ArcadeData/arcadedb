@@ -124,7 +124,7 @@ class Issue5683LSMTreeIndexCursorTest extends TestHelper {
   }
 
   private LSMTreeIndexMutable bucketMutableIndex() {
-    final com.arcadedb.index.TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("id").getFirst();
+    final com.arcadedb.index.TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("id").get(0);
     for (final com.arcadedb.index.Index bucketIndex : typeIndex.getIndexesOnBuckets())
       if (bucketIndex instanceof LSMTreeIndex lsmIndex)
         return lsmIndex.getMutableIndex();

@@ -519,7 +519,7 @@ public class StripedEdgeList extends EdgeLinkedList {
       if (size == 0)
         continue;
       if (size == 1) {
-        iterator.addIterator(factory.create(chains.getFirst()));
+        iterator.addIterator(factory.create(chains.get(0)));
         continue;
       }
 

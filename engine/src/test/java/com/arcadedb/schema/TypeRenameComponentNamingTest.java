@@ -255,7 +255,7 @@ class TypeRenameComponentNamingTest extends TestHelper {
 
     // Block the LAST index the rename loop will reach, so at least one earlier index is renamed before the failure.
     final File databaseDirectory = new File(database.getDatabasePath());
-    final String blockedComponent = indexes.getLast().getIndexesOnBuckets()[0].getName();
+    final String blockedComponent = indexes.get(indexes.size() - 1).getIndexesOnBuckets()[0].getName();
     final File blockedFile = fileStartingWith(databaseDirectory, blockedComponent + ".");
     final File parked = new File(databaseDirectory,
         blockedFile.getName().replace("Multi_0_", "renamed.Multi_0_"));
@@ -316,7 +316,7 @@ class TypeRenameComponentNamingTest extends TestHelper {
     assertThat(buckets).as("two buckets are needed for a mid-loop failure").hasSize(2);
 
     final File databaseDirectory = new File(database.getDatabasePath());
-    final File parked = parkDirectoryOnRenameTarget(databaseDirectory, buckets.getLast().getName(), "Multi",
+    final File parked = parkDirectoryOnRenameTarget(databaseDirectory, buckets.get(buckets.size() - 1).getName(), "Multi",
         "renamed.Multi");
 
     try {
@@ -368,7 +368,7 @@ class TypeRenameComponentNamingTest extends TestHelper {
     assertThat(edgeBuckets).as("out and in edge buckets are needed for a mid-loop failure").hasSize(2);
 
     final File databaseDirectory = new File(database.getDatabasePath());
-    final File parked = parkDirectoryOnRenameTarget(databaseDirectory, edgeBuckets.getLast().getName(), "V", "re.named");
+    final File parked = parkDirectoryOnRenameTarget(databaseDirectory, edgeBuckets.get(edgeBuckets.size() - 1).getName(), "V", "re.named");
 
     try {
       assertThatThrownBy(() -> database.getSchema().getType("V").rename("re.named"))

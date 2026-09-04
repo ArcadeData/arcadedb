@@ -294,7 +294,7 @@ class Issue6220TruncateTransactionTest extends TestHelper {
         database.command("sql", "INSERT INTO BoomBucket SET n = ?", i);
     });
 
-    final String bucketName = database.getSchema().getType("BoomBucket").getBuckets(false).getFirst().getName();
+    final String bucketName = database.getSchema().getType("BoomBucket").getBuckets(false).get(0).getName();
 
     final AtomicInteger deletes = new AtomicInteger();
     final BeforeRecordDeleteListener boom = (final Record record) -> {
@@ -330,7 +330,7 @@ class Issue6220TruncateTransactionTest extends TestHelper {
         database.command("sql", "INSERT INTO B SET n = ?", i);
     });
 
-    final String bucketName = database.getSchema().getType("B").getBuckets(false).getFirst().getName();
+    final String bucketName = database.getSchema().getType("B").getBuckets(false).get(0).getName();
 
     database.begin();
     database.command("sql", "TRUNCATE BUCKET `" + bucketName + "` UNSAFE").close();

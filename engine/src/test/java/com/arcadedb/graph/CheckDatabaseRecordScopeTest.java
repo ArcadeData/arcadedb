@@ -547,9 +547,9 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
 
     assertThat(database.countType("LINK", false)).as("baseline cached count").isEqualTo(2L);
 
-    corruptRecordTypeByte(edges.getFirst());
+    corruptRecordTypeByte(edges.get(0));
 
-    try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + edges.getFirst() + " FIX")) {
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + edges.get(0) + " FIX")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(longProperty(rs.next(), "autoFix")).as("the corrupted edge must actually have been removed")
           .isGreaterThan(0L);

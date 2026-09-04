@@ -46,7 +46,7 @@ class BucketIteratorPhantomPageTest extends TestHelper {
     database.newDocument("PhantomPageTest").set("id", 1).save();
     database.commit();
 
-    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).get(0);
     final int totalPages = bucket.pageCount.get();
     assertThat(totalPages).as("one small record must fit on a single freshly-created page").isEqualTo(1);
 

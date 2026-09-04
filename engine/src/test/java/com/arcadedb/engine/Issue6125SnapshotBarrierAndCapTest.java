@@ -278,7 +278,7 @@ class Issue6125SnapshotBarrierAndCapTest extends TestHelper {
     // TRANSACTION: THAT WOULD ALSO BLOCK ON THE VALIDATION HALF OF updatePages, WHICH TAKES THE SAME LOCK, AND THE
     // TEST WOULD PASS EVEN IF THE ENQUEUE HAD BEEN MOVED OUT FROM UNDER IT - WHICH IS THE ONE REGRESSION IT EXISTS
     // TO CATCH
-    final int fileId = db.getSchema().getType(TYPE).getBuckets(false).getFirst().getFileId();
+    final int fileId = db.getSchema().getType(TYPE).getBuckets(false).get(0).getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final PageId pageId = new PageId(db, fileId, 0);
     final MutablePage page = pageManager.getImmutablePage(pageId, file.getPageSize(), false, true).modify();
@@ -328,7 +328,7 @@ class Issue6125SnapshotBarrierAndCapTest extends TestHelper {
     final PageManagerFlushThread flushThread = pageManager.getFlushThread();
     assertThat(pageManager.waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
 
-    final int fileId = db.getSchema().getType(TYPE).getBuckets(false).getFirst().getFileId();
+    final int fileId = db.getSchema().getType(TYPE).getBuckets(false).get(0).getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final MutablePage page = pageManager.getImmutablePage(new PageId(db, fileId, 0), file.getPageSize(), false, true)
         .modify();

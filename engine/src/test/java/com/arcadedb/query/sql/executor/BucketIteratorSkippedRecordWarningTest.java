@@ -126,7 +126,7 @@ class BucketIteratorSkippedRecordWarningTest extends TestHelper {
    * {@code BucketIterator} counts it as a skipped record instead of returning it.
    */
   private void corruptSecondSlot(final DocumentType type) throws Exception {
-    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).get(0);
     assertThat(bucket.getTotalPages()).as("both records must fit on a single page").isEqualTo(1);
 
     database.begin();

@@ -491,7 +491,7 @@ class Issue6129ChunkedSlotMergeTest extends BucketPageLayoutTestSupport {
   @Test
   void aSlotThatChangesShapeInOneTransactionIsExcludedFromTheMerge() {
     database.transaction(() -> database.getSchema().createDocumentType("Shapes", 1).createProperty("v", Type.STRING));
-    final int fileId = database.getSchema().getType("Shapes").getBuckets(false).getFirst().getFileId();
+    final int fileId = database.getSchema().getType("Shapes").getBuckets(false).get(0).getFileId();
 
     final byte[] base = "base".getBytes();
     final byte[] image = "image".getBytes();
@@ -615,7 +615,7 @@ class Issue6129ChunkedSlotMergeTest extends BucketPageLayoutTestSupport {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     final PageManager.PPageManagerStats after = pageManager.getStats();
     return new ConcurrentUpdateOutcome(conflicts,

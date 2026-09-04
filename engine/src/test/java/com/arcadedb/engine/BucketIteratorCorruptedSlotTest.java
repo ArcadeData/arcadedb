@@ -54,7 +54,7 @@ class BucketIteratorCorruptedSlotTest extends TestHelper {
     database.newDocument("CorruptedSlotTest").set("id", 2).save();
     database.commit();
 
-    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).get(0);
     assertThat(bucket.pageCount.get()).as("both records must fit on a single page").isEqualTo(1);
 
     database.begin();

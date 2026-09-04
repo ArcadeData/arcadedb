@@ -111,7 +111,7 @@ class BucketNameValidationTest extends TestHelper {
     database.getSchema().createVertexType("acme.Customer", 1);
 
     assertThat(database.getSchema().existsType("acme.Customer")).isTrue();
-    assertThat(database.getSchema().getType("acme.Customer").getBuckets(false).getFirst().getName())
+    assertThat(database.getSchema().getType("acme.Customer").getBuckets(false).get(0).getName())
         .isEqualTo("acme.Customer_0");
   }
 

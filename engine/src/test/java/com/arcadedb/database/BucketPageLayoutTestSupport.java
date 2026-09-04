@@ -108,7 +108,7 @@ public abstract class BucketPageLayoutTestSupport extends TestHelper {
 
   /** Physical layout of a single-bucket type: how many records are placeholders, chunked, and so on. */
   protected Map<String, Object> bucketStats(final String typeName) {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).get(0);
     final Map<String, Object>[] stats = new Map[1];
     database.transaction(() -> stats[0] = bucket.check(0, false));
     return stats[0];
@@ -169,7 +169,7 @@ public abstract class BucketPageLayoutTestSupport extends TestHelper {
 
   /** The single bucket of a type built by {@link #createChunkedRecords}. */
   protected LocalBucket bucketOf(final String typeName) {
-    return (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).getFirst();
+    return (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).get(0);
   }
 
   /** Runs {@code body} on a thread of its own, so it commits in a transaction other than the caller's. */
@@ -190,7 +190,7 @@ public abstract class BucketPageLayoutTestSupport extends TestHelper {
       throw new AssertionError(e);
     }
     if (!errors.isEmpty())
-      throw new AssertionError("the concurrent write failed: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError("the concurrent write failed: " + errors.get(0), errors.get(0));
   }
 
   /** Null-tolerant read of a numeric check-database property, so a missing field fails clearly instead of NPE. */

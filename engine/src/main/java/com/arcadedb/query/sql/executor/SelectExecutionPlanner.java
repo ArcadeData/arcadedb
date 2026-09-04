@@ -411,7 +411,7 @@ public class SelectExecutionPlanner {
         final ProjectionItem item = projection.getItems().get(0);
         final FunctionCall function = ((BaseExpression) item.getExpression().getMathExpression()).getIdentifier().getLevelZero()
             .getFunctionCall();
-        final Expression exp = function.getParams().getFirst();
+        final Expression exp = function.getParams().get(0);
         final ProjectionItem resultItem = new ProjectionItem();
         resultItem.setAlias(item.getAlias());
         resultItem.setExpression(exp.copy());
@@ -482,7 +482,7 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info))
       return false;
 
-    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().getFirst(), context));
+    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().get(0), context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -521,7 +521,7 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info)) {
       return false;
     }
-    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().getFirst(), context));
+    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().get(0), context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -627,7 +627,7 @@ public class SelectExecutionPlanner {
       return false;
 
     // Create the optimized execution step
-    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, context));
+    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().get(0), maxMinInfo.isMax, context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -3317,7 +3317,7 @@ public class SelectExecutionPlanner {
           nullPlan.chain(new FetchFromTypeExecutionStep(queryTarget.getStringValue(), filterClusters, context, true));
 
           // Create IS NULL filter for the first indexed property
-          final String propertyName = indexFields.getFirst();
+          final String propertyName = indexFields.get(0);
           final IsNullCondition isNullCondition = new IsNullCondition();
           final Expression expr = new Expression(new Identifier(propertyName));
           isNullCondition.setExpression(expr);

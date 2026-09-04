@@ -185,7 +185,7 @@ class BackupCompressionBenchmark {
   }
 
   private static void report(final long databaseSize, final List<Measurement> measurements) {
-    final Measurement reference = measurements.getFirst();
+    final Measurement reference = measurements.get(0);
     System.out.printf("%n[backup-benchmark] database on disk: %s%n", FileUtils.getSizeAsString(databaseSize));
     System.out.printf("%-46s %10s %10s %10s %10s %10s %10s%n", "configuration", "seconds", "MB/s", "archive", "ratio",
         "vs base", "peak heap");

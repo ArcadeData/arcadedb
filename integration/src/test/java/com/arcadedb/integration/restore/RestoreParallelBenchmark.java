@@ -297,7 +297,7 @@ class RestoreParallelBenchmark {
 
   private static void report(final int sizeMB, final int types, final long databaseSize,
       final List<Measurement> measurements) {
-    final Measurement reference = measurements.getFirst();
+    final Measurement reference = measurements.get(0);
     System.out.printf("%n[restore-benchmark] %,d MB target over %d type(s), database on disk: %s%n", sizeMB, types,
         FileUtils.getSizeAsString(databaseSize));
     System.out.printf("%-46s %10s %10s %10s %10s%n", "configuration", "seconds", "MB/s", "vs before", "peak heap");

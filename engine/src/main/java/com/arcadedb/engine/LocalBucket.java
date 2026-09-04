@@ -4463,7 +4463,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     LogManager.instance().log(this, Level.FINE,
             "Updated record %s by collapsing its chunk chain back into a plain record (%s threadId=%d)", null, rid, page,
-            Thread.currentThread().threadId());
+            Thread.currentThread().getId());
 
     return true;
   }

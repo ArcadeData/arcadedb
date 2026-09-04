@@ -107,7 +107,7 @@ class RaftCheckDatabaseLargeRepairIT extends BaseRaftHATest {
 
     waitForAllServers();
     for (int i = 0; i < getServerCount(); i++)
-      assertThat(inDegreeOn(i, hubs.getFirst()))
+      assertThat(inDegreeOn(i, hubs.get(0)))
           .as("the damage must have replicated to server %d before the repair", i).isNotEqualTo((long) DEGREE);
 
     final Result fix = runCheck(leaderIndex, "CHECK DATABASE TYPE " + VERTEX_TYPE + " FIX");

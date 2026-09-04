@@ -960,7 +960,7 @@ public class PageManager extends LockContext {
   private void awaitDeferredBacklogUnderCap(final List<MutablePage> pages) throws InterruptedException {
     if (flushThread == null || pages == null || pages.isEmpty())
       return;
-    flushThread.awaitDeferredBacklogUnderCap(pages.getFirst().getPageId().getDatabase());
+    flushThread.awaitDeferredBacklogUnderCap(pages.get(0).getPageId().getDatabase());
   }
 
   /**

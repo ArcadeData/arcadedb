@@ -377,7 +377,7 @@ class Issue6106StaleVectorGraphTest extends TestHelper {
             (Object) embedding(doc));
         assertThat(rs.hasNext()).isTrue();
         final List<Map<String, Object>> neighbors = rs.next().getProperty("neighbors");
-        if (neighbors != null && !neighbors.isEmpty() && id.equals(neighbors.getFirst().get("id")))
+        if (neighbors != null && !neighbors.isEmpty() && id.equals(neighbors.get(0).get("id")))
           found[0]++;
       }
     });

@@ -123,7 +123,7 @@ class Issue6048SupernodeFullWalkDegradeTest extends TestHelper {
     assertThat(positionOf).hasSize(TOTAL);
 
     // THE NEWEST EDGE IS THE HEAD OF ITS OWN CHAIN: round-robin must emit it within the first turn.
-    assertThat(positionOf.get(sources.getLast())).isLessThan(STRIPES);
+    assertThat(positionOf.get(sources.get(sources.size() - 1))).isLessThan(STRIPES);
 
     // RANK-BOUNDED ERROR for the newest 50, same bound as Issue6044StripeIterationOrderTest: the degrade
     // threshold (128) has not been reached yet at these positions.
@@ -185,11 +185,11 @@ class Issue6048SupernodeFullWalkDegradeTest extends TestHelper {
     assertThat(positionOf).hasSize(TOTAL);
 
     // GENERATION 0 (pre-promotion, oldest edges) STAYS AT THE TAIL regardless of how generation 1 degraded.
-    assertThat(positionOf.get(sources.getFirst())).isEqualTo(TOTAL - 1);
+    assertThat(positionOf.get(sources.get(0))).isEqualTo(TOTAL - 1);
 
     // GENERATION 1's OWN NEWEST EDGE IS STILL WITHIN THE FIRST TURN: its rotation started fresh, not partway
     // through some carried-over count.
-    assertThat(positionOf.get(sources.getLast())).isLessThan(STRIPES);
+    assertThat(positionOf.get(sources.get(sources.size() - 1))).isLessThan(STRIPES);
   }
 
   private void createSchema() {

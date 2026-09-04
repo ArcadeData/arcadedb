@@ -84,7 +84,7 @@ class Issue6136SchemaWalInstalmentTest {
       assertThat(entry.filesToRemove()).as("only the session's final entry retires files").isEmpty();
     }
 
-    assertThat(decoded.getFirst().filesToAdd())
+    assertThat(decoded.get(0).filesToAdd())
         .as("files first, so the pages that follow have somewhere to land").isEqualTo(filesToAdd);
     for (int i = 1; i < decoded.size(); i++)
       assertThat(decoded.get(i).filesToAdd()).as("only the first chunk creates files").isEmpty();
@@ -124,9 +124,9 @@ class Issue6136SchemaWalInstalmentTest {
 
     for (int i = 0; i < decoded.size() - 1; i++)
       assertThat(decoded.get(i).moreChunksFollow()).as("chunk %d is not the end of the change", i).isTrue();
-    assertThat(decoded.getLast().moreChunksFollow())
+    assertThat(decoded.get(decoded.size() - 1).moreChunksFollow())
         .as("the last chunk of a complete change IS the publication").isFalse();
-    assertThat(decoded.getLast().schemaJson()).isEqualTo(schemaJson);
+    assertThat(decoded.get(decoded.size() - 1).schemaJson()).isEqualTo(schemaJson);
   }
 
   /** Incompressible payloads: a compressible pattern would make every chunk fit and prove nothing. */

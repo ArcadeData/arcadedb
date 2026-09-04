@@ -95,7 +95,7 @@ class Issue6044StripeIterationOrderTest extends TestHelper {
     assertThat(positionOf.keySet()).containsAll(sources);
 
     // (a) THE NEWEST EDGE IS THE HEAD OF ITS OWN CHAIN, SO ROUND-ROBIN MUST EMIT IT WITHIN THE FIRST TURN
-    final int newestPosition = positionOf.get(sources.getLast());
+    final int newestPosition = positionOf.get(sources.get(sources.size() - 1));
     assertThat(newestPosition).isLessThan(STRIPES);
 
     // (b) RANK-BOUNDED ERROR: every one of the newest 50 edges lands in the first 400 entries. Concatenation
@@ -122,7 +122,7 @@ class Issue6044StripeIterationOrderTest extends TestHelper {
     // (c) GENERATION 0 (THE PRE-PROMOTION CHAIN, THE OLDEST EDGES) STAYS AT THE TAIL: the rotation is
     // per-generation, so the oldest edges must NOT be interleaved into the first positions. Generation 0 is
     // one chain walked newest-first and it is walked last, hence the very oldest edge is dead last.
-    assertThat(positionOf.get(sources.getFirst())).isEqualTo(TOTAL - 1);
+    assertThat(positionOf.get(sources.get(0))).isEqualTo(TOTAL - 1);
   }
 
   /**
@@ -142,7 +142,7 @@ class Issue6044StripeIterationOrderTest extends TestHelper {
     reopenDatabase();
 
     final RID hub2 = new RID(hubRID.getBucketId(), hubRID.getPosition());
-    final RID newestSrc = new RID(sources.getLast().getBucketId(), sources.getLast().getPosition());
+    final RID newestSrc = new RID(sources.get(sources.size() - 1).getBucketId(), sources.get(sources.size() - 1).getPosition());
 
     database.transaction(() -> {
       final Vertex hub = hub2.asVertex(true);

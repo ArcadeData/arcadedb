@@ -76,7 +76,7 @@ class Issue6133PendingPagesPerDatabaseTest extends TestHelper {
 
       // A later transaction supersedes a page still queued (the two-instance case of #4544): the index holds ONE
       // entry for that pageId, so the count must not grow.
-      final MutablePage superseded = file7.getFirst();
+      final MutablePage superseded = file7.get(0);
       final MutablePage newer = new MutablePage(superseded.getPageId(), PAGE_SIZE, new byte[PAGE_SIZE], 1, 0);
       index.put(newer);
       assertCountsAgree(index, db1, 8);
@@ -95,9 +95,9 @@ class Issue6133PendingPagesPerDatabaseTest extends TestHelper {
       assertCountsAgree(index, db1, 7);
 
       // The replay detach takes a copy out by pageId.
-      assertThat(index.remove(file8.getFirst().getPageId())).isSameAs(file8.getFirst());
+      assertThat(index.remove(file8.get(0).getPageId())).isSameAs(file8.get(0));
       assertCountsAgree(index, db1, 6);
-      assertThat(index.remove(file8.getFirst().getPageId())).as("a second detach of the same page finds nothing").isNull();
+      assertThat(index.remove(file8.get(0).getPageId())).as("a second detach of the same page finds nothing").isNull();
       assertCountsAgree(index, db1, 6);
 
       // A dropped file purges its pages, and only its own: db2's file 7 is a different file.
@@ -145,7 +145,7 @@ class Issue6133PendingPagesPerDatabaseTest extends TestHelper {
       assertThat(flush.waitPendingPagesOfDatabaseUntil(db1, System.currentTimeMillis() + 1_000)).isTrue();
 
       // One page of db1 in flight is enough for the same drain to report the pipeline busy.
-      final MutablePage own = pages(db1, 3, 1).getFirst();
+      final MutablePage own = pages(db1, 3, 1).get(0);
       flush.pageIndex.put(own);
       assertThat(flush.hasPendingPagesOfDatabase(db1)).isTrue();
       assertThat(flush.waitPendingPagesOfDatabaseUntil(db1, System.currentTimeMillis() + 50)).isFalse();

@@ -88,9 +88,9 @@ class Issue6143UnreferencedFilesTest extends TestHelper {
       final List<UnreferencedFiles.UnreferencedFile> found = UnreferencedFiles.scan(db());
 
       assertThat(found).hasSize(1);
-      assertThat(found.getFirst().fileId()).isEqualTo(fileId);
-      assertThat(found.getFirst().fileName()).isEqualTo(fileName);
-      assertThat(found.getFirst().reason()).contains("no schema component");
+      assertThat(found.get(0).fileId()).isEqualTo(fileId);
+      assertThat(found.get(0).fileName()).isEqualTo(fileName);
+      assertThat(found.get(0).reason()).contains("no schema component");
     } finally {
       // Dropped rather than left for the test teardown: an unreferenced file is precisely what the database drop
       // does not know about, and leaving it behind would leak the directory.
@@ -113,8 +113,8 @@ class Issue6143UnreferencedFilesTest extends TestHelper {
       final List<UnreferencedFiles.UnreferencedFile> found = UnreferencedFiles.scan(db());
 
       assertThat(found).hasSize(1);
-      assertThat(found.getFirst().fileId()).isEqualTo(fileId);
-      assertThat(found.getFirst().reason()).contains("belongs to no type");
+      assertThat(found.get(0).fileId()).isEqualTo(fileId);
+      assertThat(found.get(0).reason()).contains("belongs to no type");
     } finally {
       database.getSchema().dropBucket(bucketName);
     }

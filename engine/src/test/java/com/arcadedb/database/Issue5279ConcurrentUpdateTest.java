@@ -380,7 +380,7 @@ class Issue5279ConcurrentUpdateTest extends BucketPageLayoutTestSupport {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     assertThat(conflicts.get()).as("growing a record inside its own page must commute with writes to other slots").isZero();
 

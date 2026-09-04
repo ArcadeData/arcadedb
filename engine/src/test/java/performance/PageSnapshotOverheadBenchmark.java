@@ -229,7 +229,7 @@ class PageSnapshotOverheadBenchmark {
   @Test
   void haReplayApplyLockCost() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
-    final int fileId = db.getSchema().getType(TYPE).getBuckets(false).getFirst().getFileId();
+    final int fileId = db.getSchema().getType(TYPE).getBuckets(false).get(0).getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final PageId pageId = new PageId(db, fileId, 0);
     final ImmutablePage page = db.getPageManager().getImmutablePage(pageId, file.getPageSize(), false, true);

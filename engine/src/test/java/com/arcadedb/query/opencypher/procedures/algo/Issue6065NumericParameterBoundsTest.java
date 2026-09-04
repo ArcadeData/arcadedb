@@ -198,7 +198,7 @@ class Issue6065NumericParameterBoundsTest {
       // is 1 for k = 2 and can only ever be 0 for k = 1. Asserting 1 is therefore exactly the
       // assertion that distinguishes the floor being present from it being absent.
       assertThat(results).hasSize(1);
-      assertThat(((Number) results.getFirst().getProperty("community")).intValue()).isEqualTo(1);
+      assertThat(((Number) results.get(0).getProperty("community")).intValue()).isEqualTo(1);
     } finally {
       single.drop();
     }

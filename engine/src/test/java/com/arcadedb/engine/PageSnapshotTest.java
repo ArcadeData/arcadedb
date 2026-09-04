@@ -329,7 +329,7 @@ class PageSnapshotTest extends TestHelper {
       }
 
       assertThat(snapshot.getStatus()).isEqualTo(PageSnapshot.STATUS.OVERFLOWED);
-      assertThatThrownBy(() -> snapshot.calculateChecksum(snapshot.getFiles().getFirst().fileId()))
+      assertThatThrownBy(() -> snapshot.calculateChecksum(snapshot.getFiles().get(0).fileId()))
           .isInstanceOf(PageSnapshotException.class).hasMessageContaining("OVERFLOWED");
     }
 
@@ -572,7 +572,7 @@ class PageSnapshotTest extends TestHelper {
     });
     pageManager.waitAllPagesOfDatabaseAreFlushed(db);
 
-    final IndexInternal index = (IndexInternal) database.getSchema().getType(TYPE).getIndexesByProperties("id").getFirst();
+    final IndexInternal index = (IndexInternal) database.getSchema().getType(TYPE).getIndexesByProperties("id").get(0);
 
     try (final PageSnapshot snapshot = pageManager.openSnapshot(db)) {
       final Map<Integer, Long> t0Checksums = checksums(snapshot);

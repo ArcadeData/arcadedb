@@ -209,7 +209,7 @@ class Issue6217ChunkedReadFalseConflictTest extends BucketPageLayoutTestSupport 
     }
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     assertThat(readFailures)
         .as("a record nobody writes must never fail a read, whatever its neighbours do (%d reads)", reads.get())

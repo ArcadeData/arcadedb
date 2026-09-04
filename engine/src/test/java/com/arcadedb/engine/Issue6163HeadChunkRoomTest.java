@@ -165,7 +165,7 @@ class Issue6163HeadChunkRoomTest extends BucketPageLayoutTestSupport {
   void theHeadChunkIsAccountedInThePageFreeSpaceStatistics() {
     database.transaction(() -> database.getSchema().createDocumentType("Accounted", 1).createProperty("v", Type.STRING));
 
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Accounted").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Accounted").getBuckets(false).get(0);
     final RID chunked = sealFirstPage("Accounted");
 
     assertThat(bucket.getFreeSpaceHintForPage(0)).as("a page a spill has sealed has no free space left to offer")
@@ -298,7 +298,7 @@ class Issue6163HeadChunkRoomTest extends BucketPageLayoutTestSupport {
     assertThat((Long) bucketStats("Corrupted").get("totalMultiPageRecords")).as("the fixture must have spilled")
         .isEqualTo(1L);
 
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Corrupted").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Corrupted").getBuckets(false).get(0);
 
     database.begin();
     try {

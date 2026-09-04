@@ -240,7 +240,7 @@ public class PageManagerFlushThread extends Thread {
       // wrap here so a later drop does not throw UnsupportedOperationException - without adding an allocation to
       // the common path.
       this.pages = pages == null || pages instanceof ArrayList ? pages : new ArrayList<>(pages);
-      this.database = pages == null || pages.isEmpty() ? null : pages.getFirst().pageId.getDatabase();
+      this.database = pages == null || pages.isEmpty() ? null : pages.get(0).pageId.getDatabase();
       // A BATCH CARRIES THE PAGES OF ONE DATABASE, and from here on the whole pipeline reads that off the FIRST
       // page: the suspension check that decides whether to defer, the deferred map's key, the per-database RAM
       // charge and the committer-side cap all key on `database` above (review of #6223). A mixed batch would not
@@ -255,7 +255,7 @@ public class PageManagerFlushThread extends Thread {
     private static boolean isSingleDatabase(final List<MutablePage> pages) {
       if (pages == null || pages.isEmpty())
         return true;
-      final BasicDatabase first = pages.getFirst().pageId.getDatabase();
+      final BasicDatabase first = pages.get(0).pageId.getDatabase();
       for (int i = 1; i < pages.size(); i++)
         if (!first.equals(pages.get(i).pageId.getDatabase()))
           return false;
