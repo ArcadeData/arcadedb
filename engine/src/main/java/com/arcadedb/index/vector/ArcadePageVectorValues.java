@@ -129,8 +129,27 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       final String vectorPropertyName, final VectorLocationIndex snapshot, final int[] ordinalToVectorId,
       final LSMVectorIndex lsmIndex, final int cacheSize) {
     final int effectiveCacheSize = cacheSize <= 0 ? DEFAULT_CACHE_SIZE : cacheSize;
+    return forGraphBuild(database, dimensions, vectorPropertyName, snapshot, ordinalToVectorId, lsmIndex,
+        new VectorCache(effectiveCacheSize));
+  }
+
+  /**
+   * Same reader, over a cache the caller has already warmed.
+   * <p>
+   * The validation phase reads every vector anyway, so it warms the build cache as it goes. It used to collect
+   * those vectors into a {@code HashMap<Integer, VectorFloat<?>>} first and copy them into the cache afterwards,
+   * which held both structures at once at the peak of the build: a boxed key, a map node and a table slot per
+   * cached vector, on top of the cache entry that survives them. That is around 50 bytes a vector of pure
+   * transient overhead - some 500 MB on a ten-million-vector build, at the exact moment the build is about to
+   * allocate the graph - and it is not counted by {@link VectorHeapBudget#bytesPerCachedVector(int)}, so it was
+   * spent outside the budget that is supposed to bound the build. Handing the cache in and warming it directly
+   * removes the intermediate copy entirely.
+   */
+  public static ArcadePageVectorValues forGraphBuild(final DatabaseInternal database, final int dimensions,
+      final String vectorPropertyName, final VectorLocationIndex snapshot, final int[] ordinalToVectorId,
+      final LSMVectorIndex lsmIndex, final VectorCache warmedCache) {
     return new ArcadePageVectorValues(database, dimensions, vectorPropertyName, snapshot, true, ordinalToVectorId,
-        lsmIndex, new VectorCache(effectiveCacheSize));
+        lsmIndex, warmedCache != null ? warmedCache : new VectorCache(DEFAULT_CACHE_SIZE));
   }
 
   /**
@@ -306,19 +325,6 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
           "Error reading vector from document (ordinal=%d, RID=%s): %s", ordinal, rid, e.getMessage());
       return deletedSentinelVector;
     }
-  }
-
-  /**
-   * Pre-populates the cache with a vector for a given vectorId.
-   * Must be called from a thread that has a database context (e.g., the main thread during validation).
-   * This allows JVector's parallel ForkJoinPool threads to find vectors in the cache
-   * without needing their own database context for lookupByRID.
-   */
-  public void putInCache(final int vectorId, final VectorFloat<?> vector) {
-    // The cache has a fixed capacity (issue #3144), so warming it from the validation phase cannot hold
-    // a full second copy of the vector set on heap.
-    if (vectorCache != null)
-      vectorCache.put(vectorId, vector);
   }
 
   @Override

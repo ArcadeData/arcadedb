@@ -21,11 +21,15 @@ package com.arcadedb.index.vector;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.WarningCapture;
+import com.arcadedb.log.WarningCapture.LogLine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Random;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -34,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * document-backed indexes, where a miss costs a record lookup plus a full property deserialization. The
  * validation phase read every vector and then dropped everything past the bound, so a from-scratch build of a
  * corpus larger than the cache re-read almost every vector, hundreds of times each. The cache is now sized from
- * the corpus and the heap for document-backed indexes, and keeps the small bound only where misses are cheap.
+ * the corpus and a share of the heap ceiling (issue #7146) for both document-backed and inline-quantized indexes.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -65,7 +69,7 @@ class LSMVectorIndexBuildCacheSizingTest extends TestHelper {
       createIndex(null);
       final LSMVectorIndex index = index();
 
-      assertThat(index.computeGraphBuildCacheCapacity(NUM_VECTORS, false)).isEqualTo(16);
+      assertThat(index.computeGraphBuildCacheCapacity(NUM_VECTORS)).isEqualTo(16);
 
       final long before = index.getStats().getOrDefault("vectorFetchFromDocuments", 0L);
       index.buildVectorGraphNow();
@@ -77,15 +81,53 @@ class LSMVectorIndexBuildCacheSizingTest extends TestHelper {
     }
   }
 
-  // Inline-quantized indexes resolve a miss from an index page, so they keep the small bound instead of
-  // spending heap on full residency.
+  // Inline-quantized indexes resolve a miss from an index page, but the heap-percent knob must still move
+  // the cache (issue #7146). Only percent=0 (or an explicit graphBuildCacheSize) keeps the flat bound.
   @Test
-  void inlineQuantizedBuildKeepsTheSmallBound() {
+  void inlineQuantizedBuildHonoursTheHeapPercentKnob() {
     createIndex(VectorQuantizationType.INT8);
     final LSMVectorIndex index = index();
 
-    assertThat(index.computeGraphBuildCacheCapacity(50_000_000, true))
-        .isEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+    final int auto = index.computeGraphBuildCacheCapacity(50_000_000);
+    assertThat(auto)
+        .as("INT8 must not stay at the flat 100,000 bound while the same corpus in fp32 gets the heap share")
+        .isGreaterThan(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+    assertThat((long) auto).isLessThanOrEqualTo(ceilingShareCapacity());
+
+    final int previous = GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getValueAsInteger();
+    GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(0);
+    try {
+      assertThat(index.computeGraphBuildCacheCapacity(50_000_000))
+          .isEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+    } finally {
+      GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(previous);
+    }
+  }
+
+  @Test
+  void aFromScratchBuildLogsCacheCapacityNextToTheCorpusSize() {
+    createIndex(null);
+    final LSMVectorIndex index = index();
+
+    final List<LogLine> lines = WarningCapture.capture(Level.INFO, index::buildVectorGraphNow);
+
+    assertThat(lines.stream().map(LogLine::message))
+        .as("the chosen cache size next to the corpus is what makes a too-small default a one-line diagnosis")
+        .anyMatch(message -> message.contains("cache enabled: size=" + NUM_VECTORS + " of " + NUM_VECTORS));
+  }
+
+  // The same line for an INT8 index: before issue #7146 it read "size=100000", whatever the knob said, which is
+  // the form the report had to work back from. This also pins the warm-in-place path for inline quantization,
+  // whose vectors are read from index pages during validation rather than from documents.
+  @Test
+  void anInlineQuantizedBuildLogsTheSameCapacityAsADocumentBackedOne() {
+    createIndex(VectorQuantizationType.INT8);
+    final LSMVectorIndex index = index();
+
+    final List<LogLine> lines = WarningCapture.capture(Level.INFO, index::buildVectorGraphNow);
+
+    assertThat(lines.stream().map(LogLine::message))
+        .anyMatch(message -> message.contains("cache enabled: size=" + NUM_VECTORS + " of " + NUM_VECTORS));
   }
 
   // A corpus too large for the heap budget must still build: the cache is capped, not the corpus.
@@ -94,20 +136,40 @@ class LSMVectorIndexBuildCacheSizingTest extends TestHelper {
     createIndex(null);
     final LSMVectorIndex index = index();
 
-    // 50M vectors x 32 dims is ~9.6GB of payload, well past any sane share of a test JVM heap
-    final int capacity = index.computeGraphBuildCacheCapacity(50_000_000, false);
-    assertThat(capacity).isLessThan(50_000_000);
-    assertThat(capacity).isGreaterThanOrEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+    // The budget is a share of -Xmx (issue #7146), so a bound derived from the live heap would be the only
+    // assertion that holds on a 16 GB CI runner AND on a 256 GB workstation. 1% of any ceiling a JVM can be
+    // given is far short of 50M x 32-dim vectors, so the cap provably binds here rather than by luck.
+    final int previous = GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getValueAsInteger();
+    GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(1);
+    try {
+      final int capacity = index.computeGraphBuildCacheCapacity(50_000_000);
+      assertThat(capacity).isLessThan(50_000_000);
+      assertThat(capacity).isGreaterThanOrEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+    } finally {
+      GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(previous);
+    }
+
+    // At the default the share of the ceiling is the ceiling of what may be chosen: the available-heap cap can
+    // only lower it. Asserting the upper bound rather than an exact figure keeps this deterministic while a
+    // concurrent test is allocating.
+    assertThat(index.computeGraphBuildCacheCapacity(50_000_000))
+        .isLessThanOrEqualTo((int) Math.min(50_000_000L, ceilingShareCapacity()));
 
     // Disabling the heap share falls back to the flat bound rather than to an unbounded cache
-    final int previous = GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getValueAsInteger();
     GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(0);
     try {
-      assertThat(index.computeGraphBuildCacheCapacity(50_000_000, false))
+      assertThat(index.computeGraphBuildCacheCapacity(50_000_000))
           .isEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
     } finally {
       GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(previous);
     }
+  }
+
+  /** Vectors the configured share of {@code -Xmx} pays for. Depends on no live-heap reading, so it cannot drift. */
+  private static long ceilingShareCapacity() {
+    final int percent = Math.min(90,
+        GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getValueAsInteger());
+    return VectorHeapBudget.maxHeapBytes() / 100 * percent / VectorHeapBudget.bytesPerCachedVector(DIMENSIONS);
   }
 
   private void createIndex(final VectorQuantizationType quantization) {
