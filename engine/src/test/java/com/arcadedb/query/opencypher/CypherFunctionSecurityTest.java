@@ -146,20 +146,21 @@ class CypherFunctionSecurityTest extends TestHelper {
   }
 
   /**
-   * The accepting half of the same boundary. It has to sit at exactly {@code MAX_OUTPUT_SIZE - 1}: any smaller
-   * payload would still pass if the cap were lowered underneath it, so only the last accepted size pins the
-   * contract from below the way the bomb pins it from above.
+   * The accepting half of the same boundary. The guard refuses only what exceeds the cap, so the last accepted size
+   * is {@code MAX_OUTPUT_SIZE} itself, and that is where this has to sit: any smaller payload would still pass with
+   * the cap lowered underneath it, and so would pin nothing. Together with the bomb one byte above, the pair fixes
+   * the threshold exactly.
    */
   @Tag("slow") // ~100MB inflated per invocation: big payloads belong in the slow lane, not the shared-JVM default one
   @ParameterizedTest
   @ValueSource(strings = { "gzip", "deflate" })
-  void utilDecompressAcceptsAPayloadJustUnderTheCap(final String algorithm) throws IOException {
-    final int justUnder = UtilDecompress.MAX_OUTPUT_SIZE - 1;
+  void utilDecompressAcceptsAPayloadAtExactlyTheCap(final String algorithm) throws IOException {
+    final int atCap = UtilDecompress.MAX_OUTPUT_SIZE;
     final ResultSet rs = database.query("opencypher", "RETURN util.decompress($data, $algorithm) AS result",
-        "data", compressedRepeatedByte(justUnder, algorithm),
+        "data", compressedRepeatedByte(atCap, algorithm),
         "algorithm", algorithm);
 
-    assertThat(rs.next().<String>getProperty("result")).hasSize(justUnder);
+    assertThat(rs.next().<String>getProperty("result")).hasSize(atCap);
   }
 
   /**
