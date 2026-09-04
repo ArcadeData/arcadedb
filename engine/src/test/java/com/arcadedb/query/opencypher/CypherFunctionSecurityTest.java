@@ -24,6 +24,8 @@ import com.arcadedb.function.util.UtilCompress;
 import com.arcadedb.function.util.UtilDecompress;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -123,24 +125,19 @@ class CypherFunctionSecurityTest extends TestHelper {
   }
 
   /**
-   * A real zip bomb: ~134KB of base64 that inflates past {@link UtilDecompress#MAX_OUTPUT_SIZE}. The test this
-   * replaced round-tripped four bytes, so the guard it was named for was never reached and both of its branches
-   * were uncovered (issue #7142).
+   * A real zip bomb: ~134KB of base64 that inflates one byte past {@link UtilDecompress#MAX_OUTPUT_SIZE}, which is
+   * the first size the guard refuses. The test this replaced round-tripped four bytes, so the guard it was named
+   * for was never reached and neither of its two branches was covered (issue #7142).
+   * <p>
+   * Run against both algorithms: they used to carry one copy each of the same read loop, and they still reach the
+   * shared reader through different stream types, so a dispatch that wired one of them up wrongly would show here.
    */
-  @Test
-  void utilDecompressGzipOutputSizeLimitRejectsAZipBomb() throws IOException {
-    final ResultSet rs = database.query("opencypher", "RETURN util.decompress($data, 'gzip') AS result",
-        "data", zipBomb("gzip"));
-
-    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(rs::hasNext).actual();
-    assertThat(exception.getMessage()).contains("Decompressed output size exceeds maximum allowed", "zip bomb");
-  }
-
-  /** The deflate branch enforces the same cap - it used to carry its own copy of the read loop. */
-  @Test
-  void utilDecompressDeflateOutputSizeLimitRejectsAZipBomb() throws IOException {
-    final ResultSet rs = database.query("opencypher", "RETURN util.decompress($data, 'deflate') AS result",
-        "data", zipBomb("deflate"));
+  @ParameterizedTest
+  @ValueSource(strings = { "gzip", "deflate" })
+  void utilDecompressOutputSizeLimitRejectsAZipBomb(final String algorithm) throws IOException {
+    final ResultSet rs = database.query("opencypher", "RETURN util.decompress($data, $algorithm) AS result",
+        "data", compressedRepeatedByte(UtilDecompress.MAX_OUTPUT_SIZE + 1, algorithm),
+        "algorithm", algorithm);
 
     final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage()).contains("Decompressed output size exceeds maximum allowed", "zip bomb");
@@ -151,21 +148,15 @@ class CypherFunctionSecurityTest extends TestHelper {
    * payload would still pass if the cap were lowered underneath it, so only the last accepted size pins the
    * contract from below the way the bomb pins it from above.
    */
-  @Test
-  void utilDecompressAcceptsAPayloadJustUnderTheCap() throws IOException {
+  @ParameterizedTest
+  @ValueSource(strings = { "gzip", "deflate" })
+  void utilDecompressAcceptsAPayloadJustUnderTheCap(final String algorithm) throws IOException {
     final int justUnder = UtilDecompress.MAX_OUTPUT_SIZE - 1;
-    final ResultSet rs = database.query("opencypher", "RETURN util.decompress($data, 'gzip') AS result",
-        "data", compressedRepeatedByte(justUnder, "gzip"));
+    final ResultSet rs = database.query("opencypher", "RETURN util.decompress($data, $algorithm) AS result",
+        "data", compressedRepeatedByte(justUnder, algorithm),
+        "algorithm", algorithm);
 
     assertThat(rs.next().<String>getProperty("result")).hasSize(justUnder);
-  }
-
-  /**
-   * Builds a payload that inflates to one byte past {@link UtilDecompress#MAX_OUTPUT_SIZE}, which is the first size
-   * the guard refuses. Written a megabyte at a time so the bomb costs a megabyte of heap to build, not 100.
-   */
-  private static String zipBomb(final String algorithm) throws IOException {
-    return compressedRepeatedByte(UtilDecompress.MAX_OUTPUT_SIZE + 1, algorithm);
   }
 
   /**
