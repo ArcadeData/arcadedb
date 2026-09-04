@@ -69,7 +69,7 @@ class LSMVectorIndexBuildCacheSizingTest extends TestHelper {
       createIndex(null);
       final LSMVectorIndex index = index();
 
-      assertThat(index.computeGraphBuildCacheCapacity(NUM_VECTORS, false)).isEqualTo(16);
+      assertThat(index.computeGraphBuildCacheCapacity(NUM_VECTORS)).isEqualTo(16);
 
       final long before = index.getStats().getOrDefault("vectorFetchFromDocuments", 0L);
       index.buildVectorGraphNow();
@@ -88,17 +88,16 @@ class LSMVectorIndexBuildCacheSizingTest extends TestHelper {
     createIndex(VectorQuantizationType.INT8);
     final LSMVectorIndex index = index();
 
-    final int auto = index.computeGraphBuildCacheCapacity(50_000_000, true);
+    final int auto = index.computeGraphBuildCacheCapacity(50_000_000);
     assertThat(auto)
-        .as("INT8 and fp32 share the same heap-budgeted auto size; INT8 must not stay at 100,000 while fp32 grows")
-        .isEqualTo(index.computeGraphBuildCacheCapacity(50_000_000, false));
-    assertThat(auto).isLessThan(50_000_000);
-    assertThat(auto).isGreaterThanOrEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+        .as("INT8 must not stay at the flat 100,000 bound while the same corpus in fp32 gets the heap share")
+        .isGreaterThan(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+    assertThat((long) auto).isLessThanOrEqualTo(ceilingShareCapacity());
 
     final int previous = GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getValueAsInteger();
     GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(0);
     try {
-      assertThat(index.computeGraphBuildCacheCapacity(50_000_000, true))
+      assertThat(index.computeGraphBuildCacheCapacity(50_000_000))
           .isEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
     } finally {
       GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(previous);
@@ -117,26 +116,60 @@ class LSMVectorIndexBuildCacheSizingTest extends TestHelper {
         .anyMatch(message -> message.contains("cache enabled: size=" + NUM_VECTORS + " of " + NUM_VECTORS));
   }
 
+  // The same line for an INT8 index: before issue #7146 it read "size=100000", whatever the knob said, which is
+  // the form the report had to work back from. This also pins the warm-in-place path for inline quantization,
+  // whose vectors are read from index pages during validation rather than from documents.
+  @Test
+  void anInlineQuantizedBuildLogsTheSameCapacityAsADocumentBackedOne() {
+    createIndex(VectorQuantizationType.INT8);
+    final LSMVectorIndex index = index();
+
+    final List<LogLine> lines = WarningCapture.capture(Level.INFO, index::buildVectorGraphNow);
+
+    assertThat(lines.stream().map(LogLine::message))
+        .anyMatch(message -> message.contains("cache enabled: size=" + NUM_VECTORS + " of " + NUM_VECTORS));
+  }
+
   // A corpus too large for the heap budget must still build: the cache is capped, not the corpus.
   @Test
   void autoSizingIsCappedByTheHeapBudget() {
     createIndex(null);
     final LSMVectorIndex index = index();
 
-    // 50M vectors x 32 dims is ~9.6GB of payload, well past any sane share of a test JVM heap
-    final int capacity = index.computeGraphBuildCacheCapacity(50_000_000, false);
-    assertThat(capacity).isLessThan(50_000_000);
-    assertThat(capacity).isGreaterThanOrEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+    // The budget is a share of -Xmx (issue #7146), so a bound derived from the live heap would be the only
+    // assertion that holds on a 16 GB CI runner AND on a 256 GB workstation. 1% of any ceiling a JVM can be
+    // given is far short of 50M x 32-dim vectors, so the cap provably binds here rather than by luck.
+    final int previous = GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getValueAsInteger();
+    GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(1);
+    try {
+      final int capacity = index.computeGraphBuildCacheCapacity(50_000_000);
+      assertThat(capacity).isLessThan(50_000_000);
+      assertThat(capacity).isGreaterThanOrEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+    } finally {
+      GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(previous);
+    }
+
+    // At the default the share of the ceiling is the ceiling of what may be chosen: the available-heap cap can
+    // only lower it. Asserting the upper bound rather than an exact figure keeps this deterministic while a
+    // concurrent test is allocating.
+    assertThat(index.computeGraphBuildCacheCapacity(50_000_000))
+        .isLessThanOrEqualTo((int) Math.min(50_000_000L, ceilingShareCapacity()));
 
     // Disabling the heap share falls back to the flat bound rather than to an unbounded cache
-    final int previous = GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getValueAsInteger();
     GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(0);
     try {
-      assertThat(index.computeGraphBuildCacheCapacity(50_000_000, false))
+      assertThat(index.computeGraphBuildCacheCapacity(50_000_000))
           .isEqualTo(ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
     } finally {
       GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(previous);
     }
+  }
+
+  /** Vectors the configured share of {@code -Xmx} pays for. Depends on no live-heap reading, so it cannot drift. */
+  private static long ceilingShareCapacity() {
+    final int percent = Math.min(90,
+        GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getValueAsInteger());
+    return VectorHeapBudget.maxHeapBytes() / 100 * percent / VectorHeapBudget.bytesPerCachedVector(DIMENSIONS);
   }
 
   private void createIndex(final VectorQuantizationType quantization) {
