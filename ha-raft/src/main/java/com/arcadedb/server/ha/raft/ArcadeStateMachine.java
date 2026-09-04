@@ -4177,11 +4177,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * the readiness probe, the health tick and the status endpoint, never from an apply path.
    */
   public LocalResyncState getLocalResyncState() {
-    final List<String> diverged = new ArrayList<>(divergedDatabases);
-    // Sorted so a status poll payload is stable between ticks on an unchanged node.
-    Collections.sort(diverged);
+    // A healthy node - the overwhelming majority of calls, since the readiness probe polls this - copies
+    // nothing: both immutable empties are shared constants and the record's own copyOf calls return them
+    // unchanged. Only a node that actually has something in flight pays for the copies.
+    final List<String> diverged;
+    if (divergedDatabases.isEmpty())
+      diverged = List.of();
+    else {
+      diverged = new ArrayList<>(divergedDatabases);
+      // Sorted so a status poll payload is stable between ticks on an unchanged node.
+      Collections.sort(diverged);
+    }
+    final Map<String, Long> floors = staleDatabaseAppliedFloors.isEmpty()
+        ? Map.of() : new HashMap<>(staleDatabaseAppliedFloors);
     return new LocalResyncState(needsSnapshotDownload.get(), snapshotDownloadInProgress.get(), diverged,
-        staleSnapshotAppliedFloor.get(), new HashMap<>(staleDatabaseAppliedFloors));
+        staleSnapshotAppliedFloor.get(), floors);
   }
 
   /**

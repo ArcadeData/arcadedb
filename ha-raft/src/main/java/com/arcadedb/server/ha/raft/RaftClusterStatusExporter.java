@@ -192,9 +192,14 @@ class RaftClusterStatusExporter {
     final RaftPeerId leaderId = haServer.getLeaderId();
     final long term = haServer.getCurrentTerm();
     final long commitIndex = haServer.getCommitIndex();
+    // The rows render from getLivePeers(), which substitutes the declared list when the division cannot be read
+    // (issue #5271) - the right answer for a caller that just needs something to print. The convergence note
+    // below must NOT be computed from that stand-in, so the committed membership is read once, separately and
+    // explicitly, and a null answer means "nothing observed this tick" rather than "the declared list" (#7136).
     final Collection<RaftPeer> peers = haServer.getLivePeers();
     if (peers.isEmpty())
       return null;
+    final Collection<RaftPeer> committedPeers = haServer.getCommittedPeersOrNull();
 
     // Collect follower replication state (only available on leader). The entries are read defensively
     // (issue #7041): while membership is changing, getFollowerStates() degrades to entries without a
@@ -249,29 +254,29 @@ class RaftClusterStatusExporter {
     rows.sort((a, b) -> a[0].compareTo(b[0]));
 
     // Remember this tick's membership before computing the note: a peer present now must not be reported as
-    // pending after it is later removed (issue #7136). Only a membership actually read from Raft counts -
-    // getLivePeers() substitutes the declared list when the division is unreadable, and folding that in would
-    // mark every declared peer as once-committed and silence the note for good.
-    final Collection<RaftPeer> committedPeers = haServer.getCommittedPeersOrNull();
-    if (committedPeers != null)
+    // pending after it is later removed (issue #7136). Both the record and the count are derived from
+    // committedPeers, never from the rows: the rows may be the declared-list stand-in, and folding that in
+    // would mark every declared peer as once-committed and silence the note for good.
+    final List<String> committedIds = new ArrayList<>();
+    if (committedPeers != null) {
       for (final RaftPeer peer : committedPeers)
-        everCommitted.add(peer.getId().toString());
-
-    final List<String> committedIds = new ArrayList<>(peers.size());
-    for (final RaftPeer peer : peers)
-      committedIds.add(peer.getId().toString());
+        committedIds.add(peer.getId().toString());
+      everCommitted.addAll(committedIds);
+    }
 
     final List<String> declaredIds = new ArrayList<>();
     for (final RaftPeer peer : haServer.getDeclaredPeers())
       declaredIds.add(peer.getId().toString());
 
     return new ConfigSnapshot(term, commitIndex, rows, collectBootstrapBaselines(),
-        expectedMemberCount(declaredIds, committedIds, everCommitted));
+        expectedMemberCount(declaredIds, committedIds, everCommitted, committedPeers != null));
   }
 
   /**
    * How many members the committed membership is expected to reach (issue #7136): the peers in it now, plus the
-   * declared peers that have never been in it on this node's watch.
+   * declared peers that have never been in it on this node's watch. {@code membershipRead} is {@code false} on a
+   * tick where the live configuration could not be read at all, in which case {@code committedIds} is the
+   * declared list standing in for it and carries no information about who has committed.
    * <p>
    * The count feeds the "not yet converged" note only. Previously it was the raw size of
    * {@code arcadedb.ha.serverList}, which never shrinks, so a peer removed from the configuration left the note
@@ -282,7 +287,14 @@ class RaftClusterStatusExporter {
    * Pure and package-private for unit testing.
    */
   static int expectedMemberCount(final Collection<String> declaredIds, final Collection<String> committedIds,
-      final Set<String> everCommitted) {
+      final Set<String> everCommitted, final boolean membershipRead) {
+    // Nothing was read from Raft this tick: committedIds is the declared list standing in for a membership
+    // nobody observed. Answering from it would assert a convergence that was never seen - a declared peer that
+    // has not joined would read as a member. The honest denominator is the declared list itself, which equals
+    // the row count on such a tick and therefore says nothing either way until the next one.
+    if (!membershipRead)
+      return declaredIds.size();
+
     int pending = 0;
     for (final String declared : declaredIds)
       if (!committedIds.contains(declared) && !everCommitted.contains(declared))

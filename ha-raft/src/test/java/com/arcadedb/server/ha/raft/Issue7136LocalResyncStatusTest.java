@@ -294,7 +294,7 @@ class Issue7136LocalResyncStatusTest {
     // keep saying the membership is not converged yet.
     final int expected = RaftClusterStatusExporter.expectedMemberCount(
         List.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), List.of("arcadedb-1", "arcadedb-2"),
-        Set.of("arcadedb-1", "arcadedb-2"));
+        Set.of("arcadedb-1", "arcadedb-2"), true);
 
     assertThat(expected).isEqualTo(3);
   }
@@ -305,7 +305,7 @@ class Issue7136LocalResyncStatusTest {
     // complete: the note must clear rather than blame a peer that is never coming back.
     final int expected = RaftClusterStatusExporter.expectedMemberCount(
         List.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), List.of("arcadedb-1", "arcadedb-2"),
-        Set.of("arcadedb-1", "arcadedb-2", "arcadedb-3"));
+        Set.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), true);
 
     assertThat(expected).isEqualTo(2);
   }
@@ -314,9 +314,22 @@ class Issue7136LocalResyncStatusTest {
   void aRuntimeJoinNotInTheDeclaredListDoesNotInflateTheCount() {
     // A peer added with POST /api/v1/cluster/peer is a committed member the server list never declared.
     final int expected = RaftClusterStatusExporter.expectedMemberCount(
-        List.of("arcadedb-1"), List.of("arcadedb-1", "arcadedb-2"), Set.of("arcadedb-1", "arcadedb-2"));
+        List.of("arcadedb-1"), List.of("arcadedb-1", "arcadedb-2"), Set.of("arcadedb-1", "arcadedb-2"), true);
 
     assertThat(expected).isEqualTo(2);
+  }
+
+  @Test
+  void aTickThatCouldNotReadTheConfigurationFallsBackToTheDeclaredCount() {
+    // The division was unreadable (issue #5271): getCommittedPeersOrNull() answered null, so no committed id
+    // was observed this tick. Every declared peer HAS been committed before, so the pending scan would find
+    // none and return 0 - a denominator that says the cluster expects no members at all. Nothing was measured,
+    // so the honest answer is the declared list.
+    final int expected = RaftClusterStatusExporter.expectedMemberCount(
+        List.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), List.of(),
+        Set.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), false);
+
+    assertThat(expected).as("an unmeasured tick must not invent a membership size").isEqualTo(3);
   }
 
   // ---------------------------------------------------------------------------------------------

@@ -2546,7 +2546,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         if (conf != null)
           return conf.getCurrentPeers();
       } catch (final IOException e) {
-        LogManager.instance().log(this, Level.FINE, "Cannot read live peers from Raft server, using static list", e);
+        LogManager.instance().log(this, Level.FINE,
+            "Cannot read the live Raft configuration; callers that can substitute the declared server list will", e);
       }
     }
     return null;
