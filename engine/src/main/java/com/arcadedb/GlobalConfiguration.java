@@ -236,7 +236,7 @@ public enum GlobalConfiguration {
       Integer.class, 0),
 
   TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,
-      "Number of concurrent files to use for tx log. 0 = available cores, which is also the default. A value below 0 is treated as 0",
+      "Number of concurrent files to use for tx log. 0 or a negative value = available cores, which is also the default",
       Integer.class, Math.max(Runtime.getRuntime().availableProcessors(), 1)),
 
   FREE_PAGE_RAM("arcadedb.freePageRAM", SCOPE.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,
