@@ -282,15 +282,42 @@ public class DefaultLogger implements Logger {
         final Handler h = new ConsoleHandler();
         h.setFormatter(desired);
         log.addHandler(h);
-      } else {
-        for (final Handler h : log.getHandlers()) {
-          if (h instanceof ConsoleHandler && !h.getFormatter().getClass().equals(desired.getClass()))
-            h.setFormatter(desired);
-        }
-      }
+      } else
+        applyConsoleFormatter(log, desired);
     } catch (final Exception e) {
       System.err.println("Error while installing custom formatter. Logging could be disabled. Cause: " + e);
     }
+  }
+
+  /**
+   * Re-selects the console formatter and swaps it onto the console handler already installed.
+   * <p>
+   * {@link #installCustomFormatter()} runs once, from {@link #init()}, on the first log record the JVM emits - which
+   * in practice is long before a server configuration file, a {@code fromJSON} or the settings API has been read. So
+   * {@code arcadedb.server.logFormat} took effect only when it was a raw {@code -D}/env system property, and setting
+   * it through any of its SCOPE.SERVER-supported channels silently kept the default formatter (issue #7121).
+   * {@link com.arcadedb.GlobalConfiguration#SERVER_LOG_FORMAT} calls this whenever its value is set.
+   * <p>
+   * A no-op before the logger is initialized: no console handler exists yet, and {@link #init()} will select the
+   * formatter from the (by then already updated) configuration on its own. Never installs a handler - that is
+   * {@code installCustomFormatter}'s job, and doing it here would add a second console handler to a JVM whose
+   * logging is deliberately configured with none.
+   */
+  public static void refreshConsoleFormatter() {
+    if (!initialized)
+      return;
+
+    try {
+      applyConsoleFormatter(java.util.logging.Logger.getLogger(""), selectConsoleFormatter());
+    } catch (final Exception e) {
+      System.err.println("Error while refreshing the console formatter. Cause: " + e);
+    }
+  }
+
+  private static void applyConsoleFormatter(final java.util.logging.Logger log, final Formatter desired) {
+    for (final Handler h : log.getHandlers())
+      if (h instanceof ConsoleHandler && !h.getFormatter().getClass().equals(desired.getClass()))
+        h.setFormatter(desired);
   }
 
   /**

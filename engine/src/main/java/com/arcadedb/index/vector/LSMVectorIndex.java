@@ -5281,14 +5281,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Search for k nearest neighbors to the given vector and return results with similarity scores.
+   * Search for k nearest neighbors to the given vector and return results with their distances.
    * This method is similar to HnswVectorIndex.findNeighborsFromVector and avoids the need to
    * recalculate distances after the search.
    *
    * @param queryVector The query vector to search for
    * @param k           The number of neighbors to return
    *
-   * @return List of pairs containing RID and similarity score
+   * @return List of pairs containing the RID and its <b>distance</b> from the query vector - not a similarity:
+   *         smaller is closer, the list is already sorted ascending, and the nearest neighbour is first. The
+   *         value is what {@code scoreToDistance()} makes of the engine's similarity score, so it can be
+   *         negative (DOT_PRODUCT) or {@code Float.MAX_VALUE} (a EUCLIDEAN score at or below zero), and
+   *         sorting it descending returns the furthest neighbours first (issue #7140).
    */
   public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k) {
     return findNeighborsFromVector(queryVector, k, -1, null);
@@ -5307,7 +5311,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param k           The number of neighbors to return
    * @param allowedRIDs Optional set of RIDs to restrict search to (null means no filtering)
    *
-   * @return List of pairs containing RID and similarity score
+   * @return List of pairs containing the RID and its <b>distance</b> from the query vector - not a similarity:
+   *         smaller is closer, the list is already sorted ascending, and the nearest neighbour is first. The
+   *         value is what {@code scoreToDistance()} makes of the engine's similarity score, so it can be
+   *         negative (DOT_PRODUCT) or {@code Float.MAX_VALUE} (a EUCLIDEAN score at or below zero), and
+   *         sorting it descending returns the furthest neighbours first (issue #7140).
    */
   public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k,
       final Set<RID> allowedRIDs) {
@@ -5322,7 +5330,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param efSearch    Search beam width (-1 uses index default). Higher values improve recall at cost of latency.
    * @param allowedRIDs Optional set of RIDs to restrict search to (null means no filtering)
    *
-   * @return List of pairs containing RID and similarity score
+   * @return List of pairs containing the RID and its <b>distance</b> from the query vector - not a similarity:
+   *         smaller is closer, the list is already sorted ascending, and the nearest neighbour is first. The
+   *         value is what {@code scoreToDistance()} makes of the engine's similarity score, so it can be
+   *         negative (DOT_PRODUCT) or {@code Float.MAX_VALUE} (a EUCLIDEAN score at or below zero), and
+   *         sorting it descending returns the furthest neighbours first (issue #7140).
    */
   public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, int k, final int efSearch,
       final Set<RID> allowedRIDs) {
@@ -6210,7 +6222,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param queryVector The query vector to search for
    * @param k           The number of neighbors to return
    *
-   * @return List of pairs containing RID and approximate similarity score
+   * @return List of pairs containing the RID and its approximate <b>distance</b> from the query vector - not a similarity:
+   *         smaller is closer, the list is already sorted ascending, and the nearest neighbour is first. The
+   *         value is what {@code scoreToDistance()} makes of the engine's similarity score, so it can be
+   *         negative (DOT_PRODUCT) or {@code Float.MAX_VALUE} (a EUCLIDEAN score at or below zero), and
+   *         sorting it descending returns the furthest neighbours first (issue #7140).
    */
   public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, final int k) {
     return findNeighborsFromVectorApproximate(queryVector, k, null);
@@ -6228,7 +6244,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param k           The number of neighbors to return
    * @param allowedRIDs Optional set of RIDs to restrict search to (null means no filtering)
    *
-   * @return List of pairs containing RID and approximate similarity score
+   * @return List of pairs containing the RID and its approximate <b>distance</b> from the query vector - not a similarity:
+   *         smaller is closer, the list is already sorted ascending, and the nearest neighbour is first. The
+   *         value is what {@code scoreToDistance()} makes of the engine's similarity score, so it can be
+   *         negative (DOT_PRODUCT) or {@code Float.MAX_VALUE} (a EUCLIDEAN score at or below zero), and
+   *         sorting it descending returns the furthest neighbours first (issue #7140).
    */
   public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, int k,
       final Set<RID> allowedRIDs) {

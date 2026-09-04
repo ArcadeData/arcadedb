@@ -31,7 +31,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -179,12 +179,12 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
 
   @Override
   public Map<String, Object> propertiesAsMap() {
-    return new HashMap<>(map);
+    return new LinkedHashMap<>(map);
   }
 
   @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
-    final Map<String, Object> result = new HashMap<>(map);
+    final Map<String, Object> result = new LinkedHashMap<>(map);
     if (includeMetadata) {
       result.put(Property.CAT_PROPERTY, "v");
       result.put(Property.TYPE_PROPERTY, getTypeName());

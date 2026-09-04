@@ -28,6 +28,7 @@ import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
@@ -41,6 +42,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -1040,7 +1042,7 @@ public class GraphImporter implements AutoCloseable {
   private static final DateTimeFormatter DEFAULT_DATETIME_FMT = new DateTimeFormatterBuilder()
       .appendPattern("yyyy-MM-dd HH:mm:ss")
       .optionalStart().appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).optionalEnd()
-      .toFormatter();
+      .toFormatter(Locale.ENGLISH);
 
   private static Object readProperty(final RecordReader record, final PropDef pd) {
     switch (pd.type) {
@@ -1056,8 +1058,10 @@ public class GraphImporter implements AutoCloseable {
       final String v = record.get(pd.attribute);
       if (v == null)
         return null;
+      // DateUtils.getFormatter(), not DateTimeFormatter.ofPattern(): the latter binds the JVM default locale, so the
+      // same file imported on two machines would parse a textual month/day name differently, or not at all (#7144)
       final DateTimeFormatter fmt = pd.datetimeFormat != null
-          ? DateTimeFormatter.ofPattern(pd.datetimeFormat)
+          ? DateUtils.getFormatter(pd.datetimeFormat)
           : DEFAULT_DATETIME_FMT;
       return LocalDateTime.parse(v, fmt);
     }

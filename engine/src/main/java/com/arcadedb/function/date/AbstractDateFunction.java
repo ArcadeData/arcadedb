@@ -19,6 +19,7 @@
 package com.arcadedb.function.date;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.utility.DateUtils;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -107,11 +108,17 @@ public abstract class AbstractDateFunction implements StatelessFunction {
 
   /**
    * Gets a DateTimeFormatter for the given pattern, with default if null.
+   * <p>
+   * Delegates to {@link DateUtils#getFormatter(String)} rather than calling {@code DateTimeFormatter.ofPattern()}:
+   * that binds {@code Locale.getDefault(Locale.Category.FORMAT)}, so the same query would render a textual pattern
+   * field ({@code MMM}, {@code EEE}) differently on two nodes of the same cluster. A query result must not depend on
+   * which node answered it, so the locale is pinned exactly as it is for the storage formats (issue #7144). The
+   * delegation also reuses the bounded formatter cache instead of building one formatter per call.
    */
   protected DateTimeFormatter getFormatter(final String format) {
     if (format == null || format.isEmpty()) {
       return DateTimeFormatter.ISO_LOCAL_DATE_TIME;
     }
-    return DateTimeFormatter.ofPattern(format);
+    return DateUtils.getFormatter(format);
   }
 }

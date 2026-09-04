@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.DateUtils;
 
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.TemporalAccessor;
@@ -63,7 +64,10 @@ public class FormatFunction implements StatelessFunction {
       return args[0].toString();
 
     final String pattern = args[1].toString();
-    final DateTimeFormatter formatter = DateTimeFormatter.ofPattern(pattern);
+    // DateUtils.getFormatter(), not DateTimeFormatter.ofPattern(): the latter binds the JVM default locale, so the
+    // same query would render `MMM`/`EEE` differently on two nodes of one cluster (issue #7144). It also caches, so
+    // a repeated pattern does not build a formatter per row.
+    final DateTimeFormatter formatter = DateUtils.getFormatter(pattern);
 
     // CypherDuration is not a TemporalAccessor, handle separately
     if (args[0] instanceof CypherDuration)

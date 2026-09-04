@@ -21,6 +21,7 @@ package com.arcadedb;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
@@ -235,8 +236,8 @@ public enum GlobalConfiguration {
       Integer.class, 0),
 
   TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,
-      "Number of concurrent files to use for tx log. 0 (default) = available cores", Integer.class,
-      Math.max(Runtime.getRuntime().availableProcessors(), 1)),
+      "Number of concurrent files to use for tx log. 0 = available cores, which is also the default. A value below 0 is treated as 0",
+      Integer.class, Math.max(Runtime.getRuntime().availableProcessors(), 1)),
 
   FREE_PAGE_RAM("arcadedb.freePageRAM", SCOPE.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,
       50),
@@ -888,10 +889,10 @@ public enum GlobalConfiguration {
       Integer.class, 2),
 
   // CYPHER
-  CYPHER_STATEMENT_CACHE("arcadedb.cypher.statementCache", SCOPE.DATABASE,
-      "Max number of entries in the cypher statement cache. Use 0 to disable. Caching statements speeds up execution of the same cypher queries",
-      Integer.class, 1000),
-
+  // `arcadedb.cypher.statementCache` used to be declared here. It had no reader anywhere in the tree and was a
+  // duplicate of OPENCYPHER_STATEMENT_CACHE, which is the one LocalDatabase actually sizes the parsed-statement
+  // cache from - so a user tuning Cypher plan caching through it changed nothing (issue #7121). Removed rather
+  // than wired up: two settings for one cache is the defect, and the surviving one already works.
   CYPHER_MAX_EXPRESSION_DEPTH("arcadedb.cypher.maxExpressionDepth", SCOPE.DATABASE,
       """
       Maximum nesting depth allowed for a single Cypher expression, for example parentheses, list/map literals \
@@ -1362,9 +1363,18 @@ public enum GlobalConfiguration {
       "When SERVER_READINESS_REQUIRES_HA is true, the maximum number of Raft log entries a follower may lag behind the commit index (commitIndex - lastAppliedIndex) and still report Ready. Keeps /api/v1/ready returning 503 until a (re)joined follower has replayed the committed log, so a rolling restart does not drop the write quorum.",
       Long.class, 100L),
 
+  // The console formatter is chosen once, on the first log record the JVM emits, which is almost always before a
+  // server configuration file, a fromJSON, or the settings API has had a chance to speak. Without this callback the
+  // setting only ever worked as a raw -D/env system property and every supported channel silently kept the default
+  // formatter (issue #7121). Re-selecting on set is enough: DefaultLogger swaps the formatter on the console handler
+  // it already installed, and is a no-op before the logger is initialized (init() then picks the value up itself).
   SERVER_LOG_FORMAT("arcadedb.server.logFormat", SCOPE.SERVER,
       "Console log format: 'text' (default, human-readable) or 'json' (one JSON object per line with correlation fields)",
-      String.class, "text"),
+      String.class, "text", //
+      value -> {
+        DefaultLogger.refreshConsoleFormatter();
+        return value;
+      }),
 
   SERVER_LOG_INCLUDE_TRACE("arcadedb.server.logIncludeTrace", SCOPE.SERVER,
       "In text log mode, append [traceId=...] to each line while a trace is active. Default false preserves current text output.",

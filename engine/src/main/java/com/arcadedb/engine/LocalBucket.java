@@ -246,6 +246,24 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * Reads {@code arcadedb.bucketReuseSpaceMode} from the OWNING DATABASE's configuration, not from the JVM-wide
+   * {@link GlobalConfiguration} enum. The setting is declared {@code SCOPE.DATABASE} and {@code ALTER DATABASE}
+   * persists it per database, but both constructors used to read the static value, so a database tuned to
+   * {@code low} kept whatever the process default said and the persisted schema recorded a value the engine ignored
+   * (issue #7121). Every other DATABASE-scoped setting in this class is already read this way - see
+   * {@code COMMIT_LOCK_TIMEOUT}, {@code BUCKET_WIPEOUT_ONDELETE} and {@code TX_RETRIES} below.
+   */
+  private static REUSE_SPACE_MODE reuseSpaceModeOf(final DatabaseInternal database) {
+    return REUSE_SPACE_MODE.valueOf(
+        database.getConfiguration().getValueAsString(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE).toUpperCase(Locale.ENGLISH));
+  }
+
+  /** The mode this bucket resolved at construction. Package-private for unit testing (issue #7121). */
+  String reuseSpaceModeName() {
+    return reuseSpaceMode.name();
+  }
+
+  /**
    * Slots and page space handed out to the transactions currently inserting into ONE bucket page (issue #5279).
    * Every access is made under the entry's own monitor, which serialises the claims on a given page.
    */
@@ -415,7 +433,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     this.maxRecordsInPage = maxRecordsInPageForVersion(version);
     this.contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
     this.cachedRecordCount.set(0);
-    this.reuseSpaceMode = REUSE_SPACE_MODE.valueOf(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
+    this.reuseSpaceMode = reuseSpaceModeOf(database);
     this.purpose = purposeForVersion(version);
   }
 
@@ -435,7 +453,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     super(database, name, filePath, id, mode, pageSize, version);
     this.maxRecordsInPage = maxRecordsInPageForVersion(version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
-    this.reuseSpaceMode = REUSE_SPACE_MODE.valueOf(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
+    this.reuseSpaceMode = reuseSpaceModeOf(database);
     // Derive purpose from the bucket file version - the version itself is persisted in the on-disk file name
     // (e.g. Doc_0_ext.<id>.<pageSize>.v1.bucket), so this assignment is reliable as soon as the LocalBucket
     // is constructed - long before LocalDocumentType.restoreExternalBuckets() runs. That closes the gap where

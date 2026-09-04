@@ -530,9 +530,21 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         use vector.sparseNeighbors(...) for top-K retrieval""");
   }
 
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Delegates to {@link PaginatedSparseVectorEngine#livePostings()}, not to {@code totalPostings()}: the latter is
+   * the sizing metric and counts tombstones, which is precisely the one thing {@link Index#countEntries()} says the
+   * answer must not do, so the count settled on a residual after deletions instead of dropping (issue #7140).
+   * As that contract warns, this walks the whole structure - never call it on a query path.
+   */
   @Override
   public long countEntries() {
-    return engine.totalPostings();
+    try {
+      return engine.livePostings();
+    } catch (final IOException e) {
+      throw new IndexException("Error on counting the live entries of index '" + getName() + "'", e);
+    }
   }
 
   @Override
