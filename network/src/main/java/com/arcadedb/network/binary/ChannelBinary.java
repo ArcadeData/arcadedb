@@ -18,6 +18,7 @@
  */
 package com.arcadedb.network.binary;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
@@ -36,6 +37,13 @@ import java.util.logging.Level;
  **/
 public abstract class ChannelBinary extends Channel implements ChannelDataInput, ChannelDataOutput {
   private static final int              MAX_LENGTH_DEBUG = 150;
+  /**
+   * Issue #7124: the chunk-size errors used to point the operator at a setting that has never existed.
+   * {@code maxChunkSize} comes from {@link GlobalConfiguration#HA_REPLICATION_CHUNK_MAXSIZE} in both
+   * {@link ChannelBinaryServer} and {@link ChannelBinaryClient}, so the key is read from the setting itself rather
+   * than spelled out again: a rename cannot desynchronise the four messages from the lever they name.
+   */
+  private static final String           MAX_CHUNK_SIZE_SETTING = GlobalConfiguration.HA_REPLICATION_CHUNK_MAXSIZE.getKey();
   private final        int              maxChunkSize;
   protected            DataInputStream  in;
   protected            DataOutputStream out;
@@ -117,7 +125,8 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
     final int len = in.readInt();
     if (len > maxChunkSize) {
       throw new IOException(
-          "Impossible to read a chunk of length:" + len + " max allowed chunk length:" + maxChunkSize + " see NETWORK_BINARY_MAX_CONTENT_LENGTH settings ");
+          "Impossible to read a chunk of length:" + len + " max allowed chunk length:" + maxChunkSize + ". See the '"
+              + MAX_CHUNK_SIZE_SETTING + "' setting");
     }
     updateMetricReceivedBytes(Binary.INT_SERIALIZED_SIZE + len);
 
@@ -208,7 +217,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
     } else {
       if (iLength > maxChunkSize) {
         throw new IOException("Impossible to write a chunk of " + iLength + " bytes. Max allowed chunk is " + maxChunkSize
-            + " bytes. See NETWORK_BINARY_MAX_CONTENT_LENGTH settings ");
+            + " bytes. See the '" + MAX_CHUNK_SIZE_SETTING + "' setting");
       }
 
       out.writeInt(iLength);
@@ -223,7 +232,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
       final int length = content.length;
       if (length > maxChunkSize) {
         throw new IOException("Impossible to write a chunk of " + length + " bytes. Max allowed chunk is " + maxChunkSize
-            + " bytes. See NETWORK_BINARY_MAX_CONTENT_LENGTH settings ");
+            + " bytes. See the '" + MAX_CHUNK_SIZE_SETTING + "' setting");
       }
 
       out.write(content, 0, length);
@@ -314,7 +323,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
 
     if (length > maxChunkSize)
       throw new IOException("Impossible to write a chunk of " + length + " bytes max allowed chunk is " + maxChunkSize
-          + " bytes. See NETWORK_BINARY_MAX_CONTENT_LENGTH settings ");
+          + " bytes. See the '" + MAX_CHUNK_SIZE_SETTING + "' setting");
 
     out.write(buffer.array(), buffer.arrayOffset(), length);
     updateMetricTransmittedBytes(length);

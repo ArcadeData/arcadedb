@@ -197,6 +197,11 @@ public class ArcadeDBServer {
   // Holds the per-follower gauge refresh scheduler open; must be closed on stop or the daemon
   // thread it starts leaks one instance per restart (issue #5850).
   private              HAReplicationMetrics haReplicationMetrics;
+  // The server-health monitor (low disk, heap pressure, JVM safepoint spikes) is NOT started: nothing constructs
+  // ServerMonitor, so none of its checks run. Issue #7124 fixed two defects in it - the low-disk warning measured
+  // the JVM working directory rather than the configured database directory, and the safepoint "spike" check
+  // compared two lifetime cumulative averages - which means the class is now correct but still inert. Re-enabling it
+  // is a separate decision: it starts one more daemon thread and begins writing WARNING events to the event log.
 //  private             ServerMonitor                         serverMonitor;
 
   static {

@@ -102,7 +102,12 @@ public class AlterDatabaseStatement extends DDLStatement {
       // "set server setting" HTTP command. ContextConfiguration.setValue is a plain map put, so without this the
       // SQL surface could store a value that is not the setting's declared type - accepted here with a result row,
       // and thrown on later inside whichever component read the setting next.
-      finalValue = cfg.coerce(finalValue);
+      //
+      // Issue #7124: through the STRICT conversion, like the other administrative writers. The permissive coerce()
+      // folds an unparseable boolean to false, so `ALTER DATABASE `arcadedb.txWAL` ture` used to answer with a
+      // result row and turn the write-ahead log OFF for this database - a durability hazard produced by a typo,
+      // reported as a success, and saved to the database configuration.
+      finalValue = cfg.coerceFromAdminCommand(finalValue);
       db.getConfiguration().setValue(cfg, finalValue);
       try {
         db.saveConfiguration();
