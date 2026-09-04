@@ -23,6 +23,7 @@ import com.arcadedb.function.text.TextLevenshteinDistance;
 import com.arcadedb.function.util.UtilCompress;
 import com.arcadedb.function.util.UtilDecompress;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -132,6 +133,7 @@ class CypherFunctionSecurityTest extends TestHelper {
    * Run against both algorithms: they used to carry one copy each of the same read loop, and they still reach the
    * shared reader through different stream types, so a dispatch that wired one of them up wrongly would show here.
    */
+  @Tag("slow") // ~100MB inflated per invocation: big payloads belong in the slow lane, not the shared-JVM default one
   @ParameterizedTest
   @ValueSource(strings = { "gzip", "deflate" })
   void utilDecompressOutputSizeLimitRejectsAZipBomb(final String algorithm) throws IOException {
@@ -148,6 +150,7 @@ class CypherFunctionSecurityTest extends TestHelper {
    * payload would still pass if the cap were lowered underneath it, so only the last accepted size pins the
    * contract from below the way the bomb pins it from above.
    */
+  @Tag("slow") // ~100MB inflated per invocation: big payloads belong in the slow lane, not the shared-JVM default one
   @ParameterizedTest
   @ValueSource(strings = { "gzip", "deflate" })
   void utilDecompressAcceptsAPayloadJustUnderTheCap(final String algorithm) throws IOException {

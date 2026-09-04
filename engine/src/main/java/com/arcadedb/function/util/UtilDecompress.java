@@ -76,19 +76,22 @@ public class UtilDecompress extends AbstractUtilFunction {
       final ByteArrayInputStream bais = new ByteArrayInputStream(compressedBytes);
 
       // Both algorithms share one bounded read loop: a second copy of it would be free to drift away from the
-      // zip-bomb guard, and only one of the two would then be covered by any given test (issue #7142).
-      switch (algorithm) {
-      case "gzip":
-        try (final GZIPInputStream gzis = new GZIPInputStream(bais)) {
-          return readBounded(gzis);
+      // zip-bomb guard, and only one of the two would then be covered by any given test (issue #7142). The arrow
+      // form is deliberate - a colon switch would be correct only while every branch happens to return, so adding
+      // a line to one of them could silently fall through into the next algorithm.
+      return switch (algorithm) {
+        case "gzip" -> {
+          try (final GZIPInputStream gzis = new GZIPInputStream(bais)) {
+            yield readBounded(gzis);
+          }
         }
-      case "deflate":
-        try (final InflaterInputStream iis = new InflaterInputStream(bais)) {
-          return readBounded(iis);
+        case "deflate" -> {
+          try (final InflaterInputStream iis = new InflaterInputStream(bais)) {
+            yield readBounded(iis);
+          }
         }
-      default:
-        throw new IllegalArgumentException("Unsupported compression algorithm: " + algorithm);
-      }
+        default -> throw new IllegalArgumentException("Unsupported compression algorithm: " + algorithm);
+      };
     } catch (final IOException e) {
       throw new RuntimeException("Error decompressing data", e);
     }
