@@ -221,7 +221,7 @@ class Issue6358ChunkFootprintAccountingTest extends BucketPageLayoutTestSupport 
     bumper.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError("the competing write failed: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError("the competing write failed: " + errors.get(0), errors.get(0));
     assertThat(committed).as("the delete must eventually commit").isTrue();
 
     assertThat(bucket.getFreeSpaceHintForPage(0)).as("a page can never be offered less than no free space")

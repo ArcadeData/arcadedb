@@ -119,10 +119,10 @@ class Issue6151BoltSchemaProcedureTest {
     assertThat(served.fields()).containsExactly("result");
     assertThat(served.rows()).hasSize(3);
 
-    assertThat(served.rows().get(0).getFirst()).isEqualTo(engineValues("CALL db.labels()", "label"));
-    assertThat(served.rows().get(1).getFirst())
+    assertThat(served.rows().get(0).get(0)).isEqualTo(engineValues("CALL db.labels()", "label"));
+    assertThat(served.rows().get(1).get(0))
         .isEqualTo(engineValues("CALL db.relationshipTypes()", "relationshipType"));
-    assertThat(served.rows().get(2).getFirst()).isEqualTo(engineValues("CALL db.propertyKeys()", "propertyKey"));
+    assertThat(served.rows().get(2).get(0)).isEqualTo(engineValues("CALL db.propertyKeys()", "propertyKey"));
   }
 
   @Test
@@ -218,7 +218,7 @@ class Issue6151BoltSchemaProcedureTest {
     final List<Object> values = new ArrayList<>(served.rows().size());
     for (final List<Object> row : served.rows()) {
       assertThat(row).hasSize(1);
-      values.add(row.getFirst());
+      values.add(row.get(0));
     }
     assertThat(values).containsExactlyElementsOf(engineValues(query, field));
     return values;

@@ -102,7 +102,7 @@ public class GraphQLSchema {
     final Map<String, Object> arguments = null;
 
     try {
-      final Selection selection = op.getSelectionSet().getSelections().getFirst();
+      final Selection selection = op.getSelectionSet().getSelections().get(0);
       final FieldWithAlias aliasField = selection.getFieldWithAlias();
       queryName = aliasField != null ? aliasField.getName() : selection.getName();
 

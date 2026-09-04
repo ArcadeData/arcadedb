@@ -181,7 +181,7 @@ public class SelectCompositeIndexTest extends TestHelper {
     final List<Vertex> list = result.toList();
 
     assertThat(list).hasSize(1);
-    assertThat(list.getFirst().getLong("orderedAt")).isEqualTo(3L);
+    assertThat(list.get(0).getLong("orderedAt")).isEqualTo(3L);
     assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
     assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(1L);
   }
@@ -254,7 +254,7 @@ public class SelectCompositeIndexTest extends TestHelper {
     final List<Vertex> list = result.toList();
 
     assertThat(list).hasSize(1);
-    assertThat(list.getFirst().getLong("payload")).isEqualTo(3L);
+    assertThat(list.get(0).getLong("payload")).isEqualTo(3L);
     assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
     assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(1L);
   }
@@ -359,7 +359,7 @@ public class SelectCompositeIndexTest extends TestHelper {
     final List<Vertex> list = result.toList();
 
     assertThat(list).hasSize(1);
-    assertThat(list.getFirst().getString("key3")).isEqualTo("u3");
+    assertThat(list.get(0).getString("key3")).isEqualTo("u3");
     assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
     // THE STANDALONE UNIQUE INDEX ON key3 MUST WIN OVER THE COMPOSITE PREFIX MATCH: ONLY THE SINGLE MATCHING RECORD
     // IS EVALUATED, NOT THE WHOLE key1='a' GROUP
@@ -396,7 +396,7 @@ public class SelectCompositeIndexTest extends TestHelper {
     final List<Vertex> list = result.toList();
 
     assertThat(list).hasSize(1);
-    assertThat(list.getFirst().getString("key3")).isEqualTo("u3");
+    assertThat(list.get(0).getString("key3")).isEqualTo("u3");
     assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
     // THE COMPOSITE PREFIX MATCH IS KEPT: EVERY key1='a' ROW IS EVALUATED (NOT JUST THE ONE MATCHING key3), SINCE A
     // NON-UNIQUE STANDALONE INDEX ON key3 DOES NOT TRIGGER DEFERRAL

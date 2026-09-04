@@ -501,7 +501,7 @@ public class FullTextQueryExecutor {
   static boolean isUnqualified(final List<String> propertyNames, final String field) {
     if (field == null || field.isEmpty() || DEFAULT_FIELD.equals(field))
       return true;
-    return propertyNames != null && propertyNames.size() == 1 && Index.basePropertyName(propertyNames.getFirst())
+    return propertyNames != null && propertyNames.size() == 1 && Index.basePropertyName(propertyNames.get(0))
         .equals(field);
   }
 

@@ -222,7 +222,7 @@ public class FullTextSearch {
       final LinkedHashMap<String, Float> unionScoringTokens = new LinkedHashMap<>();
       final Map<Object[], Map<String, Float>> tokensByProperty = new IdentityHashMap<>();
       for (final Object[] propertyKey : perProperty) {
-        final Map<String, Float> propertyTokens = bucketIndexes.getFirst().getSimpleQueryTokenBoosts(propertyKey);
+        final Map<String, Float> propertyTokens = bucketIndexes.get(0).getSimpleQueryTokenBoosts(propertyKey);
         tokensByProperty.put(propertyKey, propertyTokens);
         for (final Map.Entry<String, Float> token : propertyTokens.entrySet())
           unionScoringTokens.merge(token.getKey(), token.getValue(), Math::max);
@@ -237,7 +237,7 @@ public class FullTextSearch {
           keys, effectiveLimit);
     }
 
-    final Map<String, Float> scoringTokens = bucketIndexes.getFirst().getSimpleQueryTokenBoosts(keys);
+    final Map<String, Float> scoringTokens = bucketIndexes.get(0).getSimpleQueryTokenBoosts(keys);
     final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes,
         scanDocumentFrequencies(bucketIndexes, scoringTokens));
 

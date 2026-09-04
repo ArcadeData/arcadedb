@@ -814,7 +814,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: handling catalog query: %s (thread=%s)", query,
-          Thread.currentThread().threadId());
+          Thread.currentThread().getId());
 
     final List<Result> types = toResults(PostgresTypeCatalog.resolve(query));
     if (types != null)

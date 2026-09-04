@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue6401NodeIdentityTest extends AbstractParserTest {
 
   private Expression projectionOf(final String query) {
-    return ((SelectStatement) checkRightSyntax(query)).getProjection().getItems().getFirst().expression;
+    return ((SelectStatement) checkRightSyntax(query)).getProjection().getItems().get(0).expression;
   }
 
   /**

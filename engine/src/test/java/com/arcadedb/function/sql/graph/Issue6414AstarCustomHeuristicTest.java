@@ -139,7 +139,7 @@ class Issue6414AstarCustomHeuristicTest extends TestHelper {
       assertThat(args.get(5)).isEqualTo(2.5);               // dFactor
     }
     // The first call is the source's own estimate, taken before any node has a parent.
-    assertThat(ARGUMENTS.getFirst().get(1)).isNull();
+    assertThat(ARGUMENTS.get(0).get(1)).isNull();
   }
 
   @Test

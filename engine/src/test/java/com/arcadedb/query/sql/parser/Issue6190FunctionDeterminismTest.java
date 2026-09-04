@@ -43,7 +43,7 @@ class Issue6190FunctionDeterminismTest extends AbstractParserTest {
 
   private Expression rightOperandOf(final String query) {
     final SelectStatement statement = (SelectStatement) checkRightSyntax(query);
-    final BooleanExpression term = statement.whereClause.flatten().getFirst().subBlocks.getFirst();
+    final BooleanExpression term = statement.whereClause.flatten().get(0).subBlocks.get(0);
     return ((BinaryCondition) term).right;
   }
 

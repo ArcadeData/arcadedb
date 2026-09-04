@@ -370,7 +370,9 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
         .build();
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    // HttpClient only became AutoCloseable in JDK 21, so it is a plain local here rather than a resource.
+    final HttpClient client = HttpClient.newHttpClient();
+    try {
       final HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
       assertThat(response.statusCode()).as("a streaming client that is answered must be answered correctly")

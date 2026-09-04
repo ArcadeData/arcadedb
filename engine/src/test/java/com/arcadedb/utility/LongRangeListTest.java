@@ -168,7 +168,7 @@ class LongRangeListTest {
     assertThat(new LongRangeList(10L, -3L, 4).reversed()).isInstanceOf(LongRangeList.class)
         .containsExactly(1L, 4L, 7L, 10L);
     // Reversing twice is the identity, and the empty and single-element cases are their own reverse.
-    assertThat(new LongRangeList(10L, -3L, 4).reversed().reversed()).containsExactly(10L, 7L, 4L, 1L);
+    assertThat(((LongRangeList) new LongRangeList(10L, -3L, 4).reversed()).reversed()).containsExactly(10L, 7L, 4L, 1L);
     assertThat(new LongRangeList(0L, 1L, 0).reversed()).isInstanceOf(LongRangeList.class).isEmpty();
     assertThat(new LongRangeList(7L, 2L, 1).reversed()).isInstanceOf(LongRangeList.class).containsExactly(7L);
   }

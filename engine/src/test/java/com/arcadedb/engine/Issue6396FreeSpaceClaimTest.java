@@ -85,15 +85,15 @@ class Issue6396FreeSpaceClaimTest extends BucketPageLayoutTestSupport {
       for (int i = 0; i < 8; i++)
         rids.add(database.newDocument(TYPE).set("v", "v".repeat(512)).save().getIdentity());
 
-      final MutablePage page = pageOf(rids.getFirst());
+      final MutablePage page = pageOf(rids.get(0));
       assertThat(page.getFreeSpaceClaim())
           .as("an insert must state what free tail it leaves; without a claim the commit has nothing to check")
           .isNotEqualTo(MutablePage.FREE_SPACE_CLAIM_UNKNOWN);
-      assertThat(page.getFreeSpaceClaim()).isEqualTo(freeTailOf(page, rids.getLast()));
+      assertThat(page.getFreeSpaceClaim()).isEqualTo(freeTailOf(page, rids.get(rids.size() - 1)));
     });
 
     // And it survives the commit that measures the same page: the two descriptions agree end to end.
-    assertThat(bucket.getFreeSpaceHintForPage(0)).isEqualTo(freeTailAfterCommit(rids.getLast()));
+    assertThat(bucket.getFreeSpaceHintForPage(0)).isEqualTo(freeTailAfterCommit(rids.get(rids.size() - 1)));
     checkDatabase();
   }
 
@@ -157,13 +157,13 @@ class Issue6396FreeSpaceClaimTest extends BucketPageLayoutTestSupport {
     database.transaction(() -> {
       database.newDocument(TYPE).set("v", "v".repeat(512)).save();
       rids.get(3).asDocument(true).delete();
-      assertLowerBoundOn(pageOf(rids.getFirst()));
+      assertLowerBoundOn(pageOf(rids.get(0)));
     });
 
     database.transaction(() -> {
       database.newDocument(TYPE).set("v", "v".repeat(512)).save();
-      rids.getLast().asDocument(true).delete();
-      assertLowerBoundOn(pageOf(rids.getFirst()));
+      rids.get(rids.size() - 1).asDocument(true).delete();
+      assertLowerBoundOn(pageOf(rids.get(0)));
     });
 
     // The last record of the page, shrunk in place: the tail moves outwards and nothing reports it.
@@ -223,8 +223,8 @@ class Issue6396FreeSpaceClaimTest extends BucketPageLayoutTestSupport {
           rids.add(database.newDocument(TYPE).set("v", "v".repeat(400)).save().getIdentity());
       });
 
-      final RID first = rids.getFirst();
-      final RID last = rids.getLast();
+      final RID first = rids.get(0);
+      final RID last = rids.get(rids.size() - 1);
       final RID bystander = rids.get(4);
 
       database.transaction(() -> {

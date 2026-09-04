@@ -464,14 +464,13 @@ public final class CypherVariableUsage {
     public void visit(final Expression expression) {
       if (found)
         return;
-      switch (expression) {
-      case VariableExpression variableExpression -> found = variable.equals(variableExpression.getVariableName());
-      case PropertyAccessExpression property -> found = variable.equals(property.getVariableName());
-      case MapProjectionExpression projection -> found = variable.equals(projection.getVariableName());
-      default -> {
-        // Not a name-carrying node; the walk still descends into its children.
-      }
-      }
+      if (expression instanceof VariableExpression variableExpression)
+        found = variable.equals(variableExpression.getVariableName());
+      else if (expression instanceof PropertyAccessExpression property)
+        found = variable.equals(property.getVariableName());
+      else if (expression instanceof MapProjectionExpression projection)
+        found = variable.equals(projection.getVariableName());
+      // GENERIC CASE: not a name-carrying node; the walk still descends into its children.
     }
 
     @Override

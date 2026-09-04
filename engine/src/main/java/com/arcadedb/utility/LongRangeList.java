@@ -185,11 +185,12 @@ public class LongRangeList extends AbstractList<Long> implements RandomAccess {
    * it stays lazy, and {@code arcadedb.queryMaxRangeSize} is documented as the cap on what a query may
    * <i>materialise</i>, so a reversal that materialises turns a free range into gigabytes of boxed longs.
    * <p>
-   * Overriding {@link List#reversed()} rather than adding a private helper means every caller that already speaks
-   * the {@code SequencedCollection} vocabulary gets the lazy answer for free. The returned range is independent of
-   * this one - both are immutable, so nothing observes the difference from the view {@code List} would return.
+   * Upstream declares this as an override of {@code List.reversed()}. That method arrived with
+   * {@code SequencedCollection} in JDK 21, so on this branch it is a plain method on the class instead: callers hold
+   * a {@code LongRangeList} (see {@code CollSort} and {@code ReverseFunction}) and still get the lazy answer. The
+   * returned range is independent of this one - both are immutable, so nothing observes the difference from the
+   * view {@code List} would return.
    */
-  @Override
   public List<Long> reversed() {
     if (size <= 1)
       // Reversing nothing, or a single element, gives back the same sequence.

@@ -110,8 +110,8 @@ class CypherOptionalMatchIdentityProjectionIssue6544Test {
           """);
 
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().<Object>getProperty("id")).isEqualTo(38);
-      assertThat(rows.getFirst().<Object>getProperty("p1")).isNotNull();
+      assertThat(rows.get(0).<Object>getProperty("id")).isEqualTo(38);
+      assertThat(rows.get(0).<Object>getProperty("p1")).isNotNull();
     });
   }
 
@@ -188,9 +188,9 @@ class CypherOptionalMatchIdentityProjectionIssue6544Test {
           RETURN n0, r0, p1
           """);
       assertThat(standalone).hasSize(1);
-      assertThat(standalone.getFirst().<Object>getProperty("n0")).isNull();
-      assertThat(standalone.getFirst().<Object>getProperty("r0")).isNull();
-      assertThat(standalone.getFirst().<Object>getProperty("p1")).isNull();
+      assertThat(standalone.get(0).<Object>getProperty("n0")).isNull();
+      assertThat(standalone.get(0).<Object>getProperty("r0")).isNull();
+      assertThat(standalone.get(0).<Object>getProperty("p1")).isNull();
     });
   }
 }

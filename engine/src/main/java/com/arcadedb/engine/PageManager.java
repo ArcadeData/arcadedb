@@ -1478,7 +1478,7 @@ public class PageManager extends LockContext {
           putPageInReadCache(new CachedPage(page, true));
         handedOver = true;
         flushThread.scheduleFlushOfPages(updatedPages,
-            flushSlotReserved ? updatedPages.getFirst().getPageId().getDatabase() : null);
+            flushSlotReserved ? updatedPages.get(0).getPageId().getDatabase() : null);
       } else {
         // SYNCHRONOUS FLUSH
         for (final MutablePage page : updatedPages) {
@@ -1509,7 +1509,7 @@ public class PageManager extends LockContext {
     final PageManagerFlushThread thread = flushThread;
     if (thread == null || pages == null || pages.isEmpty())
       return false;
-    return thread.reserveQueueSlot(pages.getFirst().getPageId().getDatabase());
+    return thread.reserveQueueSlot(pages.get(0).getPageId().getDatabase());
   }
 
   /**
@@ -1521,7 +1521,7 @@ public class PageManager extends LockContext {
   private void releaseFlushQueueSlot(final List<MutablePage> pages) {
     final PageManagerFlushThread thread = flushThread;
     if (thread != null && pages != null && !pages.isEmpty())
-      thread.releaseQueueReservation(pages.getFirst().getPageId().getDatabase());
+      thread.releaseQueueReservation(pages.get(0).getPageId().getDatabase());
   }
 
   protected void flushPage(final MutablePage page) throws IOException {

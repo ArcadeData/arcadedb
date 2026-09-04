@@ -121,8 +121,8 @@ class Issue6501GroupedDeltaMergeTest extends TestHelper {
     final List<Pair<RID, Float>> grouped = grouped(3, 1);
     assertThat(ridsOf(grouped)).as("the same index, vector and instant must not answer a groupBy query from a stale corpus")
         .containsExactlyInAnyOrderElementsOf(fresh);
-    assertThat(grouped.getFirst().getSecond()).as("and the nearest row must be the nearest row")
-        .isEqualTo(ungrouped.getFirst().getSecond());
+    assertThat(grouped.get(0).getSecond()).as("and the nearest row must be the nearest row")
+        .isEqualTo(ungrouped.get(0).getSecond());
     assertWellFormed(grouped);
 
     assertThat(stat("groupedSearchesMergingDelta"))
@@ -265,7 +265,7 @@ class Issue6501GroupedDeltaMergeTest extends TestHelper {
     createSchema();
     insertBaseVertices();
 
-    final RID shared = vectorIndex().findNeighborsFromVector(query(), 1).getFirst().getFirst();
+    final RID shared = vectorIndex().findNeighborsFromVector(query(), 1).get(0).getFirst();
     assertThat(vectorIndex().requeueIntoDeltaBufferForTest(shared))
         .as("the nearest record has to be in the graph for this to be an overlap at all").isNotNegative();
     assertThat(deltaCount()).as("and in the delta buffer as well, which is the whole point").isPositive();

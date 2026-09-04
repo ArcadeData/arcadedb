@@ -288,7 +288,7 @@ class Issue6296AlgoAPSPLazyRowsTest {
   }
 
   private static long measure(final com.sun.management.ThreadMXBean threads, final Runnable body) {
-    final long id = Thread.currentThread().threadId();
+    final long id = Thread.currentThread().getId();
     final long before = threads.getThreadAllocatedBytes(id);
     body.run();
     return threads.getThreadAllocatedBytes(id) - before;

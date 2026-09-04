@@ -675,7 +675,7 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
     final Set<Long> ids = new HashSet<>();
     for (final Thread t : Thread.getAllStackTraces().keySet())
       if (t.getName().startsWith(prefix) && t.isAlive())
-        ids.add(t.threadId());
+        ids.add(t.getId());
     return ids;
   }
 

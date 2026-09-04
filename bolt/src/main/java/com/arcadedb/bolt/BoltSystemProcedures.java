@@ -205,7 +205,7 @@ final class BoltSystemProcedures {
    * Reads every value of a single-field procedure into one list, for the combined query's collected form.
    */
   private static List<Object> column(final Database database, final CypherProcedure procedure) {
-    final String field = procedure.getYieldFields().getFirst();
+    final String field = procedure.getYieldFields().get(0);
     final List<Object> values = new ArrayList<>();
     try (final Stream<Result> results = execute(database, procedure)) {
       results.forEach(result -> values.add(result.getProperty(field)));

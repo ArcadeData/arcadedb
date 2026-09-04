@@ -99,7 +99,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -1983,12 +1982,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   private String mapRecordType(final String typeName) {
     try {
       final Object type = getSchema().getType(typeName);
-      return switch (type) {
-        case VertexType v -> "v";
-        case EdgeType e -> "e";
-        case DocumentType d -> "d";
-        default -> null;
-      };
+      if (type instanceof VertexType)
+        return "v";
+      else if (type instanceof EdgeType)
+        return "e";
+      else if (type instanceof DocumentType)
+        return "d";
+      return null;
 
     } catch (Exception e) {
       throw new RuntimeException(e);

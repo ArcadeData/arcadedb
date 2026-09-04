@@ -150,7 +150,7 @@ class Issue6376AlgoMaxKCutWeightAlignmentTest {
             .as("the view must actually back the call")
             .isEqualTo(true);
         assertThat(rows).hasSize(4);
-        assertThat(((Number) rows.getFirst().getProperty("cutWeight")).doubleValue()).isEqualTo(115.0);
+        assertThat(((Number) rows.get(0).getProperty("cutWeight")).doubleValue()).isEqualTo(115.0);
       } finally {
         database.rollback();
       }
@@ -170,7 +170,7 @@ class Issue6376AlgoMaxKCutWeightAlignmentTest {
       final List<Result> rows = collect(new AlgoMaxKCut().execute(
           new Object[] { 2, Map.of("weightProperty", "w", "seed", seed) }, null, context));
       assertThat(rows).hasSize(4);
-      return ((Number) rows.getFirst().getProperty("cutWeight")).doubleValue();
+      return ((Number) rows.get(0).getProperty("cutWeight")).doubleValue();
     } finally {
       database.rollback();
     }

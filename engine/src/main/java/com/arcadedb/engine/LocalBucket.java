@@ -4000,7 +4000,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (orderedRecordsInPage.isEmpty())
       return page.getMaxContentSize() - contentHeaderSize;
 
-    final int[] lastRecord = orderedRecordsInPage.getLast();
+    final int[] lastRecord = orderedRecordsInPage.get(orderedRecordsInPage.size() - 1);
     return page.getMaxContentSize() - (lastRecord[0] + lastRecord[1]);
   }
 
@@ -5287,7 +5287,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     LogManager.instance().log(this, Level.FINE,
             "Updated record %s by collapsing its chunk chain back into a plain %srecord (%s threadId=%d)", null, rid,
-            isPlaceHolderContent ? "placeholder content " : "", page, Thread.currentThread().threadId());
+            isPlaceHolderContent ? "placeholder content " : "", page, Thread.currentThread().getId());
 
     return true;
   }

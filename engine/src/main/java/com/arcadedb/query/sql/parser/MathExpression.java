@@ -793,10 +793,10 @@ public class MathExpression extends SimpleNode {
 
     if (childExpressions.size() == 2) {
       // Extract scalar values from ResultSets for arithmetic operations (issue #1723)
-      final Object leftValue = extractScalarFromResultSet(childExpressions.getFirst().execute(currentRecord, context));
+      final Object leftValue = extractScalarFromResultSet(childExpressions.get(0).execute(currentRecord, context));
       // `??` is the one operator whose result can be decided by the left operand alone, so the right one - which may
       // be a function call or a sub-query - is not evaluated when the fallback is not taken (issue #6393).
-      if (operators.getFirst() == Operator.NULL_COALESCING && leftValue != null)
+      if (operators.get(0) == Operator.NULL_COALESCING && leftValue != null)
         return leftValue;
       final Object rightValue = extractScalarFromResultSet(childExpressions.get(1).execute(currentRecord, context));
       return operators.get(0).apply(leftValue, rightValue);
@@ -814,10 +814,10 @@ public class MathExpression extends SimpleNode {
 
     if (childExpressions.size() == 2) {
       // Extract scalar values from ResultSets for arithmetic operations (issue #1723)
-      final Object leftValue = extractScalarFromResultSet(childExpressions.getFirst().execute(currentRecord, context));
+      final Object leftValue = extractScalarFromResultSet(childExpressions.get(0).execute(currentRecord, context));
       // `??` is the one operator whose result can be decided by the left operand alone, so the right one - which may
       // be a function call or a sub-query - is not evaluated when the fallback is not taken (issue #6393).
-      if (operators.getFirst() == Operator.NULL_COALESCING && leftValue != null)
+      if (operators.get(0) == Operator.NULL_COALESCING && leftValue != null)
         return leftValue;
       final Object rightValue = extractScalarFromResultSet(childExpressions.get(1).execute(currentRecord, context));
       return operators.get(0).apply(leftValue, rightValue);

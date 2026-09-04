@@ -49,7 +49,7 @@ class Issue6283ComponentFileIdMismatchTest extends TestHelper {
     final DatabaseInternal db = (DatabaseInternal) database;
 
     database.getSchema().createDocumentType("Issue6283Type", 1);
-    final Bucket existing = database.getSchema().getType("Issue6283Type").getBuckets(false).getFirst();
+    final Bucket existing = database.getSchema().getType("Issue6283Type").getBuckets(false).get(0);
     final String name = existing.getName();
     final int registeredFileId = existing.getFileId();
 

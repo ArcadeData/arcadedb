@@ -562,7 +562,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       // sitting in a later slot - on every one of `value`'s elements, which made this loop quadratic in the
       // element count (#6640: a 15,000-value IN() on an indexed property took ~10s here alone).
       final PCollection tail = key.copy();
-      tail.getExpressions().removeFirst();
+      tail.getExpressions().remove(0);
       for (final Object elemInKey : MultiValue.getMultiValueIterable(value)) {
         final PCollection newHead = new PCollection();
         for (final Expression exp : head.getExpressions())

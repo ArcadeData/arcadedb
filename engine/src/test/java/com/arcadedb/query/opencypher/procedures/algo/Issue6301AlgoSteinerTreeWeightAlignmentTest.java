@@ -183,7 +183,7 @@ class Issue6301AlgoSteinerTreeWeightAlignmentTest {
             .as("the view must actually back the call")
             .isEqualTo(true);
         assertThat(rows).hasSize(1);
-        assertThat(((Number) rows.getFirst().getProperty("weight")).doubleValue()).isEqualTo(3.0);
+        assertThat(((Number) rows.get(0).getProperty("weight")).doubleValue()).isEqualTo(3.0);
       } finally {
         database.rollback();
       }
@@ -361,7 +361,7 @@ class Issue6301AlgoSteinerTreeWeightAlignmentTest {
       final List<Result> rows = collect(new AlgoBellmanFord().execute(
           new Object[] { vertexNamed("X"), vertexNamed("Z"), "ROAD", "w" }, null, context));
       assertThat(rows).hasSize(1);
-      return ((Number) rows.getFirst().getProperty("weight")).doubleValue();
+      return ((Number) rows.get(0).getProperty("weight")).doubleValue();
     } finally {
       database.rollback();
     }

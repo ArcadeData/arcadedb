@@ -404,7 +404,7 @@ public class PageManagerFlushThread extends Thread {
         // AVOID INSERTING AN EMPTY LIST BECAUSE IS USED TO SHUTDOWN THE THREAD
         return;
 
-      final BasicDatabase database = pages.getFirst().pageId.getDatabase();
+      final BasicDatabase database = pages.get(0).pageId.getDatabase();
       assert slotReservedFor == null || slotReservedFor.equals(database) :
           "a slot reserved for database '" + slotReservedFor.getName() + "' cannot pay for a batch of '"
               + database.getName() + "'";

@@ -239,7 +239,7 @@ class CypherVariableLengthReversedAnchorSemanticsTest {
     try (final ResultSet resultSet = database.query("opencypher", "PROFILE " + query)) {
       while (resultSet.hasNext())
         resultSet.next();
-      final String firstStep = resultSet.getExecutionPlan().orElseThrow().getSteps().getFirst().getDescription();
+      final String firstStep = resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription();
       return firstStep.contains("AnchorSelection{variable='hub', useIndex=true")
           && firstStep.contains("VarLengthExpand(hub)")
           && firstStep.contains("NodeIndexSeek(hub:Node)");

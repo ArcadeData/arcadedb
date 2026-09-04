@@ -194,7 +194,7 @@ class CypherCountPushDownLabelIssue6322Test extends TestHelper {
         values.add(((Number) rs.next().getProperty("c")).longValue());
     }
     assertThat(values).as(query).hasSize(1);
-    return values.getFirst();
+    return values.get(0);
   }
 
   /** The {@code k=c} pairs of a grouped count, as strings, so an assertion reads as the query does. */

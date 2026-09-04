@@ -382,7 +382,7 @@ class Issue6340TimeSeriesCheckDatabaseTest extends TestHelper {
     final List<String> bucketWarnings = warningsOf(row).stream()
         .filter(w -> w.contains("timeseries 'Cpu'") && w.contains("mutable bucket")).toList();
     assertThat(bucketWarnings).hasSize(1);
-    assertThat(bucketWarnings.getFirst()).contains("declares 9999 data page(s) but page");
+    assertThat(bucketWarnings.get(0)).contains("declares 9999 data page(s) but page");
   }
 
   /**
