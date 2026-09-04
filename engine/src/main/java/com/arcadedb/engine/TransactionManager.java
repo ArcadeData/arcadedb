@@ -537,6 +537,15 @@ public class TransactionManager {
   private boolean applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final boolean ignoreErrors) {
     boolean changed = false;
+    // Whether at least one page was written at a version STRICTLY GREATER than the one on disk, i.e. this
+    // transaction carried content the database did not have yet. `changed` cannot answer that question: since
+    // #4926 an EQUAL-version page is deliberately re-applied (torn-write repair), which sets `changed` on a
+    // transaction that was already fully applied. The bucket record-count fold at the end of this method is a
+    // RELATIVE increment, so folding it on such a replay double-counts it, and on a cleanly-restarted node the
+    // counter is live (statistics.json) and never invalidated, so the over-count is permanent (issue #7126).
+    // A version advance is the precise idempotency signal: if a previous apply of this entry had reached the
+    // fold, every page of the entry would already be at or beyond its target version, so nothing could advance.
+    boolean versionAdvanced = false;
     boolean involveDictionary = false;
 
     final int dictionaryId =
@@ -723,6 +732,10 @@ public class TransactionManager {
           involveDictionary = true;
 
         changed = true;
+        if (txPage.currentPageVersion > page.getVersion())
+          // New content for this page: the database did not have this version yet, so the record-count delta
+          // this entry carries has not been folded into the cached counters (issue #7126).
+          versionAdvanced = true;
         LogManager.instance().log(this, Level.FINE, "  - updating page %s v%d", null, pageId, modifiedPage.version);
 
       } catch (final ClosedByInterruptException e) {
@@ -740,10 +753,13 @@ public class TransactionManager {
       }
     }
 
-    if (changed) {
+    if (versionAdvanced) {
       for (final Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
-        final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(entry.getKey());
-        if (bucket.getCachedRecordCount() > -1)
+        // getFileByIdIfExists, not getBucketById: a DROP TYPE replayed after this entry removed the bucket, and
+        // the counter of a bucket that no longer exists is nobody's business - mirrors the same fold in
+        // TransactionContext.commit2ndPhase.
+        if (database.getSchema().getFileByIdIfExists(entry.getKey()) instanceof LocalBucket bucket
+            && bucket.getCachedRecordCount() > -1)
           // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
           bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());
       }

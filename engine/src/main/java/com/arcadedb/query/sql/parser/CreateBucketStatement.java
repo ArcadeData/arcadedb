@@ -44,19 +44,28 @@ public class CreateBucketStatement extends DDLStatement {
     final String bucketName = name.getStringValue();
     if (db.getSchema().existsBucket(bucketName)) {
       if (ifNotExists)
-        return new InternalResultSet();
+        // One row, exactly as the creating branch below, with created=false telling the two apart: a retry of
+        // an IF NOT EXISTS statement must not answer a shape that reads as failure (issue #7143).
+        return new InternalResultSet(describe(context, bucketName, db.getSchema().getBucketByName(bucketName), false));
       throw new CommandExecutionException("Bucket '" + bucketName + "' already exists");
     }
     final Bucket bucket = db.getSchema().createBucket(bucketName);
 
-    final ResultInternal result = new ResultInternal(context.getDatabase());
-    result.setProperty("operation", "create bucket");
-    result.setProperty("bucketName", bucketName);
-    result.setProperty("bucketId", bucket.getFileId());
+    final ResultInternal result = describe(context, bucketName, bucket, true);
 
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
+  }
+
+  private static ResultInternal describe(final CommandContext context, final String bucketName, final Bucket bucket,
+      final boolean created) {
+    final ResultInternal result = new ResultInternal(context.getDatabase());
+    result.setProperty("operation", "create bucket");
+    result.setProperty("bucketName", bucketName);
+    result.setProperty("bucketId", bucket.getFileId());
+    result.setProperty("created", created);
+    return result;
   }
 
   @Override

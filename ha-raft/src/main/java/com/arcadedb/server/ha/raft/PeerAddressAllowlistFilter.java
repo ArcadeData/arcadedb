@@ -29,6 +29,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -70,6 +71,16 @@ import java.util.logging.Level;
  *       picked up by the reactive miss path and the background {@link #proactiveRefresh()}.</li>
  * </ul>
  * <p>
+ * The set of hosts is NOT frozen at boot (issue #7132). The hosts declared in {@code serverList} are the
+ * <i>configured</i> ones and are the only ones the quorum and completeness latches above count, but a
+ * caller may {@link #learnPeerHosts add} more at runtime, and {@code RaftHAServer} does so on every health
+ * monitor tick from the live Raft configuration. Without that, a peer that joined after this node started -
+ * through {@code addPeer}, or through the Kubernetes StatefulSet scale-up auto-join of issue #4836 - was
+ * rejected forever by every node that had already latched {@code everQuorumResolved}: the two features are
+ * individually correct and were jointly broken, because nothing reconciled them. Learned hosts resolve
+ * exactly like configured ones but are best-effort: a name that does not resolve contributes nothing,
+ * is logged at FINE rather than WARNING, and never holds the latches back.
+ * <p>
  * This is NOT a substitute for mTLS: it does not authenticate peer identity and does not
  * encrypt the traffic. See GitHub issue #3890. The bounded startup fail-open is an acceptable
  * trade-off for that reason; set {@code startupGraceMs=0} to disable it.
@@ -86,7 +97,13 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   // (at startup or from a non-peer) while letting the allowlist converge within ~1s.
   private static final long        MISS_RESOLVE_FLOOR_MS = 1_000L;
 
+  // Hosts declared in arcadedb.ha.serverList. Immutable, and the ONLY ones the quorum/completeness
+  // latches below count: they describe the configured cluster, which is what #4828 reasoned about.
   private final List<String>                 peerHosts;
+  // Hosts learned after construction (issue #7132): the members of the live Raft configuration, plus - on
+  // Kubernetes - the headless service domain behind arcadedb.ha.k8sSuffix, which resolves to every pod of
+  // the StatefulSet. Copy-on-write so isAllowed()'s hot path never synchronises against a learner.
+  private volatile Set<String>               learnedHosts = Collections.emptySet();
   // Number of declared peer hosts that must resolve before the startup fail-open ends: a Raft
   // majority (floor(n/2)+1). Enough peers to form the cluster, so a single permanently-down peer
   // no longer holds the fail-open window open for its full duration (issue #4828).
@@ -191,8 +208,14 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
       return true;
     }
 
+    // Named settings and the full host list, because this is logged on the RECEIVING node: an operator
+    // looking at a peer that will not join sees nothing at all in ITS log (issue #7132).
     LogManager.instance().log(this, Level.WARNING,
-        "Rejecting Raft gRPC connection from non-peer address: %s (allowed=%s)", ip, allowedIps.get());
+        "Rejecting Raft gRPC connection from %s: the address is not in the cluster peer allowlist "
+            + "(allowed=%s, configured hosts=%s, learned from the live Raft configuration=%s). If this is a "
+            + "legitimate peer, add it to 'arcadedb.ha.serverList' or check that its hostname resolves from "
+            + "this node; 'arcadedb.ha.peerAllowlist.enabled=false' disables the check entirely.",
+        ip, allowedIps.get(), peerHosts, learnedHosts);
     return false;
   }
 
@@ -209,6 +232,54 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   /** True once a quorum (majority) of peer hosts has been covered at least once. Exposed for testing. */
   boolean isQuorumResolved() {
     return everQuorumResolved;
+  }
+
+  /**
+   * Adds hosts discovered after construction to the allowlist and re-resolves immediately when any of them
+   * is new (issue #7132). The caller is {@code RaftHAServer.refreshPeerAllowlist}, which passes the hosts of
+   * the live Raft configuration on every health monitor tick, and {@code installPeerAllowlist}, which seeds
+   * the Kubernetes headless service domain. Idempotent: a tick that discovers nothing new costs one set
+   * comparison and does not touch DNS.
+   * <p>
+   * Learned hosts do not count towards {@link #isQuorumResolved()} or {@link #isEverCompletelyResolved()}:
+   * those gates describe the CONFIGURED cluster (issue #4828), and a name that does not resolve yet must not
+   * hold the fail-open window open, nor - once it does resolve - retroactively widen the quorum a returning
+   * peer has to clear.
+   *
+   * @return true when at least one host was not already known, i.e. when a re-resolution was performed
+   */
+  boolean learnPeerHosts(final Collection<String> hosts) {
+    if (hosts == null || hosts.isEmpty())
+      return false;
+
+    final Set<String> added = new HashSet<>();
+    synchronized (this) {
+      for (final String host : hosts) {
+        if (host == null || host.isBlank())
+          continue;
+        final String trimmed = host.trim();
+        if (peerHosts.contains(trimmed) || learnedHosts.contains(trimmed))
+          continue;
+        added.add(trimmed);
+      }
+      if (added.isEmpty())
+        return false;
+
+      final Set<String> merged = new HashSet<>(learnedHosts);
+      merged.addAll(added);
+      learnedHosts = Collections.unmodifiableSet(merged);
+      // Unconditional, NOT resolveIfStale: a newly learned host is exactly the case the refresh floors were
+      // written to throttle away, and the connection it is meant to admit is usually already being retried.
+      doResolve();
+    }
+    LogManager.instance().log(this, Level.FINE,
+        "Raft gRPC peer allowlist learned %d new host(s): %s", added.size(), added);
+    return true;
+  }
+
+  /** The hosts learned after construction. Exposed for testing. */
+  Set<String> getLearnedHosts() {
+    return learnedHosts;
   }
 
   /** Triggers an immediate DNS re-resolution. Exposed for testing. */
@@ -253,45 +324,62 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     final long now = clock.getAsLong();
     final Set<String> effective = new HashSet<>(LoopbackHosts.IPS);
     int covered = 0;
-    for (final String host : peerHosts) {
-      Set<String> fresh = null;
-      try {
-        final InetAddress[] addrs = resolver.resolve(host);
-        if (addrs != null && addrs.length > 0) {
-          fresh = new HashSet<>();
-          for (final InetAddress a : addrs)
-            fresh.add(a.getHostAddress());
-        }
-      } catch (final UnknownHostException e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Cannot resolve cluster peer host '%s' for Raft gRPC allowlist: %s", host, e.getMessage());
-      }
-
-      if (fresh != null && !fresh.isEmpty()) {
-        lastKnownIps.put(host, fresh);
-        lastKnownMs.put(host, now);
-        effective.addAll(fresh);
+    for (final String host : peerHosts)
+      if (resolveHostInto(host, now, effective, true))
         covered++;
-      } else {
-        // Resolution failed: keep the last-known-good IPs for a bounded time (sticky) so a transient
-        // DNS outage or pod-IP churn does not evict a peer that resolved moments ago.
-        final Set<String> prev = lastKnownIps.get(host);
-        final Long prevMs = lastKnownMs.get(host);
-        if (prev != null && prevMs != null && stickyTtlMs > 0 && now - prevMs <= stickyTtlMs) {
-          effective.addAll(prev);
-          covered++;
-        } else {
-          lastKnownIps.remove(host);
-          lastKnownMs.remove(host);
-        }
-      }
-    }
+    // Learned hosts widen the allowlist but never the gates: see learnPeerHosts.
+    for (final String host : learnedHosts)
+      resolveHostInto(host, now, effective, false);
+
     allowedIps.set(Collections.unmodifiableSet(effective));
     lastResolveMs = now;
     if (covered >= resolveQuorum)
       everQuorumResolved = true;
     if (covered == peerHosts.size())
       everCompletelyResolved = true;
+  }
+
+  /**
+   * Resolves one host into {@code effective}, applying the sticky last-known-good retention. Returns whether
+   * the host ended up covered (freshly resolved, or served from its sticky entry).
+   *
+   * @param declared true for a host from {@code serverList}, whose failure to resolve is worth a WARNING;
+   *                 false for a learned host, where a name that does not (yet) resolve is expected - a
+   *                 headless service domain outside Kubernetes is the normal case.
+   */
+  private boolean resolveHostInto(final String host, final long now, final Set<String> effective,
+      final boolean declared) {
+    Set<String> fresh = null;
+    try {
+      final InetAddress[] addrs = resolver.resolve(host);
+      if (addrs != null && addrs.length > 0) {
+        fresh = new HashSet<>();
+        for (final InetAddress a : addrs)
+          fresh.add(a.getHostAddress());
+      }
+    } catch (final UnknownHostException e) {
+      LogManager.instance().log(this, declared ? Level.WARNING : Level.FINE,
+          "Cannot resolve cluster peer host '%s' for Raft gRPC allowlist: %s", host, e.getMessage());
+    }
+
+    if (fresh != null && !fresh.isEmpty()) {
+      lastKnownIps.put(host, fresh);
+      lastKnownMs.put(host, now);
+      effective.addAll(fresh);
+      return true;
+    }
+
+    // Resolution failed: keep the last-known-good IPs for a bounded time (sticky) so a transient
+    // DNS outage or pod-IP churn does not evict a peer that resolved moments ago.
+    final Set<String> prev = lastKnownIps.get(host);
+    final Long prevMs = lastKnownMs.get(host);
+    if (prev != null && prevMs != null && stickyTtlMs > 0 && now - prevMs <= stickyTtlMs) {
+      effective.addAll(prev);
+      return true;
+    }
+    lastKnownIps.remove(host);
+    lastKnownMs.remove(host);
+    return false;
   }
 
   /**
@@ -360,6 +448,7 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
 
   @Override
   public String toString() {
-    return "PeerAddressAllowlistFilter{peerHosts=" + peerHosts + ", allowed=" + allowedIps.get() + "}";
+    return "PeerAddressAllowlistFilter{peerHosts=" + peerHosts + ", learnedHosts=" + learnedHosts + ", allowed="
+        + allowedIps.get() + "}";
   }
 }
