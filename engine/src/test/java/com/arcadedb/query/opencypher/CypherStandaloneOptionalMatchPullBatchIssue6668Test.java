@@ -99,7 +99,7 @@ class CypherStandaloneOptionalMatchPullBatchIssue6668Test {
       final List<Result> rows = rows("OPTIONAL MATCH (n:Person {id: -1}) RETURN n");
 
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().<Object>getProperty("n")).isNull();
+      assertThat(rows.get(0).<Object>getProperty("n")).isNull();
     });
   }
 
@@ -113,7 +113,7 @@ class CypherStandaloneOptionalMatchPullBatchIssue6668Test {
       final List<Result> rows = rows("OPTIONAL MATCH (n:Person {id: 0}) RETURN n.id AS id");
 
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().<Object>getProperty("id")).isEqualTo(0);
+      assertThat(rows.get(0).<Object>getProperty("id")).isEqualTo(0);
     });
   }
 }

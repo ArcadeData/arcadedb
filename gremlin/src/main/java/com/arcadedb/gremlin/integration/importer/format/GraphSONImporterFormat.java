@@ -269,7 +269,7 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
         return null;
 
       // A single entry is a single-cardinality property: keep it scalar so the property type is not widened to a list.
-      return values.size() == 1 ? values.getFirst() : values;
+      return values.size() == 1 ? values.get(0) : values;
     } else if (propObj instanceof JSONObject propJson) {
       // Check for typed value format
       if (propJson.has("@type") && propJson.has("@value")) {

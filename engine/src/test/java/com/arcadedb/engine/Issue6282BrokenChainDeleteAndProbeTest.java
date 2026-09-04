@@ -337,7 +337,7 @@ class Issue6282BrokenChainDeleteAndProbeTest extends TestHelper {
       final VertexType type = db.getSchema().createVertexType(TYPE, 1);
       type.createProperty("id", Type.INTEGER);
       type.createProperty("data", Type.STRING);
-      bucketIdHolder[0] = type.getBuckets(false).getFirst().getFileId();
+      bucketIdHolder[0] = type.getBuckets(false).get(0).getFileId();
     });
 
     final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(bucketIdHolder[0])).getPageSize();

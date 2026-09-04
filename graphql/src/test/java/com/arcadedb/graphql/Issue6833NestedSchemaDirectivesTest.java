@@ -55,7 +55,7 @@ class Issue6833NestedSchemaDirectivesTest extends AbstractGraphQLTest {
         final List<Result> authors = book.getProperty("authors");
         assertThat(authors).hasSize(1);
 
-        final Result author = authors.getFirst();
+        final Result author = authors.get(0);
         assertThat(author.<String>getProperty("lastName")).isEqualTo("Rowling");
         assertThat(author.getPropertyNames()).contains("wrote");
 
@@ -89,12 +89,12 @@ class Issue6833NestedSchemaDirectivesTest extends AbstractGraphQLTest {
         final List<Result> authors = book.getProperty("authors");
         assertThat(authors).hasSize(1);
 
-        final List<Result> wrote = authors.getFirst().getProperty("wrote");
+        final List<Result> wrote = authors.get(0).getProperty("wrote");
         assertThat(wrote).hasSize(2);
         for (final Result written : wrote) {
           final List<Result> writtenBy = written.getProperty("authors");
           assertThat(writtenBy).hasSize(1);
-          assertThat(writtenBy.getFirst().<String>getProperty("firstName")).isEqualTo("Joanne");
+          assertThat(writtenBy.get(0).<String>getProperty("firstName")).isEqualTo("Joanne");
         }
 
         assertThat(resultSet.hasNext()).isFalse();
@@ -122,7 +122,7 @@ class Issue6833NestedSchemaDirectivesTest extends AbstractGraphQLTest {
         final List<Result> authors = book.getProperty("authors");
         assertThat(authors).hasSize(1);
 
-        final Result author = authors.getFirst();
+        final Result author = authors.get(0);
         assertThat(author.<String>getProperty("firstName")).isEqualTo("Joanne");
         assertThat(author.<String>getProperty("lastName")).isEqualTo("Rowling");
 

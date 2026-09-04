@@ -119,7 +119,7 @@ class Issue5467SmallCorpusTraversalCostTest extends TestHelper {
     inTx(() -> readers.add(buildSegment("seg-5467-pagefetch", 1L, docs, INT8_PARAMS)));
 
     inTx(() -> {
-      try (final PaginatedSegmentDimCursor c = readers.getFirst().openCursor(0)) {
+      try (final PaginatedSegmentDimCursor c = readers.get(0).openCursor(0)) {
         final PaginatedDimMetadata meta = c.metadata();
         final Set<Integer> pages = new HashSet<>();
         for (int b = 0; b < meta.blockCount(); b++)
@@ -164,7 +164,7 @@ class Issue5467SmallCorpusTraversalCostTest extends TestHelper {
     inTx(() -> readers.add(buildSegment("seg-5467-lazyweights", 1L, docs, INT8_PARAMS)));
 
     inTx(() -> {
-      final PaginatedSegmentReader reader = readers.getFirst();
+      final PaginatedSegmentReader reader = readers.get(0);
       try (final PaginatedSegmentDimCursor navigateOnly = reader.openCursor(0)) {
         navigateOnly.start();
         while (navigateOnly.advance())
@@ -214,7 +214,7 @@ class Issue5467SmallCorpusTraversalCostTest extends TestHelper {
     }
 
     inTx(() -> {
-      final PaginatedSegmentReader reader = readers.getFirst();
+      final PaginatedSegmentReader reader = readers.get(0);
       final PaginatedSegmentDimCursor[] sources = new PaginatedSegmentDimCursor[DIMS];
       final DimCursor[] cursors = new DimCursor[DIMS];
       try {

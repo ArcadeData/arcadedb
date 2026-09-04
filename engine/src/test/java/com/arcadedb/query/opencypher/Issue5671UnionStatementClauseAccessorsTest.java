@@ -107,7 +107,7 @@ class Issue5671UnionStatementClauseAccessorsTest {
     // column names are the union's column names.
     assertThat(union.getReturnClause()).isNotNull();
     assertThat(union.getReturnClause().getReturnItems()).hasSize(1);
-    assertThat(union.getReturnClause().getReturnItems().getFirst().getAlias()).isEqualTo("c");
+    assertThat(union.getReturnClause().getReturnItems().get(0).getAlias()).isEqualTo("c");
   }
 
   @Test

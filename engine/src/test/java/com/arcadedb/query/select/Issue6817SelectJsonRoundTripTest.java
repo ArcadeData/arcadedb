@@ -77,7 +77,7 @@ public class Issue6817SelectJsonRoundTripTest extends TestHelper {
    */
   @Test
   void fromBucketsRoundTripsInsteadOfThrowing() {
-    final String bucket = database.getSchema().getType("V").getBuckets(false).getFirst().getName();
+    final String bucket = database.getSchema().getType("V").getBuckets(false).get(0).getName();
 
     final JSONObject json = database.select().fromBuckets(bucket)//
         .where().property("name").eq().value("John").compile().json();
@@ -93,7 +93,7 @@ public class Issue6817SelectJsonRoundTripTest extends TestHelper {
    */
   @Test
   void fromBucketsRoundTrippedSelectStillExecutes() {
-    final String bucket = database.getSchema().getType("V").getBuckets(false).getFirst().getName();
+    final String bucket = database.getSchema().getType("V").getBuckets(false).get(0).getName();
 
     final JSONObject json = database.select().fromBuckets(bucket)//
         .where().property("name").eq().value("John").compile().json();
@@ -163,8 +163,8 @@ public class Issue6817SelectJsonRoundTripTest extends TestHelper {
 
     final Select rebuilt = database.select().json(json);
     assertThat(rebuilt.orderBy).hasSize(1);
-    assertThat(rebuilt.orderBy.getFirst().getFirst()).isEqualTo("id");
-    assertThat(rebuilt.orderBy.getFirst().getSecond()).isFalse();
+    assertThat(rebuilt.orderBy.get(0).getFirst()).isEqualTo("id");
+    assertThat(rebuilt.orderBy.get(0).getSecond()).isFalse();
     assertThat(rebuilt.compile().json()).isEqualTo(json);
 
     final List<Vertex> got = database.select().json(json).vertices().toList();
@@ -179,10 +179,10 @@ public class Issue6817SelectJsonRoundTripTest extends TestHelper {
 
     final Select rebuilt = database.select().json(json);
     assertThat(rebuilt.orderBy).hasSize(2);
-    assertThat(rebuilt.orderBy.getFirst().getFirst()).isEqualTo("name");
-    assertThat(rebuilt.orderBy.getFirst().getSecond()).isTrue();
-    assertThat(rebuilt.orderBy.getLast().getFirst()).isEqualTo("id");
-    assertThat(rebuilt.orderBy.getLast().getSecond()).isFalse();
+    assertThat(rebuilt.orderBy.get(0).getFirst()).isEqualTo("name");
+    assertThat(rebuilt.orderBy.get(0).getSecond()).isTrue();
+    assertThat(rebuilt.orderBy.get(rebuilt.orderBy.size() - 1).getFirst()).isEqualTo("id");
+    assertThat(rebuilt.orderBy.get(rebuilt.orderBy.size() - 1).getSecond()).isFalse();
     assertThat(rebuilt.compile().json()).isEqualTo(json);
   }
 

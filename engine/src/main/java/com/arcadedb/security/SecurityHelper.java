@@ -49,7 +49,7 @@ public final class SecurityHelper {
 
     final List<Integer> bucketIds = type.getBucketIds(false);
     if (!bucketIds.isEmpty())
-      database.checkPermissionsOnFile(bucketIds.getFirst(), access);
+      database.checkPermissionsOnFile(bucketIds.get(0), access);
     else
       database.checkPermissionsOnType(type.getName(), access);
   }

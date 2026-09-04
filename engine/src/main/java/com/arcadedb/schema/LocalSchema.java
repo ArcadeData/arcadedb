@@ -1882,45 +1882,42 @@ public class LocalSchema implements Schema {
           type = new LocalEdgeType(this, typeName,
               !schemaType.has("bidirectional") || schemaType.getBoolean("bidirectional"),
               schemaType.getBoolean("lightweight", false), schemaType.getBoolean("unique", false));
-          case "d" -> new LocalDocumentType(this, typeName);
-          case "t" -> {
-            final LocalTimeSeriesType tsType = new LocalTimeSeriesType(this, typeName);
-            tsType.fromJSON(schemaType);
-            try {
-              tsType.initEngine();
-            } catch (final IOException e) {
-              // Register the type anyway rather than letting it vanish from the schema (issue #6356): the
-              // exception this catches means one derived file (a .ts.sealed most commonly, rebuildable under HA
-              // by recompacting the replicated mutable pages) failed to open, not that the type or its mutable
-              // data is gone. Registering it keeps the type VISIBLE - CHECK DATABASE already has a branch for
-              // exactly this (DatabaseChecker#checkTimeSeries: "the storage engine is not initialised") that a
-              // type missing from the schema map could never reach - and every read/write against it now fails
-              // loudly through LocalTimeSeriesType#requireEngine() instead of the type silently reappearing empty
-              // on the next write. Not registering it here is what issue #6356 reported: the database opened
-              // cleanly with the type simply gone and nothing said why.
-              tsType.markEngineUnavailable(e.getMessage());
-              LogManager.instance().log(this, Level.SEVERE,
-                  "Error initializing TimeSeries engine for type '%s', the type is registered but its storage is "
-                      + "unavailable until this is resolved: %s", e, typeName, e.getMessage());
-            }
-            // Schedule automatic retention/downsampling if policies are defined. Kept OUTSIDE the try above and
-            // behind its own catch: this can only run once the engine is actually available, and a scheduling
-            // failure (the executor rejecting the task, e.g. mid-shutdown) is unrelated to whether the engine
-            // itself works - it must not be mistaken for one and must not escape to the outer catch in this
-            // method, which would abort every type the load has not reached yet for a reason that has nothing to
-            // do with any of them.
-            if (tsType.isEngineAvailable()) {
-              try {
-                getTimeSeriesMaintenanceScheduler().schedule(database, tsType);
-              } catch (final RejectedExecutionException e) {
-                LogManager.instance().log(this, Level.WARNING,
-                    "Could not schedule automatic TimeSeries maintenance for type '%s': %s", e, typeName, e.getMessage());
-              }
-            }
-            yield tsType;
+        } else if ("d".equals(kind)) {
+          type = new LocalDocumentType(this, typeName);
+        } else if ("t".equals(kind)) {
+          final LocalTimeSeriesType tsType = new LocalTimeSeriesType(this, typeName);
+          tsType.fromJSON(schemaType);
+          try {
+            tsType.initEngine();
+          } catch (final IOException e) {
+            // Register the type anyway rather than letting it vanish from the schema (issue #6356): the
+            // exception this catches means one derived file (a .ts.sealed most commonly, rebuildable under HA
+            // by recompacting the replicated mutable pages) failed to open, not that the type or its mutable
+            // data is gone. Registering it keeps the type VISIBLE - CHECK DATABASE already has a branch for
+            // exactly this (DatabaseChecker#checkTimeSeries: "the storage engine is not initialised") that a
+            // type missing from the schema map could never reach - and every read/write against it now fails
+            // loudly through LocalTimeSeriesType#requireEngine() instead of the type silently reappearing empty
+            // on the next write. Not registering it here is what issue #6356 reported: the database opened
+            // cleanly with the type simply gone and nothing said why.
+            tsType.markEngineUnavailable(e.getMessage());
+            LogManager.instance().log(this, Level.SEVERE,
+                "Error initializing TimeSeries engine for type '%s', the type is registered but its storage is "
+                    + "unavailable until this is resolved: %s", e, typeName, e.getMessage());
           }
-          // Schedule automatic retention/downsampling if policies are defined
-          getTimeSeriesMaintenanceScheduler().schedule(database, tsType);
+          // Schedule automatic retention/downsampling if policies are defined. Kept OUTSIDE the try above and
+          // behind its own catch: this can only run once the engine is actually available, and a scheduling
+          // failure (the executor rejecting the task, e.g. mid-shutdown) is unrelated to whether the engine
+          // itself works - it must not be mistaken for one and must not escape to the outer catch in this
+          // method, which would abort every type the load has not reached yet for a reason that has nothing to
+          // do with any of them.
+          if (tsType.isEngineAvailable()) {
+            try {
+              getTimeSeriesMaintenanceScheduler().schedule(database, tsType);
+            } catch (final RejectedExecutionException e) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Could not schedule automatic TimeSeries maintenance for type '%s': %s", e, typeName, e.getMessage());
+            }
+          }
           type = tsType;
         } else
           throw new ConfigurationException("Type '" + kind + "' is not supported");

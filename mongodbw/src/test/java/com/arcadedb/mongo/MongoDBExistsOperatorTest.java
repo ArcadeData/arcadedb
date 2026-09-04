@@ -82,7 +82,7 @@ public class MongoDBExistsOperatorTest extends BaseGraphServerTest {
     final List<Document> found = collection.find(exists("middleName", false)).into(new ArrayList<>());
 
     assertThat(found).hasSize(1);
-    assertThat(found.getFirst().getString("name")).isEqualTo("without-middle");
+    assertThat(found.get(0).getString("name")).isEqualTo("without-middle");
   }
 
   @Test
@@ -90,6 +90,6 @@ public class MongoDBExistsOperatorTest extends BaseGraphServerTest {
     final List<Document> found = collection.find(exists("middleName", true)).into(new ArrayList<>());
 
     assertThat(found).hasSize(1);
-    assertThat(found.getFirst().getString("name")).isEqualTo("with-middle");
+    assertThat(found.get(0).getString("name")).isEqualTo("with-middle");
   }
 }

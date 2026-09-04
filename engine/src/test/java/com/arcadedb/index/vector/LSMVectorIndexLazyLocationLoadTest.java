@@ -176,7 +176,7 @@ class LSMVectorIndexLazyLocationLoadTest {
         // The exact query vector was just inserted, so it must come back as the nearest neighbour
         final List<Pair<RID, Float>> neighbours = index.findNeighborsFromVector(query, 5);
         assertThat(neighbours).isNotEmpty();
-        assertThat(neighbours.getFirst().getSecond()).isEqualTo(0.0f);
+        assertThat(neighbours.get(0).getSecond()).isEqualTo(0.0f);
       } finally {
         db.close();
       }

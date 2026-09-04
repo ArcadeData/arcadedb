@@ -123,7 +123,7 @@ public class GraphQLResultSet implements ResultSet {
       }
       return mapProjections(current, projections);
     } finally {
-      expansionPath.removeLast();
+      expansionPath.remove(expansionPath.size() - 1);
     }
   }
 
@@ -277,11 +277,13 @@ public class GraphQLResultSet implements ResultSet {
       final ObjectTypeDefinition projectionType = entry.type();
 
       if (selectionSet != null) {
-        switch (projectionValue) {
-        case Map m -> projectionValue = mapBySelections(new ResultInternal(m), selectionSet, projectionType);
-        case EmbeddedDocument emb -> projectionValue = mapBySelections(new ResultInternal(emb), selectionSet, projectionType);
-        case Result result -> projectionValue = mapBySelections(result, selectionSet, projectionType);
-        case Iterable iterable -> {
+        if (projectionValue instanceof Map m) {
+          projectionValue = mapBySelections(new ResultInternal(m), selectionSet, projectionType);
+        } else if (projectionValue instanceof EmbeddedDocument emb) {
+          projectionValue = mapBySelections(new ResultInternal(emb), selectionSet, projectionType);
+        } else if (projectionValue instanceof Result result) {
+          projectionValue = mapBySelections(result, selectionSet, projectionType);
+        } else if (projectionValue instanceof Iterable iterable) {
           final List<Result> subResults = new ArrayList<>();
           for (final Object o : iterable) {
             final Result item;
@@ -299,13 +301,16 @@ public class GraphQLResultSet implements ResultSet {
           continue;
         }
       } else if (projectionType != null) {
-        switch (projectionValue) {
-        case Map m -> projectionValue = mapByReturnType(new ResultInternal(m), projectionType);
+        if (projectionValue instanceof Map m) {
+          projectionValue = mapByReturnType(new ResultInternal(m), projectionType);
+        }
         // MIRRORS THE Map/Result ARMS: THIS BRANCH IS THE ONE WHERE selectionSet IS NULL BY CONSTRUCTION, SO
         // DELEGATING TO mapBySelections() WITH IT WAS A GUARANTEED NPE. SEE ISSUE #6835
-        case EmbeddedDocument emb -> projectionValue = mapByReturnType(new ResultInternal(emb), projectionType);
-        case Result result -> projectionValue = mapByReturnType(result, projectionType);
-        case Iterable iterable -> {
+        else if (projectionValue instanceof EmbeddedDocument emb) {
+          projectionValue = mapByReturnType(new ResultInternal(emb), projectionType);
+        } else if (projectionValue instanceof Result result) {
+          projectionValue = mapByReturnType(result, projectionType);
+        } else if (projectionValue instanceof Iterable iterable) {
           final List<Result> subResults = new ArrayList<>();
           for (final Object o : iterable) {
             final Result item;

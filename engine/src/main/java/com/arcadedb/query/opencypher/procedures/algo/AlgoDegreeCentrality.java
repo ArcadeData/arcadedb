@@ -25,17 +25,13 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.List;
-import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
  * Procedure: algo.degree(relTypes?, direction?)
  * <p>
  * Computes degree centrality for every vertex: the normalized fraction of nodes connected to it.
- * Routes through {@link #loadGraph} like the rest of the {@code algo.*} package (issue #6316), so a Graph
- * Analytical View covering the graph is used when one is ready. CSR-backed, {@link GraphData#degrees} reads
- * the count straight off the view's offset arrays in O(1) per node rather than materialising and counting a
- * neighbour list, which is the same {@code vertex.countEdges()}-style efficiency the OLTP path already had.
+ * Uses {@code vertex.countEdges()} for maximum efficiency — no edge objects are materialised.
  * </p>
  * <p>
  * {@code direction} (default {@code BOTH}) selects which edges count towards {@code degree}/{@code score}: with
@@ -89,9 +85,9 @@ public class AlgoDegreeCentrality extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = args.length > 1 ? parseDirection(extractString(args[1], "direction")) : Vertex.DIRECTION.BOTH;
 
     final Database db = context.getDatabase();
-    final GraphData graph = loadGraph(db, null, relTypes, context);
+    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
 
-    final int n = graph.nodeCount;
+    final int n = vertices.size();
     if (n == 0)
       return Stream.empty();
 
@@ -104,7 +100,7 @@ public class AlgoDegreeCentrality extends AbstractAlgoProcedure {
       final long out = dir != Vertex.DIRECTION.IN ? countEdges(v, Vertex.DIRECTION.OUT, relTypes) : 0;
       final long total = in + out;
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getRID(i));
+      r.setProperty("node", v.getIdentity());
       r.setProperty("inDegree", in);
       r.setProperty("outDegree", out);
       r.setProperty("degree", total);

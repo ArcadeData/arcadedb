@@ -1073,19 +1073,6 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
 
     /**
-     * Charges {@code rows} neighbour/weight row-header pairs and {@code entries} (neighbour id + weight) pairs to
-     * the call's budget - the weighted counterpart of {@link #reserveAdjacency}, doubled because a
-     * {@link WeightedAdjacency} holds a neighbour array AND a weight array per node rather than one.
-     */
-    private void reserveWeightedAdjacency(final long rows, final long entries) {
-      if (rows == 0 && entries == 0)
-        return;
-      memory.reserve(saturatingSum(saturatingProduct(rows, MATRIX_ROW_OVERHEAD_BYTES * 2),
-              saturatingProduct(entries, INT_BYTES + DOUBLE_BYTES)), "the weighted adjacency",
-          rows > 0 ? rows + " nodes, " + entries + " edge entries" : entries + " edge entries");
-    }
-
-    /**
      * Record build: the neighbour and the weight come off the same {@link Edge}, so they cannot be mismatched.
      * Works for a CSR-backed graph too - {@link #getVertex} and {@link #indexOf} bridge back to the records -
      * which is what makes it the fallback whenever the columnar path cannot answer exactly.

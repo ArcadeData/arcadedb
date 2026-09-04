@@ -127,7 +127,7 @@ class Issue4416SlicedSealedStoreTest {
 
     assertThat(slices).hasSize(3);
     assertThat(slices).allSatisfy(slice -> assertThat(slice.bytes()).isNotEmpty());
-    assertThat(slices.getLast().last()).isTrue();
+    assertThat(slices.get(slices.size() - 1).last()).isTrue();
   }
 
   // ---- the wire format -------------------------------------------------------------------------------------
@@ -152,7 +152,7 @@ class Issue4416SlicedSealedStoreTest {
     assertThat(decoded.sealedFileBlobs()).isEmpty();
     assertThat(decoded.sealedFileChunks()).hasSize(1);
 
-    final TsSealedChunk back = decoded.sealedFileChunks().getFirst();
+    final TsSealedChunk back = decoded.sealedFileChunks().get(0);
     assertThat(back.typeName()).isEqualTo(TYPE);
     assertThat(back.shardIndex()).isEqualTo(2);
     assertThat(back.fileName()).isEqualTo(FILE);
@@ -178,7 +178,7 @@ class Issue4416SlicedSealedStoreTest {
 
     assertThat(decoded.moreChunksFollow()).isTrue();
     assertThat(decoded.sealedFileChunks()).hasSize(1);
-    assertThat(decoded.sealedFileChunks().getFirst().last()).isFalse();
+    assertThat(decoded.sealedFileChunks().get(0).last()).isFalse();
     assertThat(decoded.schemaJson()).isEmpty();
     assertThat(decoded.walEntries()).isEmpty();
   }
@@ -385,7 +385,7 @@ class Issue4416SlicedSealedStoreTest {
     assertThat(slices).as("every byte must still ship - a short list here is silent follower divergence")
         .hasSize(overTheBound);
     assertThat(slices.stream().filter(TsSealedChunk::last).count()).as("exactly one slice publishes").isEqualTo(1);
-    assertThat(slices.getLast().last()).isTrue();
+    assertThat(slices.get(slices.size() - 1).last()).isTrue();
 
     final ByteArrayOutputStream reassembled = new ByteArrayOutputStream();
     long nextOffset = 0;

@@ -35,6 +35,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
@@ -145,7 +146,7 @@ class Issue6592CompactedRootPageDescendingStepBackTest extends TestHelper {
           .compile().vertices().toList())
         ascending.add(v.getLong("orderedAt"));
 
-      assertThat(ascending).as("ascending prefix scan").isEqualTo(descending.reversed());
+      assertThat(ascending).as("ascending prefix scan").isEqualTo(reversedCopy(descending));
     });
   }
 
@@ -264,7 +265,7 @@ class Issue6592CompactedRootPageDescendingStepBackTest extends TestHelper {
         if (expected.isEmpty())
           assertThat(newest).as("LIMIT 1 on an empty group").isNull();
         else
-          assertThat(newest.getLong("orderedAt")).as("LIMIT 1 on " + key1 + "/" + key2).isEqualTo(expected.getFirst());
+          assertThat(newest.getLong("orderedAt")).as("LIMIT 1 on " + key1 + "/" + key2).isEqualTo(expected.get(0));
 
         final List<Long> ascending = new ArrayList<>();
         for (final Vertex v : database.select().fromType("Supplier")//
@@ -273,7 +274,7 @@ class Issue6592CompactedRootPageDescendingStepBackTest extends TestHelper {
             .orderBy("orderedAt", true)//
             .compile().vertices().toList())
           ascending.add(v.getLong("orderedAt"));
-        assertThat(ascending).as("ASC on " + key1 + "/" + key2).isEqualTo(expected.reversed());
+        assertThat(ascending).as("ASC on " + key1 + "/" + key2).isEqualTo(reversedCopy(expected));
       });
     }
   }
@@ -298,4 +299,15 @@ class Issue6592CompactedRootPageDescendingStepBackTest extends TestHelper {
     final Object value = vertex.get("ordered_at");
     return value instanceof LocalDateTime dateTime ? dateTime.toInstant(ZoneOffset.UTC).toEpochMilli() : ((Date) value).getTime();
   }
+
+  /**
+   * {@code List.reversed()} arrived with {@code SequencedCollection} in JDK 21; on this branch the reversal is an
+   * explicit copy, which is what the assertion wanted anyway - an independent list, not a view.
+   */
+  private static List<Long> reversedCopy(final List<Long> source) {
+    final List<Long> reversed = new ArrayList<>(source);
+    Collections.reverse(reversed);
+    return reversed;
+  }
+
 }

@@ -97,8 +97,8 @@ class Issue6265InfluenceMaximizationBufferReuseTest {
     assertThat(rows).hasSize(4);
 
     // Round 1 must pick the hub: it is the only node whose cascade reaches all four nodes.
-    assertThat(rows.getFirst().<Object>getProperty("nodeId").toString()).contains(vertexRid("H"));
-    assertThat(rows.getFirst().<Number>getProperty("marginalGain").doubleValue()).isEqualTo(4.0);
+    assertThat(rows.get(0).<Object>getProperty("nodeId").toString()).contains(vertexRid("H"));
+    assertThat(rows.get(0).<Number>getProperty("marginalGain").doubleValue()).isEqualTo(4.0);
 
     // Every following round adds a leaf to an already-fully-covered graph: the correct marginal gain is 0,
     // never negative. A leaked `activated` bit from an earlier call would undercount the cascade and drive
@@ -189,7 +189,7 @@ class Issue6265InfluenceMaximizationBufferReuseTest {
   }
 
   private static long measure(final com.sun.management.ThreadMXBean threads, final Runnable body) {
-    final long id = Thread.currentThread().threadId();
+    final long id = Thread.currentThread().getId();
     final long before = threads.getThreadAllocatedBytes(id);
     body.run();
     return threads.getThreadAllocatedBytes(id) - before;

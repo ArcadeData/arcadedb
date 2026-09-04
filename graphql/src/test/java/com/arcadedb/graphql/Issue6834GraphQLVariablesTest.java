@@ -482,7 +482,7 @@ class Issue6834GraphQLVariablesTest extends AbstractGraphQLTest {
 
         final List<Result> authors = resultSet.next().getProperty("authors");
         assertThat(authors).hasSize(1);
-        assertThat(authors.getFirst().<String>getProperty("lastName")).isEqualTo("Rowling");
+        assertThat(authors.get(0).<String>getProperty("lastName")).isEqualTo("Rowling");
 
         assertThat(resultSet.hasNext()).isFalse();
       }

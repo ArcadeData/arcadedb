@@ -115,7 +115,7 @@ public class Issue6815SelectTimeoutNotInstalledTest extends TestHelper {
    */
   @Test
   void singleBucketIterationThrowsOnTimeout() {
-    final String bucket = database.getSchema().getType("V").getBuckets(false).getFirst().getName();
+    final String bucket = database.getSchema().getType("V").getBuckets(false).get(0).getName();
 
     assertThatThrownBy(() -> {
       final SelectIterator<Vertex> iter = database.select().fromBuckets(bucket)//
@@ -127,7 +127,7 @@ public class Issue6815SelectTimeoutNotInstalledTest extends TestHelper {
 
   @Test
   void singleBucketIterationTruncatesWhenNotThrowing() {
-    final String bucket = database.getSchema().getType("V").getBuckets(false).getFirst().getName();
+    final String bucket = database.getSchema().getType("V").getBuckets(false).get(0).getName();
 
     final SelectIterator<Vertex> iter = database.select().fromBuckets(bucket)//
         .where().property("name").eq().value("John")//
@@ -218,7 +218,7 @@ public class Issue6815SelectTimeoutNotInstalledTest extends TestHelper {
    */
   @Test
   void anEffectivelyInfiniteTimeoutNeverExpiresOnASingleBucket() {
-    final String bucket = database.getSchema().getType("V").getBuckets(false).getFirst().getName();
+    final String bucket = database.getSchema().getType("V").getBuckets(false).get(0).getName();
 
     assertThat(database.select().fromBuckets(bucket)//
         .where().property("name").eq().value("John")//

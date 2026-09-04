@@ -378,11 +378,11 @@ class Issue5414LastPointTest extends TestHelper {
     // function (SQLFunctionTsLast extends SQLAggregatedFunction), so it follows the same rule.
     final List<Result> avg = query("SELECT avg(value) AS v FROM Empty WHERE host = 'a'");
     assertThat(avg).hasSize(1);
-    assertThat(avg.getFirst().<Object>getProperty("v")).isNull();
+    assertThat(avg.get(0).<Object>getProperty("v")).isNull();
 
     final List<Result> last = query("SELECT ts.last(value, ts) AS v FROM Empty WHERE host = 'a'");
     assertThat(last).hasSize(1);
-    assertThat(last.getFirst().<Object>getProperty("v")).isNull();
+    assertThat(last.get(0).<Object>getProperty("v")).isNull();
   }
 
   @Test

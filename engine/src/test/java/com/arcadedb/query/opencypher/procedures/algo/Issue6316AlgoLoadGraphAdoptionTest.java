@@ -311,7 +311,7 @@ class Issue6316AlgoLoadGraphAdoptionTest {
   private double maxFlowValue(final CommandContext context) {
     final List<Result> rows = drain(new AlgoMaxFlow().execute(new Object[] { named("S"), named("T"), null, "w" }, null, context));
     assertThat(rows).hasSize(1);
-    return rows.getFirst().<Number>getProperty("maxFlow").doubleValue();
+    return rows.get(0).<Number>getProperty("maxFlow").doubleValue();
   }
 
   // ── algo.kShortestPaths ──────────────────────────────────────────────────

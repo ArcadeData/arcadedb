@@ -1975,7 +1975,7 @@ public class PostgresNetworkExecutor extends Thread {
         portals.put(portalName, portal);
         if (DEBUG)
           LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
-              portalName, Thread.currentThread().threadId());
+              portalName, Thread.currentThread().getId());
       } else {
         portals.remove(portalName);
       }

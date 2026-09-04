@@ -72,14 +72,15 @@ public class SQLFunctionIf extends SQLFunctionAbstract {
     final boolean result;
 
     final Object condition = params[0];
-    switch (condition) {
-    case Boolean boolean1 -> result = boolean1;
-    case String s -> result = Boolean.parseBoolean(s);
-    case Number number -> result = number.intValue() > 0;
-    case null, default -> {
+    if (condition instanceof Boolean boolean1)
+      result = boolean1;
+    else if (condition instanceof String s)
+      result = Boolean.parseBoolean(s);
+    else if (condition instanceof Number number)
+      result = number.intValue() > 0;
+    else
+      // GENERIC CASE: null, or anything with no truth value of its own.
       return null;
-    }
-    }
 
     // AN OMITTED FALSE BRANCH IS A null, WHICH IS WHAT THE DOCUMENTED TWO-ARGUMENT FORM MEANS. THE BODY USED TO READ
     // params[2] UNCONDITIONALLY AND HAND THE RESULTING ArrayIndexOutOfBoundsException TO A catch (Exception) THAT

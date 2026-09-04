@@ -85,8 +85,8 @@ class CypherFullTextSearchTest extends TestHelper {
       }
 
       assertThat(titles).containsExactlyInAnyOrder("Doc1", "Doc2", "Doc4");
-      assertThat(titles.getFirst()).isEqualTo("Doc4");
-      assertThat(scores.getFirst()).isGreaterThan(scores.get(1));
+      assertThat(titles.get(0)).isEqualTo("Doc4");
+      assertThat(scores.get(0)).isGreaterThan(scores.get(1));
       for (int i = 1; i < scores.size(); i++)
         assertThat(scores.get(i)).isLessThanOrEqualTo(scores.get(i - 1));
     }

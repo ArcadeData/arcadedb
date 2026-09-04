@@ -98,10 +98,10 @@ class SlowWaitInstrumentTest {
 
     final List<String> warnings = logger.formattedAt(Level.WARNING);
     assertThat(warnings).hasSize(1);
-    assertThat(warnings.getFirst()).contains(BaseRaftHATest.SLOW_WAIT_MARKER);
+    assertThat(warnings.get(0)).contains(BaseRaftHATest.SLOW_WAIT_MARKER);
     // The literal token issue #6343 went looking for. Kept as a separate assertion from the marker constant on
     // purpose: renaming the constant is fine, changing the words a tracker greps for is not.
-    assertThat(warnings.getFirst()).contains("SLOW WAIT");
+    assertThat(warnings.get(0)).contains("SLOW WAIT");
     // Asserted as an absence too: a report demoted to INFO still says everything it used to and is still wrong,
     // because nobody scrolls an HA IT log looking for INFO lines.
     assertThat(logger.formattedAt(Level.INFO)).isEmpty();
@@ -126,8 +126,8 @@ class SlowWaitInstrumentTest {
 
     final List<String> warnings = logger.formattedAt(Level.WARNING);
     assertThat(warnings).hasSize(1);
-    assertThat(warnings.getFirst()).contains("awaitValue(100% of them)");
-    assertThat(warnings.getFirst()).contains(BaseRaftHATest.SLOW_WAIT_MARKER);
+    assertThat(warnings.get(0)).contains("awaitValue(100% of them)");
+    assertThat(warnings.get(0)).contains(BaseRaftHATest.SLOW_WAIT_MARKER);
   }
 
   /**

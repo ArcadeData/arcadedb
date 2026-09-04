@@ -98,7 +98,7 @@ class Issue6694CompactedRootPageDescendingPurposeTest extends TestHelper {
     });
 
     final TypeIndex typeIndex = database.getSchema().getType("Supplier").getIndexesByProperties("key1", "key2", "orderedAt")
-        .getFirst();
+        .get(0);
     try {
       assertThat(((IndexInternal) typeIndex).scheduleCompaction()).as("compaction scheduled").isTrue();
       assertThat(((IndexInternal) typeIndex).compact()).as("compaction executed").isTrue();
@@ -150,7 +150,7 @@ class Issue6694CompactedRootPageDescendingPurposeTest extends TestHelper {
   void descendingPartialKeyIteratorIncludesAnEntireLowerSeries() {
     database.transaction(() -> {
       final TypeIndex typeIndex = database.getSchema().getType("Supplier").getIndexesByProperties("key1", "key2", "orderedAt")
-          .getFirst();
+          .get(0);
 
       // Partial (2-of-3 component) descending iterator starting at the target group, with no lower bound: it must
       // walk straight through the target group and then through the entire "0"/"x" series below it, dropping nothing.

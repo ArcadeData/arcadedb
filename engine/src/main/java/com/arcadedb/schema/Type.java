@@ -745,25 +745,18 @@ public enum Type {
           }
         }
       } else if (targetClass.equals(Instant.class)) {
-        switch (value) {
-        case Instant instant -> {
+        if (value instanceof Instant instant) {
           if (property != null)
             return instant.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
-        }
-        case Number number -> {
+        } else if (value instanceof Number number) {
           return DateUtils.dateTime(database, number.longValue(), ChronoUnit.MILLIS, Instant.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
-        }
-        case Date date -> {
+        } else if (value instanceof Date date) {
           return DateUtils.dateTime(database, date.getTime(), ChronoUnit.MILLIS, Instant.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
-        }
-        case Calendar calendar -> {
+        } else if (value instanceof Calendar calendar) {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, Instant.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
-        }
-        default -> {
-        }
         }
       } else if (targetClass.equals(Identifiable.class) || targetClass.equals(RID.class)) {
         if (MultiValue.isMultiValue(value)) {

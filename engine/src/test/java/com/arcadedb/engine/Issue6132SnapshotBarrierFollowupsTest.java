@@ -131,7 +131,7 @@ class Issue6132SnapshotBarrierFollowupsTest extends TestHelper {
     final PageManagerFlushThread flushThread = pageManager.getFlushThread();
     assertThat(pageManager.waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
 
-    final int fileId = db.getSchema().getType(TYPE).getBuckets(false).getFirst().getFileId();
+    final int fileId = db.getSchema().getType(TYPE).getBuckets(false).get(0).getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final MutablePage page = pageManager.getImmutablePage(new PageId(db, fileId, 0), file.getPageSize(), false, true)
         .modify();

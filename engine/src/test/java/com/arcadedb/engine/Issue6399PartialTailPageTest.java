@@ -65,7 +65,7 @@ class Issue6399PartialTailPageTest extends TestHelper {
     final RID[] savedRid = new RID[1];
     db.transaction(() -> savedRid[0] = db.newDocument("Issue6399Type").set("id", 1).save().getIdentity());
 
-    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Issue6399Type").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Issue6399Type").getBuckets(false).get(0);
     final int pageSize = bucket.getPageSize();
     final int wholePages = bucket.getTotalPages();
     assertThat(wholePages).as("premise: at least the header page is committed").isPositive();
@@ -95,7 +95,7 @@ class Issue6399PartialTailPageTest extends TestHelper {
 
       final DatabaseInternal reopenedInternal = (DatabaseInternal) reopened;
       final LocalBucket reopenedBucket =
-          (LocalBucket) reopenedInternal.getSchema().getType("Issue6399Type").getBuckets(false).getFirst();
+          (LocalBucket) reopenedInternal.getSchema().getType("Issue6399Type").getBuckets(false).get(0);
 
       // THE TORN BYTES WERE ROUNDED AWAY, NOT COUNTED AS AN EXTRA PAGE
       assertThat(reopenedBucket.getTotalPages()).isEqualTo(wholePages);

@@ -4670,7 +4670,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return liveVectorValues;
 
     final String vectorProp =
-        metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() : "vector";
+        metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) : "vector";
     return ArcadePageVectorValues.forSearch(getDatabase(), metadata.dimensions, vectorProp, vectorIndex(), ordinalMap,
         this, getSearchVectorCache());
   }

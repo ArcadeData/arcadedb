@@ -167,14 +167,14 @@ class Issue6459GraphPathfindingCommandTimeoutTest {
   void astarStillReturnsTheCorrectPathWhenNothingAborts() {
     final List<Result> rows = drainSql("select expand(astar(" + nodeRid[0] + ", " + nodeRid[3] + ", 'w'))");
     assertThat(rows).as("a healthy call must still find a path once the guard is in place").isNotEmpty();
-    assertThat(rows.getFirst().getIdentity()).contains(nodeRid[0]);
+    assertThat(rows.get(0).getIdentity()).contains(nodeRid[0]);
   }
 
   @Test
   void dijkstraStillReturnsTheCorrectPathWhenNothingAborts() {
     final List<Result> rows = drainSql("select expand(dijkstra(" + nodeRid[0] + ", " + nodeRid[3] + ", 'w'))");
     assertThat(rows).as("a healthy call must still find a path once the guard is in place").isNotEmpty();
-    assertThat(rows.getFirst().getIdentity()).contains(nodeRid[0]);
+    assertThat(rows.get(0).getIdentity()).contains(nodeRid[0]);
   }
 
   @Test

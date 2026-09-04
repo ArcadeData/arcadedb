@@ -92,7 +92,7 @@ class Issue6592CompactedCompositePrefixDescTest extends TestHelper {
     });
 
     final TypeIndex typeIndex = database.getSchema().getType("Supplier").getIndexesByProperties("key1", "key2", "orderedAt")
-        .getFirst();
+        .get(0);
     try {
       assertThat(((IndexInternal) typeIndex).scheduleCompaction()).as("compaction scheduled").isTrue();
       assertThat(((IndexInternal) typeIndex).compact()).as("compaction executed").isTrue();

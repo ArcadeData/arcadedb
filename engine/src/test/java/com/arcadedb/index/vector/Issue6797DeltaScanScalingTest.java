@@ -450,7 +450,7 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
     assertThat(before).isNotEmpty();
 
     // Put the nearest row into the delta buffer as well, without removing its graph node.
-    final RID duplicated = before.getFirst().getFirst();
+    final RID duplicated = before.get(0).getFirst();
     assertThat(index.requeueIntoDeltaBufferForTest(duplicated))
         .as("the row must still carry a live graph node").isNotEqualTo(-1);
 

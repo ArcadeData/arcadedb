@@ -108,7 +108,7 @@ class Issue4416SlicedSealedApplyTest {
           .isEqualTo(sealedSamplesBefore);
     }
 
-    stateMachine.applySealedChunks(follower, List.of(slices.getLast()));
+    stateMachine.applySealedChunks(follower, List.of(slices.get(slices.size() - 1)));
 
     assertThat(staging).as("the staging file is consumed by the install").doesNotExist();
     assertThat(Files.readAllBytes(new File(followerPath, SEALED_FILE).toPath()))
@@ -234,7 +234,7 @@ class Issue4416SlicedSealedApplyTest {
   @Test
   void areassemblyOfTheWrongLengthIsRefused() throws Exception {
     final List<TsSealedChunk> slices = slice(sealedBytesOf(leader), 4_096);
-    final TsSealedChunk last = slices.getLast();
+    final TsSealedChunk last = slices.get(slices.size() - 1);
     slices.set(slices.size() - 1, new TsSealedChunk(last.typeName(), last.shardIndex(), last.fileName(),
         last.fileLength() + 4_096, last.fileCrc(), last.offset(), last.bytes(), true));
 

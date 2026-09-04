@@ -2382,7 +2382,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         }
         for (int i = 0; i < slices.size() - 1; i++)
           broker.replicateSealedChunk(getName(), slices.get(i));
-        finalSealedChunks.add(slices.getLast());
+        finalSealedChunks.add(slices.get(slices.size() - 1));
         sealedSlicesShipped += slices.size();
         // Per-STORE, not per-session: the burst that costs latency is one store's sequence of round trips, and
         // summing across stores would hide a single pathological shard behind a busy-but-healthy cycle.
