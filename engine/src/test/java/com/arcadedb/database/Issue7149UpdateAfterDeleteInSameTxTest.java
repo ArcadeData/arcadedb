@@ -155,6 +155,36 @@ class Issue7149UpdateAfterDeleteInSameTxTest {
   }
 
   @Test
+  void aDroppedWriteIsNotCountedAsAnUpdate() {
+    final RID rid = createRecord(5);
+
+    final long before = ((Number) database.getStats().get("updateRecord")).longValue();
+    database.transaction(() -> {
+      final MutableVertex stale = database.lookupByRID(rid, true).asVertex().modify();
+      database.deleteRecord(database.lookupByRID(rid, true));
+      stale.set("value", "dropped");
+      stale.save();
+    });
+
+    assertThat(((Number) database.getStats().get("updateRecord")).longValue())
+        .as("a write that was never applied is not an update").isEqualTo(before);
+  }
+
+  @Test
+  void anOrdinaryUpdateIsStillCounted() {
+    final RID rid = createRecord(6);
+
+    final long before = ((Number) database.getStats().get("updateRecord")).longValue();
+    database.transaction(() -> {
+      final MutableVertex v = database.lookupByRID(rid, true).asVertex().modify();
+      v.set("value", "counted");
+      v.save();
+    });
+
+    assertThat(((Number) database.getStats().get("updateRecord")).longValue()).isEqualTo(before + 1);
+  }
+
+  @Test
   void anUpdateQueuedBeforeTheDeleteIsStillDropped() {
     // The symmetric order, which removeRecordFromCache() has always handled: pinned here so the two halves of the
     // invariant the commit-time arm relies on stay together.

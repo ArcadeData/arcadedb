@@ -1358,8 +1358,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeUpdate(record))
         return;
 
-    stats.updateRecord.incrementAndGet();
-
     executeInReadLock(() -> {
       if (isTransactionActive()) {
         // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
@@ -1405,6 +1403,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       } else
         updateRecordNoLock(record, false);
+
+      // Counted HERE rather than before the branch (#7149): the statistic reports records this database actually
+      // updated, and the two ways out above that are not an update - a listener vetoing the write, and a write to a
+      // record this transaction already deleted - both leave without reaching it. Both also skip the after-update
+      // events right below, so the two stay in step.
+      stats.updateRecord.incrementAndGet();
 
       // INVOKE EVENT CALLBACKS
       events.onAfterUpdate(record);
