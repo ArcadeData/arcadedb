@@ -304,11 +304,28 @@ public class DefaultLogger implements Logger {
    * logging is deliberately configured with none.
    */
   public static void refreshConsoleFormatter() {
+    refreshConsoleFormatter(null);
+  }
+
+  /**
+   * Same, for a value the caller already holds and that {@link #selectConsoleFormatter()} could not find on its own.
+   * <p>
+   * A SCOPE.SERVER setting is authoritative in the SERVER's {@link com.arcadedb.ContextConfiguration}, and that
+   * overlay is a plain map: neither {@code fromJSON} (the server configuration file) nor
+   * {@code ContextConfiguration.setValue} (the {@code SET SERVER SETTING} API) writes through to the
+   * {@link com.arcadedb.GlobalConfiguration} enum, so neither the enum's value nor its set-callback ever sees them.
+   * The server therefore hands the value in explicitly from those two paths; {@code null} means "resolve it the
+   * usual way", which is what the enum's own callback does.
+   *
+   * @param format the console log format to apply, or {@code null} to resolve it from the usual sources
+   */
+  public static void refreshConsoleFormatter(final String format) {
     if (!initialized)
       return;
 
     try {
-      applyConsoleFormatter(java.util.logging.Logger.getLogger(""), selectConsoleFormatter());
+      applyConsoleFormatter(java.util.logging.Logger.getLogger(""),
+          format != null ? formatterFor(format) : selectConsoleFormatter());
     } catch (final Exception e) {
       System.err.println("Error while refreshing the console formatter. Cause: " + e);
     }
@@ -333,7 +350,11 @@ public class DefaultLogger implements Logger {
    * explicit {@code -D}/env override, which is the intended precedence and the reason the resolver is used at all.
    */
   static Formatter selectConsoleFormatter() {
-    final String format = SystemVariableResolver.INSTANCE.resolveSystemVariables("${arcadedb.server.logFormat}", "text");
+    return formatterFor(SystemVariableResolver.INSTANCE.resolveSystemVariables("${arcadedb.server.logFormat}", "text"));
+  }
+
+  /** The formatter one {@code arcadedb.server.logFormat} value selects, wherever that value was read from. */
+  static Formatter formatterFor(final String format) {
     if ("json".equalsIgnoreCase(format))
       return new JsonLogFormatter();
     return new AnsiLogFormatter();

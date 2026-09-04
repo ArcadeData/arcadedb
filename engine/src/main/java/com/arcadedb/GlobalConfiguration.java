@@ -2408,6 +2408,18 @@ public enum GlobalConfiguration {
     else
       value = defValue;
     explicitlySet = false;
+
+    // Symmetry with setValue: a callback is a side effect that has to follow the value, or a reset would report the
+    // default while whatever the callback drives stays on the value that was just discarded (issue #7121).
+    if (callback != null)
+      try {
+        final Object newValue = callback.call(value);
+        if (newValue != value)
+          value = newValue;
+      } catch (final Exception e) {
+        if (LogManager.instance() != null)
+          LogManager.instance().log(this, Level.SEVERE, "Error during resetting property %s", e, key);
+      }
   }
 
   /**

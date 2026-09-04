@@ -127,6 +127,76 @@ class Issue7121GlobalConfigurationSweepTest {
     }
   }
 
+  /**
+   * The premise for why the server has to refresh the formatter itself. A SCOPE.SERVER setting is authoritative in
+   * the server's own {@link ContextConfiguration}, and that overlay is a plain map: neither {@code fromJSON} (the
+   * server configuration file) nor {@code setValue} (the {@code SET SERVER SETTING} API) writes through to the
+   * {@link GlobalConfiguration} enum. So the enum's set-callback alone cannot reach either channel, which is what
+   * {@code ArcadeDBServer.loadConfiguration()} and {@code PostServerCommandHandler.applySetting()} compensate for.
+   */
+  @Test
+  void aContextConfigurationOverlayDoesNotWriteThroughToTheEnum() {
+    final ContextConfiguration overlay = new ContextConfiguration();
+    overlay.setValue(GlobalConfiguration.SERVER_LOG_FORMAT, "json");
+
+    assertThat(overlay.getValueAsString(GlobalConfiguration.SERVER_LOG_FORMAT))
+        .as("the overlay holds the server's value")
+        .isEqualTo("json");
+    assertThat(GlobalConfiguration.SERVER_LOG_FORMAT.getValueAsString())
+        .as("but the enum - the only thing the set-callback and selectConsoleFormatter() see - is untouched")
+        .isEqualTo("text");
+  }
+
+  /** The mechanism the two server channels use: apply a value the resolver could not have found on its own. */
+  @Test
+  void refreshConsoleFormatterAppliesAnExplicitValue() {
+    withOwnConsoleHandler(() -> {
+      DefaultLogger.refreshConsoleFormatter("json");
+      assertThat(consoleFormatterName())
+          .as("a value read out of the server's ContextConfiguration must be applicable directly")
+          .isEqualTo("JsonLogFormatter");
+
+      DefaultLogger.refreshConsoleFormatter("text");
+      assertThat(consoleFormatterName()).isEqualTo("AnsiLogFormatter");
+    });
+  }
+
+  /** A callback is a side effect that must follow the value on the way back down, too. */
+  @Test
+  void resettingTheSettingAlsoSwapsTheFormatterBack() {
+    withOwnConsoleHandler(() -> {
+      GlobalConfiguration.SERVER_LOG_FORMAT.setValue("json");
+      assertThat(consoleFormatterName()).isEqualTo("JsonLogFormatter");
+
+      GlobalConfiguration.SERVER_LOG_FORMAT.reset();
+      assertThat(consoleFormatterName())
+          .as("reset() reports the default, so it must apply it as well")
+          .isEqualTo("AnsiLogFormatter");
+    });
+  }
+
+  /**
+   * Runs {@code assertions} with a console handler guaranteed to exist. A JVM can legitimately be configured with
+   * none; skipping in that case would let these tests silently prove nothing, so one is installed and removed.
+   */
+  private static void withOwnConsoleHandler(final Runnable assertions) {
+    LogManager.instance().log(Issue7121GlobalConfigurationSweepTest.class, Level.FINEST, "bootstrap");
+
+    final Logger root = Logger.getLogger("");
+    ConsoleHandler installedByTest = null;
+    if (consoleHandler(root) == null) {
+      installedByTest = new ConsoleHandler();
+      installedByTest.setFormatter(new AnsiLogFormatter());
+      root.addHandler(installedByTest);
+    }
+    try {
+      assertions.run();
+    } finally {
+      if (installedByTest != null)
+        root.removeHandler(installedByTest);
+    }
+  }
+
   private static ConsoleHandler consoleHandler(final Logger root) {
     for (final Handler h : root.getHandlers())
       if (h instanceof ConsoleHandler consoleHandler)

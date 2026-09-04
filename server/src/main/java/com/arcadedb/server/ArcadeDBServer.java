@@ -1448,6 +1448,11 @@ public class ArcadeDBServer {
         configuration.reset();
         configuration.fromJSON(content);
 
+        // fromJSON writes into this ContextConfiguration only - it never reaches GlobalConfiguration, so the
+        // SERVER_LOG_FORMAT set-callback that swaps the console formatter cannot fire from here. The console
+        // formatter was already chosen on the first log record the JVM emitted, long before this file was read,
+        // so the server applies the value it just loaded itself (issue #7121).
+        DefaultLogger.refreshConsoleFormatter(configuration.getValueAsString(GlobalConfiguration.SERVER_LOG_FORMAT));
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e, file);
       }

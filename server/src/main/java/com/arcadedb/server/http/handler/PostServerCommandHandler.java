@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
@@ -910,6 +911,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
           "'value' must not be empty for setting '" + setting.getKey() + "' of type " + setting.getType().getSimpleName());
 
     configuration.setValue(setting.getKey(), setting.coerce(value));
+
+    // ContextConfiguration.setValue is a plain map put: it does not write through to GlobalConfiguration, so a
+    // setting whose effect is a side effect rather than a value someone later reads would be stored and never
+    // applied. The console formatter is chosen once, at logger initialization, so it has to be told (issue #7121).
+    if (setting == GlobalConfiguration.SERVER_LOG_FORMAT)
+      DefaultLogger.refreshConsoleFormatter(configuration.getValueAsString(setting));
   }
 
   private JSONObject getServerEvents(final String fileName) {
