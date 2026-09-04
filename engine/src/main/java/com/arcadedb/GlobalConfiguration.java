@@ -2447,6 +2447,12 @@ public enum GlobalConfiguration {
    * SIDE EFFECT rather than a value someone later reads was therefore stored and never applied through any of the
    * channels its SCOPE advertises (issue #7121). The return value is deliberately dropped - the overlay owns the
    * stored value, this call is only about running the side effect.
+   * <p>
+   * <b>That makes a contract on the callback of any SCOPE.SERVER setting: it must be a pure side effect and return
+   * its argument unchanged.</b> A callback that NORMALISES the value - case-folds it, clamps it, substitutes a
+   * default - would have that normalisation applied on the enum path and silently dropped here, so the same input
+   * would be stored one way in the process-wide enum and another way in a server's overlay. Normalise in
+   * {@link #coerce(Object)} instead, which both paths go through.
    */
   void applyContextValue(final Object newValue) {
     if (callback != null && scope == SCOPE.SERVER)
