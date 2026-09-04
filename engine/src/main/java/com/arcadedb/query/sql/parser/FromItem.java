@@ -56,6 +56,9 @@ public class FromItem extends SimpleNode {
    * the rendered text as a name - a schema type for {@code CountFromTypeStep}, a context variable path - must use
    * this: an alias names the rows the target yields, and is never part of the target's own name. Looking up
    * {@code "Main AS m"} as a type finds nothing (issue #7153).
+   * <p>
+   * Rendered with no parameter map, exactly as the no-argument {@link #toString()} is: a name resolved out of this
+   * text is a schema or context name, never a bound value.
    */
   public String toStringWithoutAlias() {
     final StringBuilder builder = new StringBuilder();
