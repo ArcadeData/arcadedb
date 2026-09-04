@@ -126,7 +126,10 @@ public class RemoteImmutableDocument extends ImmutableDocument {
    */
   @Override
   public synchronized Map<String, Object> propertiesAsMap() {
-    return Collections.unmodifiableMap(map);
+    // A copy, like RemoteImmutableVertex's override: `map` is not written after construction today, so a view would
+    // be correct, but two siblings answering the same call with a view and with a copy is the kind of difference
+    // that only shows up once one of them starts mutating.
+    return new LinkedHashMap<>(map);
   }
 
   public synchronized Object get(final String propertyName) {
