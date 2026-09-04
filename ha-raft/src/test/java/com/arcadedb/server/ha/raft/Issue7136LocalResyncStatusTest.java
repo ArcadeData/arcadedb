@@ -294,7 +294,7 @@ class Issue7136LocalResyncStatusTest {
     // keep saying the membership is not converged yet.
     final int expected = RaftClusterStatusExporter.expectedMemberCount(
         List.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), List.of("arcadedb-1", "arcadedb-2"),
-        Set.of("arcadedb-1", "arcadedb-2"), true);
+        Set.of("arcadedb-1", "arcadedb-2"), true, 2);
 
     assertThat(expected).isEqualTo(3);
   }
@@ -305,7 +305,7 @@ class Issue7136LocalResyncStatusTest {
     // complete: the note must clear rather than blame a peer that is never coming back.
     final int expected = RaftClusterStatusExporter.expectedMemberCount(
         List.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), List.of("arcadedb-1", "arcadedb-2"),
-        Set.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), true);
+        Set.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), true, 2);
 
     assertThat(expected).isEqualTo(2);
   }
@@ -314,22 +314,24 @@ class Issue7136LocalResyncStatusTest {
   void aRuntimeJoinNotInTheDeclaredListDoesNotInflateTheCount() {
     // A peer added with POST /api/v1/cluster/peer is a committed member the server list never declared.
     final int expected = RaftClusterStatusExporter.expectedMemberCount(
-        List.of("arcadedb-1"), List.of("arcadedb-1", "arcadedb-2"), Set.of("arcadedb-1", "arcadedb-2"), true);
+        List.of("arcadedb-1"), List.of("arcadedb-1", "arcadedb-2"), Set.of("arcadedb-1", "arcadedb-2"), true, 2);
 
     assertThat(expected).isEqualTo(2);
   }
 
   @Test
-  void aTickThatCouldNotReadTheConfigurationFallsBackToTheDeclaredCount() {
-    // The division was unreadable (issue #5271): getCommittedPeersOrNull() answered null, so no committed id
-    // was observed this tick. Every declared peer HAS been committed before, so the pending scan would find
-    // none and return 0 - a denominator that says the cluster expects no members at all. Nothing was measured,
-    // so the honest answer is the declared list.
+  void aTickThatMeasuredNoMembershipMakesNoConvergenceClaim() {
+    // The division was unreadable this tick (issue #5271): getCommittedPeersOrNull() answered nothing, so the
+    // rows were rendered from the separate fallback read and none of the three inputs describes them. Scanning
+    // them anyway answers 0 (every declared peer has been committed before, so none is pending), and the
+    // declared-list denominator answers 3 against 2 rendered rows - reporting the removed peer as pending
+    // again, for one tick, which is the bug this change exists to remove. The row count is the only honest
+    // answer: the note stays silent until a tick actually measures something.
     final int expected = RaftClusterStatusExporter.expectedMemberCount(
-        List.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), List.of(),
-        Set.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), false);
+        List.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), List.<String>of(),
+        Set.of("arcadedb-1", "arcadedb-2", "arcadedb-3"), false, 2);
 
-    assertThat(expected).as("an unmeasured tick must not invent a membership size").isEqualTo(3);
+    assertThat(expected).as("an unmeasured tick claims neither convergence nor divergence").isEqualTo(2);
   }
 
   // ---------------------------------------------------------------------------------------------

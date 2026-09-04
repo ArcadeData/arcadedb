@@ -2547,7 +2547,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           return conf.getCurrentPeers();
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.FINE,
-            "Cannot read the live Raft configuration; callers that can substitute the declared server list will", e);
+            "Cannot read the live Raft configuration this tick; returning no membership, and it is the caller's "
+                + "choice whether to substitute the declared server list", e);
       }
     }
     return null;

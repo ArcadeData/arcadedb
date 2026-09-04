@@ -192,11 +192,14 @@ class RaftClusterStatusExporter {
     final RaftPeerId leaderId = haServer.getLeaderId();
     final long term = haServer.getCurrentTerm();
     final long commitIndex = haServer.getCommitIndex();
-    // ONE read of the live configuration, so the rows and the convergence note below describe the same instant.
-    // getLivePeers() is consulted only when that read produced nothing: it substitutes the declared list when
-    // the division cannot be read (issue #5271), which is the right answer for a caller that just needs
-    // something to print but must never be mistaken for a committed membership (issue #7136). A live
-    // configuration is never empty, so an empty answer is "nothing observed", not "a cluster of nobody".
+    // The committed membership is read first, and the rows come straight from it whenever it is there, so the
+    // rows and the convergence note below describe one instant. getLivePeers() is the fallback for a tick that
+    // read nothing: it substitutes the declared list when the division cannot be read (issue #5271), which is
+    // the right answer for a caller that just needs something to print but must never be mistaken for a
+    // committed membership (issue #7136). It resolves the division a second time, and may even succeed where
+    // the first attempt failed - which is why an unmeasured tick makes no convergence claim at all below,
+    // rather than falling back to a denominator the rows were not measured against. A live configuration is
+    // never empty, so an empty answer is "nothing observed", not "a cluster of nobody".
     final Collection<RaftPeer> committedPeers = haServer.getCommittedPeersOrNull();
     final boolean membershipRead = committedPeers != null && !committedPeers.isEmpty();
     final Collection<RaftPeer> peers = membershipRead ? committedPeers : haServer.getLivePeers();
@@ -271,14 +274,15 @@ class RaftClusterStatusExporter {
       declaredIds.add(peer.getId().toString());
 
     return new ConfigSnapshot(term, commitIndex, rows, collectBootstrapBaselines(),
-        expectedMemberCount(declaredIds, committedIds, everCommitted, membershipRead));
+        expectedMemberCount(declaredIds, committedIds, everCommitted, membershipRead, rows.size()));
   }
 
   /**
    * How many members the committed membership is expected to reach (issue #7136): the peers in it now, plus the
    * declared peers that have never been in it on this node's watch. {@code membershipRead} is {@code false} on a
-   * tick where the live configuration could not be read at all, in which case {@code committedIds} is the
-   * declared list standing in for it and carries no information about who has committed.
+   * tick where the live configuration could not be read at all: nothing was observed, so the answer is
+   * {@code renderedRows} - the count the table itself shows, which leaves the note silent rather than asserting
+   * a convergence or a divergence against a membership nobody measured.
    * <p>
    * The count feeds the "not yet converged" note only. Previously it was the raw size of
    * {@code arcadedb.ha.serverList}, which never shrinks, so a peer removed from the configuration left the note
@@ -289,13 +293,13 @@ class RaftClusterStatusExporter {
    * Pure and package-private for unit testing.
    */
   static int expectedMemberCount(final Collection<String> declaredIds, final Collection<String> committedIds,
-      final Set<String> everCommitted, final boolean membershipRead) {
-    // Nothing was read from Raft this tick: committedIds is the declared list standing in for a membership
-    // nobody observed. Answering from it would assert a convergence that was never seen - a declared peer that
-    // has not joined would read as a member. The honest denominator is the declared list itself, which equals
-    // the row count on such a tick and therefore says nothing either way until the next one.
+      final Set<String> everCommitted, final boolean membershipRead, final int renderedRows) {
+    // Nothing was read from Raft this tick, so no membership was observed and none of the three inputs
+    // describes what the rows show - the rows came from the fallback read, which may even have succeeded where
+    // this one failed. Returning the row count makes the note silent: a tick that measured nothing must not
+    // claim a convergence NOR a divergence, in either direction, until the next one measures something.
     if (!membershipRead)
-      return declaredIds.size();
+      return renderedRows;
 
     int pending = 0;
     for (final String declared : declaredIds)

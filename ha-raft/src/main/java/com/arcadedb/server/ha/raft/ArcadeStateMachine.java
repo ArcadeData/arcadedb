@@ -4173,8 +4173,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * readiness gate (issue #7136). Copies rather than views: a poll rendering the document must not see the set
    * change under it, and the caller must not be able to reach into the state machine's own collections.
    * <p>
-   * Cheap by design - two small copies of collections that are empty on a healthy node - and called only from
-   * the readiness probe, the health tick and the status endpoint, never from an apply path.
+   * Called only from the readiness probe, the health tick and the status endpoint, never from an apply path. A
+   * healthy node - the overwhelming majority of those calls - allocates only the record itself; a node that is
+   * actually resyncing pays for a sorted copy and the record's own defensive copy of it, which is a fair price
+   * on a path that runs a handful of times a second at most.
    */
   public LocalResyncState getLocalResyncState() {
     // A healthy node - the overwhelming majority of calls, since the readiness probe polls this - copies
