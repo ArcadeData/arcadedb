@@ -164,6 +164,22 @@ class CypherFunctionSecurityTest extends TestHelper {
   }
 
   /**
+   * The last uncovered branch of the pair: an algorithm neither function supports is refused by name rather than
+   * silently treated as the default one, which would hand the caller back a payload encoded differently from what
+   * it asked for.
+   */
+  @Test
+  void unsupportedCompressionAlgorithmsAreRefused() {
+    final ResultSet compress = database.query("opencypher", "RETURN util.compress('data', 'lzma') AS result");
+    assertThat(assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(compress::hasNext).actual().getMessage())
+        .contains("Unsupported compression algorithm", "lzma");
+
+    final ResultSet decompress = database.query("opencypher", "RETURN util.decompress('AAAA', 'lzma') AS result");
+    assertThat(assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(decompress::hasNext).actual().getMessage())
+        .contains("Unsupported compression algorithm", "lzma");
+  }
+
+  /**
    * The algorithm is named rather than defaulted: a helper that quietly produced gzip for anything it did not
    * recognise would hand the deflate test a payload the deflate branch never sees, and the test would still pass.
    */
