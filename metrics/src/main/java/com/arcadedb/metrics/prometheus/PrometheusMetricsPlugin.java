@@ -69,11 +69,53 @@ public class PrometheusMetricsPlugin implements ServerPlugin {
     if (!enabled)
       return;
 
-    Boolean requireAuthentication = Boolean.valueOf(configuration.getValue("arcadedb.serverMetrics.prometheus.requireAuthentication", "true"));
-    routes.addExactPath("/prometheus", new GetPrometheusMetricsHandler(httpServer, registry, requireAuthentication));
+    routes.addExactPath("/prometheus", new GetPrometheusMetricsHandler(httpServer, registry, isAuthenticationRequired(configuration)));
 
     LogManager.instance().log(this, Level.INFO, "Prometheus backend metrics http handler configured");
 
+  }
+
+  /**
+   * Reads {@link GlobalConfiguration#SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION} and FAILS CLOSED.
+   * <p>
+   * Issue #7124: this used to be {@code Boolean.valueOf(configuration.getValue(key, "true"))}, which had two
+   * defects. {@link ContextConfiguration#getValue(String, Object)} infers its type parameter from the {@code "true"}
+   * default and casts the stored value to {@link String}, so a value set programmatically as a {@link Boolean} threw
+   * {@code ClassCastException}; and {@code Boolean.valueOf} answers {@code false} for anything it cannot parse, so
+   * {@code requireAuthentication=ture} silently published the metrics endpoint unauthenticated.
+   * <p>
+   * The strict parse lives here rather than in {@link GlobalConfiguration#coerce(Object)}, which stays permissive on
+   * purpose: it runs inside that class's static initializer over every system property and environment variable, so
+   * a throw there becomes an {@code ExceptionInInitializerError} that takes the whole engine down instead of the
+   * setting. An authentication switch is worth the extra care at the one site that reads it.
+   *
+   * @return {@code true} unless the configured value is unambiguously {@code false}
+   */
+  static boolean isAuthenticationRequired(final ContextConfiguration configuration) {
+    final String key = GlobalConfiguration.SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION.getKey();
+
+    // READ AS Object: THE CONTEXT MAP CAN HOLD EITHER THE RAW STRING FROM THE SERVER CONFIGURATION OR A Boolean SET
+    // PROGRAMMATICALLY, AND getValue() BLINDLY CASTS TO THE TYPE OF THE DEFAULT IT IS GIVEN.
+    Object value = configuration != null ? configuration.getValue(key, (Object) null) : null;
+    if (value == null)
+      value = GlobalConfiguration.SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION.getValue();
+
+    if (value instanceof Boolean b)
+      return b;
+
+    if (value != null) {
+      final String text = value.toString().trim();
+      if ("true".equalsIgnoreCase(text))
+        return true;
+      if ("false".equalsIgnoreCase(text))
+        return false;
+
+      LogManager.instance().log(PrometheusMetricsPlugin.class, Level.WARNING,
+          "Invalid value '%s' for setting '%s': only 'true' and 'false' are accepted. Requiring authentication on the /prometheus endpoint",
+          text, key);
+    }
+
+    return true;
   }
 
 }

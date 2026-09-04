@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.monitor;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.event.ServerEventLog;
 
@@ -41,11 +43,12 @@ public class ServerMonitor {
 	private static final int INTERVAL_TIME = 10_000;
 	private static final int MINS_30 = 30 * 60 * 1_000;
 	private static final int HOURS_24 = 24 * 60 * 60 * 1_000;
+	private static final float SAFEPOINT_SPIKE_THRESHOLD_PERC = 20F;
 	private final ArcadeDBServer server;
 	private volatile Thread checker;
 	private AtomicBoolean running = new AtomicBoolean(false);
-	private long lastHotspotSafepointTime = 0L;
-	private long lastHotspotSafepointCount = 0L;
+	// READ AND WRITTEN ONLY BY THE MONITOR THREAD.
+	private final SafepointSpikeDetector safepointSpikeDetector = new SafepointSpikeDetector();
 	// WRITTEN BY THE MONITOR THREAD, READ BY getStatus() FROM ANY THREAD: volatile GUARANTEES VISIBILITY.
 	private volatile long lastHeapWarningReported = 0L;
 	private volatile long lastDiskSpaceWarningReported = 0L;
@@ -119,17 +122,17 @@ public class ServerMonitor {
 		}
 
 		try {
-			final File currentDir = new File(".");
-			final long freeSpace = currentDir.getUsableSpace(); // Better than getFreeSpace()
-			final long totalSpace = currentDir.getTotalSpace();
+			final File monitoredDir = resolveDiskSpaceDirectory(server.getConfiguration());
+			final long freeSpace = monitoredDir.getUsableSpace(); // Better than getFreeSpace()
+			final long totalSpace = monitoredDir.getTotalSpace();
 
 			if (totalSpace > 0) {
 				final float freeSpacePerc = freeSpace * 100F / totalSpace;
 				if (freeSpacePerc < 20) {
 					// REPORT THE SPIKE
 					server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null,
-							String.format("Available space on disk is only %.1f%% (%.2f GB free of %.2f GB total)", freeSpacePerc,
-									freeSpace / (1024.0 * 1024.0 * 1024.0), totalSpace / (1024.0 * 1024.0 * 1024.0)));
+							String.format("Available space on disk is only %.1f%% (%.2f GB free of %.2f GB total) on '%s'", freeSpacePerc,
+									freeSpace / (1024.0 * 1024.0 * 1024.0), totalSpace / (1024.0 * 1024.0 * 1024.0), monitoredDir.getPath()));
 					lastDiskSpaceWarningReported = System.currentTimeMillis();
 				}
 			}
@@ -137,6 +140,39 @@ public class ServerMonitor {
 		catch (SecurityException e) {
 			LOGGER.log(Level.FINE, "Cannot check disk space due to security restrictions", e);
 		}
+	}
+
+	/**
+	 * Returns the directory whose filesystem the low-disk warning must measure.
+	 * <p>
+	 * Issue #7124: this used to be the JVM working directory. When the databases live on a mounted volume - the
+	 * normal container and Kubernetes layout - that reports the container filesystem and the warning stays quiet
+	 * while the data volume fills, which is precisely the condition it exists to precede.
+	 * <p>
+	 * The configured directory does not necessarily exist yet: a not-yet-created path reports 0 usable and 0 total
+	 * bytes, which the {@code totalSpace > 0} guard reads as "cannot tell" and the check goes silent. Walking up to
+	 * the closest existing ancestor measures the filesystem the databases are going to land on, which is the number
+	 * the operator needs. The working directory remains the fallback so the check never has nothing to measure.
+	 */
+	static File resolveDiskSpaceDirectory(final ContextConfiguration configuration) {
+		if (configuration != null) {
+			try {
+				final String configured = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
+				if (configured != null && !configured.isBlank()) {
+					File dir = new File(configured.trim()).getAbsoluteFile();
+					while (dir != null && !dir.exists())
+						dir = dir.getParentFile();
+
+					if (dir != null)
+						return dir;
+				}
+			}
+			catch (Exception e) {
+				LOGGER.log(Level.FINE, "Cannot resolve the configured database directory, falling back to the working directory", e);
+			}
+		}
+
+		return new File(".");
 	}
 
 	private void checkHeapRAM() {
@@ -187,24 +223,12 @@ public class ServerMonitor {
 			Long hotspotSafepointCount = (Long) mBeanServer.getAttribute(hotspotRuntimeMBean, "SafepointCount");
 
 			if (hotspotSafepointTime != null && hotspotSafepointCount != null && hotspotSafepointCount > 0) {
-				if (lastHotspotSafepointCount > 0) {
-					final float lastAvgSafepointTime = lastHotspotSafepointTime / (float) lastHotspotSafepointCount;
-					final float avgSafepointTime = hotspotSafepointTime / (float) hotspotSafepointCount;
-
-					if (lastAvgSafepointTime > 0) {
-						final float deltaPerc = (avgSafepointTime - lastAvgSafepointTime) * 100 / lastAvgSafepointTime;
-
-						if (deltaPerc > 20) {
-							// REPORT THE SPIKE
-							server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null, String.format(
-									"Server overloaded: JVM Safepoint spiked up %.1f%% from the last sampling (avg time: %.2fms -> %.2fms)",
-									deltaPerc, lastAvgSafepointTime, avgSafepointTime));
-						}
-					}
-				}
-
-				lastHotspotSafepointTime = hotspotSafepointTime;
-				lastHotspotSafepointCount = hotspotSafepointCount;
+				final SafepointSpike spike = safepointSpikeDetector.sample(hotspotSafepointTime, hotspotSafepointCount);
+				if (spike != null)
+					// REPORT THE SPIKE
+					server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null, String.format(
+							"Server overloaded: JVM Safepoint spiked up %.1f%% from the last sampling (avg time: %.2fms -> %.2fms)",
+							spike.deltaPerc(), spike.previousIntervalAvgMs(), spike.currentIntervalAvgMs()));
 			}
 		}
 		catch (Exception e) {
@@ -259,6 +283,67 @@ public class ServerMonitor {
 	public MonitoringStatus getStatus() {
 		return new MonitoringStatus(running.get(), safepointMonitoringAvailable, System.currentTimeMillis() - lastHeapWarningReported < MINS_30,
 				System.currentTimeMillis() - lastDiskSpaceWarningReported < HOURS_24);
+	}
+
+	/**
+	 * A safepoint-pause spike measured over one sampling interval: the average pause of the previous interval, the
+	 * average pause of the interval just closed, and the increase between them as a percentage.
+	 */
+	record SafepointSpike(float previousIntervalAvgMs, float currentIntervalAvgMs, float deltaPerc) {
+	}
+
+	/**
+	 * Detects a rise in the average JVM safepoint pause between consecutive sampling intervals.
+	 * <p>
+	 * Issue #7124: the check this replaces compared {@code TotalSafepointTime / SafepointCount} at one sample against
+	 * the same ratio at the previous one. Both are LIFETIME cumulative averages, so within a few minutes of startup
+	 * each is dominated by history and their difference tends to zero - the warning fired during startup and then
+	 * never again, whatever the JVM went on to do. The message claiming the spike was "from the last sampling" was
+	 * something those two numbers could not express.
+	 * <p>
+	 * Keeping the previous sample's RAW counters makes the interval measurable: {@code deltaTime / deltaCount} is the
+	 * average pause of the interval just closed, and comparing consecutive interval averages is what "from the last
+	 * sampling" means. Three samples are therefore needed before the first comparison: one to open the first
+	 * interval, one to close it, and one to close the interval that gets compared against it.
+	 * <p>
+	 * Not thread-safe: a single {@link ServerMonitor} thread owns one instance.
+	 */
+	static final class SafepointSpikeDetector {
+		private long  lastSafepointTime  = 0L;
+		private long  lastSafepointCount = 0L;
+		private float lastIntervalAvgMs  = -1F;
+
+		/**
+		 * Feeds the two monotonically increasing HotSpot counters of one sample.
+		 *
+		 * @return the spike, or {@code null} when there is nothing to report - no safepoint happened during the
+		 * interval, no earlier interval exists to compare against, or the average pause did not rise past the
+		 * threshold.
+		 */
+		SafepointSpike sample(final long totalSafepointTime, final long safepointCount) {
+			SafepointSpike spike = null;
+
+			// A QUIET INTERVAL LEAVES THE COUNTERS WHERE THEY WERE: THERE IS NO NEW AVERAGE, AND THE BASELINE MUST
+			// STAY THE LAST INTERVAL THAT ACTUALLY HAD SAFEPOINTS RATHER THAN COLLAPSING TO ZERO.
+			if (lastSafepointCount > 0 && safepointCount > lastSafepointCount) {
+				final long deltaCount = safepointCount - lastSafepointCount;
+				final long deltaTime = Math.max(0L, totalSafepointTime - lastSafepointTime);
+				final float intervalAvgMs = deltaTime / (float) deltaCount;
+
+				if (lastIntervalAvgMs > 0) {
+					final float deltaPerc = (intervalAvgMs - lastIntervalAvgMs) * 100 / lastIntervalAvgMs;
+					if (deltaPerc > SAFEPOINT_SPIKE_THRESHOLD_PERC)
+						spike = new SafepointSpike(lastIntervalAvgMs, intervalAvgMs, deltaPerc);
+				}
+
+				lastIntervalAvgMs = intervalAvgMs;
+			}
+
+			lastSafepointTime = totalSafepointTime;
+			lastSafepointCount = safepointCount;
+
+			return spike;
+		}
 	}
 
 	/**
