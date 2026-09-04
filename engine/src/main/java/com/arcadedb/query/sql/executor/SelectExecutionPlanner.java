@@ -1947,7 +1947,7 @@ public class SelectExecutionPlanner {
     // so there is no "materialize everything then discard it" cost here to reclaim.
     // Skip pushdown when WHERE references LET variables ($), since LET is evaluated after fetch.
     final boolean whereRefersToLet = info.perRecordLetClause != null && info.whereClause != null
-        && info.whereClause.toString().contains("$");
+        && !variableNamesIn(info.whereClause.toString()).isEmpty();
     if (info.whereClause != null && info.whereClause.baseExpression != null && !whereRefersToLet) {
       final FetchFromTypeWithFilterStep fetcher = new FetchFromTypeWithFilterStep(identifier.getStringValue(), effectiveClusters,
           info.whereClause, context, orderByRidAsc);
@@ -1988,7 +1988,7 @@ public class SelectExecutionPlanner {
     // method (called from handleFetchFromTarget). Chaining it into a FilterStep on the fetch-side
     // plan would evaluate it before LET populates the variable, silently dropping every row. Defer
     // to the normal scan path, which applies WHERE only after LET. See issue #5856.
-    if (info.perRecordLetClause != null && info.whereClause != null && info.whereClause.toString().contains("$"))
+    if (info.perRecordLetClause != null && info.whereClause != null && !variableNamesIn(info.whereClause.toString()).isEmpty())
       return false;
 
     final AndBlock andBlock = info.flattenedWhereClause.getFirst();
@@ -2158,7 +2158,7 @@ public class SelectExecutionPlanner {
   /** Whether any sub-block of {@code andBlock} other than the one at {@code skipIndex} mentions a variable. */
   private static boolean referencesAVariableOutside(final AndBlock andBlock, final int skipIndex) {
     for (int i = 0; i < andBlock.getSubBlocks().size(); i++)
-      if (i != skipIndex && andBlock.getSubBlocks().get(i).toString().contains("$"))
+      if (i != skipIndex && !variableNamesIn(andBlock.getSubBlocks().get(i).toString()).isEmpty())
         return true;
 
     return false;
@@ -3298,6 +3298,12 @@ public class SelectExecutionPlanner {
               statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
+            // Same guard as every sibling branch: a residual that reads a per-record LET variable has to be filtered
+            // downstream of the LET steps, or it is evaluated with the variable unset and drops every row of this
+            // branch. This one was missing it (issue #7153).
+            if (refersToLet(block.getSubBlocks(), info.perRecordLetClause)) {
+              handleLet(subPlan, info, context);
+            }
             subPlan.chain(new FilterStep(createWhereFrom(block), context));
           }
           resultSubPlans.add(subPlan);
@@ -3326,26 +3332,60 @@ public class SelectExecutionPlanner {
   /**
    * Whether any of {@code subBlocks} reads one of the variables {@code letClause} declares.
    * <p>
-   * Matched by name, on the rendered condition: a variable reference is not always the whole expression
-   * ({@code #X:Y IN $brain} reads one), and there is no generic walker over the expression AST to ask instead.
-   * Matching the declared names rather than a bare {@code "$"} keeps a string literal that merely contains the
-   * character ({@code WHERE currency = 'US$'}) from counting as a reference, which would cost the statement an
-   * index it could have used (issue #7153).
+   * Read off the rendered condition rather than walked on the AST: a variable reference is not always the whole
+   * expression ({@code #X:Y IN $brain} reads one), and there is no generic walker over the expression nodes to ask
+   * instead. The names are compared whole, so a LET named {@code rel} is not found in {@code 'no relation'}
+   * (issue #7153).
+   * <p>
+   * Compared with the leading {@code $} stripped from both sides: the grammar takes a LET name as a plain
+   * identifier, so {@code LET brain = out(...)} and {@code LET $brain = out(...)} both declare the variable that
+   * {@code $brain} reads, and only one of the two spellings carries the sigil.
    */
   private static boolean refersToLet(final List<BooleanExpression> subBlocks, final LetClause letClause) {
-    if (subBlocks == null || letClause == null || letClause.getItems() == null)
+    if (subBlocks == null || letClause == null || letClause.getItems() == null || letClause.getItems().isEmpty())
       return false;
 
-    for (final BooleanExpression exp : subBlocks) {
-      final String rendered = exp.toString();
-      if (rendered.indexOf('$') < 0)
+    for (final BooleanExpression exp : subBlocks)
+      for (final String name : variableNamesIn(exp.toString()))
+        for (final LetItem item : letClause.getItems())
+          if (name.equals(withoutSigil(item.getVarName().getStringValue())))
+            return true;
+
+    return false;
+  }
+
+  private static String withoutSigil(final String variableName) {
+    return variableName.startsWith("$") ? variableName.substring(1) : variableName;
+  }
+
+  /**
+   * The context-variable names the rendered SQL mentions, each without its leading {@code $}: every sigil that
+   * actually starts a name, and the name it starts - {@code $parent.$current.x} yields {@code parent} and
+   * {@code current}. A {@code $} that starts nothing is a character inside a string literal, not a reference, which
+   * is the whole point: {@code WHERE currency = 'US$'} used to read as "this condition depends on a LET" and cost
+   * the statement a predicate pushdown, an edge-RID lookup, or an index (issue #7153).
+   * <p>
+   * Callers that only need to know whether ANY variable is mentioned test the result for emptiness. That is the
+   * right question for a filter the planner wants to evaluate inside the fetch: {@code $current} and {@code $parent}
+   * are no more available there than a per-record LET is.
+   */
+  private static List<String> variableNamesIn(final String rendered) {
+    List<String> names = null;
+
+    for (int i = rendered.indexOf('$'); i >= 0; i = rendered.indexOf('$', i + 1)) {
+      int end = i + 1;
+      while (end < rendered.length() && Character.isJavaIdentifierPart(rendered.charAt(end)))
+        ++end;
+
+      if (end == i + 1)
         continue;
 
-      for (final LetItem item : letClause.getItems())
-        if (rendered.contains(item.getVarName().getStringValue()))
-          return true;
+      if (names == null)
+        names = new ArrayList<>(2);
+      names.add(rendered.substring(i + 1, end));
     }
-    return false;
+
+    return names == null ? Collections.emptyList() : names;
   }
 
   private List<Integer> classClustersFiltered(final Database db, final DocumentType clazz, final Set<String> filterClusters) {
@@ -4452,10 +4492,10 @@ public class SelectExecutionPlanner {
       return subQuery;
     if (info.whereClause == null || info.whereClause.getBaseExpression() == null)
       return subQuery;
-    // Conservative: skip if WHERE references parent scope, LET variables, or $current/$parent (anything starting with '$').
+    // Conservative: skip if WHERE references parent scope, LET variables, or $current/$parent - any variable at all.
     if (info.whereClause.refersToParent())
       return subQuery;
-    if (info.whereClause.toString().contains("$"))
+    if (!variableNamesIn(info.whereClause.toString()).isEmpty())
       return subQuery;
 
     final TraverseStatement copy = (TraverseStatement) traverse.copy();
