@@ -207,8 +207,10 @@ import com.arcadedb.utility.CollectionUtils;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -242,6 +244,69 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       "map", "agg", "node", "rel", "path", "create");
 
   private int positionalParamCounter = 0;
+
+  /**
+   * Pushed for a statement whose target carries no alias. {@link ArrayDeque} rejects nulls, and a marker is needed
+   * rather than simply pushing nothing: a nested statement must NOT inherit the enclosing statement's alias, because
+   * inside it that name still refers to the OUTER record and stripping it would silently re-point the reference at
+   * the inner one.
+   */
+  private static final String NO_TARGET_ALIAS = "";
+
+  /** Target aliases of the statements currently being built, innermost first. See {@link #resolveTargetAlias}. */
+  private final Deque<String> targetAliases = new ArrayDeque<>();
+
+  /**
+   * Opens the alias scope of a statement whose target has just been built. Every {@link #pushTargetAlias} must be
+   * paired with a {@link #popTargetAlias} in a finally block, so that a parse error inside one statement cannot
+   * leave a stale alias in scope for the next.
+   */
+  private void pushTargetAlias(final FromClause target) {
+    final Identifier alias = target != null && target.getItem() != null ? target.getItem().getAlias() : null;
+    targetAliases.push(alias == null ? NO_TARGET_ALIAS : alias.getStringValue());
+  }
+
+  private void popTargetAlias() {
+    targetAliases.pop();
+  }
+
+  /**
+   * Resolves a reference qualified by the target alias of the statement being built: given {@code SELECT FROM Main m},
+   * rewrites {@code m.code} into {@code code} and a bare {@code m} into {@code @this}.
+   * <p>
+   * The rewrite happens here, at parse time, rather than in the planner, for two reasons. It is done once per
+   * statement text and then cached with the statement, so no execution pays for it; and, more importantly, the
+   * planner matches index conditions syntactically, so an alias left in place does not merely cost the index - the
+   * plan reads {@code m.code} as a property named {@code m} and answers the query with no rows at all (issue #7153).
+   *
+   * @return {@code expr}, rewritten in place when it was alias-qualified
+   */
+  private BaseExpression resolveTargetAlias(final BaseExpression expr) {
+    final String alias = targetAliases.peek();
+    if (alias == null || alias.isEmpty())
+      return expr;
+
+    final BaseIdentifier baseId = expr.identifier;
+    if (baseId == null || baseId.suffix == null || baseId.suffix.identifier == null)
+      return expr;
+    if (!alias.equals(baseId.suffix.identifier.getStringValue()))
+      return expr;
+
+    final Modifier first = expr.modifier;
+    if (first != null && first.suffix != null && !first.suffix.star && !first.squareBrackets && first.methodCall == null) {
+      // "m.code": the qualifier adds nothing, so drop it and let the property address the record directly. This is
+      // the shape the index matcher has to see.
+      baseId.suffix = first.suffix;
+      expr.modifier = first.next;
+    } else {
+      // A bare "m", or one followed by a method call, an array selector or ".*": the alias IS the record, and
+      // whatever follows applies to the record itself.
+      final RecordAttribute self = new RecordAttribute();
+      self.setName(Property.THIS_PROPERTY);
+      baseId.suffix = new SuffixIdentifier(self);
+    }
+    return expr;
+  }
 
   // ENTRY POINTS
 
@@ -291,14 +356,30 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public SelectStatement visitSelectStatement(final SQLParser.SelectStatementContext ctx) {
     final SelectStatement stmt = new SelectStatement();
 
+    // FROM clause. Visited before every other clause even though it is not written first: the target may declare an
+    // alias, and the clauses below are the ones that reference it (issue #7153).
+    if (ctx.fromClause() != null) {
+      stmt.target = (FromClause) visit(ctx.fromClause());
+    }
+
+    pushTargetAlias(stmt.target);
+    try {
+      buildSelectClauses(stmt, ctx);
+    } finally {
+      popTargetAlias();
+    }
+
+    return stmt;
+  }
+
+  /**
+   * Builds every SELECT clause but the target, which the two {@code selectStatement} visitors have already built and
+   * whose alias is in scope for the duration of this call.
+   */
+  private void buildSelectClauses(final SelectStatement stmt, final SQLParser.SelectStatementContext ctx) {
     // Projection
     if (ctx.projection() != null) {
       stmt.projection = (Projection) visit(ctx.projection());
-    }
-
-    // FROM clause
-    if (ctx.fromClause() != null) {
-      stmt.target = (FromClause) visit(ctx.fromClause());
     }
 
     // LET clause
@@ -338,8 +419,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (ctx.timeout() != null) {
       stmt.timeout = (Timeout) visit(ctx.timeout());
     }
-
-    return stmt;
   }
 
   /**
@@ -353,54 +432,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Get the selectStatement context from the labeled alternative
     final SQLParser.SelectStatementContext selectCtx = ctx.selectStatement();
 
-    // Projection
-    if (selectCtx.projection() != null) {
-      stmt.projection = (Projection) visit(selectCtx.projection());
-    }
-
-    // FROM clause
+    // FROM clause, built first so that a target alias is in scope for every clause that can reference it (#7153)
     if (selectCtx.fromClause() != null) {
       stmt.target = (FromClause) visit(selectCtx.fromClause());
     }
 
-    // LET clause
-    if (selectCtx.letClause() != null) {
-      stmt.letClause = (LetClause) visit(selectCtx.letClause());
-    }
-
-    // WHERE clause
-    if (selectCtx.whereClause() != null) {
-      stmt.whereClause = (WhereClause) visit(selectCtx.whereClause());
-    }
-
-    // GROUP BY clause
-    if (selectCtx.groupBy() != null) {
-      stmt.groupBy = (GroupBy) visit(selectCtx.groupBy());
-    }
-
-    // ORDER BY clause
-    if (selectCtx.orderBy() != null) {
-      stmt.orderBy = (OrderBy) visit(selectCtx.orderBy());
-    }
-
-    // UNWIND clause
-    if (selectCtx.unwind() != null) {
-      stmt.unwind = (Unwind) visit(selectCtx.unwind());
-    }
-
-    // SKIP clause
-    if (selectCtx.skip() != null) {
-      stmt.skip = (Skip) visit(selectCtx.skip());
-    }
-
-    // LIMIT clause
-    if (selectCtx.limit() != null) {
-      stmt.limit = (Limit) visit(selectCtx.limit());
-    }
-
-    // TIMEOUT clause
-    if (selectCtx.timeout() != null) {
-      stmt.timeout = (Timeout) visit(selectCtx.timeout());
+    pushTargetAlias(stmt.target);
+    try {
+      buildSelectClauses(stmt, selectCtx);
+    } finally {
+      popTargetAlias();
     }
 
     return stmt;
@@ -1743,9 +1784,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public FromItem visitFromIdentifier(final SQLParser.FromIdentifierContext ctx) {
     final FromItem fromItem = new FromItem();
 
-    // Identifier is the main FROM target (alias, if present, is the second identifier and ignored in execution)
+    // The first identifier is the FROM target; a second one is the target alias (FROM User u / FROM User AS u).
+    // The alias is consumed by resolveTargetAlias(), which rewrites every "u.property" reference in the rest of
+    // the statement into a plain "property" so that it addresses the record the target yields (issue #7153).
     if (ctx.identifier() != null && !ctx.identifier().isEmpty()) {
       fromItem.identifier = (Identifier) visit(ctx.identifier(0));
+      if (ctx.identifier().size() > 1)
+        fromItem.alias = (Identifier) visit(ctx.identifier(1));
     }
 
     // Handle modifiers if present - chain them using modifier.next
@@ -3584,7 +3629,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
 
-    return baseExpr;
+    return resolveTargetAlias(baseExpr);
   }
 
   /**
@@ -4761,6 +4806,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Target
     stmt.target = (FromClause) visit(updateCtx.fromClause());
 
+    pushTargetAlias(stmt.target);
+    try {
+      buildUpdateClauses(stmt, updateCtx);
+    } finally {
+      popTargetAlias();
+    }
+
+    return stmt;
+  }
+
+  /**
+   * Builds every UPDATE clause but the target, whose alias is in scope for the duration of this call (issue #7153).
+   */
+  private void buildUpdateClauses(final UpdateStatement stmt, final SQLParser.UpdateStatementContext updateCtx) {
     // Update operations (SET, ADD, PUT, REMOVE, INCREMENT, MERGE, CONTENT)
     for (final SQLParser.UpdateOperationContext opCtx : updateCtx.updateOperation()) {
       final UpdateOperations ops = (UpdateOperations) visit(opCtx);
@@ -4814,8 +4873,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (updateCtx.timeout() != null) {
       stmt.timeout = (Timeout) visit(updateCtx.timeout());
     }
-
-    return stmt;
   }
 
   /**
@@ -4968,6 +5025,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // FROM clause
     stmt.fromClause = (FromClause) visit(deleteCtx.fromClause());
 
+    pushTargetAlias(stmt.fromClause);
+    try {
+      buildDeleteClauses(stmt, deleteCtx);
+    } finally {
+      popTargetAlias();
+    }
+
+    return stmt;
+  }
+
+  /**
+   * Builds every DELETE clause but the target, whose alias is in scope for the duration of this call (issue #7153).
+   */
+  private void buildDeleteClauses(final DeleteStatement stmt, final SQLParser.DeleteStatementContext deleteCtx) {
     // RETURN BEFORE flag
     stmt.returnBefore = deleteCtx.RETURN() != null && deleteCtx.BEFORE() != null;
 
@@ -5000,8 +5071,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // UNSAFE flag
     stmt.unsafe = deleteCtx.UNSAFE() != null;
-
-    return stmt;
   }
 
   /**

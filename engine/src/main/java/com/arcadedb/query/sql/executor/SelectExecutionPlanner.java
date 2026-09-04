@@ -3321,7 +3321,7 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private boolean refersToLet(final List<BooleanExpression> subBlocks) {
+  private static boolean refersToLet(final List<BooleanExpression> subBlocks) {
     if (subBlocks == null)
       return false;
 
@@ -3459,11 +3459,15 @@ public class SelectExecutionPlanner {
       final Set<String> filterBuckets, final QueryPlanningInfo info, final CommandContext context) {
 
     final List<ExecutionStepInternal> result = handleTypeAsTargetWithIndex(targetType.getStringValue(), filterBuckets, info,
-        context);
+        context, true);
 
     if (result != null) {
       result.forEach(plan::chain);
-      info.whereClause = null;
+      // Normally null: the index search consumed the whole WHERE clause, or filtered what it left behind inside the
+      // fetch plan. What survives here is the residual that reads a per-record LET variable, kept as the statement's
+      // WHERE clause so that handleWhere() chains it after handleLet() (issue #7153).
+      info.whereClause = info.deferredLetWhereClause;
+      info.deferredLetWhereClause = null;
       info.flattenedWhereClause = null;
       return true;
     }
@@ -3519,7 +3523,7 @@ public class SelectExecutionPlanner {
 
   private List<ExecutionStepInternal> handleTypeAsTargetWithIndexRecursive(final String targetType, final Set<String> filterBuckets,
       final QueryPlanningInfo info, final CommandContext context) {
-    List<ExecutionStepInternal> result = handleTypeAsTargetWithIndex(targetType, filterBuckets, info, context);
+    List<ExecutionStepInternal> result = handleTypeAsTargetWithIndex(targetType, filterBuckets, info, context, false);
     if (result == null) {
       result = new ArrayList<>();
       final DocumentType typez = context.getDatabase().getSchema().getType(targetType);
@@ -3551,8 +3555,14 @@ public class SelectExecutionPlanner {
     return result.isEmpty() ? null : result;
   }
 
+  /**
+   * @param allowDeferredLetFilter whether a residual condition that reads a per-record LET variable may be deferred to
+   *                               the statement's WHERE clause. Only the single, top-level target can do that: there
+   *                               is one WHERE clause to defer into, so a per-sub-type or per-OR-branch residual has
+   *                               to give the index up instead (issue #7153).
+   */
   private List<ExecutionStepInternal> handleTypeAsTargetWithIndex(final String targetType, final Set<String> filterBuckets,
-      final QueryPlanningInfo info, final CommandContext context) {
+      final QueryPlanningInfo info, final CommandContext context, final boolean allowDeferredLetFilter) {
     if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
       return null;
 
@@ -3579,11 +3589,13 @@ public class SelectExecutionPlanner {
     List<IndexSearchDescriptor> optimumIndexSearchDescriptors =
         commonFactor(indexSearchDescriptors);
 
-    return executionStepFromIndexes(filterBuckets, typez, info, context, optimumIndexSearchDescriptors);
+    return executionStepFromIndexes(filterBuckets, typez, info, context, optimumIndexSearchDescriptors,
+        allowDeferredLetFilter);
   }
 
   private List<ExecutionStepInternal> executionStepFromIndexes(final Set<String> filterClusters, final DocumentType clazz,
-      final QueryPlanningInfo info, final CommandContext context, List<IndexSearchDescriptor> optimumIndexSearchDescriptors) {
+      final QueryPlanningInfo info, final CommandContext context, final List<IndexSearchDescriptor> optimumIndexSearchDescriptors,
+      final boolean allowDeferredLetFilter) {
     List<ExecutionStepInternal> result;
     if (optimumIndexSearchDescriptors.size() == 1) {
       final IndexSearchDescriptor desc = optimumIndexSearchDescriptors.getFirst();
@@ -3609,20 +3621,30 @@ public class SelectExecutionPlanner {
       if (orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, (AndBlock) desc.keyCondition, desc.getIndex()))
         info.orderApplied = true;
 
-        if (needsFilterStep(desc.getRemainingCondition(), context)) {
-        if (info.perRecordLetClause != null
-            && refersToLet(Collections.singletonList(desc.getRemainingCondition()))) {
-          SelectExecutionPlan stubPlan = new SelectExecutionPlan(context,
-              statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
-          handleLet(stubPlan, info, context);
-          for (ExecutionStep step : stubPlan.getSteps()) {
-            result.add((ExecutionStepInternal) step);
-          }
-        }
-        result.add(
-            new FilterStep(createWhereFrom(desc.getRemainingCondition()), context));
+      if (needsFilterStep(desc.getRemainingCondition(), context)) {
+        if (refersToPerRecordLet(info, desc.getRemainingCondition())) {
+          if (!allowDeferredLetFilter)
+            // A sub-type or OR branch: the residual would have to be deferred per branch, and there is only one
+            // WHERE clause to defer it into. Give the whole statement up to the plain scan, which evaluates the
+            // filter after the LET by construction.
+            return null;
+
+          // The residual reads a variable the per-record LET computes, and the LET steps run downstream of this
+          // fetch. Hand it back to the planner rather than filtering here: handleWhere() chains it after
+          // handleLet(), where the variable is finally set. Filtering here would read it unset, and the LET steps
+          // used to be spliced in ahead of the fetch to compensate - which produced a plan whose first step had
+          // nothing to pull from and raised "Cannot execute a local LET on a query without a target" (issue #7153).
+          info.deferredLetWhereClause = createWhereFrom(desc.getRemainingCondition());
+        } else
+          result.add(new FilterStep(createWhereFrom(desc.getRemainingCondition()), context));
       }
     } else {
+      for (final IndexSearchDescriptor desc : optimumIndexSearchDescriptors)
+        if (needsFilterStep(desc.getRemainingCondition(), context) && refersToPerRecordLet(info,
+            desc.getRemainingCondition()))
+          // One OR branch per sub-plan, each with its own residual: see above.
+          return null;
+
       result = new ArrayList<>();
       result.add(createParallelIndexFetch(optimumIndexSearchDescriptors, filterClusters, context));
       if (optimumIndexSearchDescriptors.size() > 1) {
@@ -3630,6 +3652,15 @@ public class SelectExecutionPlanner {
       }
     }
     return result;
+  }
+
+  /**
+   * Whether {@code condition} reads a variable this statement's per-record LET computes. Asked of what an index
+   * search leaves behind, to decide whether that residual can be filtered inside the fetch plan (where the variable
+   * is not set yet) or has to wait for the LET steps downstream of it.
+   */
+  private static boolean refersToPerRecordLet(final QueryPlanningInfo info, final BooleanExpression condition) {
+    return info.perRecordLetClause != null && refersToLet(Collections.singletonList(condition));
   }
 
   private boolean fullySorted(final OrderBy orderBy, final AndBlock conditions, final Index idx) {
