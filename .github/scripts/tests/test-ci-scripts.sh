@@ -30,6 +30,7 @@ CONTROLCHARS="$SCRIPTS/check-source-control-chars.py"
 NEEDSOUTPUTS="$SCRIPTS/check-workflow-needs-outputs.py"
 STATUSCOMPLETE="$SCRIPTS/check-ci-status-completeness.py"
 GRAALVMPIN="$SCRIPTS/check-native-graalvm-pin.py"
+RELEASEASSETS="$SCRIPTS/check-release-upload-assets.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -1551,6 +1552,97 @@ expect "reports a workflow it cannot parse as YAML" 1 "not parseable as YAML" \
 # The repository's own two files must agree - this is the case that would have caught b53c48c1e2.
 expect "the repository's own native pin matches its own workflow" 0 "consistent" \
     "$GRAALVMPIN"
+
+echo
+echo "check-release-upload-assets.py"
+
+# These cases vary only the asset arguments of a `gh release upload` step, so the workflow around
+# them is boilerplate.
+release_workflow() {
+    local path="$1"
+    shift
+    cat >"$path" <<YAML
+name: Release
+on:
+  release:
+    types: [ published ]
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Attach to release
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "\${{ github.event.release.tag_name }}" \\
+            $* \\
+            --clobber
+YAML
+}
+
+mkdir -p "$work/releaseassets"
+
+# The regression this check exists for: run 33796693420. Each matrix leg packages exactly one
+# archive, so the .zip pattern matched nothing on the three Unix legs and the .tar.gz pattern
+# matched nothing on Windows - `gh release upload` exits nonzero on a zero-match pattern, so all
+# four legs failed AFTER building and packaging their binary successfully.
+release_workflow "$work/releaseassets/glob.yml" \
+    'native/target/arcadedb-*.tar.gz native/target/arcadedb-*.zip native/target/*.sha256'
+expect "rejects the run 33796693420 asset globs" 1 "arcadedb-*.zip" \
+    "$RELEASEASSETS" "$work/releaseassets/glob.yml"
+
+# The fix: names computed by an earlier step and passed through a step output.
+release_workflow "$work/releaseassets/explicit.yml" \
+    '"native/target/$ARCHIVE" "native/target/$ARCHIVE.sha256"'
+expect "accepts assets named through a shell variable" 0 "explicit" \
+    "$RELEASEASSETS" "$work/releaseassets/explicit.yml"
+
+# A single glob is no safer than three - it still cannot report which leg produced nothing.
+release_workflow "$work/releaseassets/single-glob.yml" 'dist/arcadedb-?.tar.gz'
+expect "rejects a '?' glob as well as '*'" 1 "arcadedb-?.tar.gz" \
+    "$RELEASEASSETS" "$work/releaseassets/single-glob.yml"
+
+# The tag is a positional too, and it is not an asset - a tag holding a glob character must not be
+# reported, or the check would fire on workflows that upload nothing patterned.
+cat >"$work/releaseassets/tag-only.yml" <<'YAML'
+name: Release
+on: [ workflow_dispatch ]
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Attach to release
+        run: gh release upload "v1.*" dist/arcadedb.tar.gz --clobber
+YAML
+expect "does not treat the tag argument as an asset" 0 "explicit" \
+    "$RELEASEASSETS" "$work/releaseassets/tag-only.yml"
+
+# A workflow with no `gh release upload` at all passes rather than erroring.
+cat >"$work/releaseassets/none.yml" <<'YAML'
+name: Build
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ls dist/*.tar.gz
+YAML
+expect "ignores workflows that never upload a release asset" 0 "explicit" \
+    "$RELEASEASSETS" "$work/releaseassets/none.yml"
+
+# Fail closed on a workflow it cannot read, exactly as the GraalVM pin check does.
+cat >"$work/releaseassets/broken.yml" <<'YAML'
+name: broken
+on: [workflow_dispatch
+jobs:
+  build:
+YAML
+expect "reports a workflow it cannot parse as YAML" 1 "not parseable as YAML" \
+    "$RELEASEASSETS" "$work/releaseassets/broken.yml"
+
+# The repository's own workflows must pass - this is the case that would have caught run 33796693420.
+expect "the repository's own workflows name their release assets" 0 "explicit" \
+    "$RELEASEASSETS"
 
 echo
 if [[ $failures -gt 0 ]]; then
