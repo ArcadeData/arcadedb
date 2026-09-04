@@ -1365,6 +1365,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * {@link #refreshSegmentsFromFileManager()} runs first for the same reason {@code topK} calls it - on a Raft
    * follower, segments arrive through component shipping and only become visible to this engine on that refresh,
    * so without it the count would stay stale until the next query.
+   * <p>
+   * What the lock does NOT buy is isolation from writes that land DURING the walk: the captured memtable is the
+   * live object, and a concurrent {@code put}/{@code remove} on its {@code ConcurrentSkipListMap} can be observed
+   * or missed depending on where the scan has reached. That is deliberate and is what every sibling
+   * implementation does - {@link com.arcadedb.index.lsm.LSMTreeIndex#countEntries()} walks a live cursor the same
+   * way, and {@link com.arcadedb.index.Index#countEntries()} promises a live count, not a point-in-time one under
+   * concurrent mutation. Buying that isolation would mean either copying the memtable or holding out every writer
+   * for the whole O(total dims) walk, and a maintenance counter is not worth stalling commits for. The bug this
+   * lock closes is the different one: a memtable being flushed disappearing from BOTH reads at once, which is a
+   * whole memtable missing from the answer rather than a few concurrent entries.
    */
   public long livePostings() throws IOException {
     ensureOpen();
