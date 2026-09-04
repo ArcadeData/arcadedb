@@ -102,6 +102,10 @@ class Issue7121BucketReuseSpaceModeTest {
           .as("and the reopened bucket must be built from it, not from the JVM-wide default")
           .isEqualTo("LOW");
     }
+
+    assertThat(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString())
+        .as("ALTER DATABASE tunes ONE database: it must not write through to the process-wide default")
+        .isEqualTo("high");
   }
 
   private static LocalBucket bucketOf(final Database db) {
