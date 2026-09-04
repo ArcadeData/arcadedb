@@ -2468,6 +2468,12 @@ public enum GlobalConfiguration {
     try {
       coerced = coerce(newValue);
     } catch (final Exception e) {
+      // Logged, not swallowed silently: the callback is about to be handed a value of a type it may not expect, and
+      // the failure it then throws would otherwise point at the callback instead of at the value that caused it.
+      if (LogManager.instance() != null)
+        LogManager.instance()
+            .log(this, Level.WARNING, "Value %s for property %s could not be coerced to %s; the setting's side effect "
+                + "runs with the raw value", e, newValue, key, type.getSimpleName());
       coerced = newValue;
     }
     invokeCallback(coerced);
