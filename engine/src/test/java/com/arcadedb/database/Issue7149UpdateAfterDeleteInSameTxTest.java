@@ -28,6 +28,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -90,7 +91,7 @@ class Issue7149UpdateAfterDeleteInSameTxTest {
 
   private List<RID> indexEntriesFor(final int id) {
     final IndexCursor cursor = database.getSchema().getIndexByName("Doc[id]").get(new Object[] { id });
-    final java.util.ArrayList<RID> found = new java.util.ArrayList<>();
+    final List<RID> found = new ArrayList<>();
     while (cursor.hasNext())
       found.add(cursor.next().getIdentity());
     return found;
