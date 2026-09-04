@@ -3368,11 +3368,28 @@ public class SelectExecutionPlanner {
    * Callers that only need to know whether ANY variable is mentioned test the result for emptiness. That is the
    * right question for a filter the planner wants to evaluate inside the fetch: {@code $current} and {@code $parent}
    * are no more available there than a per-record LET is.
+   * <p>
+   * Quoted runs - string literals and backtick-quoted identifiers - are skipped whole, so nothing inside one is
+   * read as a reference. Erring here is one-directional by construction: a real {@code $name} always survives the
+   * scan, so the answer can only ever be too generous, and too generous costs an optimisation rather than a row.
    */
   private static List<String> variableNamesIn(final String rendered) {
     List<String> names = null;
 
-    for (int i = rendered.indexOf('$'); i >= 0; i = rendered.indexOf('$', i + 1)) {
+    for (int i = 0; i < rendered.length(); ++i) {
+      final char c = rendered.charAt(i);
+
+      // A quoted run is data, not SQL: skip it whole rather than reading the names it may spell. WHERE note =
+      // 'see $relation' names no variable, and a backtick-quoted `$relation` is a property whose name starts with
+      // the character. Both used to read as a LET reference.
+      if (c == '\'' || c == '"' || c == '`') {
+        i = endOfQuotedRun(rendered, i);
+        continue;
+      }
+
+      if (c != '$')
+        continue;
+
       int end = i + 1;
       while (end < rendered.length() && Character.isJavaIdentifierPart(rendered.charAt(end)))
         ++end;
@@ -3383,9 +3400,29 @@ public class SelectExecutionPlanner {
       if (names == null)
         names = new ArrayList<>(2);
       names.add(rendered.substring(i + 1, end));
+      i = end - 1;
     }
 
     return names == null ? Collections.emptyList() : names;
+  }
+
+  /**
+   * The index of the closing quote of the run {@code rendered.charAt(start)} opens, honouring backslash escapes, or
+   * the last index of the string when the run is unterminated - which a rendered statement should never contain, and
+   * which is answered this way so the caller's loop ends rather than reading the rest as SQL.
+   */
+  private static int endOfQuotedRun(final String rendered, final int start) {
+    final char quote = rendered.charAt(start);
+
+    for (int i = start + 1; i < rendered.length(); ++i) {
+      final char c = rendered.charAt(i);
+      if (c == '\\')
+        ++i;
+      else if (c == quote)
+        return i;
+    }
+
+    return rendered.length() - 1;
   }
 
   private List<Integer> classClustersFiltered(final Database db, final DocumentType clazz, final Set<String> filterClusters) {

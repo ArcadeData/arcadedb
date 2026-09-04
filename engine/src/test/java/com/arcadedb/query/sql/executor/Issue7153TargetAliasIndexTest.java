@@ -21,6 +21,8 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.SQLQueryEngine;
+import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.SelectStatement;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -326,6 +328,55 @@ class Issue7153TargetAliasIndexTest extends TestHelper {
         + "WHERE (search_index('Main[notes]', 'linked') = true AND $relation.size() = 1) "//
         + "OR (search_index('Main[notes]', 'nothing') = true AND $relation.size() = 0)")) {
       assertThat(rs.stream().map(r -> r.<String>getProperty("code"))).containsExactlyInAnyOrder("C1", "C2");
+    }
+  }
+
+  /**
+   * A quoted run is data. {@code WHERE note = '$relation'} spells a LET variable's name inside a string literal and
+   * names no variable at all, and a backtick-quoted {@code `$relation`} is a property whose name merely starts with
+   * the character.
+   */
+  @Test
+  void aVariableNameInsideAQuotedRunIsNotAReference() {
+    database.transaction(() -> database.command("sql", "UPDATE Main SET note = '$relation' WHERE code = 'C1'"));
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT code FROM Main LET $relation = out('relation') WHERE note = '$relation'")) {
+      // the residual reads no variable, so it is pushed into the scan rather than deferred past the LET
+      assertThat(plan(rs)).contains("FETCH FROM TYPE Main WITH FILTER");
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // and the index survives the same literal next to an indexed condition
+    try (final ResultSet rs = database.query("sql",
+        "SELECT code FROM Main m LET $relation = out('relation') WHERE m.code = 'C1' AND note = '$relation'")) {
+      final String plan = plan(rs);
+      assertThat(plan).contains("FETCH FROM INDEX Main[code]");
+      assertThat(plan.indexOf("FILTER ITEMS WHERE")).isLessThan(plan.indexOf("LET (for each record)"));
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * A target that is not a type name is resolved out of its rendered text, and an alias is not part of that text.
+   * The contract is asserted on {@code FromItem} directly because the one planner branch that resolves a dotted
+   * variable path this way cannot be reached from SQL today - a bare identifier carrying a modifier is read as a
+   * type name first - while an aliased {@code $var} target, which can, has to keep working.
+   */
+  @Test
+  void anAliasIsNotPartOfTheTargetsName() {
+    final FromItem target = ((SelectStatement) ((SQLQueryEngine) database.getQueryEngine("sql"))//
+        .parse("SELECT FROM Main m", (DatabaseInternal) database)).getTarget().getItem();
+
+    assertThat(target.toString()).isEqualTo("Main AS m");
+    assertThat(target.toStringWithoutAlias()).isEqualTo("Main");
+
+    try (final ResultSet rs = database.command("sqlscript",
+        "LET $chosen = (SELECT FROM Main WHERE code = 'C1'); SELECT code FROM $chosen[0] AS c")) {
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("C1");
+      assertThat(rs.hasNext()).isFalse();
     }
   }
 
