@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Locale;
@@ -36,6 +37,9 @@ import java.util.zip.InflaterInputStream;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class UtilDecompress extends AbstractUtilFunction {
+  /** Largest decompressed payload this function will buffer; anything beyond it is refused as a zip bomb. */
+  public static final int MAX_OUTPUT_SIZE = 100 * 1024 * 1024; // 100MB maximum output size
+
   @Override
   protected String getSimpleName() {
     return "decompress";
@@ -56,8 +60,6 @@ public class UtilDecompress extends AbstractUtilFunction {
     return "Decompress base64-encoded data using the specified algorithm (gzip or deflate)";
   }
 
-  private static final int MAX_OUTPUT_SIZE = 100 * 1024 * 1024; // 100MB maximum output size
-
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args[0] == null)
@@ -69,46 +71,46 @@ public class UtilDecompress extends AbstractUtilFunction {
     try {
       final byte[] compressedBytes = Base64.getDecoder().decode(base64Data);
       final ByteArrayInputStream bais = new ByteArrayInputStream(compressedBytes);
-      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
 
-      switch (algorithm) {
-      case "gzip":
-        try (final GZIPInputStream gzis = new GZIPInputStream(bais)) {
-          final byte[] buffer = new byte[1024];
-          int len;
-          long totalBytesRead = 0;
-          while ((len = gzis.read(buffer)) != -1) {
-            totalBytesRead += len;
-            if (totalBytesRead > MAX_OUTPUT_SIZE) {
-              throw new IllegalArgumentException(
-                  "Decompressed output size exceeds maximum allowed (" + MAX_OUTPUT_SIZE + " bytes). Potential zip bomb attack.");
-            }
-            baos.write(buffer, 0, len);
+      // Both algorithms share one bounded read loop: a second copy of it would be free to drift away from the
+      // zip-bomb guard, and only one of the two would then be covered by any given test (issue #7142). The arrow
+      // form is deliberate - a colon switch would be correct only while every branch happens to return, so adding
+      // a line to one of them could silently fall through into the next algorithm.
+      return switch (algorithm) {
+        case "gzip" -> {
+          try (final GZIPInputStream gzis = new GZIPInputStream(bais)) {
+            yield readBounded(gzis);
           }
         }
-        break;
-      case "deflate":
-        try (final InflaterInputStream iis = new InflaterInputStream(bais)) {
-          final byte[] buffer = new byte[1024];
-          int len;
-          long totalBytesRead = 0;
-          while ((len = iis.read(buffer)) != -1) {
-            totalBytesRead += len;
-            if (totalBytesRead > MAX_OUTPUT_SIZE) {
-              throw new IllegalArgumentException(
-                  "Decompressed output size exceeds maximum allowed (" + MAX_OUTPUT_SIZE + " bytes). Potential zip bomb attack.");
-            }
-            baos.write(buffer, 0, len);
+        case "deflate" -> {
+          try (final InflaterInputStream iis = new InflaterInputStream(bais)) {
+            yield readBounded(iis);
           }
         }
-        break;
-      default:
-        throw new IllegalArgumentException("Unsupported compression algorithm: " + algorithm);
-      }
-
-      return baos.toString(StandardCharsets.UTF_8);
+        default -> throw new IllegalArgumentException("Unsupported compression algorithm: " + algorithm);
+      };
     } catch (final IOException e) {
       throw new RuntimeException("Error decompressing data", e);
     }
+  }
+
+  /**
+   * Drains {@code in} into a string, refusing to buffer more than {@link #MAX_OUTPUT_SIZE} bytes. The cap is what
+   * stops a zip bomb - a few hundred bytes of input that inflate to gigabytes - from exhausting the heap, so it is
+   * checked before each chunk is buffered rather than after the whole stream has been read.
+   */
+  private static String readBounded(final InputStream in) throws IOException {
+    final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    final byte[] buffer = new byte[8192];
+    long totalBytesRead = 0;
+    int len;
+    while ((len = in.read(buffer)) != -1) {
+      totalBytesRead += len;
+      if (totalBytesRead > MAX_OUTPUT_SIZE)
+        throw new IllegalArgumentException(
+            "Decompressed output size exceeds maximum allowed (" + MAX_OUTPUT_SIZE + " bytes). Potential zip bomb attack.");
+      baos.write(buffer, 0, len);
+    }
+    return baos.toString(StandardCharsets.UTF_8);
   }
 }
