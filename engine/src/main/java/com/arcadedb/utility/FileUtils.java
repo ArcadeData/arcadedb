@@ -39,8 +39,6 @@ import java.lang.management.ThreadMXBean;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -253,16 +251,6 @@ public class FileUtils {
       else
         copyDirectory(f, target);
     }
-  }
-
-  public static boolean renameFile(final File from, final File to) throws IOException {
-    final FileSystem fileSystem = FileSystems.getDefault();
-
-    final Path fromPath = fileSystem.getPath(from.getAbsolutePath());
-    final Path toPath = fileSystem.getPath(to.getAbsolutePath());
-    Files.move(fromPath, toPath);
-
-    return true;
   }
 
   public static String threadDump() {

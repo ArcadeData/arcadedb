@@ -299,19 +299,6 @@ class FileUtilsTest {
   }
 
   @Test
-  void renameFile() throws Exception {
-    final Path original = tempDir.resolve("original.txt");
-    final Path renamed = tempDir.resolve("renamed.txt");
-    Files.createFile(original);
-
-    Files.move(original, renamed); // Use Files.move to avoid issues on some OS
-//    FileUtils.renameFile(original.toFile(), renamed.toFile());
-
-    assertThat(Files.exists(original)).isFalse();
-    assertThat(Files.exists(renamed)).isTrue();
-  }
-
-  @Test
   void escapeHTML() {
     assertThat(FileUtils.escapeHTML("<script>")).contains("&#60;");
     assertThat(FileUtils.escapeHTML(">")).contains("&#62;");

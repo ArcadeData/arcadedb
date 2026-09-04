@@ -19,12 +19,20 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.text.TextLevenshteinDistance;
+import com.arcadedb.function.util.UtilCompress;
+import com.arcadedb.function.util.UtilDecompress;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Map;
+import java.util.zip.DeflaterOutputStream;
+import java.util.zip.GZIPOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
@@ -65,15 +73,14 @@ class CypherFunctionSecurityTest extends TestHelper {
     assertThat(resultSet.next().<String>getProperty("result")).isNull();
   }
 
+  /**
+   * Was {@code @Disabled} for "large parameter passing (11MB) has issues in Cypher query engine". That reason was
+   * wrong: binding a multi-megabyte String parameter works, and the cap fires exactly as written. Issue #7142 asked
+   * which of the two it was - the answer is that there was no engine limitation to record.
+   */
   @Test
-  @Disabled("Large parameter passing (11MB) has issues in Cypher query engine - security check exists in function code")
   void utilCompressInputSizeLimit() {
-    // Test that compression has input size limits to prevent DoS
-    // Create a string larger than max allowed size (11MB exceeds 10MB limit)
-    // Note: This test is disabled because passing 11MB parameters through Cypher
-    // query parameters has issues. The security check exists in UtilCompress.java.
-    final int SIZE = 11 * 1024 * 1024;
-    final char[] largeChars = new char[SIZE];
+    final char[] largeChars = new char[UtilCompress.MAX_INPUT_SIZE + 1];
     Arrays.fill(largeChars, 'x');
     final String largeString = new String(largeChars);
 
@@ -81,7 +88,18 @@ class CypherFunctionSecurityTest extends TestHelper {
 
     final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class)
         .isThrownBy(rs::hasNext).actual();
-    assertThat(exception.getMessage().contains("Input size exceeds maximum allowed")).isTrue();
+    assertThat(exception.getMessage()).contains("Input size exceeds maximum allowed");
+  }
+
+  /** The companion boundary: a payload of exactly the cap is compressed rather than refused. */
+  @Test
+  void utilCompressAcceptsExactlyTheCap() {
+    final char[] atCap = new char[UtilCompress.MAX_INPUT_SIZE];
+    Arrays.fill(atCap, 'x');
+
+    final ResultSet rs = database.query("opencypher", "RETURN util.compress($data) AS result", "data", new String(atCap));
+
+    assertThat(rs.next().<String>getProperty("result")).isNotEmpty();
   }
 
   @Test
@@ -93,17 +111,70 @@ class CypherFunctionSecurityTest extends TestHelper {
   }
 
   @Test
-  void utilDecompressOutputSizeLimit() {
-    // Test that decompression has output size limits to prevent zip bomb attacks
-    // First, compress a small string
+  void utilDecompressRoundTrip() {
+    // The control for the two zip-bomb tests below: a payload under the cap still round-trips.
     final ResultSet compressResult = database.query("opencypher", "RETURN util.compress('test') AS compressed");
     final String compressed = compressResult.next().getProperty("compressed").toString();
 
-    // For now, just verify decompression works with valid data
     final ResultSet decompressResult = database.query("opencypher",
         "RETURN util.decompress('" + compressed + "') AS result");
     assertThat(decompressResult.hasNext()).isTrue();
     assertThat(decompressResult.next().<String>getProperty("result")).isEqualTo("test");
+  }
+
+  /**
+   * A real zip bomb: ~134KB of base64 that inflates past {@link UtilDecompress#MAX_OUTPUT_SIZE}. The test this
+   * replaced round-tripped four bytes, so the guard it was named for was never reached and both of its branches
+   * were uncovered (issue #7142).
+   */
+  @Test
+  void utilDecompressGzipOutputSizeLimitRejectsAZipBomb() throws IOException {
+    final ResultSet rs = database.query("opencypher", "RETURN util.decompress($data, 'gzip') AS result",
+        "data", zipBomb("gzip"));
+
+    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(rs::hasNext).actual();
+    assertThat(exception.getMessage()).contains("Decompressed output size exceeds maximum allowed", "zip bomb");
+  }
+
+  /** The deflate branch enforces the same cap - it used to carry its own copy of the read loop. */
+  @Test
+  void utilDecompressDeflateOutputSizeLimitRejectsAZipBomb() throws IOException {
+    final ResultSet rs = database.query("opencypher", "RETURN util.decompress($data, 'deflate') AS result",
+        "data", zipBomb("deflate"));
+
+    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(rs::hasNext).actual();
+    assertThat(exception.getMessage()).contains("Decompressed output size exceeds maximum allowed", "zip bomb");
+  }
+
+  /** Just past the cap decompresses to a value the guard must refuse; just under it must still be accepted. */
+  @Test
+  void utilDecompressAcceptsAPayloadJustUnderTheCap() throws IOException {
+    final int justUnder = 8 * 1024 * 1024; // large enough to exercise the loop, small enough to stay cheap
+    final ResultSet rs = database.query("opencypher", "RETURN util.decompress($data, 'gzip') AS result",
+        "data", gzipOfRepeatedByte(justUnder, "gzip"));
+
+    assertThat(rs.next().<String>getProperty("result")).hasSize(justUnder);
+  }
+
+  /**
+   * Builds a payload that inflates to one byte past {@link UtilDecompress#MAX_OUTPUT_SIZE}, which is the first size
+   * the guard refuses. Written a megabyte at a time so the bomb costs a megabyte of heap to build, not 100.
+   */
+  private static String zipBomb(final String algorithm) throws IOException {
+    return gzipOfRepeatedByte(UtilDecompress.MAX_OUTPUT_SIZE + 1, algorithm);
+  }
+
+  private static String gzipOfRepeatedByte(final int size, final String algorithm) throws IOException {
+    final ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+    final byte[] chunk = new byte[1024 * 1024];
+    Arrays.fill(chunk, (byte) 'x');
+    try (final OutputStream out = "deflate".equals(algorithm) ?
+        new DeflaterOutputStream(compressed) :
+        new GZIPOutputStream(compressed)) {
+      for (int written = 0; written < size; written += chunk.length)
+        out.write(chunk, 0, Math.min(chunk.length, size - written));
+    }
+    return Base64.getEncoder().encodeToString(compressed.toByteArray());
   }
 
   @Test
@@ -259,20 +330,41 @@ class CypherFunctionSecurityTest extends TestHelper {
     assertThat(resultSet.next().<String>getProperty("result")).isEqualTo("Hello Alice, you are 30 years old");
   }
 
+  /**
+   * Was {@code @Disabled} for "large parameter passing (10KB+) has issues in Cypher query engine". Same verdict as
+   * {@link #utilCompressInputSizeLimit()}: the parameter binds, the guard fires, there was no engine limitation.
+   */
   @Test
-  @Disabled("Large parameter passing (10KB+) has issues in Cypher query engine - security check exists in function code")
   void textLevenshteinDistanceMaxLength() {
-    // Test that excessively long strings are rejected for Levenshtein distance (MAX_STRING_LENGTH = 10000)
-    // Note: This test is disabled because passing large string parameters through Cypher
-    // query parameters has issues. The security check exists in TextLevenshteinDistance.java.
-    final String longString = "a".repeat(10100);
+    final String longString = "a".repeat(TextLevenshteinDistance.MAX_STRING_LENGTH + 1);
     final ResultSet rs = database.query("opencypher", "RETURN text.levenshteinDistance($str1, $str2) AS result",
         "str1", longString,
         "str2", "test");
-    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(rs::hasNext).actual();
-    assertThat(exception.getMessage().contains("exceeds maximum allowed") ||
-        exception.getMessage().contains("String length")).as("Expected string length error but got: " + exception.getMessage())
-        .isTrue();
+    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(rs::hasNext)
+        .actual();
+    assertThat(exception.getMessage()).contains("String length exceeds maximum allowed");
+  }
+
+  /** The second argument is capped too, and it is a separate check in the function. */
+  @Test
+  void textLevenshteinDistanceMaxLengthOnTheSecondArgument() {
+    final String longString = "a".repeat(TextLevenshteinDistance.MAX_STRING_LENGTH + 1);
+    final ResultSet rs = database.query("opencypher", "RETURN text.levenshteinDistance($str1, $str2) AS result",
+        "str1", "test",
+        "str2", longString);
+    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(rs::hasNext)
+        .actual();
+    assertThat(exception.getMessage()).contains("String length exceeds maximum allowed");
+  }
+
+  /** A pair of strings at exactly the cap is computed rather than refused. */
+  @Test
+  void textLevenshteinDistanceAcceptsExactlyTheCap() {
+    final String atCap = "a".repeat(TextLevenshteinDistance.MAX_STRING_LENGTH);
+    final ResultSet rs = database.query("opencypher", "RETURN text.levenshteinDistance($str1, $str2) AS result",
+        "str1", atCap,
+        "str2", atCap);
+    assertThat(rs.next().<Long>getProperty("result")).isZero();
   }
 
   @Test
