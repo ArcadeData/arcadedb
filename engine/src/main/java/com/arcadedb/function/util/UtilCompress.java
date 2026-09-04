@@ -78,19 +78,21 @@ public class UtilCompress extends AbstractUtilFunction {
 
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
 
+      // Arrow form, as on the decompress side: a colon switch stays correct only while every branch keeps its
+      // break, so a line added to one of them could fall through and compress the payload twice, with the second
+      // algorithm wrapping the output of the first.
       switch (algorithm) {
-      case "gzip":
-        try (final GZIPOutputStream gzos = new GZIPOutputStream(baos)) {
-          gzos.write(inputBytes);
+        case "gzip" -> {
+          try (final GZIPOutputStream gzos = new GZIPOutputStream(baos)) {
+            gzos.write(inputBytes);
+          }
         }
-        break;
-      case "deflate":
-        try (final DeflaterOutputStream dos = new DeflaterOutputStream(baos, new Deflater(Deflater.DEFAULT_COMPRESSION))) {
-          dos.write(inputBytes);
+        case "deflate" -> {
+          try (final DeflaterOutputStream dos = new DeflaterOutputStream(baos, new Deflater(Deflater.DEFAULT_COMPRESSION))) {
+            dos.write(inputBytes);
+          }
         }
-        break;
-      default:
-        throw new IllegalArgumentException("Unsupported compression algorithm: " + algorithm);
+        default -> throw new IllegalArgumentException("Unsupported compression algorithm: " + algorithm);
       }
 
       return Base64.getEncoder().encodeToString(baos.toByteArray());
