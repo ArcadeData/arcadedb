@@ -51,7 +51,10 @@ public final class MicrometerQueryTracer implements QueryTracer {
     final Observation observation = Observation.createNotStarted("arcadedb.query", observationRegistry)
         .lowCardinalityKeyValue("protocol", protocol != null ? protocol : "internal")
         .lowCardinalityKeyValue("db", database != null ? database : "none")
-        .lowCardinalityKeyValue("language", language != null ? language : "unknown")
+        // Bounded through the same helper the RED timer uses: "low cardinality" is a promise to whatever
+        // handler is attached - one of which may turn these keys into meter tags - and the language is
+        // client-supplied, so the promise has to be enforced rather than assumed (issue #7122).
+        .lowCardinalityKeyValue("language", MicrometerQueryMetricsRecorder.languageTag(language))
         .lowCardinalityKeyValue("type", type != null ? type : "query")
         .highCardinalityKeyValue("db.statement", query != null ? query : "");
     observation.start();

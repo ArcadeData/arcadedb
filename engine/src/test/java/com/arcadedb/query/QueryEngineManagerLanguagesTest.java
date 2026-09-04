@@ -57,4 +57,27 @@ class QueryEngineManagerLanguagesTest {
     // registration must not collapse them.
     assertThat(languages).contains("opencypher", "cypher");
   }
+
+  @Test
+  void isLanguageRegisteredAnswersForEveryAvailableLanguage() {
+    final QueryEngineManager manager = QueryEngineManager.getInstance();
+    // The bounded "language" tag of arcadedb.query.duration is derived from this predicate, so it has to
+    // agree with the list every registered alias is surfaced in (issue #7122).
+    for (final String language : manager.getAvailableLanguages())
+      assertThat(manager.isLanguageRegistered(language)).as(language).isTrue();
+  }
+
+  @Test
+  void isLanguageRegisteredMatchesCaseInsensitivelyAndRejectsTheRest() {
+    final QueryEngineManager manager = QueryEngineManager.getInstance();
+
+    // getEngine() lowercases before resolving, so the predicate has to agree: "SQL" runs the sql engine.
+    assertThat(manager.isLanguageRegistered("SQL")).isTrue();
+    assertThat(manager.isLanguageRegistered("SqL")).isTrue();
+
+    // Whatever a caller invents must be rejected - that is what keeps the metric tag bounded.
+    assertThat(manager.isLanguageRegistered("lang12345")).isFalse();
+    assertThat(manager.isLanguageRegistered("")).isFalse();
+    assertThat(manager.isLanguageRegistered(null)).isFalse();
+  }
 }
