@@ -56,10 +56,7 @@ public class UtilCompress extends AbstractUtilFunction {
     return "Compress data using the specified algorithm (gzip or deflate), returns base64-encoded string";
   }
 
-  /**
-   * Maximum size of the payload this function will compress. Public so the regression test asserts against the
-   * same boundary the guard enforces (issue #7142).
-   */
+  /** Largest payload this function will compress; anything beyond it is refused. */
   public static final int MAX_INPUT_SIZE = 10 * 1024 * 1024; // 10MB maximum input size
 
   @Override

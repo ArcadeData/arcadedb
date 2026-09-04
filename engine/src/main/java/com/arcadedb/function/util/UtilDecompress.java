@@ -57,10 +57,7 @@ public class UtilDecompress extends AbstractUtilFunction {
     return "Decompress base64-encoded data using the specified algorithm (gzip or deflate)";
   }
 
-  /**
-   * Maximum size the decompressed payload may reach before the read is refused as a zip bomb. Public so the
-   * regression test asserts against the same boundary the guard enforces (issue #7142).
-   */
+  /** Largest decompressed payload this function will buffer; anything beyond it is refused as a zip bomb. */
   public static final int MAX_OUTPUT_SIZE = 100 * 1024 * 1024; // 100MB maximum output size
 
   @Override
