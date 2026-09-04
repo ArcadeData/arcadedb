@@ -300,7 +300,15 @@ jobs:
             native/src/test/scripts/smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true
           fi
 
+      # Publishes the archive it created as a step output, because "Attach to release" below cannot
+      # discover it with a glob: `gh release upload` expands each asset argument itself and treats a
+      # pattern matching nothing as a FATAL error, and each leg produces exactly one archive - the
+      # three Unix legs a .tar.gz and no .zip, Windows a .zip and no .tar.gz. Passing both patterns
+      # unconditionally therefore failed on every leg, which is how release run 33796693420 lost all
+      # of 26.9.1's native assets after building, smoke-testing and packaging every one of them.
+      # .github/scripts/check-release-upload-assets.py fails the `lint` job if a glob comes back.
       - name: Package artifact
+        id: package
         shell: bash
         run: |
           cd native/target
@@ -314,6 +322,8 @@ jobs:
             tar czf "$ARCHIVE" "$BIN"
             shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256" || sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
           fi
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "[package] archive: $ARCHIVE (+ $ARCHIVE.sha256)"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -329,10 +339,11 @@ jobs:
         if: ${{ github.event_name == 'release' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
         shell: bash
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
-            native/target/arcadedb-*.tar.gz native/target/arcadedb-*.zip native/target/*.sha256 \
+            "native/target/$ARCHIVE" "native/target/$ARCHIVE.sha256" \
             --clobber
 
   # Packages the two required Linux binaries (musl-static amd64, mostly-static-glibc arm64) built
