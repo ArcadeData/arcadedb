@@ -86,3 +86,23 @@ The hot path is unchanged for an already-seen tuple: one string concatenation an
 `ConcurrentHashMap.get`, exactly as before. `languageTag()` — a `toLowerCase` scan (which returns
 `this` when nothing changes) plus one volatile read and one hash lookup — runs only on a cache miss,
 and a miss already pays for a `Timer.Builder`, a `Tags` list and a registry registration.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7157
+
+### Review cycles
+
+| Cycle | Head SHA | Changes | Bot review outcome |
+|---|---|---|---|
+| 1 | `2134ad3e98` | initial implementation + regression tests | `claude` responded with no actionable items; CodeRabbit: "No actionable comments were generated in the recent review"; Codacy: 0 new issues |
+
+No review comment in cycle 1 required a code change, and no item was deferred.
+
+### Deferred items
+
+None.
+
+### Final state
+
+`clean-approval` — one cycle, nothing to address. Merge remains the developer's decision.
