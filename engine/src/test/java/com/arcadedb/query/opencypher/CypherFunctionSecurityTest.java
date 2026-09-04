@@ -146,12 +146,16 @@ class CypherFunctionSecurityTest extends TestHelper {
     assertThat(exception.getMessage()).contains("Decompressed output size exceeds maximum allowed", "zip bomb");
   }
 
-  /** Just past the cap decompresses to a value the guard must refuse; just under it must still be accepted. */
+  /**
+   * The accepting half of the same boundary. It has to sit at exactly {@code MAX_OUTPUT_SIZE - 1}: any smaller
+   * payload would still pass if the cap were lowered underneath it, so only the last accepted size pins the
+   * contract from below the way the bomb pins it from above.
+   */
   @Test
   void utilDecompressAcceptsAPayloadJustUnderTheCap() throws IOException {
-    final int justUnder = 8 * 1024 * 1024; // large enough to exercise the loop, small enough to stay cheap
+    final int justUnder = UtilDecompress.MAX_OUTPUT_SIZE - 1;
     final ResultSet rs = database.query("opencypher", "RETURN util.decompress($data, 'gzip') AS result",
-        "data", gzipOfRepeatedByte(justUnder, "gzip"));
+        "data", compressedRepeatedByte(justUnder, "gzip"));
 
     assertThat(rs.next().<String>getProperty("result")).hasSize(justUnder);
   }
@@ -161,16 +165,22 @@ class CypherFunctionSecurityTest extends TestHelper {
    * the guard refuses. Written a megabyte at a time so the bomb costs a megabyte of heap to build, not 100.
    */
   private static String zipBomb(final String algorithm) throws IOException {
-    return gzipOfRepeatedByte(UtilDecompress.MAX_OUTPUT_SIZE + 1, algorithm);
+    return compressedRepeatedByte(UtilDecompress.MAX_OUTPUT_SIZE + 1, algorithm);
   }
 
-  private static String gzipOfRepeatedByte(final int size, final String algorithm) throws IOException {
+  /**
+   * The algorithm is named rather than defaulted: a helper that quietly produced gzip for anything it did not
+   * recognise would hand the deflate test a payload the deflate branch never sees, and the test would still pass.
+   */
+  private static String compressedRepeatedByte(final int size, final String algorithm) throws IOException {
     final ByteArrayOutputStream compressed = new ByteArrayOutputStream();
     final byte[] chunk = new byte[1024 * 1024];
     Arrays.fill(chunk, (byte) 'x');
-    try (final OutputStream out = "deflate".equals(algorithm) ?
-        new DeflaterOutputStream(compressed) :
-        new GZIPOutputStream(compressed)) {
+    try (final OutputStream out = switch (algorithm) {
+      case "gzip" -> new GZIPOutputStream(compressed);
+      case "deflate" -> new DeflaterOutputStream(compressed);
+      default -> throw new IllegalArgumentException("Unsupported compression algorithm: " + algorithm);
+    }) {
       for (int written = 0; written < size; written += chunk.length)
         out.write(chunk, 0, Math.min(chunk.length, size - written));
     }
