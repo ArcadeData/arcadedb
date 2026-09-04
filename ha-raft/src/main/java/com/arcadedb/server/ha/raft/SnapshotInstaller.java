@@ -964,6 +964,9 @@ public final class SnapshotInstaller {
     // Records the size+CRC32 of each file actually extracted, used to verify against the manifest.
     final Map<String, long[]> extracted = new HashMap<>();
     byte[] manifestBytes = null;
+    // Read once for the whole install rather than per entry: the limit must not change mid-extraction, and a
+    // snapshot with many small entries should not pay a configuration lookup for each of them.
+    final long maxEntryBytes = maxZipEntryUncompressedBytes();
 
     try (final ZipInputStream zipIn = new ZipInputStream(source)) {
       ZipEntry zipEntry;
@@ -1005,7 +1008,7 @@ public final class SnapshotInstaller {
         final CRC32 crc = new CRC32();
         try (final FileOutputStream fos = new FileOutputStream(targetFile.toFile());
             final CheckedOutputStream cos = new CheckedOutputStream(fos, crc)) {
-          final long uncompressedBytes = copyWithLimit(zipIn, cos, maxZipEntryUncompressedBytes(), entryName);
+          final long uncompressedBytes = copyWithLimit(zipIn, cos, maxEntryBytes, entryName);
 
           // Decompression-bomb defense: check ratio for entries large enough to matter.
           // Uses raw counter delta (compressed bytes including headers) which slightly
