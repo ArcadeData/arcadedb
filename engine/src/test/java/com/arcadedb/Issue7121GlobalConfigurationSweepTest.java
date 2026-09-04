@@ -21,6 +21,8 @@ package com.arcadedb;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.DefaultLogger;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.AnsiLogFormatter;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -30,6 +32,8 @@ import java.io.File;
 import java.util.logging.ConsoleHandler;
 import java.util.logging.Formatter;
 import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -94,37 +98,47 @@ class Issue7121GlobalConfigurationSweepTest {
   /** 4. Setting the log format through the configuration must reach the installed console handler. */
   @Test
   void serverLogFormatSwapsTheConsoleFormatter() {
-    // Make sure the logger has been initialized, so a console handler exists to swap the formatter on
-    LogManagerBootstrap.ensureInitialized();
+    // Force the one-shot DefaultLogger.init(), so the console handler this test needs is in place
+    LogManager.instance().log(Issue7121GlobalConfigurationSweepTest.class, Level.FINEST, "bootstrap");
 
-    final String before = consoleFormatterName();
-    if (before == null)
-      // No ConsoleHandler in this JVM's logging setup (an operator can legitimately configure none): nothing to assert
-      return;
+    final Logger root = Logger.getLogger("");
+    // A JVM can legitimately be configured with no console handler. Rather than skipping - which would make this
+    // test silently prove nothing on such a setup - install one for the duration and take it back out.
+    ConsoleHandler installedByTest = null;
+    if (consoleHandler(root) == null) {
+      installedByTest = new ConsoleHandler();
+      installedByTest.setFormatter(new AnsiLogFormatter());
+      root.addHandler(installedByTest);
+    }
 
-    GlobalConfiguration.SERVER_LOG_FORMAT.setValue("json");
-    assertThat(consoleFormatterName())
-        .as("the setting is SCOPE.SERVER, so setting it through the configuration must take effect")
-        .isEqualTo("JsonLogFormatter");
+    try {
+      assertThat(consoleFormatterName()).as("premise: the text formatter is what we start from").isEqualTo("AnsiLogFormatter");
 
-    GlobalConfiguration.SERVER_LOG_FORMAT.setValue("text");
-    assertThat(consoleFormatterName()).isEqualTo("AnsiLogFormatter");
+      GlobalConfiguration.SERVER_LOG_FORMAT.setValue("json");
+      assertThat(consoleFormatterName())
+          .as("the setting is SCOPE.SERVER, so setting it through the configuration must take effect")
+          .isEqualTo("JsonLogFormatter");
+
+      GlobalConfiguration.SERVER_LOG_FORMAT.setValue("text");
+      assertThat(consoleFormatterName()).as("and it must swap back").isEqualTo("AnsiLogFormatter");
+    } finally {
+      if (installedByTest != null)
+        root.removeHandler(installedByTest);
+    }
   }
 
-  private static String consoleFormatterName() {
-    for (final Handler h : java.util.logging.Logger.getLogger("").getHandlers())
-      if (h instanceof ConsoleHandler) {
-        final Formatter f = h.getFormatter();
-        return f != null ? f.getClass().getSimpleName() : null;
-      }
+  private static ConsoleHandler consoleHandler(final Logger root) {
+    for (final Handler h : root.getHandlers())
+      if (h instanceof ConsoleHandler consoleHandler)
+        return consoleHandler;
     return null;
   }
 
-  /** Forces the one-shot {@link DefaultLogger#init()} by emitting a record through the facade. */
-  private static final class LogManagerBootstrap {
-    static void ensureInitialized() {
-      com.arcadedb.log.LogManager.instance()
-          .log(Issue7121GlobalConfigurationSweepTest.class, java.util.logging.Level.FINEST, "bootstrap");
-    }
+  private static String consoleFormatterName() {
+    final ConsoleHandler h = consoleHandler(Logger.getLogger(""));
+    if (h == null)
+      return null;
+    final Formatter f = h.getFormatter();
+    return f != null ? f.getClass().getSimpleName() : null;
   }
 }

@@ -323,9 +323,14 @@ public class DefaultLogger implements Logger {
   /**
    * Selects the console log formatter from {@code arcadedb.server.logFormat}: {@code json} yields a
    * {@link JsonLogFormatter}, anything else (default {@code text}) keeps the existing
-   * {@link AnsiLogFormatter}. Resolved via {@link SystemVariableResolver} - the same mechanism this
-   * class already uses for {@code arcadedb.installCustomFormatter} - because this runs before
-   * GlobalConfiguration values are guaranteed initialized.
+   * {@link AnsiLogFormatter}.
+   * <p>
+   * Resolved via {@link SystemVariableResolver} - the same mechanism this class already uses for
+   * {@code arcadedb.installCustomFormatter} - because this can run before GlobalConfiguration values are guaranteed
+   * initialized. That resolver is NOT system-property-only: it tries the JVM system property, then the environment,
+   * and then {@code GlobalConfiguration.findByKey(...).getValueAsString()}. So a value set through the settings API,
+   * a server configuration file or {@code fromJSON} is honoured here (issue #7121) - it is simply outranked by an
+   * explicit {@code -D}/env override, which is the intended precedence and the reason the resolver is used at all.
    */
   static Formatter selectConsoleFormatter() {
     final String format = SystemVariableResolver.INSTANCE.resolveSystemVariables("${arcadedb.server.logFormat}", "text");

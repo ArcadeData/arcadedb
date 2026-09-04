@@ -1352,14 +1352,33 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * residual after deletions instead of dropping (issue #7140).
    * <p>
    * The walk is the per-dim merge {@link #countDim} already performs for IDF, run over the union of the dims held
-   * by the memtable and by each segment, against ONE snapshot of both so a concurrent flush cannot make a posting
-   * be counted twice or missed. Cost is O(total dims x sources), the same order as a compaction: this is exactly
-   * the "every LSM-based implementation walks the whole structure, never call it on a query path" case the
+   * by the memtable and by each segment. Cost is O(total dims x sources), the same order as a compaction: this is
+   * exactly the "every LSM-based implementation walks the whole structure, never call it on a query path" case the
    * {@code countEntries()} contract warns about, not a cheap accessor.
+   * <p>
+   * <b>Snapshot.</b> {@link #flush} swaps the memtable BEFORE it publishes the sealed segment, so reading the two
+   * fields independently - as {@link #topK} does, where the worst case is a transiently incomplete result set -
+   * can miss every posting of the memtable being flushed. A count that is silently short by a whole memtable is
+   * not a tolerable approximation, so both references are captured under {@link #mutatorLock}, which every
+   * publisher holds. The lock is released before the scan itself: it only has to make the pair coherent, and
+   * holding it across an O(total dims) walk would block flushes and compactions for the duration.
+   * {@link #refreshSegmentsFromFileManager()} runs first for the same reason {@code topK} calls it - on a Raft
+   * follower, segments arrive through component shipping and only become visible to this engine on that refresh,
+   * so without it the count would stay stale until the next query.
    */
   public long livePostings() throws IOException {
-    final Memtable mtSnapshot = memtable.get();
-    final PaginatedSegmentReader[] segSnapshot = segments.get();
+    ensureOpen();
+    refreshSegmentsFromFileManager();
+
+    final Memtable mtSnapshot;
+    final PaginatedSegmentReader[] segSnapshot;
+    mutatorLock.lock();
+    try {
+      mtSnapshot = memtable.get();
+      segSnapshot = segments.get();
+    } finally {
+      mutatorLock.unlock();
+    }
 
     // The union of the dims any source holds. IntHashSet rather than a boxed Set: a wide corpus reaches millions of
     // dims, and this would otherwise be one Integer allocation each.

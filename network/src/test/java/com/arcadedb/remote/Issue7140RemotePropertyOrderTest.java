@@ -29,8 +29,10 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -111,9 +113,30 @@ class Issue7140RemotePropertyOrderTest {
     assertThat(mutable.toMap(false).keySet()).containsExactlyElementsOf(PROPERTIES);
   }
 
+  /**
+   * {@code Document.getPropertyNames()} promises an unmodifiable SNAPSHOT: the caller must not be able to change the
+   * record through it, and it must not track later changes - that is what makes the natural
+   * {@code for (name : getPropertyNames()) remove(name)} prune loop safe.
+   */
   @Test
-  void getPropertyNamesIsASnapshotNotAView() {
-    // The contract on Document.getPropertyNames() asks for an unmodifiable snapshot; a keySet() view is neither
-    assertThat(document.getPropertyNames()).isNotSameAs(document.getPropertyNames());
+  void getPropertyNamesIsAnUnmodifiableSnapshotNotALiveView() {
+    assertThatThrownBy(() -> document.getPropertyNames().remove("zeta")).isInstanceOf(UnsupportedOperationException.class);
+
+    final RemoteMutableDocument mutable = (RemoteMutableDocument) document.modify();
+    final Set<String> namesBefore = mutable.getPropertyNames();
+    mutable.set("addedLater", 99);
+
+    assertThat(namesBefore)
+        .as("a set taken before the change must not grow with the record")
+        .containsExactlyElementsOf(PROPERTIES);
+    assertThat(mutable.getPropertyNames())
+        .as("while a set taken after it sees the new property, still last in insertion order")
+        .containsExactlyElementsOf(withAddedLater());
+  }
+
+  private static List<String> withAddedLater() {
+    final List<String> expected = new ArrayList<>(PROPERTIES);
+    expected.add("addedLater");
+    return expected;
   }
 }

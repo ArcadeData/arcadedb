@@ -45,6 +45,8 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 public class RemoteImmutableDocument extends ImmutableDocument {
   protected final RemoteDatabase      remoteDatabase;
   protected final Map<String, Object> map;
+  /** Snapshot handed out by {@link #getPropertyNames()}; see there for why it is computed once. */
+  private final   Set<String>         propertyNames;
 
   public RemoteImmutableDocument(final RemoteDatabase remoteDatabase, final Map<String, Object> attributes) {
     super(null, remoteDatabase.getSchema().getType((String) attributes.get(Property.TYPE_PROPERTY)), null, null);
@@ -85,6 +87,8 @@ public class RemoteImmutableDocument extends ImmutableDocument {
       }
     }
 
+    this.propertyNames = Collections.unmodifiableSet(new LinkedHashSet<>(map.keySet()));
+
     final String ridAsString = (String) attributes.get(RID_PROPERTY);
     if (ridAsString != null)
       this.rid = remoteDatabase.newRID(ridAsString);
@@ -101,7 +105,12 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   public synchronized Set<String> getPropertyNames() {
     // A snapshot in insertion order, exactly as MutableDocument.getPropertyNames() returns: the contract on
     // Document.getPropertyNames() asks for both, and a keySet() view is neither (issue #7140).
-    return Collections.unmodifiableSet(new LinkedHashSet<>(map.keySet()));
+    //
+    // Built once in the constructor rather than copied per call: `map` is populated there and never written again -
+    // this class is the IMMUTABLE record - so one unmodifiable set is already a valid snapshot for every caller and
+    // repeating the copy would only be garbage. RemoteMutableDocument, which can change, inherits MutableDocument's
+    // per-call copy instead.
+    return propertyNames;
   }
 
   @Override
