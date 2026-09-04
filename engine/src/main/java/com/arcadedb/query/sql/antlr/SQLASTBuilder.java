@@ -279,6 +279,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * planner matches index conditions syntactically, so an alias left in place does not merely cost the index - the
    * plan reads {@code m.code} as a property named {@code m} and answers the query with no rows at all (issue #7153).
    *
+   * <p>
+   * One shape is deliberately out of reach: the {@link #FUNCTION_NAMESPACES} fast path earlier in
+   * {@link #visitIdentifierChain} matches on the literal base identifier before this runs, so aliasing a target with
+   * a namespace name and then calling a method of that namespace on it ({@code SELECT FROM Foo map WHERE
+   * map.get('x') = 1}) still parses as the namespaced function {@code map.get}. That ambiguity predates aliases -
+   * it applies to any property named {@code map}, {@code ts}, {@code geo}, ... - and is left as is; backtick-quote
+   * the alias, or pick another one, to address the record instead.
+   *
    * @return {@code expr}, rewritten in place when it was alias-qualified
    */
   private BaseExpression resolveTargetAlias(final BaseExpression expr) {
@@ -480,6 +488,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public MatchStatement visitMatchStatement(final SQLParser.MatchStatementContext ctx) {
+    // MATCH has no FROM target: its patterns declare their own aliases ({as: a}) and RETURN addresses them as
+    // "a.property". Shadow any enclosing SELECT's target alias so it cannot rewrite those (issue #7153).
+    pushTargetAlias(null);
+    try {
+      return buildMatchStatement(ctx);
+    } finally {
+      popTargetAlias();
+    }
+  }
+
+  private MatchStatement buildMatchStatement(final SQLParser.MatchStatementContext ctx) {
     final MatchStatement stmt = new MatchStatement();
 
     // Parse match expressions (both positive and negative patterns)
@@ -563,6 +582,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public MatchStatement visitMatchStmt(final SQLParser.MatchStmtContext ctx) {
+    // see visitMatchStatement. Not delegated to buildMatchStatement(): that one applies LIMIT through
+    // Statement.setLimit(), which drops a negative bound, while this one assigns it - a difference this change is
+    // not the place to settle.
+    pushTargetAlias(null);
+    try {
+      return buildTopLevelMatchStatement(ctx);
+    } finally {
+      popTargetAlias();
+    }
+  }
+
+  private MatchStatement buildTopLevelMatchStatement(final SQLParser.MatchStmtContext ctx) {
     final MatchStatement stmt = new MatchStatement();
 
     // Get the matchStatement context from the labeled alternative
@@ -1455,6 +1486,27 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Get the traverseStatement context from the labeled alternative
     final SQLParser.TraverseStatementContext traverseCtx = ctx.traverseStatement();
 
+    // FROM clause (required), built first so that its alias - and only its alias - is in scope for the projections
+    // and the WHILE clause below. A TRAVERSE nested in an aliased SELECT must not inherit that SELECT's alias: the
+    // name would still refer to the outer record (issue #7153).
+    if (traverseCtx.fromClause() != null) {
+      stmt.setTarget((FromClause) visit(traverseCtx.fromClause()));
+    }
+
+    pushTargetAlias(stmt.getTarget());
+    try {
+      buildTraverseClauses(stmt, traverseCtx);
+    } finally {
+      popTargetAlias();
+    }
+
+    return stmt;
+  }
+
+  /**
+   * Builds every TRAVERSE clause but the target, whose alias is in scope for the duration of this call.
+   */
+  private void buildTraverseClauses(final TraverseStatement stmt, final SQLParser.TraverseStatementContext traverseCtx) {
     // Parse projection items (optional)
     final List<TraverseProjectionItem> projections = new ArrayList<>();
     if (CollectionUtils.isNotEmpty(traverseCtx.traverseProjectionItem())) {
@@ -1464,11 +1516,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
     stmt.setProjections(projections);
-
-    // FROM clause (required)
-    if (traverseCtx.fromClause() != null) {
-      stmt.setTarget((FromClause) visit(traverseCtx.fromClause()));
-    }
 
     // MAXDEPTH clause (optional)
     if (traverseCtx.pInteger() != null) {
@@ -1496,8 +1543,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (traverseCtx.timeout() != null) {
       stmt.timeout = (Timeout) visit(traverseCtx.timeout());
     }
-
-    return stmt;
   }
 
   /**

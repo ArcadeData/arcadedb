@@ -374,12 +374,12 @@ public class SelectExecutionPlanner {
    */
   protected static Projection translateDistinct(Projection projection) {
     if (projection != null && projection.getItems().size() == 1) {
-      if (isDistinct(projection.getItems().get(0))) {
+      if (isDistinct(projection.getItems().getFirst())) {
         projection = projection.copy();
-        final ProjectionItem item = projection.getItems().get(0);
+        final ProjectionItem item = projection.getItems().getFirst();
         final FunctionCall function = ((BaseExpression) item.getExpression().getMathExpression()).getIdentifier().getLevelZero()
             .getFunctionCall();
-        final Expression exp = function.getParams().get(0);
+        final Expression exp = function.getParams().getFirst();
         final ProjectionItem resultItem = new ProjectionItem();
         resultItem.setAlias(item.getAlias());
         resultItem.setExpression(exp.copy());
@@ -450,7 +450,9 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info))
       return false;
 
-    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().get(0), context));
+    // The type name, not the rendered target: FromItem.toString() appends " AS <alias>" when the statement declared
+    // one, and CountFromTypeStep looks its argument up in the schema (issue #7153).
+    result.chain(new CountFromTypeStep(targetClass.getStringValue(), info.projection.getAllAliases().getFirst(), context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -489,7 +491,7 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info)) {
       return false;
     }
-    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().get(0), context));
+    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().getFirst(), context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -510,7 +512,7 @@ public class SelectExecutionPlanner {
         || info.projection.getItems().size() != 1) {
       return false;
     }
-    final ProjectionItem item = info.aggregateProjection.getItems().get(0);
+    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
     return "count(*)".equalsIgnoreCase(item.getExpression().toString());
   }
 
@@ -536,7 +538,7 @@ public class SelectExecutionPlanner {
         || projection.getItems().size() != 1) {
       return false;
     }
-    final ProjectionItem item = aggregateProjection.getItems().get(0);
+    final ProjectionItem item = aggregateProjection.getItems().getFirst();
     return item.getExpression().isCount();
   }
 
@@ -589,7 +591,7 @@ public class SelectExecutionPlanner {
       return false;
 
     // Create the optimized execution step
-    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().get(0), maxMinInfo.isMax, context));
+    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -618,12 +620,12 @@ public class SelectExecutionPlanner {
     // Ensure the projection expression is purely a function call (e.g., max(id)), not a compound
     // expression like max(id)+1. If the projection has additional arithmetic, the index-optimized
     // path would skip those operations and return wrong results.
-    final ProjectionItem projItem = info.projection.getItems().get(0);
+    final ProjectionItem projItem = info.projection.getItems().getFirst();
     final Expression projExp = projItem.getExpression();
     if (projExp.getMathExpression() == null || !(projExp.getMathExpression() instanceof BaseExpression))
       return null;
 
-    final ProjectionItem aggregateItem = info.aggregateProjection.getItems().get(0);
+    final ProjectionItem aggregateItem = info.aggregateProjection.getItems().getFirst();
     final Expression exp = aggregateItem.getExpression();
 
     if (exp.getMathExpression() == null || !(exp.getMathExpression() instanceof BaseExpression base))
@@ -649,7 +651,7 @@ public class SelectExecutionPlanner {
       return null;
 
     // Get the property name from the pre-aggregate projection
-    final ProjectionItem preAggItem = info.preAggregateProjection.getItems().get(0);
+    final ProjectionItem preAggItem = info.preAggregateProjection.getItems().getFirst();
     final Expression preAggExp = preAggItem.getExpression();
 
     if (preAggExp.getMathExpression() == null || !(preAggExp.getMathExpression() instanceof BaseExpression preAggBase))
@@ -674,7 +676,7 @@ public class SelectExecutionPlanner {
     for (final TypeIndex index : indexes) {
       // Must be a single-property index on the exact property
       final List<String> propNames = index.getPropertyNames();
-      if (propNames.size() == 1 && propNames.get(0).equals(propertyName)) {
+      if (propNames.size() == 1 && propNames.getFirst().equals(propertyName)) {
         // Must support ordered iterations (RangeIndex like LSM_TREE)
         if (index.supportsOrderedIterations())
           return index;
@@ -743,7 +745,7 @@ public class SelectExecutionPlanner {
     extractSubQueries(info);
     if (info.projection != null && info.projection.isExpand()) {
       info.expand = true;
-      final ProjectionItem expandItem = info.projection.getItems().get(0);
+      final ProjectionItem expandItem = info.projection.getItems().getFirst();
       if (expandItem.getAlias() != null)
         info.expandAlias = expandItem.getAlias().getStringValue();
       info.projection = info.projection.getExpandContent();
@@ -842,7 +844,7 @@ public class SelectExecutionPlanner {
   private static void addOrderByProjections(final QueryPlanningInfo info) {
     if (info.orderApplied || info.expand || info.unwind != null || info.orderBy == null || info.orderBy.getItems().size() == 0
         || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
-        && info.projection.getItems().get(0).isAll())) {
+        && info.projection.getItems().getFirst().isAll())) {
       return;
     }
 
@@ -878,7 +880,7 @@ public class SelectExecutionPlanner {
   private static void addUnwindProjections(final QueryPlanningInfo info) {
     if (info.unwind == null || info.unwind.getItems() == null || info.unwind.getItems().isEmpty()
         || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
-        && info.projection.getItems().get(0).isAll())) {
+        && info.projection.getItems().getFirst().isAll())) {
       return;
     }
 
@@ -1191,8 +1193,8 @@ public class SelectExecutionPlanner {
           return;
         }
       } else {
-        final String targetStr = target.toString();
-        variableValue = context.getVariablePath(targetStr);
+        // without the alias: this is resolved as a variable path, and " AS <alias>" is not part of one
+        variableValue = context.getVariablePath(target.toStringWithoutAlias());
       }
       if (variableValue != null) {
         // Handle single Result object (e.g., from $parent.$current)
@@ -1406,7 +1408,7 @@ public class SelectExecutionPlanner {
       return result;
 
     //TODO optimization: merge multiple conditions
-    for (final BooleanExpression booleanExpression : flattenedWhereClause.get(0).getSubBlocks()) {
+    for (final BooleanExpression booleanExpression : flattenedWhereClause.getFirst().getSubBlocks()) {
       if (isRidRange(booleanExpression, context)) {
         result.getSubBlocks().add(booleanExpression.copy());
       }
@@ -1551,7 +1553,7 @@ public class SelectExecutionPlanner {
       } else if (info.flattenedWhereClause.size() > 1) {
         throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + info.whereClause);
       } else {
-        final AndBlock andBlock = info.flattenedWhereClause.get(0);
+        final AndBlock andBlock = info.flattenedWhereClause.getFirst();
         if (andBlock.getSubBlocks().size() == 1) {
 
           info.whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
@@ -1989,7 +1991,7 @@ public class SelectExecutionPlanner {
     if (info.perRecordLetClause != null && info.whereClause != null && info.whereClause.toString().contains("$"))
       return false;
 
-    final AndBlock andBlock = info.flattenedWhereClause.get(0);
+    final AndBlock andBlock = info.flattenedWhereClause.getFirst();
     final String edgeTypeName = docType.getName();
 
     // Look for @out = <RID> or @in = <RID> in the WHERE conditions
@@ -2076,7 +2078,7 @@ public class SelectExecutionPlanner {
         info.perRecordLetClause != null && info.perRecordLetClause.getItems() != null && !info.perRecordLetClause.getItems()
             .isEmpty();
 
-    final AndBlock andBlock = info.flattenedWhereClause.get(0);
+    final AndBlock andBlock = info.flattenedWhereClause.getFirst();
 
     for (int i = 0; i < andBlock.getSubBlocks().size(); i++) {
       final BooleanExpression expr = andBlock.getSubBlocks().get(i);
@@ -2909,7 +2911,7 @@ public class SelectExecutionPlanner {
     if (info.aggregateProjection != null || info.groupBy != null || info.distinct || info.projectionAfterOrderBy != null)
       return false;
 
-    final OrderByItem item = info.orderBy.getItems().get(0);
+    final OrderByItem item = info.orderBy.getItems().getFirst();
     // A modifier, a computed expression or a parameterised direction all mean the fetch order alone
     // cannot satisfy the clause.
     if (item.modifier != null || item.expression != null || item.getDirectionParameter() != null)
@@ -2994,7 +2996,7 @@ public class SelectExecutionPlanner {
     final List<ColumnDefinition> columns = tsType.getTsColumns();
     final Set<String> constrainedTags = new HashSet<>();
 
-    for (final BooleanExpression expr : info.flattenedWhereClause.get(0).getSubBlocks()) {
+    for (final BooleanExpression expr : info.flattenedWhereClause.getFirst().getSubBlocks()) {
       if (extractTimeRange(expr, timestampColumn, context) != null)
         continue;
 
@@ -3226,7 +3228,7 @@ public class SelectExecutionPlanner {
           // a different evaluation than the full-text index semantics.
           final BooleanExpression remaining = bestIndex.getRemainingCondition();
           if (remaining != null && !remaining.isEmpty()) {
-            if (info.perRecordLetClause != null && refersToLet(Collections.singletonList(remaining))) {
+            if (refersToLet(Collections.singletonList(remaining), info.perRecordLetClause)) {
               handleLet(subPlan, info, context);
             }
             subPlan.chain(new FilterStep(createWhereFrom(remaining), context));
@@ -3238,7 +3240,7 @@ public class SelectExecutionPlanner {
               statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
-            if (info.perRecordLetClause != null && refersToLet(block.getSubBlocks())) {
+            if (refersToLet(block.getSubBlocks(), info.perRecordLetClause)) {
               handleLet(subPlan, info, context);
             }
             subPlan.chain(new FilterStep(createWhereFrom(block), context));
@@ -3286,7 +3288,7 @@ public class SelectExecutionPlanner {
           plan.chain(step);
           plan.chain(new FilterByClustersStep(filterClusters, context));
           if (!block.getSubBlocks().isEmpty()) {
-            if (info.perRecordLetClause != null && refersToLet(block.getSubBlocks())) {
+            if (refersToLet(block.getSubBlocks(), info.perRecordLetClause)) {
               handleLet(plan, info, context);
             }
             plan.chain(new FilterStep(createWhereFrom(block), context));
@@ -3321,15 +3323,27 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private static boolean refersToLet(final List<BooleanExpression> subBlocks) {
-    if (subBlocks == null)
+  /**
+   * Whether any of {@code subBlocks} reads one of the variables {@code letClause} declares.
+   * <p>
+   * Matched by name, on the rendered condition: a variable reference is not always the whole expression
+   * ({@code #X:Y IN $brain} reads one), and there is no generic walker over the expression AST to ask instead.
+   * Matching the declared names rather than a bare {@code "$"} keeps a string literal that merely contains the
+   * character ({@code WHERE currency = 'US$'}) from counting as a reference, which would cost the statement an
+   * index it could have used (issue #7153).
+   */
+  private static boolean refersToLet(final List<BooleanExpression> subBlocks, final LetClause letClause) {
+    if (subBlocks == null || letClause == null || letClause.getItems() == null)
       return false;
 
-    for (BooleanExpression exp : subBlocks) {
-      // Check if expression contains a variable reference (starts with or contains "$")
-      // An expression like "#X:Y IN $brain" doesn't start with "$" but contains a variable reference
-      if (exp.toString().contains("$"))
-        return true;
+    for (final BooleanExpression exp : subBlocks) {
+      final String rendered = exp.toString();
+      if (rendered.indexOf('$') < 0)
+        continue;
+
+      for (final LetItem item : letClause.getItems())
+        if (rendered.contains(item.getVarName().getStringValue()))
+          return true;
     }
     return false;
   }
@@ -3428,7 +3442,7 @@ public class SelectExecutionPlanner {
           nullPlan.chain(new FetchFromTypeExecutionStep(queryTarget.getStringValue(), filterClusters, context, true));
 
           // Create IS NULL filter for the first indexed property
-          final String propertyName = indexFields.get(0);
+          final String propertyName = indexFields.getFirst();
           final IsNullCondition isNullCondition = new IsNullCondition();
           final Expression expr = new Expression(new Identifier(propertyName));
           isNullCondition.setExpression(expr);
@@ -3508,7 +3522,7 @@ public class SelectExecutionPlanner {
     final List<DocumentType> stack = new ArrayList<>();
     stack.add(typez);
     while (!stack.isEmpty()) {
-      final DocumentType current = stack.remove(0);
+      final DocumentType current = stack.removeFirst();
       traversed.add(current);
       for (final DocumentType sub : current.getSubTypes()) {
         if (traversed.contains(sub))
@@ -3558,8 +3572,8 @@ public class SelectExecutionPlanner {
   /**
    * @param allowDeferredLetFilter whether a residual condition that reads a per-record LET variable may be deferred to
    *                               the statement's WHERE clause. Only the single, top-level target can do that: there
-   *                               is one WHERE clause to defer into, so a per-sub-type or per-OR-branch residual has
-   *                               to give the index up instead (issue #7153).
+   *                               is one WHERE clause to defer into, so a per-sub-type residual has to give the
+   *                               index up instead (issue #7153).
    */
   private List<ExecutionStepInternal> handleTypeAsTargetWithIndex(final String targetType, final Set<String> filterBuckets,
       final QueryPlanningInfo info, final CommandContext context, final boolean allowDeferredLetFilter) {
@@ -3598,7 +3612,7 @@ public class SelectExecutionPlanner {
       final boolean allowDeferredLetFilter) {
     List<ExecutionStepInternal> result;
     if (optimumIndexSearchDescriptors.size() == 1) {
-      final IndexSearchDescriptor desc = optimumIndexSearchDescriptors.get(0);
+      final IndexSearchDescriptor desc = optimumIndexSearchDescriptors.getFirst();
       result = new ArrayList<>();
 
       final Boolean orderAsc = getOrderDirection(info);
@@ -3624,9 +3638,8 @@ public class SelectExecutionPlanner {
       if (needsFilterStep(desc.getRemainingCondition(), context)) {
         if (refersToPerRecordLet(info, desc.getRemainingCondition())) {
           if (!allowDeferredLetFilter)
-            // A sub-type or OR branch: the residual would have to be deferred per branch, and there is only one
-            // WHERE clause to defer it into. Give the whole statement up to the plain scan, which evaluates the
-            // filter after the LET by construction.
+            // One sub-plan per sub-type, each with its own residual, and a single WHERE clause to defer into. Give
+            // the whole statement up to the plain scan, which evaluates the filter after the LET by construction.
             return null;
 
           // The residual reads a variable the per-record LET computes, and the LET steps run downstream of this
@@ -3639,10 +3652,14 @@ public class SelectExecutionPlanner {
           result.add(new FilterStep(createWhereFrom(desc.getRemainingCondition()), context));
       }
     } else {
+      // Defensive, and not reachable through a SELECT today: handleTypeAsTargetWithIndexedFunction() runs first at
+      // both call sites and claims every multi-block WHERE, so an OR reaches its own per-branch planning - which
+      // chains the LET into each sub-plan correctly, because that sub-plan is not empty by then. Kept because this
+      // branch chains residual filters of its own, and one reading a per-record LET would be evaluated with the
+      // variable unset, which is a wrong answer rather than a lost optimisation.
       for (final IndexSearchDescriptor desc : optimumIndexSearchDescriptors)
         if (needsFilterStep(desc.getRemainingCondition(), context) && refersToPerRecordLet(info,
             desc.getRemainingCondition()))
-          // One OR branch per sub-plan, each with its own residual: see above.
           return null;
 
       result = new ArrayList<>();
@@ -3660,7 +3677,7 @@ public class SelectExecutionPlanner {
    * is not set yet) or has to wait for the LET steps downstream of it.
    */
   private static boolean refersToPerRecordLet(final QueryPlanningInfo info, final BooleanExpression condition) {
-    return info.perRecordLetClause != null && refersToLet(Collections.singletonList(condition));
+    return refersToLet(Collections.singletonList(condition), info.perRecordLetClause);
   }
 
   private boolean fullySorted(final OrderBy orderBy, final AndBlock conditions, final Index idx) {
@@ -3711,8 +3728,8 @@ public class SelectExecutionPlanner {
       if (orderItems.isEmpty()) {
         return true;//nothing to sort, the conditions completely overlap the ORDER BY
       }
-      if (s.equals(orderItems.get(0))) {
-        orderItems.remove(0);
+      if (s.equals(orderItems.getFirst())) {
+        orderItems.removeFirst();
         overlapping = true; //start overlapping
       } else if (overlapping) {
         return false; //overlapping, but next order item does not match...
@@ -3832,7 +3849,7 @@ public class SelectExecutionPlanner {
     if (sortedDescriptors.isEmpty()) {
       descriptors = Collections.emptyList();
     } else {
-      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.get(0).getFirst()))
+      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.getFirst().getFirst()))
           .map(Pair::getSecond).collect(Collectors.toList());
     }
 
@@ -3840,7 +3857,7 @@ public class SelectExecutionPlanner {
     descriptors = descriptors.stream().sorted(Comparator.comparingInt(x -> x.blockCount())).collect(Collectors.toList());
 
     // get the one that has more indexed fields
-    return descriptors.isEmpty() ? null : descriptors.get(descriptors.size() - 1);
+    return descriptors.isEmpty() ? null : descriptors.getLast();
   }
 
   /**
@@ -3956,7 +3973,7 @@ public class SelectExecutionPlanner {
           .toList();
 
       // get only the descriptors with the lowest cost
-      final int lowestCost = sortedDescriptors.get(0).getFirst();
+      final int lowestCost = sortedDescriptors.getFirst().getFirst();
       descriptors = sortedDescriptors.stream()
           .filter(x -> x.getFirst().equals(lowestCost))
           .map(x -> x.getSecond())
@@ -3964,7 +3981,7 @@ public class SelectExecutionPlanner {
     }
 
     // Return the first descriptor (all remaining have same subBlocks size and cost)
-    return descriptors.get(0);
+    return descriptors.getFirst();
   }
 
   /**
@@ -4343,7 +4360,7 @@ public class SelectExecutionPlanner {
       info.orderApplied = true;
 
     if (buckets.size() == 1) {
-      final Bucket parserBucket = buckets.get(0);
+      final Bucket parserBucket = buckets.getFirst();
 
       Integer bucketId = parserBucket.getBucketNumber();
       if (bucketId == null) {
@@ -4457,7 +4474,7 @@ public class SelectExecutionPlanner {
       return false;
 
     if (info.orderBy.getItems().size() == 1) {
-      OrderByItem item = info.orderBy.getItems().get(0);
+      OrderByItem item = info.orderBy.getItems().getFirst();
       String recordAttr = item.getRecordAttr();
       return RID_PROPERTY.equalsIgnoreCase(recordAttr) && OrderByItem.DESC.equals(item.getType());
     }
@@ -4472,7 +4489,7 @@ public class SelectExecutionPlanner {
       return false;
 
     if (info.orderBy.getItems().size() == 1) {
-      final OrderByItem item = info.orderBy.getItems().get(0);
+      final OrderByItem item = info.orderBy.getItems().getFirst();
       final String recordAttr = item.getRecordAttr();
       return RID_PROPERTY.equalsIgnoreCase(recordAttr) && (item.getType() == null || OrderByItem.ASC.equals(
           item.getType()));
