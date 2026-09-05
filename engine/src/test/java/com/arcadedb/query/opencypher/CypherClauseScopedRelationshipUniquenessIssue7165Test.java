@@ -338,6 +338,40 @@ class CypherClauseScopedRelationshipUniquenessIssue7165Test extends TestHelper {
   }
 
   /**
+   * The one combination the shapes above leave implicit: {@code OPTIONAL MATCH} runs through the same builder,
+   * so the scope reaches it the same way, but it also nulls the variables its clause binds when it finds
+   * nothing - and a relationship variable carried in from the CALL must not be among them. Both halves are
+   * checked: the reuse still excludes its edge, and a failed optional match leaves the carried binding alone.
+   */
+  @Test
+  void anOptionalMatchAfterCallYieldKeepsTheCarriedRelationshipBinding() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (c:P {uuid:'c'})-[:LINK {uuid:'r2', fact:'alpha gamma', srcUuid:'c'}]->(d:P {uuid:'d'})"));
+
+    final String reuse = """
+        CALL db.index.fulltext.queryRelationships('LINK[fact]', 'alpha')
+        YIELD relationship AS r
+        OPTIONAL MATCH (a)-[r:LINK]->(b), (c)-[s:LINK]->(d)
+        RETURN r.uuid + '/' + s.uuid AS pair""";
+    final String withSpelling = """
+        MATCH (x)-[r:LINK]->(y)
+        WITH r
+        OPTIONAL MATCH (a)-[r:LINK]->(b), (c)-[s:LINK]->(d)
+        RETURN r.uuid + '/' + s.uuid AS pair""";
+
+    assertThat(queryColumn(reuse, "pair")).containsExactlyInAnyOrder("r1/r2", "r2/r1");
+    assertThat(queryColumn(reuse, "pair")).isEqualTo(queryColumn(withSpelling, "pair"));
+
+    assertThat(queryColumn("""
+        CALL db.index.fulltext.queryRelationships('LINK[fact]', 'alpha')
+        YIELD relationship AS r
+        OPTIONAL MATCH (a:P {uuid:'nope'})-[r:LINK]->(b)
+        RETURN r.uuid AS uuid""", "uuid"))
+        .as("the optional match finds nothing, and nulls nothing the CALL bound")
+        .containsExactlyInAnyOrder("r1", "r2");
+  }
+
+  /**
    * The rule the fix must not weaken: two relationship patterns of the SAME clause still bind distinct
    * edges, so a two-hop pattern cannot walk the single edge out and back again.
    */
