@@ -36,6 +36,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
 import com.arcadedb.server.security.SecurityUserFileRepository;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.proto.RaftProtos;
@@ -3313,9 +3314,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Applies a replicated user list.
    * <p>
-   * A local failure here - {@code ServerSecurity.applyReplicatedUsers} cannot write
+   * A local PERSISTENCE failure here - {@code ServerSecurity.applyReplicatedUsers} cannot write
    * {@code server-users.jsonl} because the config volume is full, read-only or NFS-hiccuping - is deliberately
-   * NOT a node-halt condition (issue #7137). It reaches {@code handleUnexpectedApplyError} with the empty
+   * NOT a node-halt condition (issue #7137). Every other failure of that method still is; see the note at the
+   * catch below. It reaches {@code handleUnexpectedApplyError} with the empty
    * database name the codec gives this entry, which skips the per-database quarantine of #4797 and lands in
    * the node-wide {@code catch (Throwable)} halt; and because the halt leaves the applied index untouched on
    * purpose, the next start replays the same entry and halts again. With an environmental cause that is an
@@ -3341,7 +3343,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     try {
       server.getSecurity().applyReplicatedUsers(payload);
-    } catch (final RuntimeException e) {
+    } catch (final ReplicatedUsersPersistenceException e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Could not fully apply a replicated user list on this node: %s. The node keeps running and, when the "
               + "list reached memory, is already enforcing it - but it is not durable: a restart before this is "
@@ -3356,6 +3358,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "Failed to persist the replicated user list locally; the node is already enforcing the new list in "
               + "memory, only its durability to disk failed", e);
     }
+    // Note what is NOT caught: a payload this node cannot parse, or a user entry it cannot construct, throws
+    // from applyReplicatedUsers BEFORE any mutation. That is not "the disk is full", it is "this node cannot
+    // read a committed entry its peers applied", and it still reaches the node-wide halt - the case #4798
+    // argues must never be skipped quietly. Catching RuntimeException here would have downgraded it silently.
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_USERS_ENTRY (%d bytes)", payload.length());
   }
 

@@ -632,12 +632,21 @@ public final class SnapshotInstaller {
       server.setSnapshotInstallInProgress(false);
     }
 
-    // recoverSingleDatabase reports its own failures and returns; the backup surviving IS the failure signal.
+    // recoverSingleDatabase reports its own failures and returns, so the caller has to read the outcome off the
+    // filesystem. Two things have to be true, not one: the backup is gone AND what it was restored into is a
+    // database. A restore that consumed the backup but left a directory that still cannot be opened would
+    // otherwise pass this check, and the install would overwrite the questionable state with a fresh download -
+    // destroying the one signal this whole mechanism exists to preserve.
     if (Files.isDirectory(snapshotBackup))
       throw new IOException("Refusing to install a snapshot for '" + databaseName
           + "': a retained .snapshot-backup from a previous failed install could not be reconciled into "
           + dbPath + ". It is the only intact copy of this database on this node and will not be deleted; "
           + "resolve the underlying problem (typically a full or read-only volume) and retry");
+
+    if (!looksLikeADatabaseDirectory(dbPath))
+      throw new IOException("Refusing to install a snapshot for '" + databaseName + "': the retained backup was "
+          + "consumed but " + dbPath + " still does not hold a loadable database. Its state is preserved as-is "
+          + "for inspection rather than overwritten by a fresh download");
   }
 
   /**

@@ -50,7 +50,7 @@ public class PostStepDownHandler extends AbstractServerHttpHandler {
       // leader, forcing an election nobody asked for - which is what a request load-balanced by a Kubernetes
       // Service across every ready endpoint does. 409 names the leader so the caller can reissue there,
       // instead of a 200 for an effect that landed on another node (issue #7134).
-      return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
+      return ClusterLeadershipResponses.notTheLeader(e);
     }
     return new ExecutionResponse(200,
         new JSONObject().put("result", "Leadership step-down initiated").toString());

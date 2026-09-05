@@ -110,6 +110,13 @@ public final class RaftLogEntryCodec {
    * {@code [magic][length][payload]} is recognisably a deliberate extension and is skipped, while a truncated or
    * corrupt entry does not carry the magic and is still refused.
    * <p>
+   * The trade-off, accepted deliberately: this is weaker than the flat "any trailing byte is corruption" rule it
+   * replaces. Garbage that happens to open with these exact four bytes followed by a length that fits inside the
+   * entry is skipped rather than flagged. Against that stands the cost of the old rule - a rolling upgrade in
+   * which two of three nodes halt permanently the first time anyone adds a field - and a 4-byte magic at a frame
+   * boundary is not a shape random corruption reaches often. Whoever widens the frame later should keep that
+   * asymmetry in mind: cheaper detection is not worth reopening the halt.
+   * <p>
    * <b>Contract for whoever adds the next field:</b> append it with {@link #writeExtensionSection} - never as
    * bare trailing bytes - and make its absence mean "the peer that wrote this predates the field". Peers running
    * a version older than this one still halt on it, so a field may only be EMITTED once every peer in the

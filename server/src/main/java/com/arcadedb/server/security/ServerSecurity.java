@@ -857,10 +857,21 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // #7137). Returning early here would leave this node authenticating against the PREVIOUS user list - so a
     // password the operator has just changed, or an account they have just dropped, would keep working here for
     // as long as the volume stays full or read-only. The entry is valid and reached a quorum; the only thing
-    // that failed is writing it down, so the revocation takes effect now and what is outstanding is durability:
-    // this node reads a stale file if it restarts first, which is the exposure the previous halt already had,
-    // and the Raft entry is replayed on the next start.
+    // that failed is writing it down, so the revocation takes effect now and what is outstanding is durability.
+    //
+    // Durability is NOT recovered by itself, and the caller must not tell an operator otherwise. Because the
+    // node keeps applying later entries, the state machine's applied index moves past this one, a snapshot
+    // taken at shutdown records the advanced index, and Ratis may compact the entry away - so a restart reloads
+    // the stale file with nothing left to replay. Fixing the volume is therefore only half the repair: the user
+    // change has to be reissued.
     final Exception persistFailure = trySaveUsers(list);
+    if (persistFailure != null)
+      // Logged here, at the point of capture, and not only where it is thrown below: the throw is the LAST
+      // statement, so anything between - today invalidateAuthSessionsOfRevokedPrincipals - that throws would
+      // propagate instead and take this failure with it. Only one exception can leave a method.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Could not write the replicated user list to '%s'. The new list IS in effect on this node from now on; "
+              + "what failed is making it durable", persistFailure, SecurityUserFileRepository.FILE_NAME);
 
     // Published in a single atomic reference swap so concurrent readers never observe an empty/torn window.
     this.users = newUsers;
@@ -873,9 +884,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // Reported last, so the caller learns the list did not reach disk while this node is already enforcing it.
     // On the Raft apply path this fails the entry without halting the node (issue #7137).
     if (persistFailure != null)
-      throw new ServerException("Replicated users applied in memory but could NOT be persisted to '"
-          + SecurityUserFileRepository.FILE_NAME + "'; this node enforces the new list now but will read the "
-          + "stale file if it restarts before the problem is fixed", persistFailure);
+      throw new ReplicatedUsersPersistenceException("Replicated users applied in memory but could NOT be persisted to '"
+          + SecurityUserFileRepository.FILE_NAME + "'; this node enforces the new list now, but a restart reverts it "
+          + "to the stale file and the change must then be reissued", persistFailure);
   }
 
   /**

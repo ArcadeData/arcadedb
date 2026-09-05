@@ -77,7 +77,7 @@ public class PostTransferLeaderHandler extends AbstractServerHttpHandler {
       // both branches of this endpoint must answer "wrong node" the same way, and a bare 500 "Leadership
       // transfer failed" names nothing the caller can act on and reads like a leader-side failure (issue #7134).
       if (!raftHAServer.isLeader())
-        return notTheLeader(new NotTheLeaderRefusalException("Refusing to transfer leadership",
+        return ClusterLeadershipResponses.notTheLeader(new NotTheLeaderRefusalException("Refusing to transfer leadership",
             raftHAServer.getLeaderId()));
 
       // Transfer to any peer (Ratis picks the best candidate). A false from here is deliberately NOT folded
@@ -99,19 +99,10 @@ public class PostTransferLeaderHandler extends AbstractServerHttpHandler {
     try {
       raftHAServer.transferLeadership(peerId, timeoutMs);
     } catch (final NotTheLeaderRefusalException e) {
-      return notTheLeader(e);
+      return ClusterLeadershipResponses.notTheLeader(e);
     }
     return new ExecutionResponse(200, new JSONObject().put("result", "Leadership transferred to " + peerId)
         .put("leaderId", peerId).toString());
   }
 
-  /**
-   * The 409 both branches answer when this node is not the leader (issue #7134): Ratis would route the request
-   * to the real leader and force an unrequested election, so the refusal happens here and names the leader to
-   * reissue against. Deliberately NOT extended to a plain {@code ConfigurationException} - one raised by a
-   * transfer the LEADER attempted and failed means something else entirely, and keeps the mapping it had.
-   */
-  private static ExecutionResponse notTheLeader(final NotTheLeaderRefusalException e) {
-    return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
-  }
 }
