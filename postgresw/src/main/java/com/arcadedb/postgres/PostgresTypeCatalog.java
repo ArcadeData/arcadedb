@@ -328,6 +328,13 @@ public class PostgresTypeCatalog {
    * The receive function is what the Apache Arrow ADBC driver reads to decide how to decode a column, so it
    * has to be PostgreSQL's own name and not something plausible: a name the driver does not know leaves the
    * type out of its resolver, and every column of that type then fails to bind.
+   * <p>
+   * These four columns are {@code regproc} in PostgreSQL, which is an OID that formats as the function's
+   * name. Clients exploit both readings at once - the ADBC bootstrap filters on {@code typreceive != 0}
+   * (the OID) and projects the same column to read the name - and this catalog can only answer with the
+   * name. That still gives the right answer for the filter, because a name never compares equal to
+   * {@code 0}, but it is an accident of the comparison rather than a modelled regproc: a client that
+   * expected an actual OID here, or wrote {@code typreceive > 0}, would not be served correctly.
    */
   private static String ioFunction(final PostgresType type, final String suffix) {
     if (type.isArrayType())
@@ -341,6 +348,11 @@ public class PostgresTypeCatalog {
   /**
    * pg_type.typispreferred: within a category, the type PostgreSQL casts towards when it has a choice. Only
    * one member of each category carries it.
+   * <p>
+   * Category D is an approximation: PostgreSQL's preferred date/time type is {@code timestamptz}, which this
+   * protocol does not produce, so {@code timestamp} is the closest of the two it does have. It is the right
+   * answer for choosing between {@code date} and {@code timestamp}, which is the only choice a client can
+   * face here, but it is not what a stock server would report.
    */
   private static Boolean preferred(final PostgresType type) {
     return switch (type) {
