@@ -843,22 +843,26 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     for (int i = 0; i < array.length(); i++)
       list.add(array.getJSONObject(i));
 
-    // A local persistence failure is reported, but only AFTER the new list has been applied in memory
-    // (issue #7137). Returning early here would leave this node authenticating against the PREVIOUS user
-    // list - so a password the operator has just changed, or an account they have just dropped, would keep
-    // working on this node for as long as the volume stays full or read-only. The entry is valid and reached
-    // a quorum; the only thing that failed is writing it down. Applying it in memory makes the revocation
-    // effective immediately and leaves the durability problem as what it is: this node will read a stale file
-    // if it restarts before the volume is fixed, which is the same exposure the previous behaviour had, and
-    // the Raft entry is replayed on the next start.
-    final Exception persistFailure = trySaveUsers(list);
-
-    // Build in-memory map from the authoritative Raft payload, not from the file, and publish it in a
-    // single atomic reference swap so concurrent readers never observe an empty/torn window.
+    // Build the in-memory map from the authoritative Raft payload, not from the file, BEFORE the file is
+    // written: constructing a ServerSecurityUser can reject a malformed entry, and a payload that cannot be
+    // turned into users must leave both the file and this node's users untouched rather than persisting a
+    // snapshot the node itself could not load. Everything that can throw therefore still happens before any
+    // mutation, which is the ordering ArcadeStateMachine relies on (see the note above).
     final Map<String, ServerSecurityUser> previousUsers = this.users;
     final Map<String, ServerSecurityUser> newUsers = new ConcurrentHashMap<>();
     for (final JSONObject userJson : list)
       newUsers.put(userJson.getString("name"), new ServerSecurityUser(server, userJson));
+
+    // A local persistence failure is captured, not thrown, and reported only AFTER the swap below (issue
+    // #7137). Returning early here would leave this node authenticating against the PREVIOUS user list - so a
+    // password the operator has just changed, or an account they have just dropped, would keep working here for
+    // as long as the volume stays full or read-only. The entry is valid and reached a quorum; the only thing
+    // that failed is writing it down, so the revocation takes effect now and what is outstanding is durability:
+    // this node reads a stale file if it restarts first, which is the exposure the previous halt already had,
+    // and the Raft entry is replayed on the next start.
+    final Exception persistFailure = trySaveUsers(list);
+
+    // Published in a single atomic reference swap so concurrent readers never observe an empty/torn window.
     this.users = newUsers;
 
     // A peer applying a replicated drop or password change must also revoke the login tokens it had already

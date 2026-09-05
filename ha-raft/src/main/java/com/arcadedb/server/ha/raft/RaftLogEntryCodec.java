@@ -703,7 +703,14 @@ public final class RaftLogEntryCodec {
                 + ": " + e.getMessage(), type, databaseName, e);
       }
     } catch (final IOException e) {
-      throw new IllegalStateException("Failed to decode Raft log entry", e);
+      // The envelope header itself is unreadable - the entry ended before its type byte or its database name.
+      // Report it as a decode failure like any other so the stated guarantee holds literally ("a decode failure
+      // is a RaftLogEntryDecodeException"), with a null database name, which is what routes it to the node-wide
+      // halt: an entry whose header did not survive names no database to quarantine, so there is nothing a
+      // targeted resync could repair (issue #7138).
+      throw new RaftLogEntryDecodeException(
+          "Failed to decode the Raft log entry envelope header (the entry ended before its type byte or database "
+              + "name): " + e.getMessage(), null, null, e);
     }
   }
 
