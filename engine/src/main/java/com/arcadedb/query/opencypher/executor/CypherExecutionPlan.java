@@ -1912,20 +1912,16 @@ public class CypherExecutionPlan {
    * a user can write a variable called {@code `*`}, and {@code WITH n AS `*`} is an ordinary projection that resets
    * the scope to that one name, not a star that forwards it (issue #6334).
    */
-  /** The name a projected item binds downstream: its alias, or the expression's own text when it has none. */
-  private static String projectedName(final ReturnClause.ReturnItem item) {
-    final String alias = item.getAlias();
-    return alias != null ? alias : item.getExpression().getText();
-  }
-
   private static void applyProjectionToScope(final List<ReturnClause.ReturnItem> items, final Set<String> scope) {
     boolean forwardsAll = false;
     final List<String> projected = new ArrayList<>(items.size());
     for (final ReturnClause.ReturnItem item : items) {
       if (item.isStar())
         forwardsAll = true;
-      else
-        projected.add(projectedName(item));
+      else {
+        final String alias = item.getAlias();
+        projected.add(alias != null ? alias : item.getExpression().getText());
+      }
     }
     if (!forwardsAll)
       scope.clear();
@@ -2418,9 +2414,13 @@ public class CypherExecutionPlan {
 
   /**
    * Adds the names a {@code CALL { }} subquery makes visible to the clauses that follow it: its own
-   * {@code RETURN} items, which join the outer scope rather than replacing it. A {@code RETURN *} names the
-   * subquery body's variables rather than listing them here, so it contributes nothing - the push-down it
-   * would enable is an optimization, and missing it costs a filter, not a row.
+   * {@code RETURN} items, which join the outer scope rather than replacing it. A {@code RETURN *} forwards the
+   * subquery body's own variables rather than listing them here, so it contributes nothing. That costs the
+   * push-down below and nothing else: the join against a variable the subquery already bound is enforced when
+   * the following MATCH runs, against the value the row carries, not from this bookkeeping - a
+   * {@code RETURN *} subquery answers exactly as the same query written with an explicit list, or with
+   * {@code WITH}, which is what {@link
+   * com.arcadedb.query.opencypher.CypherClauseScopedRelationshipUniquenessIssue7165Test} pins.
    */
   private static void collectSubqueryOutputVariables(final SubqueryClause subqueryClause,
       final Set<String> boundVariables) {
@@ -2430,7 +2430,7 @@ public class CypherExecutionPlan {
       return;
     for (final ReturnClause.ReturnItem item : returnClause.getReturnItems())
       if (!item.isStar())
-        boundVariables.add(projectedName(item));
+        boundVariables.add(item.getOutputName());
   }
 
   /**
