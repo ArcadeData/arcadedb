@@ -281,18 +281,24 @@ public class SimpleCypherStatement implements CypherStatement {
   private static boolean anyWriteProcedureCall(final List<CallClause> calls) {
     if (calls.isEmpty())
       return false;
-    for (final CallClause call : calls) {
-      final CypherProcedure procedure = CypherProcedureRegistry.get(call.getProcedureName());
-      if (procedure != null) {
-        // A per-call refinement may only narrow, so a procedure that never writes needs no second look.
-        if (procedure.isWriteProcedure() && procedure.isWriteProcedure(literalArguments(call)))
-          return true;
-        continue;
-      }
-      if (!isConfirmedPureFunctionName(call.getProcedureName()))
+    for (final CallClause call : calls)
+      if (isWriteProcedureCall(call))
         return true;
-    }
     return false;
+  }
+
+  /**
+   * Whether one {@code CALL} can modify the database, resolved the same way {@link #anyWriteProcedureCall} needs it
+   * and the query planner does: the planner plants an eager read/write barrier ahead of a write procedure whose
+   * writes an upstream pattern could otherwise re-read (issue #7171), and it must classify a call exactly as the
+   * read-only flag above does or the two disagree about the same statement.
+   */
+  public static boolean isWriteProcedureCall(final CallClause call) {
+    final CypherProcedure procedure = CypherProcedureRegistry.get(call.getProcedureName());
+    if (procedure != null)
+      // A per-call refinement may only narrow, so a procedure that never writes needs no second look.
+      return procedure.isWriteProcedure() && procedure.isWriteProcedure(literalArguments(call));
+    return !isConfirmedPureFunctionName(call.getProcedureName());
   }
 
   /**
