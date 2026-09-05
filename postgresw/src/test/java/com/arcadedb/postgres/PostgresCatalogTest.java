@@ -459,6 +459,65 @@ class PostgresCatalogTest {
     assertThat(answer.columns.keySet()).containsExactly("relname", "current_database", "?column?");
   }
 
+  // ---------------------------------------------------------------- pg_type as a relation of its own
+
+  /**
+   * The Apache Arrow ADBC driver's type-resolver bootstrap, verbatim from arrow-adbc
+   * {@code c/driver/postgresql/database.cc}. Its WHERE clause is a conjunction of three inequalities, one of
+   * them behind a cast and one of them parenthesised - which is why answering it belongs to the expression
+   * evaluator rather than to {@link PostgresTypeCatalog}'s single-equality patterns (issue #7178).
+   */
+  private static final String ADBC_TYPE_RESOLVER_QUERY =
+      "SELECT oid, typname, typreceive, typbasetype, typrelid, typarray FROM "
+          + "pg_catalog.pg_type WHERE (typreceive != 0 OR typsend != 0) AND typtype != 'r' AND "
+          + "typreceive::TEXT != 'array_recv'";
+
+  @Test
+  void theArrowAdbcTypeResolverQueryIsAnswered() {
+    final PostgresCatalog.Answer answer = resolve(ADBC_TYPE_RESOLVER_QUERY);
+
+    assertThat(answer.columns.keySet())
+        .as("the driver validates the column count before it looks at a single row")
+        .containsExactly("oid", "typname", "typreceive", "typbasetype", "typrelid", "typarray");
+    assertThat(answer.rows).isNotEmpty();
+
+    assertThat(names(answer.rows, "typname")).contains("int4", "text", "bool", "timestamp", "numeric")
+        .as("typreceive::TEXT != 'array_recv' filters the array types out").doesNotContain("_int4", "_text");
+
+    final Map<String, Object> int4 = answer.rows.stream().filter(row -> "int4".equals(row.get("typname")))
+        .findFirst().orElseThrow();
+    assertThat(int4.get("oid")).isEqualTo(PostgresType.INTEGER.code);
+    assertThat(int4.get("typreceive")).isEqualTo("int4recv");
+    assertThat(int4.get("typarray")).isEqualTo(PostgresType.ARRAY_INT.code);
+    assertThat(int4.get("typbasetype")).isEqualTo(0);
+    assertThat(int4.get("typrelid")).isEqualTo(0);
+  }
+
+  @Test
+  void aPlainEnumerationOfPgTypeListsEveryTypeInOidOrder() {
+    final PostgresCatalog.Answer answer = resolve("SELECT oid, typname FROM pg_catalog.pg_type ORDER BY oid");
+
+    assertThat(answer.rows).hasSize(PostgresType.values().length);
+    assertThat(names(answer.rows, "oid")).isSorted();
+  }
+
+  @Test
+  void aFilteredLookupInPgTypeSelectsOneRow() {
+    final PostgresCatalog.Answer answer = resolve("SELECT typname, typlen FROM pg_type WHERE typcategory = 'N' AND typlen = 8");
+
+    assertThat(names(answer.rows, "typname")).containsExactlyInAnyOrder("int8", "float8");
+  }
+
+  @Test
+  void aColumnListJoiningPgTypeStillAnswersOneRowPerColumn() {
+    // pg_type carrying a family of its own must not turn the driver's column list - which joins pg_attribute
+    // to pg_type to name each column's type - into an enumeration of the type catalog.
+    final PostgresCatalog.Answer answer = resolve(JDBC_GET_COLUMNS, "Article", "%");
+
+    assertThat(names(answer.rows, "attname")).containsExactly("id", "title");
+    assertThat(names(answer.rows, "typtype")).containsOnly("b");
+  }
+
   // ---------------------------------------------------------------- helpers
 
   private PostgresCatalog.Answer resolve(final String query, final Object... parameters) {

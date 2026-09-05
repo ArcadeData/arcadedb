@@ -114,7 +114,7 @@ public class PostgresCatalog {
 
   /** The families of rows a catalog query can be about. */
   private enum Family {
-    SCHEMAS, TABLES, COLUMNS, DATABASES, ROLES, PRIVILEGES, CHARACTER_SETS, COLLATIONS, VIEWS
+    SCHEMAS, TABLES, COLUMNS, DATABASES, ROLES, PRIVILEGES, CHARACTER_SETS, COLLATIONS, VIEWS, TYPES
   }
 
   private static void relation(final String name, final Family family, final String... columns) {
@@ -168,14 +168,20 @@ public class PostgresCatalog {
     relation("information_schema.views", Family.VIEWS, "table_catalog", "table_schema", "table_name", "view_definition",
         "check_option", "is_updatable", "is_insertable_into");
 
+    // pg_type is both: on its own it is a query about the types this protocol can produce (issue #7178), and
+    // joined to pg_attribute it decorates a column row with that column's type. Which of the two a query is
+    // about is decided by rank(): TYPES never outranks anything, so it only wins when nothing else is named.
+    relation("pg_type", Family.TYPES, "oid", "typname", "typnamespace", "typowner", "typlen", "typbyval", "typtype",
+        "typcategory", "typispreferred", "typisdefined", "typdelim", "typrelid", "typelem", "typarray", "typinput",
+        "typoutput", "typreceive", "typsend", "typmodin", "typmodout", "typanalyze", "typsubscript", "typalign",
+        "typstorage", "typbasetype", "typtypmod", "typnotnull", "typndims", "typcollation", "typdefaultbin",
+        "typdefault", "typacl");
+
     // Decorating relations: they never decide the family, they only contribute columns to a row. Every one of
     // them is something ArcadeDB has no equivalent of, so their columns are all NULL - which is exactly what a
     // LEFT JOIN against them yields in PostgreSQL when there is no comment, no default and no inheritance.
     relation("pg_description", null, "objoid", "classoid", "objsubid", "description");
     relation("pg_attrdef", null, "oid", "adrelid", "adnum", "adbin", "adsrc");
-    relation("pg_type", null, "oid", "typname", "typnamespace", "typowner", "typlen", "typbyval", "typtype",
-        "typcategory", "typispreferred", "typisdefined", "typdelim", "typrelid", "typelem", "typarray", "typinput",
-        "typoutput", "typbasetype", "typtypmod", "typnotnull", "typndims", "typcollation", "typdefault");
     relation("pg_collation", null, "oid", "collname", "collnamespace", "collowner", "collprovider", "collcollate",
         "collctype");
   }
@@ -336,6 +342,12 @@ public class PostgresCatalog {
     return current;
   }
 
+  /**
+   * How specific a family is, when a query names relations belonging to more than one. TYPES stays at the
+   * bottom on purpose: pg_type joined to pg_class or pg_attribute is a question about tables or columns that
+   * happens to name the type of each, and answering it with one row per type instead of one row per column
+   * would change what every such query means. It wins only when nothing else in the FROM has a family.
+   */
   private static int rank(final Family family) {
     return switch (family) {
       case SCHEMAS -> 1;
@@ -682,9 +694,36 @@ public class PostgresCatalog {
       case PRIVILEGES -> List.of(privilegeRow(context).complete());
       case CHARACTER_SETS -> List.of(characterSetRow(context).complete());
       case COLLATIONS -> List.of(collationRow(context).complete());
+      case TYPES -> typeRows();
       // ArcadeDB has no relation that a PostgreSQL client would render as a view.
       case VIEWS -> List.of();
     };
+  }
+
+  /**
+   * One row per type this protocol can produce, which is the only set of types it can honestly describe. The
+   * values come from {@link PostgresTypeCatalog}, so a client reading pg_type through the generic catalog is
+   * told exactly what {@code SELECT ... FROM pg_type} tells it through the recogniser that runs first.
+   * <p>
+   * This is what makes the Apache Arrow ADBC driver able to connect (issue #7178). Its type-resolver
+   * bootstrap - {@code SELECT oid, typname, typreceive, typbasetype, typrelid, typarray FROM pg_catalog.pg_type
+   * WHERE (typreceive != 0 OR typsend != 0) AND typtype != 'r' AND typreceive::TEXT != 'array_recv'} - is a
+   * shape no regular expression should be asked to read, and the driver rejects the connection outright when
+   * the answer has no columns rather than falling back to anything.
+   */
+  private static List<Row> typeRows() {
+    final PostgresType[] types = PostgresTypeCatalog.types();
+    final List<Row> rows = new ArrayList<>(types.length);
+
+    for (final PostgresType type : types) {
+      final Row row = new Row();
+      final Map<String, Object> columns = row.of("pg_type");
+      for (final String column : PostgresTypeCatalog.COLUMNS)
+        columns.put(column, PostgresTypeCatalog.columnValue(type, column));
+      rows.add(row.complete());
+    }
+
+    return rows;
   }
 
   private static Row schemaRow(final Context context) {

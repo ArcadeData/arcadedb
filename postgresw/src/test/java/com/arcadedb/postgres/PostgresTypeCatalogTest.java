@@ -109,7 +109,7 @@ class PostgresTypeCatalogTest {
       "SELECT oid FROM pg_type WHERE typtype = 'b' AND typlen > 4",
       "SELECT oid FROM pg_type ORDER BY oid",
       // A column this catalog cannot produce is declined whole rather than answered with a hole in it.
-      "SELECT oid, typcollation FROM pg_type",
+      "SELECT oid, typacl FROM pg_type",
       // Not pg_type at all.
       "SELECT oid FROM pg_class" })
   void shapesThisCatalogCannotAnswerAreDeclined(final String query) {
@@ -195,6 +195,46 @@ class PostgresTypeCatalogTest {
     assertThat(byOid).containsEntry(PostgresType.JSON.code, "json_in");
     assertThat(byOid).containsEntry(PostgresType.NUMERIC.code, "numeric_in");
     assertThat(byOid).containsEntry(PostgresType.ARRAY_TEXT.code, "array_in");
+  }
+
+  @Test
+  void binaryIoFunctionsAreSpelledTheWayPostgresSpellsThem() {
+    // issue #7178: the Apache Arrow ADBC driver picks a column's decoder by typreceive's name, so a plausible
+    // name is no better than none - the type is simply left out of its resolver.
+    final Map<Integer, Map<String, Object>> byOid = new HashMap<>();
+    for (final Map<String, Object> row : PostgresTypeCatalog.resolve("SELECT oid, typreceive, typsend, typoutput FROM pg_type"))
+      byOid.put((Integer) row.get("oid"), row);
+
+    assertThat(byOid.get(PostgresType.INTEGER.code)).containsEntry("typreceive", "int4recv")
+        .containsEntry("typsend", "int4send").containsEntry("typoutput", "int4out");
+    assertThat(byOid.get(PostgresType.BOOLEAN.code)).containsEntry("typreceive", "boolrecv");
+    assertThat(byOid.get(PostgresType.BYTEA.code)).containsEntry("typreceive", "bytearecv");
+    assertThat(byOid.get(PostgresType.VARCHAR.code)).containsEntry("typreceive", "varcharrecv");
+    assertThat(byOid.get(PostgresType.TIMESTAMP.code)).containsEntry("typreceive", "timestamp_recv")
+        .containsEntry("typsend", "timestamp_send");
+    assertThat(byOid.get(PostgresType.NUMERIC.code)).containsEntry("typreceive", "numeric_recv");
+    assertThat(byOid.get(PostgresType.JSON.code)).containsEntry("typreceive", "json_recv");
+    assertThat(byOid.get(PostgresType.ARRAY_TEXT.code))
+        .as("the driver excludes arrays with typreceive != 'array_recv' and rebuilds them from typarray")
+        .containsEntry("typreceive", "array_recv").containsEntry("typsend", "array_send");
+  }
+
+  @Test
+  void storageAttributesFollowEachTypesWidth() {
+    final Map<Integer, Map<String, Object>> byOid = new HashMap<>();
+    for (final Map<String, Object> row : PostgresTypeCatalog
+        .resolve("SELECT oid, typbyval, typalign, typstorage, typcollation FROM pg_type"))
+      byOid.put((Integer) row.get("oid"), row);
+
+    assertThat(byOid.get(PostgresType.SMALLINT.code)).containsEntry("typbyval", Boolean.TRUE)
+        .containsEntry("typalign", "s").containsEntry("typstorage", "p").containsEntry("typcollation", 0);
+    assertThat(byOid.get(PostgresType.LONG.code)).containsEntry("typalign", "d");
+    assertThat(byOid.get(PostgresType.BOOLEAN.code)).containsEntry("typalign", "c");
+    assertThat(byOid.get(PostgresType.TEXT.code)).containsEntry("typbyval", Boolean.FALSE)
+        .containsEntry("typstorage", "x")
+        .as("a collation-sensitive type carries the default collation's OID").containsEntry("typcollation", 100);
+    assertThat(byOid.get(PostgresType.NUMERIC.code))
+        .as("numeric is the one varlena type PostgreSQL keeps in the main table").containsEntry("typstorage", "m");
   }
 
   @Test
