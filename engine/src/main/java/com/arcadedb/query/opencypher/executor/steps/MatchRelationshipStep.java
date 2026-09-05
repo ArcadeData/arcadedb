@@ -83,6 +83,12 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    * one that forgot dropped every row without raising anything.
    */
   private final Set<String> clauseVariables;
+  /**
+   * The other half of the scope: every relationship variable the clause writes, including one an earlier
+   * clause already bound and this clause merely names again. {@link #clauseVariables} deliberately omits
+   * those, so without this a fresh relationship pattern could rebind the very edge a reused variable carries.
+   */
+  private final Set<String> clauseRelationshipVariables;
   private final Direction directionOverride; // When non-null, overrides pattern.getDirection()
 
   // GAV provider for CSR-accelerated fast path (null = not checked yet, resolved lazily)
@@ -110,9 +116,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    */
   public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
       final RelationshipPattern pattern, final String pathVariable, final NodePattern targetNodePattern,
-      final Set<String> boundVariableNames, final Set<String> clauseVariables, final CommandContext context) {
+      final Set<String> boundVariableNames, final Set<String> clauseVariables,
+      final Set<String> clauseRelationshipVariables, final CommandContext context) {
     this(sourceVariable, relationshipVariable, targetVariable, pattern, pathVariable, targetNodePattern,
-        boundVariableNames, clauseVariables, null, context);
+        boundVariableNames, clauseVariables, clauseRelationshipVariables, null, context);
   }
 
   /**
@@ -122,7 +129,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    */
   public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
       final RelationshipPattern pattern, final String pathVariable, final NodePattern targetNodePattern,
-      final Set<String> boundVariableNames, final Set<String> clauseVariables, final Direction directionOverride,
+      final Set<String> boundVariableNames, final Set<String> clauseVariables,
+      final Set<String> clauseRelationshipVariables, final Direction directionOverride,
       final CommandContext context) {
     super(context);
     this.sourceVariable = sourceVariable;
@@ -133,6 +141,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     this.targetNodePattern = targetNodePattern;
     this.boundVariableNames = boundVariableNames;
     this.clauseVariables = clauseVariables;
+    this.clauseRelationshipVariables = clauseRelationshipVariables;
     this.directionOverride = directionOverride;
   }
 
@@ -645,7 +654,14 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     // Current hop's edge types (null = untyped, matches all)
     final List<String> currentTypes = pattern.hasTypes() ? pattern.getTypes() : null;
 
-    for (final String prop : clauseVariables) {
+    return resultContainsOverlappingEdges(result, currentTypes, clauseVariables)
+        || resultContainsOverlappingEdges(result, currentTypes, clauseRelationshipVariables);
+  }
+
+  @SuppressWarnings("unchecked")
+  private boolean resultContainsOverlappingEdges(final Result result, final List<String> currentTypes,
+      final Set<String> scope) {
+    for (final String prop : scope) {
       // Skip the current relationship variable if it's being rebound
       if (prop.equals(relationshipVariable))
         continue;
@@ -898,8 +914,13 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    */
   @SuppressWarnings("unchecked")
   private boolean isEdgeAlreadyUsed(final Result result, final Edge edge) {
-    final RID edgeRid = edge.getIdentity();
-    for (final String prop : clauseVariables) {
+    return isEdgeAlreadyUsed(result, edge.getIdentity(), clauseVariables)
+        || isEdgeAlreadyUsed(result, edge.getIdentity(), clauseRelationshipVariables);
+  }
+
+  @SuppressWarnings("unchecked")
+  private boolean isEdgeAlreadyUsed(final Result result, final RID edgeRid, final Set<String> scope) {
+    for (final String prop : scope) {
       // Skip the current relationship variable: it holds a bound value from a previous
       // step that we're about to overwrite, not a different relationship in the pattern
       if (prop.equals(relationshipVariable))

@@ -226,6 +226,39 @@ class CypherClauseScopedRelationshipUniquenessIssue7165Test extends TestHelper {
   }
 
   /**
+   * A relationship variable an earlier clause bound is still one of this clause's relationship patterns when
+   * the clause names it again, so the clause's other patterns must be distinct from it. The clause's freshly
+   * bound variables alone cannot say that - they deliberately omit an already-bound name, since OPTIONAL MATCH
+   * nulls what it lists and must not null a carried binding - so the scope also carries every relationship
+   * variable the clause writes.
+   * <p>
+   * Without it {@code su} could rebind the very edge {@code ru} carries, and the answer depended on the order
+   * the patterns happened to be written in. Both spellings of the shape are checked: the {@code CALL ... YIELD}
+   * one this issue is about, and the {@code WITH} one, which behaved the same way before the fix.
+   */
+  @Test
+  void aRelationshipVariableReusedFromAnEarlierClauseStillExcludesItsEdge() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (c:P {uuid:'c'})-[:LINK {uuid:'r2', fact:'alpha gamma', srcUuid:'c'}]->(d:P {uuid:'d'})"));
+
+    final String afterCall = """
+        CALL db.index.fulltext.queryRelationships('LINK[fact]', 'alpha')
+        YIELD relationship AS r
+        MATCH (a)-[r:LINK]->(b), (c)-[s:LINK]->(d)
+        RETURN r.uuid + '/' + s.uuid AS pair""";
+    final String afterWith = """
+        MATCH (x)-[r:LINK]->(y)
+        WITH r
+        MATCH (a)-[r:LINK]->(b), (c)-[s:LINK]->(d)
+        RETURN r.uuid + '/' + s.uuid AS pair""";
+
+    assertThat(queryColumn(afterCall, "pair"))
+        .as("s must never bind the edge r already carries")
+        .containsExactlyInAnyOrder("r1/r2", "r2/r1");
+    assertThat(queryColumn(afterWith, "pair")).containsExactlyInAnyOrder("r1/r2", "r2/r1");
+  }
+
+  /**
    * The rule the fix must not weaken: two relationship patterns of the SAME clause still bind distinct
    * edges, so a two-hop pattern cannot walk the single edge out and back again.
    */

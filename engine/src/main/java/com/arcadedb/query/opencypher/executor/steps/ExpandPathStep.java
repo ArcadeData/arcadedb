@@ -74,11 +74,10 @@ public class ExpandPathStep extends AbstractExecutionStep {
    */
   private final Set<String> clauseVariables;
   /**
-   * The relationship variables this hop shares its path pattern with, on top of {@link #clauseVariables}.
-   * OpenCypher path isomorphism is scoped to the path rather than to the clause, so a relationship variable an
-   * earlier clause bound, named again by this path, still conflicts with this hop.
+   * The other half of the scope: every relationship variable the clause writes, including one an earlier clause
+   * already bound and this clause merely names again, which {@link #clauseVariables} deliberately omits.
    */
-  private final Set<String> pathCoParticipants;
+  private final Set<String> clauseRelationshipVariables;
   private final Direction directionOverride;
   private final boolean reverseResultPath;
   /**
@@ -90,16 +89,16 @@ public class ExpandPathStep extends AbstractExecutionStep {
   public ExpandPathStep(final String sourceVariable, final String pathVariable, final String relationshipVariable,
       final String targetVariable, final RelationshipPattern pattern, final boolean useBFS,
       final NodePattern targetNodePattern, final PathMode pathMode, final Set<String> clauseVariables,
-      final Set<String> pathCoParticipants, final CommandContext context) {
+      final Set<String> clauseRelationshipVariables, final CommandContext context) {
     this(sourceVariable, pathVariable, relationshipVariable, targetVariable, pattern, useBFS,
-        targetNodePattern, pathMode, clauseVariables, pathCoParticipants, null, false, context);
+        targetNodePattern, pathMode, clauseVariables, clauseRelationshipVariables, null, false, context);
   }
 
   public ExpandPathStep(final String sourceVariable, final String pathVariable, final String relationshipVariable,
       final String targetVariable, final RelationshipPattern pattern, final boolean useBFS,
       final NodePattern targetNodePattern, final PathMode pathMode, final Set<String> clauseVariables,
-      final Set<String> pathCoParticipants, final Direction directionOverride, final boolean reverseResultPath,
-      final CommandContext context) {
+      final Set<String> clauseRelationshipVariables, final Direction directionOverride,
+      final boolean reverseResultPath, final CommandContext context) {
     super(context);
 
     if (!pattern.isVariableLength())
@@ -114,7 +113,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
     this.useBFS = useBFS;
     this.pathMode = pathMode;
     this.clauseVariables = clauseVariables;
-    this.pathCoParticipants = pathCoParticipants;
+    this.clauseRelationshipVariables = clauseRelationshipVariables;
     this.directionOverride = directionOverride;
     this.reverseResultPath = reverseResultPath;
     this.dynamicLabelEvaluator = targetNodePattern != null && targetNodePattern.hasDynamicLabels() ?
@@ -300,15 +299,14 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
   /**
    * Checks if any edge in the traversal path conflicts with an edge already bound by another relationship
-   * pattern of the same MATCH clause, or by another hop of this hop's own path pattern. A variable bound by a
-   * previous clause is not examined, so it cannot block the traversal even when it references the same edge.
+   * pattern of the same MATCH clause. A variable bound by a previous clause and not named again by this one is
+   * not examined, so it cannot block the traversal even when it references the same edge.
    */
   private boolean hasEdgeConflict(final Result result, final TraversalPath path) {
     if (path.getEdges().isEmpty())
       return false;
-    if (hasEdgeConflict(result, path, clauseVariables))
-      return true;
-    return !pathCoParticipants.isEmpty() && hasEdgeConflict(result, path, pathCoParticipants);
+    return hasEdgeConflict(result, path, clauseVariables)
+        || hasEdgeConflict(result, path, clauseRelationshipVariables);
   }
 
   @SuppressWarnings("unchecked")
