@@ -55,7 +55,7 @@ import java.util.Set;
  * Uses specialized traversers (BFS/DFS) to efficiently find paths
  * within the specified hop range.
  */
-public class ExpandPathStep extends AbstractExecutionStep {
+public class ExpandPathStep extends AbstractExecutionStep implements ClauseScopedUniquenessStep {
   private final String sourceVariable;
   private final String pathVariable;
   private final String relationshipVariable;
@@ -67,7 +67,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
   // (see #6097). Flipping this back to true reintroduces the original OOM risk.
   private final boolean useBFS;
   private final PathMode pathMode;
-  private final Set<String> previousStepVariables;
+  private Set<String> clauseScopeVariables = Set.of(); // Variables of the owning MATCH clause, see ClauseScopedUniquenessStep
   private final Direction directionOverride;
   private final boolean reverseResultPath;
   /**
@@ -91,43 +91,20 @@ public class ExpandPathStep extends AbstractExecutionStep {
       final String targetVariable, final RelationshipPattern pattern, final boolean useBFS,
       final NodePattern targetNodePattern, final CommandContext context) {
     this(sourceVariable, pathVariable, relationshipVariable, targetVariable, pattern, useBFS,
-        targetNodePattern, null, null, context);
+        targetNodePattern, null, null, false, context);
   }
 
   public ExpandPathStep(final String sourceVariable, final String pathVariable, final String relationshipVariable,
       final String targetVariable, final RelationshipPattern pattern, final boolean useBFS,
       final NodePattern targetNodePattern, final PathMode pathMode, final CommandContext context) {
     this(sourceVariable, pathVariable, relationshipVariable, targetVariable, pattern, useBFS,
-        targetNodePattern, pathMode, null, context);
-  }
-
-  /**
-   * Creates an expand path step with previous-step variable scoping for relationship uniqueness.
-   *
-   * @param sourceVariable        variable name for source vertex
-   * @param pathVariable          variable name for the path (can be null)
-   * @param relationshipVariable  variable name for the relationship list (can be null)
-   * @param targetVariable        variable name for target vertex
-   * @param pattern               relationship pattern with variable-length specification
-   * @param useBFS                true for BFS (level-order; frontier grows with branching factor), false for DFS (default for MATCH: bounded stack, no combinatorial blow-up - see #6097)
-   * @param targetNodePattern     target node pattern for label/property filtering
-   * @param pathMode              path mode override (DIFFERENT_RELATIONSHIPS, etc.)
-   * @param previousStepVariables snapshot of variables bound by previous MATCH clauses (or WITH); these
-   *                              are excluded from edge-uniqueness conflict checking, since Cypher's
-   *                              relationship uniqueness only applies within a single MATCH clause
-   */
-  public ExpandPathStep(final String sourceVariable, final String pathVariable, final String relationshipVariable,
-      final String targetVariable, final RelationshipPattern pattern, final boolean useBFS,
-      final NodePattern targetNodePattern, final PathMode pathMode, final Set<String> previousStepVariables,
-      final CommandContext context) {
-    this(sourceVariable, pathVariable, relationshipVariable, targetVariable, pattern, useBFS,
-        targetNodePattern, pathMode, previousStepVariables, null, false, context);
+        targetNodePattern, pathMode, null, false, context);
   }
 
   public ExpandPathStep(final String sourceVariable, final String pathVariable, final String relationshipVariable,
       final String targetVariable, final RelationshipPattern pattern, final boolean useBFS,
-      final NodePattern targetNodePattern, final PathMode pathMode, final Set<String> previousStepVariables,
-      final Direction directionOverride, final boolean reverseResultPath, final CommandContext context) {
+      final NodePattern targetNodePattern, final PathMode pathMode, final Direction directionOverride,
+      final boolean reverseResultPath, final CommandContext context) {
     super(context);
 
     if (!pattern.isVariableLength())
@@ -141,11 +118,15 @@ public class ExpandPathStep extends AbstractExecutionStep {
     this.targetNodePattern = targetNodePattern;
     this.useBFS = useBFS;
     this.pathMode = pathMode;
-    this.previousStepVariables = previousStepVariables;
     this.directionOverride = directionOverride;
     this.reverseResultPath = reverseResultPath;
     this.dynamicLabelEvaluator = targetNodePattern != null && targetNodePattern.hasDynamicLabels() ?
         new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance())) : null;
+  }
+
+  @Override
+  public void setClauseScopeVariables(final Set<String> clauseScopeVariables) {
+    this.clauseScopeVariables = clauseScopeVariables;
   }
 
   /**
@@ -341,24 +322,17 @@ public class ExpandPathStep extends AbstractExecutionStep {
   }
 
   /**
-   * Checks if any edge in the traversal path conflicts with edges already
-   * bound in the result (relationship uniqueness within a MATCH clause).
-   * <p>
-   * Cypher's relationship uniqueness rule only applies within a single MATCH clause.
-   * Variables bound by previous MATCH clauses (or carried via WITH) must therefore
-   * not block the current traversal even if they reference the same edge.
+   * Checks if any edge in the traversal path conflicts with edges already bound by another relationship
+   * pattern of the same MATCH clause - see {@link ClauseScopedUniquenessStep}. A variable bound by a
+   * previous clause is not examined, so it cannot block the traversal even when it references the same edge.
    */
   @SuppressWarnings("unchecked")
   private boolean hasEdgeConflict(final Result result, final TraversalPath path) {
     if (path.getEdges().isEmpty())
       return false;
-    for (final String prop : result.getPropertyNames()) {
+    for (final String prop : clauseScopeVariables) {
       // Skip our own variables
       if (prop.equals(relationshipVariable) || prop.equals(pathVariable) || prop.equals(targetVariable))
-        continue;
-      // Skip variables bound by previous MATCH clauses or WITH: Cypher's relationship
-      // uniqueness only applies within the current MATCH clause
-      if (previousStepVariables != null && previousStepVariables.contains(prop))
         continue;
       final Object val = result.getProperty(prop);
       if (val instanceof Edge) {
