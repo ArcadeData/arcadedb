@@ -210,6 +210,29 @@ class Issue7138EntryExtensionSectionTest {
   }
 
   /**
+   * An entry whose ENVELOPE HEADER did not survive - it ends before the database name - is a decode failure like
+   * any other, so it is reported as one rather than as a generic unexpected error. It still halts, because it
+   * names no database to quarantine and so nothing a targeted resync could repair.
+   */
+  @Test
+  void anEntryTruncatedInsideItsHeaderIsADecodeFailureAndStillHalts() {
+    // A valid type byte and nothing after it: the database name's UTF read hits EOF.
+    final ByteString truncated = ByteString.copyFrom(new byte[] { RaftLogEntryType.TX_ENTRY.getId() });
+
+    assertThatThrownBy(() -> RaftLogEntryCodec.decode(truncated))
+        .isInstanceOf(RaftLogEntryDecodeException.class)
+        .hasMessageContaining("envelope header");
+
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final CompletableFuture<Message> future = sm.applyTransaction(entryAt(sm, truncated, 9L));
+
+    assertThat(future.isCompletedExceptionally()).isTrue();
+    assertThat(sm.isHaltedAfterCriticalError())
+        .as("no database name means nothing to quarantine, so the node-wide halt is the honest answer")
+        .isTrue();
+  }
+
+  /**
    * Control for the arm above: an unknown TYPE is a different failure and still halts. #4798 is right that
    * skipping a committed mutation nobody can read is a silent divergence, and nothing here loosens that.
    */

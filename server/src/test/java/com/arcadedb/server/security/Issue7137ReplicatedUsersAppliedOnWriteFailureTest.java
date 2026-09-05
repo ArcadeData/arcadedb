@@ -106,6 +106,30 @@ class Issue7137ReplicatedUsersAppliedOnWriteFailureTest {
         .doesNotThrowAnyException();
   }
 
+  /**
+   * The other ordering the fix depends on: a payload this node cannot turn into users must leave BOTH the file
+   * and the in-memory map untouched. Writing first would persist a snapshot the node itself could not load, and
+   * the caller converts every exception out of this method into a non-halting one - so a half-applied state
+   * here would be reported as "the node stayed up safely".
+   */
+  @Test
+  void aPayloadThatCannotBeTurnedIntoUsersChangesNothing() {
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), CONFIG_PATH);
+    security.applyReplicatedUsers(usersPayload(security));
+    final File usersFile = new File(CONFIG_PATH, SecurityUserFileRepository.FILE_NAME);
+    final long sizeBefore = usersFile.length();
+
+    // No "name": ServerSecurityUser cannot be constructed from it.
+    final String malformed = new JSONArray().put(new JSONObject().put("nome", "bob")).toString();
+
+    assertThatThrownBy(() -> security.applyReplicatedUsers(malformed)).isInstanceOf(Exception.class);
+
+    assertThat(usersFile.length()).as("a payload that cannot be loaded must not be persisted").isEqualTo(sizeBefore);
+    assertThat(security.authenticate("alice", PASSWORD, null).getName())
+        .as("and must not disturb the users already in memory")
+        .isEqualTo("alice");
+  }
+
   /** Control: with a writable file the same payload applies cleanly and reports nothing. */
   @Test
   void aWritableFileAppliesWithoutReportingAFailure() {
