@@ -87,6 +87,11 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    * The other half of the scope: every relationship variable the clause writes, including one an earlier
    * clause already bound and this clause merely names again. {@link #clauseVariables} deliberately omits
    * those, so without this a fresh relationship pattern could rebind the very edge a reused variable carries.
+   * <p>
+   * The two sets overlap - a relationship this clause binds itself is in both - and the checks below simply
+   * walk each in turn rather than a deduplicated union. That is deliberate: the union cannot be precomputed,
+   * because {@link #clauseVariables} is still being filled when this step is built, and computing it later
+   * means a mutable cache for what is at most a second look at a handful of names.
    */
   private final Set<String> clauseRelationshipVariables;
   private final Direction directionOverride; // When non-null, overrides pattern.getDirection()
