@@ -245,7 +245,25 @@ class RaftClusterManager {
     }
   }
 
+  /**
+   * Transfers leadership to a specific peer. Only the leader may do this.
+   * <p>
+   * The guard is not a local-capability check, it is the whole point (issue #7134): Ratis routes a
+   * {@code TransferLeadershipRequest} submitted through a FOLLOWER's client to the current leader, so
+   * without it a {@code POST /api/v1/cluster/leader} or {@code /cluster/stepdown} that landed on a follower -
+   * which is what a Kubernetes ClusterIP Service does, since it load-balances across every ready endpoint -
+   * forced an election on a leader that never asked for one, and answered 200 for an effect that landed on a
+   * different node. #4809 added the same guard to the no-target {@link #transferLeadership(long)}; this is the
+   * path it did not cover. It lives here rather than only in the handlers so no future caller can bypass it.
+   *
+   * @throws ConfigurationException when this node is not the leader, naming the leader (when known) so the
+   *                                caller can retry against the right node
+   */
   void transferLeadership(final String targetPeerId, final long timeoutMs) {
+    if (!raftHAServer.isLeader())
+      throw new ConfigurationException(notTheLeaderMessage(
+          "Refusing to transfer leadership to " + targetPeerId));
+
     LogManager.instance().log(this, Level.INFO, "Transferring leadership to %s (timeout=%d ms)", targetPeerId, timeoutMs);
     final RaftClient client = raftHAServer.getClient();
     try {
@@ -273,6 +291,20 @@ class RaftClusterManager {
       }
       throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId + ": " + e.getMessage(), e);
     }
+  }
+
+  /**
+   * The refusal message shared by every "this node is not the leader" guard, naming the current leader when one
+   * is known. Package-private so {@link RaftHAServer#stepDown()} phrases its refusal identically.
+   */
+  static String notTheLeaderMessage(final String prefix, final RaftPeerId leaderId) {
+    return prefix + ": this node is not the leader"
+        + (leaderId != null ? ", the current leader is '" + leaderId + "' - reissue the request against that node"
+        : " and no leader is currently known - retry once one is elected");
+  }
+
+  private String notTheLeaderMessage(final String prefix) {
+    return notTheLeaderMessage(prefix, raftHAServer.getLeaderId());
   }
 
   void leaveCluster() {

@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
@@ -712,9 +713,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     try {
       channelRecoveryExecutor.execute(() -> {
-        // Leadership may have moved while this task sat in the queue; a transfer from a non-leader is
-        // rejected by Ratis and would only log noise. Re-check before choosing a target so the choice is
-        // made against the configuration this node is actually leading.
+        // Leadership may have moved while this task sat in the queue. Re-check before choosing a target so the
+        // choice is made against the configuration this node is actually leading - and note that this re-check
+        // is load-bearing rather than cosmetic: Ratis does NOT reject a transfer submitted through a
+        // non-leader's client, it routes it to the current leader, so a stale task would force an election on a
+        // node that never asked for one (issue #7134).
         if (shutdownRequested || !isLeader())
           return;
 
@@ -2730,7 +2733,22 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     clusterManager.transferLeadership(targetPeerId, timeoutMs);
   }
 
+  /**
+   * Steps this leader down by transferring leadership to the best eligible peer.
+   * <p>
+   * Refuses when this node is not the leader (issue #7134). A follower has nothing to step down FROM, but the
+   * transfer it would issue does not fail locally: Ratis routes it to the real leader, which then holds an
+   * election nobody asked for. That is reachable from an ordinary {@code POST /api/v1/cluster/stepdown} sent
+   * through a Kubernetes Service, so the guard sits here - in the method every caller goes through - rather
+   * than only in the handler.
+   *
+   * @throws ConfigurationException when this node is not the leader
+   */
   public void stepDown() {
+    if (!isLeader())
+      throw new ConfigurationException(
+          RaftClusterManager.notTheLeaderMessage("Refusing to step down", getLeaderId()));
+
     final List<RaftPeer> candidates = selectStepDownTargets(getLivePeers(), localPeerId, clusterMonitor);
 
     for (final RaftPeer peer : candidates) {
