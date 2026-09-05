@@ -283,4 +283,39 @@ class DateUtilsTest {
     // Same answer now that the default locale is back: the cached formatter did not capture the Italian one
     assertThat(DateUtils.format(dateTime, pattern)).isEqualTo("04 March 2026 Wednesday");
   }
+
+  /**
+   * Issue #7164: the Cypher {@code CREATE INDEX} type inference needs to know the precision a value actually
+   * carries, because {@code Type.getTypeByClass} collapses every temporal class onto the millisecond
+   * {@code DATETIME}. A non-temporal must report {@code null} so the caller falls back to the class-based
+   * inference.
+   */
+  @Test
+  void precisionFromValueReportsWhatTheValueCarries() {
+    assertThat(DateUtils.getPrecisionFromValue(LocalDateTime.of(2026, 1, 2, 3, 4, 5, 0))).isEqualTo(ChronoUnit.SECONDS);
+    assertThat(DateUtils.getPrecisionFromValue(LocalDateTime.of(2026, 1, 2, 3, 4, 5, 123_000_000))).isEqualTo(ChronoUnit.MILLIS);
+    assertThat(DateUtils.getPrecisionFromValue(LocalDateTime.of(2026, 1, 2, 3, 4, 5, 123_456_000))).isEqualTo(ChronoUnit.MICROS);
+    assertThat(DateUtils.getPrecisionFromValue(LocalDateTime.of(2026, 1, 2, 3, 4, 5, 123_456_789))).isEqualTo(ChronoUnit.NANOS);
+    assertThat(DateUtils.getPrecisionFromValue(Instant.ofEpochSecond(1, 123_456_000))).isEqualTo(ChronoUnit.MICROS);
+    assertThat(DateUtils.getPrecisionFromValue(ZonedDateTime.of(2026, 1, 2, 3, 4, 5, 123_456_789, ZoneOffset.UTC)))
+        .isEqualTo(ChronoUnit.NANOS);
+    // A Date cannot hold more than milliseconds
+    assertThat(DateUtils.getPrecisionFromValue(new java.util.Date())).isEqualTo(ChronoUnit.MILLIS);
+    // Not a sub-second-capable temporal
+    assertThat(DateUtils.getPrecisionFromValue(LocalDate.of(2026, 1, 2))).isNull();
+    assertThat(DateUtils.getPrecisionFromValue("2026-01-02")).isNull();
+    assertThat(DateUtils.getPrecisionFromValue(null)).isNull();
+  }
+
+  /**
+   * {@link DateUtils#getHigherPrecision} used to skip {@code OffsetDateTime} entirely, so two offset datetimes
+   * differing only below the millisecond compared as if they were both millisecond-precision.
+   */
+  @Test
+  void higherPrecisionCoversOffsetDateTime() {
+    final OffsetDateTime micros = OffsetDateTime.of(2026, 1, 2, 3, 4, 5, 123_456_000, ZoneOffset.UTC);
+    final OffsetDateTime millis = OffsetDateTime.of(2026, 1, 2, 3, 4, 5, 123_000_000, ZoneOffset.UTC);
+    assertThat(DateUtils.getPrecisionFromValue(micros)).isEqualTo(ChronoUnit.MICROS);
+    assertThat(DateUtils.getHigherPrecision(millis, micros)).isEqualTo(ChronoUnit.MICROS);
+  }
 }
