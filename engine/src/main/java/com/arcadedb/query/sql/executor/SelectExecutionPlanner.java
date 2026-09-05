@@ -450,7 +450,9 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info))
       return false;
 
-    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().getFirst(), context));
+    // The type name, not the rendered target: FromItem.toString() appends " AS <alias>" when the statement declared
+    // one, and CountFromTypeStep looks its argument up in the schema (issue #7153).
+    result.chain(new CountFromTypeStep(targetClass.getStringValue(), info.projection.getAllAliases().getFirst(), context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -1191,8 +1193,8 @@ public class SelectExecutionPlanner {
           return;
         }
       } else {
-        final String targetStr = target.toString();
-        variableValue = context.getVariablePath(targetStr);
+        // without the alias: this is resolved as a variable path, and " AS <alias>" is not part of one
+        variableValue = context.getVariablePath(target.toStringWithoutAlias());
       }
       if (variableValue != null) {
         // Handle single Result object (e.g., from $parent.$current)
@@ -1945,7 +1947,7 @@ public class SelectExecutionPlanner {
     // so there is no "materialize everything then discard it" cost here to reclaim.
     // Skip pushdown when WHERE references LET variables ($), since LET is evaluated after fetch.
     final boolean whereRefersToLet = info.perRecordLetClause != null && info.whereClause != null
-        && info.whereClause.toString().contains("$");
+        && !variableNamesIn(info.whereClause.toString()).isEmpty();
     if (info.whereClause != null && info.whereClause.baseExpression != null && !whereRefersToLet) {
       final FetchFromTypeWithFilterStep fetcher = new FetchFromTypeWithFilterStep(identifier.getStringValue(), effectiveClusters,
           info.whereClause, context, orderByRidAsc);
@@ -1986,7 +1988,7 @@ public class SelectExecutionPlanner {
     // method (called from handleFetchFromTarget). Chaining it into a FilterStep on the fetch-side
     // plan would evaluate it before LET populates the variable, silently dropping every row. Defer
     // to the normal scan path, which applies WHERE only after LET. See issue #5856.
-    if (info.perRecordLetClause != null && info.whereClause != null && info.whereClause.toString().contains("$"))
+    if (info.perRecordLetClause != null && info.whereClause != null && !variableNamesIn(info.whereClause.toString()).isEmpty())
       return false;
 
     final AndBlock andBlock = info.flattenedWhereClause.getFirst();
@@ -2156,7 +2158,7 @@ public class SelectExecutionPlanner {
   /** Whether any sub-block of {@code andBlock} other than the one at {@code skipIndex} mentions a variable. */
   private static boolean referencesAVariableOutside(final AndBlock andBlock, final int skipIndex) {
     for (int i = 0; i < andBlock.getSubBlocks().size(); i++)
-      if (i != skipIndex && andBlock.getSubBlocks().get(i).toString().contains("$"))
+      if (i != skipIndex && !variableNamesIn(andBlock.getSubBlocks().get(i).toString()).isEmpty())
         return true;
 
     return false;
@@ -3226,7 +3228,7 @@ public class SelectExecutionPlanner {
           // a different evaluation than the full-text index semantics.
           final BooleanExpression remaining = bestIndex.getRemainingCondition();
           if (remaining != null && !remaining.isEmpty()) {
-            if (info.perRecordLetClause != null && refersToLet(Collections.singletonList(remaining))) {
+            if (refersToLet(Collections.singletonList(remaining), info.perRecordLetClause)) {
               handleLet(subPlan, info, context);
             }
             subPlan.chain(new FilterStep(createWhereFrom(remaining), context));
@@ -3238,7 +3240,7 @@ public class SelectExecutionPlanner {
               statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
-            if (info.perRecordLetClause != null && refersToLet(block.getSubBlocks())) {
+            if (refersToLet(block.getSubBlocks(), info.perRecordLetClause)) {
               handleLet(subPlan, info, context);
             }
             subPlan.chain(new FilterStep(createWhereFrom(block), context));
@@ -3286,7 +3288,7 @@ public class SelectExecutionPlanner {
           plan.chain(step);
           plan.chain(new FilterByClustersStep(filterClusters, context));
           if (!block.getSubBlocks().isEmpty()) {
-            if (info.perRecordLetClause != null && refersToLet(block.getSubBlocks())) {
+            if (refersToLet(block.getSubBlocks(), info.perRecordLetClause)) {
               handleLet(plan, info, context);
             }
             plan.chain(new FilterStep(createWhereFrom(block), context));
@@ -3296,6 +3298,12 @@ public class SelectExecutionPlanner {
               statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
+            // Same guard as every sibling branch: a residual that reads a per-record LET variable has to be filtered
+            // downstream of the LET steps, or it is evaluated with the variable unset and drops every row of this
+            // branch. This one was missing it (issue #7153).
+            if (refersToLet(block.getSubBlocks(), info.perRecordLetClause)) {
+              handleLet(subPlan, info, context);
+            }
             subPlan.chain(new FilterStep(createWhereFrom(block), context));
           }
           resultSubPlans.add(subPlan);
@@ -3321,17 +3329,100 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private boolean refersToLet(final List<BooleanExpression> subBlocks) {
-    if (subBlocks == null)
+  /**
+   * Whether any of {@code subBlocks} reads one of the variables {@code letClause} declares.
+   * <p>
+   * Read off the rendered condition rather than walked on the AST: a variable reference is not always the whole
+   * expression ({@code #X:Y IN $brain} reads one), and there is no generic walker over the expression nodes to ask
+   * instead. The names are compared whole, so a LET named {@code rel} is not found in {@code 'no relation'}
+   * (issue #7153).
+   * <p>
+   * Compared with the leading {@code $} stripped from both sides: the grammar takes a LET name as a plain
+   * identifier, so {@code LET brain = out(...)} and {@code LET $brain = out(...)} both declare the variable that
+   * {@code $brain} reads, and only one of the two spellings carries the sigil.
+   */
+  private static boolean refersToLet(final List<BooleanExpression> subBlocks, final LetClause letClause) {
+    if (subBlocks == null || letClause == null || letClause.getItems() == null || letClause.getItems().isEmpty())
       return false;
 
-    for (BooleanExpression exp : subBlocks) {
-      // Check if expression contains a variable reference (starts with or contains "$")
-      // An expression like "#X:Y IN $brain" doesn't start with "$" but contains a variable reference
-      if (exp.toString().contains("$"))
-        return true;
-    }
+    for (final BooleanExpression exp : subBlocks)
+      for (final String name : variableNamesIn(exp.toString()))
+        for (final LetItem item : letClause.getItems())
+          if (name.equals(withoutSigil(item.getVarName().getStringValue())))
+            return true;
+
     return false;
+  }
+
+  private static String withoutSigil(final String variableName) {
+    return variableName.startsWith("$") ? variableName.substring(1) : variableName;
+  }
+
+  /**
+   * The context-variable names the rendered SQL mentions, each without its leading {@code $}: every sigil that
+   * actually starts a name, and the name it starts - {@code $parent.$current.x} yields {@code parent} and
+   * {@code current}. A {@code $} that starts nothing is a character inside a string literal, not a reference, which
+   * is the whole point: {@code WHERE currency = 'US$'} used to read as "this condition depends on a LET" and cost
+   * the statement a predicate pushdown, an edge-RID lookup, or an index (issue #7153).
+   * <p>
+   * Callers that only need to know whether ANY variable is mentioned test the result for emptiness. That is the
+   * right question for a filter the planner wants to evaluate inside the fetch: {@code $current} and {@code $parent}
+   * are no more available there than a per-record LET is.
+   * <p>
+   * Quoted runs - string literals and backtick-quoted identifiers - are skipped whole, so nothing inside one is
+   * read as a reference. Erring here is one-directional by construction: a real {@code $name} always survives the
+   * scan, so the answer can only ever be too generous, and too generous costs an optimisation rather than a row.
+   */
+  private static List<String> variableNamesIn(final String rendered) {
+    List<String> names = null;
+
+    for (int i = 0; i < rendered.length(); ++i) {
+      final char c = rendered.charAt(i);
+
+      // A quoted run is data, not SQL: skip it whole rather than reading the names it may spell. WHERE note =
+      // 'see $relation' names no variable, and a backtick-quoted `$relation` is a property whose name starts with
+      // the character. Both used to read as a LET reference.
+      if (c == '\'' || c == '"' || c == '`') {
+        i = endOfQuotedRun(rendered, i);
+        continue;
+      }
+
+      if (c != '$')
+        continue;
+
+      int end = i + 1;
+      while (end < rendered.length() && Character.isJavaIdentifierPart(rendered.charAt(end)))
+        ++end;
+
+      if (end == i + 1)
+        continue;
+
+      if (names == null)
+        names = new ArrayList<>(2);
+      names.add(rendered.substring(i + 1, end));
+      i = end - 1;
+    }
+
+    return names == null ? Collections.emptyList() : names;
+  }
+
+  /**
+   * The index of the closing quote of the run {@code rendered.charAt(start)} opens, honouring backslash escapes, or
+   * the last index of the string when the run is unterminated - which a rendered statement should never contain, and
+   * which is answered this way so the caller's loop ends rather than reading the rest as SQL.
+   */
+  private static int endOfQuotedRun(final String rendered, final int start) {
+    final char quote = rendered.charAt(start);
+
+    for (int i = start + 1; i < rendered.length(); ++i) {
+      final char c = rendered.charAt(i);
+      if (c == '\\')
+        ++i;
+      else if (c == quote)
+        return i;
+    }
+
+    return rendered.length() - 1;
   }
 
   private List<Integer> classClustersFiltered(final Database db, final DocumentType clazz, final Set<String> filterClusters) {
@@ -3459,11 +3550,15 @@ public class SelectExecutionPlanner {
       final Set<String> filterBuckets, final QueryPlanningInfo info, final CommandContext context) {
 
     final List<ExecutionStepInternal> result = handleTypeAsTargetWithIndex(targetType.getStringValue(), filterBuckets, info,
-        context);
+        context, true);
 
     if (result != null) {
       result.forEach(plan::chain);
-      info.whereClause = null;
+      // Normally null: the index search consumed the whole WHERE clause, or filtered what it left behind inside the
+      // fetch plan. What survives here is the residual that reads a per-record LET variable, kept as the statement's
+      // WHERE clause so that handleWhere() chains it after handleLet() (issue #7153).
+      info.whereClause = info.deferredLetWhereClause;
+      info.deferredLetWhereClause = null;
       info.flattenedWhereClause = null;
       return true;
     }
@@ -3519,7 +3614,7 @@ public class SelectExecutionPlanner {
 
   private List<ExecutionStepInternal> handleTypeAsTargetWithIndexRecursive(final String targetType, final Set<String> filterBuckets,
       final QueryPlanningInfo info, final CommandContext context) {
-    List<ExecutionStepInternal> result = handleTypeAsTargetWithIndex(targetType, filterBuckets, info, context);
+    List<ExecutionStepInternal> result = handleTypeAsTargetWithIndex(targetType, filterBuckets, info, context, false);
     if (result == null) {
       result = new ArrayList<>();
       final DocumentType typez = context.getDatabase().getSchema().getType(targetType);
@@ -3551,8 +3646,14 @@ public class SelectExecutionPlanner {
     return result.isEmpty() ? null : result;
   }
 
+  /**
+   * @param allowDeferredLetFilter whether a residual condition that reads a per-record LET variable may be deferred to
+   *                               the statement's WHERE clause. Only the single, top-level target can do that: there
+   *                               is one WHERE clause to defer into, so a per-sub-type residual has to give the
+   *                               index up instead (issue #7153).
+   */
   private List<ExecutionStepInternal> handleTypeAsTargetWithIndex(final String targetType, final Set<String> filterBuckets,
-      final QueryPlanningInfo info, final CommandContext context) {
+      final QueryPlanningInfo info, final CommandContext context, final boolean allowDeferredLetFilter) {
     if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
       return null;
 
@@ -3579,11 +3680,13 @@ public class SelectExecutionPlanner {
     List<IndexSearchDescriptor> optimumIndexSearchDescriptors =
         commonFactor(indexSearchDescriptors);
 
-    return executionStepFromIndexes(filterBuckets, typez, info, context, optimumIndexSearchDescriptors);
+    return executionStepFromIndexes(filterBuckets, typez, info, context, optimumIndexSearchDescriptors,
+        allowDeferredLetFilter);
   }
 
   private List<ExecutionStepInternal> executionStepFromIndexes(final Set<String> filterClusters, final DocumentType clazz,
-      final QueryPlanningInfo info, final CommandContext context, List<IndexSearchDescriptor> optimumIndexSearchDescriptors) {
+      final QueryPlanningInfo info, final CommandContext context, final List<IndexSearchDescriptor> optimumIndexSearchDescriptors,
+      final boolean allowDeferredLetFilter) {
     List<ExecutionStepInternal> result;
     if (optimumIndexSearchDescriptors.size() == 1) {
       final IndexSearchDescriptor desc = optimumIndexSearchDescriptors.getFirst();
@@ -3609,20 +3712,33 @@ public class SelectExecutionPlanner {
       if (orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, (AndBlock) desc.keyCondition, desc.getIndex()))
         info.orderApplied = true;
 
-        if (needsFilterStep(desc.getRemainingCondition(), context)) {
-        if (info.perRecordLetClause != null
-            && refersToLet(Collections.singletonList(desc.getRemainingCondition()))) {
-          SelectExecutionPlan stubPlan = new SelectExecutionPlan(context,
-              statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
-          handleLet(stubPlan, info, context);
-          for (ExecutionStep step : stubPlan.getSteps()) {
-            result.add((ExecutionStepInternal) step);
-          }
-        }
-        result.add(
-            new FilterStep(createWhereFrom(desc.getRemainingCondition()), context));
+      if (needsFilterStep(desc.getRemainingCondition(), context)) {
+        if (refersToPerRecordLet(info, desc.getRemainingCondition())) {
+          if (!allowDeferredLetFilter)
+            // One sub-plan per sub-type, each with its own residual, and a single WHERE clause to defer into. Give
+            // the whole statement up to the plain scan, which evaluates the filter after the LET by construction.
+            return null;
+
+          // The residual reads a variable the per-record LET computes, and the LET steps run downstream of this
+          // fetch. Hand it back to the planner rather than filtering here: handleWhere() chains it after
+          // handleLet(), where the variable is finally set. Filtering here would read it unset, and the LET steps
+          // used to be spliced in ahead of the fetch to compensate - which produced a plan whose first step had
+          // nothing to pull from and raised "Cannot execute a local LET on a query without a target" (issue #7153).
+          info.deferredLetWhereClause = createWhereFrom(desc.getRemainingCondition());
+        } else
+          result.add(new FilterStep(createWhereFrom(desc.getRemainingCondition()), context));
       }
     } else {
+      // Defensive, and not reachable through a SELECT today: handleTypeAsTargetWithIndexedFunction() runs first at
+      // both call sites and claims every multi-block WHERE, so an OR reaches its own per-branch planning - which
+      // chains the LET into each sub-plan correctly, because that sub-plan is not empty by then. Kept because this
+      // branch chains residual filters of its own, and one reading a per-record LET would be evaluated with the
+      // variable unset, which is a wrong answer rather than a lost optimisation.
+      for (final IndexSearchDescriptor desc : optimumIndexSearchDescriptors)
+        if (needsFilterStep(desc.getRemainingCondition(), context) && refersToPerRecordLet(info,
+            desc.getRemainingCondition()))
+          return null;
+
       result = new ArrayList<>();
       result.add(createParallelIndexFetch(optimumIndexSearchDescriptors, filterClusters, context));
       if (optimumIndexSearchDescriptors.size() > 1) {
@@ -3630,6 +3746,15 @@ public class SelectExecutionPlanner {
       }
     }
     return result;
+  }
+
+  /**
+   * Whether {@code condition} reads a variable this statement's per-record LET computes. Asked of what an index
+   * search leaves behind, to decide whether that residual can be filtered inside the fetch plan (where the variable
+   * is not set yet) or has to wait for the LET steps downstream of it.
+   */
+  private static boolean refersToPerRecordLet(final QueryPlanningInfo info, final BooleanExpression condition) {
+    return refersToLet(Collections.singletonList(condition), info.perRecordLetClause);
   }
 
   private boolean fullySorted(final OrderBy orderBy, final AndBlock conditions, final Index idx) {
@@ -4404,10 +4529,10 @@ public class SelectExecutionPlanner {
       return subQuery;
     if (info.whereClause == null || info.whereClause.getBaseExpression() == null)
       return subQuery;
-    // Conservative: skip if WHERE references parent scope, LET variables, or $current/$parent (anything starting with '$').
+    // Conservative: skip if WHERE references parent scope, LET variables, or $current/$parent - any variable at all.
     if (info.whereClause.refersToParent())
       return subQuery;
-    if (info.whereClause.toString().contains("$"))
+    if (!variableNamesIn(info.whereClause.toString()).isEmpty())
       return subQuery;
 
     final TraverseStatement copy = (TraverseStatement) traverse.copy();

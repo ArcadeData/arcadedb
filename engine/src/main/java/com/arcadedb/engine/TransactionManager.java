@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
@@ -537,6 +538,15 @@ public class TransactionManager {
   private boolean applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final boolean ignoreErrors) {
     boolean changed = false;
+    // Whether at least one page was written at a version STRICTLY GREATER than the one on disk, i.e. this
+    // transaction carried content the database did not have yet. `changed` cannot answer that question: since
+    // #4926 an EQUAL-version page is deliberately re-applied (torn-write repair), which sets `changed` on a
+    // transaction that was already fully applied. The bucket record-count fold at the end of this method is a
+    // RELATIVE increment, so folding it on such a replay double-counts it, and on a cleanly-restarted node the
+    // counter is live (statistics.json) and never invalidated, so the over-count is permanent (issue #7126).
+    // A version advance is the precise idempotency signal: if a previous apply of this entry had reached the
+    // fold, every page of the entry would already be at or beyond its target version, so nothing could advance.
+    boolean versionAdvanced = false;
     boolean involveDictionary = false;
 
     final int dictionaryId =
@@ -723,6 +733,10 @@ public class TransactionManager {
           involveDictionary = true;
 
         changed = true;
+        if (txPage.currentPageVersion > page.getVersion())
+          // New content for this page: the database did not have this version yet, so the record-count delta
+          // this entry carries has not been folded into the cached counters (issue #7126).
+          versionAdvanced = true;
         LogManager.instance().log(this, Level.FINE, "  - updating page %s v%d", null, pageId, modifiedPage.version);
 
       } catch (final ClosedByInterruptException e) {
@@ -740,10 +754,13 @@ public class TransactionManager {
       }
     }
 
-    if (changed) {
+    if (versionAdvanced) {
       for (final Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
-        final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(entry.getKey());
-        if (bucket.getCachedRecordCount() > -1)
+        // getFileByIdIfExists, not getBucketById: a DROP TYPE replayed after this entry removed the bucket, and
+        // the counter of a bucket that no longer exists is nobody's business - mirrors the same fold in
+        // TransactionContext.commit2ndPhase.
+        if (database.getSchema().getFileByIdIfExists(entry.getKey()) instanceof LocalBucket bucket
+            && bucket.getCachedRecordCount() > -1)
           // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
           bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());
       }
@@ -994,6 +1011,20 @@ public class TransactionManager {
     fileIdsLockManager.unlock(fileId, requester);
   }
 
+  /**
+   * Resolves {@link GlobalConfiguration#TX_WAL_FILES} into an actual pool size. The setting documents {@code 0 =
+   * available cores}, but nothing translated it, so an operator who set the value the description advertises got a
+   * zero-length pool and every commit then died on {@code threadId() % 0} - an {@code ArithmeticException} out of
+   * {@link #writeTransactionToWAL}, on the first write, for the life of the database (issue #7121). Translating at
+   * the read site is the idiom the other "0 = auto" settings already use (see {@code QueryEngineManager}'s
+   * {@code autoSizeThreads} for {@code QUERY_PARALLELISM_POOL_THREADS}). A negative value resolves the same way
+   * rather than throwing {@code NegativeArraySizeException} deeper in.
+   */
+  static int walFilePoolSize(final ContextConfiguration configuration) {
+    final int configured = configuration.getValueAsInteger(GlobalConfiguration.TX_WAL_FILES);
+    return configured > 0 ? configured : Math.max(Runtime.getRuntime().availableProcessors(), 1);
+  }
+
   private void createWALFilePool() {
     // #4958: seed the counter PAST any existing txlog_<n>.wal. WALFile opens its path in "rw" mode
     // without truncation, so restarting the counter from 0 while preserved WAL files are still on disk
@@ -1013,7 +1044,7 @@ public class TransactionManager {
           }
       }
 
-    activeWALFilePool = new WALFile[database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FILES)];
+    activeWALFilePool = new WALFile[walFilePoolSize(database.getConfiguration())];
     for (int i = 0; i < activeWALFilePool.length; ++i) {
       final long counter = logFileCounter.getAndIncrement();
       try {

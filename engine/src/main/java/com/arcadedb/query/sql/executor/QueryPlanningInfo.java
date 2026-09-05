@@ -65,6 +65,14 @@ public class QueryPlanningInfo {
 
   FromClause     target;
   WhereClause    whereClause;
+
+  /**
+   * The part of the WHERE clause an index search left behind that has to be evaluated AFTER the per-record LET,
+   * because it reads a variable the LET computes. {@code SelectExecutionPlanner.handleTypeAsTargetWithIndex()} moves
+   * it back into {@link #whereClause} so that {@code handleWhere()} chains it downstream of {@code handleLet()};
+   * every other residual is filtered inside the fetch plan instead. Issue #7153.
+   */
+  WhereClause    deferredLetWhereClause;
   List<AndBlock> flattenedWhereClause;
   GroupBy        groupBy;
   OrderBy        orderBy;

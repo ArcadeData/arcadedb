@@ -97,7 +97,7 @@ public class ComponentFile {
 
   public void drop() throws IOException {
     close();
-    LogManager.instance().log(this, Level.FINE, "Deleting file %s (id=%d) to %s...", null, filePath, fileId);
+    LogManager.instance().log(this, Level.FINE, "Deleting file %s (id=%d)...", null, filePath, fileId);
     Files.delete(Path.of(getFilePath()));
   }
 

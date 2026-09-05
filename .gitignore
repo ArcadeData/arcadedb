@@ -392,8 +392,10 @@ security.json
 databases
 .history
 .DS_Store
-config/server-users.jsonl
-config/server-groups.json
+# Anchored patterns matched only the repository root, so a server test run in any module (ha-raft, server,
+# postgresw, ...) left its generated security files untracked-but-visible and they were easy to `git add -A` in
+**/config/server-users.jsonl
+**/config/server-groups.json
 doc/src/main/asciidoc/*/.asciidoctor/
 doc/src/main/asciidoc/*/var/
 gremlin/file:/

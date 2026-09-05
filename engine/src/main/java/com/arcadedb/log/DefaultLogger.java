@@ -46,6 +46,7 @@ public class DefaultLogger implements Logger {
   private static final String DEFAULT_LOG                  = "com.arcadedb";
   private static final String ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb.installCustomFormatter";
   private static final String FILE_LOG_PROPERTIES          = "arcadedb-log.properties";
+  private static final String SERVER_LOG_FORMAT_KEY        = "arcadedb.server.logFormat";
   // Fallback when ${arcadedb.server.logsDirectory} cannot be resolved (e.g. the first log fires during
   // GlobalConfiguration's own static init, before its values are queryable). Must stay in sync with the
   // default of GlobalConfiguration.SERVER_LOGS_DIRECTORY (asserted by DefaultLoggerLogDirTest).
@@ -282,26 +283,88 @@ public class DefaultLogger implements Logger {
         final Handler h = new ConsoleHandler();
         h.setFormatter(desired);
         log.addHandler(h);
-      } else {
-        for (final Handler h : log.getHandlers()) {
-          if (h instanceof ConsoleHandler && !h.getFormatter().getClass().equals(desired.getClass()))
-            h.setFormatter(desired);
-        }
-      }
+      } else
+        applyConsoleFormatter(log, desired);
     } catch (final Exception e) {
       System.err.println("Error while installing custom formatter. Logging could be disabled. Cause: " + e);
     }
   }
 
   /**
+   * Re-selects the console formatter and swaps it onto the console handler already installed.
+   * <p>
+   * {@link #installCustomFormatter()} runs once, from {@link #init()}, on the first log record the JVM emits - which
+   * in practice is long before a server configuration file, a {@code fromJSON} or the settings API has been read. So
+   * {@code arcadedb.server.logFormat} took effect only when it was a raw {@code -D}/env system property, and setting
+   * it through any of its SCOPE.SERVER-supported channels silently kept the default formatter (issue #7121).
+   * {@link com.arcadedb.GlobalConfiguration#SERVER_LOG_FORMAT} calls this whenever its value is set.
+   * <p>
+   * A no-op before the logger is initialized: no console handler exists yet, and {@link #init()} will select the
+   * formatter from the (by then already updated) configuration on its own. Never installs a handler - that is
+   * {@code installCustomFormatter}'s job, and doing it here would add a second console handler to a JVM whose
+   * logging is deliberately configured with none.
+   */
+  public static void refreshConsoleFormatter() {
+    refreshConsoleFormatter(null);
+  }
+
+  /**
+   * Same, for a value the caller already holds and that {@link #selectConsoleFormatter()} could not find on its own.
+   * <p>
+   * A SCOPE.SERVER setting is authoritative in the SERVER's {@link com.arcadedb.ContextConfiguration}, and that
+   * overlay is a plain map: neither {@code fromJSON} (the server configuration file) nor
+   * {@code ContextConfiguration.setValue} (the {@code SET SERVER SETTING} API) writes through to the
+   * {@link com.arcadedb.GlobalConfiguration} enum, so neither the enum's value nor its set-callback ever sees them.
+   * The server therefore hands the value in explicitly from those two paths; {@code null} means "resolve it the
+   * usual way", which is what the enum's own callback does.
+   *
+   * @param format the console log format to apply, or {@code null} to resolve it from the usual sources
+   */
+  public static void refreshConsoleFormatter(final String format) {
+    if (!initialized)
+      return;
+
+    try {
+      // An explicit -D/env override still outranks a configuration write, which is the order
+      // selectConsoleFormatter()'s resolver already applies and the one an operator debugging a node expects: the
+      // flag they passed on the command line is not silently undone by a file the server reads afterwards.
+      String effective = System.getProperty(SERVER_LOG_FORMAT_KEY);
+      if (effective == null)
+        effective = System.getenv(SERVER_LOG_FORMAT_KEY);
+      if (effective == null)
+        effective = format;
+
+      applyConsoleFormatter(java.util.logging.Logger.getLogger(""),
+          effective != null ? formatterFor(effective) : selectConsoleFormatter());
+    } catch (final Exception e) {
+      System.err.println("Error while refreshing the console formatter. Cause: " + e);
+    }
+  }
+
+  private static void applyConsoleFormatter(final java.util.logging.Logger log, final Formatter desired) {
+    for (final Handler h : log.getHandlers())
+      if (h instanceof ConsoleHandler && !h.getFormatter().getClass().equals(desired.getClass()))
+        h.setFormatter(desired);
+  }
+
+  /**
    * Selects the console log formatter from {@code arcadedb.server.logFormat}: {@code json} yields a
    * {@link JsonLogFormatter}, anything else (default {@code text}) keeps the existing
-   * {@link AnsiLogFormatter}. Resolved via {@link SystemVariableResolver} - the same mechanism this
-   * class already uses for {@code arcadedb.installCustomFormatter} - because this runs before
-   * GlobalConfiguration values are guaranteed initialized.
+   * {@link AnsiLogFormatter}.
+   * <p>
+   * Resolved via {@link SystemVariableResolver} - the same mechanism this class already uses for
+   * {@code arcadedb.installCustomFormatter} - because this can run before GlobalConfiguration values are guaranteed
+   * initialized. That resolver is NOT system-property-only: it tries the JVM system property, then the environment,
+   * and then {@code GlobalConfiguration.findByKey(...).getValueAsString()}. So a value set through the settings API,
+   * a server configuration file or {@code fromJSON} is honoured here (issue #7121) - it is simply outranked by an
+   * explicit {@code -D}/env override, which is the intended precedence and the reason the resolver is used at all.
    */
   static Formatter selectConsoleFormatter() {
-    final String format = SystemVariableResolver.INSTANCE.resolveSystemVariables("${arcadedb.server.logFormat}", "text");
+    return formatterFor(SystemVariableResolver.INSTANCE.resolveSystemVariables("${" + SERVER_LOG_FORMAT_KEY + "}", "text"));
+  }
+
+  /** The formatter one {@code arcadedb.server.logFormat} value selects, wherever that value was read from. */
+  static Formatter formatterFor(final String format) {
     if ("json".equalsIgnoreCase(format))
       return new JsonLogFormatter();
     return new AnsiLogFormatter();

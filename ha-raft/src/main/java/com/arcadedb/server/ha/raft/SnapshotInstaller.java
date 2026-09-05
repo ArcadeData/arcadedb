@@ -120,10 +120,22 @@ public final class SnapshotInstaller {
   static final long MIN_RATIO_CHECK_BYTES = 64L * 1024L;
 
   /**
-   * Maximum allowed uncompressed size for a single ZIP entry (10 GB). Entries exceeding this
-   * limit trigger a zip-bomb defense exception. Package-private for unit testing.
+   * Default maximum allowed uncompressed size for a single ZIP entry (10 GB), used when
+   * {@link GlobalConfiguration#HA_SNAPSHOT_MAX_ENTRY_SIZE} is unset or not positive. Entries exceeding the limit
+   * trigger a zip-bomb defense exception. Package-private for unit testing.
    */
   static final long MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 10L * 1024 * 1024 * 1024;
+
+  /**
+   * The effective per-entry cap. {@code arcadedb.ha.snapshotMaxEntrySize} declared and documented exactly this
+   * limit but had no reader anywhere in the tree, so the only way to change it was to recompile this class
+   * (issue #7121). A non-positive configured value falls back to the compiled default rather than disabling the
+   * defense - a zip-bomb guard that an operator can switch off by typing 0 is not a guard.
+   */
+  static long maxZipEntryUncompressedBytes() {
+    final long configured = GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE.getValueAsLong();
+    return configured > 0 ? configured : MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES;
+  }
 
   /**
    * Logged at most once: warns that SSL is enabled but the snapshot is being downloaded over plain
@@ -952,6 +964,9 @@ public final class SnapshotInstaller {
     // Records the size+CRC32 of each file actually extracted, used to verify against the manifest.
     final Map<String, long[]> extracted = new HashMap<>();
     byte[] manifestBytes = null;
+    // Read once for the whole install rather than per entry: the limit must not change mid-extraction, and a
+    // snapshot with many small entries should not pay a configuration lookup for each of them.
+    final long maxEntryBytes = maxZipEntryUncompressedBytes();
 
     try (final ZipInputStream zipIn = new ZipInputStream(source)) {
       ZipEntry zipEntry;
@@ -993,7 +1008,7 @@ public final class SnapshotInstaller {
         final CRC32 crc = new CRC32();
         try (final FileOutputStream fos = new FileOutputStream(targetFile.toFile());
             final CheckedOutputStream cos = new CheckedOutputStream(fos, crc)) {
-          final long uncompressedBytes = copyWithLimit(zipIn, cos, MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES, entryName);
+          final long uncompressedBytes = copyWithLimit(zipIn, cos, maxEntryBytes, entryName);
 
           // Decompression-bomb defense: check ratio for entries large enough to matter.
           // Uses raw counter delta (compressed bytes including headers) which slightly

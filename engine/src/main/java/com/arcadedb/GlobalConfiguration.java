@@ -21,6 +21,7 @@ package com.arcadedb;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
@@ -235,8 +236,8 @@ public enum GlobalConfiguration {
       Integer.class, 0),
 
   TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,
-      "Number of concurrent files to use for tx log. 0 (default) = available cores", Integer.class,
-      Math.max(Runtime.getRuntime().availableProcessors(), 1)),
+      "Number of concurrent files to use for tx log. 0 or a negative value = available cores, which is also the default",
+      Integer.class, Math.max(Runtime.getRuntime().availableProcessors(), 1)),
 
   FREE_PAGE_RAM("arcadedb.freePageRAM", SCOPE.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,
       50),
@@ -888,10 +889,10 @@ public enum GlobalConfiguration {
       Integer.class, 2),
 
   // CYPHER
-  CYPHER_STATEMENT_CACHE("arcadedb.cypher.statementCache", SCOPE.DATABASE,
-      "Max number of entries in the cypher statement cache. Use 0 to disable. Caching statements speeds up execution of the same cypher queries",
-      Integer.class, 1000),
-
+  // `arcadedb.cypher.statementCache` used to be declared here. It had no reader anywhere in the tree and was a
+  // duplicate of OPENCYPHER_STATEMENT_CACHE, which is the one LocalDatabase actually sizes the parsed-statement
+  // cache from - so a user tuning Cypher plan caching through it changed nothing (issue #7121). Removed rather
+  // than wired up: two settings for one cache is the defect, and the surviving one already works.
   CYPHER_MAX_EXPRESSION_DEPTH("arcadedb.cypher.maxExpressionDepth", SCOPE.DATABASE,
       """
       Maximum nesting depth allowed for a single Cypher expression, for example parentheses, list/map literals \
@@ -1034,18 +1035,19 @@ public enum GlobalConfiguration {
       Maximum number of vectors to cache in memory during HNSW graph building. \
       Higher values speed up construction but use more RAM. \
       RAM usage = cacheSize * (dimensions * 4 + 64) bytes. \
-      0 (default) sizes it automatically: an index whose vectors live in the documents (no quantization, or \
-      PRODUCT) caches the whole set when it fits arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent, because \
-      every miss costs a record read; an inline-quantized index (INT8/BINARY) reads a miss straight from an \
-      index page and keeps a small bound instead.""",
+      0 (default) sizes it automatically: the cache holds the whole corpus when it fits \
+      arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent, for document-backed indexes (no quantization, or \
+      PRODUCT) and for inline-quantized indexes (INT8/BINARY). An explicit positive size still wins.""",
       Integer.class, 0),
 
   VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent", SCOPE.DATABASE,
       """
-      Maximum share of the JVM heap (percentage) the auto-sized graph-build cache may use. Only applies when \
-      arcadedb.vectorIndex.graphBuildCacheSize is left at 0. A corpus larger than this budget still builds: \
-      the cache evicts instead of holding everything. Measured against the heap currently AVAILABLE rather than \
-      against the ceiling, so a rebuild that is holding the old graph resident asks for less (issue #6503). \
+      Maximum share of the JVM heap ceiling (percentage) the auto-sized graph-build cache may use. Only applies \
+      when arcadedb.vectorIndex.graphBuildCacheSize is left at 0. A corpus larger than this budget still builds: \
+      the cache evicts instead of holding everything. Taken as this percent of -Xmx, then capped at 90% of the \
+      heap currently AVAILABLE: a served ingest that already holds the corpus in this JVM must not get a third \
+      of the cache an embedded build of the same corpus would get (issue #7146), and an online rebuild that is \
+      holding the old graph must still ask for less (issue #6503). Applies to INT8/BINARY as well as fp32. \
       Values above 90 are clamped to 90: no cache is allowed to plan on the whole heap.""",
       Integer.class, 25),
 
@@ -1343,6 +1345,12 @@ public enum GlobalConfiguration {
 
   SERVER_METRICS_LOGGING("arcadedb.serverMetrics.logging", SCOPE.SERVER, "True to enable metrics logging", Boolean.class, false),
 
+  SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION("arcadedb.serverMetrics.prometheus.requireAuthentication", SCOPE.SERVER, """
+      True (the default) to require authentication on the /prometheus scrape endpoint. Issue #7124: the plugin \
+      reads this setting with a STRICT parse and treats anything that is neither `true` nor `false` as `true`, so a \
+      typo cannot silently publish the endpoint unauthenticated - unlike the permissive coercion every other \
+      Boolean setting gets, which reads an unparseable value as false.""", Boolean.class, true),
+
   SERVER_METRICS_TRACING_ENABLED("arcadedb.serverMetrics.tracing.enabled", SCOPE.SERVER,
       "Enable OpenTelemetry distributed tracing (requires the optional tracing plugin on the classpath). Note: query/command spans include the statement text as the db.statement span attribute, which may contain sensitive data, so secure the OTLP collector endpoint",
       Boolean.class, false),
@@ -1361,9 +1369,18 @@ public enum GlobalConfiguration {
       "When SERVER_READINESS_REQUIRES_HA is true, the maximum number of Raft log entries a follower may lag behind the commit index (commitIndex - lastAppliedIndex) and still report Ready. Keeps /api/v1/ready returning 503 until a (re)joined follower has replayed the committed log, so a rolling restart does not drop the write quorum.",
       Long.class, 100L),
 
+  // The console formatter is chosen once, on the first log record the JVM emits, which is almost always before a
+  // server configuration file, a fromJSON, or the settings API has had a chance to speak. Without this callback the
+  // setting only ever worked as a raw -D/env system property and every supported channel silently kept the default
+  // formatter (issue #7121). Re-selecting on set is enough: DefaultLogger swaps the formatter on the console handler
+  // it already installed, and is a no-op before the logger is initialized (init() then picks the value up itself).
   SERVER_LOG_FORMAT("arcadedb.server.logFormat", SCOPE.SERVER,
       "Console log format: 'text' (default, human-readable) or 'json' (one JSON object per line with correlation fields)",
-      String.class, "text"),
+      String.class, "text", //
+      value -> {
+        DefaultLogger.refreshConsoleFormatter(value != null ? value.toString() : null);
+        return value;
+      }),
 
   SERVER_LOG_INCLUDE_TRACE("arcadedb.server.logIncludeTrace", SCOPE.SERVER,
       "In text log mode, append [traceId=...] to each line while a trace is active. Default false preserves current text output.",
@@ -2064,9 +2081,13 @@ public enum GlobalConfiguration {
 
   HA_PEER_ALLOWLIST_ENABLED("arcadedb.ha.peerAllowlist.enabled", SCOPE.SERVER,
       """
-      Reject inbound Raft gRPC connections whose remote address does not resolve to a host in \
-      arcadedb.ha.serverList. Loopback is always allowed. Does not provide peer identity or encryption: \
-      use mTLS on untrusted networks.""",
+      Reject inbound Raft gRPC connections whose remote address does not resolve to a cluster peer host. \
+      The hosts are those of arcadedb.ha.serverList (expanded with arcadedb.ha.k8sSuffix when \
+      arcadedb.ha.k8s is set), plus the members of the live Raft configuration, which are picked up on \
+      every health monitor tick so a peer that joined at runtime is admitted; on Kubernetes the headless \
+      service behind arcadedb.ha.k8sSuffix is resolved too, so a StatefulSet scale-up pod can complete its \
+      auto-join. Loopback is always allowed. Does not provide peer identity or encryption: use mTLS on \
+      untrusted networks.""",
       Boolean.class, true),
 
   HA_GRPC_ALLOWLIST_REFRESH_MS("arcadedb.ha.grpcAllowlistRefreshMs", SCOPE.SERVER,
@@ -2397,6 +2418,69 @@ public enum GlobalConfiguration {
     else
       value = defValue;
     explicitlySet = false;
+
+    // Symmetry with setValue: a callback is a side effect that has to follow the value, or a reset would report the
+    // default while whatever the callback drives stays on the value that was just discarded (issue #7121).
+    value = invokeCallback(value);
+  }
+
+  /**
+   * Runs this setting's callback for {@code newValue} and returns what it makes of it. Shared by
+   * {@link #setValue(Object)}, {@link #reset()} and {@link #applyContextValue(Object)} so the three cannot drift -
+   * which is exactly how {@code SERVER_LOG_FORMAT}'s set and reset paths came apart (issue #7121). A callback that
+   * throws is logged and swallowed: it is a side effect attached to a setting, never a reason to fail the write.
+   */
+  private Object invokeCallback(final Object newValue) {
+    if (callback == null)
+      return newValue;
+    try {
+      return callback.call(newValue);
+    } catch (final Exception e) {
+      if (LogManager.instance() != null)
+        LogManager.instance().log(this, Level.SEVERE, "Error on applying property %s=%s", e, key, newValue);
+      return newValue;
+    }
+  }
+
+  /**
+   * Runs the callback for a value written into a {@link ContextConfiguration} overlay rather than into this enum.
+   * <p>
+   * A SCOPE.SERVER setting is authoritative in the SERVER's own overlay, and that overlay is a plain map: the
+   * server configuration file ({@code fromJSON}), the {@code SET SERVER SETTING} admin command and the MCP
+   * {@code set_server_setting} tool all write into it without ever touching this enum. A setting whose effect is a
+   * SIDE EFFECT rather than a value someone later reads was therefore stored and never applied through any of the
+   * channels its SCOPE advertises (issue #7121). The return value is deliberately dropped - the overlay owns the
+   * stored value, this call is only about running the side effect.
+   * <p>
+   * <b>That makes a contract on the callback of any SCOPE.SERVER setting: it must be a pure side effect and return
+   * its argument unchanged.</b> A callback that NORMALISES the value - case-folds it, clamps it, substitutes a
+   * default - would have that normalisation applied on the enum path and silently dropped here, so the same input
+   * would be stored one way in the process-wide enum and another way in a server's overlay. Normalise in
+   * {@link #coerce(Object)} instead, which both paths go through.
+   * <p>
+   * The callback is handed a COERCED value, as {@link #setValue(Object)} hands it one, so a callback that expects
+   * the setting's declared type (a {@code Boolean}, an {@code Integer}) is not silently given the raw {@code String}
+   * a configuration file or an admin command carried. A value this setting cannot coerce is passed through as-is
+   * rather than failing the write: the overlay has already stored it, and refusing here would leave the side effect
+   * and the stored value disagreeing.
+   */
+  void applyContextValue(final Object newValue) {
+    if (callback == null || scope != SCOPE.SERVER)
+      return;
+
+    Object coerced;
+    try {
+      coerced = coerce(newValue);
+    } catch (final Exception e) {
+      // Logged, not swallowed silently: the callback is about to be handed a value of a type it may not expect, and
+      // the failure it then throws would otherwise point at the callback instead of at the value that caused it.
+      if (LogManager.instance() != null)
+        LogManager.instance()
+            .log(this, Level.WARNING, "Value %s for property %s could not be coerced to %s; the setting's side effect "
+                + "runs with the raw value", e, newValue, key, type.getSimpleName());
+      coerced = newValue;
+    }
+    invokeCallback(coerced);
   }
 
   /**
@@ -2697,6 +2781,40 @@ public enum GlobalConfiguration {
    *
    * @throws IllegalArgumentException if {@code iValue} cannot be represented as this setting's type
    */
+  /**
+   * The conversion {@link #coerce(Object)} performs, but STRICT about a {@code Boolean} setting: a text value that is
+   * neither {@code true} nor {@code false} is refused instead of silently reading as {@code false}.
+   * <p>
+   * Issue #7124: {@code coerce} cannot be tightened, and its own javadoc says why - it runs inside this class's
+   * static initializer over every system property and environment variable, so a boolean typo would become an
+   * {@code ExceptionInInitializerError} that takes the engine down instead of the setting. That leniency is safe for
+   * a value the process configured itself with, and unsafe for one an administrator just typed: {@code SET SERVER
+   * SETTING arcadedb.serverMetrics.prometheus.requireAuthentication ture} used to be answered with a 200 and store
+   * {@code false}, turning a typo into an unauthenticated metrics endpoint. Every other type already refuses what it
+   * cannot read here ({@code abc} for an {@code Integer} throws); {@code Boolean} was the one that did not.
+   * <p>
+   * This is the entry point for a value that arrived from an administrative command, where refusing loudly is an
+   * error the operator can read and act on. All four writers use it: the {@code set server setting} and
+   * {@code set database setting} HTTP commands, the {@code set_server_setting} MCP tool, and
+   * {@code ALTER DATABASE ... SETTING} in SQL. Every other conversion path keeps using {@link #coerce(Object)} -
+   * notably this class's own static initializer, which is the reason the two have to be separate methods.
+   *
+   * @param iValue the value to convert, or {@code null}
+   *
+   * @return the value as an instance of {@link #getType()}, or {@code null} when {@code iValue} is {@code null}
+   *
+   * @throws IllegalArgumentException if {@code iValue} cannot be represented as this setting's type
+   */
+  public Object coerceFromAdminCommand(final Object iValue) {
+    if (type == Boolean.class && iValue != null && !(iValue instanceof Boolean)) {
+      final String text = iValue.toString().trim();
+      if (!"true".equalsIgnoreCase(text) && !"false".equalsIgnoreCase(text))
+        throw invalidValue(iValue, new IllegalArgumentException("only 'true' and 'false' are accepted"));
+    }
+
+    return coerce(iValue);
+  }
+
   public Object coerce(final Object iValue) {
     if (iValue == null)
       return null;
@@ -2820,16 +2938,7 @@ public enum GlobalConfiguration {
     try {
       value = coerce(iValue);
 
-      if (callback != null)
-        try {
-          final Object newValue = callback.call(value);
-          if (newValue != value)
-            // OVERWRITE IT
-            value = newValue;
-        } catch (final Exception e) {
-          if (LogManager.instance() != null)
-            LogManager.instance().log(this, Level.SEVERE, "Error during setting property %s=%s", e, key, value);
-        }
+      value = invokeCallback(value);
 
       if (allowed != null && value != null)
         if (!allowed.contains(value.toString().toLowerCase(Locale.ENGLISH)))

@@ -36,6 +36,11 @@ import java.util.logging.Level;
  * after them, not the whole heap. Raising {@code -Xmx} did not create headroom either, because a bigger heap grew
  * both caches proportionally and the rebuild was no more likely to fit (issue #6503).
  * <p>
+ * The graph-build cache is the exception to "percent of leftover". A served ingest that already holds the
+ * corpus in this JVM would otherwise get a third of the cache an embedded build of the same corpus would get
+ * (issue #7146). {@link #buildCacheBudgetBytes(int)} takes the percent of the ceiling and caps it at 90% of
+ * leftover, so the two deployments agree until an online rebuild is actually holding the old graph.
+ * <p>
  * <b>Why not {@code Runtime.freeMemory()}.</b> That reports free space in the <em>currently committed</em> heap,
  * and everything allocated since the last collection counts as used whether it is live or garbage. Read just
  * before a collection it says the heap is nearly full even when almost all of it is about to be reclaimed, so a
@@ -139,6 +144,34 @@ final class VectorHeapBudget {
     if (percent <= 0)
       return 0L;
     return availableHeapBytes() / 100 * Math.min(percent, 90);
+  }
+
+  /**
+   * Heap the graph-build cache may claim: the operator's share of the ceiling, never more than 90% of what is
+   * currently free.
+   * <p>
+   * {@link #budgetBytes(int)} takes the percent of AVAILABLE heap, which is the right denominator for an admission
+   * gate that must not OOM (issue #6503). It is the wrong denominator for the build cache itself. A served ingest
+   * that has just written the corpus into this JVM reports a small leftover, so 25% of that leftover is a third of
+   * the cache an embedded build of the same corpus would get - and that is the steep side of the cache curve
+   * (issue #7146). Taking the percent of {@code -Xmx} instead makes the two deployments agree; capping at 90% of
+   * currently free heap is what still shrinks the cache when an online rebuild is holding the old graph.
+   */
+  static long buildCacheBudgetBytes(final int percent) {
+    return buildCacheBudgetBytes(percent, maxHeapBytes(), availableHeapBytes());
+  }
+
+  /**
+   * Same arithmetic as {@link #buildCacheBudgetBytes(int)}, with the heap figures supplied so a test can pin the
+   * served vs embedded numbers from issue #7146 without a 24 GB fixture.
+   */
+  static long buildCacheBudgetBytes(final int percent, final long maxHeap, final long availableHeap) {
+    if (percent <= 0)
+      return 0L;
+    final int p = Math.min(percent, 90);
+    final long fromCeiling = Math.max(0L, maxHeap) / 100 * p;
+    final long fromAvailable = Math.max(0L, availableHeap) / 100 * 90;
+    return Math.min(fromCeiling, fromAvailable);
   }
 
   /**

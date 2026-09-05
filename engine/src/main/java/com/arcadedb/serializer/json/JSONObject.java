@@ -588,8 +588,18 @@ public class JSONObject implements Map<String, Object> {
    */
   public JSONObject setDateFormat(final String dateFormat) {
     this.dateFormatAsString = dateFormat;
+    // Null is the documented timestamp mode (see the javadoc above and the `dateFormatAsString == null` branches in
+    // put()), so it must not reach a formatter factory: both DateTimeFormatter.ofPattern(null) and
+    // DateUtils.getFormatter(null) throw NullPointerException, which the IllegalArgumentException catch below never
+    // covered. The setter documented a mode it could not actually be put into.
+    if (dateFormat == null) {
+      this.dateFormat = null;
+      return this;
+    }
     try {
-      this.dateFormat = DateTimeFormatter.ofPattern(dateFormat);
+      // DateUtils.getFormatter(), not DateTimeFormatter.ofPattern(): these formats come from the schema, and JSON is a
+      // wire and storage format, so a textual field must not follow the JVM default locale (issue #7144)
+      this.dateFormat = DateUtils.getFormatter(dateFormat);
     } catch (IllegalArgumentException e) {
       throw new JSONException("Invalid date format: " + dateFormat, e);
     }
@@ -598,8 +608,12 @@ public class JSONObject implements Map<String, Object> {
 
   public JSONObject setDateTimeFormat(final String dateFormat) {
     this.dateTimeFormatAsString = dateFormat;
+    if (dateFormat == null) {
+      this.dateTimeFormat = null;
+      return this;
+    }
     try {
-      this.dateTimeFormat = DateTimeFormatter.ofPattern(dateFormat);
+      this.dateTimeFormat = DateUtils.getFormatter(dateFormat);
     } catch (IllegalArgumentException e) {
       throw new JSONException("Invalid date format: " + dateFormat, e);
     }

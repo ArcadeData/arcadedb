@@ -903,7 +903,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         switch (decoded.type()) {
         case TX_ENTRY -> applyTxEntry(decoded, index, originatedLocally);
         case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
-        case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
+        case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
         case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
         case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
         case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index, originatedLocally);
@@ -2561,11 +2561,35 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return list != null && !list.isEmpty();
   }
 
-  private void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+  // @VisibleForTesting
+  void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
     final String databaseName = decoded.databaseName();
     final boolean forceSnapshot = decoded.forceSnapshot();
 
     if (forceSnapshot) {
+      // Replay guard (issue #7143). Ratis re-feeds every entry between the last snapshot marker and
+      // shutdown, and unlike the normal-create branch below the force branch has no existence check to
+      // stop it - existence is precisely what it ignores. So without this a restart re-downloaded and
+      // re-installed the whole database on every replay: correct in outcome, but a node restarting
+      // repeatedly re-pulls a multi-GB database on each attempt, lengthening every start and competing
+      // for the bandwidth the cluster needs to recover. The in-place Ratis restart (restartRatisIfNeeded,
+      // one per health-monitor tick) can repeat that without the process ever exiting.
+      //
+      // The same per-database evidence applyBootstrapFingerprintEntry uses: a persisted applied index at
+      // or beyond this entry proves a previous session ran this install to completion and that Raft has
+      // since replicated this database forward from there. It is deliberately PER-DATABASE - one state
+      // machine multiplexes every database, so a co-located database that advanced the global index must
+      // not suppress this one's reinstall (issue #4824) - and a legacy plain-number applied-index file
+      // yields -1, which re-installs exactly as before.
+      final long persistedApplied = readPersistedAppliedIndex(databaseName);
+      if (persistedApplied >= entryIndex) {
+        LogManager.instance().log(this, Level.INFO,
+            "Database '%s' already reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
+                + "entryIndex=%d); skipping the snapshot re-download",
+            databaseName, persistedApplied, entryIndex);
+        return;
+      }
+
       // Restore flow: replace files from the leader's snapshot even if the DB exists.
       // The leader's own files are already authoritative, so the leader skips the reinstall;
       // replicas close their local copy and pull the fresh snapshot from the leader.

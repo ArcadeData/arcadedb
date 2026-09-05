@@ -197,6 +197,11 @@ public class ArcadeDBServer {
   // Holds the per-follower gauge refresh scheduler open; must be closed on stop or the daemon
   // thread it starts leaks one instance per restart (issue #5850).
   private              HAReplicationMetrics haReplicationMetrics;
+  // The server-health monitor (low disk, heap pressure, JVM safepoint spikes) is NOT started: nothing constructs
+  // ServerMonitor, so none of its checks run. Issue #7124 fixed two defects in it - the low-disk warning measured
+  // the JVM working directory rather than the configured database directory, and the safepoint "spike" check
+  // compared two lifetime cumulative averages - which means the class is now correct but still inert. Re-enabling it
+  // is a separate decision: it starts one more daemon thread and begins writing WARNING events to the event log.
 //  private             ServerMonitor                         serverMonitor;
 
   static {
@@ -1368,8 +1373,8 @@ public class ArcadeDBServer {
               break;
 
             default:
-              LogManager.instance().log(this, Level.SEVERE, "Unsupported command %s in startup command: '%s'", null
-                  , commandType);
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Unsupported command '%s' in startup command: '%s'", null, commandType, command);
             }
           }
         } else {
@@ -1446,8 +1451,10 @@ public class ArcadeDBServer {
       try {
         final String content = FileUtils.readFileAsString(file);
         configuration.reset();
+        // fromJSON runs the side effect of every declared SCOPE.SERVER setting it loads, so a setting like
+        // arcadedb.server.logFormat - whose effect is swapping the console formatter chosen at logger init, long
+        // before this file is read - takes effect from the configuration file too (issue #7121).
         configuration.fromJSON(content);
-
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e, file);
       }

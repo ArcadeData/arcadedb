@@ -93,7 +93,15 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     final Schema schema = context.getDatabase().getSchema();
     if (schema.existsType(name.getStringValue())) {
       if (ifNotExists) {
-        return new InternalResultSet();
+        // One row, exactly as the creating branch below, with created=false telling the two apart. IF NOT
+        // EXISTS is there to make a retry safe, so answering an empty result set the second time - which a
+        // client checking the row count reads as failure - defeated its purpose (issue #7143).
+        final ResultInternal existing = new ResultInternal(context.getDatabase());
+        existing.setProperty("operation", commandType());
+        existing.setProperty("typeName", name.getStringValue());
+        existing.setProperty("created", false);
+        name = prevName;
+        return new InternalResultSet(existing);
       } else {
         throw new CommandExecutionException("Type " + name + " already exists");
       }
@@ -103,6 +111,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", commandType());
     result.setProperty("typeName", name.getStringValue());
+    result.setProperty("created", true);
 
     final DocumentType[] superclasses = getSuperTypes(schema);
 

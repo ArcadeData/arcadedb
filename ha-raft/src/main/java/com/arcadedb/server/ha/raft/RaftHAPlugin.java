@@ -185,7 +185,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       LogManager.instance().log(this, Level.WARNING,
           "HA database '%s' has %d type(s) backed by a single bucket: %s. In a cluster all writes "
               + "execute on the leader, so these types serialize concurrent writers on the same page and cause "
-              + "MVCC retries. Increase buckets (e.g. CREATE VERTEX TYPE <name> BUCKETS 16) and set "
+              + "MVCC retries. Add buckets to an EXISTING type with 'ALTER TYPE <name> BUCKET +<name>_1' (repeat "
+              + "once per extra bucket; the bucket is created if it does not exist) and then set "
               + "'ALTER TYPE <name> BucketSelectionStrategy `thread`' to remove the contention.",
           db.getName(), singleBucketTypes.size(), singleBucketTypes);
     } catch (final RuntimeException e) {

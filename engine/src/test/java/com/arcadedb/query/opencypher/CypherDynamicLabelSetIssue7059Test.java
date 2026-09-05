@@ -289,6 +289,77 @@ class CypherDynamicLabelSetIssue7059Test extends TestHelper {
     assertThat(rs.next().<List<String>>getProperty("l")).containsExactlyInAnyOrder("Entity", "Finding");
   }
 
+  /**
+   * Issue #7151, reported against a snapshot that predated the fix above: the dynamic label written as a bare
+   * <i>string literal</i>, {@code SET n:$('W')}, rather than as a parameter or a property read. It is the one
+   * shape of the expression whose source text is a plausible label on its own, so a regression here would land a
+   * type literally named {@code $('W')} exactly as the report describes. Neo4j 2026.06 yields {@code [U, W]}.
+   */
+  @Test
+  void aStringLiteralDynamicLabelInterpolates() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (n:U {id: 1})").close();
+      database.command("opencypher", "MATCH (n:U) WHERE n.id = 1 SET n:$('W')").close();
+    });
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:U) WHERE n.id = 1 RETURN labels(n) AS l");
+    assertThat(rs.next().<List<String>>getProperty("l")).containsExactlyInAnyOrder("U", "W");
+    assertThat(schemaTypeNames()).noneMatch(name -> name.contains("$("));
+  }
+
+  /** The label the literal produced has to be reachable by name, not merely present in {@code labels()}. */
+  @Test
+  void theStringLiteralLabelIsMatchable() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (n:U {id: 1})").close();
+      database.command("opencypher", "MATCH (n:U) WHERE n.id = 1 SET n:$('W')").close();
+    });
+
+    assertThat(database.query("opencypher", "MATCH (n:W) RETURN count(n) AS c").next().<Long>getProperty("c")).isEqualTo(1L);
+  }
+
+  /**
+   * The reporter drove this over the HTTP command API, which runs each statement on its own implicit transaction
+   * rather than inside a caller-opened one. Label writes rewrite the record, so the two paths commit differently.
+   */
+  @Test
+  void aStringLiteralDynamicLabelInterpolatesUnderAutocommit() {
+    database.command("opencypher", "CREATE (n:U {id: 1})").close();
+    database.command("opencypher", "MATCH (n:U) WHERE n.id = 1 SET n:$('W')").close();
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:U) WHERE n.id = 1 RETURN labels(n) AS l");
+    assertThat(rs.next().<List<String>>getProperty("l")).containsExactlyInAnyOrder("U", "W");
+    assertThat(schemaTypeNames()).noneMatch(name -> name.contains("$("));
+  }
+
+  /** The REMOVE mirror of the literal form, the shape issue #7093 reported. */
+  @Test
+  void aStringLiteralDynamicLabelIsRemovable() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (n:U:W {id: 1})").close();
+      database.command("opencypher", "MATCH (n:U) WHERE n.id = 1 REMOVE n:$('W')").close();
+    });
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:U) WHERE n.id = 1 RETURN labels(n) AS l");
+    assertThat(rs.next().<List<String>>getProperty("l")).containsExactly("U");
+  }
+
+  /**
+   * An expression, not just a literal: {@code $('W' + 'X')} has to be evaluated, and its source text is not a
+   * label at all. Neo4j applies {@code WX}.
+   */
+  @Test
+  void aComputedStringExpressionDynamicLabelInterpolates() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (n:U {id: 1})").close();
+      database.command("opencypher", "MATCH (n:U) WHERE n.id = 1 SET n:$('W' + 'X')").close();
+    });
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:U) WHERE n.id = 1 RETURN labels(n) AS l");
+    assertThat(rs.next().<List<String>>getProperty("l")).containsExactlyInAnyOrder("U", "WX");
+    assertThat(schemaTypeNames()).noneMatch(name -> name.contains("$("));
+  }
+
   private List<String> schemaTypeNames() {
     return database.getSchema().getTypes().stream().map(t -> t.getName()).toList();
   }

@@ -59,7 +59,10 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
 
     if (schema.existsType(name.getStringValue())) {
       if (ifNotExists)
-        return new InternalResultSet();
+        // One row, exactly as the creating branch below, with created=false telling the two apart. Returning
+        // an empty result set on a retry made a caller that checks the row count read success as failure,
+        // which is precisely what IF NOT EXISTS exists to prevent (issue #7143).
+        return new InternalResultSet(describe(context, false));
       else
         throw new CommandExecutionException("Type '" + name.getStringValue() + "' already exists");
     }
@@ -89,10 +92,15 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
 
     builder.create();
 
+    return new InternalResultSet(describe(context, true));
+  }
+
+  private ResultInternal describe(final CommandContext context, final boolean created) {
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "create timeseries type");
     result.setProperty("typeName", name.getStringValue());
-    return new InternalResultSet(result);
+    result.setProperty("created", created);
+    return result;
   }
 
   @Override

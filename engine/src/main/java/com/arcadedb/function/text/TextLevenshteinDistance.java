@@ -31,7 +31,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
  */
 public class TextLevenshteinDistance extends AbstractTextFunction {
 
-  private static final int MAX_STRING_LENGTH = 10000;
+  /** Longest either argument may be; beyond it the O(n*m) computation is refused rather than run. */
+  public static final int MAX_STRING_LENGTH = 10000;
 
   @Override
   protected String getSimpleName() {

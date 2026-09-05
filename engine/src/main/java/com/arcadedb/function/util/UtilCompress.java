@@ -36,6 +36,9 @@ import java.util.zip.GZIPOutputStream;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class UtilCompress extends AbstractUtilFunction {
+  /** Largest payload this function will compress; anything beyond it is refused. */
+  public static final int MAX_INPUT_SIZE = 10 * 1024 * 1024; // 10MB maximum input size
+
   @Override
   protected String getSimpleName() {
     return "compress";
@@ -56,8 +59,6 @@ public class UtilCompress extends AbstractUtilFunction {
     return "Compress data using the specified algorithm (gzip or deflate), returns base64-encoded string";
   }
 
-  private static final int MAX_INPUT_SIZE = 10 * 1024 * 1024; // 10MB maximum input size
-
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args[0] == null)
@@ -77,19 +78,21 @@ public class UtilCompress extends AbstractUtilFunction {
 
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
 
+      // Arrow form, as on the decompress side: a colon switch stays correct only while every branch keeps its
+      // break, so a line added to one of them could fall through and compress the payload twice, with the second
+      // algorithm wrapping the output of the first.
       switch (algorithm) {
-      case "gzip":
-        try (final GZIPOutputStream gzos = new GZIPOutputStream(baos)) {
-          gzos.write(inputBytes);
+        case "gzip" -> {
+          try (final GZIPOutputStream gzos = new GZIPOutputStream(baos)) {
+            gzos.write(inputBytes);
+          }
         }
-        break;
-      case "deflate":
-        try (final DeflaterOutputStream dos = new DeflaterOutputStream(baos, new Deflater(Deflater.DEFAULT_COMPRESSION))) {
-          dos.write(inputBytes);
+        case "deflate" -> {
+          try (final DeflaterOutputStream dos = new DeflaterOutputStream(baos, new Deflater(Deflater.DEFAULT_COMPRESSION))) {
+            dos.write(inputBytes);
+          }
         }
-        break;
-      default:
-        throw new IllegalArgumentException("Unsupported compression algorithm: " + algorithm);
+        default -> throw new IllegalArgumentException("Unsupported compression algorithm: " + algorithm);
       }
 
       return Base64.getEncoder().encodeToString(baos.toByteArray());
