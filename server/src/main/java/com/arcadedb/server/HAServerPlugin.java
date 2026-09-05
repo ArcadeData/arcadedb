@@ -202,14 +202,17 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
-   * Transfers leadership to the specified peer.
+   * Transfers leadership to the specified peer. Only the leader may do this: a follower has nothing to
+   * transfer and the request would be routed to the real leader, forcing an election nobody asked for
+   * (issue #7134). Implementations must refuse on a non-leader, naming the leader when one is known.
    */
   default void transferLeadership(final String targetPeerId, final long timeoutMs) {
     throw new UnsupportedOperationException("Dynamic membership not supported by this HA implementation");
   }
 
   /**
-   * Steps down from leadership, transferring to any available peer.
+   * Steps down from leadership, transferring to any available peer. Only the leader may do this; see
+   * {@link #transferLeadership(String, long)} for why a non-leader must refuse rather than forward.
    */
   default void stepDown() {
     throw new UnsupportedOperationException("Dynamic membership not supported by this HA implementation");
