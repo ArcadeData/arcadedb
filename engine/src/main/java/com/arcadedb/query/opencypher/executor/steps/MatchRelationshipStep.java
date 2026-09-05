@@ -116,7 +116,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    * @param pattern              relationship pattern to match
    * @param pathVariable         path variable name (e.g., p in p = (a)-[r]->(b)), can be null
    * @param targetNodePattern    target node pattern for label filtering (can be null)
-   * @param boundVariableNames   set of variable names already bound in previous steps (can be null)
+   * @param boundVariableNames   the names the row already carries a vertex under when this hop runs, which
+   *                             the hop identity-checks its target against: everything bound before this MATCH
+   *                             plus everything the MATCH has bound so far, this hop's own included (#6311).
+   *                             Can be null
    * @param context              command context
    */
   public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
