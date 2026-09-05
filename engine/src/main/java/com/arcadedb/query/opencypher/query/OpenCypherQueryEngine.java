@@ -922,6 +922,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * nanoseconds (nothing can widen it further), and the caller is about to walk every record anyway
    * to build the index, so it costs one extra sequential scan on a DDL statement that is already
    * linear in the type's size.
+   * <p>
+   * That scan is unconditional once the property is seen to be temporal, including the common case
+   * where every value is plain millisecond-precision and the answer is the {@code DATETIME} the
+   * capped scan would have given. So indexing a temporal column on a very large type costs a
+   * measurable amount of extra wall clock on top of the index build - deliberately, because the
+   * alternative is silently truncating precision that is already persisted. If a slow
+   * {@code CREATE INDEX} on a huge temporal column ever needs to be cut down, this is the place, and
+   * anything that reintroduces a bound reintroduces the truncation of issue #7164 with it.
    */
   private Type inferPropertyTypeFromExistingData(final String typeName, final String propertyName) {
     try {
@@ -935,8 +943,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
         scanned++;
         if (!(record instanceof Document doc))
           continue;
-        if (!doc.has(propertyName))
-          continue;
+        // NO has() GUARD: get() ALREADY ANSWERS null FOR AN ABSENT PROPERTY, AND EACH OF THE TWO MAKES ITS OWN PASS
+        // OVER THE RECORD BUFFER - ASKING TWICE DOUBLED THE COST OF EVERY RECORD IN THE UNCAPPED SWEEP ABOVE
         final Object value = doc.get(propertyName);
         if (value == null)
           continue;
