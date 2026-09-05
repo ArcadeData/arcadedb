@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
 
@@ -348,9 +347,14 @@ public final class SnapshotInstaller {
             + "' downloaded but failed to open; rolled back to the previous local copy", openEx);
       }
 
-      // Success: drop the retained backup and clear the pending marker.
-      deleteDirectoryIfExists(snapshotBackup);
+      // Success. Clear the pending marker FIRST, then drop the retained backup - the order matters because the
+      // marker is what every reconciliation path keys on. Deleting the backup first and failing (or crashing)
+      // before the marker leaves marker+backup, which reconcileRetainedBackup and startup recovery both read as
+      // "the swap was interrupted" and would answer by restoring the OLD database over the new one that is
+      // already correctly installed. Marker-first leaves at worst a stale backup directory with no marker, which
+      // every path ignores and the next install deletes as leftover.
       Files.deleteIfExists(pendingMarker);
+      deleteDirectoryIfExists(snapshotBackup);
 
       HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
     }
@@ -769,10 +773,9 @@ public final class SnapshotInstaller {
         if (!looksLikeADatabaseDirectory(dbDir)) {
           LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
               "Snapshot recovery for %s found no completion marker and no backup to restore from, and the database "
-                  + "directory does not contain '%s' - it is incomplete, not intact. Leaving it and the "
+                  + "directory does not hold a loadable schema - it is incomplete, not intact. Leaving it and the "
                   + ".snapshot-pending marker untouched for inspection rather than accepting it as a healthy "
-                  + "database; the node will reacquire this database from the leader", null, dbDir,
-              LocalSchema.SCHEMA_FILE_NAME);
+                  + "database; the node will reacquire this database from the leader", null, dbDir);
           return;
         }
 
@@ -792,12 +795,19 @@ public final class SnapshotInstaller {
 
   /**
    * Whether {@code dbDir} holds something that can be opened as a database, used by the recovery branch that has
-   * no marker and no backup to reason from (issue #7139). {@code schema.json} is the file every ArcadeDB database
-   * directory carries and the one {@code clearLiveDatabaseFiles} removes along with the rest, so its absence is
-   * the cheapest reliable evidence that a rollback tore this directory rather than never having touched it.
+   * no marker and no backup to reason from (issue #7139). A rollback that tore the directory took the schema
+   * file with everything else, so its absence is the cheapest reliable evidence of a torn directory rather than
+   * an untouched one.
+   * <p>
+   * Delegates to {@link DatabaseFactory#exists()} rather than testing {@code schema.json} directly: that is the
+   * engine's own definition, and it also accepts {@code schema.prev.json}, the marker {@code LocalSchema} leaves
+   * mid-rewrite. A database interrupted during a schema rewrite is exactly the kind of state this path exists to
+   * reason about, and testing only the final name would misread it as torn.
    */
   private static boolean looksLikeADatabaseDirectory(final Path dbDir) {
-    return Files.exists(dbDir.resolve(LocalSchema.SCHEMA_FILE_NAME));
+    try (final DatabaseFactory factory = new DatabaseFactory(dbDir.toString())) {
+      return factory.exists();
+    }
   }
 
   /**

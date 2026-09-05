@@ -27,6 +27,8 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -103,6 +105,43 @@ class Issue7134StepDownRetryStopsOnRefusalTest {
 
     verify(raft, times(3)).stepDown();
   }
+
+  /**
+   * The same shape one level up, in {@code stepDown()}'s own candidate loop. Leadership moving after the entry
+   * guard used to be swallowed per candidate: every remaining peer refused identically, the loop fell through to
+   * a redundant no-target attempt and a misleading "no other peer available", and stepDown() RETURNED NORMALLY -
+   * which the HTTP handler reports as 200 for a step-down that never happened.
+   */
+  @Test
+  void stepDownAbortsWhenLeadershipMovesWhileCandidatesAreTried() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getServerName()).thenReturn("ArcadeDB_0");
+
+    // isLeader() is true (the entry guard passes) but every transfer refuses, as it does once leadership moved.
+    final RaftHAServer raft = new RaftHAServer(server, config) {
+      @Override
+      public boolean isLeader() {
+        return true;
+      }
+
+      @Override
+      public void transferLeadership(final String targetPeerId, final long timeoutMs) {
+        transferAttempts++;
+        throw new NotTheLeaderRefusalException("Refusing to transfer leadership to " + targetPeerId,
+            RaftPeerId.valueOf(NEW_LEADER));
+      }
+    };
+
+    assertThatThrownBy(raft::stepDown)
+        .as("a step-down that transferred nothing must not return normally")
+        .isInstanceOf(NotTheLeaderRefusalException.class)
+        .hasMessageContaining(NEW_LEADER);
+    assertThat(transferAttempts).as("the remaining candidates all refuse identically; do not try them").isEqualTo(1);
+  }
+
+  private int transferAttempts;
 
   /** And a node that is not the leader when recovery starts never attempts a step-down at all. */
   @Test

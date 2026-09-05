@@ -2756,7 +2756,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * through a Kubernetes Service, so the guard sits here - in the method every caller goes through - rather
    * than only in the handler.
    *
-   * @throws NotTheLeaderRefusalException when this node is not the leader
+   * @throws NotTheLeaderRefusalException when this node is not the leader, whether that is already true on
+   *                                       entry or becomes true while the candidates are being tried
    */
   public void stepDown() {
     if (!isLeader())
@@ -2768,6 +2769,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       try {
         transferLeadership(peer.getId().toString(), 10_000);
         return;
+      } catch (final NotTheLeaderRefusalException notLeader) {
+        // Leadership moved between the guard above and this attempt. Every remaining candidate refuses
+        // identically, so walking the list logs the same thing N times and then falls through to "no other peer
+        // available for leadership transfer" - and stepDown() would RETURN NORMALLY, which the HTTP handler
+        // reports as 200 for a step-down that never happened. Propagate instead: the caller is told, with the
+        // new leader's name, that there was nothing here to step down from (issue #7134).
+        throw notLeader;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE,
             "Failed to step down (transfer to %s): %s", peer.getId(), e.getMessage());

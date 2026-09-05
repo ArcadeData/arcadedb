@@ -156,6 +156,29 @@ class Issue7139RetainedBackupNotDestroyedTest {
   }
 
   /**
+   * A database interrupted during a SCHEMA REWRITE carries {@code schema.prev.json} and no {@code schema.json} -
+   * and that is a database, not a torn directory. Testing only the final name would misread exactly the kind of
+   * interrupted state this recovery path exists to reason about, which is why the check delegates to the
+   * engine's own {@code DatabaseFactory.exists()} rather than restating it.
+   */
+  @Test
+  void aDatabaseInterruptedMidSchemaRewriteIsNotMistakenForATornDirectory(@TempDir final Path databasesDir)
+      throws Exception {
+    final Path dbDir = databasesDir.resolve(DB);
+    Files.createDirectories(dbDir);
+    Files.writeString(dbDir.resolve("schema.prev.json"), "{\"original\":true}");
+    Files.writeString(dbDir.resolve("data.dat"), "existing-data");
+    Files.writeString(dbDir.resolve(".snapshot-pending"), "");
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir);
+
+    assertThat(dbDir.resolve(".snapshot-pending"))
+        .as("a mid-rewrite database is intact, so the orphaned branch may clean up around it")
+        .doesNotExist();
+    assertThat(Files.readString(dbDir.resolve("data.dat"))).isEqualTo("existing-data");
+  }
+
+  /**
    * A server whose snapshot download can never succeed (no leader address resolves), with retries turned off so
    * the test does not pay the backoff.
    */
