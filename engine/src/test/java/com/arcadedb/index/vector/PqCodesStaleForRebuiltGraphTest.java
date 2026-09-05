@@ -95,6 +95,10 @@ class PqCodesStaleForRebuiltGraphTest extends TestHelper {
     // Before anything is made stale: the settled pair agrees, and the approximate path answers through it. This
     // is what stops the guard from being a way to switch the PQ path off - if it fired in the steady state the
     // index would quietly serve every query from the exact path, and no other assertion here would notice.
+    //
+    // graphNodeCount is getIdUpperBound(), which is deliberately the same quantity the guard compares against the
+    // code count - not size(). Asserting one while the guard checked the other would leave any future divergence
+    // between the two (a graph carrying a hole in its id space) invisible to this test.
     assertThat(index.getStats().get("graphNodeCount"))
         .as("a settled index's codes cover exactly the graph they were built from")
         .isLessThanOrEqualTo((long) index.getPQVectorCount());

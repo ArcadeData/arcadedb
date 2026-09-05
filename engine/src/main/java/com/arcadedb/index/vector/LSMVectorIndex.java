@@ -6331,16 +6331,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // exclude the entry point, so a filter cannot close this. The ordinal map is checked too because the
         // pre-filter branch scores ordinals from it rather than from the beam.
         //
+        // getIdUpperBound(), not size(): the question here is the ordinal SPACE the beam can hand back, and JVector
+        // defines that as "highest node id seen + 1" while size() is merely how many nodes are in it. The two are
+        // equal for every graph this index publishes today, because a deletion rebuilds the graph rather than
+        // punching a hole in its id space (loadPersistedGraphOrDecidePrefix refuses a persisted graph outright once
+        // getDeletedCount() is non-zero, issue #3135) - but a graph that ever did carry a hole would pass a
+        // size() check and still walk an ordinal past the codes' end, which is the exception this whole guard
+        // exists to prevent. The rest of the file already asks the question this way: findUnreachableOrdinals sizes
+        // its BFS arrays off getIdUpperBound(), and getStats reports it as graphNodeCount.
+        //
         // Any state where this fires is a state the PQ path cannot serve at all, so nothing that works today is
         // being turned off: in the steady state the codes cover exactly the graph they were built from. The exact
         // path needs no codes, so it answers correctly throughout the window, and the fast path resumes by itself
         // on the next query once the codes are republished. Falling back has to happen after this lock is
         // released - findNeighborsFromVector can take the WRITE lock to rebuild, and this thread holds the read
         // lock, which ReentrantReadWriteLock cannot upgrade.
+        //
+        // pinnedOrdinalMap is also the ONE snapshot the filter and the result loop below both resolve through, the
+        // way the exact path takes one: reading the volatile field at each use instead would let a rebuild land
+        // between two of them and pair an ordinal's RID with a vector from a different mapping (issue #4581). The
+        // guard has to check that same array for the same reason - checking one snapshot and walking another says
+        // nothing.
         final PQVectors           pinnedPq         = pqVectors;
         final ImmutableGraphIndex pinnedGraph      = graphIndex;
         final int[]               pinnedOrdinalMap = this.ordinalToVectorId;
-        if (pinnedPq != null && pinnedGraph.size() <= pinnedPq.count()
+        if (pinnedPq != null && pinnedGraph.getIdUpperBound() <= pinnedPq.count()
             && pinnedOrdinalMap.length <= pinnedPq.count()) {
           // Convert query vector to VectorFloat
           final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
@@ -6357,30 +6372,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Wrap in a DefaultSearchScoreProvider (concrete implementation)
           final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(scoreFunction, approxReranker);
 
-          // Snapshot the volatile ordinal map once, the way the exact path does: the filter and the result loop below
-          // must resolve an ordinal through the same array, or a concurrent rebuild between the two reads would pair
-          // an ordinal's RID with a vector from a different mapping (issue #4581).
-          final int[] ordinalMap = pinnedOrdinalMap;
-
           // Issue #6514 pre-filter plan: the PQ-scored counterpart of the issue #6502 plan in findNeighborsFromVector -
           // see preFilterApproximate's javadoc for why it cannot simply call bruteForceScan. Gated by its own
           // selectivity threshold, not VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY: Issue6514ApproximatePrefilterBenchmark
           // measured this path's crossover at roughly 6-7% selectivity, well below the exact path's 20% default -
           // see VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY's javadoc for why the two cannot share one knob.
-          if (allowedRIDs != null && !allowedRIDs.isEmpty() && allowListQualifiesForPreFilter(allowedRIDs, ordinalMap,
+          if (allowedRIDs != null && !allowedRIDs.isEmpty() && allowListQualifiesForPreFilter(allowedRIDs, pinnedOrdinalMap,
               GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY)) {
             metrics.incrementPreFilterSearches();
             final List<Pair<RID, Float>> results = new ArrayList<>(k);
             // PQ-scaled, not exact (issue #6559 item 2): preFilterApproximate scores its ordinals from the PQ codes,
             // so delta rows merged here are ranked against - and returned alongside - approximate scores.
             mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results);
-            preFilterApproximate(scoreFunction, k, allowedRIDs, results, ordinalMap);
+            preFilterApproximate(scoreFunction, k, allowedRIDs, results, pinnedOrdinalMap);
             return results;
           }
 
           // Live-only (plus the optional RID allow-list): PQ scores a tombstone as happily as a live vector, so
           // without this the beam fills with nodes the post-filter below then drops (issue #5558).
-          final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex());
+          final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, pinnedOrdinalMap, vectorIndex());
 
           // Execute search using the PQ-based score provider
           // The graph structure is typically small enough to stay in OS page cache
@@ -6406,8 +6416,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           int skippedDeletedOrNull = 0;
           for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
             final int ordinal = nodeScore.node;
-            if (ordinal >= 0 && ordinal < ordinalMap.length) {
-              final int vectorId = ordinalMap[ordinal];
+            if (ordinal >= 0 && ordinal < pinnedOrdinalMap.length) {
+              final int vectorId = pinnedOrdinalMap[ordinal];
               final RID rid = vectorIndex().getRid(vectorId);
               if (rid != null) {
                 final float distance = scoreToDistance(metadata.similarityFunction, nodeScore.score);
