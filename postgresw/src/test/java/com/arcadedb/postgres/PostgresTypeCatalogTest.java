@@ -266,6 +266,22 @@ class PostgresTypeCatalogTest {
   }
 
   @Test
+  void noArrayTypeHasAnArrayForAnElement() {
+    // typalign and typcollation are derived by reading the element's, which is a single step only because
+    // this protocol has no array of arrays. The assumption is invisible in that code and would misbehave
+    // quietly rather than fail if one were ever added, so it is asserted here instead.
+    for (final PostgresType type : PostgresType.values()) {
+      if (!type.isArrayType())
+        continue;
+      final PostgresType element = PostgresType.byCode(type.elementCode);
+      assertThat(element).as("%s declares element OID %d, which is not a type this protocol produces",
+          type.typeName, type.elementCode).isNotNull();
+      assertThat(element.isArrayType()).as("%s's element %s must not itself be an array",
+          type.typeName, element.typeName).isFalse();
+    }
+  }
+
+  @Test
   void numericIsCategorisedAsNumberLikeEveryOtherNumericType() {
     // issue #6447: NUMERIC used to fall through category()'s default "U" (user-defined) arm, the same bucket
     // real PostgreSQL uses for json - wrong for a type PostgreSQL itself files under "N" alongside int4/float8.

@@ -133,6 +133,32 @@ class Issue7178ArrowAdbcBootstrapIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  @Test
+  void aPgTypeColumnThisCatalogDoesNotModelAnswersNullRatherThanNothing() throws Exception {
+    // The two recognisers disagree about this shape on purpose, and only the end-to-end answer settles it.
+    // PostgresTypeCatalog declines a projection naming a column it cannot value, which used to end the
+    // query with an empty result set because pg_type had no family in PostgresCatalog either. Now it falls
+    // through to the generic catalog, where an unmodelled column of a modelled relation answers NULL - the
+    // same treatment pg_class and pg_attribute have always given one. A client that asks for typacl gets
+    // the rest of its row instead of being told the whole query matched nothing.
+    try (final Connection connection = openJdbcConnection();
+        final Statement statement = connection.createStatement();
+        final ResultSet resultSet = statement.executeQuery("SELECT oid, typname, typacl FROM pg_catalog.pg_type")) {
+
+      assertThat(resultSet.getMetaData().getColumnCount()).isEqualTo(3);
+
+      int rows = 0;
+      while (resultSet.next()) {
+        ++rows;
+        assertThat(resultSet.getInt("oid")).isPositive();
+        assertThat(resultSet.getString("typname")).isNotBlank();
+        assertThat(resultSet.getString("typacl")).as("no built-in type carries an ACL").isNull();
+      }
+
+      assertThat(rows).as("an unmodelled column must not empty the result set").isPositive();
+    }
+  }
+
   private Connection openJdbcConnection() throws Exception {
     Class.forName("org.postgresql.Driver");
     final Properties properties = new Properties();
