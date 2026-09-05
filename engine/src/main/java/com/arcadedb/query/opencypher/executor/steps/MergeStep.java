@@ -45,6 +45,7 @@ import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryStatistics;
@@ -242,16 +243,10 @@ public class MergeStep extends AbstractExecutionStep {
       }
 
       final List<Result> results;
-      if (pathPattern.isSingleNode()) {
-        results = mergeSingleNodeAll(pathPattern.getFirstNode(), baseResult);
-        // Add path binding for single-node MERGE (e.g., MERGE p = (a {num: 1}))
-        if (pathPattern.hasPathVariable()) {
-          for (final Result r : results)
-            addPathBinding((ResultInternal) r, pathPattern);
-        }
-      } else {
+      if (pathPattern.isSingleNode())
+        results = mergeSingleNodeAll(pathPattern, baseResult);
+      else
         results = mergePathAll(pathPattern, baseResult);
-      }
 
       // Apply ON CREATE SET or ON MATCH SET to each result
       for (final Result r : results) {
@@ -275,15 +270,20 @@ public class MergeStep extends AbstractExecutionStep {
    * Merges a single node, returning ALL matching nodes or creating one.
    * MERGE returns one row per matching node, or creates if none match.
    */
-  private List<Result> mergeSingleNodeAll(final NodePattern nodePattern, final ResultInternal baseResult) {
+  private List<Result> mergeSingleNodeAll(final PathPattern pathPattern, final ResultInternal baseResult) {
+    final NodePattern nodePattern = pathPattern.getFirstNode();
     final String variable = nodePattern.getVariable();
 
     // Only check for already-bound variable when explicitly named by the user.
     // Anonymous MERGE nodes (no variable) should always search for matches.
     if (variable != null) {
       final Object existing = baseResult.getProperty(variable);
-      if (existing instanceof Vertex) {
+      if (existing instanceof Vertex bound) {
+        // No query reaches this today - the semantic validator refuses a single-node MERGE naming a variable an
+        // earlier clause bound - but the row still describes a path if one ever does, so bind it here rather
+        // than leave the variable unset behind a check that only holds as long as the validator does.
         baseResult.setProperty("  wasCreated", false);
+        bindSingleNodePath(baseResult, pathPattern, bound);
         return List.of(baseResult);
       }
     }
@@ -292,7 +292,7 @@ public class MergeStep extends AbstractExecutionStep {
     final List<Vertex> matches = findAllNodes(nodePattern, baseResult);
 
     if (!matches.isEmpty())
-      return buildMatchResults(matches, variable, baseResult);
+      return buildMatchResults(matches, pathPattern, baseResult);
 
     // No match - create one.  If a UNIQUE-index collision is raised on create
     // (issue #4351: another row in the same batch/transaction already produced
@@ -304,22 +304,33 @@ public class MergeStep extends AbstractExecutionStep {
       if (variable != null)
         baseResult.setProperty(variable, vertex);
       baseResult.setProperty("  wasCreated", true);
+      bindSingleNodePath(baseResult, pathPattern, vertex);
       return List.of(baseResult);
     } catch (final DuplicatedKeyException e) {
       final List<Vertex> retryMatches = findAllNodes(nodePattern, baseResult);
       if (retryMatches.isEmpty())
         throw e;
-      return buildMatchResults(retryMatches, variable, baseResult);
+      return buildMatchResults(retryMatches, pathPattern, baseResult);
     }
   }
 
-  private List<Result> buildMatchResults(final List<Vertex> matches, final String variable, final ResultInternal baseResult) {
+  /** Binds {@code MERGE p = (a {num: 1})} - a zero-length path over the single node the pattern merged. */
+  private void bindSingleNodePath(final ResultInternal result, final PathPattern pathPattern, final Vertex vertex) {
+    final Object[] trace = newPathTrace(pathPattern);
+    tracePathElement(trace, 0, vertex);
+    addPathBinding(result, pathPattern, trace);
+  }
+
+  private List<Result> buildMatchResults(final List<Vertex> matches, final PathPattern pathPattern,
+      final ResultInternal baseResult) {
+    final String variable = pathPattern.getFirstNode().getVariable();
     final List<Result> results = new ArrayList<>(matches.size());
     for (final Vertex v : matches) {
       final ResultInternal r = copyResult(baseResult);
       if (variable != null)
         r.setProperty(variable, v);
       r.setProperty("  wasCreated", false);
+      bindSingleNodePath(r, pathPattern, v);
       results.add(r);
     }
     return results;
@@ -376,7 +387,7 @@ public class MergeStep extends AbstractExecutionStep {
     if (anchorIdx < 0) {
       // No bound anchor: the existing forward walker scans the relevant edge
       // type. The optimizer's MATCH-path is responsible for index-based seeds.
-      traverseFromNode(pathPattern, 0, null, copyResult(baseResult), results);
+      traverseFromNode(pathPattern, 0, null, copyResult(baseResult), newPathTrace(pathPattern), results);
       return results;
     }
 
@@ -388,7 +399,7 @@ public class MergeStep extends AbstractExecutionStep {
     if (anchorIdx == 0) {
       // Anchor is at the start: the forward walker already picks up the
       // binding from currentResult and walks the anchor's outgoing edges.
-      traverseFromNode(pathPattern, 0, null, copyResult(baseResult), results);
+      traverseFromNode(pathPattern, 0, null, copyResult(baseResult), newPathTrace(pathPattern), results);
       return results;
     }
 
@@ -484,7 +495,12 @@ public class MergeStep extends AbstractExecutionStep {
       if (relPattern.getVariable() != null)
         r.setProperty(relPattern.getVariable(), matchingEdge);
       r.setProperty("  wasCreated", false);
-      addPathBinding(r, pathPattern);
+
+      final Object[] trace = newPathTrace(pathPattern);
+      tracePathElement(trace, 2 * anchorIdx, anchorVertex);
+      tracePathElement(trace, 2 * unboundIdx, candidate);
+      tracePathElement(trace, 1, matchingEdge);
+      addPathBinding(r, pathPattern, trace);
       results.add(r);
     }
 
@@ -592,17 +608,33 @@ public class MergeStep extends AbstractExecutionStep {
     if (anchorPattern.getVariable() != null)
       anchored.setProperty(anchorPattern.getVariable(), anchorVertex);
 
+    final Object[] anchoredTrace = newPathTrace(pathPattern);
+    tracePathElement(anchoredTrace, 2 * anchorIdx, anchorVertex);
+
     final int lastIdx = pathPattern.getRelationshipCount();
 
     if (anchorIdx == lastIdx) {
-      walkLeft(pathPattern, anchorIdx, anchorVertex, anchored, results);
+      walkLeft(pathPattern, anchorIdx, anchorVertex, anchored, anchoredTrace, results);
       return;
     }
 
-    final List<Result> rightResults = new ArrayList<>();
-    walkRight(pathPattern, anchorIdx, anchorVertex, anchored, rightResults);
-    for (final Result rr : rightResults)
-      walkLeft(pathPattern, anchorIdx, anchorVertex, (ResultInternal) rr, results);
+    // Every right-side completion carries its own bindings, so it carries its own trace too: the left walk
+    // that continues it has to extend that one rather than the anchor's.
+    final List<TracedResult> rightResults = new ArrayList<>();
+    walkRight(pathPattern, anchorIdx, anchorVertex, anchored, anchoredTrace, rightResults);
+    for (final TracedResult rr : rightResults)
+      walkLeft(pathPattern, anchorIdx, anchorVertex, rr.result(), rr.trace(), results);
+  }
+
+  /**
+   * A partially-walked path: the row's bindings paired with the path slots {@link #newPathTrace} allocated.
+   * <p>
+   * Unlike the slot array itself, this wrapper is not gated on the pattern naming a path variable: the list it
+   * goes into has one element type, and splitting the walk into traced and untraced variants to save one small
+   * record per right-side completion would duplicate the walker. It is the one allocation this carries into a
+   * MERGE that binds no path, and only for a pattern whose bound anchor sits in the middle of a longer one.
+   */
+  private record TracedResult(ResultInternal result, Object[] trace) {
   }
 
   /**
@@ -611,9 +643,9 @@ public class MergeStep extends AbstractExecutionStep {
    * in {@code rightResults} when {@code nodeIdx} reaches the last node.
    */
   private void walkRight(final PathPattern pathPattern, final int nodeIdx, final Vertex currentVertex,
-      final ResultInternal current, final List<Result> rightResults) {
+      final ResultInternal current, final Object[] trace, final List<TracedResult> rightResults) {
     if (nodeIdx == pathPattern.getRelationshipCount()) {
-      rightResults.add(current);
+      rightResults.add(new TracedResult(current, trace));
       return;
     }
 
@@ -629,16 +661,16 @@ public class MergeStep extends AbstractExecutionStep {
 
     if (dir == Direction.OUT || dir == Direction.BOTH)
       walkRightDir(pathPattern, nodeIdx, currentVertex, relPattern, relType, relProps, nextPattern,
-          Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN, current, rightResults);
+          Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN, current, trace, rightResults);
     if (dir == Direction.IN || dir == Direction.BOTH)
       walkRightDir(pathPattern, nodeIdx, currentVertex, relPattern, relType, relProps, nextPattern,
-          Vertex.DIRECTION.IN, Vertex.DIRECTION.OUT, current, rightResults);
+          Vertex.DIRECTION.IN, Vertex.DIRECTION.OUT, current, trace, rightResults);
   }
 
   private void walkRightDir(final PathPattern pathPattern, final int nodeIdx, final Vertex currentVertex,
       final RelationshipPattern relPattern, final String relType, final Map<String, Object> relProps,
       final NodePattern nextPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
-      final ResultInternal current, final List<Result> rightResults) {
+      final ResultInternal current, final Object[] trace, final List<TracedResult> rightResults) {
     for (final Edge edge : currentVertex.getEdges(edgeDir, relType)) {
       if (relProps != null && !matchesProperties(edge, relProps))
         continue;
@@ -655,7 +687,10 @@ public class MergeStep extends AbstractExecutionStep {
         next.setProperty(nextPattern.getVariable(), nextV);
       if (relPattern.getVariable() != null)
         next.setProperty(relPattern.getVariable(), edge);
-      walkRight(pathPattern, nodeIdx + 1, nextV, next, rightResults);
+      final Object[] nextTrace = branchPathTrace(trace);
+      tracePathElement(nextTrace, 2 * nodeIdx + 1, edge);
+      tracePathElement(nextTrace, 2 * nodeIdx + 2, nextV);
+      walkRight(pathPattern, nodeIdx + 1, nextV, next, nextTrace, rightResults);
     }
   }
 
@@ -665,11 +700,11 @@ public class MergeStep extends AbstractExecutionStep {
    * into {@code results} when index 0 is reached.
    */
   private void walkLeft(final PathPattern pathPattern, final int nodeIdx, final Vertex currentVertex,
-      final ResultInternal current, final List<Result> results) {
+      final ResultInternal current, final Object[] trace, final List<Result> results) {
     if (nodeIdx == 0) {
       final ResultInternal r = copyResult(current);
       r.setProperty("  wasCreated", false);
-      addPathBinding(r, pathPattern);
+      addPathBinding(r, pathPattern, trace);
       results.add(r);
       return;
     }
@@ -691,16 +726,16 @@ public class MergeStep extends AbstractExecutionStep {
     // dir == BOTH → walk both
     if (dir == Direction.OUT || dir == Direction.BOTH)
       walkLeftDir(pathPattern, nodeIdx, currentVertex, relPattern, relType, relProps, prevPattern,
-          Vertex.DIRECTION.IN, Vertex.DIRECTION.OUT, current, results);
+          Vertex.DIRECTION.IN, Vertex.DIRECTION.OUT, current, trace, results);
     if (dir == Direction.IN || dir == Direction.BOTH)
       walkLeftDir(pathPattern, nodeIdx, currentVertex, relPattern, relType, relProps, prevPattern,
-          Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN, current, results);
+          Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN, current, trace, results);
   }
 
   private void walkLeftDir(final PathPattern pathPattern, final int nodeIdx, final Vertex currentVertex,
       final RelationshipPattern relPattern, final String relType, final Map<String, Object> relProps,
       final NodePattern prevPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
-      final ResultInternal current, final List<Result> results) {
+      final ResultInternal current, final Object[] trace, final List<Result> results) {
     for (final Edge edge : currentVertex.getEdges(edgeDir, relType)) {
       if (relProps != null && !matchesProperties(edge, relProps))
         continue;
@@ -717,7 +752,10 @@ public class MergeStep extends AbstractExecutionStep {
         next.setProperty(prevPattern.getVariable(), prevV);
       if (relPattern.getVariable() != null)
         next.setProperty(relPattern.getVariable(), edge);
-      walkLeft(pathPattern, nodeIdx - 1, prevV, next, results);
+      final Object[] nextTrace = branchPathTrace(trace);
+      tracePathElement(nextTrace, 2 * nodeIdx - 1, edge);
+      tracePathElement(nextTrace, 2 * nodeIdx - 2, prevV);
+      walkLeft(pathPattern, nodeIdx - 1, prevV, next, nextTrace, results);
     }
   }
 
@@ -727,9 +765,13 @@ public class MergeStep extends AbstractExecutionStep {
    * node).  {@code forcedVertex} is non-null when the node was reached via a
    * preceding edge traversal; otherwise the node is resolved from
    * {@code currentResult} or left as "unbound" for a full-scan.
+   *
+   * @param trace path slots this call owns outright - every caller either allocates a fresh array or hands over
+   *              a {@link #branchPathTrace(Object[])} clone of its own, so this method writes its position into
+   *              the array directly and only clones again where it forks into sibling branches
    */
   private void traverseFromNode(final PathPattern pathPattern, final int nodeIndex,
-      final Vertex forcedVertex, final ResultInternal currentResult, final List<Result> results) {
+      final Vertex forcedVertex, final ResultInternal currentResult, final Object[] trace, final List<Result> results) {
 
     final NodePattern nodePattern = pathPattern.getNode(nodeIndex);
 
@@ -768,7 +810,8 @@ public class MergeStep extends AbstractExecutionStep {
       if (nodePattern.getVariable() != null)
         r.setProperty(nodePattern.getVariable(), vertex);
       r.setProperty("  wasCreated", false);
-      addPathBinding(r, pathPattern);
+      tracePathElement(trace, 2 * nodeIndex, vertex);
+      addPathBinding(r, pathPattern, trace);
       results.add(r);
       return;
     }
@@ -784,7 +827,9 @@ public class MergeStep extends AbstractExecutionStep {
       if (nodePattern.getVariable() != null)
         stepResult.setProperty(nodePattern.getVariable(), vertex);
 
-      traverseEdgesFromVertex(pathPattern, nodeIndex, vertex, relPattern, stepResult, results);
+      tracePathElement(trace, 2 * nodeIndex, vertex);
+
+      traverseEdgesFromVertex(pathPattern, nodeIndex, vertex, relPattern, stepResult, trace, results);
     } else {
       // Anchor is unbound — scan all edges of the required type; both endpoints
       // of each edge must satisfy their respective node patterns
@@ -819,7 +864,10 @@ public class MergeStep extends AbstractExecutionStep {
                 stepResult.setProperty(nodePattern.getVariable(), sourceV);
               if (relPattern.getVariable() != null)
                 stepResult.setProperty(relPattern.getVariable(), edge);
-              traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, results);
+              final Object[] stepTrace = branchPathTrace(trace);
+              tracePathElement(stepTrace, 2 * nodeIndex, sourceV);
+              tracePathElement(stepTrace, 2 * nodeIndex + 1, edge);
+              traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, stepTrace, results);
             }
           }
           if (dir == Direction.IN || dir == Direction.BOTH) {
@@ -831,7 +879,10 @@ public class MergeStep extends AbstractExecutionStep {
                 stepResult.setProperty(nodePattern.getVariable(), sourceV);
               if (relPattern.getVariable() != null)
                 stepResult.setProperty(relPattern.getVariable(), edge);
-              traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, results);
+              final Object[] stepTrace = branchPathTrace(trace);
+              tracePathElement(stepTrace, 2 * nodeIndex, sourceV);
+              tracePathElement(stepTrace, 2 * nodeIndex + 1, edge);
+              traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, stepTrace, results);
             }
           }
         } catch (final RecordNotFoundException e) {
@@ -848,7 +899,7 @@ public class MergeStep extends AbstractExecutionStep {
    */
   private void traverseEdgesFromVertex(final PathPattern pathPattern, final int nodeIndex,
       final Vertex vertex, final RelationshipPattern relPattern,
-      final ResultInternal currentResult, final List<Result> results) {
+      final ResultInternal currentResult, final Object[] trace, final List<Result> results) {
 
     if (!relPattern.hasTypes())
       return;
@@ -871,7 +922,10 @@ public class MergeStep extends AbstractExecutionStep {
         if (relPattern.getVariable() != null)
           stepResult.setProperty(relPattern.getVariable(), edge);
 
-        traverseFromNode(pathPattern, nodeIndex + 1, nextV, stepResult, results);
+        final Object[] stepTrace = branchPathTrace(trace);
+        tracePathElement(stepTrace, 2 * nodeIndex + 1, edge);
+
+        traverseFromNode(pathPattern, nodeIndex + 1, nextV, stepResult, stepTrace, results);
       } catch (final RecordNotFoundException e) {
         // Ghost edge: segment pointer exists but record was concurrently deleted.
         // Skip and continue - the edge does not satisfy the MERGE pattern.
@@ -891,7 +945,10 @@ public class MergeStep extends AbstractExecutionStep {
           if (relPattern.getVariable() != null)
             stepResult.setProperty(relPattern.getVariable(), edge);
 
-          traverseFromNode(pathPattern, nodeIndex + 1, nextV, stepResult, results);
+          final Object[] stepTrace = branchPathTrace(trace);
+          tracePathElement(stepTrace, 2 * nodeIndex + 1, edge);
+
+          traverseFromNode(pathPattern, nodeIndex + 1, nextV, stepResult, stepTrace, results);
         } catch (final RecordNotFoundException e) {
           // Ghost edge - same case: segment pointer to a concurrently-deleted edge record. Skip it.
           GhostEdgeReporter.reportSkipped(e);
@@ -927,6 +984,10 @@ public class MergeStep extends AbstractExecutionStep {
       vertices.add(vertex);
     }
 
+    final Object[] trace = newPathTrace(pathPattern);
+    for (int i = 0; i <= pathPattern.getRelationshipCount(); i++)
+      tracePathElement(trace, 2 * i, vertices.get(i));
+
     for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
       final RelationshipPattern relPattern = pathPattern.getRelationship(i);
       final Vertex fromVertex = relPattern.getDirection() == Direction.IN
@@ -935,11 +996,12 @@ public class MergeStep extends AbstractExecutionStep {
           ? vertices.get(i) : vertices.get(i + 1);
 
       final Edge edge = createEdge(fromVertex, toVertex, relPattern, baseResult);
+      tracePathElement(trace, 2 * i + 1, edge);
       if (relPattern.getVariable() != null)
         baseResult.setProperty(relPattern.getVariable(), edge);
     }
 
-    addPathBinding(baseResult, pathPattern);
+    addPathBinding(baseResult, pathPattern, trace);
     baseResult.setProperty("  wasCreated", true);
     return List.of(baseResult);
   }
@@ -962,28 +1024,70 @@ public class MergeStep extends AbstractExecutionStep {
     return true;
   }
 
-  private void addPathBinding(final ResultInternal result, final PathPattern pathPattern) {
+  /**
+   * Allocates the slot array a path walk fills in as it binds each element of {@code pathPattern}.
+   * <p>
+   * Slot {@code 2*i} holds the vertex bound to node {@code i}, slot {@code 2*i+1} the edge bound to
+   * relationship {@code i} - a position in the pattern, not a variable name, which is the whole point: a path
+   * is made of every node and relationship the pattern names <i>or does not</i>, so it cannot be reconstructed
+   * from the row's variable bindings alone (issue #7169).
+   */
+  private static Object[] newPathTrace(final PathPattern pathPattern) {
+    // No path variable, nothing to reconstruct: the walk carries a null trace and every step below is a no-op,
+    // so an ordinary MERGE - the overwhelmingly common one, and a bulk-load hot path - allocates nothing extra.
+    return pathPattern.hasPathVariable() ? new Object[2 * pathPattern.getRelationshipCount() + 1] : null;
+  }
+
+  /** Branches the trace so a sibling walk of the same prefix cannot see this branch's later steps. */
+  private static Object[] branchPathTrace(final Object[] trace) {
+    return trace == null ? null : trace.clone();
+  }
+
+  private static void tracePathElement(final Object[] trace, final int slot, final Object element) {
+    if (trace != null)
+      trace[slot] = element;
+  }
+
+  /**
+   * Binds the named path variable to the path the walk actually traversed.
+   * <p>
+   * The value is a {@link TraversalPath}, the same type MATCH and CREATE bind, so {@code length()},
+   * {@code nodes()} and {@code relationships()} answer for a merged path exactly as they do for a matched or
+   * created one. This used to be a flat list of just the elements the pattern happened to name, which made an
+   * anonymous hop vanish from the path: {@code MERGE p = (a)<-[r]-(b)<-[:T]-(c)} reported {@code length(p) = 1}
+   * over three nodes, and {@code MERGE p = (:A)-[:T]->(:B)} - nothing named at all - bound an empty path.
+   *
+   * @param trace the slot array {@link #newPathTrace(PathPattern)} allocated, filled by the walk
+   */
+  private void addPathBinding(final ResultInternal result, final PathPattern pathPattern, final Object[] trace) {
     if (!pathPattern.hasPathVariable())
       return;
-    final String pathVar = pathPattern.getPathVariable();
-    final List<Object> pathElements = new ArrayList<>();
-    for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
-      final NodePattern np = pathPattern.getNode(i);
-      if (np.getVariable() != null) {
-        final Object v = result.getProperty(np.getVariable());
-        if (v != null)
-          pathElements.add(v);
-      }
-      if (i < pathPattern.getRelationshipCount()) {
-        final RelationshipPattern rp = pathPattern.getRelationship(i);
-        if (rp.getVariable() != null) {
-          final Object e = result.getProperty(rp.getVariable());
-          if (e != null)
-            pathElements.add(e);
-        }
-      }
-    }
-    result.setProperty(pathVar, pathElements);
+
+    // A path variable means newPathTrace allocated the array, and every emit point fills every slot of it
+    // before reaching here, so a hole is a bug in the walk rather than a shape a query can produce. Reading
+    // past it would bind a truncated path - silently wrong data, which is the exact defect this method exists
+    // to fix - so say so instead.
+    final TraversalPath path = new TraversalPath(tracedVertex(trace, 0, pathPattern));
+    for (int i = 0; i < pathPattern.getRelationshipCount(); i++)
+      path.addStep(tracedEdge(trace, 2 * i + 1, pathPattern), tracedVertex(trace, 2 * i + 2, pathPattern));
+
+    result.setProperty(pathPattern.getPathVariable(), path);
+  }
+
+  private static Vertex tracedVertex(final Object[] trace, final int slot, final PathPattern pathPattern) {
+    final Object element = trace == null ? null : trace[slot];
+    if (element instanceof Vertex vertex)
+      return vertex;
+    throw new IllegalStateException(
+        "MERGE: node " + (slot / 2) + " of path '" + pathPattern.getPathVariable() + "' was left unbound: " + element);
+  }
+
+  private static Edge tracedEdge(final Object[] trace, final int slot, final PathPattern pathPattern) {
+    final Object element = trace == null ? null : trace[slot];
+    if (element instanceof Edge edge)
+      return edge;
+    throw new IllegalStateException(
+        "MERGE: relationship " + (slot / 2) + " of path '" + pathPattern.getPathVariable() + "' was left unbound: " + element);
   }
 
   private ResultInternal copyResult(final Result source) {
