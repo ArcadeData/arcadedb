@@ -143,4 +143,20 @@ public class QueryEngineManager extends DedicatedThreadPool {
   public List<String> getAvailableLanguages() {
     return new ArrayList<>(implementations.keySet());
   }
+
+  /**
+   * Whether {@code language} names an engine registered on this JVM, matched the way
+   * {@link #getEngine(String, DatabaseInternal)} matches it (case-insensitively). Unlike
+   * {@link #getAvailableLanguages()} this answers the question without copying the key set, so it is usable
+   * from instrumentation that runs once per query: one volatile read of the copy-on-write map plus one hash
+   * lookup, no allocation.
+   * <p>
+   * Exists so the {@code language} tag of {@code arcadedb.query.duration} can be bounded at its source. The
+   * language travels straight from the caller - {@code db.query("<language>", ...)}, the {@code {lang}} path
+   * segment of the HTTP API - so a metric that echoed it verbatim registered one permanent meter per invented
+   * name; the engine registry is the component that knows which values are real (issue #7122).
+   */
+  public boolean isLanguageRegistered(final String language) {
+    return language != null && implementations.containsKey(language.toLowerCase(Locale.ENGLISH));
+  }
 }

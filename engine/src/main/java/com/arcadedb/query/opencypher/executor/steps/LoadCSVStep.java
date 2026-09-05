@@ -49,7 +49,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.zip.GZIPInputStream;
-import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
@@ -323,19 +322,46 @@ public class LoadCSVStep extends AbstractExecutionStep {
    * Transparently decompresses .gz and .zip files.
    */
   static BufferedReader openReader(final String url, final CommandContext context) throws IOException {
-    InputStream is = openRawInputStream(url, context);
+    return decompressingReader(url, openRawInputStream(url, context));
+  }
 
-    if (url.endsWith(".gz"))
-      is = new GZIPInputStream(is);
-    else if (url.endsWith(".zip")) {
-      final ZipInputStream zis = new ZipInputStream(is);
-      final ZipEntry entry = zis.getNextEntry();
-      if (entry == null)
-        throw new CommandExecutionException("ZIP file is empty: " + url);
-      is = zis;
+  /**
+   * Wraps an already-open stream in the decompressor the URL's extension calls for and hands back a reader over
+   * it. Split from {@link #openReader} so the failure paths - a corrupt archive header, an archive with no entry
+   * - can be driven from a test with a stream whose closing is observable, without a live file or HTTP source.
+   * <p>
+   * Owns {@code raw} from here on: on every throw it closes what it has built, so a malformed archive costs no
+   * file descriptor (issue #7122).
+   */
+  static BufferedReader decompressingReader(final String url, final InputStream raw) throws IOException {
+    // The decompressing wrappers read (and can reject) the archive header in their own constructor, and the
+    // empty-ZIP check below reads the first entry, so this block throws on a malformed archive with the outer
+    // stream already open. Nothing further up closes it - the caller only closes the BufferedReader it never
+    // received - so each such LOAD CSV leaked one file descriptor / socket (issue #7122).
+    InputStream is = raw;
+    try {
+      if (url.endsWith(".gz"))
+        is = new GZIPInputStream(raw);
+      else if (url.endsWith(".zip")) {
+        final ZipInputStream zis = new ZipInputStream(raw);
+        is = zis;
+        // An archive carrying no entry is an unreadable CSV source, reported as the IOException the caller
+        // already handles: thrown as anything else it would bypass the "Error opening CSV file: <url>" arm and
+        // surface without the url every other open failure names.
+        if (zis.getNextEntry() == null)
+          throw new IOException("ZIP file is empty: " + url);
+      }
+
+      return new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+    } catch (final IOException | RuntimeException e) {
+      // Closes the outermost stream built so far, which closes the ones it wraps.
+      try {
+        is.close();
+      } catch (final IOException suppressed) {
+        e.addSuppressed(suppressed);
+      }
+      throw e;
     }
-
-    return new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
   }
 
   /**
