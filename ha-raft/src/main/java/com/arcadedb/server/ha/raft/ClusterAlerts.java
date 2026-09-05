@@ -24,11 +24,13 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ha.raft.ArcadeStateMachine.LocalResyncState;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -121,12 +123,29 @@ public class ClusterAlerts {
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
       final ClusterMembership membership, final String localPeerId) {
+    return scan(server, stateMachine, followerSamples, visibleDatabases, membership, localPeerId,
+        stateMachine != null ? stateMachine.getLocalResyncState() : null);
+  }
+
+  /**
+   * Scan overload taking the local node's resync state explicitly (issue #7136), so a caller that also renders
+   * it into the same status document passes one sample to both and the document cannot contradict itself -
+   * {@code localResync.inProgress} false next to a {@code local-resync-in-progress} alert, or the reverse.
+   */
+  public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
+      final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
+      final ClusterMembership membership, final String localPeerId,
+      final LocalResyncState localResyncState) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts, visibleDatabases);
     if (stateMachine != null) {
       checkLeaderMissingDatabases(stateMachine, alerts, visibleDatabases);
       checkFailedAcquireDatabases(stateMachine, alerts, visibleDatabases);
       checkBootstrapDivergedDatabases(stateMachine, alerts, visibleDatabases);
+      // The local node's own resync state (issue #7136). Everything above describes the cluster or the
+      // databases; this is the only check that answers "is THIS node serving traffic", which is exactly what
+      // an operator is asking when they poll the node readiness has taken out of the Service.
+      addLocalResyncAlert(localResyncState, visibleDatabases, alerts);
     }
     addLaggingFollowerAlert(followerSamples, alerts);
     if (membership != null)
@@ -191,16 +210,95 @@ public class ClusterAlerts {
   }
 
   /**
+   * Pure alert builder (package-private for unit testing): appends the local-resync alert iff this node is
+   * holding itself out of the ready set (issue #7136).
+   * <p>
+   * The invariant behind it: anything that makes {@code /api/v1/ready} answer 503 must be visible in
+   * {@code GET /api/v1/cluster}, and visible in {@code alerts} specifically, so a monitoring rule keyed on that
+   * array fires instead of reading {@code 200}/{@code RUNNING}/{@code alerts: []} on the node that is actually
+   * down. Before this the four components of {@link ArcadeStateMachine#isResyncInProgress()} reached neither.
+   * <p>
+   * {@code critical} when the node is known to hold data that is behind - a database quarantined on a WAL
+   * version gap, or a read floor outstanding after a download that did not land - because that state does not
+   * clear on its own timetable and can survive restarts. A snapshot download merely queued or running is
+   * {@code warning}: it is the ordinary recovery path and is expected to finish.
+   * <p>
+   * Node-scoped in the same sense as the lagging-follower alert - whether this node serves traffic is not a
+   * per-tenant fact - so {@code visibleDatabases} reduces only the database <em>names</em> in the payload, never
+   * whether the alert fires. A caller that may see no database at all still learns that the node is resyncing.
+   */
+  static void addLocalResyncAlert(final LocalResyncState state, final Set<String> visibleDatabases,
+      final JSONArray alerts) {
+    if (state == null || !state.inProgress())
+      return;
+
+    final boolean holdingStaleData = !state.divergedDatabases().isEmpty() || state.snapshotAppliedFloor() >= 0
+        || !state.databaseAppliedFloors().isEmpty();
+
+    alerts.put(new JSONObject()
+        .put("id", "local-resync-in-progress")
+        .put("severity", holdingStaleData ? SEVERITY_CRITICAL : SEVERITY_WARNING)
+        .put("title", holdingStaleData ? "This node holds data that is behind the cluster"
+            : "This node is resyncing from the leader")
+        .put("message", "This node is not ready to serve traffic: /api/v1/ready answers 503 and a Kubernetes "
+            + "Service has taken it out of rotation. "
+            + (holdingStaleData
+                ? "It is holding at least one database it knows is behind the committed Raft log - quarantined "
+                    + "after a WAL version gap, or clamped at a read floor because a snapshot install did not "
+                    + "bring it up to date - so reads that require linearizability are refused rather than "
+                    + "served stale. This does not clear by itself until a resync succeeds."
+                : "A snapshot download from the leader is queued or running; the node rejoins the ready set "
+                    + "when it completes.")
+            + " The rest of the cluster is unaffected, which is why the peer list and the leader fields here "
+            + "still look healthy.")
+        .put("recommendation", "Watch this node's localResync in this same document until it clears. If it does "
+            + "not, check the logs for the resync error and force a fresh download of the named database(s) "
+            + "(POST /api/v1/cluster/resync/{database}); a node that is itself the leader cannot resync from "
+            + "itself and needs leadership transferred first (POST /api/v1/cluster/leader).")
+        .put("details", new JSONObject()
+            .put("snapshotDownloadQueued", state.snapshotDownloadQueued())
+            .put("snapshotDownloadInProgress", state.snapshotDownloadInProgress())
+            .put("divergedDatabases", namesArray(visible(state.divergedDatabases(), visibleDatabases)))
+            .put("snapshotAppliedFloor", state.snapshotAppliedFloor())
+            .put("databaseAppliedFloors", visibleFloors(state.databaseAppliedFloors(), visibleDatabases))));
+  }
+
+  /**
    * Reduces a list of database names to the ones the caller may see. A {@code null} filter means the
    * unrestricted operator view and returns {@code names} untouched.
+   * <p>
+   * Package-private because {@link GetClusterHandler} scopes the same names for the {@code localResync} object
+   * it renders from the same {@link LocalResyncState} (issue #7136): one predicate for the
+   * whole endpoint, so the alert payload and the document body cannot disagree about what a caller may see.
    */
-  private static List<String> visible(final List<String> names, final Set<String> visibleDatabases) {
+  static List<String> visible(final List<String> names, final Set<String> visibleDatabases) {
     if (visibleDatabases == null || names == null || names.isEmpty())
       return names;
     final List<String> result = new ArrayList<>(names.size());
     for (final String name : names)
       if (visibleDatabases.contains(name))
         result.add(name);
+    return result;
+  }
+
+  /**
+   * Reduces the per-database read floors to the ones the caller may see, rendered as a JSON object keyed by
+   * database name (issue #7136). The map counterpart of {@link #visible(List, Set)}, shared with
+   * {@link GetClusterHandler} for the same reason.
+   */
+  static JSONObject visibleFloors(final Map<String, Long> floors, final Set<String> visibleDatabases) {
+    final JSONObject result = new JSONObject();
+    for (final Map.Entry<String, Long> entry : floors.entrySet())
+      if (visibleDatabases == null || visibleDatabases.contains(entry.getKey()))
+        result.put(entry.getKey(), entry.getValue());
+    return result;
+  }
+
+  /** Renders a list of database names as a JSON array. */
+  static JSONArray namesArray(final List<String> names) {
+    final JSONArray result = new JSONArray();
+    for (final String name : names)
+      result.put(name);
     return result;
   }
 

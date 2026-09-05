@@ -28,6 +28,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -55,6 +57,23 @@ class RaftClusterStatusExporter {
   private final    RaftHAServer   haServer;
   private final    ClusterMonitor clusterMonitor;
   private volatile int            lastStableSignature;
+
+  /**
+   * Every peer id this node has ever seen in the committed membership, so a peer that <b>left</b> the
+   * configuration can be told from one that has <b>not joined yet</b> (issue #7136).
+   * <p>
+   * The convergence note below counts the declared peers ({@code arcadedb.ha.serverList}) that are missing from
+   * the committed membership. Both cases look identical in a single snapshot, and the note used to call both
+   * "not yet converged" - so a peer legitimately removed with {@code DELETE /api/v1/cluster/peer/{id}} was
+   * labelled as pending forever, a convergence that can never happen. A peer that was a member and is not one
+   * now is not pending, and stops being counted.
+   * <p>
+   * Bounded by the size of the cluster's history of members, and never reset: a peer re-added under the same id
+   * is a member again, and the note is driven by the current membership either way. A removal that happened
+   * before this node started is not in here and is still reported as pending - the endpoint's
+   * {@code peers-not-in-configuration} alert is the durable statement of that condition, and it names the peer.
+   */
+  private final Set<String> everCommitted = ConcurrentHashMap.newKeySet();
 
   RaftClusterStatusExporter(final RaftHAServer haServer, final ClusterMonitor clusterMonitor) {
     this.haServer = haServer;
@@ -98,6 +117,10 @@ class RaftClusterStatusExporter {
     final long           commitIndex;
     final List<String[]> rows;
     final List<String[]> baselineRows;
+    /**
+     * How many members the committed membership is expected to reach: the peers already in it, plus the declared
+     * peers that have never been in it. A declared peer that was removed is NOT counted (issue #7136).
+     */
     final int            configuredServers;
 
     ConfigSnapshot(final long term, final long commitIndex, final List<String[]> rows,
@@ -169,7 +192,17 @@ class RaftClusterStatusExporter {
     final RaftPeerId leaderId = haServer.getLeaderId();
     final long term = haServer.getCurrentTerm();
     final long commitIndex = haServer.getCommitIndex();
-    final Collection<RaftPeer> peers = haServer.getLivePeers();
+    // The committed membership is read first, and the rows come straight from it whenever it is there, so the
+    // rows and the convergence note below describe one instant. getLivePeers() is the fallback for a tick that
+    // read nothing: it substitutes the declared list when the division cannot be read (issue #5271), which is
+    // the right answer for a caller that just needs something to print but must never be mistaken for a
+    // committed membership (issue #7136). It resolves the division a second time, and may even succeed where
+    // the first attempt failed - which is why an unmeasured tick makes no convergence claim at all below,
+    // rather than falling back to a denominator the rows were not measured against. A live configuration is
+    // never empty, so an empty answer is "nothing observed", not "a cluster of nobody".
+    final Collection<RaftPeer> committedPeers = haServer.getCommittedPeersOrNull();
+    final boolean membershipRead = committedPeers != null && !committedPeers.isEmpty();
+    final Collection<RaftPeer> peers = membershipRead ? committedPeers : haServer.getLivePeers();
     if (peers.isEmpty())
       return null;
 
@@ -225,7 +258,54 @@ class RaftClusterStatusExporter {
     // not change the stable signature (it would re-emit an identical membership picture).
     rows.sort((a, b) -> a[0].compareTo(b[0]));
 
-    return new ConfigSnapshot(term, commitIndex, rows, collectBootstrapBaselines(), haServer.getConfiguredServers());
+    // Remember this tick's membership before computing the note: a peer present now must not be reported as
+    // pending after it is later removed (issue #7136). Nothing is recorded on a tick that read no membership:
+    // the rows are then the declared-list stand-in, and folding that in would mark every declared peer as
+    // once-committed and silence the note for good.
+    final List<String> committedIds = new ArrayList<>();
+    if (membershipRead) {
+      for (final RaftPeer peer : committedPeers)
+        committedIds.add(peer.getId().toString());
+      everCommitted.addAll(committedIds);
+    }
+
+    final List<String> declaredIds = new ArrayList<>();
+    for (final RaftPeer peer : haServer.getDeclaredPeers())
+      declaredIds.add(peer.getId().toString());
+
+    return new ConfigSnapshot(term, commitIndex, rows, collectBootstrapBaselines(),
+        expectedMemberCount(declaredIds, committedIds, everCommitted, membershipRead, rows.size()));
+  }
+
+  /**
+   * How many members the committed membership is expected to reach (issue #7136): the peers in it now, plus the
+   * declared peers that have never been in it on this node's watch. {@code membershipRead} is {@code false} on a
+   * tick where the live configuration could not be read at all: nothing was observed, so the answer is
+   * {@code renderedRows} - the count the table itself shows, which leaves the note silent rather than asserting
+   * a convergence or a divergence against a membership nobody measured.
+   * <p>
+   * The count feeds the "not yet converged" note only. Previously it was the raw size of
+   * {@code arcadedb.ha.serverList}, which never shrinks, so a peer removed from the configuration left the note
+   * standing forever - the #7040 fix converted the readers that matter onto the live configuration and this one
+   * was missed. A committed member the server list never declared (added with {@code POST /api/v1/cluster/peer})
+   * is already in {@code committedIds} and must not be counted twice.
+   * <p>
+   * Pure and package-private for unit testing.
+   */
+  static int expectedMemberCount(final Collection<String> declaredIds, final Collection<String> committedIds,
+      final Set<String> everCommitted, final boolean membershipRead, final int renderedRows) {
+    // Nothing was read from Raft this tick, so no membership was observed and none of the three inputs
+    // describes what the rows show - the rows came from the fallback read, which may even have succeeded where
+    // this one failed. Returning the row count makes the note silent: a tick that measured nothing must not
+    // claim a convergence NOR a divergence, in either direction, until the next one measures something.
+    if (!membershipRead)
+      return renderedRows;
+
+    int pending = 0;
+    for (final String declared : declaredIds)
+      if (!committedIds.contains(declared) && !everCommitted.contains(declared))
+        pending++;
+    return committedIds.size() + pending;
   }
 
   /**
