@@ -166,6 +166,22 @@ class CypherClauseScopedRelationshipUniquenessIssue7165Test extends TestHelper {
         .contains("MATCH NODE (n:P) [filter: n.uuid = rel.srcUuid]");
   }
 
+  /** What a {@code CALL { }} subquery returns reaches the following MATCH's scan the same way a YIELD does. */
+  @Test
+  void aPredicateReadingASubqueryOutputIsPushedIntoTheMatchScanToo() {
+    final String query = """
+        CALL { MATCH (z)-[q:LINK]->(w) RETURN q.srcUuid AS src }
+        MATCH (n:P) WHERE n.uuid = src
+        RETURN n.uuid AS uuid""";
+
+    assertThat(queryColumn(query, "uuid")).containsExactly("a");
+
+    try (final ResultSet result = database.query("opencypher", "EXPLAIN " + query)) {
+      assertThat(result.getExecutionPlan().orElseThrow().prettyPrint(0, 2))
+          .contains("MATCH NODE (n:P) [filter: n.uuid = src]");
+    }
+  }
+
   /** A yielded scalar was never the problem, and must keep working: the control for the two tests above. */
   @Test
   void matchAfterCallYieldingAScalarStillChainsOnTheCallRows() {
@@ -173,6 +189,24 @@ class CypherClauseScopedRelationshipUniquenessIssue7165Test extends TestHelper {
         "CALL db.labels() YIELD label MATCH (n)-[e:LINK]->(m) RETURN e.uuid AS uuid", "uuid");
 
     assertThat(uuids).containsExactly("r1");
+  }
+
+  /**
+   * A quantified path pattern does its own relationship-isomorphism bookkeeping in {@code QuantifiedPathStep},
+   * off the same scope, so it lost rows to a preceding CALL exactly as a plain relationship pattern did.
+   */
+  @Test
+  void aQuantifiedPathPatternAfterCallYieldMatchesTheYieldedRelationship() {
+    final String afterCall = """
+        CALL db.index.fulltext.queryRelationships('LINK[fact]', 'alpha')
+        YIELD relationship AS rel
+        MATCH (a:P)((x:P)-[:LINK]->(y:P)){1,2}(b:P)
+        RETURN b.uuid AS uuid""";
+
+    assertThat(queryColumn(afterCall, "uuid"))
+        .as("the same rows the pattern produces on its own")
+        .isEqualTo(queryColumn("MATCH (a:P)((x:P)-[:LINK]->(y:P)){1,2}(b:P) RETURN b.uuid AS uuid", "uuid"));
+    assertThat(queryColumn(afterCall, "uuid")).containsExactly("b");
   }
 
   /** {@code CALL { }} exports its relationship the same way an in-query CALL yields one. */
