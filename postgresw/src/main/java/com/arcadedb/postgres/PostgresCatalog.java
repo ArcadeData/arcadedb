@@ -718,15 +718,23 @@ public class PostgresCatalog {
     final List<PostgresType> types = PostgresTypeCatalog.types();
     final List<Row> rows = new ArrayList<>(types.size());
 
-    for (final PostgresType type : types) {
-      final Row row = new Row();
-      final Map<String, Object> columns = row.of("pg_type");
-      for (final String column : PostgresTypeCatalog.COLUMNS)
-        columns.put(column, PostgresTypeCatalog.columnValue(type, column));
-      rows.add(row.complete());
-    }
+    for (final PostgresType type : types)
+      rows.add(describeType(new Row(), type).complete());
 
     return rows;
+  }
+
+  /**
+   * Fills a row's {@code pg_type} columns with the given type's, which is the one place that decides what
+   * this catalog says a type is. Both callers need it to be the same answer: a client that enumerates
+   * pg_type and one that reads a column's type off a {@code pg_attribute} join must not be told two
+   * different things about the same OID.
+   */
+  private static Row describeType(final Row row, final PostgresType type) {
+    final Map<String, Object> columns = row.of("pg_type");
+    for (final String column : PostgresTypeCatalog.COLUMNS)
+      columns.put(column, PostgresTypeCatalog.columnValue(type, column));
+    return row;
   }
 
   private static Row schemaRow(final Context context) {
@@ -796,12 +804,7 @@ public class PostgresCatalog {
 
         // The type row a client joins pg_attribute to in order to name the column's type. It describes the
         // column's own type, which is the only reading of that join that makes sense.
-        final Map<String, Object> typeColumns = row.of("pg_type");
-        for (final String column : PostgresTypeCatalog.COLUMNS)
-          typeColumns.put(column, PostgresTypeCatalog.columnValue(pgType, column));
-        typeColumns.put("typnamespace", 11);
-
-        rows.add(row.complete());
+        rows.add(describeType(row, pgType).complete());
       }
     }
 
