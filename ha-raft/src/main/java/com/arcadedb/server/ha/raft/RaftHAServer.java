@@ -2554,7 +2554,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // made every membership reader behind configuredPeers() - /api/v1/cluster, getReplicaAddresses(), the
         // Bolt/gRPC routing table - propagate instead of degrading, and aborted the health-monitor tick that
         // drives the restart (issue #7135). Membership reads must degrade, never propagate.
-        LogManager.instance().log(this, Level.FINE,
+        // WARNING, matching the sibling guards (isLeader, getLeaderId) rather than the FINE this used to log:
+        // now that the catch is wide enough to swallow a genuine bug and not only the documented Ratis
+        // IllegalStateException, a silent fallback to "no membership" is how such a bug would hide.
+        LogManager.instance().log(this, Level.WARNING,
             "Cannot read the live Raft configuration this tick; returning no membership, and it is the caller's "
                 + "choice whether to substitute the declared server list", e);
       }
@@ -2600,7 +2603,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // IllegalStateException while an in-place restart re-initializes the division (issue #5271), so the
       // narrow catch let /api/v1/ready answer HTTP 500 instead of NOT_READY (issue #7135). This method's
       // contract is to fail closed on unreadable state, and that is the answer for every read failure.
-      LogManager.instance().log(this, Level.FINE, "Cannot read Raft state for readiness probe", e);
+      // WARNING for the same reason as getCommittedPeersOrNull above: the broad catch must not let a real bug
+      // hide behind a probe that merely answers NOT_READY.
+      LogManager.instance().log(this, Level.WARNING, "Cannot read Raft state for readiness probe", e);
       return false;
     }
   }

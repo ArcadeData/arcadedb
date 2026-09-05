@@ -812,6 +812,13 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * the previous list, so a revoked account or a changed password would keep working here for as long as the
    * config volume stays full or read-only - the opposite of what a security entry is for.
    * <p>
+   * <b>That ordering is a contract, not an implementation detail.</b> {@code ArcadeStateMachine.applySecurityUsers
+   * Entry} converts every exception out of this method into a non-halting {@code ReplicationException}, and it may
+   * only do so because everything that can throw here either runs BEFORE any mutation (the parse) or AFTER the
+   * in-memory swap has already published the authoritative list. A step added between those two points - or a
+   * reshuffle that moves the publish later - would silently turn a real divergence into "the fail-safe case" at
+   * that call site. Keep new work outside that window, or revisit the caller.
+   * <p>
    * The in-memory map is built from the Raft payload rather than re-reading from
    * disk. In multi-server test setups (and potentially in embedded deployments),
    * multiple in-process servers may share the same config directory. Reading from
