@@ -27,7 +27,9 @@ import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.SetClause;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -126,6 +128,20 @@ class CypherEagernessAnalyzerTest {
     assertThat(analyzer.needsBarrier(emptyForeach(), NOTHING_BOUND)).as("an empty body writes nothing").isFalse();
   }
 
+  /**
+   * A body that only updates existing entities creates nothing, so it can add no row to an enumeration.
+   * Property and label writes are a different hazard class and deliberately out of this barrier's scope -
+   * see the note on {@link CypherEagernessAnalyzer}.
+   */
+  @Test
+  void aForeachBodyThatOnlyUpdatesNeedsNoBarrier() {
+    final CypherEagernessAnalyzer analyzer = new CypherEagernessAnalyzer();
+    analyzer.observeRead(matchOf(node("Person", "n")));
+
+    assertThat(analyzer.needsBarrier(foreachSetting(), NOTHING_BOUND)).isFalse();
+    assertThat(analyzer.needsBarrier(foreachRemoving(), NOTHING_BOUND)).isFalse();
+  }
+
   @Test
   void aNestedForeachBodyIsWeighedToo() {
     final CypherEagernessAnalyzer analyzer = new CypherEagernessAnalyzer();
@@ -203,6 +219,19 @@ class CypherEagernessAnalyzerTest {
   private static ForeachClause foreachNesting(final ForeachClause nested) {
     return new ForeachClause("x", new LiteralExpression(List.of(1), "[1]"),
         List.of(new ClauseEntry(ClauseEntry.ClauseType.FOREACH, nested, 0)));
+  }
+
+  private static ForeachClause foreachSetting() {
+    final SetClause set = new SetClause(
+        List.of(new SetClause.SetItem("n", "touched", new LiteralExpression(true, "true"))));
+    return new ForeachClause("x", new LiteralExpression(List.of(1), "[1]"),
+        List.of(new ClauseEntry(ClauseEntry.ClauseType.SET, set, 0)));
+  }
+
+  private static ForeachClause foreachRemoving() {
+    final RemoveClause remove = new RemoveClause(List.of(new RemoveClause.RemoveItem("n", "touched")));
+    return new ForeachClause("x", new LiteralExpression(List.of(1), "[1]"),
+        List.of(new ClauseEntry(ClauseEntry.ClauseType.REMOVE, remove, 0)));
   }
 
   private static ForeachClause emptyForeach() {
