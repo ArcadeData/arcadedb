@@ -136,6 +136,42 @@ class GetClusterHandlerIT extends BaseRaftHATest {
     assertThat(response0.get("leaderId")).isEqualTo(response1.get("leaderId"));
   }
 
+  /**
+   * Issue #7136: every node - not just the leader - must publish its own resync state and its own Raft
+   * position, so the endpoint an operator polls during an incident cannot answer {@code 200} /
+   * {@code alerts: []} on the very node readiness is holding out of the Service.
+   * <p>
+   * On a healthy cluster the assertion is that the fields exist and read "nothing in flight"; the
+   * component-by-component behaviour, and the alert a quarantine raises, are pinned by
+   * {@code Issue7136LocalResyncStatusTest} without needing a live WAL gap.
+   */
+  @Test
+  void everyNodePublishesItsOwnResyncStateAndPosition() throws Exception {
+    for (int i = 0; i < getServerCount(); i++) {
+      final JSONObject response = queryClusterEndpoint(i);
+
+      final JSONObject localResync = response.getJSONObject("localResync");
+      assertThat(localResync.getBoolean("inProgress"))
+          .as("a healthy node reports no resync in flight").isFalse();
+      assertThat(localResync.getBoolean("snapshotDownloadQueued")).isFalse();
+      assertThat(localResync.getBoolean("snapshotDownloadInProgress")).isFalse();
+      assertThat(localResync.getJSONArray("divergedDatabases").toList()).isEmpty();
+      assertThat(localResync.getLong("snapshotAppliedFloor")).isEqualTo(-1L);
+      assertThat(localResync.getJSONObject("databaseAppliedFloors").keySet()).isEmpty();
+
+      // A follower's response used to carry no lag figure about itself: getFollowerSamples() is the leader's
+      // view of its followers, so the peer rows are empty on the node being polled.
+      assertThat(response.has("localAppliedIndex")).as("every node must carry its own applied index").isTrue();
+      assertThat(response.has("localCommitIndex")).as("every node must carry its own commit index").isTrue();
+      assertThat(response.getLong("localCommitIndex")).isGreaterThanOrEqualTo(0L);
+      assertThat(response.getLong("localReplicationLag"))
+          .as("commitIndex - appliedIndex, or -1 when either is unreadable").isGreaterThanOrEqualTo(-1L);
+
+      // The invariant: nothing that would make readiness answer 503 is missing from this document.
+      assertThat(response.getJSONArray("alerts").toString()).doesNotContain("local-resync-in-progress");
+    }
+  }
+
   private JSONObject queryClusterEndpoint(final int serverIndex) throws Exception {
     final int httpPort = 2480 + serverIndex;
     final URL url = new URL("http://localhost:" + httpPort + "/api/v1/cluster");
