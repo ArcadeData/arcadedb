@@ -23,6 +23,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -283,6 +284,7 @@ public class PostgresCatalog {
 
     final Map<String, Collection<String>> columnsByRelation = new LinkedHashMap<>();
     final List<Row> rows;
+    boolean toleratesUnreadableFilter = true;
 
     if (from.size() == 1 && from.get(0).derived != null) {
       // A derived table: the inner SELECT is the catalog query and this one is a filter over its output. The
@@ -327,10 +329,68 @@ public class PostgresCatalog {
       if (family == null)
         return DECLINED;
 
+      if (readsOneRelationThroughTwoAliases(statement, from))
+        return DECLINED;
+
+      // The permissive-WHERE rule rests on every row being one of the user's own types in the one database
+      // this connection is bound to, so a predicate that cannot be read can only be excluding rows this
+      // catalog never produced. pg_type breaks that premise: its rows are a fixed set of built-in types, and
+      // a filter over them selects a real subset. Answering "every type" to "the type named hstore" is the
+      // fabricated system-catalog row this class exists to avoid - psycopg asks exactly that and fails with
+      // "found 23 different types named hstore" - so here an unreadable predicate declines instead.
+      toleratesUnreadableFilter = family != Family.TYPES;
+
       rows = buildRows(family, context);
     }
 
-    return project(statement, from, rows, context, columnsByRelation);
+    return project(statement, from, rows, context, columnsByRelation, toleratesUnreadableFilter);
+  }
+
+  /**
+   * Whether the query reads columns through two different aliases of the same relation, which is a shape this
+   * row model cannot represent: a {@link Row} carries one map per relation, so both aliases read the same map.
+   * The second alias would answer with the first one's values, and a projection naming a column through both
+   * would announce one column where the client asked for two - which is precisely the kind of miscount that
+   * makes a strict client (the Arrow ADBC driver among them) abort. So the query is declined instead, and the
+   * caller sends the empty result set that any unreadable catalog shape gets.
+   * <p>
+   * The self-join that matters in practice - {@code FROM pg_type t, pg_type e WHERE t.oid = N AND t.typelem =
+   * e.oid}, where the projected columns describe a different row from the one the filter selects - is
+   * answered by {@link PostgresTypeCatalog}, which runs first and recognises it as its own shape.
+   * <p>
+   * Only aliases the query actually <b>reads through</b> count. An alias that appears solely in a join
+   * condition does not, because those conditions are skipped rather than evaluated: the JDBC driver's
+   * {@code getColumns()} joins {@code pg_class} and {@code pg_namespace} a second time purely to look up a
+   * comment it then never projects, and declining that would take out the column list of every JDBC client.
+   */
+  private static boolean readsOneRelationThroughTwoAliases(final Statement statement, final List<FromEntry> from) {
+    final Map<String, String> aliasesByRelation = new HashMap<>();
+
+    for (final List<PostgresCatalogToken> clause : Arrays.asList(statement.projection, statement.where,
+        statement.orderBy)) {
+      if (clause == null)
+        continue;
+
+      for (int i = 0; i + 1 < clause.size(); i++) {
+        final PostgresCatalogToken token = clause.get(i);
+        if (token.type != PostgresCatalogToken.Type.IDENTIFIER
+            && token.type != PostgresCatalogToken.Type.QUOTED_IDENTIFIER)
+          continue;
+        if (!clause.get(i + 1).isSymbol("."))
+          continue;
+
+        final String qualifier = token.text.toLowerCase(Locale.ENGLISH);
+        final FromEntry entry = entryFor(from, qualifier);
+        if (entry == null || entry.derived != null)
+          continue;
+
+        final String previous = aliasesByRelation.putIfAbsent(entry.relation, qualifier);
+        if (previous != null && !previous.equals(qualifier))
+          return true;
+      }
+    }
+
+    return false;
   }
 
   private static Family mostSpecific(final Family current, final Family candidate) {
@@ -893,7 +953,8 @@ public class PostgresCatalog {
   // ---------------------------------------------------------------- projection
 
   private static Answer project(final Statement statement, final List<FromEntry> from, final List<Row> rows,
-      final Context context, final Map<String, Collection<String>> columnsByRelation) {
+      final Context context, final Map<String, Collection<String>> columnsByRelation,
+      final boolean toleratesUnreadableFilter) {
     final List<ProjectionItem> projection = parseProjection(statement.projection, from, columnsByRelation);
     if (projection == null)
       return DECLINED;
@@ -904,9 +965,18 @@ public class PostgresCatalog {
         PostgresCatalogExpression.parse(statement.where);
 
     final List<Row> surviving = new ArrayList<>(rows.size());
-    for (final Row row : rows)
-      if (where == null || PostgresCatalogExpression.isTrue(where.evaluate(new RowResolver(row, from, context, null, 0))))
+    for (final Row row : rows) {
+      if (where == null) {
         surviving.add(row);
+        continue;
+      }
+
+      final Object matches = where.evaluate(new RowResolver(row, from, context, null, 0));
+      if (matches == PostgresCatalogExpression.UNKNOWN && !toleratesUnreadableFilter)
+        return DECLINED;
+      if (PostgresCatalogExpression.isTrue(matches))
+        surviving.add(row);
+    }
 
     // Window functions are the one thing that cannot be computed a row at a time: row_number() is defined by
     // the other rows of its partition. They are computed here, over the rows that survived the filter.

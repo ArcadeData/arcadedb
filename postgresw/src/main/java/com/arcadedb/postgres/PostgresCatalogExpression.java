@@ -401,6 +401,14 @@ abstract class PostgresCatalogExpression {
       return operator.startsWith("NOT") != matches;
     }
 
+    /**
+     * Compares two values the way a catalog predicate needs them compared. Mixed types fall back to comparing
+     * their text, which is what lets a client that writes {@code typreceive != 0} against a column this
+     * catalog answers with a function <i>name</i> still get the answer it expects: PostgreSQL's own column is
+     * a {@code regproc}, an OID that formats as that name, and no name ever reads as {@code 0}. That is a
+     * property of the text comparison rather than a modelled regproc - an ordering test on such a column
+     * ({@code typreceive > 0}) would compare names against "0" and answer something the client did not mean.
+     */
     private static Object compare(final String operator, final Object l, final Object r) {
       if (l == null || r == null)
         return null;
