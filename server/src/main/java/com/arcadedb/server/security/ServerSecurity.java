@@ -892,6 +892,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // Exception, not IOException: an unchecked failure out of save() would otherwise propagate from here
       // BEFORE the in-memory swap below, which is precisely the #7137 hazard - this node would go on
       // authenticating against the previous list while the caller logged that it had stayed up safely.
+      //
+      // The cost of the breadth is that a genuine bug inside save() is classified the same as a full disk. That
+      // is accepted deliberately here, and it does not hide: the only caller logs every one of these at SEVERE
+      // with the cause attached (ArcadeStateMachine.applySecurityUsersEntry), which is the visibility the
+      // similarly-widened catches in RaftHAServer had to add a log-level bump to get.
       return e;
     }
   }
