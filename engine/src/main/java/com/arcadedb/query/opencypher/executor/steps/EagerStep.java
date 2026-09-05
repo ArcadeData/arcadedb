@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -47,22 +48,39 @@ import java.util.NoSuchElementException;
  * The planner therefore inserts it only where the write's shape can actually feed an upstream pattern -
  * see {@code CypherEagernessAnalyzer} - so the common bulk shapes ({@code UNWIND ... CREATE},
  * {@code MATCH (a)-[:KNOWS]->(b) CREATE (a)-[:SCORED]->(b)}) keep streaming untouched.
+ * <p>
+ * The other thing draining everything costs is a downstream {@code LIMIT}'s short-circuit: a barriered
+ * query runs its write for every matched row rather than stopping at the first N. That is inherent to the
+ * ordering the barrier exists to impose - stopping early would mean some rows never saw the writes the
+ * earlier ones did - and Neo4j's {@code Eager} has the same effect, but it is worth knowing when a write
+ * query with a LIMIT suddenly touches more rows than it used to.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class EagerStep extends AbstractExecutionStep {
+  /**
+   * The drained input, and how far the result sets handed out so far have read into it. Both live on the
+   * step rather than on the {@link ResultSet} it returns, so a second {@code syncPull} continues where the
+   * first left off instead of re-reading {@code prev} and handing back rows a caller already consumed.
+   */
+  private List<Result> materialized = null;
+  private int          currentIndex = 0;
+
   public EagerStep(final CommandContext context) {
     super(context);
   }
 
+  /**
+   * {@code nRecords} is a batching hint here, not a per-pull cap: every step in this pipeline returns a
+   * result set that iterates the whole of its input (see {@code OrderByStep}, and {@code ForeachStep}'s
+   * refilling buffer), and its consumer pulls once and drains until {@code hasNext()} is false. Capping the
+   * returned set at {@code nRecords} would silently truncate the query at one batch.
+   */
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("EagerStep requires a previous step");
 
     return new ResultSet() {
-      private List<Result> materialized = null;
-      private int          currentIndex = 0;
-
       @Override
       public boolean hasNext() {
         if (materialized == null)
@@ -81,11 +99,17 @@ public class EagerStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           materialized = new ArrayList<>();
+          // The drain is one uninterrupted region, and the statement-level drain that tests the command
+          // deadline per row only starts once this one has finished - so a TIMEOUT clause could not end a
+          // long barrier before this guard. Same reason CypherExecutionPlan.execute() carries one (#6266).
+          final WorkGuard guard = WorkGuard.forCommandDeadline(context);
           // Integer.MAX_VALUE rather than nRecords: a partial drain would leave the upstream cursor open
           // across the writes, which is the very interleaving this step exists to prevent.
           final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
-          while (prevResults.hasNext())
+          while (prevResults.hasNext()) {
+            guard.check();
             materialized.add(prevResults.next());
+          }
           if (context.isProfiling())
             rowCount += materialized.size();
         } finally {

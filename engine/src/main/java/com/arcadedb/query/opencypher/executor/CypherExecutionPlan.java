@@ -1155,7 +1155,7 @@ public class CypherExecutionPlan {
           final CreateClause createClause = entry.getTypedClause();
           if (!createClause.isEmpty()) {
             if (eagerness.needsBarrier(createClause, optimizerBoundVariables))
-              currentStep = withEagerBarrier(currentStep, context);
+              currentStep = withEagerBarrier(currentStep, context, eagerness);
             final CreateStep createStep = new CreateStep(createClause, context, functionFactory);
             createStep.setPrevious(currentStep);
             currentStep = createStep;
@@ -1197,7 +1197,7 @@ public class CypherExecutionPlan {
         case MERGE: {
           final MergeClause mergeClause = entry.getTypedClause();
           if (eagerness.needsBarrier(mergeClause, optimizerBoundVariables))
-            currentStep = withEagerBarrier(currentStep, context);
+            currentStep = withEagerBarrier(currentStep, context, eagerness);
           final MergeStep mergeStep = new MergeStep(mergeClause, context, functionFactory);
           mergeStep.setPrevious(currentStep);
           currentStep = mergeStep;
@@ -1564,7 +1564,7 @@ public class CypherExecutionPlan {
       case MERGE:
         final MergeClause mergeClause = entry.getTypedClause();
         if (currentStep != null && eagerness.needsBarrier(mergeClause, boundVariables))
-          currentStep = withEagerBarrier(currentStep, context);
+          currentStep = withEagerBarrier(currentStep, context, eagerness);
         final MergeStep mergeStep =
             new MergeStep(mergeClause, context, functionFactory);
         if (currentStep != null) {
@@ -1577,7 +1577,7 @@ public class CypherExecutionPlan {
         final CreateClause createClause = entry.getTypedClause();
         if (!createClause.isEmpty()) {
           if (currentStep != null && eagerness.needsBarrier(createClause, boundVariables))
-            currentStep = withEagerBarrier(currentStep, context);
+            currentStep = withEagerBarrier(currentStep, context, eagerness);
           final CreateStep createStep = new CreateStep(createClause, context, functionFactory);
           if (currentStep != null) {
             createStep.setPrevious(currentStep);
@@ -1627,7 +1627,7 @@ public class CypherExecutionPlan {
         // argument - so it conflicts with every read still in flight ahead of it (issue #7171).
         if (currentStep != null && eagerness.needsBarrierForWriteProcedure()
             && SimpleCypherStatement.isWriteProcedureCall(callClause))
-          currentStep = withEagerBarrier(currentStep, context);
+          currentStep = withEagerBarrier(currentStep, context, eagerness);
         final CallStep callStep =
             new CallStep(callClause, context, functionFactory);
         if (currentStep != null) {
@@ -1655,7 +1655,7 @@ public class CypherExecutionPlan {
             database.getConfiguration().getValueAsBoolean(GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ)
                 && graphReadFollows(clausesInOrder, entryIndex);
         if (currentStep != null && eagerness.needsBarrier(foreachClause, boundVariables))
-          currentStep = withEagerBarrier(currentStep, context);
+          currentStep = withEagerBarrier(currentStep, context, eagerness);
         final ForeachStep foreachStep =
             new ForeachStep(foreachClause, context, functionFactory, foreachEagerMaterialize, foreachEagerExecution);
         if (currentStep != null) {
@@ -3021,11 +3021,13 @@ public class CypherExecutionPlan {
    * {@link CypherEagernessAnalyzer}, which keeps it off every shape whose writes cannot feed a read.
    */
   private static AbstractExecutionStep withEagerBarrier(final AbstractExecutionStep currentStep,
-      final CommandContext context) {
+      final CommandContext context, final CypherEagernessAnalyzer eagerness) {
     if (currentStep == null)
       return null;
     final EagerStep eagerStep = new EagerStep(context);
     eagerStep.setPrevious(currentStep);
+    // The barrier closes every enumeration behind it, so the writes that follow it need no second one.
+    eagerness.observeBarrier();
     return eagerStep;
   }
 
@@ -3648,7 +3650,7 @@ public class CypherExecutionPlan {
     // Step 3: MERGE clause - find or create pattern
     if (statement.getMergeClause() != null) {
       if (currentStep != null && eagerness.needsBarrier(statement.getMergeClause(), legacyBoundVariables))
-        currentStep = withEagerBarrier(currentStep, context);
+        currentStep = withEagerBarrier(currentStep, context, eagerness);
       final MergeStep mergeStep = new MergeStep(
           statement.getMergeClause(), context, functionFactory);
       // MERGE is typically standalone, but can be chained
@@ -3661,7 +3663,7 @@ public class CypherExecutionPlan {
     // Step 4: CREATE clause - create vertices/edges
     if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty()) {
       if (currentStep != null && eagerness.needsBarrier(statement.getCreateClause(), legacyBoundVariables))
-        currentStep = withEagerBarrier(currentStep, context);
+        currentStep = withEagerBarrier(currentStep, context, eagerness);
       final CreateStep createStep = new CreateStep(statement.getCreateClause(), context, functionFactory);
       if (currentStep != null) {
         // Chained CREATE (after MATCH/WHERE)
