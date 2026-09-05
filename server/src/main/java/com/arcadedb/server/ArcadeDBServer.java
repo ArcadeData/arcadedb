@@ -708,25 +708,47 @@ public class ArcadeDBServer {
     }
   }
 
+  /**
+   * Installs the cardinality backstops for the RED timers. Each caps the number of distinct values a
+   * client-influenced tag may take and denies the meter beyond it, so a future route, a new wire protocol or a
+   * plain regression can never grow the registry without bound. Every limit is read from the constant on the
+   * component that produces the tag, so the registry-side bound and that component's own timer-cache bound stay
+   * tied to one number rather than two independently-chosen ones.
+   * <p>
+   * Extracted so the filters can be applied to a throwaway registry and asserted directly, without starting a
+   * server and without depending on JVM-wide state a {@code MeterFilter} can never be removed from.
+   */
+  // @VisibleForTesting
+  static void installCardinalityMeterFilters(final MeterRegistry.Config config) {
+    // arcadedb.http.requests / path: the handler already collapses unmatched URIs to a constant (issue #5025).
+    config.meterFilter(MeterFilter.maximumAllowableTags("arcadedb.http.requests", "path", 100, MeterFilter.deny()));
+    // arcadedb.http.requests / db: the handler already collapses a {database} path parameter naming no existing
+    // database onto a constant, but database name churn - or a future route exposing another free segment as
+    // "db" - must not be able to grow the registry either (issue #6805).
+    config.meterFilter(MeterFilter.maximumAllowableTags("arcadedb.http.requests", "db",
+        AbstractServerHttpHandler.MAX_DB_TAG_VALUES + AbstractServerHttpHandler.RESERVED_DB_TAG_VALUES,
+        MeterFilter.deny()));
+    // arcadedb.query.duration / language: the recorder already collapses anything that does not name a
+    // registered query engine onto a constant, but the language reaches it straight from the caller, so this
+    // meter gets the same registry-side backstop its HTTP sibling has (issue #7122).
+    config.meterFilter(MeterFilter.maximumAllowableTags("arcadedb.query.duration", "language",
+        MicrometerQueryMetricsRecorder.MAX_LANGUAGE_TAG_VALUES
+            + MicrometerQueryMetricsRecorder.RESERVED_LANGUAGE_TAG_VALUES,
+        MeterFilter.deny()));
+    // arcadedb.query.duration / db: same reasoning as the HTTP timer's "db" tag - the value is a real database
+    // name, so only create/drop churn can grow it, and the recorder's own cache ceiling collapses it far later
+    // than this bound does (issue #7122).
+    config.meterFilter(MeterFilter.maximumAllowableTags("arcadedb.query.duration", "db",
+        MicrometerQueryMetricsRecorder.MAX_DB_TAG_VALUES + MicrometerQueryMetricsRecorder.RESERVED_DB_TAG_VALUES,
+        MeterFilter.deny()));
+  }
+
   private void startMetrics() {
     synchronized (METRICS_INSTALL_MUTEX) {
       if (!metricsFiltersInstalled) {
-        // Backstop against a path-tag cardinality explosion on arcadedb.http.requests. The handler already
-        // collapses unmatched URIs to a constant, but this caps the number of distinct "path" tag values and
-        // denies further ones so a future route or regression can never grow the registry without bound.
-        // A MeterFilter cannot be removed from a registry, so it is installed once per JVM, and before any
-        // meter exists as Micrometer requires MeterFilters to precede the meters they govern.
-        Metrics.globalRegistry.config().meterFilter(
-            MeterFilter.maximumAllowableTags("arcadedb.http.requests", "path", 100, MeterFilter.deny()));
-        // Same backstop for the "db" half of the tuple (issue #6805). The handler already collapses a
-        // {database} path parameter naming no existing database onto a constant, but database name churn -
-        // or a future route exposing another free segment as "db" - must not be able to grow the registry
-        // either. The limit comes from the handler that produces the tag, so the registry-side bound and the
-        // handler's own timer-cache bound stay tied to one number.
-        Metrics.globalRegistry.config().meterFilter(
-            MeterFilter.maximumAllowableTags("arcadedb.http.requests", "db",
-                AbstractServerHttpHandler.MAX_DB_TAG_VALUES + AbstractServerHttpHandler.RESERVED_DB_TAG_VALUES,
-                MeterFilter.deny()));
+        // A MeterFilter cannot be removed from a registry, so the whole set is installed once per JVM, and
+        // before any meter exists as Micrometer requires MeterFilters to precede the meters they govern.
+        installCardinalityMeterFilters(Metrics.globalRegistry.config());
         metricsFiltersInstalled = true;
       }
 
