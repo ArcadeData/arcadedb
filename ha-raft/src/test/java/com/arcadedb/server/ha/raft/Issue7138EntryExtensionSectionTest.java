@@ -70,7 +70,10 @@ class Issue7138EntryExtensionSectionTest {
     assertThat(decoded.databaseName()).isEqualTo(DB);
   }
 
-  /** Every type, not just the one: the point of #7138 is that the constraint stops being per-type folklore. */
+  /**
+   * All five non-schema types, not just the one: the point of #7138 is that the constraint stops being per-type
+   * folklore, so a regression that reintroduced it for a single type has to fail here.
+   */
   @Test
   void everyEntryTypeToleratesATrailingExtensionSection() {
     final byte[] future = new byte[] { 1, 2, 3, 4 };
@@ -82,6 +85,10 @@ class Issue7138EntryExtensionSectionTest {
     assertThat(RaftLogEntryCodec.decode(RaftLogEntryCodec.appendExtensionSection(
         RaftLogEntryCodec.encodeDropDatabaseEntry(DB), future)).type())
         .isEqualTo(RaftLogEntryType.DROP_DATABASE_ENTRY);
+
+    assertThat(RaftLogEntryCodec.decode(RaftLogEntryCodec.appendExtensionSection(
+        RaftLogEntryCodec.encodeInstallDatabaseEntry(DB, true), future)).type())
+        .isEqualTo(RaftLogEntryType.INSTALL_DATABASE_ENTRY);
 
     assertThat(RaftLogEntryCodec.decode(RaftLogEntryCodec.appendExtensionSection(
         RaftLogEntryCodec.encodeSecurityUsersEntry("[]"), future)).type())

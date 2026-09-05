@@ -844,12 +844,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // effective immediately and leaves the durability problem as what it is: this node will read a stale file
     // if it restarts before the volume is fixed, which is the same exposure the previous behaviour had, and
     // the Raft entry is replayed on the next start.
-    IOException persistFailure = null;
-    try {
-      usersRepository.save(list);
-    } catch (final IOException e) {
-      persistFailure = e;
-    }
+    final IOException persistFailure = trySaveUsers(list);
 
     // Build in-memory map from the authoritative Raft payload, not from the file, and publish it in a
     // single atomic reference swap so concurrent readers never observe an empty/torn window.
@@ -870,6 +865,21 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerException("Replicated users applied in memory but could NOT be persisted to '"
           + SecurityUserFileRepository.FILE_NAME + "'; this node enforces the new list now but will read the "
           + "stale file if it restarts before the problem is fixed", persistFailure);
+  }
+
+  /**
+   * Writes the users file, returning the failure instead of throwing it so the caller can finish applying the
+   * list before reporting (issue #7137). Inlining the try/catch at the call site would force a non-final local:
+   * javac treats every statement in a {@code try} as able to throw, so an assignment made after the call is
+   * still "possibly assigned" at the {@code catch}.
+   */
+  private IOException trySaveUsers(final List<JSONObject> list) {
+    try {
+      usersRepository.save(list);
+      return null;
+    } catch (final IOException e) {
+      return e;
+    }
   }
 
   public void saveGroups() {
