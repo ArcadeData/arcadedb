@@ -82,8 +82,11 @@ public class PostgresCatalog {
   /** PostgreSQL's own first user OID: everything below it is a system object. */
   private static final int FIRST_USER_OID = 16384;
   private static final int OID_SPACE      = 1_000_000;
-  /** The OID of the bootstrap superuser in a stock PostgreSQL, used for every "owner" column. */
-  private static final int OWNER_OID      = 10;
+  /**
+   * The OID of the bootstrap superuser in a stock PostgreSQL, used for every "owner" column - here and in
+   * {@link PostgresTypeCatalog}'s {@code typowner}, so the two surfaces cannot drift apart on who owns what.
+   */
+  static final int OWNER_OID = 10;
 
   /** A catalog query whose shape this class will not answer. The caller sends an empty result set. */
   public static final Answer DECLINED = new Answer(new LinkedHashMap<>(), null);
@@ -712,8 +715,8 @@ public class PostgresCatalog {
    * the answer has no columns rather than falling back to anything.
    */
   private static List<Row> typeRows() {
-    final PostgresType[] types = PostgresTypeCatalog.types();
-    final List<Row> rows = new ArrayList<>(types.length);
+    final List<PostgresType> types = PostgresTypeCatalog.types();
+    final List<Row> rows = new ArrayList<>(types.size());
 
     for (final PostgresType type : types) {
       final Row row = new Row();

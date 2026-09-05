@@ -238,6 +238,34 @@ class PostgresTypeCatalogTest {
   }
 
   @Test
+  void anArrayTakesItsStorageAttributesFromItsElement() {
+    // PostgreSQL auto-generates each array type from its element (Catalog.pm, GenerateArrayTypes). Only the
+    // columns with a BKI_ARRAY_DEFAULT get a fixed array value; the rest are copied from the element, and
+    // typalign has a rule of its own: INT unless the element needs DOUBLE.
+    final Map<Integer, Map<String, Object>> byOid = new HashMap<>();
+    for (final Map<String, Object> row : PostgresTypeCatalog
+        .resolve("SELECT oid, typalign, typcollation, typstorage, typbyval, typcategory FROM pg_type"))
+      byOid.put((Integer) row.get("oid"), row);
+
+    assertThat(byOid.get(PostgresType.ARRAY_LONG.code))
+        .as("_int8's element is DOUBLE-aligned, so the array is too").containsEntry("typalign", "d");
+    assertThat(byOid.get(PostgresType.ARRAY_DOUBLE.code)).containsEntry("typalign", "d");
+    assertThat(byOid.get(PostgresType.ARRAY_INT.code))
+        .as("_int4's element is INT-aligned").containsEntry("typalign", "i");
+    assertThat(byOid.get(PostgresType.ARRAY_CHAR.code))
+        .as("an array never narrows to its element's CHAR alignment").containsEntry("typalign", "i");
+
+    assertThat(byOid.get(PostgresType.ARRAY_TEXT.code))
+        .as("typcollation has no BKI_ARRAY_DEFAULT, so _text copies text's collation rather than dropping it")
+        .containsEntry("typcollation", 100);
+    assertThat(byOid.get(PostgresType.ARRAY_INT.code))
+        .as("an array of a non-collatable element stays non-collatable").containsEntry("typcollation", 0);
+
+    assertThat(byOid.get(PostgresType.ARRAY_TEXT.code)).containsEntry("typstorage", "x")
+        .containsEntry("typbyval", Boolean.FALSE).containsEntry("typcategory", "A");
+  }
+
+  @Test
   void numericIsCategorisedAsNumberLikeEveryOtherNumericType() {
     // issue #6447: NUMERIC used to fall through category()'s default "U" (user-defined) arm, the same bucket
     // real PostgreSQL uses for json - wrong for a type PostgreSQL itself files under "N" alongside int4/float8.
