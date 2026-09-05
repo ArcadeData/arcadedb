@@ -85,7 +85,8 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
   private final boolean               pathVariableBindsGroup;
   private final QuantifiedPathPattern group;
   private final NodePattern           targetNodePattern;
-  private final Set<String>           clauseVariables; // see MatchRelationshipStep's field of the same name
+  private final Set<String>           clauseVariables; // see MatchRelationshipStep's fields of the same names
+  private final Set<String>           clauseRelationshipVariables;
   private final List<NodePattern>     innerNodes;
   private final List<RelationshipPattern> innerRelationships;
   /**
@@ -104,11 +105,13 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
    *                               spans further segments and must stay a single concatenated path
    * @param group                  the quantified path pattern to repeat
    * @param targetNodePattern      right boundary node pattern, for label/property filtering; may be null
-   * @param clauseVariables        the owning MATCH clause's own variables - the relationship-isomorphism scope
+   * @param clauseVariables        the owning MATCH clause's own variables - half the isomorphism scope
+   * @param clauseRelationshipVariables every relationship variable the clause writes - the other half
    */
   public QuantifiedPathStep(final String sourceVariable, final String targetVariable, final String pathVariable,
       final boolean pathVariableBindsGroup, final QuantifiedPathPattern group, final NodePattern targetNodePattern,
-      final Set<String> clauseVariables, final CommandContext context) {
+      final Set<String> clauseVariables, final Set<String> clauseRelationshipVariables,
+      final CommandContext context) {
     super(context);
     this.sourceVariable = sourceVariable;
     this.targetVariable = targetVariable;
@@ -117,6 +120,7 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
     this.group = group;
     this.targetNodePattern = targetNodePattern;
     this.clauseVariables = clauseVariables;
+    this.clauseRelationshipVariables = clauseRelationshipVariables;
     this.innerNodes = group.getInnerPattern().getNodes();
     this.innerRelationships = group.getInnerPattern().getRelationships();
     this.dynamicLabelEvaluator = targetNodePattern != null && targetNodePattern.hasDynamicLabels() ?
@@ -536,13 +540,18 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
    */
   private Set<RID> collectBoundRelationships(final Result input) {
     final Set<RID> used = new HashSet<>();
+    collectBoundRelationships(input, clauseVariables, used);
+    collectBoundRelationships(input, clauseRelationshipVariables, used);
+    return used;
+  }
+
+  private void collectBoundRelationships(final Result input, final Set<String> scope, final Set<RID> used) {
     final List<String> groupVariables = group.getGroupVariables();
-    for (final String property : clauseVariables) {
+    for (final String property : scope) {
       if (property.equals(targetVariable) || property.equals(pathVariable) || groupVariables.contains(property))
         continue;
       collectRelationships(input.getProperty(property), used);
     }
-    return used;
   }
 
   private static void collectRelationships(final Object value, final Set<RID> used) {

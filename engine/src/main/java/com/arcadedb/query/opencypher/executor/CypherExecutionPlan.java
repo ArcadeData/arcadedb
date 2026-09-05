@@ -1950,6 +1950,8 @@ public class CypherExecutionPlan {
 
     final AbstractExecutionStep stepBeforeMatch = currentStep;
     final Set<String> matchVariables = new HashSet<>();
+    // The other half of the relationship-uniqueness scope: see clauseRelationshipVariables().
+    final Set<String> clauseRelVariables = clauseRelationshipVariables(matchClause);
     final boolean isOptional = matchClause.isOptional();
 
     // Reorder independent (disconnected) comma-separated pattern parts so the expensive edge-bearing
@@ -2293,7 +2295,8 @@ public class CypherExecutionPlan {
               if (!boundVariables.contains(groupVariable))
                 matchVariables.add(groupVariable);
             nextStep = new QuantifiedPathStep(effectiveSourceVar, effectiveTargetVar, pathVariable,
-                bindsGroupPathVariable(pathPattern), quantified, effectiveTargetNode, matchVariables, context);
+                bindsGroupPathVariable(pathPattern), quantified, effectiveTargetNode, matchVariables,
+                clauseRelVariables, context);
           } else if (relPattern.isVariableLength()) {
             // DFS, not BFS: DFS's active stack is bounded by maxHops regardless of branching
             // factor, while BFS's frontier queue must hold an entire level's children before it
@@ -2302,7 +2305,7 @@ public class CypherExecutionPlan {
             // a pure implementation-strategy change, not a semantic one (#6097).
             nextStep = new ExpandPathStep(effectiveSourceVar, pathVariable, relVar, effectiveTargetVar, relPattern,
                 false, effectiveTargetNode, pathPattern.getEffectivePathMode(), matchVariables,
-                pathCoParticipants(pathPattern, i), directionOverride, reversed, context);
+                clauseRelVariables, directionOverride, reversed, context);
           } else {
             // Check if this hop requires IN traversal on a unidirectional edge.
             // Unidirectional edges don't store incoming links, so we must restructure:
@@ -2343,12 +2346,14 @@ public class CypherExecutionPlan {
               }
               // Swap source/target and reverse direction: go OUT from scanned target to bound source
               nextStep = new MatchRelationshipStep(effectiveTargetVar, relVar, effectiveSourceVar, relPattern,
-                  pathVariable, sourceNode, boundWithSource, matchVariables, Direction.OUT, context);
+                  pathVariable, sourceNode, boundWithSource, matchVariables, clauseRelVariables, Direction.OUT,
+                  context);
             } else {
               // Normal case: pass target node pattern for label filtering and bound variables for identity
               // checking. The relationship-uniqueness scope is published once the clause is complete.
               nextStep = new MatchRelationshipStep(effectiveSourceVar, relVar, effectiveTargetVar, relPattern,
-                  pathVariable, effectiveTargetNode, targetIdentityVars, matchVariables, directionOverride, context);
+                  pathVariable, effectiveTargetNode, targetIdentityVars, matchVariables, clauseRelVariables,
+                  directionOverride, context);
             }
           }
 
@@ -3095,6 +3100,7 @@ public class CypherExecutionPlan {
           // Track the step before this MATCH clause for OPTIONAL MATCH wrapping
           final AbstractExecutionStep stepBeforeMatch = currentStep;
           final Set<String> matchVariables = new HashSet<>();
+          final Set<String> clauseRelVariables = clauseRelationshipVariables(matchClause);
           final boolean isOptional = matchClause.isOptional();
 
           // For optional match, we build the match chain separately (not chained to stepBeforeMatch)
@@ -3319,14 +3325,14 @@ public class CypherExecutionPlan {
                     if (!legacyBoundVariables.contains(groupVariable))
                       matchVariables.add(groupVariable);
                   nextStep = new QuantifiedPathStep(currentSourceVar, targetVar, pathVariable,
-                      bindsGroupPathVariable(pathPattern), quantified, targetNode, matchVariables, context);
+                      bindsGroupPathVariable(pathPattern), quantified, targetNode, matchVariables, clauseRelVariables,
+                      context);
                 } else if (relPattern.isVariableLength()) {
                   // Variable-length path - pass path variable, relationship variable, and target node for label
                   // filtering.
                   // DFS, not BFS: see the matching comment in the optimizer plan builder above (#6097).
                   nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, false,
-                      targetNode, pathPattern.getEffectivePathMode(), matchVariables, pathCoParticipants(pathPattern, i),
-                      context);
+                      targetNode, pathPattern.getEffectivePathMode(), matchVariables, clauseRelVariables, context);
                 } else {
                   // Fixed-length relationship - pass path variable, target node pattern, and bound variables.
                   // #6311: the same snapshot rule as the ordered builder above - the hop identity-checks its
@@ -3336,7 +3342,7 @@ public class CypherExecutionPlan {
                   final Set<String> targetIdentityVars = new HashSet<>(legacyBoundVariables);
                   targetIdentityVars.addAll(matchVariables);
                   nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
-                      targetNode, targetIdentityVars, matchVariables, context);
+                      targetNode, targetIdentityVars, matchVariables, clauseRelVariables, context);
                 }
 
                 // Update source for next hop in multi-hop patterns
@@ -4974,27 +4980,34 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * The relationship variables that the variable-length hop at {@code vlpHopIndex} shares its path pattern
-   * with, on top of the ones the MATCH clause itself binds.
+   * Every relationship variable a MATCH clause writes, whether or not this clause is the one that binds it.
    * <p>
-   * OpenCypher path isomorphism applies within a single <em>path</em>, not only within a MATCH clause. A
-   * relationship variable a prior MATCH already bound, named again by this path, is a same-path
-   * co-participant and must still be checked for edge conflicts - the clause's own variable set does not
-   * carry it, because this clause did not bind it.
+   * The other half of the uniqueness scope, alongside the variables the clause binds. A relationship variable
+   * an earlier clause already bound - a {@code CALL}'s yield, a {@code WITH} - is still one of this clause's
+   * relationship patterns when the clause names it again, so it is a co-participant the clause's other
+   * patterns must be distinct from. The freshly-bound set alone cannot say so: it deliberately omits an
+   * already-bound name, because {@code OPTIONAL MATCH} nulls what it lists and must not null a carried
+   * binding.
    */
-  private static Set<String> pathCoParticipants(final PathPattern pathPattern, final int vlpHopIndex) {
-    Set<String> coParticipants = null;
-    for (int j = 0; j < pathPattern.getRelationshipCount(); j++) {
-      if (j == vlpHopIndex)
-        continue;
-      final String variable = pathPattern.getRelationship(j).getVariable();
-      if (variable != null && !variable.isEmpty()) {
-        if (coParticipants == null)
-          coParticipants = new HashSet<>();
-        coParticipants.add(variable);
+  private static Set<String> clauseRelationshipVariables(final MatchClause matchClause) {
+    if (!matchClause.hasPathPatterns())
+      return Set.of();
+    Set<String> variables = null;
+    for (final PathPattern pathPattern : matchClause.getPathPatterns())
+      for (final RelationshipPattern relationship : pathPattern.getRelationships()) {
+        final String variable = relationship.getVariable();
+        if (variable != null && !variable.isEmpty()) {
+          if (variables == null)
+            variables = new HashSet<>();
+          variables.add(variable);
+        }
+        if (relationship instanceof QuantifiedPathPattern quantified) {
+          if (variables == null)
+            variables = new HashSet<>();
+          variables.addAll(quantified.getGroupVariables());
+        }
       }
-    }
-    return coParticipants == null ? Set.of() : coParticipants;
+    return variables == null ? Set.of() : variables;
   }
 
   /**
