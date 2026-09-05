@@ -279,6 +279,9 @@ public class MergeStep extends AbstractExecutionStep {
     if (variable != null) {
       final Object existing = baseResult.getProperty(variable);
       if (existing instanceof Vertex bound) {
+        // No query reaches this today - the semantic validator refuses a single-node MERGE naming a variable an
+        // earlier clause bound - but the row still describes a path if one ever does, so bind it here rather
+        // than leave the variable unset behind a check that only holds as long as the validator does.
         baseResult.setProperty("  wasCreated", false);
         bindSingleNodePath(baseResult, pathPattern, bound);
         return List.of(baseResult);
@@ -1051,18 +1054,31 @@ public class MergeStep extends AbstractExecutionStep {
     if (!pathPattern.hasPathVariable())
       return;
 
-    final int relationshipCount = pathPattern.getRelationshipCount();
-    if (trace == null || !(trace[0] instanceof Vertex startVertex))
-      return; // the walk did not bind a start node: nothing to describe
-
-    final TraversalPath path = new TraversalPath(startVertex);
-    for (int i = 0; i < relationshipCount; i++) {
-      if (!(trace[2 * i + 1] instanceof Edge edge) || !(trace[2 * i + 2] instanceof Vertex vertex))
-        break;
-      path.addStep(edge, vertex);
-    }
+    // A path variable means newPathTrace allocated the array, and every emit point fills every slot of it
+    // before reaching here, so a hole is a bug in the walk rather than a shape a query can produce. Reading
+    // past it would bind a truncated path - silently wrong data, which is the exact defect this method exists
+    // to fix - so say so instead.
+    final TraversalPath path = new TraversalPath(tracedVertex(trace, 0, pathPattern));
+    for (int i = 0; i < pathPattern.getRelationshipCount(); i++)
+      path.addStep(tracedEdge(trace, 2 * i + 1, pathPattern), tracedVertex(trace, 2 * i + 2, pathPattern));
 
     result.setProperty(pathPattern.getPathVariable(), path);
+  }
+
+  private static Vertex tracedVertex(final Object[] trace, final int slot, final PathPattern pathPattern) {
+    final Object element = trace == null ? null : trace[slot];
+    if (element instanceof Vertex vertex)
+      return vertex;
+    throw new IllegalStateException(
+        "MERGE left node " + (slot / 2) + " of path '" + pathPattern.getPathVariable() + "' unbound: " + element);
+  }
+
+  private static Edge tracedEdge(final Object[] trace, final int slot, final PathPattern pathPattern) {
+    final Object element = trace == null ? null : trace[slot];
+    if (element instanceof Edge edge)
+      return edge;
+    throw new IllegalStateException(
+        "MERGE left relationship " + (slot / 2) + " of path '" + pathPattern.getPathVariable() + "' unbound: " + element);
   }
 
   private ResultInternal copyResult(final Result source) {
