@@ -132,6 +132,20 @@ class CypherIndexDatetimePrecisionIssue7164Test {
   }
 
   @Test
+  void aLaterNonTemporalValueDoesNotResetTheInferredPrecision() {
+    // Heterogeneous properties are already an unsupported shape, but the sweep must degrade gracefully: a row whose
+    // value is not a temporal reports no precision and is simply skipped, it must not reset the kind settled by the
+    // first value nor drag the precision back down to milliseconds.
+    insert("Het", "micro", MICROS);
+    database.command("cypher", "CREATE (n:Het {uuid:'text', created_at:'not a date'})");
+    insert("Het", "micro2", MICROS);
+    database.command("cypher", "CREATE INDEX het_created IF NOT EXISTS FOR (n:Het) ON (n.created_at)");
+
+    assertThat(database.getSchema().getType("Het").getProperty("created_at").getType()).isEqualTo(Type.DATETIME_MICROS);
+    assertThat(readBack("Het", "micro")).isEqualTo(MICROS);
+  }
+
+  @Test
   void nonTemporalPropertyStillInfersFromTheFirstValue() {
     // Non-temporal inference (issue #4222) is unchanged: the first non-null value decides the type.
     database.command("cypher", "CREATE (n:Num {uuid:'a', val:1})");
