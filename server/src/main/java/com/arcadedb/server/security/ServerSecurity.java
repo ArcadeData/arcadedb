@@ -807,6 +807,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * Called from the Raft state machine on every peer when a SECURITY_USERS_ENTRY
    * is applied.
    * <p>
+   * A failure to WRITE the file does not abandon the apply: the new list is published in memory first and the
+   * failure is thrown at the end (issue #7137). Returning early would leave this node authenticating against
+   * the previous list, so a revoked account or a changed password would keep working here for as long as the
+   * config volume stays full or read-only - the opposite of what a security entry is for.
+   * <p>
    * The in-memory map is built from the Raft payload rather than re-reading from
    * disk. In multi-server test setups (and potentially in embedded deployments),
    * multiple in-process servers may share the same config directory. Reading from
@@ -831,10 +836,19 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     for (int i = 0; i < array.length(); i++)
       list.add(array.getJSONObject(i));
 
+    // A local persistence failure is reported, but only AFTER the new list has been applied in memory
+    // (issue #7137). Returning early here would leave this node authenticating against the PREVIOUS user
+    // list - so a password the operator has just changed, or an account they have just dropped, would keep
+    // working on this node for as long as the volume stays full or read-only. The entry is valid and reached
+    // a quorum; the only thing that failed is writing it down. Applying it in memory makes the revocation
+    // effective immediately and leaves the durability problem as what it is: this node will read a stale file
+    // if it restarts before the volume is fixed, which is the same exposure the previous behaviour had, and
+    // the Raft entry is replayed on the next start.
+    IOException persistFailure = null;
     try {
       usersRepository.save(list);
     } catch (final IOException e) {
-      throw new ServerException("Failed to save replicated users file", e);
+      persistFailure = e;
     }
 
     // Build in-memory map from the authoritative Raft payload, not from the file, and publish it in a
@@ -849,6 +863,13 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // issued to that principal, or the credentials the operator revoked keep working on this node until the
     // token idle-expires. Non-blocking, so it is safe on the state-machine apply thread.
     invalidateAuthSessionsOfRevokedPrincipals(previousUsers, newUsers);
+
+    // Reported last, so the caller learns the list did not reach disk while this node is already enforcing it.
+    // On the Raft apply path this fails the entry without halting the node (issue #7137).
+    if (persistFailure != null)
+      throw new ServerException("Replicated users applied in memory but could NOT be persisted to '"
+          + SecurityUserFileRepository.FILE_NAME + "'; this node enforces the new list now but will read the "
+          + "stale file if it restarts before the problem is fixed", persistFailure);
   }
 
   public void saveGroups() {

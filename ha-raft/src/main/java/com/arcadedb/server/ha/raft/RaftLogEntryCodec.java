@@ -115,6 +115,12 @@ public final class RaftLogEntryCodec {
    * a version older than this one still halt on it, so a field may only be EMITTED once every peer in the
    * supported upgrade range tolerates extensions; from that release on, adding a field is safe by construction.
    * The value is the ASCII {@code "ADBX"}, chosen so it is recognisable in a hex dump of a log segment.
+   * <p>
+   * <b>{@code SCHEMA_ENTRY} is excluded, and not merely exempt.</b> Its optional sections are UNFRAMED and
+   * positional - a decoder that has consumed the file maps reads whatever comes next as the #4382 WAL section's
+   * count - so a frame appended to one is not skipped, it is read as that count and rejected as a corrupt
+   * entry. Extending {@code SCHEMA_ENTRY} means adding another section to its own mechanism, in
+   * {@code decodeSchemaEntry}, exactly as #5443 and #4416 did.
    */
   static final int EXTENSION_MAGIC = 0x41444258;
 
@@ -125,6 +131,9 @@ public final class RaftLogEntryCodec {
    * Appends one self-describing extension section to an entry being encoded. Call this AFTER the type's own
    * fields have been written, so a decoder that predates the section stops cleanly at the end of what it knows.
    * Sections may be repeated; a decoder skips every one it does not recognise.
+   * <p>
+   * Not for {@code SCHEMA_ENTRY}, whose own unframed optional sections would swallow the frame header - see
+   * {@link #EXTENSION_MAGIC}.
    *
    * @param payload the section's bytes, whose meaning is entirely up to the field being added (typically its own
    *                small self-describing sub-format, so that a future reader can tell its sections apart)
@@ -725,9 +734,11 @@ public final class RaftLogEntryCodec {
    * extend without halting older peers, and it keeps the corruption signal that rule existed for: a truncated
    * entry ends mid-field or mid-frame, and neither carries the magic at a frame boundary.
    * <p>
-   * {@code SCHEMA_ENTRY} is exempt: its optional trailing sections (the #4382 WAL blobs, the #5443 flag, the
+   * {@code SCHEMA_ENTRY} is excluded: its optional trailing sections (the #4382 WAL blobs, the #5443 flag, the
    * #4416 slices) predate this framing and are unframed, so requiring the magic there would reject entries peers
-   * legitimately produce today. New sections on it should still use {@link #writeExtensionSection}.
+   * legitimately produce today - and its decoder has already consumed anything that follows the file maps as one
+   * of those sections, so there is nothing left here to frame. It extends through its own mechanism instead; see
+   * {@link #EXTENSION_MAGIC}.
    */
   private static void skipTrailingExtensionSections(final DataInputStream dis, final RaftLogEntryType type)
       throws IOException {

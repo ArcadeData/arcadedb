@@ -24,6 +24,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -75,7 +76,7 @@ class Issue7139RetainedBackupNotDestroyedTest {
     // The second attempt cannot download either (no leader address resolves), exactly like the first.
     assertThatThrownBy(() -> SnapshotInstaller.install(DB, dbPath.toString(), () -> null, () -> null, null,
         serverThatCannotDownload(databasesDir)))
-        .isInstanceOf(java.io.IOException.class);
+        .isInstanceOf(IOException.class);
 
     assertThat(dbPath.resolve("schema.json"))
         .as("the retained backup must be reconciled into the live directory, not deleted")
@@ -104,7 +105,7 @@ class Issue7139RetainedBackupNotDestroyedTest {
 
     assertThatThrownBy(() -> SnapshotInstaller.install(DB, dbPath.toString(), () -> null, () -> null, null,
         serverThatCannotDownload(databasesDir)))
-        .isInstanceOf(java.io.IOException.class)
+        .isInstanceOf(IOException.class)
         .hasMessageContaining("only intact copy");
 
     assertThat(backup).as("the last copy of the database must survive a refused install").exists();

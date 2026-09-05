@@ -195,7 +195,10 @@ class RaftClusterManager {
     if (!raftHAServer.isLeader()) {
       LogManager.instance().log(this, Level.INFO,
           "Leadership transfer requested but this node (%s) is not the leader; nothing to transfer", selfId);
-      return false;
+      // Refuse the way the targeted path does, so ONE endpoint does not answer "wrong node" two different ways
+      // (issue #7134): a boolean false here reached the caller as a bare 500 "Leadership transfer failed", which
+      // names nothing the caller can act on and reads like a leader-side failure.
+      throw new NotTheLeaderRefusalException("Refusing to transfer leadership", raftHAServer.getLeaderId());
     }
 
     try {
@@ -261,8 +264,8 @@ class RaftClusterManager {
    */
   void transferLeadership(final String targetPeerId, final long timeoutMs) {
     if (!raftHAServer.isLeader())
-      throw new ConfigurationException(notTheLeaderMessage(
-          "Refusing to transfer leadership to " + targetPeerId));
+      throw new NotTheLeaderRefusalException("Refusing to transfer leadership to " + targetPeerId,
+          raftHAServer.getLeaderId());
 
     LogManager.instance().log(this, Level.INFO, "Transferring leadership to %s (timeout=%d ms)", targetPeerId, timeoutMs);
     final RaftClient client = raftHAServer.getClient();
@@ -291,20 +294,6 @@ class RaftClusterManager {
       }
       throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId + ": " + e.getMessage(), e);
     }
-  }
-
-  /**
-   * The refusal message shared by every "this node is not the leader" guard, naming the current leader when one
-   * is known. Package-private so {@link RaftHAServer#stepDown()} phrases its refusal identically.
-   */
-  static String notTheLeaderMessage(final String prefix, final RaftPeerId leaderId) {
-    return prefix + ": this node is not the leader"
-        + (leaderId != null ? ", the current leader is '" + leaderId + "' - reissue the request against that node"
-        : " and no leader is currently known - retry once one is elected");
-  }
-
-  private String notTheLeaderMessage(final String prefix) {
-    return notTheLeaderMessage(prefix, raftHAServer.getLeaderId());
   }
 
   void leaveCluster() {

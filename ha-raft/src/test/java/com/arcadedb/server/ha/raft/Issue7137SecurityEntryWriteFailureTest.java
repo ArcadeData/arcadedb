@@ -46,11 +46,16 @@ import static org.mockito.Mockito.when;
  * halted again. With an environmental cause (a full or read-only config volume) the pod crash-looped
  * indefinitely, with nothing in the log connecting it to the password change that triggered it.
  * <p>
- * The payload is valid and every other node applies it. The apply is also fail-safe: {@code
- * ServerSecurity.applyReplicatedUsers} swaps the in-memory user map only AFTER the save returns, so on
- * failure the node's state still matches the pre-entry state. A security entry that cannot be persisted
- * locally is an availability problem for user administration, not a state-divergence risk, and the node
- * must stay up with stale users and a loud SEVERE instead of halting.
+ * The payload is valid and every other node applies it, and nothing here can diverge the databases the node
+ * replicates - the failure is confined to one file of server-local configuration. A security entry that cannot
+ * be persisted locally is an operational problem, not a state-divergence risk, so the node must stay up with a
+ * loud SEVERE instead of halting.
+ * <p>
+ * Staying up must not mean honouring credentials the operator has just revoked, which is the other half of the
+ * fix: {@code ServerSecurity.applyReplicatedUsers} publishes the new list in memory BEFORE reporting the write
+ * failure, so the revocation is effective here immediately and only its durability is outstanding. That half is
+ * covered by {@code Issue7137ReplicatedUsersAppliedOnWriteFailureTest} in the server module; this class covers
+ * the node not halting.
  * <p>
  * The empty {@code databaseName} the codec gives this entry is what routed the failure into the node-wide
  * branch of {@code handleUnexpectedApplyError}, since the per-database quarantine of #4797 is skipped for

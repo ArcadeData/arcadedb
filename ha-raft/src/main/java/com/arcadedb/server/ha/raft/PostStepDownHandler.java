@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.ha.raft;
 
-import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
@@ -46,7 +45,7 @@ public class PostStepDownHandler extends AbstractServerHttpHandler {
 
     try {
       raftHAServer.stepDown();
-    } catch (final ConfigurationException e) {
+    } catch (final NotTheLeaderRefusalException e) {
       // A follower has nothing to step down from, and Ratis would route the transfer it issues to the real
       // leader, forcing an election nobody asked for - which is what a request load-balanced by a Kubernetes
       // Service across every ready endpoint does. 409 names the leader so the caller can reissue there,

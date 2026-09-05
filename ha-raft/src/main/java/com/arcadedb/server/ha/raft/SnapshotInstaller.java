@@ -613,10 +613,19 @@ public final class SnapshotInstaller {
             + "database directory may be incomplete. Reconciling from the backup before starting a new install "
             + "(issue #7139)", null, databaseName);
 
-    synchronized (server.getDatabasesLock()) {
-      closeLocalDatabaseIfOpen(server, databaseName);
-      recoverSingleDatabase(dbPath);
-      reopenQuietly(server, databaseName);
+    // Same 503 window PHASE 2 opens around swapAndReopen: this moves files under the live database directory
+    // too, and the engine-internal open paths do not consult the registry lock's meaning, only HTTP does.
+    // Without it a client could be served from the directory mid-restore. Cleared in a finally so a failed
+    // reconciliation cannot leave the server wedged in "install in progress".
+    server.setSnapshotInstallInProgress(true);
+    try {
+      synchronized (server.getDatabasesLock()) {
+        closeLocalDatabaseIfOpen(server, databaseName);
+        recoverSingleDatabase(dbPath);
+        reopenQuietly(server, databaseName);
+      }
+    } finally {
+      server.setSnapshotInstallInProgress(false);
     }
 
     // recoverSingleDatabase reports its own failures and returns; the backup surviving IS the failure signal.
