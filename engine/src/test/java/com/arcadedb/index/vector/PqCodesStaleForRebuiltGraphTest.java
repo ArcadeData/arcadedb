@@ -133,6 +133,12 @@ class PqCodesStaleForRebuiltGraphTest extends TestHelper {
         .as("the point of the fixture is a graph holding ordinals the codes were never sized for")
         .isGreaterThan((long) index.getPQVectorCount());
 
+    // The refused attempt searches nothing and hands the query to findNeighborsFromVector, which counts and times
+    // itself. So it must not be counted here as well: one caller-facing search would be charged as two, and the
+    // two clocks do not measure the same span - this method's spans the exact search on top of its own guard
+    // overhead - so the summed latency would outgrow the operation count getAvgSearchLatencyMs divides it by.
+    final long searchOpsBefore = index.getStats().get("searchOperations");
+
     assertThatCode(() -> {
       final var results = index.findNeighborsFromVectorApproximate(randomUnitVector(random), 10);
       assertThat(results)
@@ -142,6 +148,10 @@ class PqCodesStaleForRebuiltGraphTest extends TestHelper {
         .as("walking a graph through codes that do not cover it threw IndexOutOfBoundsException from deep inside "
             + "JVector; the search must refuse the mismatched pair and answer exactly instead")
         .doesNotThrowAnyException();
+
+    assertThat(index.getStats().get("searchOperations") - searchOpsBefore)
+        .as("a refused PQ attempt is not a search of its own - only the exact search it delegates to may be counted")
+        .isEqualTo(1L);
   }
 
   private static PQVectors pqVectors(final LSMVectorIndex index) throws Exception {

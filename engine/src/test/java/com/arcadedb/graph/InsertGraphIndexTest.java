@@ -90,6 +90,30 @@ class InsertGraphIndexTest extends TestHelper {
     }
   }
 
+  /**
+   * Regression test for the leak above. Nothing else in the suite can observe the restore directly: the symptom of
+   * the missing one was a test roughly 70 classes downstream capturing no log output, which names this class
+   * nowhere. Asserting it here is the only place the two halves are visible at once.
+   * <p>
+   * Safe to call {@link #endTest()} by hand - it clears {@code previousLogger}, so the {@code @AfterEach} that
+   * follows is a no-op rather than a second, stale restore, and the logger is left as this class found it.
+   */
+  @Test
+  void endTestRestoresTheDisplacedLogger() {
+    assertThat(LogManager.instance().getLogger())
+        .as("beginTest() must install the null logger before the test body runs")
+        .isSameAs(NullLogger.INSTANCE);
+
+    final Logger displaced = previousLogger;
+    assertThat(displaced).as("the logger beginTest() displaced must be kept in order to be put back").isNotNull();
+
+    endTest();
+
+    assertThat(LogManager.instance().getLogger())
+        .as("setLogger() is process-wide, so failing to restore it discards every log line in the rest of the fork")
+        .isSameAs(displaced);
+  }
+
   @Override
   protected String getPerformanceProfile() {
     return "high-performance";

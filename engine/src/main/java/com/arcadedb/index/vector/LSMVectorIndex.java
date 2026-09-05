@@ -6263,9 +6263,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return findNeighborsFromVector(queryVector, k, allowedRIDs);
     }
 
-    // Track search metrics
+    // Track search metrics. Both halves are recorded together in the finally below rather than the count here and
+    // the latency there, because one exit from this method must record NEITHER: when the guard further down refuses
+    // the graph/PQ pair, this call hands the whole search to findNeighborsFromVector, which counts and times itself.
+    // Counting here as well would charge one caller-facing search twice - and worse, the two latencies do not even
+    // measure the same thing, since this method's clock spans the exact search it delegates to on top of its own
+    // guard overhead, so the summed latency would grow faster than the operation count it is divided by.
     final long startTime = System.nanoTime(); // Use nanos for microsecond precision
-    metrics.incrementSearchOperations();
+    boolean handedOffToExactSearch = false;
 
     try {
       if (queryVector == null)
@@ -6432,6 +6437,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return results;
         }
 
+        // The guard refused the graph/PQ pair. Nothing was searched, so this attempt is not an operation of its
+        // own: the exact search below is the search, and it keeps its own books.
+        handedOffToExactSearch = true;
+
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error performing PQ approximate search", e);
         throw new IndexException("Error performing PQ approximate search", e);
@@ -6443,9 +6452,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // block. Outside the read lock on purpose: this can rebuild, which takes the write lock.
       return findNeighborsFromVector(queryVector, k, allowedRIDs);
     } finally {
-      // Track search latency (convert nanos to ms for consistency)
-      final long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
-      metrics.addSearchLatency(elapsedMs);
+      if (!handedOffToExactSearch) {
+        // Track search latency (convert nanos to ms for consistency)
+        final long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
+        metrics.incrementSearchOperations();
+        metrics.addSearchLatency(elapsedMs);
+      }
     }
   }
 
