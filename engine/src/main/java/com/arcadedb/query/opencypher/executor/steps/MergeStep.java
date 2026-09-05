@@ -758,6 +758,10 @@ public class MergeStep extends AbstractExecutionStep {
    * node).  {@code forcedVertex} is non-null when the node was reached via a
    * preceding edge traversal; otherwise the node is resolved from
    * {@code currentResult} or left as "unbound" for a full-scan.
+   *
+   * @param trace path slots this call owns outright - every caller either allocates a fresh array or hands over
+   *              a {@link #branchPathTrace(Object[])} clone of its own, so this method writes its position into
+   *              the array directly and only clones again where it forks into sibling branches
    */
   private void traverseFromNode(final PathPattern pathPattern, final int nodeIndex,
       final Vertex forcedVertex, final ResultInternal currentResult, final Object[] trace, final List<Result> results) {
@@ -799,9 +803,8 @@ public class MergeStep extends AbstractExecutionStep {
       if (nodePattern.getVariable() != null)
         r.setProperty(nodePattern.getVariable(), vertex);
       r.setProperty("  wasCreated", false);
-      final Object[] terminalTrace = branchPathTrace(trace);
-      tracePathElement(terminalTrace, 2 * nodeIndex, vertex);
-      addPathBinding(r, pathPattern, terminalTrace);
+      tracePathElement(trace, 2 * nodeIndex, vertex);
+      addPathBinding(r, pathPattern, trace);
       results.add(r);
       return;
     }
@@ -817,10 +820,9 @@ public class MergeStep extends AbstractExecutionStep {
       if (nodePattern.getVariable() != null)
         stepResult.setProperty(nodePattern.getVariable(), vertex);
 
-      final Object[] stepTrace = branchPathTrace(trace);
-      tracePathElement(stepTrace, 2 * nodeIndex, vertex);
+      tracePathElement(trace, 2 * nodeIndex, vertex);
 
-      traverseEdgesFromVertex(pathPattern, nodeIndex, vertex, relPattern, stepResult, stepTrace, results);
+      traverseEdgesFromVertex(pathPattern, nodeIndex, vertex, relPattern, stepResult, trace, results);
     } else {
       // Anchor is unbound — scan all edges of the required type; both endpoints
       // of each edge must satisfy their respective node patterns
@@ -1070,7 +1072,7 @@ public class MergeStep extends AbstractExecutionStep {
     if (element instanceof Vertex vertex)
       return vertex;
     throw new IllegalStateException(
-        "MERGE left node " + (slot / 2) + " of path '" + pathPattern.getPathVariable() + "' unbound: " + element);
+        "MERGE: node " + (slot / 2) + " of path '" + pathPattern.getPathVariable() + "' was left unbound: " + element);
   }
 
   private static Edge tracedEdge(final Object[] trace, final int slot, final PathPattern pathPattern) {
@@ -1078,7 +1080,7 @@ public class MergeStep extends AbstractExecutionStep {
     if (element instanceof Edge edge)
       return edge;
     throw new IllegalStateException(
-        "MERGE left relationship " + (slot / 2) + " of path '" + pathPattern.getPathVariable() + "' unbound: " + element);
+        "MERGE: relationship " + (slot / 2) + " of path '" + pathPattern.getPathVariable() + "' was left unbound: " + element);
   }
 
   private ResultInternal copyResult(final Result source) {
