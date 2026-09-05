@@ -136,6 +136,8 @@ import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
@@ -1598,6 +1600,11 @@ public class CypherExecutionPlan {
           callStep.setCountOnlyOptimization(true);
         }
         currentStep = callStep;
+        // A CALL binds the names it yields the way UNWIND binds its variable: they belong to the scope a
+        // following MATCH starts from, not to that MATCH's own clause. Registering them is what lets the
+        // MATCH push a predicate that reads one of them down into its scan, and what keeps a yielded
+        // relationship out of the MATCH's clause-scoped uniqueness set (issue #7165).
+        collectCallOutputVariables(callClause, boundVariables);
         break;
 
       case FOREACH:
@@ -1624,6 +1631,9 @@ public class CypherExecutionPlan {
           subqueryStep.setPrevious(currentStep);
         }
         currentStep = subqueryStep;
+        // What the subquery returns joins the outer scope, exactly as a CALL's YIELD names do, so a following
+        // MATCH can push a predicate that reads one of them into its scan instead of filtering behind it.
+        collectSubqueryOutputVariables(subqueryClause, boundVariables);
         break;
       }
     }
@@ -1942,7 +1952,14 @@ public class CypherExecutionPlan {
     }
 
     final AbstractExecutionStep stepBeforeMatch = currentStep;
+    // Handed to every relationship step of this clause BY REFERENCE, never copied: a step built for an early
+    // hop has to observe the names later hops add, and it does because planning finishes long before the first
+    // row is pulled. Copying it at a call site "to be safe" would give that step a scope missing the very
+    // variables the uniqueness rule has to compare against, which is the bug this whole file's #7165 comments
+    // are about, reintroduced one hop at a time.
     final Set<String> matchVariables = new HashSet<>();
+    // The other half of the relationship-uniqueness scope: see clauseRelationshipVariables().
+    final Set<String> clauseRelVariables = clauseRelationshipVariables(matchClause);
     final boolean isOptional = matchClause.isOptional();
 
     // Reorder independent (disconnected) comma-separated pattern parts so the expensive edge-bearing
@@ -2286,8 +2303,8 @@ public class CypherExecutionPlan {
               if (!boundVariables.contains(groupVariable))
                 matchVariables.add(groupVariable);
             nextStep = new QuantifiedPathStep(effectiveSourceVar, effectiveTargetVar, pathVariable,
-                bindsGroupPathVariable(pathPattern), quantified, effectiveTargetNode,
-                new HashSet<>(boundVariables), context);
+                bindsGroupPathVariable(pathPattern), quantified, effectiveTargetNode, matchVariables,
+                clauseRelVariables, context);
           } else if (relPattern.isVariableLength()) {
             // DFS, not BFS: DFS's active stack is bounded by maxHops regardless of branching
             // factor, while BFS's frontier queue must hold an entire level's children before it
@@ -2295,8 +2312,8 @@ public class CypherExecutionPlan {
             // way around that. A MATCH's result order is unspecified without ORDER BY, so this is
             // a pure implementation-strategy change, not a semantic one (#6097).
             nextStep = new ExpandPathStep(effectiveSourceVar, pathVariable, relVar, effectiveTargetVar, relPattern,
-                false, effectiveTargetNode, pathPattern.getEffectivePathMode(), computePrevVarsForVlp(pathPattern, i, boundVariables),
-                directionOverride, reversed, context);
+                false, effectiveTargetNode, pathPattern.getEffectivePathMode(), matchVariables,
+                clauseRelVariables, directionOverride, reversed, context);
           } else {
             // Check if this hop requires IN traversal on a unidirectional edge.
             // Unidirectional edges don't store incoming links, so we must restructure:
@@ -2337,13 +2354,13 @@ public class CypherExecutionPlan {
               }
               // Swap source/target and reverse direction: go OUT from scanned target to bound source
               nextStep = new MatchRelationshipStep(effectiveTargetVar, relVar, effectiveSourceVar, relPattern,
-                  pathVariable, sourceNode, boundWithSource, new HashSet<>(boundVariables),
-                  Direction.OUT, context);
+                  pathVariable, sourceNode, boundWithSource, matchVariables, clauseRelVariables, Direction.OUT,
+                  context);
             } else {
-              // Normal case: pass target node pattern for label filtering, bound variables for identity
-              // checking, and a snapshot for relationship uniqueness scoping.
+              // Normal case: pass target node pattern for label filtering and bound variables for identity
+              // checking. The relationship-uniqueness scope is published once the clause is complete.
               nextStep = new MatchRelationshipStep(effectiveSourceVar, relVar, effectiveTargetVar, relPattern,
-                  pathVariable, effectiveTargetNode, targetIdentityVars, new HashSet<>(boundVariables),
+                  pathVariable, effectiveTargetNode, targetIdentityVars, matchVariables, clauseRelVariables,
                   directionOverride, context);
             }
           }
@@ -2393,6 +2410,50 @@ public class CypherExecutionPlan {
     boundVariables.addAll(matchVariables);
 
     return currentStep;
+  }
+
+  /**
+   * Adds the names a {@code CALL { }} subquery makes visible to the clauses that follow it: its own
+   * {@code RETURN} items, which join the outer scope rather than replacing it. A {@code RETURN *} forwards the
+   * subquery body's own variables rather than listing them here, so it contributes nothing. That costs the
+   * push-down below and nothing else: the join against a variable the subquery already bound is enforced when
+   * the following MATCH runs, against the value the row carries, not from this bookkeeping - a
+   * {@code RETURN *} subquery answers exactly as the same query written with an explicit list, or with
+   * {@code WITH}, which is what {@link
+   * com.arcadedb.query.opencypher.CypherClauseScopedRelationshipUniquenessIssue7165Test} pins.
+   */
+  private static void collectSubqueryOutputVariables(final SubqueryClause subqueryClause,
+      final Set<String> boundVariables) {
+    final ReturnClause returnClause = subqueryClause.getInnerStatement() != null ?
+        subqueryClause.getInnerStatement().getReturnClause() : null;
+    if (returnClause == null)
+      return;
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems())
+      if (!item.isStar())
+        boundVariables.add(item.getOutputName());
+  }
+
+  /**
+   * Adds the names a {@code CALL} makes visible to the clauses that follow it: the YIELD aliases when the
+   * clause lists them, otherwise the procedure's own declared output fields, which is what {@code YIELD *}
+   * and a bare {@code CALL} put into the row. A name the registry does not know contributes nothing: it may
+   * still run - an ArcadeDB SQL function reached through {@code CALL} resolves further down in
+   * {@link com.arcadedb.query.opencypher.executor.steps.CallStep} - it just declares no output fields to read
+   * here. What is missed is the push-down below, never a row: relationship uniqueness is scoped to the MATCH
+   * clause's own variables and asks this set nothing.
+   */
+  private static void collectCallOutputVariables(final CallClause callClause, final Set<String> boundVariables) {
+    if (callClause.hasYield() && !callClause.isYieldAll()) {
+      for (final CallClause.YieldItem item : callClause.getYieldItems())
+        boundVariables.add(item.getOutputName());
+      return;
+    }
+    final CypherProcedure procedure = CypherProcedureRegistry.get(callClause.getProcedureName());
+    if (procedure == null)
+      return;
+    final List<String> yieldFields = procedure.getYieldFields();
+    if (yieldFields != null)
+      boundVariables.addAll(yieldFields);
   }
 
   /**
@@ -3016,6 +3077,15 @@ public class CypherExecutionPlan {
   /**
    * Legacy method for building execution steps (fixed order).
    * Used when clause order information is not available.
+   * <p>
+   * It has no {@code CALL} handling, and needs none: {@link com.arcadedb.query.opencypher.parser.StatementBuilder}
+   * is the only thing that puts a {@code CallClause} on a statement and it always appends the matching entry to
+   * {@code clausesInOrder}, so a statement carrying a CALL never reaches here - this method runs only when that
+   * list is null or empty. Should that ever stop holding, a {@code case CALL:} added here has to register the
+   * clause's YIELD names the way the ordered builder does (see {@link #collectCallOutputVariables}), or a
+   * predicate reading one of them silently stops being pushed into the following MATCH's scan. Relationship
+   * uniqueness is not at stake either way: its scope comes from the MATCH clause's own AST rather than from
+   * what earlier clauses registered, which is the whole point of #7165.
    */
   private AbstractExecutionStep buildExecutionStepsLegacy(final CommandContext context) {
     AbstractExecutionStep currentStep = null;
@@ -3070,7 +3140,9 @@ public class CypherExecutionPlan {
 
           // Track the step before this MATCH clause for OPTIONAL MATCH wrapping
           final AbstractExecutionStep stepBeforeMatch = currentStep;
+          // By reference, never copied - see the note in buildMatchStep().
           final Set<String> matchVariables = new HashSet<>();
+          final Set<String> clauseRelVariables = clauseRelationshipVariables(matchClause);
           final boolean isOptional = matchClause.isOptional();
 
           // For optional match, we build the match chain separately (not chained to stepBeforeMatch)
@@ -3295,14 +3367,14 @@ public class CypherExecutionPlan {
                     if (!legacyBoundVariables.contains(groupVariable))
                       matchVariables.add(groupVariable);
                   nextStep = new QuantifiedPathStep(currentSourceVar, targetVar, pathVariable,
-                      bindsGroupPathVariable(pathPattern), quantified, targetNode,
-                      new HashSet<>(legacyBoundVariables), context);
+                      bindsGroupPathVariable(pathPattern), quantified, targetNode, matchVariables, clauseRelVariables,
+                      context);
                 } else if (relPattern.isVariableLength()) {
                   // Variable-length path - pass path variable, relationship variable, and target node for label
-                  // filtering. Snapshot previously bound variables for relationship-uniqueness scoping.
+                  // filtering.
                   // DFS, not BFS: see the matching comment in the optimizer plan builder above (#6097).
                   nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, false,
-                      targetNode, pathPattern.getEffectivePathMode(), computePrevVarsForVlp(pathPattern, i, legacyBoundVariables), context);
+                      targetNode, pathPattern.getEffectivePathMode(), matchVariables, clauseRelVariables, context);
                 } else {
                   // Fixed-length relationship - pass path variable, target node pattern, and bound variables.
                   // #6311: the same snapshot rule as the ordered builder above - the hop identity-checks its
@@ -3312,7 +3384,7 @@ public class CypherExecutionPlan {
                   final Set<String> targetIdentityVars = new HashSet<>(legacyBoundVariables);
                   targetIdentityVars.addAll(matchVariables);
                   nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
-                      targetNode, targetIdentityVars, context);
+                      targetNode, targetIdentityVars, matchVariables, clauseRelVariables, context);
                 }
 
                 // Update source for next hop in multi-hop patterns
@@ -4950,26 +5022,37 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * Computes the set of "previously bound" variables to pass to {@link ExpandPathStep} for a
-   * variable-length hop at {@code vlpHopIndex} within {@code pathPattern}.
+   * Every relationship variable a MATCH clause writes, whether or not this clause is the one that binds it.
    * <p>
-   * OpenCypher path isomorphism applies within a single <em>path</em>, not within a MATCH clause.
-   * A relationship variable bound by a prior MATCH that is also explicitly named in the current
-   * path pattern is a same-path co-participant and must be checked for edge conflicts even though
-   * it was introduced before this MATCH. We therefore remove those co-participants from the
-   * exclusion set before handing it to ExpandPathStep.
+   * The other half of the uniqueness scope, alongside the variables the clause binds. A relationship variable
+   * an earlier clause already bound - a {@code CALL}'s yield, a {@code WITH} - is still one of this clause's
+   * relationship patterns when the clause names it again, so it is a co-participant the clause's other
+   * patterns must be distinct from. The freshly-bound set alone cannot say so: it deliberately omits an
+   * already-bound name, because {@code OPTIONAL MATCH} nulls what it lists and must not null a carried
+   * binding.
    */
-  private static Set<String> computePrevVarsForVlp(final PathPattern pathPattern, final int vlpHopIndex,
-      final Set<String> boundVariables) {
-    final Set<String> prevVars = new HashSet<>(boundVariables);
-    for (int j = 0; j < pathPattern.getRelationshipCount(); j++) {
-      if (j == vlpHopIndex)
-        continue;
-      final RelationshipPattern rel = pathPattern.getRelationship(j);
-      if (rel.getVariable() != null && !rel.getVariable().isEmpty())
-        prevVars.remove(rel.getVariable());
-    }
-    return prevVars;
+  private static Set<String> clauseRelationshipVariables(final MatchClause matchClause) {
+    if (!matchClause.hasPathPatterns())
+      return Set.of();
+    Set<String> variables = null;
+    for (final PathPattern pathPattern : matchClause.getPathPatterns())
+      for (final RelationshipPattern relationship : pathPattern.getRelationships()) {
+        final String variable = relationship.getVariable();
+        if (variable != null && !variable.isEmpty()) {
+          if (variables == null)
+            variables = new HashSet<>();
+          variables.add(variable);
+        }
+        if (relationship instanceof QuantifiedPathPattern quantified) {
+          if (variables == null)
+            variables = new HashSet<>();
+          // A group's variables are its node ones as well as its relationship ones, and both are taken, exactly
+          // as the clause's own variable set takes them. Nothing is read from a name the row holds a vertex
+          // under: every consumer of this set asks whether the value is an Edge first.
+          variables.addAll(quantified.getGroupVariables());
+        }
+      }
+    return variables == null ? Set.of() : variables;
   }
 
   /**
