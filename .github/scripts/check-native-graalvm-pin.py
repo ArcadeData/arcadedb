@@ -13,9 +13,10 @@ which names neither the pom nor the workflow, so the cause has to be known rathe
 
 This has now shipped twice from a Dependabot bump nobody could refuse in time (3fecba4bf ->
 25.2.4, then b53c48c1e2 -> 25.3.4.1), each time taking out every leg of the Native Image workflow.
-A comment in the pom did not stop the second one: .mergify.yml merges a Dependabot PR on one
-approval with no green-CI condition and stamps [skip ci] on the merge commit, so main never
-re-tests it either. Hence a check that runs in the always-on `lint` job on every PR.
+A comment in the pom did not stop the second one: dependabot-auto-merge.yml merges a Dependabot PR
+on one approval with no green-CI condition, and a merge pushed with GITHUB_TOKEN starts no
+workflow run, so main never re-tests it either. Hence a check that runs in the always-on `lint`
+job on every PR.
 
 Two things are enforced:
 

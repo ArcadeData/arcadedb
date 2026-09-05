@@ -1,0 +1,76 @@
+# Merges a Dependabot pull request once someone has approved it.
+#
+# This replaces the single rule .mergify.yml used to carry. The reason it is a workflow rather
+# than Mergify config: that rule stamped `[skip ci]` on the merge commit through the merge
+# action's `commit_message_template`, which Mergify deprecated with a 2026-09-30 deadline. Its
+# declarative replacement, `commit_message_format`, only takes `title: inherit|pr-title`,
+# `body: inherit|pr-body|empty` and a fixed three-value `trailers` enum, so there is nowhere left
+# to put arbitrary text, and no other Mergify action can edit a title. Mergify said as much when
+# it opened #4904: "This template has no exact commit_message_format equivalent."
+#
+# Merging from a workflow gets the same effect without the commit-message hack. A push made with
+# the repository's GITHUB_TOKEN starts no workflow run at all - "if a workflow run pushes code
+# using the repository's GITHUB_TOKEN, a new workflow will not run even when the repository
+# contains a workflow configured to run when push events occur" - so main's push-triggered jobs
+# stay quiet on a Dependabot merge exactly as they did under `[skip ci]`. The marker is kept in
+# the subject anyway: it costs nothing, it says out loud what the merge is doing, and it is what
+# would carry the behaviour if this ever has to merge with a PAT or an App token instead.
+name: Dependabot auto-merge
+
+on:
+  pull_request_review:
+    types: [ submitted ]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    # The Mergify conditions this reproduces: `author=dependabot[bot]` and
+    # `#approved-reviews-by>=1`. There is deliberately no green-CI condition, as there was none
+    # before. Note the actor here is the human who approved, not dependabot[bot], so this run gets
+    # a writable GITHUB_TOKEN rather than the read-only one Dependabot-triggered workflows get.
+    if: >-
+      github.event.review.state == 'approved' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      # native/pom.xml's native.graalvm.version MUST equal the builder JDK that native-image.yml
+      # installs, or the image build dies in TruffleBaseFeature with NoSuchMethodError
+      # getLoopNodeFactory(). Dependabot cannot move both sides, and this job merges on ONE
+      # approval with no green-CI condition, then suppresses main's CI - so neither the reviewer's
+      # attention nor `lint` is a backstop here. It has let the skew through twice (3fecba4bf,
+      # b53c48c1e2). A GraalVM PR is handled by hand instead: merge it only together with a
+      # matching bump in native-image.yml, otherwise close it.
+      - name: Decide whether this PR may be merged unattended
+        id: guard
+        run: |
+          set -euo pipefail
+          gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json files,mergeable > pr.json
+          if jq -r '.files[].path' pr.json | grep -qx 'native/pom\.xml'; then
+            echo "native/pom.xml is in this PR: the GraalVM pin moves by hand, together with" \
+                 "native-image.yml's builder. Leaving it open."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+          elif [ "$(jq -r '.mergeable' pr.json)" = "CONFLICTING" ]; then
+            echo "PR is in conflict with main. Leaving it open for Dependabot to rebase."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "merge=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge
+        if: steps.guard.outputs.merge == 'true'
+        env:
+          # Through the environment, never interpolated into the script: a pull request title is
+          # attacker-controlled text, and `${{ }}` would splice it straight into the shell.
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json body --jq '.body' |
+            gh pr merge "$PR" -R "$GITHUB_REPOSITORY" --merge \
+              --subject "$TITLE (#$PR) [skip ci]" --body-file -
