@@ -3348,8 +3348,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "fixed reads the previous '%s'. The usual cause is a local write failure: check that the "
               + "configuration directory holding that file is writable and has free space",
           e, e.getMessage(), SecurityUserFileRepository.FILE_NAME);
+      // The message has to match what actually happened, because it is the half most likely to travel - into
+      // another node's log, an HA status payload, an incident writeup - without the SEVERE above beside it.
+      // "Stays up with its previous users" was true before the ordering fix and is now the opposite of the
+      // guarantee this fix exists to provide (issue #7137).
       throw new ReplicationException(
-          "Failed to persist the replicated user list locally; the node stays up with its previous users", e);
+          "Failed to persist the replicated user list locally; the node is already enforcing the new list in "
+              + "memory, only its durability to disk failed", e);
     }
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_USERS_ENTRY (%d bytes)", payload.length());
   }
