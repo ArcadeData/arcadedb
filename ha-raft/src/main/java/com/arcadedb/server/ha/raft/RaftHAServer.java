@@ -2548,7 +2548,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         final var conf = division.getRaftConf();
         if (conf != null)
           return conf.getCurrentPeers();
-      } catch (final IOException e) {
+      } catch (final Exception e) {
+        // Catch Exception, not IOException: Ratis throws IllegalStateException ("stateMachineUpdater is
+        // uninitialized") for the whole window in which an in-place restart re-initializes the division
+        // (issue #5271), which is precisely the window this fallback exists for. Narrowing it to IOException
+        // made every membership reader behind configuredPeers() - /api/v1/cluster, getReplicaAddresses(), the
+        // Bolt/gRPC routing table - propagate instead of degrading, and aborted the health-monitor tick that
+        // drives the restart (issue #7135). Membership reads must degrade, never propagate.
         LogManager.instance().log(this, Level.FINE,
             "Cannot read the live Raft configuration this tick; returning no membership, and it is the caller's "
                 + "choice whether to substitute the declared server list", e);
@@ -2590,7 +2596,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final boolean resyncInProgress = sm != null && sm.isResyncInProgress();
       return isReadyForTrafficState(leaderPresent, localInConfig, info.isLeader(), commitIndex, appliedIndex,
           maxLagEntries, resyncInProgress, info.isLeaderReady());
-    } catch (final IOException e) {
+    } catch (final Exception e) {
+      // Catch Exception, not IOException: getLastAppliedIndex() above is documented to throw Ratis'
+      // IllegalStateException while an in-place restart re-initializes the division (issue #5271), so the
+      // narrow catch let /api/v1/ready answer HTTP 500 instead of NOT_READY (issue #7135). This method's
+      // contract is to fail closed on unreadable state, and that is the answer for every read failure.
       LogManager.instance().log(this, Level.FINE, "Cannot read Raft state for readiness probe", e);
       return false;
     }
