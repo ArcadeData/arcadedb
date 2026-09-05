@@ -36,6 +36,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.security.SecurityUserFileRepository;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
@@ -1142,6 +1143,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throw new ReplicationException(
           "Apply error on database '" + databaseName + "' at index " + index + "; per-database snapshot resync in progress", t);
     }
+
+    // Node-scoped entry (no single target database): there is no per-database state to quarantine and no
+    // targeted resync that would repair it, so an unexpected error here still escalates to the node-wide halt
+    // (issue #4798's reasoning: never silently skip a committed mutation). An apply that is provably fail-safe
+    // classifies its OWN failure as recoverable before it reaches here - see applySecurityUsersEntry (issue
+    // #7137) - so the entries that arrive at this line are the ones for which a halt is the honest answer.
+    // Say which class of entry it was: without it, the SEVERE at the fatal branch names only an index.
+    LogManager.instance().log(this, Level.SEVERE,
+        "Unexpected error applying a node-scoped Raft entry at index %d (the entry targets no single database, so "
+            + "there is nothing to quarantine); escalating to the node-wide halt: %s", index, t.getMessage());
     throw t;
   }
 
@@ -3276,13 +3287,45 @@ public class ArcadeStateMachine extends BaseStateMachine {
       previous.close();
   }
 
+  /**
+   * Applies a replicated user list.
+   * <p>
+   * A local failure here - {@code ServerSecurity.applyReplicatedUsers} cannot write
+   * {@code server-users.jsonl} because the config volume is full, read-only or NFS-hiccuping - is deliberately
+   * NOT a node-halt condition (issue #7137). It reaches {@code handleUnexpectedApplyError} with the empty
+   * database name the codec gives this entry, which skips the per-database quarantine of #4797 and lands in
+   * the node-wide {@code catch (Throwable)} halt; and because the halt leaves the applied index untouched on
+   * purpose, the next start replays the same entry and halts again. With an environmental cause that is an
+   * indefinite crash loop of the whole node - every co-located database - triggered by nothing worse than a
+   * password change on the leader.
+   * <p>
+   * Failing the entry is enough because this apply is fail-safe: {@code applyReplicatedUsers} swaps the
+   * in-memory user map only AFTER the save returns, so on failure the node's state still matches its
+   * pre-entry state and cannot diverge. What is lost is the ability to administer users on this node until
+   * the volume is fixed, which is an availability problem, and the SEVERE below is what says so. The
+   * classification lives here, at the apply site, rather than in the generic handler: whether a failure is
+   * fail-safe is a property of the apply, not of the entry's database scoping, so a future node-scoped entry
+   * that is NOT fail-safe still reaches the halt it needs.
+   */
   private void applySecurityUsersEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String payload = decoded.usersJson();
     if (payload == null) {
       LogManager.instance().log(this, Level.WARNING, "SECURITY_USERS_ENTRY has null payload, skipping");
       return;
     }
-    server.getSecurity().applyReplicatedUsers(payload);
+    try {
+      server.getSecurity().applyReplicatedUsers(payload);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Could not apply a replicated user list on this node: %s. The node keeps running with its PREVIOUS users - "
+              + "the in-memory user map is swapped only after the new list is persisted, so no state divergence is "
+              + "possible - but user administration will not take effect here until this is resolved. The usual cause "
+              + "is a local write failure: check that the configuration directory holding '%s' is writable and has "
+              + "free space",
+          e, e.getMessage(), SecurityUserFileRepository.FILE_NAME);
+      throw new ReplicationException(
+          "Failed to persist the replicated user list locally; the node stays up with its previous users", e);
+    }
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_USERS_ENTRY (%d bytes)", payload.length());
   }
 
