@@ -182,6 +182,27 @@ class CypherClauseScopedRelationshipUniquenessIssue7165Test extends TestHelper {
     }
   }
 
+  /**
+   * A {@code RETURN *} subquery forwards its body's own variables rather than listing them, so the planner
+   * registers none of them and a following MATCH that names one sees a variable it believes is fresh. It must
+   * still join against the value the row carries rather than scanning and rebinding it - what the registration
+   * buys is the push-down, not the join. Pinned against both an explicit {@code RETURN} list and {@code WITH},
+   * and with two subquery rows, so a Cartesian product would show up as four rows rather than two.
+   */
+  @Test
+  void aSubqueryReturningStarStillJoinsTheFollowingMatchOnItsCarriedBinding() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (c:P {uuid:'c'})-[:LINK {uuid:'r2', fact:'gamma', srcUuid:'c'}]->(d:P {uuid:'d'})"));
+
+    final String star = "CALL { MATCH (n:P) RETURN * } MATCH (n)-[:LINK]->(m) RETURN n.uuid + '/' + m.uuid AS pair";
+    final String explicit = "CALL { MATCH (n:P) RETURN n } MATCH (n)-[:LINK]->(m) RETURN n.uuid + '/' + m.uuid AS pair";
+    final String with = "MATCH (n:P) WITH n MATCH (n)-[:LINK]->(m) RETURN n.uuid + '/' + m.uuid AS pair";
+
+    assertThat(queryColumn(star, "pair")).containsExactlyInAnyOrder("a/b", "c/d");
+    assertThat(queryColumn(star, "pair")).isEqualTo(queryColumn(explicit, "pair"));
+    assertThat(queryColumn(star, "pair")).isEqualTo(queryColumn(with, "pair"));
+  }
+
   /** A yielded scalar was never the problem, and must keep working: the control for the two tests above. */
   @Test
   void matchAfterCallYieldingAScalarStillChainsOnTheCallRows() {
