@@ -48,6 +48,7 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -58,6 +59,7 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.Index;
 
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -902,23 +904,70 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * {@code propertyName} and returns the {@link Type} that matches its Java class. Returns
    * {@code null} if no record sets the property. Used by Cypher DDL to preserve numeric
    * properties across {@code CREATE INDEX} on an already-populated type (issue #4222).
+   * <p>
+   * Temporal values are the one case where the Java class alone is not enough:
+   * {@link Type#getTypeByClass} maps every temporal class onto the millisecond {@link Type#DATETIME},
+   * while an <em>undeclared</em> temporal property is serialized at the precision of each value
+   * (see {@code BinaryTypes.getTypeFromValue}). Declaring {@code DATETIME} would therefore silently
+   * truncate to milliseconds every write made after the index was created, on a property whose
+   * existing rows carry microseconds or nanoseconds (issue #7164). So the first non-null value still
+   * decides the property's <em>kind</em>, but when that kind is temporal the scan keeps going and
+   * declares the widest precision the data actually holds. Milliseconds stay the floor - a value that
+   * happens to land on a whole second must not declare the property {@code DATETIME_SECOND} and
+   * truncate the millisecond writes ArcadeDB has always accepted by default.
+   * <p>
+   * The 256-record cap that bounds the kind lookup is deliberately not applied to that precision
+   * sweep: a capped sweep would silently truncate a type whose first 256 rows happen to sit on a
+   * millisecond boundary, which is the very failure being fixed. The sweep stops as soon as it sees
+   * nanoseconds (nothing can widen it further), and the caller is about to walk every record anyway
+   * to build the index, so it costs one extra sequential scan on a DDL statement that is already
+   * linear in the type's size.
+   * <p>
+   * That scan is unconditional once the property is seen to be temporal, including the common case
+   * where every value is plain millisecond-precision and the answer is the {@code DATETIME} the
+   * capped scan would have given. So indexing a temporal column on a very large type costs a
+   * measurable amount of extra wall clock on top of the index build - deliberately, because the
+   * alternative is silently truncating precision that is already persisted. If a slow
+   * {@code CREATE INDEX} on a huge temporal column ever needs to be cut down, this is the place, and
+   * anything that reintroduces a bound reintroduces the truncation of issue #7164 with it.
    */
   private Type inferPropertyTypeFromExistingData(final String typeName, final String propertyName) {
     try {
       final Iterator<Record> it = database.iterateType(typeName, true);
       int scanned = 0;
+      ChronoUnit temporalPrecision = null;
       // 256 is enough to spot the dominant value type without doing a full table scan; users
       // hitting heterogeneous-typed properties can declare the property explicitly via SQL.
-      while (it.hasNext() && scanned < 256) {
+      while (it.hasNext() && (temporalPrecision != null || scanned < 256)) {
         final Record record = it.next();
         scanned++;
         if (!(record instanceof Document doc))
           continue;
-        if (!doc.has(propertyName))
-          continue;
+        // NO has() GUARD: get() ALREADY ANSWERS null FOR AN ABSENT PROPERTY, AND EACH OF THE TWO MAKES ITS OWN PASS
+        // OVER THE RECORD BUFFER - ASKING TWICE DOUBLED THE COST OF EVERY RECORD IN THE UNCAPPED SWEEP ABOVE
         final Object value = doc.get(propertyName);
         if (value == null)
           continue;
+
+        final ChronoUnit precision = DateUtils.getPrecisionFromValue(value);
+
+        if (temporalPrecision != null) {
+          // THE KIND IS ALREADY SETTLED AS TEMPORAL: LATER VALUES ONLY WIDEN THE PRECISION
+          if (precision != null && precision.compareTo(temporalPrecision) < 0)
+            temporalPrecision = precision;
+          if (temporalPrecision == ChronoUnit.NANOS)
+            break;
+          continue;
+        }
+
+        if (precision != null) {
+          // MILLIS IS THE FLOOR: NEVER NARROW BELOW THE DEFAULT DATETIME PRECISION
+          temporalPrecision = precision.compareTo(ChronoUnit.MILLIS) < 0 ? precision : ChronoUnit.MILLIS;
+          if (temporalPrecision == ChronoUnit.NANOS)
+            break;
+          continue;
+        }
+
         try {
           return Type.getTypeByClass(value.getClass());
         } catch (final IllegalArgumentException ignored) {
@@ -927,6 +976,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
           return null;
         }
       }
+
+      if (temporalPrecision != null)
+        return Type.getByBinaryType(DateUtils.getBestBinaryTypeForPrecision(temporalPrecision));
     } catch (final Exception ignored) {
       // If iteration fails for any reason (e.g. schema in transient state) just skip inference.
     }

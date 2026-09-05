@@ -476,9 +476,29 @@ public class DateUtils {
       case null -> throw new IllegalArgumentException("Object is null");
       case LocalDateTime time -> time.getNano();
       case ZonedDateTime time -> time.getNano();
+      case OffsetDateTime time -> time.getNano();
       case Instant instant -> instant.getNano();
       default -> throw new IllegalArgumentException("Object of class '" + obj.getClass() + "' is not supported");
     };
+  }
+
+  /**
+   * Returns the sub-second precision actually carried by a temporal value, or {@code null} when the object is not a
+   * temporal ArcadeDB stores with a sub-second precision (a {@code LocalDate}, a number, a string, anything else).
+   * {@code Date} and {@code Calendar} cannot hold anything finer than a millisecond, so they always report
+   * {@link ChronoUnit#MILLIS}.
+   *
+   * @param obj value to inspect
+   *
+   * @return the value's precision, or {@code null} if it is not a sub-second-capable temporal
+   */
+  public static ChronoUnit getPrecisionFromValue(final Object obj) {
+    if (obj instanceof Date || obj instanceof Calendar)
+      return ChronoUnit.MILLIS;
+    if (obj instanceof LocalDateTime || obj instanceof ZonedDateTime || obj instanceof OffsetDateTime
+        || obj instanceof Instant)
+      return getPrecision(getNanos(obj));
+    return null;
   }
 
   public static boolean isDate(final Object obj) {
@@ -494,13 +514,8 @@ public class DateUtils {
 
     ChronoUnit highestPrecision = ChronoUnit.MILLIS;
     for (int i = 0; i < objs.length; i++) {
-      final Object obj = objs[i];
-      final ChronoUnit precision;
-      if (obj instanceof Date || obj instanceof Calendar)
-        precision = ChronoUnit.MILLIS;
-      else if (obj instanceof LocalDateTime || obj instanceof ZonedDateTime || obj instanceof Instant)
-        precision = getPrecision(getNanos(obj));
-      else
+      final ChronoUnit precision = getPrecisionFromValue(objs[i]);
+      if (precision == null)
         continue;
 
       if (precision.compareTo(highestPrecision) < 0)
