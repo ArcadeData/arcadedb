@@ -169,6 +169,43 @@ class CypherEagerWriteBarrierIssue7171Test {
         .contains("EAGER");
   }
 
+  /**
+   * A FOREACH whose body actually writes goes through the analyzer's recursive body walk, not the
+   * empty-body path the reported query exercises: {@code CREATE (:l6)} inside the body adds vertices the
+   * MATCH's own {@code (:l6)} anchor scans, so the FOREACH gets a barrier of its own.
+   */
+  @Test
+  void aForeachWhoseBodyWritesAConflictingPatternIsBarriered() {
+    open("foreach-body");
+
+    assertThat(explain("""
+        MATCH (:l3|l8) <-[r0]- (:l6)
+        FOREACH (x IN [1] | CREATE (:l6))
+        RETURN r0"""))
+        .as("the body creates vertices of a label the MATCH anchor scans")
+        .contains("EAGER");
+    assertThat(explain("""
+        MATCH (:l3|l8) <-[r0]- (:l6)
+        FOREACH (x IN [1] | CREATE (:Untouched))
+        RETURN r0"""))
+        .as("Untouched is a label no pattern reads")
+        .doesNotContain("EAGER");
+  }
+
+  /** One barrier is enough for the writes behind it: it already drained every enumeration they could see. */
+  @Test
+  void consecutiveConflictingWritesShareOneBarrier() {
+    open("one-barrier");
+
+    final String plan = explain("""
+        MATCH (n:l6)
+        CREATE (:l6)
+        CREATE (:l6)
+        RETURN n""");
+    assertThat(plan).contains("EAGER");
+    assertThat(plan.split("EAGER", -1).length - 1).as("exactly one barrier, not one per write").isEqualTo(1);
+  }
+
   private long rowCountOf(final String name, final String query) {
     open(name);
     return rowCount(query);

@@ -106,6 +106,21 @@ public final class CypherEagernessAnalyzer {
    * runs - the one place in the pipeline where that is provably true.
    */
   public void observeAggregationBoundary() {
+    clearReadFootprint();
+  }
+
+  /**
+   * Clears the read footprint once a barrier has actually been planted. The barrier drains everything
+   * upstream of it, so the enumerations that made the following write conflict are closed before that write
+   * runs, and a second write behind it needs no barrier of its own: {@code MATCH (n:A) CREATE (:A) CREATE
+   * (:A)} plants one, not two. A later MATCH re-opens an enumeration and {@link #observeRead} records it
+   * again, so nothing that does need a barrier loses one.
+   */
+  public void observeBarrier() {
+    clearReadFootprint();
+  }
+
+  private void clearReadFootprint() {
     readNodeLabels.clear();
     readRelationshipTypes.clear();
     anyRead = false;
