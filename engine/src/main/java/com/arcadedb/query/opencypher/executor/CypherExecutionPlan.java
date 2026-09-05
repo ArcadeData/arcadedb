@@ -80,6 +80,7 @@ import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
+import com.arcadedb.query.opencypher.ast.SimpleCypherStatement;
 import com.arcadedb.query.opencypher.ast.ShortestPathExpression;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
 import com.arcadedb.query.opencypher.ast.StarExpression;
@@ -105,6 +106,7 @@ import com.arcadedb.query.opencypher.executor.steps.CountOp;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.DegreeProductOp;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
+import com.arcadedb.query.opencypher.executor.steps.EagerStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
@@ -135,6 +137,7 @@ import com.arcadedb.query.opencypher.executor.steps.UnwindStep;
 import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
+import com.arcadedb.query.opencypher.planner.CypherEagernessAnalyzer;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
@@ -1125,6 +1128,10 @@ public class CypherExecutionPlan {
     // MATCH clauses seen since the last WITH (or since the start), i.e. the ones that actually feed
     // whichever DELETE segment is reached next - see matchClausesNeedEagerDelete().
     final List<MatchClause> currentSegmentMatchClauses = new ArrayList<>();
+    // See buildExecutionStepsWithOrder(): the same read/write barrier analysis, over the same clause list
+    // (issue #7171). This path never sees a CALL or a FOREACH, so only CREATE and MERGE are weighed here.
+    final CypherEagernessAnalyzer eagerness = new CypherEagernessAnalyzer();
+    final Set<String> optimizerBoundVariables = new HashSet<>();
     if (clausesInOrder != null) {
       for (final ClauseEntry entry : clausesInOrder) {
         switch (entry.getType()) {
@@ -1133,6 +1140,8 @@ public class CypherExecutionPlan {
           // attached to MATCH clauses still need to be applied as filters.
           final MatchClause matchClause = entry.getTypedClause();
           currentSegmentMatchClauses.add(matchClause);
+          eagerness.observeRead(matchClause);
+          collectPatternVariables(matchClause, optimizerBoundVariables);
           if (matchClause.hasWhereClause()) {
             final FilterPropertiesStep filterStep =
                 new FilterPropertiesStep(matchClause.getWhereClause(), context);
@@ -1145,6 +1154,8 @@ public class CypherExecutionPlan {
         case CREATE: {
           final CreateClause createClause = entry.getTypedClause();
           if (!createClause.isEmpty()) {
+            if (eagerness.needsBarrier(createClause, optimizerBoundVariables))
+              currentStep = withEagerBarrier(currentStep, context);
             final CreateStep createStep = new CreateStep(createClause, context, functionFactory);
             createStep.setPrevious(currentStep);
             currentStep = createStep;
@@ -1185,6 +1196,8 @@ public class CypherExecutionPlan {
 
         case MERGE: {
           final MergeClause mergeClause = entry.getTypedClause();
+          if (eagerness.needsBarrier(mergeClause, optimizerBoundVariables))
+            currentStep = withEagerBarrier(currentStep, context);
           final MergeStep mergeStep = new MergeStep(mergeClause, context, functionFactory);
           mergeStep.setPrevious(currentStep);
           currentStep = mergeStep;
@@ -1196,12 +1209,16 @@ public class CypherExecutionPlan {
           final UnwindStep unwindStep = new UnwindStep(unwindClause, context, functionFactory);
           unwindStep.setPrevious(currentStep);
           currentStep = unwindStep;
+          optimizerBoundVariables.add(unwindClause.getVariable());
           break;
         }
 
         case WITH: {
           final WithClause withClause = entry.getTypedClause();
           currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory);
+          if (withClause.hasAggregations())
+            eagerness.observeAggregationBoundary();
+          applyProjectionToScope(withClause.getItems(), optimizerBoundVariables);
           // A WITH boundary starts a new segment: MATCH clauses before it no longer feed a DELETE
           // that comes after it (issue #6631). Unlike buildExecutionStepsWithOrder()'s WITH case, a
           // plain clear() here (no taint tracking for a DELETE that plainly forwards a disconnected
@@ -1398,6 +1415,10 @@ public class CypherExecutionPlan {
     // them unchanged) - see closeMatchSegment() and deleteMayTargetTaintedVariable().
     final Set<String> disconnectedTaintedVariables = new HashSet<>();
 
+    // Shape of everything read so far, weighed against each write clause's own shape to decide where an
+    // eager read/write barrier has to go so the query never reads back what it just created (issue #7171).
+    final CypherEagernessAnalyzer eagerness = new CypherEagernessAnalyzer();
+
     // Both count push-downs answer from the schema and the CSR arrays alone: they read the statement's patterns and
     // never look at the incoming rows. That makes the enumerating form of them wrong the moment the seed row binds
     // one of those pattern variables - a seeded body counting `MATCH (n)-[:KNOWS]->(m)` with `n` already bound to one
@@ -1482,12 +1503,17 @@ public class CypherExecutionPlan {
       case MATCH:
         final MatchClause matchClause = entry.getTypedClause();
         currentSegmentMatchClauses.add(matchClause);
+        eagerness.observeRead(matchClause);
         if (matchClause.isOptional()) {
           // Try chained count optimization first (handles 2 consecutive OPTIONAL MATCH + count)
           final AbstractExecutionStep chainedOptimized = tryOptimizeChainedOptionalMatchCount(
               matchClause, clausesInOrder, entryIndex, currentStep, context, boundVariables);
           if (chainedOptimized != null) {
             currentStep = chainedOptimized;
+            // The optimization swallows the next OPTIONAL MATCH whole, so its patterns are read without ever
+            // reaching this switch: fold them into the read footprint before skipping past them.
+            if (clausesInOrder.get(entryIndex + 1).getType() == ClauseEntry.ClauseType.MATCH)
+              eagerness.observeRead(clausesInOrder.get(entryIndex + 1).getTypedClause());
             entryIndex += 2; // skip both the next OPTIONAL MATCH and the WITH clause
             // Update boundVariables from the WITH clause
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
@@ -1529,10 +1555,16 @@ public class CypherExecutionPlan {
         // A rename (WITH n AS m) doesn't change how rows flow either - propagate the taint onto the
         // new name too, or a later DELETE of m would find nothing tainted under that name.
         propagateTaintThroughRenames(withClause, disconnectedTaintedVariables);
+        // Only an aggregating WITH provably drains the enumerations feeding it, closing the #7171 hazard for
+        // everything read before it; a plain forwarding WITH leaves them just as open as they were.
+        if (withClause.hasAggregations())
+          eagerness.observeAggregationBoundary();
         break;
 
       case MERGE:
         final MergeClause mergeClause = entry.getTypedClause();
+        if (currentStep != null && eagerness.needsBarrier(mergeClause, boundVariables))
+          currentStep = withEagerBarrier(currentStep, context);
         final MergeStep mergeStep =
             new MergeStep(mergeClause, context, functionFactory);
         if (currentStep != null) {
@@ -1544,6 +1576,8 @@ public class CypherExecutionPlan {
       case CREATE:
         final CreateClause createClause = entry.getTypedClause();
         if (!createClause.isEmpty()) {
+          if (currentStep != null && eagerness.needsBarrier(createClause, boundVariables))
+            currentStep = withEagerBarrier(currentStep, context);
           final CreateStep createStep = new CreateStep(createClause, context, functionFactory);
           if (currentStep != null) {
             createStep.setPrevious(currentStep);
@@ -1589,6 +1623,11 @@ public class CypherExecutionPlan {
 
       case CALL:
         final CallClause callClause = entry.getTypedClause();
+        // A write procedure is opaque to the planner - merge.relationship takes its type as a runtime
+        // argument - so it conflicts with every read still in flight ahead of it (issue #7171).
+        if (currentStep != null && eagerness.needsBarrierForWriteProcedure()
+            && SimpleCypherStatement.isWriteProcedureCall(callClause))
+          currentStep = withEagerBarrier(currentStep, context);
         final CallStep callStep =
             new CallStep(callClause, context, functionFactory);
         if (currentStep != null) {
@@ -1615,6 +1654,8 @@ public class CypherExecutionPlan {
         final boolean foreachEagerExecution =
             database.getConfiguration().getValueAsBoolean(GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ)
                 && graphReadFollows(clausesInOrder, entryIndex);
+        if (currentStep != null && eagerness.needsBarrier(foreachClause, boundVariables))
+          currentStep = withEagerBarrier(currentStep, context);
         final ForeachStep foreachStep =
             new ForeachStep(foreachClause, context, functionFactory, foreachEagerMaterialize, foreachEagerExecution);
         if (currentStep != null) {
@@ -2974,6 +3015,37 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Inserts the eager read/write barrier of issue #7171 ahead of a write clause: everything the pipeline has
+   * read is drained into memory before the first row reaches the write, so no enumeration is still open while
+   * the write adds entities it could match. Where the barrier is needed is decided by
+   * {@link CypherEagernessAnalyzer}, which keeps it off every shape whose writes cannot feed a read.
+   */
+  private static AbstractExecutionStep withEagerBarrier(final AbstractExecutionStep currentStep,
+      final CommandContext context) {
+    if (currentStep == null)
+      return null;
+    final EagerStep eagerStep = new EagerStep(context);
+    eagerStep.setPrevious(currentStep);
+    return eagerStep;
+  }
+
+  /**
+   * Adds every node and relationship variable a MATCH binds to {@code target}. Used to tell a CREATE/MERGE node
+   * that names an already-matched entity (a reference) from one that creates a new entity, which is what stops
+   * {@code MATCH (a:A), (b:B) MERGE (a)-[:R]->(b)} from being read as creating unlabelled vertices.
+   */
+  private static void collectPatternVariables(final MatchClause matchClause, final Set<String> target) {
+    for (final PathPattern pathPattern : matchClause.getPathPatterns()) {
+      for (final NodePattern node : pathPattern.getNodes())
+        if (node.getVariable() != null)
+          target.add(node.getVariable());
+      for (final RelationshipPattern relationship : pathPattern.getRelationships())
+        if (relationship.getVariable() != null)
+          target.add(relationship.getVariable());
+    }
+  }
+
+  /**
    * Closes the MATCH segment tracked in {@code currentSegmentMatchClauses} at a WITH boundary: if the
    * segment being closed needs the eager guard at all ({@link #matchClausesNeedEagerDelete}), every node
    * AND relationship variable it bound is added to {@code disconnectedTaintedVariables} before the
@@ -3564,8 +3636,19 @@ public class CypherExecutionPlan {
       }
     }
 
+    // The read/write barrier analysis of buildExecutionStepsWithOrder(), over the flat clause lists this
+    // method works from (issue #7171). It only runs for a statement with no tracked clause order, which is
+    // single-segment by construction, so the whole MATCH list is the read footprint for both writes below.
+    // legacyBoundVariables already holds every variable the MATCH clauses above bound, which is what tells a
+    // CREATE/MERGE node that names an existing entity from one that creates a new one.
+    final CypherEagernessAnalyzer eagerness = new CypherEagernessAnalyzer();
+    for (final MatchClause matchClause : statement.getMatchClauses())
+      eagerness.observeRead(matchClause);
+
     // Step 3: MERGE clause - find or create pattern
     if (statement.getMergeClause() != null) {
+      if (currentStep != null && eagerness.needsBarrier(statement.getMergeClause(), legacyBoundVariables))
+        currentStep = withEagerBarrier(currentStep, context);
       final MergeStep mergeStep = new MergeStep(
           statement.getMergeClause(), context, functionFactory);
       // MERGE is typically standalone, but can be chained
@@ -3577,6 +3660,8 @@ public class CypherExecutionPlan {
 
     // Step 4: CREATE clause - create vertices/edges
     if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty()) {
+      if (currentStep != null && eagerness.needsBarrier(statement.getCreateClause(), legacyBoundVariables))
+        currentStep = withEagerBarrier(currentStep, context);
       final CreateStep createStep = new CreateStep(statement.getCreateClause(), context, functionFactory);
       if (currentStep != null) {
         // Chained CREATE (after MATCH/WHERE)
