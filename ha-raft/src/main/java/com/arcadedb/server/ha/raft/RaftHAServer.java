@@ -3510,7 +3510,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // Membership kept changing under us across every attempt: report the peers we currently know,
       // without indices, rather than risk attributing a match/next index to the wrong peer.
       return degradedFollowerStates(leaderFollowerInfos(info));
-    } catch (final IOException e) {
+    } catch (final Exception e) {
+      // Exception, not IOException, for the same reason as getCommittedPeersOrNull() and isReadyForTraffic():
+      // this reads division.getInfo() through the identical path, so it meets the identical Ratis
+      // IllegalStateException while an in-place restart re-initializes the division (issue #5271). It feeds
+      // getReplicationStats(), getFollowerSamples() and the cluster-status and health endpoints, so propagating
+      // here would 500 them in exactly the window the #7135 hardening exists for. No followers is the right
+      // degraded answer.
+      LogManager.instance().log(this, Level.FINE, "Cannot read follower states this tick", e);
       return List.of();
     }
   }

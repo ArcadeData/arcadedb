@@ -199,6 +199,10 @@ class RaftClusterManager {
       // and Issue4809NoTargetTransferLeadershipIT pins it) that embedded callers read as a boolean. The HTTP
       // endpoint gets its "wrong node" 409 from a guard in PostTransferLeaderHandler instead, so the two
       // branches of that endpoint still answer alike without changing what this method promises Java callers.
+      //
+      // So the invariant is enforced in two places for this one overload, and a NEW caller that needs to tell
+      // "wrong node" apart from "the transfer failed" gets no structural cue from the boolean: it has to make
+      // the isLeader() check itself, the way that handler does.
       return false;
     }
 
