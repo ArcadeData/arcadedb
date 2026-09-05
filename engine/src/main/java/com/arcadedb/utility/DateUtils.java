@@ -138,24 +138,18 @@ public class DateUtils {
    * value (issue #4601).
    */
   public static Long dateToEpochDays(final Object value) {
-    if (value == null)
-      return null;
-    else if (value instanceof LocalDate localDate)
-      return localDate.toEpochDay();
-    else if (value instanceof LocalDateTime localDateTime)
-      return localDateTime.toLocalDate().toEpochDay();
-    else if (value instanceof Date date)
-      return date.getTime() / MS_IN_A_DAY;
-    else if (value instanceof Calendar calendar)
-      return calendar.getTimeInMillis() / MS_IN_A_DAY;
-    else if (value instanceof Instant instant)
-      return instant.atZone(UTC_ZONE_ID).toLocalDate().toEpochDay();
-    else if (value instanceof ZonedDateTime zonedDateTime)
-      return zonedDateTime.toLocalDate().toEpochDay();
-    else if (value instanceof Number number)
-      return number.longValue();
-    else
-      throw new IllegalArgumentException("Cannot convert value of type '" + value.getClass() + "' to epoch days for a DATE value");
+    return switch (value) {
+      case null -> null;
+      case LocalDate localDate -> localDate.toEpochDay();
+      case LocalDateTime localDateTime -> localDateTime.toLocalDate().toEpochDay();
+      case Date date -> date.getTime() / MS_IN_A_DAY;
+      case Calendar calendar -> calendar.getTimeInMillis() / MS_IN_A_DAY;
+      case Instant instant -> instant.atZone(UTC_ZONE_ID).toLocalDate().toEpochDay();
+      case ZonedDateTime zonedDateTime -> zonedDateTime.toLocalDate().toEpochDay();
+      case Number number -> number.longValue();
+      default ->
+          throw new IllegalArgumentException("Cannot convert value of type '" + value.getClass() + "' to epoch days for a DATE value");
+    };
   }
 
   public static Long dateTimeToTimestamp(final Object value, final ChronoUnit precisionToUse) {
@@ -448,57 +442,63 @@ public class DateUtils {
   }
 
   public static byte getBestBinaryTypeForPrecision(final ChronoUnit precision) {
-    if (precision == ChronoUnit.SECONDS)
-      return BinaryTypes.TYPE_DATETIME_SECOND;
-    else if (precision == ChronoUnit.MILLIS)
-      return BinaryTypes.TYPE_DATETIME;
-    else if (precision == ChronoUnit.MICROS)
-      return BinaryTypes.TYPE_DATETIME_MICROS;
-    else if (precision == ChronoUnit.NANOS)
-      return BinaryTypes.TYPE_DATETIME_NANOS;
-    throw new IllegalArgumentException("Not supported precision '" + precision + "'");
+    return switch (precision) {
+      case SECONDS -> BinaryTypes.TYPE_DATETIME_SECOND;
+      case MILLIS -> BinaryTypes.TYPE_DATETIME;
+      case MICROS -> BinaryTypes.TYPE_DATETIME_MICROS;
+      case NANOS -> BinaryTypes.TYPE_DATETIME_NANOS;
+      case null, default -> throw new IllegalArgumentException("Not supported precision '" + precision + "'");
+    };
   }
 
   public static final ChronoUnit getPrecisionFromType(final Type type) {
-    switch (type) {
-    case DATETIME_SECOND:
-      return ChronoUnit.SECONDS;
-    case DATETIME:
-      return ChronoUnit.MILLIS;
-    case DATETIME_MICROS:
-      return ChronoUnit.MICROS;
-    case DATETIME_NANOS:
-      return ChronoUnit.NANOS;
-    default:
-      throw new IllegalArgumentException("Illegal date type from type " + type);
-    }
+    return switch (type) {
+      case DATETIME_SECOND -> ChronoUnit.SECONDS;
+      case DATETIME -> ChronoUnit.MILLIS;
+      case DATETIME_MICROS -> ChronoUnit.MICROS;
+      case DATETIME_NANOS -> ChronoUnit.NANOS;
+      default -> throw new IllegalArgumentException("Illegal date type from type " + type);
+    };
   }
 
   public static final ChronoUnit getPrecisionFromBinaryType(final byte type) {
-    switch (type) {
-    case BinaryTypes.TYPE_DATETIME_SECOND:
-      return ChronoUnit.SECONDS;
-    case BinaryTypes.TYPE_DATETIME:
-      return ChronoUnit.MILLIS;
-    case BinaryTypes.TYPE_DATETIME_MICROS:
-      return ChronoUnit.MICROS;
-    case BinaryTypes.TYPE_DATETIME_NANOS:
-      return ChronoUnit.NANOS;
-    default:
-      throw new IllegalArgumentException("Illegal date type from binary type " + type);
-    }
+    return switch (type) {
+      case BinaryTypes.TYPE_DATETIME_SECOND -> ChronoUnit.SECONDS;
+      case BinaryTypes.TYPE_DATETIME -> ChronoUnit.MILLIS;
+      case BinaryTypes.TYPE_DATETIME_MICROS -> ChronoUnit.MICROS;
+      case BinaryTypes.TYPE_DATETIME_NANOS -> ChronoUnit.NANOS;
+      default -> throw new IllegalArgumentException("Illegal date type from binary type " + type);
+    };
   }
 
   public static int getNanos(final Object obj) {
-    if (obj == null)
-      throw new IllegalArgumentException("Object is null");
-    else if (obj instanceof LocalDateTime time)
-      return time.getNano();
-    else if (obj instanceof ZonedDateTime time)
-      return time.getNano();
-    else if (obj instanceof Instant instant)
-      return instant.getNano();
-    throw new IllegalArgumentException("Object of class '" + obj.getClass() + "' is not supported");
+    return switch (obj) {
+      case null -> throw new IllegalArgumentException("Object is null");
+      case LocalDateTime time -> time.getNano();
+      case ZonedDateTime time -> time.getNano();
+      case OffsetDateTime time -> time.getNano();
+      case Instant instant -> instant.getNano();
+      default -> throw new IllegalArgumentException("Object of class '" + obj.getClass() + "' is not supported");
+    };
+  }
+
+  /**
+   * Returns the sub-second precision actually carried by a temporal value, or {@code null} when the object is not a
+   * temporal ArcadeDB stores with a sub-second precision (a {@code LocalDate}, a number, a string, anything else).
+   * {@code Date} and {@code Calendar} cannot hold anything finer than a millisecond, so they always report
+   * {@link ChronoUnit#MILLIS}.
+   *
+   * @param obj value to inspect
+   *
+   * @return the value's precision, or {@code null} if it is not a sub-second-capable temporal
+   */
+  public static ChronoUnit getPrecisionFromValue(final Object obj) {
+    if (obj instanceof Date || obj instanceof Calendar)
+      return ChronoUnit.MILLIS;
+    if (obj instanceof LocalDateTime || obj instanceof ZonedDateTime || obj instanceof OffsetDateTime
+        || obj instanceof Instant)
+      return getPrecision(getNanos(obj));
+    return null;
   }
 
   public static boolean isDate(final Object obj) {
@@ -514,13 +514,8 @@ public class DateUtils {
 
     ChronoUnit highestPrecision = ChronoUnit.MILLIS;
     for (int i = 0; i < objs.length; i++) {
-      final Object obj = objs[i];
-      final ChronoUnit precision;
-      if (obj instanceof Date || obj instanceof Calendar)
-        precision = ChronoUnit.MILLIS;
-      else if (obj instanceof LocalDateTime || obj instanceof ZonedDateTime || obj instanceof Instant)
-        precision = getPrecision(getNanos(obj));
-      else
+      final ChronoUnit precision = getPrecisionFromValue(objs[i]);
+      if (precision == null)
         continue;
 
       if (precision.compareTo(highestPrecision) < 0)
