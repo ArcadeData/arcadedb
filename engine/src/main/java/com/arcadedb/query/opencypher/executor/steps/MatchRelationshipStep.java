@@ -62,7 +62,7 @@ import java.util.Set;
  * - Follows KNOWS relationships in OUT direction
  * - Binds edges to 'r' and target vertices to 'b'
  */
-public class MatchRelationshipStep extends AbstractExecutionStep implements ClauseScopedUniquenessStep {
+public class MatchRelationshipStep extends AbstractExecutionStep {
   private final String sourceVariable;
   private final String relationshipVariable;
   private final String targetVariable;
@@ -70,7 +70,19 @@ public class MatchRelationshipStep extends AbstractExecutionStep implements Clau
   private final String pathVariable;
   private final NodePattern targetNodePattern;
   private final Set<String> boundVariableNames;
-  private Set<String> clauseScopeVariables = Set.of(); // Variables of the owning MATCH clause, see ClauseScopedUniquenessStep
+  /**
+   * The variables the owning MATCH clause binds, and the whole of what Cypher's relationship uniqueness rule
+   * ranges over: within one clause every relationship pattern binds a distinct edge, and an edge some earlier
+   * clause bound - by a {@code WITH}, an {@code UNWIND}, a {@code CALL ... YIELD}, a {@code CREATE} - is not a
+   * relationship of this clause's pattern and must not stop the pattern from matching it again (issue #7165).
+   * <p>
+   * Mandatory, and the planner passes the clause's live set: it keeps filling it while it plans the rest of the
+   * clause, and it is complete and never touched again long before the first row is pulled. Stating the scope
+   * this way round rather than as a list of names bound elsewhere is what keeps the rule decidable from the
+   * clause alone - the excluding form needed every other clause to remember to declare what it binds, and the
+   * one that forgot dropped every row without raising anything.
+   */
+  private final Set<String> clauseVariables;
   private final Direction directionOverride; // When non-null, overrides pattern.getDirection()
 
   // GAV provider for CSR-accelerated fast path (null = not checked yet, resolved lazily)
@@ -85,35 +97,6 @@ public class MatchRelationshipStep extends AbstractExecutionStep implements Clau
   private boolean gavUsed = false;
 
   /**
-   * Creates a match relationship step.
-   *
-   * @param sourceVariable       variable name for source vertex
-   * @param relationshipVariable variable name for relationship (can be null)
-   * @param targetVariable       variable name for target vertex
-   * @param pattern              relationship pattern to match
-   * @param context              command context
-   */
-  public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
-      final RelationshipPattern pattern, final CommandContext context) {
-    this(sourceVariable, relationshipVariable, targetVariable, pattern, null, context);
-  }
-
-  /**
-   * Creates a match relationship step with path variable support.
-   *
-   * @param sourceVariable       variable name for source vertex
-   * @param relationshipVariable variable name for relationship (can be null)
-   * @param targetVariable       variable name for target vertex
-   * @param pattern              relationship pattern to match
-   * @param pathVariable         path variable name (e.g., p in p = (a)-[r]->(b)), can be null
-   * @param context              command context
-   */
-  public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
-      final RelationshipPattern pattern, final String pathVariable, final CommandContext context) {
-    this(sourceVariable, relationshipVariable, targetVariable, pattern, pathVariable, null, null, context);
-  }
-
-  /**
    * Creates a match relationship step with target node filtering and bound variable awareness.
    *
    * @param sourceVariable       variable name for source vertex
@@ -124,13 +107,12 @@ public class MatchRelationshipStep extends AbstractExecutionStep implements Clau
    * @param targetNodePattern    target node pattern for label filtering (can be null)
    * @param boundVariableNames   set of variable names already bound in previous steps (can be null)
    * @param context              command context
-   * @see #setClauseScopeVariables(Set) for the separate relationship-uniqueness scope
    */
   public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
       final RelationshipPattern pattern, final String pathVariable, final NodePattern targetNodePattern,
-      final Set<String> boundVariableNames, final CommandContext context) {
+      final Set<String> boundVariableNames, final Set<String> clauseVariables, final CommandContext context) {
     this(sourceVariable, relationshipVariable, targetVariable, pattern, pathVariable, targetNodePattern,
-        boundVariableNames, null, context);
+        boundVariableNames, clauseVariables, null, context);
   }
 
   /**
@@ -140,7 +122,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep implements Clau
    */
   public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
       final RelationshipPattern pattern, final String pathVariable, final NodePattern targetNodePattern,
-      final Set<String> boundVariableNames, final Direction directionOverride, final CommandContext context) {
+      final Set<String> boundVariableNames, final Set<String> clauseVariables, final Direction directionOverride,
+      final CommandContext context) {
     super(context);
     this.sourceVariable = sourceVariable;
     this.relationshipVariable = relationshipVariable;
@@ -149,12 +132,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep implements Clau
     this.pathVariable = pathVariable;
     this.targetNodePattern = targetNodePattern;
     this.boundVariableNames = boundVariableNames;
+    this.clauseVariables = clauseVariables;
     this.directionOverride = directionOverride;
-  }
-
-  @Override
-  public void setClauseScopeVariables(final Set<String> clauseScopeVariables) {
-    this.clauseScopeVariables = clauseScopeVariables;
   }
 
   /**
@@ -649,7 +628,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep implements Clau
 
   /**
    * Checks if the result contains edges whose type overlaps with the current hop's edge types. Only the
-   * variables of the owning MATCH clause are examined - see {@link ClauseScopedUniquenessStep}.
+   * variables of the owning MATCH clause are examined - see {@link #clauseVariables}.
    * <p>
    * Cypher's relationship uniqueness constraint requires that each relationship in a MATCH clause
    * matches a distinct edge. However, edges of different types are <i>always</i> distinct — an edge
@@ -666,7 +645,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep implements Clau
     // Current hop's edge types (null = untyped, matches all)
     final List<String> currentTypes = pattern.hasTypes() ? pattern.getTypes() : null;
 
-    for (final String prop : clauseScopeVariables) {
+    for (final String prop : clauseVariables) {
       // Skip the current relationship variable if it's being rebound
       if (prop.equals(relationshipVariable))
         continue;
@@ -914,13 +893,13 @@ public class MatchRelationshipStep extends AbstractExecutionStep implements Clau
   /**
    * Checks if an edge is already bound by another relationship pattern of the same MATCH clause.
    * Enforces Cypher's relationship uniqueness constraint, which is scoped to one clause - see
-   * {@link ClauseScopedUniquenessStep}.
+   * {@link #clauseVariables}.
    * Checks both Edge-typed properties and edges inside TraversalPaths.
    */
   @SuppressWarnings("unchecked")
   private boolean isEdgeAlreadyUsed(final Result result, final Edge edge) {
     final RID edgeRid = edge.getIdentity();
-    for (final String prop : clauseScopeVariables) {
+    for (final String prop : clauseVariables) {
       // Skip the current relationship variable: it holds a bound value from a previous
       // step that we're about to overwrite, not a different relationship in the pattern
       if (prop.equals(relationshipVariable))

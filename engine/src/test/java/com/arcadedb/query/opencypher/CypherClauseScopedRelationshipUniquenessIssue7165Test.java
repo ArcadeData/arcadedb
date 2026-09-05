@@ -57,11 +57,12 @@ class CypherClauseScopedRelationshipUniquenessIssue7165Test extends TestHelper {
       database.command("sql", "CREATE EDGE TYPE LINK IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY LINK.uuid IF NOT EXISTS STRING");
       database.command("sql", "CREATE PROPERTY LINK.fact IF NOT EXISTS STRING");
+      database.command("sql", "CREATE PROPERTY LINK.srcUuid IF NOT EXISTS STRING");
       database.command("sql", "CREATE INDEX IF NOT EXISTS ON LINK (fact) FULL_TEXT");
     });
 
     database.transaction(() -> database.command("opencypher",
-        "CREATE (a:P {uuid:'a'})-[:LINK {uuid:'r1', fact:'alpha beta'}]->(b:P {uuid:'b'})"));
+        "CREATE (a:P {uuid:'a'})-[:LINK {uuid:'r1', fact:'alpha beta', srcUuid:'a'}]->(b:P {uuid:'b'})"));
   }
 
   /**
@@ -101,6 +102,68 @@ class CypherClauseScopedRelationshipUniquenessIssue7165Test extends TestHelper {
         RETURN e.uuid AS uuid""", "uuid");
 
     assertThat(uuids).containsExactly("r1");
+  }
+
+  /**
+   * {@code YIELD *} and a bare {@code CALL} name no aliases, so the planner reads the procedure's declared
+   * output fields instead. Both shapes have to chain into a following MATCH the same way an explicit YIELD does.
+   */
+  @Test
+  void yieldStarAndABareCallChainIntoAFollowingMatchToo() {
+    assertThat(queryColumn("""
+        CALL db.index.fulltext.queryRelationships('LINK[fact]', 'alpha')
+        YIELD *
+        MATCH (n)-[e:LINK]->(m)
+        RETURN e.uuid AS uuid""", "uuid")).containsExactly("r1");
+
+    assertThat(queryColumn("CALL db.labels() MATCH (n)-[e:LINK]->(m) RETURN e.uuid AS uuid", "uuid"))
+        .containsExactly("r1");
+  }
+
+  /**
+   * A procedure name the Cypher procedure registry does not know - here an ArcadeDB SQL function reached
+   * through {@code CALL} - cannot reintroduce the bug. Stating the uniqueness scope as the MATCH clause's own
+   * variables is what makes that true: the rule no longer consults what earlier clauses bound, so a name the
+   * planner cannot resolve to declared output fields is simply not one of this clause's relationships.
+   */
+  @Test
+  void aProcedureTheRegistryDoesNotKnowCannotReintroduceTheBug() {
+    final List<Object> bare = new ArrayList<>();
+    final List<Object> yielded = new ArrayList<>();
+    database.transaction(() -> {
+      bare.addAll(commandColumn("CALL math.abs(-3) MATCH (n)-[e:LINK]->(m) RETURN e.uuid AS uuid", "uuid"));
+      yielded.addAll(commandColumn(
+          "CALL math.abs(-3) YIELD value AS v MATCH (n)-[e:LINK]->(m) RETURN e.uuid AS uuid", "uuid"));
+    });
+
+    assertThat(bare).containsExactly("r1");
+    assertThat(yielded).containsExactly("r1");
+  }
+
+  /**
+   * The other half of registering a CALL's outputs in the planner's scope: a WHERE that reads a yielded name
+   * is now pushed into the following MATCH's scan instead of being evaluated on every row it produces. Asserted
+   * on the plan, because the rows alone are the same either way - which is exactly why a regression here would
+   * otherwise go unnoticed.
+   */
+  @Test
+  void aPredicateReadingAYieldedVariableIsPushedIntoTheMatchScan() {
+    final String query = """
+        CALL db.index.fulltext.queryRelationships('LINK[fact]', 'alpha')
+        YIELD relationship AS rel, score
+        MATCH (n:P) WHERE n.uuid = rel.srcUuid
+        RETURN n.uuid AS uuid""";
+
+    assertThat(queryColumn(query, "uuid")).containsExactly("a");
+
+    final String plan;
+    try (final ResultSet result = database.query("opencypher", "EXPLAIN " + query)) {
+      plan = result.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
+    }
+
+    assertThat(plan)
+        .as("the scan itself must carry the predicate, not just the FILTER behind it")
+        .contains("MATCH NODE (n:P) [filter: n.uuid = rel.srcUuid]");
   }
 
   /** A yielded scalar was never the problem, and must keep working: the control for the two tests above. */
@@ -190,6 +253,16 @@ class CypherClauseScopedRelationshipUniquenessIssue7165Test extends TestHelper {
         "MATCH (n)-[e:LINK]->(m)-[rest:LINK*1..3]->(o) RETURN e.uuid AS uuid", "uuid");
 
     assertThat(uuids).isEmpty();
+  }
+
+  /** {@code command} rather than {@code query}: an unresolved procedure name reads as possibly-writing. */
+  private List<Object> commandColumn(final String cypher, final String column) {
+    final List<Object> values = new ArrayList<>();
+    try (final ResultSet result = database.command("opencypher", cypher)) {
+      while (result.hasNext())
+        values.add(result.next().getProperty(column));
+    }
+    return values;
   }
 
   private List<Object> queryColumn(final String cypher, final String column) {
