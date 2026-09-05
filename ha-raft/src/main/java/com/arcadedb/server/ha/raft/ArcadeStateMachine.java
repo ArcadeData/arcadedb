@@ -959,6 +959,29 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } catch (final IllegalArgumentException e) {
       LogManager.instance().log(this, Level.WARNING, "Invalid raft log entry at index %d: %s", index, e.getMessage());
       return CompletableFuture.failedFuture(e);
+    } catch (final RaftLogEntryDecodeException e) {
+      // A committed entry of a KNOWN type that this version cannot read: truncated, corrupt, or written in a
+      // shape it does not understand. "Halt the node" and "skip the entry" are not the only two options
+      // (issue #7138): when the envelope named a database, the failure is isolable exactly like an apply error
+      // on that database, so quarantine it and let the leader resend it as a snapshot. The node stays up for
+      // its other databases, and the entry is never silently skipped. Without a database name there is nothing
+      // to quarantine, and handleUnexpectedApplyError escalates to the node-wide halt as before.
+      final String decodeDatabase = e.getDatabaseName();
+      LogManager.instance().log(this, Level.SEVERE,
+          "Cannot decode the committed Raft log entry at index %d (type=%s, database=%s). This is either a corrupt "
+              + "entry or one written by a newer node in a shape this version cannot read: %s",
+          e, index, e.getType(), decodeDatabase == null || decodeDatabase.isEmpty() ? "<none>" : decodeDatabase,
+          e.getMessage());
+      try {
+        handleUnexpectedApplyError(index, decodeDatabase, e);
+      } catch (final ReplicationException quarantined) {
+        return CompletableFuture.failedFuture(quarantined);
+      } catch (final RuntimeException fatal) {
+        triggerCriticalHalt();
+        return CompletableFuture.failedFuture(fatal);
+      }
+      // handleUnexpectedApplyError always throws; unreachable, but the compiler needs a value.
+      return CompletableFuture.failedFuture(e);
     } catch (final Throwable e) {
       // Unexpected errors (NPE, ClassCastException, OOM, etc.) indicate a bug that could cause
       // state divergence if silently swallowed. Crash the server so the node recovers via snapshot.
