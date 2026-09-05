@@ -626,7 +626,14 @@ public class MergeStep extends AbstractExecutionStep {
       walkLeft(pathPattern, anchorIdx, anchorVertex, rr.result(), rr.trace(), results);
   }
 
-  /** A partially-walked path: the row's bindings paired with the path slots {@link #newPathTrace} allocated. */
+  /**
+   * A partially-walked path: the row's bindings paired with the path slots {@link #newPathTrace} allocated.
+   * <p>
+   * Unlike the slot array itself, this wrapper is not gated on the pattern naming a path variable: the list it
+   * goes into has one element type, and splitting the walk into traced and untraced variants to save one small
+   * record per right-side completion would duplicate the walker. It is the one allocation this carries into a
+   * MERGE that binds no path, and only for a pattern whose bound anchor sits in the middle of a longer one.
+   */
   private record TracedResult(ResultInternal result, Object[] trace) {
   }
 
