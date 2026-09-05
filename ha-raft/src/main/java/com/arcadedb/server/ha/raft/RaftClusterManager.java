@@ -195,6 +195,10 @@ class RaftClusterManager {
     if (!raftHAServer.isLeader()) {
       LogManager.instance().log(this, Level.INFO,
           "Leadership transfer requested but this node (%s) is not the leader; nothing to transfer", selfId);
+      // Returns false rather than throwing, unlike the targeted overload: this is a published contract (#4809,
+      // and Issue4809NoTargetTransferLeadershipIT pins it) that embedded callers read as a boolean. The HTTP
+      // endpoint gets its "wrong node" 409 from a guard in PostTransferLeaderHandler instead, so the two
+      // branches of that endpoint still answer alike without changing what this method promises Java callers.
       return false;
     }
 
@@ -245,7 +249,25 @@ class RaftClusterManager {
     }
   }
 
+  /**
+   * Transfers leadership to a specific peer. Only the leader may do this.
+   * <p>
+   * The guard is not a local-capability check, it is the whole point (issue #7134): Ratis routes a
+   * {@code TransferLeadershipRequest} submitted through a FOLLOWER's client to the current leader, so
+   * without it a {@code POST /api/v1/cluster/leader} or {@code /cluster/stepdown} that landed on a follower -
+   * which is what a Kubernetes ClusterIP Service does, since it load-balances across every ready endpoint -
+   * forced an election on a leader that never asked for one, and answered 200 for an effect that landed on a
+   * different node. #4809 added the same guard to the no-target {@link #transferLeadership(long)}; this is the
+   * path it did not cover. It lives here rather than only in the handlers so no future caller can bypass it.
+   *
+   * @throws ConfigurationException when this node is not the leader, naming the leader (when known) so the
+   *                                caller can retry against the right node
+   */
   void transferLeadership(final String targetPeerId, final long timeoutMs) {
+    if (!raftHAServer.isLeader())
+      throw new NotTheLeaderRefusalException("Refusing to transfer leadership to " + targetPeerId,
+          raftHAServer.getLeaderId());
+
     LogManager.instance().log(this, Level.INFO, "Transferring leadership to %s (timeout=%d ms)", targetPeerId, timeoutMs);
     final RaftClient client = raftHAServer.getClient();
     try {

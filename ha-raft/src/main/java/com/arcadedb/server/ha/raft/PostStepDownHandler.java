@@ -43,7 +43,15 @@ public class PostStepDownHandler extends AbstractServerHttpHandler {
     if (raftHAServer == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());
 
-    raftHAServer.stepDown();
+    try {
+      raftHAServer.stepDown();
+    } catch (final NotTheLeaderRefusalException e) {
+      // A follower has nothing to step down from, and Ratis would route the transfer it issues to the real
+      // leader, forcing an election nobody asked for - which is what a request load-balanced by a Kubernetes
+      // Service across every ready endpoint does. 409 names the leader so the caller can reissue there,
+      // instead of a 200 for an effect that landed on another node (issue #7134).
+      return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
+    }
     return new ExecutionResponse(200,
         new JSONObject().put("result", "Leadership step-down initiated").toString());
   }

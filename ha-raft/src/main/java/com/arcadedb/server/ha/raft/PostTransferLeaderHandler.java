@@ -73,6 +73,13 @@ public class PostTransferLeaderHandler extends AbstractServerHttpHandler {
     final long timeoutMs = payload.getLong("timeoutMs", 30_000);
 
     if (peerId.isEmpty()) {
+      // Refuse here rather than inside the no-target transfer, whose boolean contract is published (#4809):
+      // both branches of this endpoint must answer "wrong node" the same way, and a bare 500 "Leadership
+      // transfer failed" names nothing the caller can act on and reads like a leader-side failure (issue #7134).
+      if (!raftHAServer.isLeader())
+        return notTheLeader(new NotTheLeaderRefusalException("Refusing to transfer leadership",
+            raftHAServer.getLeaderId()));
+
       // Transfer to any peer (Ratis picks the best candidate)
       final boolean success = raftHAServer.transferLeadership(timeoutMs);
       if (success)
@@ -85,8 +92,22 @@ public class PostTransferLeaderHandler extends AbstractServerHttpHandler {
     // transferLeadership throws on failure (mapped to an error response by the base handler), and on
     // success the manager has confirmed the target is the leader - report it so callers can verify
     // the outcome instead of trusting a bare success string (issue #5276).
-    raftHAServer.transferLeadership(peerId, timeoutMs);
+    try {
+      raftHAServer.transferLeadership(peerId, timeoutMs);
+    } catch (final NotTheLeaderRefusalException e) {
+      return notTheLeader(e);
+    }
     return new ExecutionResponse(200, new JSONObject().put("result", "Leadership transferred to " + peerId)
         .put("leaderId", peerId).toString());
+  }
+
+  /**
+   * The 409 both branches answer when this node is not the leader (issue #7134): Ratis would route the request
+   * to the real leader and force an unrequested election, so the refusal happens here and names the leader to
+   * reissue against. Deliberately NOT extended to a plain {@code ConfigurationException} - one raised by a
+   * transfer the LEADER attempted and failed means something else entirely, and keeps the mapping it had.
+   */
+  private static ExecutionResponse notTheLeader(final NotTheLeaderRefusalException e) {
+    return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
   }
 }

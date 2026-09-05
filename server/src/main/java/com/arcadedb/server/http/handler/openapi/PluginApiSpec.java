@@ -201,12 +201,14 @@ public class PluginApiSpec implements OpenApiContributor {
         "Transfer leadership",
         """
             Transfers Raft leadership, to the named peer when 'peerId' is given and to whichever peer \
-            Raft selects otherwise. Unknown fields in the body are rejected. """ + RAFT_REQUIRED);
+            Raft selects otherwise. Unknown fields in the body are rejected. Only the leader can transfer \
+            leadership: a server that is not the leader answers 409 naming the leader to reissue against, \
+            rather than routing the request there and forcing an election nobody asked for. """ + RAFT_REQUIRED);
     post.setRequestBody(SpecBuilders.jsonBody(
         "Transfer target", "TransferLeaderRequest", true));
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Leadership transferred", "ClusterActionResponse"),
-        "400", "401", "403", "500"));
+        "400", "401", "403", "409", "500"));
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);
@@ -216,10 +218,13 @@ public class PluginApiSpec implements OpenApiContributor {
   private PathItem createStepDownPath() {
     final Operation post = SpecBuilders.operation("stepDownClusterLeader", "Cluster",
         "Step down from leadership",
-        "Asks this server to give up leadership, triggering an election. " + RAFT_REQUIRED);
+        """
+            Asks this server to give up leadership, triggering an election. Answers 409 when this server is \
+            not the leader - it has nothing to step down from, and the request must be reissued against the \
+            leader the response names rather than acted on remotely. """ + RAFT_REQUIRED);
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Step-down initiated", "ClusterActionResponse"),
-        "400", "401", "403", "500"));
+        "400", "401", "403", "409", "500"));
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);

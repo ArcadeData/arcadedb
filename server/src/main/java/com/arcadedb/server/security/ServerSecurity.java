@@ -807,6 +807,18 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * Called from the Raft state machine on every peer when a SECURITY_USERS_ENTRY
    * is applied.
    * <p>
+   * A failure to WRITE the file does not abandon the apply: the new list is published in memory first and the
+   * failure is thrown at the end (issue #7137). Returning early would leave this node authenticating against
+   * the previous list, so a revoked account or a changed password would keep working here for as long as the
+   * config volume stays full or read-only - the opposite of what a security entry is for.
+   * <p>
+   * <b>That ordering is a contract, not an implementation detail.</b> {@code ArcadeStateMachine.applySecurityUsers
+   * Entry} converts every exception out of this method into a non-halting {@code ReplicationException}, and it may
+   * only do so because everything that can throw here either runs BEFORE any mutation (the parse) or AFTER the
+   * in-memory swap has already published the authoritative list. A step added between those two points - or a
+   * reshuffle that moves the publish later - would silently turn a real divergence into "the fail-safe case" at
+   * that call site. Keep new work outside that window, or revisit the caller.
+   * <p>
    * The in-memory map is built from the Raft payload rather than re-reading from
    * disk. In multi-server test setups (and potentially in embedded deployments),
    * multiple in-process servers may share the same config directory. Reading from
@@ -831,11 +843,15 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     for (int i = 0; i < array.length(); i++)
       list.add(array.getJSONObject(i));
 
-    try {
-      usersRepository.save(list);
-    } catch (final IOException e) {
-      throw new ServerException("Failed to save replicated users file", e);
-    }
+    // A local persistence failure is reported, but only AFTER the new list has been applied in memory
+    // (issue #7137). Returning early here would leave this node authenticating against the PREVIOUS user
+    // list - so a password the operator has just changed, or an account they have just dropped, would keep
+    // working on this node for as long as the volume stays full or read-only. The entry is valid and reached
+    // a quorum; the only thing that failed is writing it down. Applying it in memory makes the revocation
+    // effective immediately and leaves the durability problem as what it is: this node will read a stale file
+    // if it restarts before the volume is fixed, which is the same exposure the previous behaviour had, and
+    // the Raft entry is replayed on the next start.
+    final Exception persistFailure = trySaveUsers(list);
 
     // Build in-memory map from the authoritative Raft payload, not from the file, and publish it in a
     // single atomic reference swap so concurrent readers never observe an empty/torn window.
@@ -849,6 +865,31 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // issued to that principal, or the credentials the operator revoked keep working on this node until the
     // token idle-expires. Non-blocking, so it is safe on the state-machine apply thread.
     invalidateAuthSessionsOfRevokedPrincipals(previousUsers, newUsers);
+
+    // Reported last, so the caller learns the list did not reach disk while this node is already enforcing it.
+    // On the Raft apply path this fails the entry without halting the node (issue #7137).
+    if (persistFailure != null)
+      throw new ServerException("Replicated users applied in memory but could NOT be persisted to '"
+          + SecurityUserFileRepository.FILE_NAME + "'; this node enforces the new list now but will read the "
+          + "stale file if it restarts before the problem is fixed", persistFailure);
+  }
+
+  /**
+   * Writes the users file, returning the failure instead of throwing it so the caller can finish applying the
+   * list before reporting (issue #7137). Inlining the try/catch at the call site would force a non-final local:
+   * javac treats every statement in a {@code try} as able to throw, so an assignment made after the call is
+   * still "possibly assigned" at the {@code catch}.
+   */
+  private Exception trySaveUsers(final List<JSONObject> list) {
+    try {
+      usersRepository.save(list);
+      return null;
+    } catch (final Exception e) {
+      // Exception, not IOException: an unchecked failure out of save() would otherwise propagate from here
+      // BEFORE the in-memory swap below, which is precisely the #7137 hazard - this node would go on
+      // authenticating against the previous list while the caller logged that it had stayed up safely.
+      return e;
+    }
   }
 
   public void saveGroups() {

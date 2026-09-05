@@ -907,6 +907,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             "Step-down succeeded on attempt %d/%d after phase-2 failure (db=%s, tx=%s)",
             attempt, STEP_DOWN_MAX_RETRIES, getName(), txDescription);
         return;
+      } catch (final NotTheLeaderRefusalException notLeader) {
+        // Leadership moved between the isLeader() check above and the transfer. Retrying cannot help - there is
+        // nothing left to step down from - so stop immediately instead of burning the whole retry budget on a
+        // condition that is already resolved (issue #7134 follow-up).
+        LogManager.instance().log(this, Level.WARNING,
+            "Step-down after phase-2 failure is moot: this node is no longer the leader (db=%s, tx=%s): %s",
+            getName(), txDescription, notLeader.getMessage());
+        return;
       } catch (final Exception stepDownEx) {
         LogManager.instance().log(this, Level.SEVERE,
             "Step-down attempt %d/%d failed after phase-2 failure (db=%s, tx=%s): %s",

@@ -712,9 +712,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     try {
       channelRecoveryExecutor.execute(() -> {
-        // Leadership may have moved while this task sat in the queue; a transfer from a non-leader is
-        // rejected by Ratis and would only log noise. Re-check before choosing a target so the choice is
-        // made against the configuration this node is actually leading.
+        // Leadership may have moved while this task sat in the queue. Re-check before choosing a target so the
+        // choice is made against the configuration this node is actually leading - and note that this re-check
+        // is load-bearing rather than cosmetic: Ratis does NOT reject a transfer submitted through a
+        // non-leader's client, it routes it to the current leader, so a stale task would force an election on a
+        // node that never asked for one (issue #7134).
         if (shutdownRequested || !isLeader())
           return;
 
@@ -2545,8 +2547,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         final var conf = division.getRaftConf();
         if (conf != null)
           return conf.getCurrentPeers();
-      } catch (final IOException e) {
-        LogManager.instance().log(this, Level.FINE,
+      } catch (final Exception e) {
+        // Catch Exception, not IOException: Ratis throws IllegalStateException ("stateMachineUpdater is
+        // uninitialized") for the whole window in which an in-place restart re-initializes the division
+        // (issue #5271), which is precisely the window this fallback exists for. Narrowing it to IOException
+        // made every membership reader behind configuredPeers() - /api/v1/cluster, getReplicaAddresses(), the
+        // Bolt/gRPC routing table - propagate instead of degrading, and aborted the health-monitor tick that
+        // drives the restart (issue #7135). Membership reads must degrade, never propagate.
+        // WARNING, matching the sibling guards (isLeader, getLeaderId) rather than the FINE this used to log:
+        // now that the catch is wide enough to swallow a genuine bug and not only the documented Ratis
+        // IllegalStateException, a silent fallback to "no membership" is how such a bug would hide.
+        LogManager.instance().log(this, Level.WARNING,
             "Cannot read the live Raft configuration this tick; returning no membership, and it is the caller's "
                 + "choice whether to substitute the declared server list", e);
       }
@@ -2587,8 +2598,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final boolean resyncInProgress = sm != null && sm.isResyncInProgress();
       return isReadyForTrafficState(leaderPresent, localInConfig, info.isLeader(), commitIndex, appliedIndex,
           maxLagEntries, resyncInProgress, info.isLeaderReady());
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.FINE, "Cannot read Raft state for readiness probe", e);
+    } catch (final Exception e) {
+      // Catch Exception, not IOException: getLastAppliedIndex() above is documented to throw Ratis'
+      // IllegalStateException while an in-place restart re-initializes the division (issue #5271), so the
+      // narrow catch let /api/v1/ready answer HTTP 500 instead of NOT_READY (issue #7135). This method's
+      // contract is to fail closed on unreadable state, and that is the answer for every read failure.
+      // WARNING for the same reason as getCommittedPeersOrNull above: the broad catch must not let a real bug
+      // hide behind a probe that merely answers NOT_READY.
+      LogManager.instance().log(this, Level.WARNING, "Cannot read Raft state for readiness probe", e);
       return false;
     }
   }
@@ -2730,7 +2747,21 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     clusterManager.transferLeadership(targetPeerId, timeoutMs);
   }
 
+  /**
+   * Steps this leader down by transferring leadership to the best eligible peer.
+   * <p>
+   * Refuses when this node is not the leader (issue #7134). A follower has nothing to step down FROM, but the
+   * transfer it would issue does not fail locally: Ratis routes it to the real leader, which then holds an
+   * election nobody asked for. That is reachable from an ordinary {@code POST /api/v1/cluster/stepdown} sent
+   * through a Kubernetes Service, so the guard sits here - in the method every caller goes through - rather
+   * than only in the handler.
+   *
+   * @throws NotTheLeaderRefusalException when this node is not the leader
+   */
   public void stepDown() {
+    if (!isLeader())
+      throw new NotTheLeaderRefusalException("Refusing to step down", getLeaderId());
+
     final List<RaftPeer> candidates = selectStepDownTargets(getLivePeers(), localPeerId, clusterMonitor);
 
     for (final RaftPeer peer : candidates) {

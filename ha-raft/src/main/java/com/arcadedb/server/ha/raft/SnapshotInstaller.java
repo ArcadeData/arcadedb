@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
 
@@ -213,7 +214,17 @@ public final class SnapshotInstaller {
               + "for the same database - this may indicate a coordination bug in the HA layer", null, databaseName);
 
     try {
-      // Clean up any leftover state from a previous failed attempt
+      // A .snapshot-backup left behind together with the pending marker is NOT leftover junk: rollbackToBackup's
+      // failure exit deliberately keeps both, and at that point the backup is the only intact copy of the
+      // database (see its javadoc). Deleting it here destroyed that copy before this attempt had downloaded
+      // anything, so a second failure - and the conditions that cause the first, a full volume, are exactly the
+      // ones that cause the second - left the node with a torn dbPath and nothing to restore from (issue #7139).
+      // Reconcile that state first, through the same startup-recovery routine, and refuse to start if the
+      // reconciliation cannot complete.
+      reconcileRetainedBackup(databaseName, dbPath, snapshotBackup, pendingMarker, server);
+
+      // Clean up any leftover state from a previous failed attempt. Reaching here means the backup (if there was
+      // one) has been reconciled away, so these deletes only ever drop genuinely disposable state.
       deleteDirectoryIfExists(snapshotNew);
       deleteDirectoryIfExists(snapshotBackup);
       Files.deleteIfExists(pendingMarker);
@@ -578,6 +589,54 @@ public final class SnapshotInstaller {
   }
 
   /**
+   * Reconciles a {@code .snapshot-backup} that a previous install deliberately retained, before a new install is
+   * allowed to touch anything (issue #7139).
+   * <p>
+   * A backup present ALONGSIDE the {@code .snapshot-pending} marker means the previous attempt did not finish:
+   * either its swap was interrupted, or its rollback failed and left {@code dbPath} partially cleared, with the
+   * backup as the only intact copy. Both are exactly what {@link #recoverPendingSnapshotSwaps} reconciles at
+   * startup, so this runs the same routine rather than a second implementation of it - with the database closed
+   * and the registry lock held, mirroring {@link #swapAndReopen}, because the reconciliation moves files under a
+   * directory the server may have registered.
+   * <p>
+   * If the backup is still there afterwards the reconciliation failed, and the install is refused: the previous
+   * copy stays on disk for the next attempt and for an operator, which is strictly better than proceeding into a
+   * download that may fail for the same reason (a full volume) and leave nothing behind at all.
+   */
+  private static void reconcileRetainedBackup(final String databaseName, final Path dbPath, final Path snapshotBackup,
+      final Path pendingMarker, final ArcadeDBServer server) throws IOException {
+    if (!Files.exists(pendingMarker) || !Files.isDirectory(snapshotBackup))
+      return;
+
+    LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+        "A previous snapshot install for '%s' left a retained backup and its pending marker in place, so the live "
+            + "database directory may be incomplete. Reconciling from the backup before starting a new install "
+            + "(issue #7139)", null, databaseName);
+
+    // Same 503 window PHASE 2 opens around swapAndReopen: this moves files under the live database directory
+    // too, and the engine-internal open paths do not consult the registry lock's meaning, only HTTP does.
+    // Without it a client could be served from the directory mid-restore. Cleared in a finally so a failed
+    // reconciliation cannot leave the server wedged in "install in progress".
+    server.setSnapshotInstallInProgress(true);
+    try {
+      synchronized (server.getDatabasesLock()) {
+        closeLocalDatabaseIfOpen(server, databaseName);
+        recoverSingleDatabase(dbPath);
+        reopenQuietly(server, databaseName);
+      }
+    } finally {
+      server.setSnapshotInstallInProgress(false);
+    }
+
+    // recoverSingleDatabase reports its own failures and returns; the backup surviving IS the failure signal.
+    if (Files.isDirectory(snapshotBackup))
+      throw new IOException("Refusing to install a snapshot for '" + databaseName
+          + "': a retained .snapshot-backup from a previous failed install could not be reconciled into "
+          + dbPath + ". It is the only intact copy of this database on this node and will not be deleted; "
+          + "resolve the underlying problem (typically a full or read-only volume) and retry");
+  }
+
+  /**
    * Rolls the live database directory back to the retained {@code .snapshot-backup} copy after a
    * post-swap failure. Clears the failed snapshot files first so entries present only in the failed
    * snapshot do not linger, then moves the backup contents back into place.
@@ -702,6 +761,21 @@ public final class SnapshotInstaller {
         restoreBackup(dbDir, snapshotBackup);
 
       } else {
+        // No completion marker and no backup. "The download was interrupted before the backup was created" is
+        // only ONE way to reach this state, and it leaves dbDir intact. The other is "a backup was created, used
+        // for a failed rollback, and is now gone", which leaves dbDir TORN - and this branch used to bless both,
+        // deleting the marker and letting the node open a directory that is neither the old database nor the new
+        // one, with nothing in the log saying so (issue #7139). So prove the premise before acting on it.
+        if (!looksLikeADatabaseDirectory(dbDir)) {
+          LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+              "Snapshot recovery for %s found no completion marker and no backup to restore from, and the database "
+                  + "directory does not contain '%s' - it is incomplete, not intact. Leaving it and the "
+                  + ".snapshot-pending marker untouched for inspection rather than accepting it as a healthy "
+                  + "database; the node will reacquire this database from the leader", null, dbDir,
+              LocalSchema.SCHEMA_FILE_NAME);
+          return;
+        }
+
         // Download was interrupted before backup was created: just clean up
         LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
             "Cleaning up orphaned snapshot directory for: %s", null, dbDir);
@@ -714,6 +788,16 @@ public final class SnapshotInstaller {
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
           "Error recovering snapshot swap for %s: %s", e, dbDir, e.getMessage());
     }
+  }
+
+  /**
+   * Whether {@code dbDir} holds something that can be opened as a database, used by the recovery branch that has
+   * no marker and no backup to reason from (issue #7139). {@code schema.json} is the file every ArcadeDB database
+   * directory carries and the one {@code clearLiveDatabaseFiles} removes along with the rest, so its absence is
+   * the cheapest reliable evidence that a rollback tore this directory rather than never having touched it.
+   */
+  private static boolean looksLikeADatabaseDirectory(final Path dbDir) {
+    return Files.exists(dbDir.resolve(LocalSchema.SCHEMA_FILE_NAME));
   }
 
   /**

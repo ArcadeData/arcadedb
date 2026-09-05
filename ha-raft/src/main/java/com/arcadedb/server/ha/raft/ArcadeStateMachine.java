@@ -36,6 +36,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.security.SecurityUserFileRepository;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
@@ -958,6 +959,29 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } catch (final IllegalArgumentException e) {
       LogManager.instance().log(this, Level.WARNING, "Invalid raft log entry at index %d: %s", index, e.getMessage());
       return CompletableFuture.failedFuture(e);
+    } catch (final RaftLogEntryDecodeException e) {
+      // A committed entry of a KNOWN type that this version cannot read: truncated, corrupt, or written in a
+      // shape it does not understand. "Halt the node" and "skip the entry" are not the only two options
+      // (issue #7138): when the envelope named a database, the failure is isolable exactly like an apply error
+      // on that database, so quarantine it and let the leader resend it as a snapshot. The node stays up for
+      // its other databases, and the entry is never silently skipped. Without a database name there is nothing
+      // to quarantine, and handleUnexpectedApplyError escalates to the node-wide halt as before.
+      final String decodeDatabase = e.getDatabaseName();
+      LogManager.instance().log(this, Level.SEVERE,
+          "Cannot decode the committed Raft log entry at index %d (type=%s, database=%s). This is either a corrupt "
+              + "entry or one written by a newer node in a shape this version cannot read: %s",
+          e, index, e.getType(), decodeDatabase == null || decodeDatabase.isEmpty() ? "<none>" : decodeDatabase,
+          e.getMessage());
+      try {
+        handleUnexpectedApplyError(index, decodeDatabase, e);
+      } catch (final ReplicationException quarantined) {
+        return CompletableFuture.failedFuture(quarantined);
+      } catch (final RuntimeException fatal) {
+        triggerCriticalHalt();
+        return CompletableFuture.failedFuture(fatal);
+      }
+      // handleUnexpectedApplyError always throws; unreachable, but the compiler needs a value.
+      return CompletableFuture.failedFuture(e);
     } catch (final Throwable e) {
       // Unexpected errors (NPE, ClassCastException, OOM, etc.) indicate a bug that could cause
       // state divergence if silently swallowed. Crash the server so the node recovers via snapshot.
@@ -1142,6 +1166,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throw new ReplicationException(
           "Apply error on database '" + databaseName + "' at index " + index + "; per-database snapshot resync in progress", t);
     }
+
+    // Node-scoped entry (no single target database): there is no per-database state to quarantine and no
+    // targeted resync that would repair it, so an unexpected error here still escalates to the node-wide halt
+    // (issue #4798's reasoning: never silently skip a committed mutation). An apply that is provably fail-safe
+    // classifies its OWN failure as recoverable before it reaches here - see applySecurityUsersEntry (issue
+    // #7137) - so the entries that arrive at this line are the ones for which a halt is the honest answer.
+    // Say which class of entry it was: without it, the SEVERE at the fatal branch names only an index.
+    LogManager.instance().log(this, Level.SEVERE,
+        "Unexpected error applying a node-scoped Raft entry at index %d (the entry targets no single database, so "
+            + "there is nothing to quarantine); escalating to the node-wide halt: %s", index, t.getMessage());
     throw t;
   }
 
@@ -3276,13 +3310,47 @@ public class ArcadeStateMachine extends BaseStateMachine {
       previous.close();
   }
 
+  /**
+   * Applies a replicated user list.
+   * <p>
+   * A local failure here - {@code ServerSecurity.applyReplicatedUsers} cannot write
+   * {@code server-users.jsonl} because the config volume is full, read-only or NFS-hiccuping - is deliberately
+   * NOT a node-halt condition (issue #7137). It reaches {@code handleUnexpectedApplyError} with the empty
+   * database name the codec gives this entry, which skips the per-database quarantine of #4797 and lands in
+   * the node-wide {@code catch (Throwable)} halt; and because the halt leaves the applied index untouched on
+   * purpose, the next start replays the same entry and halts again. With an environmental cause that is an
+   * indefinite crash loop of the whole node - every co-located database - triggered by nothing worse than a
+   * password change on the leader.
+   * <p>
+   * Failing the entry is enough because nothing here can diverge the databases this node replicates: the
+   * failure is confined to one file of server-local configuration. It is also not a security hole, because
+   * {@code applyReplicatedUsers} publishes the new list in memory BEFORE reporting the write failure, so a
+   * revoked account or a changed password takes effect on this node immediately - only the durability of that
+   * change is outstanding, and the entry replays on the next start. What is lost is confidence that the file
+   * survives a restart, which is an operational problem, and the SEVERE below is what says so.
+   * <p>
+   * The classification lives here, at the apply site, rather than in the generic handler: whether a failure
+   * can diverge replicated state is a property of the apply, not of the entry's database scoping, so a future
+   * node-scoped entry that CAN diverge still reaches the halt it needs.
+   */
   private void applySecurityUsersEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String payload = decoded.usersJson();
     if (payload == null) {
       LogManager.instance().log(this, Level.WARNING, "SECURITY_USERS_ENTRY has null payload, skipping");
       return;
     }
-    server.getSecurity().applyReplicatedUsers(payload);
+    try {
+      server.getSecurity().applyReplicatedUsers(payload);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Could not fully apply a replicated user list on this node: %s. The node keeps running and, when the "
+              + "list reached memory, is already enforcing it - but it is not durable: a restart before this is "
+              + "fixed reads the previous '%s'. The usual cause is a local write failure: check that the "
+              + "configuration directory holding that file is writable and has free space",
+          e, e.getMessage(), SecurityUserFileRepository.FILE_NAME);
+      throw new ReplicationException(
+          "Failed to persist the replicated user list locally; the node stays up with its previous users", e);
+    }
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_USERS_ENTRY (%d bytes)", payload.length());
   }
 

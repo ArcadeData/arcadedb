@@ -90,6 +90,78 @@ public final class RaftLogEntryCodec {
   /** Maximum allowed element count for collections during decoding. */
   static final int MAX_COLLECTION_SIZE = 1_000_000;
 
+  /**
+   * Frame marker introducing a trailing EXTENSION SECTION: the forward-compatibility mechanism every entry type
+   * gets from this release on (issue #7138).
+   * <p>
+   * There is no version field on a Raft log entry - the type byte is the whole envelope - and forward
+   * compatibility used to be per-type ad hoc. {@code SCHEMA_ENTRY} carries self-describing optional sections and
+   * tolerates them; for every other type an unknown trailing field was FATAL, and fatal in the worst possible
+   * arm: the throw happens in {@code RaftLogEntryCodec.decode} outside {@code applyWithRetry}, so it is not a
+   * {@code NeedRetryException}, not a {@code ReplicationException} and not quarantinable - it reached
+   * {@code catch (Throwable)} and halted the node, with the applied index deliberately not advanced, so the halt
+   * repeated on every restart. A newer leader adding one field to, say, {@code DROP_DATABASE_ENTRY} would
+   * therefore have permanently halted every not-yet-upgraded peer: on a 3-node rolling upgrade, two nodes down.
+   * <p>
+   * A version or length prefix on the envelope cannot fix this, because no already-deployed decoder knows to
+   * look for one - the only change that helps is one existing decoders can act on, which means tolerating what
+   * comes AFTER what they understand. Tolerating anything trailing (what {@code SCHEMA_ENTRY} does) would do it,
+   * at the cost of the corruption signal this check exists for. Framing keeps both: a future field appended as
+   * {@code [magic][length][payload]} is recognisably a deliberate extension and is skipped, while a truncated or
+   * corrupt entry does not carry the magic and is still refused.
+   * <p>
+   * <b>Contract for whoever adds the next field:</b> append it with {@link #writeExtensionSection} - never as
+   * bare trailing bytes - and make its absence mean "the peer that wrote this predates the field". Peers running
+   * a version older than this one still halt on it, so a field may only be EMITTED once every peer in the
+   * supported upgrade range tolerates extensions; from that release on, adding a field is safe by construction.
+   * The value is the ASCII {@code "ADBX"}, chosen so it is recognisable in a hex dump of a log segment.
+   * <p>
+   * <b>{@code SCHEMA_ENTRY} is excluded, and not merely exempt.</b> Its optional sections are UNFRAMED and
+   * positional - a decoder that has consumed the file maps reads whatever comes next as the #4382 WAL section's
+   * count - so a frame appended to one is not skipped, it is read as that count and rejected as a corrupt
+   * entry. Extending {@code SCHEMA_ENTRY} means adding another section to its own mechanism, in
+   * {@code decodeSchemaEntry}, exactly as #5443 and #4416 did.
+   */
+  static final int EXTENSION_MAGIC = 0x41444258;
+
+  /** Bytes one extension frame spends on its header ({@link #EXTENSION_MAGIC} + length). */
+  private static final int EXTENSION_HEADER_BYTES = 8;
+
+  /**
+   * Appends one self-describing extension section to an entry being encoded. Call this AFTER the type's own
+   * fields have been written, so a decoder that predates the section stops cleanly at the end of what it knows.
+   * Sections may be repeated; a decoder skips every one it does not recognise.
+   * <p>
+   * Not for {@code SCHEMA_ENTRY}, whose own unframed optional sections would swallow the frame header - see
+   * {@link #EXTENSION_MAGIC}.
+   *
+   * @param payload the section's bytes, whose meaning is entirely up to the field being added (typically its own
+   *                small self-describing sub-format, so that a future reader can tell its sections apart)
+   */
+  public static void writeExtensionSection(final DataOutputStream dos, final byte[] payload) throws IOException {
+    dos.writeInt(EXTENSION_MAGIC);
+    dos.writeInt(payload.length);
+    dos.write(payload);
+  }
+
+  /**
+   * {@link #writeExtensionSection} for an entry that has already been encoded, returning a new {@link ByteString}.
+   * Copies the entry, so an encoder writing its own fields should prefer the streaming form; this exists for
+   * callers holding a finished entry (and for the tests that prove old decoders tolerate a new field).
+   */
+  public static ByteString appendExtensionSection(final ByteString entry, final byte[] payload) {
+    try {
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream(entry.size() + EXTENSION_HEADER_BYTES + payload.length);
+      final DataOutputStream dos = new DataOutputStream(baos);
+      entry.writeTo(dos);
+      writeExtensionSection(dos, payload);
+      dos.flush();
+      return ByteString.copyFrom(baos.toByteArray());
+    } catch (final IOException e) {
+      throw new IllegalStateException("Failed to append an extension section to a Raft log entry", e);
+    }
+  }
+
   private RaftLogEntryCodec() {
     // utility class
   }
@@ -619,28 +691,74 @@ public final class RaftLogEntryCodec {
             Collections.emptyList(), false, Collections.emptyList());
       final String databaseName = dis.readUTF();
 
-      final DecodedEntry result = switch (type) {
-        case TX_ENTRY -> decodeTxEntry(dis, databaseName);
-        case SCHEMA_ENTRY -> decodeSchemaEntry(dis, databaseName);
-        case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
-        case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
-            null, null, null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false,
-            Collections.emptyList());
-        case SECURITY_USERS_ENTRY -> decodeSecurityUsersEntry(dis);
-        case BOOTSTRAP_FINGERPRINT_ENTRY -> decodeBootstrapFingerprintEntry(dis, databaseName);
-      };
-
-      // Trailing-byte validation: detect truncated or corrupted entries.
-      // SCHEMA_ENTRY is excluded because it carries optional, self-describing trailing sections
-      // (the embedded WAL section and the TimeSeries sealed-blob section) that newer nodes may
-      // append and older decoders stop before; a clean EOF at a section boundary is normal here.
-      if (type != RaftLogEntryType.SCHEMA_ENTRY && dis.available() > 0)
-        throw new IllegalStateException(
-            "Corrupted Raft log entry: " + dis.available() + " trailing bytes after " + type + " decode");
-
-      return result;
+      try {
+        return decodeBody(dis, type, databaseName);
+      } catch (final RuntimeException | IOException e) {
+        // Wrap so the caller can tell "this entry cannot be read" apart from "applying it went wrong", and can
+        // see WHICH database the unreadable entry targeted - with that, one bad entry quarantines one database
+        // instead of halting the whole node (issue #7138).
+        throw new RaftLogEntryDecodeException(
+            "Failed to decode Raft log entry of type " + type
+                + (databaseName == null || databaseName.isEmpty() ? "" : " for database '" + databaseName + "'")
+                + ": " + e.getMessage(), type, databaseName, e);
+      }
     } catch (final IOException e) {
       throw new IllegalStateException("Failed to decode Raft log entry", e);
+    }
+  }
+
+  /** Decodes everything after the {@code (type, databaseName)} envelope header. */
+  private static DecodedEntry decodeBody(final DataInputStream dis, final RaftLogEntryType type,
+      final String databaseName) throws IOException {
+    final DecodedEntry result = switch (type) {
+      case TX_ENTRY -> decodeTxEntry(dis, databaseName);
+      case SCHEMA_ENTRY -> decodeSchemaEntry(dis, databaseName);
+      case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
+      case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
+          null, null, null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false,
+          Collections.emptyList());
+      case SECURITY_USERS_ENTRY -> decodeSecurityUsersEntry(dis);
+      case BOOTSTRAP_FINGERPRINT_ENTRY -> decodeBootstrapFingerprintEntry(dis, databaseName);
+    };
+
+    skipTrailingExtensionSections(dis, type);
+
+    return result;
+  }
+
+  /**
+   * Consumes whatever follows the fields this version knows about, refusing anything that is not a well-formed
+   * {@link #EXTENSION_MAGIC} frame (issue #7138).
+   * <p>
+   * This replaces a flat "any trailing byte is corruption" rule that made every non-schema type impossible to
+   * extend without halting older peers, and it keeps the corruption signal that rule existed for: a truncated
+   * entry ends mid-field or mid-frame, and neither carries the magic at a frame boundary.
+   * <p>
+   * {@code SCHEMA_ENTRY} is excluded: its optional trailing sections (the #4382 WAL blobs, the #5443 flag, the
+   * #4416 slices) predate this framing and are unframed, so requiring the magic there would reject entries peers
+   * legitimately produce today - and its decoder has already consumed anything that follows the file maps as one
+   * of those sections, so there is nothing left here to frame. It extends through its own mechanism instead; see
+   * {@link #EXTENSION_MAGIC}.
+   */
+  private static void skipTrailingExtensionSections(final DataInputStream dis, final RaftLogEntryType type)
+      throws IOException {
+    if (type == RaftLogEntryType.SCHEMA_ENTRY)
+      return;
+
+    while (dis.available() > 0) {
+      if (dis.available() < EXTENSION_HEADER_BYTES)
+        throw new IllegalStateException("Corrupted Raft log entry: " + dis.available()
+            + " trailing bytes after " + type + " decode, too few for an extension section header");
+
+      final int magic = dis.readInt();
+      if (magic != EXTENSION_MAGIC)
+        throw new IllegalStateException("Corrupted Raft log entry: trailing bytes after " + type
+            + " decode are not an extension section (expected magic 0x" + Integer.toHexString(EXTENSION_MAGIC)
+            + ", found 0x" + Integer.toHexString(magic) + ")");
+
+      final int length = dis.readInt();
+      checkByteLength(length, dis.available(), type + " extension section");
+      dis.skipNBytes(length);
     }
   }
 
