@@ -3073,6 +3073,15 @@ public class CypherExecutionPlan {
   /**
    * Legacy method for building execution steps (fixed order).
    * Used when clause order information is not available.
+   * <p>
+   * It has no {@code CALL} handling, and needs none: {@link com.arcadedb.query.opencypher.parser.StatementBuilder}
+   * is the only thing that puts a {@code CallClause} on a statement and it always appends the matching entry to
+   * {@code clausesInOrder}, so a statement carrying a CALL never reaches here - this method runs only when that
+   * list is null or empty. Should that ever stop holding, a {@code case CALL:} added here has to register the
+   * clause's YIELD names the way the ordered builder does (see {@link #collectCallOutputVariables}), or a
+   * predicate reading one of them silently stops being pushed into the following MATCH's scan. Relationship
+   * uniqueness is not at stake either way: its scope comes from the MATCH clause's own AST rather than from
+   * what earlier clauses registered, which is the whole point of #7165.
    */
   private AbstractExecutionStep buildExecutionStepsLegacy(final CommandContext context) {
     AbstractExecutionStep currentStep = null;
