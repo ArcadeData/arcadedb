@@ -148,6 +148,13 @@ class CypherMergePathBindingIssue7169Test extends TestHelper {
         MATCH (b:B {id: 32})
         MERGE p = (:A {id: 31})-[:R1 {t: 'q'}]->(b)-[:R2 {t: 'w'}]->(:C {id: 33})
         RETURN length(p) AS len, size(nodes(p)) AS nodeCount, size(relationships(p)) AS relCount""", 2, 3, 2);
+
+    // anchor walk, left half only: the bound anchor is the pattern's last node, so there is no right side to
+    // walk and the whole path is discovered backwards. Two relationships keep it off the index-seek fast path.
+    assertPathShape("""
+        MATCH (c:C {id: 33})
+        MERGE p = (:A {id: 31})-[:R1 {t: 'q'}]->(:B {id: 32})-[:R2 {t: 'w'}]->(c)
+        RETURN length(p) AS len, size(nodes(p)) AS nodeCount, size(relationships(p)) AS relCount""", 2, 3, 2);
   }
 
   /** A single-node MERGE binds a zero-length path over that node, on both the create and the match branch. */
