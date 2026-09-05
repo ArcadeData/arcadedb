@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -27,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for GitHub issue #7169: inserting a no-op {@code OPTIONAL MATCH (:NoSuchLabel) WHERE false}
@@ -162,6 +164,20 @@ class CypherMergePathBindingIssue7169Test extends TestHelper {
         RETURN length(p) AS len, size(nodes(p)) AS nodeCount, size(relationships(p)) AS relCount""";
     assertPathShape(anonymous, 0, 1, 0);
     assertPathShape(anonymous, 0, 1, 0);
+  }
+
+  /**
+   * The semantic validator refuses a single-node MERGE over a variable an earlier clause bound, so no query can
+   * reach the short-circuit branch that check guards. Pinned here so that stays true: were the validator ever to
+   * let the shape through, the branch behind it has to bind the path rather than silently leave it unset.
+   */
+  @Test
+  void aSingleNodeMergeCannotRebindAnAlreadyBoundVariable() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 43})"));
+
+    assertThatThrownBy(() -> command("MATCH (a:A {id: 43}) MERGE p = (a) RETURN length(p) AS len"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("already defined");
   }
 
   /**
