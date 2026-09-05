@@ -27,6 +27,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Answers the {@code pg_type} queries a PostgreSQL client makes to find out what the OIDs it was handed in
@@ -103,11 +104,13 @@ public class PostgresTypeCatalog {
 
   /**
    * The types in OID order, so that an enumeration is stable across runs and across JVMs - a client that
-   * caches the answer must not see it reshuffle.
+   * caches the answer must not see it reshuffle. Immutable, because {@link #types()} hands it out: every
+   * enumeration and every by-name lookup here reads this order, so one in-place sort by a caller would
+   * quietly reshuffle all of them.
    */
-  private static final PostgresType[] TYPES_BY_OID = Arrays.stream(PostgresType.values())
+  private static final List<PostgresType> TYPES_BY_OID = Arrays.stream(PostgresType.values())
       .sorted(Comparator.comparingInt(t -> t.code))
-      .toArray(PostgresType[]::new);
+      .collect(Collectors.toUnmodifiableList());
 
   private PostgresTypeCatalog() {
   }
@@ -116,7 +119,7 @@ public class PostgresTypeCatalog {
    * Every type this protocol can produce, in OID order. {@link PostgresCatalog} enumerates pg_type from here
    * rather than sorting {@code PostgresType.values()} again, so that both surfaces answer in the same order.
    */
-  static PostgresType[] types() {
+  static List<PostgresType> types() {
     return TYPES_BY_OID;
   }
 
@@ -261,7 +264,7 @@ public class PostgresTypeCatalog {
    */
   private static List<PostgresType> select(final String filter) {
     if (filter == null)
-      return List.of(TYPES_BY_OID);
+      return TYPES_BY_OID;
 
     final String trimmed = filter.trim();
 
@@ -302,7 +305,7 @@ public class PostgresTypeCatalog {
       case "typbasetype" -> 0;         // not a domain, so no base type
       case "typnamespace" -> 11;       // pg_catalog, whose OID is fixed at 11 in PostgreSQL
       case "typrelid" -> 0;            // not a composite, so no backing relation
-      case "typowner" -> 10;           // the bootstrap superuser, which owns every built-in type
+      case "typowner" -> PostgresCatalog.OWNER_OID; // the bootstrap superuser owns every built-in type
       case "typbyval" -> type.size > 0 && type.size <= 8;
       case "typispreferred" -> preferred(type);
       case "typisdefined" -> Boolean.TRUE;
@@ -357,10 +360,17 @@ public class PostgresTypeCatalog {
     return type.size > 0 ? "p" : "x";
   }
 
-  /** pg_type.typalign: the storage alignment PostgreSQL gives the type, from its width. */
+  /**
+   * pg_type.typalign: the storage alignment PostgreSQL gives the type, from its width. An array takes INT
+   * alignment unless its element needs DOUBLE, which is the rule PostgreSQL's own catalog generator applies
+   * ({@code Catalog.pm}, {@code GenerateArrayTypes}) - so {@code _int8} and {@code _float8} are {@code d}
+   * while every other array is {@code i}.
+   */
   private static String align(final PostgresType type) {
-    if (type.isArrayType())
-      return "i";
+    if (type.isArrayType()) {
+      final PostgresType element = PostgresType.byCode(type.elementCode);
+      return element != null && "d".equals(align(element)) ? "d" : "i";
+    }
     return switch (type.size) {
       case 1 -> "c";
       case 2 -> "s";
@@ -372,10 +382,18 @@ public class PostgresTypeCatalog {
   /**
    * pg_type.typcollation: 100, the OID of the default collation, for the types whose comparison is
    * collation-sensitive; 0 for every other, which is what PostgreSQL stores.
+   * <p>
+   * An array of a collatable element is itself collatable. PostgreSQL declares no {@code BKI_ARRAY_DEFAULT}
+   * for this column, so an auto-generated array type copies its element's value verbatim - which is why
+   * {@code _text} carries 100 and not 0, exactly as {@code text} does.
    */
   private static int collation(final PostgresType type) {
+    if (type.isArrayType()) {
+      final PostgresType element = PostgresType.byCode(type.elementCode);
+      return element == null ? 0 : collation(element);
+    }
     return switch (type) {
-      case VARCHAR, TEXT, BPCHAR, ARRAY_TEXT -> 100;
+      case VARCHAR, TEXT, BPCHAR -> 100;
       default -> 0;
     };
   }
