@@ -314,6 +314,30 @@ class CypherClauseScopedRelationshipUniquenessIssue7165Test extends TestHelper {
   }
 
   /**
+   * The same reuse, with a write clause as the one that bound the name. Where the name came from is not
+   * something the scope asks about - it is read off the MATCH clause's own patterns - so this holds for the
+   * same reason the CALL spelling above does, and is here to keep that reason honest.
+   */
+  @Test
+  void aRelationshipVariableReusedFromAWriteClauseAlsoExcludesItsEdge() {
+    final List<Object> afterCreate = new ArrayList<>();
+    final List<Object> afterMerge = new ArrayList<>();
+    database.transaction(() -> {
+      afterCreate.addAll(commandColumn("""
+          CREATE (x:P {uuid:'x'})-[r:LINK {uuid:'r2'}]->(y:P {uuid:'y'})
+          MATCH (a)-[r:LINK]->(b), (c)-[s:LINK]->(d)
+          RETURN r.uuid + '/' + s.uuid AS pair""", "pair"));
+      afterMerge.addAll(commandColumn("""
+          MERGE (a:P {uuid:'a'})-[r:LINK {uuid:'r1'}]->(b:P {uuid:'b'})
+          MATCH (p)-[r:LINK]->(q), (c)-[s:LINK]->(d)
+          RETURN r.uuid + '/' + s.uuid AS pair""", "pair"));
+    });
+
+    assertThat(afterCreate).as("s must not rebind the edge CREATE bound to r").containsExactly("r2/r1");
+    assertThat(afterMerge).as("s must not rebind the edge MERGE bound to r").containsExactly("r1/r2");
+  }
+
+  /**
    * The rule the fix must not weaken: two relationship patterns of the SAME clause still bind distinct
    * edges, so a two-hop pattern cannot walk the single edge out and back again.
    */
