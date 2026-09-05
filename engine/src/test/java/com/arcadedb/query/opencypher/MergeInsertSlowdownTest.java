@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -115,8 +116,14 @@ class MergeInsertSlowdownTest {
     final long baseTs = 1779793007000L;
 
     final long[] windowNanos = new long[ITERATIONS / BATCH];
+    final long[] windowStallNanos = new long[ITERATIONS / BATCH];
     int windowIdx = 0;
     long windowStart = System.nanoTime();
+    // Sampled alongside every nanoTime() reading so each window can be reported with the JVM-wide stall inside it
+    // taken out (issue #6260). This test times a SEQUENCE of windows rather than one span, which is the case
+    // StallAwareStopwatch.jvmStallNanos() exists for; a stopwatch per window would measure the same thing but
+    // allocate ten of them inside the hot loop.
+    long windowStartStall = StallAwareStopwatch.jvmStallNanos();
 
     // The user's workload is heavily skewed: a few merchant accounts receive most edges and
     // ordinary customers send a handful. Zipf-like draw with alpha ~1 on a pool of accounts
@@ -146,8 +153,14 @@ class MergeInsertSlowdownTest {
 
       if ((i + 1) % BATCH == 0) {
         final long now = System.nanoTime();
-        windowNanos[windowIdx++] = now - windowStart;
+        // Stall read AFTER the elapsed read, matching StallAwareStopwatch: the stall window is then never
+        // narrower than the elapsed one, so the discount can only ever come out in the measurement's favour.
+        final long nowStall = StallAwareStopwatch.jvmStallNanos();
+        windowStallNanos[windowIdx] = Math.max(0L, nowStall - windowStartStall);
+        windowNanos[windowIdx] = Math.max(0L, (now - windowStart) - windowStallNanos[windowIdx]);
+        windowIdx++;
         windowStart = now;
+        windowStartStall = nowStall;
       }
     }
 
@@ -161,6 +174,13 @@ class MergeInsertSlowdownTest {
     // tail (last quarter) average against the first-windows-after-warmup average to keep the
     // assertion stable across CI machines. A 3x guard is comfortable: in practice the ratio
     // hovers around 1x and small fluctuations from disk/GC do not move it.
+    //
+    // The windows are stall-discounted (see above) because this ratio is a claim about how the MERGE/CREATE plan
+    // scales with database size, and nothing else. Raw wall clock does not say that in a full-suite run sharing
+    // one JVM: measured on such a run the first eight windows held ~1.0-1.3 s and the last two jumped to ~4.9 s
+    // flat - a step, not the ramp a size-driven regression produces - which took the ratio to 4.40x purely on the
+    // JVM's mood late in a 14,000-test fork. Discounting the stall keeps the 3x bound tight rather than paying
+    // for that by loosening it, which would have blunted the very regression the test is here to catch.
     final long warmupNanos = average(windowNanos, 1, Math.min(4, windowNanos.length));
     final long tailNanos = average(windowNanos, windowNanos.length - Math.max(2, windowNanos.length / 4),
         windowNanos.length);
@@ -170,7 +190,8 @@ class MergeInsertSlowdownTest {
         .append(" iters/batch):\n");
     for (int w = 0; w < windowNanos.length; w++)
       dump.append("  window ").append(w).append(": ")
-          .append(String.format("%.1f", windowNanos[w] / 1_000_000.0)).append(" ms\n");
+          .append(String.format("%.1f", windowNanos[w] / 1_000_000.0)).append(" ms")
+          .append(String.format(" (%.1f ms JVM stall discounted)", windowStallNanos[w] / 1_000_000.0)).append("\n");
     dump.append("  warmup avg = ").append(String.format("%.1f", warmupNanos / 1_000_000.0)).append(" ms, ")
         .append("tail avg = ").append(String.format("%.1f", tailNanos / 1_000_000.0)).append(" ms, ")
         .append("ratio tail/warmup = ").append(String.format("%.2fx", ratio));

@@ -24,6 +24,7 @@ import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Tag;
@@ -63,10 +64,58 @@ class InsertGraphIndexTest extends TestHelper {
     database.close();
   }
 
+  /** The process-wide logger this test displaces for its own duration; put back by {@link #endTest()}. */
+  private Logger previousLogger;
+
+  /**
+   * Silences the log for this test only. Moving a million edges logs enough to bury a build, but
+   * {@link LogManager#setLogger} is process-wide and this class used to install {@link NullLogger} from
+   * {@link #getPerformanceProfile()} - a method that is only supposed to name a profile - and never put the
+   * previous one back. Every {@code LogManager.instance().log()} in the fork was then discarded for the rest of
+   * the run, which in the {@code slow} lane silently disarmed later tests asserting on a logged warning:
+   * {@code LSMVectorIndexRebuildTest} captured nothing about 70 classes downstream and failed with no hint that
+   * the cause was here. setLogger()'s own javadoc tells callers to keep what they replace and put it back.
+   */
+  @Override
+  protected void beginTest() {
+    previousLogger = LogManager.instance().getLogger();
+    LogManager.instance().setLogger(NullLogger.INSTANCE);
+  }
+
+  @Override
+  protected void endTest() {
+    if (previousLogger != null) {
+      LogManager.instance().setLogger(previousLogger);
+      previousLogger = null;
+    }
+  }
+
+  /**
+   * Regression test for the leak above. Nothing else in the suite can observe the restore directly: the symptom of
+   * the missing one was a test roughly 70 classes downstream capturing no log output, which names this class
+   * nowhere. Asserting it here is the only place the two halves are visible at once.
+   * <p>
+   * Safe to call {@link #endTest()} by hand - it clears {@code previousLogger}, so the {@code @AfterEach} that
+   * follows is a no-op rather than a second, stale restore, and the logger is left as this class found it.
+   */
+  @Test
+  void endTestRestoresTheDisplacedLogger() {
+    assertThat(LogManager.instance().getLogger())
+        .as("beginTest() must install the null logger before the test body runs")
+        .isSameAs(NullLogger.INSTANCE);
+
+    final Logger displaced = previousLogger;
+    assertThat(displaced).as("the logger beginTest() displaced must be kept in order to be put back").isNotNull();
+
+    endTest();
+
+    assertThat(LogManager.instance().getLogger())
+        .as("setLogger() is process-wide, so failing to restore it discards every log line in the rest of the fork")
+        .isSameAs(displaced);
+  }
+
   @Override
   protected String getPerformanceProfile() {
-    LogManager.instance().setLogger(NullLogger.INSTANCE);
-
     return "high-performance";
   }
 

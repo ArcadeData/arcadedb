@@ -50,15 +50,27 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * Each test below reuses the graph shape proven effective by {@link Issue6266CommandTimeoutCoverageTest}: a
  * 20,000-node ring with two chords per node (out-degree 3, so every node has both directions once the edges are
- * made bidirectional). One pass over a graph this size costs seconds, comfortably clearing the 50 ms deadline used
- * here by orders of magnitude - so a check placed inside the loop aborts almost immediately and one placed nowhere
- * (or only between unrelated checkpoints) runs to graph exhaustion first, which is exactly the distinction the
- * issue is about.
+ * made bidirectional). A check placed inside the loop aborts almost immediately, while one placed nowhere (or only
+ * between unrelated checkpoints) runs to graph exhaustion first, which is exactly the distinction the issue is
+ * about.
+ * <p>
+ * The deadline has to stay well under what one exhausting pass costs, and that cost is not a constant: the first
+ * pass over this fixture pays for the page cache, later ones do not. A warm exhaustion of one 20,000-node
+ * component measures ~55 ms here, so the 50 ms this class used to arm was not a bound at all for whichever test
+ * ran second - {@code astar()} aborted only because it ran first and cold, and {@code dijkstra()} right behind it
+ * drained all 20,000 nodes and returned normally with 5 ms to spare. {@link #ABORT_DEADLINE_MS} is an order of
+ * magnitude below the warm figure so the guard fires whatever the cache holds, and the assertions name the guard
+ * that has to fire rather than only the setting, so a deadline tripped somewhere else in the plan cannot stand in
+ * for the check under test.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue6459GraphPathfindingCommandTimeoutTest {
   private static final int NODES = 20_000;
+  /** See the class comment: an order of magnitude below a warm exhausting pass over one component (~55 ms), so
+   *  the outcome does not depend on whether an earlier test already warmed the page cache. An implementation that
+   *  consults no deadline still runs to exhaustion and returns normally, so the regression stays caught. */
+  private static final long ABORT_DEADLINE_MS = 5;
   /** A vertex with no edges at all: astar()/dijkstra() can never reach it, so they have to exhaust the whole
    *  20,000-node component before giving up - unless the deadline stops them first. */
   private static final int UNREACHABLE_IDX = NODES;
@@ -137,14 +149,16 @@ class Issue6459GraphPathfindingCommandTimeoutTest {
   @Tag("slow")
   @Timeout(120)
   void astarHonoursTheCommandTimeoutOnAnUnreachableDestination() {
-    setTimeout(50);
+    setTimeout(ABORT_DEADLINE_MS);
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> drainSql(
         "select expand(astar(" + nodeRid[0] + ", " + unreachableRid + ", 'w'))"))
         .as("astar() previously consulted neither the deadline nor a thread interrupt, so it explored the "
             + "whole reachable component before ever answering")
-        .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
+        // Naming the guard, not just the setting: every other deadline check in the plan aborts as "the command",
+        // so only this spelling says the check inside astar()'s own loop is the one that fired.
+        .hasStackTraceContaining("astar() exceeded the " + GlobalConfiguration.COMMAND_TIMEOUT.getKey());
     stopwatch.assertGaveUpWithin(60_000L, "astar() aborted from inside its main loop, not after exhausting the graph");
   }
 
@@ -152,14 +166,15 @@ class Issue6459GraphPathfindingCommandTimeoutTest {
   @Tag("slow")
   @Timeout(120)
   void dijkstraHonoursTheCommandTimeoutOnAnUnreachableDestination() {
-    // dijkstra() delegates straight to a fresh SQLFunctionAstar, so it shares the fix as well as the bug.
-    setTimeout(50);
+    // dijkstra() delegates straight to a fresh SQLFunctionAstar, so it shares the fix as well as the bug - and
+    // the guard it inherits names itself astar() when it aborts.
+    setTimeout(ABORT_DEADLINE_MS);
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> drainSql(
         "select expand(dijkstra(" + nodeRid[0] + ", " + unreachableRid + ", 'w'))"))
         .as("dijkstra() must not survive its own unreachable-destination search past the deadline")
-        .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
+        .hasStackTraceContaining("astar() exceeded the " + GlobalConfiguration.COMMAND_TIMEOUT.getKey());
     stopwatch.assertGaveUpWithin(60_000L, "dijkstra() aborted from inside astar()'s main loop");
   }
 
