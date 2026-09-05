@@ -37,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -73,7 +74,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     final RaftClusterManager manager = new RaftClusterManager(raft);
 
     assertThatThrownBy(() -> manager.transferLeadership(TARGET_PEER, 10_000))
-        .isInstanceOf(ConfigurationException.class)
+        .isInstanceOf(NotTheLeaderRefusalException.class)
         .hasMessageContaining("not the leader")
         .as("the error must name the leader so the caller can retry against the right node")
         .hasMessageContaining(REAL_LEADER);
@@ -92,7 +93,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     final RaftClusterManager manager = new RaftClusterManager(raft);
 
     assertThatThrownBy(() -> manager.transferLeadership(TARGET_PEER, 10_000))
-        .isInstanceOf(ConfigurationException.class)
+        .isInstanceOf(NotTheLeaderRefusalException.class)
         .hasMessageContaining("not the leader");
     verify(raft, never()).getClient();
   }
@@ -126,8 +127,45 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     final RaftHAServer raft = detachedServer();
 
     assertThatThrownBy(raft::stepDown)
-        .isInstanceOf(ConfigurationException.class)
+        .isInstanceOf(NotTheLeaderRefusalException.class)
         .hasMessageContaining("not the leader");
+  }
+
+  /**
+   * The no-target path is the same endpoint, so it must answer "wrong node" the same way. It used to report a
+   * follower's refusal as a bare 500 "Leadership transfer failed", which names nothing the caller can act on
+   * and is indistinguishable from a transfer the LEADER tried and could not complete.
+   */
+  @Test
+  void theNoTargetTransferOnAFollowerIsRefusedTheSameWay() {
+    final RaftHAServer raft = mock(RaftHAServer.class);
+    when(raft.isLeader()).thenReturn(false);
+    when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(REAL_LEADER));
+    when(raft.getClient()).thenReturn(mock(RaftClient.class));
+
+    final RaftClusterManager manager = new RaftClusterManager(raft);
+
+    assertThatThrownBy(() -> manager.transferLeadership(10_000))
+        .isInstanceOf(NotTheLeaderRefusalException.class)
+        .hasMessageContaining(REAL_LEADER);
+  }
+
+  /**
+   * The other half of the 409 contract: a transfer the leader attempted and failed is NOT a follower refusal,
+   * and must keep the response it always had. Collapsing the two would tell a caller to reissue the request
+   * against the very node that just failed it.
+   */
+  @Test
+  void aLeaderSideTransferFailureIsNotReportedAsAFollowerRefusal() throws Exception {
+    final RaftHAServer raft = mock(RaftHAServer.class);
+    doThrow(new ConfigurationException("Failed to transfer leadership to " + TARGET_PEER + ": timeout"))
+        .when(raft).transferLeadership(any(String.class), anyLong());
+
+    final PostTransferLeaderHandler handler = new PostTransferLeaderHandler(mock(HttpServer.class), pluginFor(raft));
+
+    assertThatThrownBy(() -> handler.execute(null, rootUser(), new JSONObject().put("peerId", TARGET_PEER)))
+        .as("the handler must not swallow a leader-side failure into a 409")
+        .isInstanceOf(ConfigurationException.class);
   }
 
   /** The HTTP contract: a follower answers 409 naming the leader, not 200 for an effect that landed elsewhere. */
@@ -155,15 +193,16 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     assertThat(response.getResponse()).contains(REAL_LEADER);
   }
 
+  private static NotTheLeaderRefusalException refusal() {
+    return new NotTheLeaderRefusalException("Refusing", RaftPeerId.valueOf(REAL_LEADER));
+  }
+
   private static void doThrowNotLeader(final RaftHAServer raft) {
-    org.mockito.Mockito.doThrow(new ConfigurationException(
-        "This node is not the leader; the current leader is '" + REAL_LEADER + "'")).when(raft).stepDown();
+    doThrow(refusal()).when(raft).stepDown();
   }
 
   private static void doThrowNotLeaderOnTransfer(final RaftHAServer raft) {
-    org.mockito.Mockito.doThrow(new ConfigurationException(
-        "This node is not the leader; the current leader is '" + REAL_LEADER + "'"))
-        .when(raft).transferLeadership(any(String.class), anyLong());
+    doThrow(refusal()).when(raft).transferLeadership(any(String.class), anyLong());
   }
 
   private static RaftHAPlugin pluginFor(final RaftHAServer raft) {

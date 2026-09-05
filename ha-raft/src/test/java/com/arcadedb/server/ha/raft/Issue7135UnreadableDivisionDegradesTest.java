@@ -25,6 +25,7 @@ import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.server.RaftServer;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,7 +35,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #7135: {@code getLivePeers()} and {@code isReadyForTraffic()} caught only
- * {@link java.io.IOException}, while Ratis throws an {@link IllegalStateException}
+ * {@link IOException}, while Ratis throws an {@link IllegalStateException}
  * ("stateMachineUpdater is uninitialized") for the whole window in which an in-place division restart
  * re-initializes (issue #5271). Both methods therefore propagated an unchecked exception instead of
  * degrading to the fallback their javadoc promises.

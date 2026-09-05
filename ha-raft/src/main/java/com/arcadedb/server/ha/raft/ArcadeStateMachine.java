@@ -3322,13 +3322,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * indefinite crash loop of the whole node - every co-located database - triggered by nothing worse than a
    * password change on the leader.
    * <p>
-   * Failing the entry is enough because this apply is fail-safe: {@code applyReplicatedUsers} swaps the
-   * in-memory user map only AFTER the save returns, so on failure the node's state still matches its
-   * pre-entry state and cannot diverge. What is lost is the ability to administer users on this node until
-   * the volume is fixed, which is an availability problem, and the SEVERE below is what says so. The
-   * classification lives here, at the apply site, rather than in the generic handler: whether a failure is
-   * fail-safe is a property of the apply, not of the entry's database scoping, so a future node-scoped entry
-   * that is NOT fail-safe still reaches the halt it needs.
+   * Failing the entry is enough because nothing here can diverge the databases this node replicates: the
+   * failure is confined to one file of server-local configuration. It is also not a security hole, because
+   * {@code applyReplicatedUsers} publishes the new list in memory BEFORE reporting the write failure, so a
+   * revoked account or a changed password takes effect on this node immediately - only the durability of that
+   * change is outstanding, and the entry replays on the next start. What is lost is confidence that the file
+   * survives a restart, which is an operational problem, and the SEVERE below is what says so.
+   * <p>
+   * The classification lives here, at the apply site, rather than in the generic handler: whether a failure
+   * can diverge replicated state is a property of the apply, not of the entry's database scoping, so a future
+   * node-scoped entry that CAN diverge still reaches the halt it needs.
    */
   private void applySecurityUsersEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String payload = decoded.usersJson();
@@ -3340,11 +3343,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       server.getSecurity().applyReplicatedUsers(payload);
     } catch (final RuntimeException e) {
       LogManager.instance().log(this, Level.SEVERE,
-          "Could not apply a replicated user list on this node: %s. The node keeps running with its PREVIOUS users - "
-              + "the in-memory user map is swapped only after the new list is persisted, so no state divergence is "
-              + "possible - but user administration will not take effect here until this is resolved. The usual cause "
-              + "is a local write failure: check that the configuration directory holding '%s' is writable and has "
-              + "free space",
+          "Could not fully apply a replicated user list on this node: %s. The node keeps running and, when the "
+              + "list reached memory, is already enforcing it - but it is not durable: a restart before this is "
+              + "fixed reads the previous '%s'. The usual cause is a local write failure: check that the "
+              + "configuration directory holding that file is writable and has free space",
           e, e.getMessage(), SecurityUserFileRepository.FILE_NAME);
       throw new ReplicationException(
           "Failed to persist the replicated user list locally; the node stays up with its previous users", e);

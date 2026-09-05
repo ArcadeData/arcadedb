@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
@@ -147,6 +148,35 @@ class Issue7138EntryExtensionSectionTest {
         .isInstanceOf(RaftLogEntryDecodeException.class)
         .rootCause()
         .hasMessageContaining("extension section");
+  }
+
+  /**
+   * SCHEMA_ENTRY is EXCLUDED from the framing, not merely exempt from the check, and the difference is worth a
+   * test: its optional sections are unframed and positional, so a decoder that has consumed the file maps reads
+   * whatever comes next as the #4382 WAL section's count. A frame appended to one is therefore not skipped - the
+   * magic is read as that count and refused. Anyone extending SCHEMA_ENTRY has to add a section to its own
+   * mechanism instead, and this is what says so if they reach for the helper.
+   */
+  @Test
+  void aFrameAppendedToASchemaEntryIsNotAnExtensionSection() {
+    final ByteString schema = RaftLogEntryCodec.encodeSchemaEntry(DB, "{}", Map.of(), Map.of(),
+        Collections.emptyList(), Collections.emptyList());
+
+    assertThatThrownBy(() -> RaftLogEntryCodec.decode(
+        RaftLogEntryCodec.appendExtensionSection(schema, new byte[] { 1, 2, 3, 4 })))
+        .as("the frame header lands where the WAL section's count is read")
+        .isInstanceOf(RaftLogEntryDecodeException.class);
+  }
+
+  /** Control for the exclusion: a SCHEMA_ENTRY carrying only its own sections still decodes untouched. */
+  @Test
+  void aSchemaEntryWithItsOwnSectionsIsUnaffected() {
+    final ByteString schema = RaftLogEntryCodec.encodeSchemaEntry(DB, "{\"v\":1}", Map.of(), Map.of(),
+        Collections.emptyList(), Collections.emptyList());
+
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(schema);
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SCHEMA_ENTRY);
+    assertThat(decoded.databaseName()).isEqualTo(DB);
   }
 
   /**

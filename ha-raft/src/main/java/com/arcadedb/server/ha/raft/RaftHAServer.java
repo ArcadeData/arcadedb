@@ -20,7 +20,6 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
@@ -2752,12 +2751,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * through a Kubernetes Service, so the guard sits here - in the method every caller goes through - rather
    * than only in the handler.
    *
-   * @throws ConfigurationException when this node is not the leader
+   * @throws NotTheLeaderRefusalException when this node is not the leader
    */
   public void stepDown() {
     if (!isLeader())
-      throw new ConfigurationException(
-          RaftClusterManager.notTheLeaderMessage("Refusing to step down", getLeaderId()));
+      throw new NotTheLeaderRefusalException("Refusing to step down", getLeaderId());
 
     final List<RaftPeer> candidates = selectStepDownTargets(getLivePeers(), localPeerId, clusterMonitor);
 

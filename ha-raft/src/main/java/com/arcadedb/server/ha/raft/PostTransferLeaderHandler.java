@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.ha.raft;
 
-import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
@@ -75,7 +74,12 @@ public class PostTransferLeaderHandler extends AbstractServerHttpHandler {
 
     if (peerId.isEmpty()) {
       // Transfer to any peer (Ratis picks the best candidate)
-      final boolean success = raftHAServer.transferLeadership(timeoutMs);
+      final boolean success;
+      try {
+        success = raftHAServer.transferLeadership(timeoutMs);
+      } catch (final NotTheLeaderRefusalException e) {
+        return notTheLeader(e);
+      }
       if (success)
         return new ExecutionResponse(200, new JSONObject().put("result", "Leadership transferred")
             .put("leaderId", Objects.toString(raftHAServer.getLeaderId(), "")).toString());
@@ -88,13 +92,20 @@ public class PostTransferLeaderHandler extends AbstractServerHttpHandler {
     // the outcome instead of trusting a bare success string (issue #5276).
     try {
       raftHAServer.transferLeadership(peerId, timeoutMs);
-    } catch (final ConfigurationException e) {
-      // Served by a follower: Ratis would route the request to the real leader and force an unrequested
-      // election. Refuse with 409 naming the leader instead (issue #7134). The same status the membership
-      // endpoints already answer for a refused configuration change.
-      return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
+    } catch (final NotTheLeaderRefusalException e) {
+      return notTheLeader(e);
     }
     return new ExecutionResponse(200, new JSONObject().put("result", "Leadership transferred to " + peerId)
         .put("leaderId", peerId).toString());
+  }
+
+  /**
+   * The 409 both branches answer when this node is not the leader (issue #7134): Ratis would route the request
+   * to the real leader and force an unrequested election, so the refusal happens here and names the leader to
+   * reissue against. Deliberately NOT extended to a plain {@code ConfigurationException} - one raised by a
+   * transfer the LEADER attempted and failed means something else entirely, and keeps the mapping it had.
+   */
+  private static ExecutionResponse notTheLeader(final NotTheLeaderRefusalException e) {
+    return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
   }
 }
