@@ -851,7 +851,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // effective immediately and leaves the durability problem as what it is: this node will read a stale file
     // if it restarts before the volume is fixed, which is the same exposure the previous behaviour had, and
     // the Raft entry is replayed on the next start.
-    final IOException persistFailure = trySaveUsers(list);
+    final Exception persistFailure = trySaveUsers(list);
 
     // Build in-memory map from the authoritative Raft payload, not from the file, and publish it in a
     // single atomic reference swap so concurrent readers never observe an empty/torn window.
@@ -880,11 +880,14 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * javac treats every statement in a {@code try} as able to throw, so an assignment made after the call is
    * still "possibly assigned" at the {@code catch}.
    */
-  private IOException trySaveUsers(final List<JSONObject> list) {
+  private Exception trySaveUsers(final List<JSONObject> list) {
     try {
       usersRepository.save(list);
       return null;
-    } catch (final IOException e) {
+    } catch (final Exception e) {
+      // Exception, not IOException: an unchecked failure out of save() would otherwise propagate from here
+      // BEFORE the in-memory swap below, which is precisely the #7137 hazard - this node would go on
+      // authenticating against the previous list while the caller logged that it had stayed up safely.
       return e;
     }
   }

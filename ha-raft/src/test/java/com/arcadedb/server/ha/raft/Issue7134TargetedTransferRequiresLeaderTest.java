@@ -132,22 +132,20 @@ class Issue7134TargetedTransferRequiresLeaderTest {
   }
 
   /**
-   * The no-target path is the same endpoint, so it must answer "wrong node" the same way. It used to report a
-   * follower's refusal as a bare 500 "Leadership transfer failed", which names nothing the caller can act on
-   * and is indistinguishable from a transfer the LEADER tried and could not complete.
+   * The no-target overload keeps the boolean contract #4809 published and
+   * {@code Issue4809NoTargetTransferLeadershipIT} pins: a Java caller reads {@code false}, not an exception.
+   * The endpoint's 409 comes from a guard in the handler instead - see below - so the HTTP contract is uniform
+   * without changing what this method promises embedded callers.
    */
   @Test
-  void theNoTargetTransferOnAFollowerIsRefusedTheSameWay() {
+  void theNoTargetTransferKeepsItsBooleanContractOnAFollower() {
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
-    when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(REAL_LEADER));
     when(raft.getClient()).thenReturn(mock(RaftClient.class));
 
     final RaftClusterManager manager = new RaftClusterManager(raft);
 
-    assertThatThrownBy(() -> manager.transferLeadership(10_000))
-        .isInstanceOf(NotTheLeaderRefusalException.class)
-        .hasMessageContaining(REAL_LEADER);
+    assertThat(manager.transferLeadership(10_000)).isFalse();
   }
 
   /**
@@ -188,13 +186,15 @@ class Issue7134TargetedTransferRequiresLeaderTest {
   @Test
   void theNoTargetTransferEndpointAnswers409OnAFollower() throws Exception {
     final RaftHAServer raft = mock(RaftHAServer.class);
-    doThrow(refusal()).when(raft).transferLeadership(anyLong());
+    when(raft.isLeader()).thenReturn(false);
+    when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(REAL_LEADER));
 
     final ExecutionResponse response = new PostTransferLeaderHandler(mock(HttpServer.class), pluginFor(raft))
         .execute(null, rootUser(), new JSONObject());
 
     assertThat(response.getCode()).isEqualTo(409);
     assertThat(response.getResponse()).contains(REAL_LEADER);
+    verify(raft, never()).transferLeadership(anyLong());
   }
 
   @Test
