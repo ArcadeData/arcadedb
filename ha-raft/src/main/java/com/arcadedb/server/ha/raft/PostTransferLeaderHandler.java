@@ -73,13 +73,15 @@ public class PostTransferLeaderHandler extends AbstractServerHttpHandler {
     final long timeoutMs = payload.getLong("timeoutMs", 30_000);
 
     if (peerId.isEmpty()) {
+      // Refuse here rather than inside the no-target transfer, whose boolean contract is published (#4809):
+      // both branches of this endpoint must answer "wrong node" the same way, and a bare 500 "Leadership
+      // transfer failed" names nothing the caller can act on and reads like a leader-side failure (issue #7134).
+      if (!raftHAServer.isLeader())
+        return notTheLeader(new NotTheLeaderRefusalException("Refusing to transfer leadership",
+            raftHAServer.getLeaderId()));
+
       // Transfer to any peer (Ratis picks the best candidate)
-      final boolean success;
-      try {
-        success = raftHAServer.transferLeadership(timeoutMs);
-      } catch (final NotTheLeaderRefusalException e) {
-        return notTheLeader(e);
-      }
+      final boolean success = raftHAServer.transferLeadership(timeoutMs);
       if (success)
         return new ExecutionResponse(200, new JSONObject().put("result", "Leadership transferred")
             .put("leaderId", Objects.toString(raftHAServer.getLeaderId(), "")).toString());

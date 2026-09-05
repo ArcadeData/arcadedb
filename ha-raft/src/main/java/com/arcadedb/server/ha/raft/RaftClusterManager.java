@@ -195,10 +195,11 @@ class RaftClusterManager {
     if (!raftHAServer.isLeader()) {
       LogManager.instance().log(this, Level.INFO,
           "Leadership transfer requested but this node (%s) is not the leader; nothing to transfer", selfId);
-      // Refuse the way the targeted path does, so ONE endpoint does not answer "wrong node" two different ways
-      // (issue #7134): a boolean false here reached the caller as a bare 500 "Leadership transfer failed", which
-      // names nothing the caller can act on and reads like a leader-side failure.
-      throw new NotTheLeaderRefusalException("Refusing to transfer leadership", raftHAServer.getLeaderId());
+      // Returns false rather than throwing, unlike the targeted overload: this is a published contract (#4809,
+      // and Issue4809NoTargetTransferLeadershipIT pins it) that embedded callers read as a boolean. The HTTP
+      // endpoint gets its "wrong node" 409 from a guard in PostTransferLeaderHandler instead, so the two
+      // branches of that endpoint still answer alike without changing what this method promises Java callers.
+      return false;
     }
 
     try {
