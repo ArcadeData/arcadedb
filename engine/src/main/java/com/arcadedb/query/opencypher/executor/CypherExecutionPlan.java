@@ -1631,6 +1631,9 @@ public class CypherExecutionPlan {
           subqueryStep.setPrevious(currentStep);
         }
         currentStep = subqueryStep;
+        // What the subquery returns joins the outer scope, exactly as a CALL's YIELD names do, so a following
+        // MATCH can push a predicate that reads one of them into its scan instead of filtering behind it.
+        collectSubqueryOutputVariables(subqueryClause, boundVariables);
         break;
       }
     }
@@ -1949,6 +1952,11 @@ public class CypherExecutionPlan {
     }
 
     final AbstractExecutionStep stepBeforeMatch = currentStep;
+    // Handed to every relationship step of this clause BY REFERENCE, never copied: a step built for an early
+    // hop has to observe the names later hops add, and it does because planning finishes long before the first
+    // row is pulled. Copying it at a call site "to be safe" would give that step a scope missing the very
+    // variables the uniqueness rule has to compare against, which is the bug this whole file's #7165 comments
+    // are about, reintroduced one hop at a time.
     final Set<String> matchVariables = new HashSet<>();
     // The other half of the relationship-uniqueness scope: see clauseRelationshipVariables().
     final Set<String> clauseRelVariables = clauseRelationshipVariables(matchClause);
@@ -2402,6 +2410,26 @@ public class CypherExecutionPlan {
     boundVariables.addAll(matchVariables);
 
     return currentStep;
+  }
+
+  /**
+   * Adds the names a {@code CALL { }} subquery makes visible to the clauses that follow it: its own
+   * {@code RETURN} items, which join the outer scope rather than replacing it. A {@code RETURN *} names the
+   * subquery body's variables rather than listing them here, so it contributes nothing - the push-down it
+   * would enable is an optimization, and missing it costs a filter, not a row.
+   */
+  private static void collectSubqueryOutputVariables(final SubqueryClause subqueryClause,
+      final Set<String> boundVariables) {
+    final ReturnClause returnClause = subqueryClause.getInnerStatement() != null ?
+        subqueryClause.getInnerStatement().getReturnClause() : null;
+    if (returnClause == null)
+      return;
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+      if (item.isStar())
+        continue;
+      final String alias = item.getAlias();
+      boundVariables.add(alias != null ? alias : item.getExpression().getText());
+    }
   }
 
   /**
@@ -3099,6 +3127,7 @@ public class CypherExecutionPlan {
 
           // Track the step before this MATCH clause for OPTIONAL MATCH wrapping
           final AbstractExecutionStep stepBeforeMatch = currentStep;
+          // By reference, never copied - see the note in buildMatchStep().
           final Set<String> matchVariables = new HashSet<>();
           final Set<String> clauseRelVariables = clauseRelationshipVariables(matchClause);
           final boolean isOptional = matchClause.isOptional();
