@@ -63,7 +63,9 @@ public class PostgresTypeCatalog {
    */
   static final List<String> COLUMNS = List.of(//
       "oid", "typname", "typelem", "typarray", "typdelim", "typtype", "typcategory", "typlen", "typinput",//
-      "typnotnull", "typbasetype", "typnamespace", "typrelid");
+      "typoutput", "typreceive", "typsend", "typnotnull", "typbasetype", "typnamespace", "typrelid", "typowner",//
+      "typbyval", "typispreferred", "typisdefined", "typalign", "typstorage", "typtypmod", "typndims",//
+      "typcollation", "typdefault");
 
   /** {@code SELECT <projection> FROM [pg_catalog.]pg_type [alias] [WHERE <filter>]} and nothing more. */
   private static final Pattern QUERY = Pattern.compile(
@@ -108,6 +110,14 @@ public class PostgresTypeCatalog {
       .toArray(PostgresType[]::new);
 
   private PostgresTypeCatalog() {
+  }
+
+  /**
+   * Every type this protocol can produce, in OID order. {@link PostgresCatalog} enumerates pg_type from here
+   * rather than sorting {@code PostgresType.values()} again, so that both surfaces answer in the same order.
+   */
+  static PostgresType[] types() {
+    return TYPES_BY_OID;
   }
 
   /**
@@ -284,29 +294,89 @@ public class PostgresTypeCatalog {
       case "typtype" -> "b";           // base type: none of these is a composite, a domain or an enum
       case "typcategory" -> category(type);
       case "typlen" -> type.size;
-      case "typinput" -> inputFunction(type);
+      case "typinput" -> ioFunction(type, "in");
+      case "typoutput" -> ioFunction(type, "out");
+      case "typreceive" -> ioFunction(type, "recv");
+      case "typsend" -> ioFunction(type, "send");
       case "typnotnull" -> Boolean.FALSE;
       case "typbasetype" -> 0;         // not a domain, so no base type
       case "typnamespace" -> 11;       // pg_catalog, whose OID is fixed at 11 in PostgreSQL
       case "typrelid" -> 0;            // not a composite, so no backing relation
+      case "typowner" -> 10;           // the bootstrap superuser, which owns every built-in type
+      case "typbyval" -> type.size > 0 && type.size <= 8;
+      case "typispreferred" -> preferred(type);
+      case "typisdefined" -> Boolean.TRUE;
+      case "typalign" -> align(type);
+      case "typstorage" -> storage(type);
+      case "typtypmod" -> -1;          // not a domain, so no modifier of its own
+      case "typndims" -> 0;            // not a domain over an array
+      case "typcollation" -> collation(type);
+      case "typdefault" -> null;       // no built-in type has one
       default -> null;
     };
   }
 
   /**
-   * pg_type.typinput, the name of the C function PostgreSQL parses the type's text representation with.
-   * Spelled out rather than synthesised from the type name, because PostgreSQL is not consistent about it:
-   * most are {@code <name>in}, but the temporal types, json and numeric take an underscore.
+   * The name of the C function PostgreSQL converts the type with: {@code typinput}/{@code typoutput} for its
+   * text representation, {@code typreceive}/{@code typsend} for its binary one. Spelled out rather than
+   * synthesised from the type name alone, because PostgreSQL is not consistent about it: most are
+   * {@code <name><suffix>}, but the temporal types, json and numeric take an underscore.
+   * <p>
+   * The receive function is what the Apache Arrow ADBC driver reads to decide how to decode a column, so it
+   * has to be PostgreSQL's own name and not something plausible: a name the driver does not know leaves the
+   * type out of its resolver, and every column of that type then fails to bind.
    */
-  private static String inputFunction(final PostgresType type) {
+  private static String ioFunction(final PostgresType type, final String suffix) {
     if (type.isArrayType())
-      return "array_in";
+      return "array_" + suffix;
     return switch (type) {
-      case DATE -> "date_in";
-      case TIMESTAMP -> "timestamp_in";
-      case JSON -> "json_in";
-      case NUMERIC -> "numeric_in";
-      default -> type.typeName + "in";
+      case DATE, TIMESTAMP, JSON, NUMERIC -> type.typeName + "_" + suffix;
+      default -> type.typeName + suffix;
+    };
+  }
+
+  /**
+   * pg_type.typispreferred: within a category, the type PostgreSQL casts towards when it has a choice. Only
+   * one member of each category carries it.
+   */
+  private static Boolean preferred(final PostgresType type) {
+    return switch (type) {
+      case DOUBLE, TEXT, BOOLEAN, TIMESTAMP -> Boolean.TRUE;
+      default -> Boolean.FALSE;
+    };
+  }
+
+  /**
+   * pg_type.typstorage: {@code p} for a fixed-width type, which is stored plain; {@code x} for a varlena one,
+   * which TOAST may compress and move out of line; {@code m} for numeric, the one variable-width type
+   * PostgreSQL keeps in the main table and only compresses.
+   */
+  private static String storage(final PostgresType type) {
+    if (type == PostgresType.NUMERIC)
+      return "m";
+    return type.size > 0 ? "p" : "x";
+  }
+
+  /** pg_type.typalign: the storage alignment PostgreSQL gives the type, from its width. */
+  private static String align(final PostgresType type) {
+    if (type.isArrayType())
+      return "i";
+    return switch (type.size) {
+      case 1 -> "c";
+      case 2 -> "s";
+      case 8 -> "d";
+      default -> "i";
+    };
+  }
+
+  /**
+   * pg_type.typcollation: 100, the OID of the default collation, for the types whose comparison is
+   * collation-sensitive; 0 for every other, which is what PostgreSQL stores.
+   */
+  private static int collation(final PostgresType type) {
+    return switch (type) {
+      case VARCHAR, TEXT, BPCHAR, ARRAY_TEXT -> 100;
+      default -> 0;
     };
   }
 
