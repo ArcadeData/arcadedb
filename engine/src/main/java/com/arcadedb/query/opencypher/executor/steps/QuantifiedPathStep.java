@@ -78,14 +78,14 @@ import java.util.function.Predicate;
  * incoming row already binds within the same MATCH clause: no relationship is traversed twice, which
  * is also what terminates an open-ended quantifier on a cyclic graph.
  */
-public class QuantifiedPathStep extends AbstractExecutionStep implements ClauseScopedUniquenessStep {
+public class QuantifiedPathStep extends AbstractExecutionStep {
   private final String                sourceVariable;
   private final String                targetVariable;
   private final String                pathVariable;
   private final boolean               pathVariableBindsGroup;
   private final QuantifiedPathPattern group;
   private final NodePattern           targetNodePattern;
-  private Set<String>                 clauseScopeVariables = Set.of(); // see ClauseScopedUniquenessStep
+  private final Set<String>           clauseVariables; // see MatchRelationshipStep's field of the same name
   private final List<NodePattern>     innerNodes;
   private final List<RelationshipPattern> innerRelationships;
   /**
@@ -104,10 +104,11 @@ public class QuantifiedPathStep extends AbstractExecutionStep implements ClauseS
    *                               spans further segments and must stay a single concatenated path
    * @param group                  the quantified path pattern to repeat
    * @param targetNodePattern      right boundary node pattern, for label/property filtering; may be null
+   * @param clauseVariables        the owning MATCH clause's own variables - the relationship-isomorphism scope
    */
   public QuantifiedPathStep(final String sourceVariable, final String targetVariable, final String pathVariable,
       final boolean pathVariableBindsGroup, final QuantifiedPathPattern group, final NodePattern targetNodePattern,
-      final CommandContext context) {
+      final Set<String> clauseVariables, final CommandContext context) {
     super(context);
     this.sourceVariable = sourceVariable;
     this.targetVariable = targetVariable;
@@ -115,15 +116,11 @@ public class QuantifiedPathStep extends AbstractExecutionStep implements ClauseS
     this.pathVariableBindsGroup = pathVariableBindsGroup;
     this.group = group;
     this.targetNodePattern = targetNodePattern;
+    this.clauseVariables = clauseVariables;
     this.innerNodes = group.getInnerPattern().getNodes();
     this.innerRelationships = group.getInnerPattern().getRelationships();
     this.dynamicLabelEvaluator = targetNodePattern != null && targetNodePattern.hasDynamicLabels() ?
         new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance())) : null;
-  }
-
-  @Override
-  public void setClauseScopeVariables(final Set<String> clauseScopeVariables) {
-    this.clauseScopeVariables = clauseScopeVariables;
   }
 
   /** One matched repetition: the vertices and relationships the inner pattern bound this time round. */
@@ -535,12 +532,12 @@ public class QuantifiedPathStep extends AbstractExecutionStep implements ClauseS
   /**
    * Collects the relationships the incoming row already binds within this MATCH clause, so the group
    * cannot reuse one. Only the clause's own variables are examined: Cypher scopes relationship isomorphism
-   * to a single MATCH clause - see {@link ClauseScopedUniquenessStep}.
+   * to a single MATCH clause.
    */
   private Set<RID> collectBoundRelationships(final Result input) {
     final Set<RID> used = new HashSet<>();
     final List<String> groupVariables = group.getGroupVariables();
-    for (final String property : clauseScopeVariables) {
+    for (final String property : clauseVariables) {
       if (property.equals(targetVariable) || property.equals(pathVariable) || groupVariables.contains(property))
         continue;
       collectRelationships(input.getProperty(property), used);
