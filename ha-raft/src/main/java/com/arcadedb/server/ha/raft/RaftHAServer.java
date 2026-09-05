@@ -2751,7 +2751,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * through a Kubernetes Service, so the guard sits here - in the method every caller goes through - rather
    * than only in the handler.
    *
-   * @throws NotTheLeaderRefusalException when this node is not the leader
+   * @throws NotTheLeaderRefusalException when this node is not the leader - on entry, and also from the
+   *                                       no-target delegation below in the narrow race where leadership is
+   *                                       lost after the entry guard but before a transfer is issued. That is
+   *                                       the honest answer in both cases: the caller is told which node to
+   *                                       reissue against rather than reading a "no peer available" line
    */
   public void stepDown() {
     if (!isLeader())

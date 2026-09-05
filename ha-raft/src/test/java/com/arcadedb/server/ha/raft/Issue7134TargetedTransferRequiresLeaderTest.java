@@ -181,6 +181,22 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     assertThat(response.getResponse()).contains(REAL_LEADER);
   }
 
+  /**
+   * The no-target request through the endpoint, not just through the manager: this is the shape a Kubernetes
+   * Service actually delivers - a bare {@code {}} body that lands on whichever pod the load balancer picked.
+   */
+  @Test
+  void theNoTargetTransferEndpointAnswers409OnAFollower() throws Exception {
+    final RaftHAServer raft = mock(RaftHAServer.class);
+    doThrow(refusal()).when(raft).transferLeadership(anyLong());
+
+    final ExecutionResponse response = new PostTransferLeaderHandler(mock(HttpServer.class), pluginFor(raft))
+        .execute(null, rootUser(), new JSONObject());
+
+    assertThat(response.getCode()).isEqualTo(409);
+    assertThat(response.getResponse()).contains(REAL_LEADER);
+  }
+
   @Test
   void theTargetedTransferEndpointAnswers409OnAFollower() throws Exception {
     final RaftHAServer raft = mock(RaftHAServer.class);
