@@ -68,6 +68,12 @@ public class PostgresTypeCatalog {
       "typbyval", "typispreferred", "typisdefined", "typalign", "typstorage", "typtypmod", "typndims",//
       "typcollation", "typdefault");
 
+  /**
+   * pg_collation's {@code default} entry, whose OID PostgreSQL fixes at 100. It is what pg_type.typcollation
+   * holds for every collation-sensitive built-in type.
+   */
+  static final int DEFAULT_COLLATION_OID = 100;
+
   /** {@code SELECT <projection> FROM [pg_catalog.]pg_type [alias] [WHERE <filter>]} and nothing more. */
   private static final Pattern QUERY = Pattern.compile(
       "^SELECT\\s+(.+?)\\s+FROM\\s+(?:PG_CATALOG\\s*\\.\\s*)?PG_TYPE(?:\\s+(?:AS\\s+)?[A-Za-z_][A-Za-z0-9_$]*)?"
@@ -392,7 +398,7 @@ public class PostgresTypeCatalog {
   }
 
   /**
-   * pg_type.typcollation: 100, the OID of the default collation, for the types whose comparison is
+   * pg_type.typcollation: {@link #DEFAULT_COLLATION_OID} for the types whose comparison is
    * collation-sensitive; 0 for every other, which is what PostgreSQL stores.
    * <p>
    * An array of a collatable element is itself collatable. PostgreSQL declares no {@code BKI_ARRAY_DEFAULT}
@@ -405,7 +411,7 @@ public class PostgresTypeCatalog {
       return element == null ? 0 : collation(element);
     }
     return switch (type) {
-      case VARCHAR, TEXT, BPCHAR -> 100;
+      case VARCHAR, TEXT, BPCHAR -> DEFAULT_COLLATION_OID;
       default -> 0;
     };
   }
