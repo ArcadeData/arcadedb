@@ -90,6 +90,9 @@ class SnapshotSwapRecoveryTest {
     Files.createDirectories(dbDir);
     Files.createDirectories(snapshotNew);
     Files.writeString(dbDir.resolve(".snapshot-pending"), "");
+    // schema.json is what makes this an INTACT database rather than one a failed rollback tore apart; the
+    // orphaned branch checks for it before accepting the directory as healthy (issue #7139).
+    Files.writeString(dbDir.resolve("schema.json"), "{}");
     Files.writeString(dbDir.resolve("data.dat"), "existing-data");
     Files.writeString(snapshotNew.resolve("partial.dat"), "incomplete");
 
@@ -158,6 +161,8 @@ class SnapshotSwapRecoveryTest {
     Files.createDirectories(dbDir);
     Files.createDirectories(snapshotNew);
     Files.writeString(dbDir.resolve(".snapshot-pending"), "");
+    // See the note above: the live directory is intact, so the orphaned branch may clean up around it.
+    Files.writeString(dbDir.resolve("schema.json"), "{}");
     Files.writeString(dbDir.resolve("data.dat"), "existing-data");
     // Incomplete extraction: some files written but no .snapshot-complete
     Files.writeString(snapshotNew.resolve("partial.dat"), "incomplete-extraction");
@@ -184,6 +189,7 @@ class SnapshotSwapRecoveryTest {
     Files.createDirectories(snapshotNew);
     Files.writeString(dbDir.resolve(".snapshot-pending"), "");
     Files.writeString(snapshotNew.resolve(".snapshot-complete"), "");
+    Files.writeString(dbDir.resolve("schema.json"), "{}");
     Files.writeString(dbDir.resolve("data.dat"), "live-data");
 
     SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir);
