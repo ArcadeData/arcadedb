@@ -24,6 +24,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -104,8 +105,17 @@ public class MergeRelationship implements CypherProcedure {
     if (!database.getSchema().existsType(relType))
       database.getSchema().createEdgeType(relType);
 
+    // The vertex instances the row carries were loaded before the rows ahead of it applied their merges, and
+    // appending an edge rewrites the edge-list head pointer of BOTH endpoints - out on the start, in on the
+    // end. Everything below reads those pointers: the existence check missed an edge a previous row had
+    // already created and merged a duplicate, and appending against a stale head fails outright with
+    // "Edge list IN head of vertex ... changed by a concurrent transaction" (issue #7174). Re-read both,
+    // exactly as MergeStep does for the anchor of a MERGE clause (issue #6461).
+    final Vertex latestStartNode = CypherVertexReload.latest(database, startNode);
+    final Vertex latestEndNode = CypherVertexReload.latest(database, endNode);
+
     // Try to find existing relationship matching the criteria
-    Edge existingEdge = findMatchingEdge(startNode, endNode, relType, matchProps);
+    final Edge existingEdge = findMatchingEdge(latestStartNode, latestEndNode, relType, matchProps);
 
     if (existingEdge != null)
       // Return existing relationship
@@ -113,7 +123,7 @@ public class MergeRelationship implements CypherProcedure {
 
     // Create new relationship with both matchProps and createProps
     // Note: using bidirectional=true so the edge can be traversed from both ends
-    final MutableEdge newEdge = startNode.newEdge(relType, endNode);
+    final MutableEdge newEdge = latestStartNode.newEdge(relType, latestEndNode);
 
     // Apply matchProps
     if (matchProps != null) {
@@ -140,8 +150,7 @@ public class MergeRelationship implements CypherProcedure {
    */
   private Edge findMatchingEdge(final Vertex startNode, final Vertex endNode,
                                 final String relType, final Map<String, Object> matchProps) {
-    // Get outgoing edges of the specified type
-
+    // startNode must be the re-read instance, not the one the row carries - see execute() (issue #7174).
     for (final Edge edge : startNode.getEdges(Vertex.DIRECTION.OUT, relType)) {
       try {
         // Check if edge connects to the endNode

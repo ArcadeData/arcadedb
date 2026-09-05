@@ -23,7 +23,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
-import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -41,6 +40,7 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.CypherValues;
+import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
@@ -1239,25 +1239,11 @@ public class MergeStep extends AbstractExecutionStep {
    * rewrites the vertex record's edge-list head pointer) the row's own instance still reflects the
    * pre-append state and a direct {@code vertex.getEdges(...)} on it would miss that edge.
    * <p>
-   * {@code database.lookupByRID} re-reads that RID - the current transaction's cache first, the page
-   * store otherwise - so it observes the latest COMMITTED state regardless of which transaction wrote it,
-   * unlike the row's own possibly-stale instance. Mirrors {@code SetStep.reloadLatestDoc} (issue #5227).
-   *
-   * @return the reloaded vertex, or {@code anchor} unchanged if it has no identity yet (not persisted) or
-   * was concurrently deleted (left for the ordinary not-found handling downstream to react to)
+   * The re-read itself lives in {@link CypherVertexReload}, shared with {@code merge.relationship}, which
+   * asks the same question of the same rows and had the same hole (issue #7174).
    */
   private Vertex reloadAnchorVertex(final Vertex anchor) {
-    if (anchor == null)
-      return null;
-    final RID rid = anchor.getIdentity();
-    if (rid == null)
-      return anchor;
-    try {
-      final Record fresh = context.getDatabase().lookupByRID(rid, true);
-      return fresh instanceof Vertex v ? v : anchor;
-    } catch (final RecordNotFoundException e) {
-      return anchor;
-    }
+    return CypherVertexReload.latest(context.getDatabase(), anchor);
   }
 
   /**
