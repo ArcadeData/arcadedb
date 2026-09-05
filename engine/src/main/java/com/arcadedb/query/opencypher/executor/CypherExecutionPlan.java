@@ -1912,16 +1912,20 @@ public class CypherExecutionPlan {
    * a user can write a variable called {@code `*`}, and {@code WITH n AS `*`} is an ordinary projection that resets
    * the scope to that one name, not a star that forwards it (issue #6334).
    */
+  /** The name a projected item binds downstream: its alias, or the expression's own text when it has none. */
+  private static String projectedName(final ReturnClause.ReturnItem item) {
+    final String alias = item.getAlias();
+    return alias != null ? alias : item.getExpression().getText();
+  }
+
   private static void applyProjectionToScope(final List<ReturnClause.ReturnItem> items, final Set<String> scope) {
     boolean forwardsAll = false;
     final List<String> projected = new ArrayList<>(items.size());
     for (final ReturnClause.ReturnItem item : items) {
       if (item.isStar())
         forwardsAll = true;
-      else {
-        final String alias = item.getAlias();
-        projected.add(alias != null ? alias : item.getExpression().getText());
-      }
+      else
+        projected.add(projectedName(item));
     }
     if (!forwardsAll)
       scope.clear();
@@ -2424,19 +2428,19 @@ public class CypherExecutionPlan {
         subqueryClause.getInnerStatement().getReturnClause() : null;
     if (returnClause == null)
       return;
-    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
-      if (item.isStar())
-        continue;
-      final String alias = item.getAlias();
-      boundVariables.add(alias != null ? alias : item.getExpression().getText());
-    }
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems())
+      if (!item.isStar())
+        boundVariables.add(projectedName(item));
   }
 
   /**
    * Adds the names a {@code CALL} makes visible to the clauses that follow it: the YIELD aliases when the
    * clause lists them, otherwise the procedure's own declared output fields, which is what {@code YIELD *}
-   * and a bare {@code CALL} put into the row. A procedure the registry does not know contributes nothing -
-   * the CALL itself fails later with a clearer message than anything this could raise.
+   * and a bare {@code CALL} put into the row. A name the registry does not know contributes nothing: it may
+   * still run - an ArcadeDB SQL function reached through {@code CALL} resolves further down in
+   * {@link com.arcadedb.query.opencypher.executor.steps.CallStep} - it just declares no output fields to read
+   * here. What is missed is the push-down below, never a row: relationship uniqueness is scoped to the MATCH
+   * clause's own variables and asks this set nothing.
    */
   private static void collectCallOutputVariables(final CallClause callClause, final Set<String> boundVariables) {
     if (callClause.hasYield() && !callClause.isYieldAll()) {
@@ -5042,6 +5046,9 @@ public class CypherExecutionPlan {
         if (relationship instanceof QuantifiedPathPattern quantified) {
           if (variables == null)
             variables = new HashSet<>();
+          // A group's variables are its node ones as well as its relationship ones, and both are taken, exactly
+          // as the clause's own variable set takes them. Nothing is read from a name the row holds a vertex
+          // under: every consumer of this set asks whether the value is an Edge first.
           variables.addAll(quantified.getGroupVariables());
         }
       }
