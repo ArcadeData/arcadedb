@@ -51,7 +51,13 @@ jobs:
         id: guard
         run: |
           set -euo pipefail
-          gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json files,mergeable > pr.json
+          gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json files,mergeable,headRefOid > pr.json
+          # Everything below is decided about ONE commit, and the merge is pinned to it. Dependabot
+          # force-pushes the same branch when a grouped update gains a member, and the maven
+          # ecosystem is `directory: "/"`, so a group PR can acquire native/pom.xml in the seconds
+          # between this read and the merge. Pinning makes a head that moved fail the run instead
+          # of merging a commit the guard below never saw.
+          echo "head=$(jq -r '.headRefOid' pr.json)" >> "$GITHUB_OUTPUT"
           if jq -r '.files[].path' pr.json | grep -qx 'native/pom\.xml'; then
             echo "native/pom.xml is in this PR: the GraalVM pin moves by hand, together with" \
                  "native-image.yml's builder. Leaving it open."
@@ -69,8 +75,12 @@ jobs:
           # Through the environment, never interpolated into the script: a pull request title is
           # attacker-controlled text, and `${{ }}` would splice it straight into the shell.
           TITLE: ${{ github.event.pull_request.title }}
+          # The commit the guard step inspected. Not github.event.pull_request.head.sha, which is
+          # the head as of the review and can be older still.
+          HEAD_SHA: ${{ steps.guard.outputs.head }}
         run: |
           set -euo pipefail
           gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json body --jq '.body' |
             gh pr merge "$PR" -R "$GITHUB_REPOSITORY" --merge \
+              --match-head-commit "$HEAD_SHA" \
               --subject "$TITLE (#$PR) [skip ci]" --body-file -
