@@ -1597,6 +1597,12 @@ public class PageManager extends LockContext {
    * first on a tie). Deliberately not clamped to {@code maxRAM}: the point here is to go BELOW the configured cache
    * size on purpose, temporarily, in exchange for something the caller values more.
    * <p>
+   * <b>Cost.</b> {@link #evictOldestPages} sorts the whole read cache under this class's monitor, so the price is set
+   * by how many pages are cached and NOT by how many bytes are asked for - one sort whether the caller wants 4 MB or
+   * 4 GB. That is the same price the routine {@link #checkForPageDisposal()} pays, minus its 100 ms throttle, so a
+   * caller has to be rare: the vector-index rebuild this was added for happens once per rebuild, holding a JVM-wide
+   * permit. Anything on a per-request path wants a different mechanism, not this one.
+   * <p>
    * A handover, not a reservation: the bytes are unreferenced when this returns, so the next collection can take
    * them, and concurrent readers are free to cache pages of their own again immediately. Nothing here can promise a
    * caller that the heap it was given up for is still there when it asks - which is why this is used to correct a

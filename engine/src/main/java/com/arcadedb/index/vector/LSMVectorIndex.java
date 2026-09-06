@@ -1862,11 +1862,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // (if needed) unlocked, mirroring buildGraphFromScratchExclusively's own publish step.
       final int[] unreachableOrdinals = persistedManifest != null ?
           persistedManifest.unreachableOrdinals() : EMPTY_ORDINALS;
+
+      // Nodes the build that produced this graph could not link are physically in it and unreachable to every beam
+      // search, at any efSearch. The session that built it served them from the delta scan; this one has to do the
+      // same or they are simply gone while totalVectors still counts them (issue #7190). Read here, BEFORE the
+      // publish below and unlocked because it is real I/O, so the graph and the entries that complete it become
+      // visible in the same write lock: publishing first and queueing afterwards would leave a window in which a
+      // search sees the graph without them, which is the very thing this fix exists to stop. Same order as the
+      // stale-prefix path, which reads its gap before publishing for the identical reason.
+      final List<DeltaVectorEntry> unreachableEntries = readUnreachableEntries(unreachableOrdinals,
+          rebuiltOrdinalToVectorId, rebuiltOrdinalToVectorId.length, vectorProp);
+
+      final int queuedUnreachable;
       lock.writeLock().lock();
       try {
         this.graphIndex = loadedGraph;
         this.graphUnreachableOrdinals = unreachableOrdinals;
         this.ordinalToVectorId = rebuiltOrdinalToVectorId;
+        // Appended, never counted as mutations and never promoting graphState - see readUnreachableEntries().
+        queuedUnreachable = appendToDeltaBuffer(unreachableEntries);
         if (graphState == GraphState.LOADING)
           this.graphState = GraphState.IMMUTABLE;
         // else: a concurrent put()/putBatch()/remove() already advanced graphState to MUTABLE while
@@ -1878,12 +1892,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
         lock.writeLock().unlock();
       }
 
-      // Nodes the build that produced this graph could not link are physically in it and unreachable to every beam
-      // search, at any efSearch. The session that built it served them from the delta scan; this one has to do the
-      // same or they are simply gone while totalVectors still counts them (issue #7190). Outside the publish lock
-      // because the read is real I/O, and after it rather than before so the graph is searchable at once.
-      requeueUnreachableVectors(unreachableOrdinals, rebuiltOrdinalToVectorId, rebuiltOrdinalToVectorId.length,
-          vectorProp);
+      if (queuedUnreachable > 0)
+        LogManager.instance().log(this, Level.INFO,
+            "Queued %d of the %d vector(s) the persisted graph of index %s leaves unreachable into the delta scan, "
+                + "which is the only way a search can return them (issue #7190)", queuedUnreachable,
+            unreachableOrdinals.length, indexName);
 
       // Build PQ if PRODUCT quantization is enabled but PQ file doesn't exist
       // This handles the case where graph was built before PRODUCT quantization was added
@@ -2153,16 +2166,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Queues the vectors of a loaded graph's unreachable ordinals into the delta buffer, so this session serves them
-   * exactly the way the session that built the graph did (issue #7190).
+   * Reads the vectors of a loaded graph's unreachable ordinals, ready to be queued into the delta buffer so this
+   * session serves them exactly the way the session that built the graph did (issue #7190).
    * <p>
-   * Deliberately touches neither {@code mutationsSinceSerialize} nor {@link #graphState}: those nodes are not
-   * pending work. They are already in the graph on disk, a rebuild does not remove them - a Vamana build orphans a
-   * fresh set - and treating them as mutations would make an index whose last build orphaned one node rebuild
-   * itself on every open, and {@code flush()} rebuild on every close. The identical reasoning, and the identical
-   * pair of consequences, is spelled out where {@code buildGraphFromScratchExclusively} makes the same re-queue at
-   * the end of a build. The cost of leaving the state alone is that these entries are scanned by every query until
-   * some real mutation triggers a rebuild, which is the same cost the building session paid.
+   * Returned rather than appended, and therefore called BEFORE the caller publishes the graph: appending is the only
+   * part that needs {@link #lock}'s write lock, and doing it in the same write lock that publishes the graph is what
+   * keeps a search from ever seeing that graph without the entries which complete it.
+   * <p>
+   * The caller must append these with {@link #appendToDeltaBuffer(List)} and touch neither
+   * {@code mutationsSinceSerialize} nor {@link #graphState} on their account: those nodes are not pending work. They
+   * are already in the graph on disk, a rebuild does not remove them - a Vamana build orphans a fresh set - and
+   * treating them as mutations would make an index whose last build orphaned one node rebuild itself on every open,
+   * and {@code flush()} rebuild on every close. The identical reasoning, and the identical pair of consequences, is
+   * spelled out where {@code buildGraphFromScratchExclusively} makes the same re-queue at the end of a build. The
+   * cost of leaving the state alone is that these entries are scanned by every query until some real mutation
+   * triggers a rebuild, which is the same cost the building session paid.
    * <p>
    * Called while holding {@link #graphBuildLock} (both call sites do) and NOT {@link #lock}'s write lock, which the
    * per-vector read it performs must not run under.
@@ -2171,11 +2189,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param liveOrdinalToVectorId the live ordinal &rarr; vector id array those ordinals index into
    * @param graphNodes            how many leading entries of that array the graph covers
    * @param vectorProp            the vector property name, for the document-read fallback
+   *
+   * @return the entries to append; empty when there is nothing to re-queue
    */
-  private void requeueUnreachableVectors(final int[] unreachableOrdinals, final int[] liveOrdinalToVectorId,
-      final int graphNodes, final String vectorProp) {
+  private List<DeltaVectorEntry> readUnreachableEntries(final int[] unreachableOrdinals,
+      final int[] liveOrdinalToVectorId, final int graphNodes, final String vectorProp) {
     if (unreachableOrdinals == null || unreachableOrdinals.length == 0)
-      return;
+      return List.of();
 
     final IntHashSet alreadyQueued;
     lock.readLock().lock();
@@ -2187,24 +2207,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.readLock().unlock();
     }
 
-    final List<DeltaVectorEntry> entries = readDeltaEntriesFor(
+    return readDeltaEntriesFor(
         unreachableVectorIdsOf(unreachableOrdinals, liveOrdinalToVectorId, graphNodes, alreadyQueued), vectorProp);
-    if (entries.isEmpty())
-      return;
-
-    final int queued;
-    lock.writeLock().lock();
-    try {
-      queued = appendToDeltaBuffer(entries);
-    } finally {
-      lock.writeLock().unlock();
-    }
-
-    if (queued > 0)
-      LogManager.instance().log(this, Level.INFO,
-          "Queued %d of %d vector(s) the persisted graph of index %s leaves unreachable into the delta scan, which "
-              + "is the only way a search can return them (issue #7190)", queued, unreachableOrdinals.length,
-          indexName);
   }
 
   /**
@@ -4202,6 +4206,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * true - without saying it is evictable; the gate now asks how much of it must be given up and gives that up
    * before admitting, rather than counting it as free and hoping.
    * <p>
+   * <b>Two indexes do not normally race each other through this gate</b>, which is why the reclaimable figure can be
+   * read as a plain snapshot: {@link #startAsyncGraphRebuild()}'s thread calls this while HOLDING the JVM-wide
+   * {@code REBUILD_SEMAPHORE} permit, so at its default of one permit no other index is inside this method deciding
+   * against the same process-wide page cache. Widen that semaphore and two rebuilds could each be admitted on bytes
+   * only one of them gets - which is what the "did the cache actually give up what it was asked for" check below
+   * exists for, and past that the {@link OutOfMemoryError} handler and the deferral cooldown.
+   * <p>
    * Package-private so tests can drive the decision directly rather than through a background thread.
    *
    * @return true to proceed with the rebuild
@@ -4243,13 +4254,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // from disk as they are needed again, which is a cost paid in I/O by whoever touches them - against a rebuild
       // that stops every query paying a linear delta scan.
       final long freed = pageManager.reclaimReadCacheRAM(reclaimNeeded);
+      if (freed >= reclaimNeeded) {
+        LogManager.instance().log(this, Level.INFO,
+            "Freed %d MB of the %d MB page read cache so the graph rebuild of vector index %s (about %d MB for %d "
+                + "nodes) fits the %d MB of available heap that %s allows it. Those pages are read back from disk on "
+                + "demand, and the cache is process-wide, so some of them may belong to another database",
+            freed / (1024 * 1024), reclaimable / (1024 * 1024), indexName, estimate / (1024 * 1024), nodes,
+            availableHeap / (1024 * 1024), GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey());
+        return true;
+      }
+
+      // The cache was smaller by the time it was asked than when it was measured a moment earlier - it shrank on its
+      // own, or something else reclaimed from the same process-wide LRU first. The admission was conditional on
+      // getting those bytes, so not getting them means declining, not proceeding and relying on the
+      // OutOfMemoryError handler this gate exists to keep out of the picture.
       LogManager.instance().log(this, Level.INFO,
-          "Freed %d MB of the %d MB page read cache so the graph rebuild of vector index %s (about %d MB for %d "
-              + "nodes) fits the %d MB of available heap that %s allows it. Those pages are read back from disk on "
-              + "demand, and the cache is process-wide, so some of them may belong to another database",
-          freed / (1024 * 1024), reclaimable / (1024 * 1024), indexName, estimate / (1024 * 1024), nodes,
-          availableHeap / (1024 * 1024), GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey());
-      return true;
+          "The page read cache of index %s gave up %d MB of the %d MB the graph rebuild needed, so the rebuild is "
+              + "deferred rather than attempted on heap it was not actually given",
+          indexName, freed / (1024 * 1024), reclaimNeeded / (1024 * 1024));
     }
 
     metrics.incrementRebuildsDeferredForMemory();
