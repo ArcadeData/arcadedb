@@ -223,6 +223,118 @@ class GraphImporterArrayPropsTest {
     });
   }
 
+
+  /**
+   * A vertex-defined edge and an edge source can declare the same edge type between the same vertex
+   * types. Only the edge source contributes properties, so sharing one collector would index its
+   * property buffers against a {@code srcIdx} that already holds the vertex-derived edges: the
+   * source's values would land on those edges and the flush would then run off the end of the
+   * buffer. Each edge source gets a collector of its own.
+   */
+  @Test
+  void edgeSourceSharingATypeWithVertexDefinedEdgesKeepsItsPropertiesAligned() throws Exception {
+    final String json = """
+        {
+          "vertices": [
+            {
+              "type": "Node",
+              "file": "importer-edge-align-nodes.jsonl",
+              "id": "id",
+              "properties": { "name": "name" },
+              "edges": [ { "attribute": "ref", "edge": "RelatedTo", "target": "Node" } ]
+            }
+          ],
+          "edgeSources": [
+            {
+              "edge": "RelatedTo",
+              "file": "importer-edge-align-edges.jsonl",
+              "from": "from:Node",
+              "to": "to:Node",
+              "properties": { "kind": "kind", "weights": "vector:weights" }
+            }
+          ]
+        }
+        """;
+
+    final JSONObject config = new JSONObject(json);
+    GraphImporter.createSchemaFromConfig(database, config);
+
+    try (final GraphImporter importer = GraphImporter.fromJSON(database, config, RESOURCE_DIR)) {
+      importer.run();
+      // 2 from the vertex source (A->B, B->C) plus 1 from the edge source (C->A)
+      assertThat(importer.getEdgeCount()).isEqualTo(3);
+    }
+
+    database.transaction(() -> {
+      // exactly one edge carries the edge-source properties, and it is the one the edge source declared
+      try (final ResultSet rs = database.query("sql", "SELECT FROM RelatedTo")) {
+        int withProps = 0;
+        while (rs.hasNext()) {
+          final Edge e = rs.next().getEdge().get();
+          if (e.getString("kind") != null) {
+            withProps++;
+            assertThat(e.getOutVertex().getString("name")).isEqualTo("C");
+            assertThat(e.getInVertex().getString("name")).isEqualTo("A");
+            assertThat(e.getString("kind")).isEqualTo("extra");
+            assertThat((float[]) e.get("weights")).containsExactly(0.5f, 0.25f);
+          } else {
+            assertThat(e.get("weights")).isNull();
+          }
+        }
+        assertThat(withProps).isEqualTo(1);
+      }
+    });
+  }
+
+  /**
+   * {@code listProperty} has the same textual fallback as {@code floatArrayProperty} on a source
+   * with no native array representation.
+   */
+  @Test
+  void importListFromTextualFormOnCsv() throws Exception {
+    database.transaction(() -> database.getSchema().createVertexType("Place"));
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Place", new CsvRowSource(RESOURCE_DIR + "/importer-lists.csv", ';', 0), v -> {
+          v.id("Id");
+          v.property("name", "Name");
+          v.listProperty("tags", "Tags");
+        })
+        .build()) {
+
+      importer.run();
+      assertThat(importer.getVertexCount()).isEqualTo(2);
+    }
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Place WHERE name = 'Alpha'")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat((List<Object>) rs.next().getVertex().get().get("tags")).containsExactly("red", "green");
+      }
+    });
+  }
+
+  /**
+   * A scalar declared as a list fails the same way one declared as a vector does.
+   */
+  @Test
+  void scalarDeclaredAsListFailsWithAClearMessage() {
+    database.transaction(() -> database.getSchema().createVertexType("Book"));
+
+    assertThatThrownBy(() -> {
+      try (final GraphImporter importer = GraphImporter.builder(database)
+          .vertex("Book", JsonlRowSource.from(RESOURCE_DIR, "importer-embeddings.jsonl"), v -> {
+            v.id("id");
+            v.listProperty("tags", "title");
+          })
+          .build()) {
+        importer.run();
+      }
+    }).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("tags")
+        .hasMessageContaining("title");
+  }
+
   /**
    * Sources with no native array representation fall back to parsing the textual form, so a
    * {@code "[0.1,0.2]"} column round-trips into the same {@code float[]}.
