@@ -28,6 +28,7 @@ import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
@@ -37,6 +38,7 @@ import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -742,8 +744,8 @@ public class GraphImporter implements AutoCloseable {
     }
 
     // Process edge-only sources
-    for (final EdgeSourceDef esd : edgeSources)
-      processEdgeSource(esd);
+    for (int i = 0; i < edgeSources.size(); i++)
+      processEdgeSource(edgeSources.get(i), i);
 
     // Free ID maps (edges now use internal indices)
     for (final TypeState ts : typeStates.values()) {
@@ -986,7 +988,7 @@ public class GraphImporter implements AutoCloseable {
   //  Pass 1: Process edge-only sources
   // ═══════════════════════════════════════════════════════════════════
 
-  private void processEdgeSource(final EdgeSourceDef esd) throws Exception {
+  private void processEdgeSource(final EdgeSourceDef esd, final int sourceIndex) throws Exception {
     final long t = System.currentTimeMillis();
     final EdgeSourceConfig cfg = esd.config;
     final TypeState fromTs = typeStates.get(cfg.fromVertexType);
@@ -994,7 +996,14 @@ public class GraphImporter implements AutoCloseable {
     if (fromTs == null || toTs == null)
       return;
 
-    final EdgeCollector ec = getOrCreateEdgeCollector(cfg.edgeType, cfg.fromVertexType, cfg.toVertexType);
+    // Own collector per edge source, never the one vertex-derived edges of the same type and
+    // endpoints share. A collector's property buffers are indexed by the collector-wide edge index,
+    // and only an edge source contributes properties: sharing would start its buffers at index 0
+    // against a srcIdx that already holds the vertex-derived rows, silently assigning this source's
+    // values to those edges and then running off the end of the buffer. Two edge sources declaring
+    // the same edge type with different property sets would collide the same way
+    final EdgeCollector ec = getOrCreateEdgeCollector(cfg.edgeType, cfg.fromVertexType, cfg.toVertexType,
+        "src" + sourceIndex);
     final int[] count = {0};
 
     esd.source.forEach(record -> {
@@ -1085,9 +1094,18 @@ public class GraphImporter implements AutoCloseable {
   // ═══════════════════════════════════════════════════════════════════
 
   private EdgeCollector getOrCreateEdgeCollector(final String edgeType, final String srcType, final String dstType) {
-    // Key by (edgeType, srcType, dstType) — same edge type can connect different vertex type pairs
-    // (e.g. POSTED: User→Question and POSTED: User→Answer)
-    final String key = edgeType + "|" + srcType + "|" + dstType;
+    return getOrCreateEdgeCollector(edgeType, srcType, dstType, "");
+  }
+
+  /**
+   * Key by (edgeType, srcType, dstType) — the same edge type can connect different vertex type pairs
+   * (e.g. POSTED: User→Question and POSTED: User→Answer) — plus a discriminator that keeps each edge
+   * source's rows in a collector of its own. Vertex-derived edges carry no properties, so they all
+   * share the empty discriminator.
+   */
+  private EdgeCollector getOrCreateEdgeCollector(final String edgeType, final String srcType, final String dstType,
+                                                 final String discriminator) {
+    final String key = edgeType + "|" + srcType + "|" + dstType + (discriminator.isEmpty() ? "" : "|" + discriminator);
     return edgeCollectors.computeIfAbsent(key, k -> new EdgeCollector(edgeType, srcType, dstType));
   }
 
@@ -1107,9 +1125,11 @@ public class GraphImporter implements AutoCloseable {
     case BOOLEAN:
       return "True".equalsIgnoreCase(record.get(pd.attribute));
     case FLOAT_ARRAY:
+      // Only the two exceptions a bad value produces, so an unrelated bug inside a custom
+      // RecordReader still surfaces as itself instead of being relabelled as a bad vector
       try {
         return record.getFloatArray(pd.attribute);
-      } catch (final RuntimeException e) {
+      } catch (final IllegalArgumentException | JSONException e) {
         throw new IllegalArgumentException(
             "Property '" + pd.name + "' is declared as a vector but attribute '" + pd.attribute
                 + "' does not hold a numeric array (" + e.getMessage() + ")", e);
@@ -1117,7 +1137,7 @@ public class GraphImporter implements AutoCloseable {
     case LIST:
       try {
         return record.getList(pd.attribute);
-      } catch (final RuntimeException e) {
+      } catch (final IllegalArgumentException | JSONException e) {
         throw new IllegalArgumentException(
             "Property '" + pd.name + "' is declared as a list but attribute '" + pd.attribute
                 + "' does not hold an array (" + e.getMessage() + ")", e);
@@ -1131,7 +1151,13 @@ public class GraphImporter implements AutoCloseable {
       final DateTimeFormatter fmt = pd.datetimeFormat != null
           ? DateUtils.getFormatter(pd.datetimeFormat)
           : DEFAULT_DATETIME_FMT;
-      return LocalDateTime.parse(v, fmt);
+      try {
+        return LocalDateTime.parse(v, fmt);
+      } catch (final DateTimeParseException e) {
+        throw new IllegalArgumentException(
+            "Property '" + pd.name + "' is declared as a datetime but attribute '" + pd.attribute
+                + "' does not hold one (" + e.getMessage() + ")", e);
+      }
     }
     default:
       return record.get(pd.attribute);
