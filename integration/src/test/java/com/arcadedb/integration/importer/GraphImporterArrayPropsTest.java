@@ -20,6 +20,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.integration.importer.graph.CsvRowSource;
@@ -34,6 +35,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -148,6 +150,75 @@ class GraphImporterArrayPropsTest {
         assertThat((float[]) v.get("embedding"))
             .containsExactly(0.11142f, -0.21346f, 0.72326f, 0.19451f, -0.17215f);
         assertThat((List<Object>) v.get("tags")).containsExactly("scifi");
+      }
+    });
+  }
+
+
+  /**
+   * Edge-source properties go through the same reader as vertex properties, so a {@code vector:} or
+   * {@code list:} spec means the same thing on an edge. Before the property builders were unified,
+   * an edge source parsed only int/long/double and silently dropped every other spec.
+   */
+  @Test
+  void importEdgeSourcePropertiesOfEveryType() throws Exception {
+    final String json = """
+        {
+          "vertices": [
+            {
+              "type": "Book",
+              "file": "importer-embeddings.jsonl",
+              "id": "id",
+              "properties": { "title": "title" }
+            }
+          ],
+          "edgeSources": [
+            {
+              "edge": "RelatedTo",
+              "file": "importer-edge-props.jsonl",
+              "from": "from:Book",
+              "to": "to:Book",
+              "properties": {
+                "kind": "kind",
+                "active": "bool:active",
+                "score": "int:score",
+                "weights": "vector:weights",
+                "labels": "list:labels",
+                "since": "datetime:since"
+              }
+            }
+          ]
+        }
+        """;
+
+    final JSONObject config = new JSONObject(json);
+    GraphImporter.createSchemaFromConfig(database, config);
+
+    try (final GraphImporter importer = GraphImporter.fromJSON(database, config, RESOURCE_DIR)) {
+      importer.run();
+      assertThat(importer.getEdgeCount()).isEqualTo(2);
+    }
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM RelatedTo WHERE kind = 'similar'")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Edge e = rs.next().getEdge().get();
+        assertThat(e.getBoolean("active")).isTrue();
+        assertThat(e.getInteger("score")).isEqualTo(7);
+        assertThat((float[]) e.get("weights")).containsExactly(0.5f, 0.25f, 0.125f);
+        assertThat((List<Object>) e.get("labels")).containsExactly("a", "b");
+        assertThat(e.getLocalDateTime("since")).isEqualTo(LocalDateTime.of(2023, 1, 15, 8, 30, 0));
+      }
+    });
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM RelatedTo WHERE kind = 'cites'")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Edge e = rs.next().getEdge().get();
+        assertThat(e.getBoolean("active")).isFalse();
+        assertThat((float[]) e.get("weights")).containsExactly(1f, 2f, 3f);
+        assertThat((List<Object>) e.get("labels")).isEmpty();
+        assertThat(e.getLocalDateTime("since")).isEqualTo(LocalDateTime.of(2024, 6, 20, 14, 45, 30));
       }
     });
   }

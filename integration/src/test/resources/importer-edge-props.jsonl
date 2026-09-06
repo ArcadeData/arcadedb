@@ -1,0 +1,2 @@
+{"from": 1, "to": 2, "kind": "similar", "active": "True", "weights": [0.5, 0.25, 0.125], "labels": ["a", "b"], "score": 7, "since": "2023-01-15 08:30:00"}
+{"from": 2, "to": 3, "kind": "cites", "active": "False", "weights": [1, 2, 3], "labels": [], "score": 9, "since": "2024-06-20 14:45:30"}
