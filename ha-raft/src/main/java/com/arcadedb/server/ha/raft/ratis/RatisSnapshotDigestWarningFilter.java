@@ -64,6 +64,14 @@ import java.util.logging.Logger;
  *       different one.</li>
  * </ul>
  *
+ * <p>What it does <em>not</em> depend on is install ordering against
+ * {@code DefaultLogger.init()}, which reconfigures JUL once per JVM through
+ * {@code LogManager.readConfiguration()}. That call resets each known logger's <b>level</b> (to
+ * {@code null}, i.e. inherit) and removes its <b>handlers</b>, but it does not clear filters - verified
+ * on this JDK - so a filter installed before it survives. The level reset is harmless here: the parent
+ * {@code org.apache.ratis} logger is pinned to {@code WARNING} by
+ * {@code RaftHAServer.start()} and this logger inherits from it.
+ *
  * @see com.arcadedb.server.ha.raft.ArcadeStateMachine
  */
 public final class RatisSnapshotDigestWarningFilter implements Filter {

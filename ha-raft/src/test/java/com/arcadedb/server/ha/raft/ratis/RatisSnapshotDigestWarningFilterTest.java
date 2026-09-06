@@ -26,6 +26,7 @@ import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.storage.RaftStorage;
+import org.apache.ratis.statemachine.SnapshotRetentionPolicy;
 import org.apache.ratis.statemachine.impl.SimpleStateMachineStorage;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -144,6 +145,28 @@ class RatisSnapshotDigestWarningFilterTest {
 
     registerMarkerAt(sm, 1L, 7293L);
     registerMarkerAt(sm, 1L, 7400L);
+
+    assertThat(handler.messagesContaining(MISSING_DIGEST_TEXT)).isEmpty();
+  }
+
+  /**
+   * The second call site is Ratis's own: {@code StateMachineUpdater.takeSnapshot()} calls
+   * {@code cleanupOldSnapshots(snapshotRetentionPolicy)} straight after the state machine's
+   * {@code takeSnapshot()}, with no ArcadeDB code in between. The filter is scoped to the logger rather
+   * than to a call site, so that path is covered too - this pins it.
+   */
+  @Test
+  void theRatisInitiatedCleanupIsSuppressedToo(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = initializedStateMachine(tempDir);
+    registerMarkerAt(sm, 1L, 7293L);
+
+    // Exactly what StateMachineUpdater.takeSnapshot() invokes.
+    sm.getStateMachineStorage().cleanupOldSnapshots(new SnapshotRetentionPolicy() {
+      @Override
+      public int getNumSnapshotsRetained() {
+        return 1;
+      }
+    });
 
     assertThat(handler.messagesContaining(MISSING_DIGEST_TEXT)).isEmpty();
   }
