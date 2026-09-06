@@ -699,7 +699,7 @@ public class GraphImporter implements AutoCloseable {
      * <p>
      * {@code float[]} rather than {@code List<Double>} is deliberate: a 768-dimension embedding
      * costs ~3KB as {@code float[]} against ~18KB as boxed doubles, and it is the exact
-     * representation {@link com.arcadedb.index.vector.VectorUtils#toFloatArray(Object)} hands to a
+     * representation {@link VectorUtils#toFloatArray(Object)} hands to a
      * vector index, so indexing the imported property converts nothing.
      */
     default float[] getFloatArray(final String attribute) {
@@ -1019,17 +1019,17 @@ public class GraphImporter implements AutoCloseable {
           case INTEGER:
             if (ec.intProps == null)
               ec.intProps = new HashMap<>();
-            ec.intProps.computeIfAbsent(pd.name, k -> new IntList(100_000)).add(record.getInt(pd.attribute));
+            ec.intProps.computeIfAbsent(pd.name, k -> new IntList(100_000)).add(readInt(record, pd));
             break;
           case LONG:
             if (ec.longProps == null)
               ec.longProps = new HashMap<>();
-            ec.longProps.computeIfAbsent(pd.name, k -> new ArrayList<>(100_000)).add(record.getLong(pd.attribute));
+            ec.longProps.computeIfAbsent(pd.name, k -> new ArrayList<>(100_000)).add(readLong(record, pd));
             break;
           case DOUBLE:
             if (ec.doubleProps == null)
               ec.doubleProps = new HashMap<>();
-            ec.doubleProps.computeIfAbsent(pd.name, k -> new DoubleList(100_000)).add(record.getDouble(pd.attribute));
+            ec.doubleProps.computeIfAbsent(pd.name, k -> new DoubleList(100_000)).add(readDouble(record, pd));
             break;
           default:
             // STRING, BOOLEAN, DATETIME, FLOAT_ARRAY and LIST all go through the same reader
@@ -1102,6 +1102,9 @@ public class GraphImporter implements AutoCloseable {
    * (e.g. POSTED: User→Question and POSTED: User→Answer) — plus a discriminator that keeps each edge
    * source's rows in a collector of its own. Vertex-derived edges carry no properties, so they all
    * share the empty discriminator.
+   * <p>
+   * The parts are joined with a pipe, which a schema type name cannot contain, so two different
+   * triples cannot collide on one key.
    */
   private EdgeCollector getOrCreateEdgeCollector(final String edgeType, final String srcType, final String dstType,
                                                  final String discriminator) {
@@ -1117,30 +1120,25 @@ public class GraphImporter implements AutoCloseable {
   private static Object readProperty(final RecordReader record, final PropDef pd) {
     switch (pd.type) {
     case INTEGER:
-      return record.getInt(pd.attribute);
+      return readInt(record, pd);
     case LONG:
-      return record.getLong(pd.attribute);
+      return readLong(record, pd);
     case DOUBLE:
-      return record.getDouble(pd.attribute);
+      return readDouble(record, pd);
     case BOOLEAN:
+      // get() returns a String, so there is no format to get wrong: anything but "True" is false
       return "True".equalsIgnoreCase(record.get(pd.attribute));
     case FLOAT_ARRAY:
-      // Only the two exceptions a bad value produces, so an unrelated bug inside a custom
-      // RecordReader still surfaces as itself instead of being relabelled as a bad vector
       try {
         return record.getFloatArray(pd.attribute);
       } catch (final IllegalArgumentException | JSONException e) {
-        throw new IllegalArgumentException(
-            "Property '" + pd.name + "' is declared as a vector but attribute '" + pd.attribute
-                + "' does not hold a numeric array (" + e.getMessage() + ")", e);
+        throw badValue(pd, "a vector", "a numeric array", e);
       }
     case LIST:
       try {
         return record.getList(pd.attribute);
       } catch (final IllegalArgumentException | JSONException e) {
-        throw new IllegalArgumentException(
-            "Property '" + pd.name + "' is declared as a list but attribute '" + pd.attribute
-                + "' does not hold an array (" + e.getMessage() + ")", e);
+        throw badValue(pd, "a list", "an array", e);
       }
     case DATETIME: {
       final String v = record.get(pd.attribute);
@@ -1154,14 +1152,52 @@ public class GraphImporter implements AutoCloseable {
       try {
         return LocalDateTime.parse(v, fmt);
       } catch (final DateTimeParseException e) {
-        throw new IllegalArgumentException(
-            "Property '" + pd.name + "' is declared as a datetime but attribute '" + pd.attribute
-                + "' does not hold one (" + e.getMessage() + ")", e);
+        throw badValue(pd, "a datetime", "one", e);
       }
     }
     default:
       return record.get(pd.attribute);
     }
+  }
+
+  // The numeric readers return primitives, so an edge source can fill its primitive buffers without
+  // boxing every value through readProperty, and still report a bad value the same way.
+
+  private static int readInt(final RecordReader record, final PropDef pd) {
+    try {
+      return record.getInt(pd.attribute);
+    } catch (final IllegalArgumentException | JSONException e) {
+      throw badValue(pd, "an integer", "one", e);
+    }
+  }
+
+  private static long readLong(final RecordReader record, final PropDef pd) {
+    try {
+      return record.getLong(pd.attribute);
+    } catch (final IllegalArgumentException | JSONException e) {
+      throw badValue(pd, "a long", "one", e);
+    }
+  }
+
+  private static double readDouble(final RecordReader record, final PropDef pd) {
+    try {
+      return record.getDouble(pd.attribute);
+    } catch (final IllegalArgumentException | JSONException e) {
+      throw badValue(pd, "a double", "one", e);
+    }
+  }
+
+  /**
+   * Names the property and the source attribute, so a bad value in a bulk load says which mapping to
+   * look at instead of surfacing as a bare NumberFormatException or JSONException from inside the
+   * row loop. Only the exceptions a bad value actually produces are caught at the call sites, so an
+   * unrelated bug inside a custom {@link RecordReader} still surfaces as itself.
+   */
+  private static IllegalArgumentException badValue(final PropDef pd, final String declaredAs, final String expected,
+                                                   final Exception cause) {
+    return new IllegalArgumentException(
+        "Property '" + pd.name + "' is declared as " + declaredAs + " but attribute '" + pd.attribute
+            + "' does not hold " + expected + " (" + cause.getMessage() + ")", cause);
   }
 
   private long countEdgeRefs() {

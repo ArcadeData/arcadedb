@@ -335,6 +335,52 @@ class GraphImporterArrayPropsTest {
         .hasMessageContaining("title");
   }
 
+
+  /**
+   * A bad element inside the array reaches the same message as a whole attribute that is not an
+   * array, though it arrives by a different exception path.
+   */
+  @Test
+  void nonNumericElementInsideAVectorFailsWithAClearMessage() {
+    database.transaction(() -> database.getSchema().createVertexType("Book"));
+
+    for (final String file : new String[] { "importer-bad-vector.jsonl", "importer-null-in-vector.jsonl" })
+      assertThatThrownBy(() -> {
+        try (final GraphImporter importer = GraphImporter.builder(database)
+            .vertex("Book", JsonlRowSource.from(RESOURCE_DIR, file), v -> {
+              v.id("id");
+              v.floatArrayProperty("embedding", "embedding");
+            })
+            .build()) {
+          importer.run();
+        }
+      }).as(file)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("embedding");
+  }
+
+  /**
+   * A number that does not parse names its mapping too, rather than surfacing as a bare
+   * NumberFormatException from inside the row loop.
+   */
+  @Test
+  void scalarDeclaredAsIntFailsWithAClearMessage() {
+    database.transaction(() -> database.getSchema().createVertexType("Book"));
+
+    assertThatThrownBy(() -> {
+      try (final GraphImporter importer = GraphImporter.builder(database)
+          .vertex("Book", JsonlRowSource.from(RESOURCE_DIR, "importer-embeddings.jsonl"), v -> {
+            v.id("id");
+            v.intProperty("year", "title");
+          })
+          .build()) {
+        importer.run();
+      }
+    }).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("year")
+        .hasMessageContaining("title");
+  }
+
   /**
    * Sources with no native array representation fall back to parsing the textual form, so a
    * {@code "[0.1,0.2]"} column round-trips into the same {@code float[]}.
