@@ -26,6 +26,7 @@ import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.integration.importer.graph.CsvRowSource;
 import com.arcadedb.integration.importer.graph.GraphImporter;
 import com.arcadedb.integration.importer.graph.JsonlRowSource;
+import com.arcadedb.integration.importer.graph.XmlRowSource;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
@@ -403,6 +404,68 @@ class GraphImporterArrayPropsTest {
     }).isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("embedding")
         .hasMessageContaining("delimiter");
+  }
+
+
+  /**
+   * The other half of the same split: a fragment that closes an array it never opened.
+   */
+  @Test
+  void arrayFragmentThatNeverOpenedSaysSo() {
+    database.transaction(() -> database.getSchema().createVertexType("Place"));
+
+    assertThatThrownBy(() -> {
+      try (final GraphImporter importer = GraphImporter.builder(database)
+          .vertex("Place", new CsvRowSource(RESOURCE_DIR + "/importer-array-tail.csv", ';', 0), v -> {
+            v.id("Id");
+            v.floatArrayProperty("embedding", "Tail");
+          })
+          .build()) {
+        importer.run();
+      }
+    }).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("never opened")
+        .hasMessageContaining("delimiter");
+  }
+
+  /**
+   * XML is the third source format sharing the textual fallback, and an attribute value holds the
+   * array's commas without any delimiter to collide with.
+   */
+  @Test
+  void importVectorAndListFromXml() throws Exception {
+    database.transaction(() -> database.getSchema().createVertexType("Place"));
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Place", XmlRowSource.from(RESOURCE_DIR, "importer-embeddings.xml"), v -> {
+          v.id("Id");
+          v.property("name", "Name");
+          v.floatArrayProperty("embedding", "Embedding");
+          v.listProperty("tags", "Tags");
+        })
+        .build()) {
+
+      importer.run();
+      assertThat(importer.getVertexCount()).isEqualTo(2);
+    }
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Place WHERE name = 'Alpha'")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Vertex v = rs.next().getVertex().get();
+        assertThat((float[]) v.get("embedding")).containsExactly(-0.31142f, 0.51346f, -0.02326f);
+        assertThat((List<Object>) v.get("tags")).containsExactly("red", "green");
+      }
+    });
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Place WHERE name = 'Beta'")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Vertex v = rs.next().getVertex().get();
+        assertThat((float[]) v.get("embedding")).containsExactly(0.5f, 0.25f, 0.125f);
+        assertThat((List<Object>) v.get("tags")).isEmpty();
+      }
+    });
   }
 
   /**
