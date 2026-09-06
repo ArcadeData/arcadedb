@@ -520,25 +520,50 @@ class PostgresCatalogTest {
 
   @Test
   void aPgTypeFilterThisCatalogCannotReadDeclinesRatherThanAnsweringEveryType() {
-    // psycopg looks a type up by name to decide whether the server has it, and casts to ::regtype to do so.
     // The permissive-WHERE rule - an unreadable predicate does not get to remove rows - is right for every
     // other relation here, because their rows are the user's own types and such a predicate can only be
     // excluding rows this catalog never produced. pg_type is a fixed set of built-in types where a filter
     // selects a real subset, so keeping every row answers "all 23 types" to "the one named hstore", and
     // psycopg fails outright with "found 23 different types named hstore" rather than concluding it is
     // absent. An unanswerable filter over pg_type has to decline.
-    assertThat(resolveRaw(PSYCOPG_TYPE_LOOKUP)).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("SELECT typname, oid FROM pg_type t WHERE t.typname = pg_catalog.quote_ident('hstore')"))
+        .isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  @Test
+  void aPgTypeFilterThatWillNotEvenParseDeclinesToo() {
+    // Parsing and evaluating are two ways to fail to read the same predicate, and only the second used to
+    // decline: a WHERE written with a construct the expression parser does not implement - a scalar
+    // sub-query here - left the parse result null, which the caller read as "no filter" and answered every
+    // type with. The two have to be treated alike (issue #7180).
+    assertThat(resolveRaw("SELECT typname FROM pg_type t WHERE t.oid = (SELECT 1 FROM pg_type LIMIT 1)"))
+        .isSameAs(PostgresCatalog.DECLINED);
+
+    // The same shape over a relation whose rows are the user's own types is still answered permissively.
+    assertThat(names(resolve("SELECT relname FROM pg_class WHERE oid = (SELECT 1 FROM pg_class LIMIT 1)").rows,
+        "relname")).containsExactly("Article", "Author");
   }
 
   /**
    * psycopg's {@code TypeInfo.fetch}, verbatim from {@code psycopg/_typeinfo.py}, with its {@code %(name)s}
-   * parameter bound. {@code to_regtype()} is a function this catalog does not implement, so the whole
-   * predicate evaluates to UNKNOWN - which is exactly the case the permissive-WHERE rule used to wave
-   * through, and pg_type is the one relation where waving it through fabricates an answer.
+   * parameter bound.
    */
   private static final String PSYCOPG_TYPE_LOOKUP =
       "SELECT typname AS name, oid, typarray AS array_oid, oid::regtype::text AS regtype, typdelim AS delimiter "
-          + "FROM pg_type t WHERE t.oid = to_regtype('hstore'::text) ORDER BY t.oid";
+          + "FROM pg_type t WHERE t.oid = to_regtype(%s) ORDER BY t.oid";
+
+  @Test
+  void psycopgsTypeLookupAnswersWhetherThisProtocolHasThatType() {
+    // to_regtype() is the whole predicate of psycopg's lookup, so until it was read the query could only be
+    // declined (issue #7180). Now it is answered the way PostgreSQL answers it: NULL for a type the server
+    // does not have, which makes the equality false and the lookup correctly conclude "absent".
+    assertThat(resolve(PSYCOPG_TYPE_LOOKUP.formatted("'hstore'::text")).rows).isEmpty();
+
+    final PostgresCatalog.Answer present = resolve(PSYCOPG_TYPE_LOOKUP.formatted("'int4'::text"));
+    assertThat(names(present.rows, "name")).containsExactly("int4");
+    assertThat(present.rows.get(0)).containsEntry("regtype", "int4")
+        .containsEntry("array_oid", PostgresType.ARRAY_INT.code);
+  }
 
   @Test
   void wrappingPgTypeInASubSelectDoesNotGetThePermissiveFilterBack() {
@@ -546,7 +571,7 @@ class PostgresCatalogTest {
     // reads the same closed set of types, so a sub-select must not become the way back to "an unreadable
     // predicate keeps every row" - which is the hole that answered psycopg with all 23 types.
     assertThat(resolveRaw("SELECT * FROM (SELECT oid, typname FROM pg_type) t "
-        + "WHERE t.oid = to_regtype('hstore'::text)")).isSameAs(PostgresCatalog.DECLINED);
+        + "WHERE t.typname = pg_catalog.quote_ident('hstore')")).isSameAs(PostgresCatalog.DECLINED);
 
     // A readable outer filter over the same sub-select still answers, so the strictness has not become a
     // blanket refusal of derived tables over pg_type.
@@ -597,6 +622,92 @@ class PostgresCatalogTest {
     final PostgresCatalog.Answer answer = resolve(JDBC_GET_COLUMNS, "Article", "%");
 
     assertThat(names(answer.rows, "attname")).containsExactly("id", "title");
+  }
+
+  // ---------------------------------------------------------------- the ::regclass cast (issue #7180)
+
+  /**
+   * {@code PostgresConnection::GetTableSchema} as the Apache Arrow native ADBC driver writes it
+   * (arrow-adbc {@code c/driver/postgresql/connection.cc}, tag {@code apache-arrow-adbc-24}). It binds one
+   * text parameter: the table name after {@code PQescapeIdentifier}, so the double quotes are part of it.
+   */
+  private static final String ADBC_GET_TABLE_SCHEMA =
+      "SELECT attname, atttypid FROM pg_catalog.pg_class AS cls "
+          + " INNER JOIN pg_catalog.pg_attribute AS attr ON cls.oid = attr.attrelid "
+          + " INNER JOIN pg_catalog.pg_type AS typ ON attr.atttypid = typ.oid "
+          + " WHERE attr.attnum >= 0 AND cls.oid = $1::regclass::oid ORDER BY attr.attnum";
+
+  @Test
+  void theDriversTableSchemaQueryDescribesTheTypeItsRegclassCastNames() {
+    final PostgresCatalog.Answer answer = resolve(ADBC_GET_TABLE_SCHEMA, "\"Article\"");
+
+    assertThat(names(answer.rows, "attname")).containsExactly("id", "title");
+    assertThat(answer.rows.get(0).get("atttypid")).isEqualTo(PostgresType.INTEGER.code);
+    assertThat(answer.rows.get(1).get("atttypid")).isEqualTo(PostgresType.VARCHAR.code);
+  }
+
+  @Test
+  void anUnquotedRegclassNameStillFindsTheTypeThatIsSpelledWithCapitals() {
+    // PostgreSQL folds an unquoted name to lower case; ArcadeDB type names are case-sensitive, so a name
+    // that no type carries verbatim is matched ignoring case rather than answered with nothing.
+    assertThat(names(resolve(ADBC_GET_TABLE_SCHEMA, "article").rows, "attname")).containsExactly("id", "title");
+  }
+
+  @Test
+  void aSchemaQualifiedRegclassNameNamesTheSameType() {
+    assertThat(names(resolve(ADBC_GET_TABLE_SCHEMA, "public.\"Article\"").rows, "attname"))
+        .containsExactly("id", "title");
+  }
+
+  @Test
+  void aRegclassNameNoTypeCarriesSelectsNoRowRatherThanEveryRow() {
+    // The permissive-WHERE rule must not turn "describe the table that does not exist" into "describe every
+    // column of every table": the cast is read, so the equality is false rather than unreadable.
+    assertThat(resolve(ADBC_GET_TABLE_SCHEMA, "\"Missing\"").rows).isEmpty();
+  }
+
+  @Test
+  void regclassOnAnOidRendersTheRelationNameTheWayPostgreSqlPrintsIt() {
+    final PostgresCatalog.Answer answer = resolve(
+        "SELECT DISTINCT attrelid::regclass FROM pg_catalog.pg_attribute ORDER BY 1");
+
+    assertThat(answer.columns.keySet()).containsExactly("regclass");
+    assertThat(names(answer.rows, "regclass")).containsExactly("Article", "Author");
+  }
+
+  @Test
+  void regtypeNamesTheTypeOfAColumnAndResolvesATypeNameBackToItsOid() {
+    final PostgresCatalog.Answer named = resolve(
+        "SELECT attname, atttypid::regtype AS t FROM pg_catalog.pg_attribute WHERE attrelid = 'Author'::regclass");
+
+    assertThat(names(named.rows, "t")).containsExactly("varchar");
+
+    final PostgresCatalog.Answer filtered = resolve(
+        "SELECT attname FROM pg_catalog.pg_attribute WHERE atttypid = 'int4'::regtype");
+
+    assertThat(names(filtered.rows, "attname")).containsExactly("id");
+  }
+
+  @Test
+  void aRegclassNameTwoTypesAnswerToOnlyByCaseIsNotGuessedAt() {
+    database.transaction(() -> database.getSchema().createDocumentType("ARTICLE").createProperty("code", Type.STRING));
+
+    // "Article" and "ARTICLE" both fold to "article", and picking either would describe the wrong table. The
+    // exact spelling still resolves, because a quoted identifier means itself.
+    assertThat(resolve(ADBC_GET_TABLE_SCHEMA, "article").rows).isEmpty();
+    assertThat(names(resolve(ADBC_GET_TABLE_SCHEMA, "\"ARTICLE\"").rows, "attname")).containsExactly("code");
+    assertThat(names(resolve(ADBC_GET_TABLE_SCHEMA, "\"Article\"").rows, "attname")).containsExactly("id", "title");
+  }
+
+  @Test
+  void aRegclassCastOfANumericOidStringIsThatOid() {
+    // PostgreSQL's regclass input accepts an OID spelled as digits, and the driver's parameter arrives as
+    // text either way.
+    final PostgresCatalog.Answer byName = resolve(ADBC_GET_TABLE_SCHEMA, "\"Author\"");
+    final Object oid = resolve("SELECT oid FROM pg_catalog.pg_class WHERE relname = 'Author'").rows.get(0).get("oid");
+
+    assertThat(names(resolve(ADBC_GET_TABLE_SCHEMA, String.valueOf(oid)).rows, "attname"))
+        .isEqualTo(names(byName.rows, "attname"));
   }
 
   // ---------------------------------------------------------------- helpers

@@ -41,8 +41,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
@@ -97,6 +99,33 @@ public enum PostgresType {
 
   private static final Map<Integer, PostgresType> CODE_MAP = Arrays.stream(values())
       .collect(Collectors.toMap(type -> type.code, type -> type));
+
+  /**
+   * Every spelling a client may name a type by: its own {@code typname} plus the SQL-standard names
+   * PostgreSQL treats as aliases of it. Built once, because a by-name lookup is a per-query cost.
+   */
+  private static final Map<String, PostgresType> NAME_MAP = buildNameMap();
+
+  private static Map<String, PostgresType> buildNameMap() {
+    final Map<String, PostgresType> names = new HashMap<>();
+    for (final PostgresType type : values())
+      names.put(type.typeName, type);
+
+    names.put("smallint", SMALLINT);
+    names.put("int2", SMALLINT);
+    names.put("integer", INTEGER);
+    names.put("int", INTEGER);
+    names.put("bigint", LONG);
+    names.put("real", REAL);
+    names.put("double precision", DOUBLE);
+    names.put("boolean", BOOLEAN);
+    names.put("character varying", VARCHAR);
+    names.put("character", BPCHAR);
+    names.put("decimal", NUMERIC);
+    names.put("timestamp without time zone", TIMESTAMP);
+
+    return Map.copyOf(names);
+  }
 
   // PostgreSQL-compatible datetime format (ISO 8601 without 'T' separator)
   private static final String            POSTGRES_TIMESTAMP_FORMAT   = "yyyy-MM-dd HH:mm:ss.SSSSSS";
@@ -483,6 +512,18 @@ public enum PostgresType {
    */
   public static PostgresType byCode(final int code) {
     return CODE_MAP.get(code);
+  }
+
+  /**
+   * Returns the type carrying the given {@code typname}, or null when this protocol has no such type.
+   * <p>
+   * PostgreSQL accepts a type under two spellings - its catalog {@code typname} and, for the types the SQL
+   * standard names, that standard name - and a client writing {@code 'integer'::regtype} means the same type
+   * as one writing {@code 'int4'::regtype}. Both are answered here, so a lookup by name does not depend on
+   * which of the two the client happened to write.
+   */
+  public static PostgresType byName(final String name) {
+    return name == null ? null : NAME_MAP.get(name.trim().toLowerCase(Locale.ENGLISH));
   }
 
   /**

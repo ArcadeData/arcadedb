@@ -61,6 +61,10 @@ class PostgresCatalogExpressionTest {
       return switch (name) {
         case "current_schema", "current_database" -> "mydb";
         case "current_schemas" -> List.of("mydb");
+        // Stand-ins for the two OID-alias lookups, so that this test is about the cast reaching the
+        // resolver rather than about what PostgresCatalog then looks the name up in.
+        case "regclass" -> "Article".equals(arguments.get(0)) ? 1042 : null;
+        case "regtype" -> "looked-up-" + arguments.get(0);
         default -> PostgresCatalogExpression.UNKNOWN;
       };
     }
@@ -274,13 +278,30 @@ class PostgresCatalogExpressionTest {
 
   @Test
   void castsAreTransparentAndSubscriptsIndexFromOne() {
-    assertThat(evaluate("'pg_class'::regclass")).isEqualTo("pg_class");
     assertThat(evaluate("attnum::int4")).isEqualTo(3L);
     assertThat(evaluate("relname::character varying(10)")).isEqualTo("Article");
     assertThat(evaluate("relname::text[]")).isEqualTo("Article");
     assertThat(evaluate("(current_schemas(true))[1]")).isEqualTo("mydb");
     assertThat(evaluate("(current_schemas(true))[9]")).isNull();
     assertThat(evaluate("relname[1]")).isSameAs(PostgresCatalogExpression.UNKNOWN);
+  }
+
+  @Test
+  void aCastToAnOidAliasTypeIsALookupRatherThanATransparentCast() {
+    // regclass and regtype hold an OID and print as a name, so the cast is the lookup itself (issue #7180).
+    // Reading them as transparent made 'Article'::regclass the string "Article", and a client comparing that
+    // against pg_class.oid - which is how the Arrow ADBC driver asks for a table's columns - silently
+    // matched nothing. They reach the resolver as the function call they are.
+    assertThat(evaluate("'Article'::regclass")).isEqualTo(1042);
+    assertThat(evaluate("'Article'::regclass::oid")).as("::oid over a regclass stays transparent")
+        .isEqualTo(1042);
+    assertThat(evaluate("attnum::regtype")).isEqualTo("looked-up-3");
+    assertThat(evaluate("pg_catalog.regclass('Article')")).as("the schema a cast type is qualified by "
+        + "does not change which type it is").isEqualTo(1042);
+
+    // Anything more than a bare name is never an OID-alias type, so those stay transparent.
+    assertThat(evaluate("relname::regclass[]")).isEqualTo("Article");
+    assertThat(evaluate("relname::regclass(10)")).isEqualTo("Article");
   }
 
   @Test

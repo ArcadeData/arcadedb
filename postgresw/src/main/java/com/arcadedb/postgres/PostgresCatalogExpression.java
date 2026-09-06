@@ -21,6 +21,7 @@ package com.arcadedb.postgres;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -58,6 +59,16 @@ abstract class PostgresCatalogExpression {
 
   /** Distinguishes "this is not one of the scalar functions" from a scalar function that answered UNKNOWN. */
   private static final Object NOT_A_SCALAR_FUNCTION = new Object();
+
+  /**
+   * The cast target types that are a catalog lookup rather than a change of representation. PostgreSQL's
+   * OID-alias types hold an OID and print as the object's name, so a cast to one of them is the only place
+   * in a catalog query where {@code ::} carries meaning this evaluator has to reproduce.
+   */
+  private static final Set<String> LOOKUP_CASTS = Set.of("regclass", "regtype");
+
+  /** Stands for a cast type that is more than a bare name, and so is never one of {@link #LOOKUP_CASTS}. */
+  private static final String COMPOUND_CAST_TYPE = "";
 
   /** Supplies the column values of the row being evaluated, and the session values around it. */
   interface Resolver {
@@ -830,11 +841,18 @@ abstract class PostgresCatalogExpression {
         final PostgresCatalogToken token = peek();
 
         if (token != null && token.isSymbol("::")) {
-          // A cast never changes what a catalog query means here: 'pg_class'::regclass is the name, and
-          // int4/text casts are there for PostgreSQL's type resolution, which this evaluator does not have.
           ++position;
-          if (!skipCastType())
+          final String castType = skipCastType();
+          if (castType == null)
             return null;
+          // Most casts are there for PostgreSQL's own type resolution and do not change what a catalog query
+          // means, so they stay transparent. The OID-alias types are the exception: they are a catalog
+          // lookup written as a cast, and reading them as transparent gives the wrong answer rather than an
+          // unknown one - 'Article'::regclass compared against pg_class.oid would compare a name to a number
+          // and quietly select nothing (issue #7180). Those are handed to the resolver as the function call
+          // they are, which is also how PostgreSQL spells them when written out: to_regclass('Article').
+          if (LOOKUP_CASTS.contains(castType))
+            operand = new FunctionCall(castType, List.of(operand));
         } else if (token != null && token.isSymbol("[")) {
           ++position;
           final PostgresCatalogExpression index = parseExpression();
@@ -846,23 +864,35 @@ abstract class PostgresCatalogExpression {
       }
     }
 
-    /** Consumes a type name after {@code ::}, including {@code varchar(10)} and {@code text[]}. */
-    private boolean skipCastType() {
+    /**
+     * Consumes a type name after {@code ::}, including {@code varchar(10)} and {@code text[]}.
+     *
+     * @return the bare type name in lower case, {@link #COMPOUND_CAST_TYPE} when it carried a length
+     * modifier, an array suffix or more than one word - none of which an OID-alias type ever does - or null
+     * when what follows the {@code ::} is not a type name at all
+     */
+    private String skipCastType() {
       final PostgresCatalogToken token = peek();
       if (token == null || token.type != PostgresCatalogToken.Type.IDENTIFIER)
-        return false;
+        return null;
       ++position;
+
+      String name = token.text.toLowerCase(Locale.ENGLISH);
 
       while (peek() != null && peek().isSymbol(".")) {
         ++position;
         if (peek() == null || peek().type != PostgresCatalogToken.Type.IDENTIFIER)
-          return false;
+          return null;
+        // pg_catalog.regclass is regclass: the schema a type name is qualified by never changes which it is.
+        name = peek().text.toLowerCase(Locale.ENGLISH);
         ++position;
       }
 
       // Some type names are several words: "double precision", "character varying", "timestamp with time zone".
-      while (peek() != null && peek().type == PostgresCatalogToken.Type.IDENTIFIER && isTypeNameWord(peek().text))
+      while (peek() != null && peek().type == PostgresCatalogToken.Type.IDENTIFIER && isTypeNameWord(peek().text)) {
         ++position;
+        name = COMPOUND_CAST_TYPE;
+      }
 
       if (peek() != null && peek().isSymbol("(")) {
         int depth = 0;
@@ -875,15 +905,17 @@ abstract class PostgresCatalogExpression {
           if (depth == 0)
             break;
         }
+        name = COMPOUND_CAST_TYPE;
       }
 
       while (peek() != null && peek().isSymbol("[")) {
         ++position;
         if (!skipSymbol("]"))
-          return false;
+          return null;
+        name = COMPOUND_CAST_TYPE;
       }
 
-      return true;
+      return name;
     }
 
     private static boolean isTypeNameWord(final String text) {

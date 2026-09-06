@@ -2400,4 +2400,26 @@ class PostgresTypeTest {
 
     assertThat((byte[]) PostgresType.deserialize(PostgresType.BYTEA.code, 0, data)).isEqualTo(payload);
   }
+
+  @Test
+  void byNameAnswersBothSpellingsPostgreSqlAcceptsForAType() {
+    // A client writing 'integer'::regtype means the type one writing 'int4'::regtype means, so both spellings
+    // have to reach the same row (issue #7180).
+    for (final PostgresType type : PostgresType.values())
+      assertThat(PostgresType.byName(type.typeName)).as(type.typeName).isSameAs(type);
+
+    assertThat(PostgresType.byName("integer")).isSameAs(PostgresType.INTEGER);
+    assertThat(PostgresType.byName("INTEGER")).isSameAs(PostgresType.INTEGER);
+    assertThat(PostgresType.byName("bigint")).isSameAs(PostgresType.LONG);
+    assertThat(PostgresType.byName("double precision")).isSameAs(PostgresType.DOUBLE);
+    assertThat(PostgresType.byName("character varying")).isSameAs(PostgresType.VARCHAR);
+    assertThat(PostgresType.byName("decimal")).isSameAs(PostgresType.NUMERIC);
+
+    // "char" and character are different types in PostgreSQL, and the aliases must not merge them.
+    assertThat(PostgresType.byName("char")).isSameAs(PostgresType.CHAR);
+    assertThat(PostgresType.byName("character")).isSameAs(PostgresType.BPCHAR);
+
+    assertThat(PostgresType.byName("hstore")).as("a type this protocol cannot produce").isNull();
+    assertThat(PostgresType.byName(null)).isNull();
+  }
 }
