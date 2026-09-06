@@ -141,6 +141,63 @@ class Issue6989SchemaDeltaTest {
   }
 
   @Test
+  void aChangeToAnotherSectionCarriesNoTypeNamesAtAll() {
+    // The blind spot the second review found: `types` is a map present in both documents, so an unconditional
+    // key set put all 800 type names into a delta that only touched `settings`.
+    final JSONObject base = schema(41, 800);
+    final JSONObject updated = schema(42, 800);
+    updated.getJSONObject("settings").put("zoneId", "UTC");
+
+    final JSONObject delta = SchemaDelta.compute(base, updated);
+
+    assertThat(delta.has(SchemaDelta.FIELD_KEYS))
+        .as("no section's key set moved, so no key set is worth carrying")
+        .isFalse();
+    assertThat(delta.toString())
+        .as("a settings change must not name a single type")
+        .doesNotContain("Type_500");
+    assertThat(delta.toString().length())
+        .as("and must not be sized by the schema")
+        .isLessThan(updated.toString().length() / 100);
+
+    assertThat(SchemaDelta.apply(base, delta).toString()).isEqualTo(updated.toString());
+  }
+
+  @Test
+  void aKeySetIsCarriedOnlyForTheSectionWhoseShapeMoved() {
+    final JSONObject base = schema(41, 60);
+    final JSONObject updated = schema(42, 60);
+    updated.getJSONObject("types").put("Brand_New", type("Brand_New", "a"));
+    updated.getJSONObject("triggers").put("onCreate", new JSONObject().put("sql", "SELECT 1"));
+
+    final JSONObject delta = SchemaDelta.compute(base, updated);
+
+    assertThat(delta.getJSONObject(SchemaDelta.FIELD_KEYS).keySet())
+        .as("only the two sections that gained a child")
+        .containsExactlyInAnyOrder("types", "triggers");
+
+    assertThat(SchemaDelta.apply(base, delta).toString()).isEqualTo(updated.toString());
+  }
+
+  @Test
+  void aChangeConfinedToOneTypeCarriesNoKeySetEither() {
+    final JSONObject base = schema(41, 400);
+    final JSONObject updated = schema(42, 400);
+    updated.getJSONObject("types").put("Type_7", type("Type_7", "id", "name", "payload", "extra"));
+
+    final JSONObject delta = SchemaDelta.compute(base, updated);
+
+    assertThat(delta.has(SchemaDelta.FIELD_KEYS))
+        .as("no type was added or dropped, so the key set says nothing apply() needs")
+        .isFalse();
+    assertThat(delta.toString().length())
+        .as("which makes the entry proportional to the one type that changed")
+        .isLessThan(updated.toString().length() / 50);
+
+    assertThat(SchemaDelta.apply(base, delta).toString()).isEqualTo(updated.toString());
+  }
+
+  @Test
   void settingsChangeIsCarriedPerKey() {
     final JSONObject base = schema(41, 5);
     final JSONObject updated = schema(42, 5);

@@ -50,12 +50,17 @@ import java.util.Set;
  * </pre>
  *
  * <h2>Why the key sets are carried rather than a list of removals</h2>
- * {@code keys}/{@code rootKeys} make {@link #apply} <b>structure-authoritative</b>: whatever document it is
- * handed, the result carries exactly the key set the leader had, with the UNCHANGED children taken from the
- * receiver's own copy. A removal therefore needs no separate drop list, and - more importantly - a receiver
- * whose document does not match the leader's base cannot end up with a phantom type that no entry ever
- * removes. The cost is one name per type, roughly 1% of a multi-MB schema, which is what keeps the entry
- * proportional to the change in practice.
+ * {@code keys}/{@code rootKeys} make {@link #apply} <b>structure-authoritative</b>: for a section the leader
+ * added to or removed from, the result carries exactly the key set the leader had, with the UNCHANGED children
+ * taken from the receiver's own copy. A removal therefore needs no separate drop list, and a receiver whose
+ * document does not match the leader's base cannot come out of that section with a phantom type no entry ever
+ * removes.
+ * <p>
+ * A key set is proportional to its SECTION, not to the change, so one is emitted only for a section whose key
+ * set actually moved - a couple of hundred bytes of names on the DDL that added or dropped something, and
+ * nothing at all on a change to another section. Emitting them unconditionally would put every type name of a
+ * 1209-type schema into a delta that only touched a setting, purely because {@code types} is a map present in
+ * both documents.
  * <p>
  * {@code base} is carried for diagnostics only, for exactly that reason: the applier warns on a mismatch
  * rather than refusing, because the delta entry does not carry a full document to fall back to, and a
@@ -126,7 +131,14 @@ public final class SchemaDelta {
 
         if (!childUpserts.isEmpty())
           merge.put(rootKey, childUpserts);
-        keys.put(rootKey, new JSONArray(new ArrayList<>(updatedMap.keySet())));
+
+        // Only when this section's SHAPE moved. A key set is proportional to the section, not to the change, so
+        // emitting it unconditionally would put every one of a 1209-type schema's type names into a delta that
+        // only touched, say, a setting or a function - {@code types} is a map present in both documents, so it
+        // would qualify without having changed at all. When the two key sets match there is nothing for apply()
+        // to drop there, and the children it does not mention are preserved either way.
+        if (baseMap == null || !baseMap.keySet().equals(updatedMap.keySet()))
+          keys.put(rootKey, new JSONArray(new ArrayList<>(updatedMap.keySet())));
 
       } else if (!base.has(rootKey) || !sameValue(baseValue, updatedValue))
         put.put(rootKey, updatedValue);
@@ -205,6 +217,12 @@ public final class SchemaDelta {
    * Structural equality of two values read out of a schema document. {@link JSONObject#equals} compares the
    * underlying tree, so an unchanged type costs no string rendering; everything else in a schema document is
    * a scalar or a small array, for which the rendered form is both cheap and exact.
+   * <p>
+   * Comparing the RENDERED form is what makes a value that JSON round-tripped into a different Java type - an
+   * {@code Integer} on one side and a {@code Long} on the other - compare equal, which {@code equals()} would
+   * not. The converse, two numerically equal values rendered differently ({@code 1} against {@code 1.0}),
+   * compares as changed and ships a redundant upsert; a schema document's root scalars are a long and two
+   * strings, so neither case arises today.
    */
   private static boolean sameValue(final Object left, final Object right) {
     if (left == right)

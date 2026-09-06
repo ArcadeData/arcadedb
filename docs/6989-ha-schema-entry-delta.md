@@ -32,10 +32,14 @@ Delta shape (`SchemaDelta`):
   "rootKeys": [ "<rootKey>", ... ] }              // authoritative root key set
 ```
 
-`keys`/`rootKeys` make `apply` **structure-authoritative**: the merged document has exactly the
-leader's key set regardless of what the receiver started from, so a removal never needs a separate
-drop list and a stale receiver cannot end up with a phantom type. They cost one name per type
-(~1% of a multi-MB schema), which is what keeps the entry proportional to the change in practice.
+`keys`/`rootKeys` make `apply` **structure-authoritative**: for a section the leader added to or removed from,
+the merged document has exactly the leader's key set regardless of what the receiver started from, so a removal
+never needs a separate drop list and a stale receiver cannot come out of that section with a phantom type.
+
+A key set is proportional to its SECTION, not to the change, so one is emitted only for a section whose key set
+actually moved. Emitting them unconditionally (the first draft, caught by the second review) put every type name
+of a 1209-type schema into a delta that only touched a setting or a function, purely because `types` is a map
+present in both documents.
 
 ## When the leader falls back to the whole document
 

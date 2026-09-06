@@ -46,7 +46,7 @@ class Issue6989SchemaDeltaCodecTest {
   private static final Map<Integer, String> ADD    = Map.of(7, "Foo_7.bucket");
   private static final Map<Integer, String> REMOVE = Map.of(3, "Old_3.bucket");
 
-  private static String bigSchema(final int typeCount) {
+  private static JSONObject bigSchema(final int typeCount) {
     final JSONObject root = new JSONObject();
     root.put("schemaVersion", 42);
     final JSONObject types = new JSONObject();
@@ -57,24 +57,48 @@ class Issue6989SchemaDeltaCodecTest {
       types.put("Type_" + i, type);
     }
     root.put("types", types);
-    return root.toString();
+    return root;
   }
+
+  /**
+   * A delta the way the leader produces one. Built rather than hand-written so the size comparison below is
+   * anchored to what {@link SchemaDelta} actually emits.
+   */
+  private static String deltaForOneChangedType(final JSONObject schema) {
+    final JSONObject updated = new JSONObject(schema.toString());
+    updated.put("schemaVersion", 43);
+    updated.getJSONObject("types").getJSONObject("Type_7").put("properties",
+        new JSONObject().put("id", new JSONObject().put("type", "STRING"))
+            .put("extra", new JSONObject().put("type", "INTEGER")));
+    return SchemaDelta.compute(schema, updated).toString();
+  }
+
+  /**
+   * The codec treats a delta as an OPAQUE string - it length-prefixes, compresses and hands it back untouched -
+   * so the placement tests carry a marker rather than a realistic document. The round trip asserting the exact
+   * string back out is what pins that opacity; a realistic delta is used where the size is the point.
+   */
+  private static final String DELTA_MARKER = new JSONObject().put(SchemaDelta.FIELD_BASE, 41L).toString();
 
   @Test
   void anEntryWithoutADeltaDecodesAsBeforeAndCarriesNoDeltaSection() {
-    final ByteString withDelta = RaftLogEntryCodec.encodeSchemaEntry(DB, "{\"schemaVersion\":1}", ADD, REMOVE);
-    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(withDelta);
+    final String schemaJson = new JSONObject().put("schemaVersion", 1).toString();
+    final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(DB, schemaJson, ADD, REMOVE);
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(entry);
 
     assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SCHEMA_ENTRY);
     assertThat(decoded.schemaDelta()).isNull();
-    assertThat(decoded.schemaJson()).isEqualTo("{\"schemaVersion\":1}");
+    assertThat(decoded.schemaJson()).isEqualTo(schemaJson);
     assertThat(decoded.filesToAdd()).isEqualTo(ADD);
     assertThat(decoded.filesToRemove()).isEqualTo(REMOVE);
   }
 
   @Test
   void aDeltaSurvivesTheRoundTrip() {
-    final String deltaJson = "{\"base\":41,\"put\":{\"schemaVersion\":42},\"rootKeys\":[\"schemaVersion\",\"types\"]}";
+    final JSONObject base = bigSchema(3);
+    final JSONObject updated = new JSONObject(base.toString());
+    updated.put("schemaVersion", 43);
+    final String deltaJson = SchemaDelta.compute(base, updated).toString();
 
     final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(DB, "", ADD, REMOVE,
         Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), false, Collections.emptyList(),
@@ -100,7 +124,7 @@ class Issue6989SchemaDeltaCodecTest {
     final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(DB, "", ADD, REMOVE,
         List.of(wal), List.of(bucketDelta),
         List.of(new RaftLogEntryCodec.TsSealedBlob("Metric", 0, "Metric_0.sealed", sealed)),
-        true, Collections.emptyList(), new SchemaDelta.Payload(41L, "{\"base\":41}"));
+        true, Collections.emptyList(), new SchemaDelta.Payload(41L, DELTA_MARKER));
 
     final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(entry);
 
@@ -111,7 +135,7 @@ class Issue6989SchemaDeltaCodecTest {
     assertThat(decoded.sealedFileBlobs().getFirst().bytes()).isEqualTo(sealed);
     assertThat(decoded.moreChunksFollow()).isTrue();
     assertThat(decoded.sealedFileChunks()).isEmpty();
-    assertThat(decoded.schemaDelta().deltaJson()).isEqualTo("{\"base\":41}");
+    assertThat(decoded.schemaDelta().deltaJson()).isEqualTo(DELTA_MARKER);
   }
 
   @Test
@@ -122,22 +146,21 @@ class Issue6989SchemaDeltaCodecTest {
 
     final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(DB, "", Collections.emptyMap(),
         Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), false,
-        List.of(chunk), new SchemaDelta.Payload(41L, "{\"base\":41}"));
+        List.of(chunk), new SchemaDelta.Payload(41L, DELTA_MARKER));
 
     final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(entry);
 
     assertThat(decoded.sealedFileChunks()).hasSize(1);
     assertThat(decoded.sealedFileChunks().getFirst().bytes()).isEqualTo(slice);
-    assertThat(decoded.schemaDelta().deltaJson()).isEqualTo("{\"base\":41}");
+    assertThat(decoded.schemaDelta().deltaJson()).isEqualTo(DELTA_MARKER);
   }
 
   @Test
   void aDeltaEntryIsAFractionOfTheDocumentEntryForTheSameChange() {
-    final String fullSchema = bigSchema(500);
-    final String deltaJson = "{\"base\":41,\"put\":{\"schemaVersion\":42},"
-        + "\"merge\":{\"types\":{\"Type_7\":{\"name\":\"Type_7\",\"properties\":{\"id\":{\"type\":\"STRING\"}}}}}}";
+    final JSONObject fullSchema = bigSchema(500);
+    final String deltaJson = deltaForOneChangedType(fullSchema);
 
-    final int documentEntry = RaftLogEntryCodec.encodeSchemaEntry(DB, fullSchema, ADD, REMOVE).size();
+    final int documentEntry = RaftLogEntryCodec.encodeSchemaEntry(DB, fullSchema.toString(), ADD, REMOVE).size();
     final int deltaEntry = RaftLogEntryCodec.encodeSchemaEntry(DB, "", ADD, REMOVE,
         Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), false, Collections.emptyList(),
         new SchemaDelta.Payload(41L, deltaJson)).size();
@@ -162,7 +185,7 @@ class Issue6989SchemaDeltaCodecTest {
       walEntries.add(wal);
       bucketDeltas.add(Collections.emptyMap());
     }
-    final SchemaDelta.Payload delta = new SchemaDelta.Payload(41L, "{\"base\":41}");
+    final SchemaDelta.Payload delta = new SchemaDelta.Payload(41L, DELTA_MARKER);
 
     final int single = RaftLogEntryCodec.encodeSchemaEntry(DB, "", ADD, REMOVE, walEntries, bucketDeltas,
         Collections.emptyList(), false, Collections.emptyList(), delta).size();
@@ -178,7 +201,7 @@ class Issue6989SchemaDeltaCodecTest {
         assertThat(decoded.moreChunksFollow()).isTrue();
       } else {
         assertThat(decoded.schemaDelta()).as("the last chunk publishes").isNotNull();
-        assertThat(decoded.schemaDelta().deltaJson()).isEqualTo("{\"base\":41}");
+        assertThat(decoded.schemaDelta().deltaJson()).isEqualTo(DELTA_MARKER);
         assertThat(decoded.moreChunksFollow()).isFalse();
       }
     }
