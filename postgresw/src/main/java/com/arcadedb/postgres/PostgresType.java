@@ -111,8 +111,9 @@ public enum PostgresType {
     for (final PostgresType type : values())
       names.put(type.typeName, type);
 
+    // Only the spellings the loop above did not already install: every entry here is a SQL-standard name
+    // that is not any type's own typname.
     names.put("smallint", SMALLINT);
-    names.put("int2", SMALLINT);
     names.put("integer", INTEGER);
     names.put("int", INTEGER);
     names.put("bigint", LONG);
