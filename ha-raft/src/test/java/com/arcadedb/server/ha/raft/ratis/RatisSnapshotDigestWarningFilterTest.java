@@ -34,10 +34,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -76,6 +78,13 @@ class RatisSnapshotDigestWarningFilterTest {
   private boolean           originalUseParentHandlers;
   private CollectingHandler handler;
 
+  /**
+   * Everything {@link #initializedStateMachine(Path)} opens, closed in {@link #restoreTheRatisLogger()}.
+   * {@link ArcadeStateMachine#close()} shuts down its lifecycle and snapshot-install executors, which
+   * would otherwise outlive every test method that created one.
+   */
+  private final List<Closeable> opened = new ArrayList<>();
+
   @BeforeEach
   void attachHandlerToTheRatisLogger() {
     ratisLogger = Logger.getLogger(RatisSnapshotDigestWarningFilter.RATIS_SNAPSHOT_STORAGE_LOGGER);
@@ -94,7 +103,12 @@ class RatisSnapshotDigestWarningFilterTest {
   }
 
   @AfterEach
-  void restoreTheRatisLogger() {
+  void restoreTheRatisLogger() throws IOException {
+    // Close in reverse order: each state machine before the storage it was initialized against.
+    for (int i = opened.size() - 1; i >= 0; i--)
+      opened.get(i).close();
+    opened.clear();
+
     ratisLogger.removeHandler(handler);
     ratisLogger.setFilter(originalFilter);
     ratisLogger.setLevel(originalLevel);
@@ -258,17 +272,20 @@ class RatisSnapshotDigestWarningFilterTest {
    * A real {@link ArcadeStateMachine} initialized against a real, formatted {@link RaftStorage} rooted
    * at {@code tempDir}, exactly as Ratis initializes it at boot.
    */
-  private static ArcadeStateMachine initializedStateMachine(final Path tempDir) throws IOException {
+  private ArcadeStateMachine initializedStateMachine(final Path tempDir) throws IOException {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, tempDir.resolve("databases").toString());
 
+    final RaftStorage raftStorage = RaftStorage.newBuilder()
+        .setDirectory(tempDir.resolve("raft-storage").toFile())
+        .setOption(RaftStorage.StartupOption.FORMAT)
+        .build();
+    opened.add(raftStorage);
+
     final ArcadeStateMachine sm = new ArcadeStateMachine();
+    opened.add(sm);
     sm.setServer(new ArcadeDBServer(config));
-    sm.initialize(stubRaftServer(), RaftGroupId.valueOf(UUID.randomUUID()),
-        RaftStorage.newBuilder()
-            .setDirectory(tempDir.resolve("raft-storage").toFile())
-            .setOption(RaftStorage.StartupOption.FORMAT)
-            .build());
+    sm.initialize(stubRaftServer(), RaftGroupId.valueOf(UUID.randomUUID()), raftStorage);
     return sm;
   }
 
