@@ -381,6 +381,30 @@ class GraphImporterArrayPropsTest {
         .hasMessageContaining("title");
   }
 
+
+  /**
+   * {@link CsvRowSource} splits on the delimiter with no quoting, so a comma-delimited file cuts an
+   * unquoted {@code [0.1,0.2,0.3]} across several fields. The parse failure has to name the
+   * delimiter rather than blame the data, which is the part a reader can act on.
+   */
+  @Test
+  void vectorColumnSplitByTheCsvDelimiterSaysSo() {
+    database.transaction(() -> database.getSchema().createVertexType("Place"));
+
+    assertThatThrownBy(() -> {
+      try (final GraphImporter importer = GraphImporter.builder(database)
+          .vertex("Place", new CsvRowSource(RESOURCE_DIR + "/importer-embeddings-comma.csv"), v -> {
+            v.id("Id");
+            v.floatArrayProperty("embedding", "Embedding");
+          })
+          .build()) {
+        importer.run();
+      }
+    }).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("embedding")
+        .hasMessageContaining("delimiter");
+  }
+
   /**
    * Sources with no native array representation fall back to parsing the textual form, so a
    * {@code "[0.1,0.2]"} column round-trips into the same {@code float[]}.
