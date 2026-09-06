@@ -49,6 +49,18 @@ import java.util.Set;
  *   "rootKeys": [ "&lt;rootKey&gt;", ... ] }                    // authoritative root key set
  * </pre>
  *
+ * <h2>Granularity: one whole child, not a nested diff</h2>
+ * A changed child is carried WHOLE - one property added to a type ships that type's entire JSON, not a diff
+ * inside it. That is the "send only the affected subtree" option issue #6989 asks for, and it is a deliberate
+ * stopping point: one level keeps {@link #compute} and {@link #apply} generic over every section of the schema
+ * document, with no per-section knowledge of what a type, a trigger or a function looks like inside, so a
+ * section added to the document later needs no change here.
+ * <p>
+ * The cost is that a type with very many properties still ships all of them when one is added. That is bounded
+ * by ONE type rather than by the schema, and the leader's own half-the-document bar refuses a delta that grew
+ * past being worth shipping. Recursive diffing would shrink that middle ground and is the obvious next step if
+ * a schema ever has types large enough to make it matter.
+ *
  * <h2>Why the key sets are carried rather than a list of removals</h2>
  * {@code keys}/{@code rootKeys} make {@link #apply} <b>structure-authoritative</b>: for a section the leader
  * added to or removed from, the result carries exactly the key set the leader had, with the UNCHANGED children

@@ -94,9 +94,24 @@ the "leader falls back to the full document until every peer is upgraded" arm of
 acceptance criteria. The DECODE side is unconditional, so upgrading is a one-way ratchet: every node
 understands deltas before any node is allowed to emit one.
 
+## Deliberate stopping points
+
+- **A changed child is carried whole.** One property added to a type ships that type's entire JSON, not a diff
+  inside it - the "send only the affected subtree" option the issue asks for. One level keeps `compute`/`apply`
+  generic over every section of the schema document, so a section added later needs no change in `SchemaDelta`;
+  the cost is bounded by one type rather than by the schema, and the half-the-document bar refuses a delta that
+  grew past being worth shipping. Recursive diffing is the obvious next step if types ever get large enough.
+- **The three cache fields are written separately, not swapped atomically.** Both writers hold the database's
+  file recording session, which is exclusive per database, so they cannot interleave. Nothing at the call site
+  enforced that, so `rememberReplicatedSchema` now checks it and logs a warning instead of leaving the
+  invariant in prose only. Warn-only: a torn base costs one extra whole-document entry, which is not worth
+  failing replication over.
+
 ## Deferred
 
 - Automatic peer-capability negotiation, which would let the gate default to on.
+- Wiring `getSchemaDeltasShipped()` / `getSchemaDocumentsShipped()` into the Micrometer HA metrics, so the
+  ratio is visible without an API call.
 - The follower still parses and rewrites the whole document (`update()` + `load()` round-trip
   through `schema.json`) - that is the companion "incremental follower apply" issue, and it is why
   `LocalSchema.update()`'s write cannot simply be coalesced: `load()` reads the file back.

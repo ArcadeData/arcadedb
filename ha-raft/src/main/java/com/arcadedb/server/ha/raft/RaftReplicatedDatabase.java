@@ -2944,11 +2944,26 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Records the schema document the followers now hold, so the NEXT change can be diffed against it (issue
    * #6989). Call only once the entry carrying it has actually been replicated.
    *
+   * <p>
+   * <b>The three fields are written separately, not swapped atomically</b>, and what makes that safe is that both
+   * callers - {@code recordFileChanges} and {@code runWithCompactionReplication} - hold this database's file
+   * RECORDING SESSION, which is exclusive per database (compaction defers rather than nesting when a session is
+   * already open). That invariant is inherited from a lock taken much earlier in the call chain and nothing at
+   * this call site enforces it, so it is checked here rather than only asserted in prose: whoever changes the
+   * recording-session mechanism gets a log line rather than a silently torn cache. Warn-only deliberately - a
+   * torn base costs one extra whole-document entry, and failing replication over a diagnostic would be a far
+   * worse trade.
+   *
    * @param fullSchemaLength the length of the whole document when that is what was shipped, or {@code -1} when a
    *                         delta was shipped and the last known whole-document length therefore still stands as
    *                         the yardstick {@link #schemaDeltaFor} sizes the next delta against
    */
   private void rememberReplicatedSchema(final JSONObject fullSchema, final int fullSchemaLength) {
+    if (!proxied.getFileManager().isRecordingChangesOnCurrentThread())
+      LogManager.instance().log(this, Level.WARNING,
+          "Schema delta base for database '%s' updated outside a file recording session; the session is what "
+              + "serializes the two writers, so this cache can now be torn (issue #6989)", getName());
+
     // Only retained when deltas are actually wanted: the document is the size of the schema, and a cluster
     // running the default configuration would otherwise pay several MB per replicated database for a base
     // nothing will ever diff against. Turning the setting on at runtime costs one more whole-document entry -
