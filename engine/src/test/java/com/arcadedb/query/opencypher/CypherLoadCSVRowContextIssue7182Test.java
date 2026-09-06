@@ -129,21 +129,31 @@ class CypherLoadCSVRowContextIssue7182Test {
 
   @Test
   void theReportedLeftQueryAnswersTheFile() {
-    final List<Object> values = rows("RETURN file() AS r, row, carrier",
-        "CALL () { RETURN ['x'] AS carrier } WITH carrier LIMIT 1 ");
-    assertThat(values).hasSize(3).allMatch(url::equals);
+    // The report's own query, quoted as it was filed.
+    assertThat(query("""
+        CALL () { RETURN ['x'] AS carrier }
+        WITH carrier LIMIT 1
+        LOAD CSV FROM '%s' AS row FIELDTERMINATOR ','
+        RETURN row, file() AS r, carrier
+        """.formatted(url))).hasSize(3).allMatch(url::equals);
   }
 
   @Test
   void theReportedRightQueryAnswersNullBecauseAggregationEndsTheRowContext() {
-    // Neo4j answers null here too: its aggregation table builds the output row with QueryState.newRow, which
-    // carries no ResourceLinenumber, and the UNWIND downstream copies that contextless row. Asserted rather
-    // than fixed, so that a later change to the carry-over has to come past this test on purpose.
-    final List<Object> values = rows("RETURN file() AS r, row, carrier",
-        "CALL () { RETURN ['x'] AS carrier } WITH carrier LIMIT 1 ",
-        "WITH {carrier: carrier, row: row} AS row1 WITH collect(row1) AS rows1 UNWIND rows1 AS row1 "
-            + "WITH row1.carrier AS carrier, row1.row AS row ");
-    assertThat(values).hasSize(3).containsOnlyNulls();
+    // The report's second query, quoted as it was filed. Neo4j answers null here too: its aggregation table
+    // builds the output row with QueryState.newRow, which carries no ResourceLinenumber, and the UNWIND
+    // downstream copies that contextless row. Asserted rather than fixed, so that a later change to the
+    // carry-over has to come past this test on purpose.
+    assertThat(query("""
+        CALL () { RETURN ['x'] AS carrier }
+        WITH carrier LIMIT 1
+        LOAD CSV FROM '%s' AS row FIELDTERMINATOR ','
+        WITH {carrier: carrier, row: row} AS row1
+        WITH collect(row1) AS rows1
+        UNWIND rows1 AS row1
+        WITH row1.carrier AS carrier, row1.row AS row
+        RETURN row, file() AS r, carrier
+        """.formatted(url))).hasSize(3).containsOnlyNulls();
   }
 
   @Test
@@ -161,16 +171,13 @@ class CypherLoadCSVRowContextIssue7182Test {
   }
 
   private List<Object> rows(final String tail) {
-    return rows(tail, "", "");
+    return query(load(tail));
   }
 
-  private List<Object> rows(final String tail, final String head) {
-    return rows(tail, head, "");
-  }
-
-  private List<Object> rows(final String tail, final String head, final String middle) {
+  /** Collects the {@code r} column of a whole query, for the two cases quoted from the report verbatim. */
+  private List<Object> query(final String cypher) {
     final List<Object> values = new ArrayList<>();
-    try (final ResultSet resultSet = database.query("opencypher", head + load(middle + tail))) {
+    try (final ResultSet resultSet = database.query("opencypher", cypher)) {
       while (resultSet.hasNext())
         values.add(resultSet.next().getProperty("r"));
     }
