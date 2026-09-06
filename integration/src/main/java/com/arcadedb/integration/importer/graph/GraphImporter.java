@@ -515,6 +515,10 @@ public class GraphImporter implements AutoCloseable {
      * Map a dense float vector property (an embedding), stored as {@code float[]}. JSONL sources
      * read the JSON array natively; the other sources parse the textual form
      * {@code "[0.1,0.2,0.3]"}. See {@link RecordReader#getFloatArray(String)}.
+     * <p>
+     * On a CSV source pick a delimiter the array does not contain ({@code ';'} rather than the
+     * default {@code ','}): {@link CsvRowSource} splits on the delimiter with no quoting, so a
+     * comma-delimited file would cut an unquoted array across several fields.
      */
     public void floatArrayProperty(final String name, final String attribute) {
       properties.add(new PropDef(name, attribute, PropType.FLOAT_ARRAY));
@@ -523,7 +527,8 @@ public class GraphImporter implements AutoCloseable {
     /**
      * Map a generic list property (e.g. an array of tags). Use
      * {@link #floatArrayProperty(String, String)} for numeric vectors: it avoids boxing every
-     * element and is what a vector index consumes without conversion.
+     * element and is what a vector index consumes without conversion. The CSV delimiter caveat on
+     * {@link #floatArrayProperty(String, String)} applies here too.
      */
     public void listProperty(final String name, final String attribute) {
       properties.add(new PropDef(name, attribute, PropType.LIST));
@@ -706,6 +711,7 @@ public class GraphImporter implements AutoCloseable {
       final String v = get(attribute);
       if (v == null || v.isEmpty())
         return null;
+      checkNotSplit(attribute, v);
       return VectorUtils.toFloatArray(v);
     }
 
@@ -718,7 +724,24 @@ public class GraphImporter implements AutoCloseable {
       final String v = get(attribute);
       if (v == null || v.isEmpty())
         return null;
+      checkNotSplit(attribute, v);
       return new JSONArray(v).toList();
+    }
+
+    /**
+     * A textual array that opens but never closes was almost certainly cut in half by the source's
+     * own field separator: {@link CsvRowSource} splits on the delimiter with no quoting, so an
+     * unquoted {@code [0.1,0.2,0.3]} in a comma-delimited file arrives as {@code "[0.1"}. Parsing
+     * that fragment fails with "does not hold a numeric array", which is true but points at the
+     * data rather than at the delimiter, so say which one it is.
+     */
+    private static void checkNotSplit(final String attribute, final String value) {
+      final String trimmed = value.trim();
+      if (trimmed.startsWith("[") == trimmed.endsWith("]"))
+        return;
+      throw new IllegalArgumentException("Attribute '" + attribute + "' holds an unterminated array (" + trimmed
+          + "). A delimited source splits an unquoted array across fields when the delimiter also separates the "
+          + "array's elements: use a delimiter the values do not contain, such as ';'");
     }
   }
 
@@ -1019,24 +1042,24 @@ public class GraphImporter implements AutoCloseable {
           case INTEGER:
             if (ec.intProps == null)
               ec.intProps = new HashMap<>();
-            ec.intProps.computeIfAbsent(pd.name, k -> new IntList(100_000)).add(readInt(record, pd));
+            ec.intProps.computeIfAbsent(pd.name, k -> new IntList(BUFFER_INITIAL_CAPACITY)).add(readInt(record, pd));
             break;
           case LONG:
             if (ec.longProps == null)
               ec.longProps = new HashMap<>();
-            ec.longProps.computeIfAbsent(pd.name, k -> new ArrayList<>(100_000)).add(readLong(record, pd));
+            ec.longProps.computeIfAbsent(pd.name, k -> new ArrayList<>(BUFFER_INITIAL_CAPACITY)).add(readLong(record, pd));
             break;
           case DOUBLE:
             if (ec.doubleProps == null)
               ec.doubleProps = new HashMap<>();
-            ec.doubleProps.computeIfAbsent(pd.name, k -> new DoubleList(100_000)).add(readDouble(record, pd));
+            ec.doubleProps.computeIfAbsent(pd.name, k -> new DoubleList(BUFFER_INITIAL_CAPACITY)).add(readDouble(record, pd));
             break;
           default:
             // STRING, BOOLEAN, DATETIME, FLOAT_ARRAY and LIST all go through the same reader
             // vertices use, so a spec means the same thing on an edge source as on a vertex
             if (ec.objProps == null)
               ec.objProps = new HashMap<>();
-            ec.objProps.computeIfAbsent(pd.name, k -> new ArrayList<>(100_000)).add(readProperty(record, pd));
+            ec.objProps.computeIfAbsent(pd.name, k -> new ArrayList<>(BUFFER_INITIAL_CAPACITY)).add(readProperty(record, pd));
             break;
           }
         }
@@ -1293,8 +1316,8 @@ public class GraphImporter implements AutoCloseable {
 
   static class EdgeCollector {
     final String edgeTypeName, srcType, dstType;
-    final IntList srcIdx = new IntList(100_000);
-    final IntList dstIdx = new IntList(100_000);
+    final IntList srcIdx = new IntList(BUFFER_INITIAL_CAPACITY);
+    final IntList dstIdx = new IntList(BUFFER_INITIAL_CAPACITY);
     Map<String, IntList>      intProps;
     Map<String, List<Long>>   longProps;
     Map<String, DoubleList>   doubleProps;
@@ -1417,6 +1440,14 @@ public class GraphImporter implements AutoCloseable {
   /**
    * Growable int array.
    */
+  /**
+   * Initial capacity of an {@link EdgeCollector}'s buffers. Each edge source gets a collector of its
+   * own, so a file with several small sources of the same edge type holds several sets of these.
+   * Every list here doubles on growth: a large source reaches its size in a handful of copies, and
+   * a small one no longer sits on a buffer it will never fill.
+   */
+  static final int BUFFER_INITIAL_CAPACITY = 4_096;
+
   static final class IntList {
     int[] data;
     int   size;
