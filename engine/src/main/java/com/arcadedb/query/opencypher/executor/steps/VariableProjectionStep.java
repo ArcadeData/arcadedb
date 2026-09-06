@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -33,6 +34,14 @@ import java.util.Set;
  * Simple projection step that keeps only specified variable names in the result.
  * Used after ORDER BY + LIMIT to strip non-projected variables that were kept
  * for ORDER BY evaluation.
+ * <p>
+ * "Non-projected variables" means the query's own variables. The LOAD CSV row context is not one of them: it
+ * describes the row rather than naming a value the query bound, so it survives the strip the same way it survives
+ * the projection {@code WithStep} does (issue #6402). Without that, a {@code WITH} carrying an {@code ORDER BY}
+ * was the one projection form that turned {@code file()} and {@code linenumber()} off for the rest of the query -
+ * {@code WITH row ORDER BY row RETURN file()} answered {@code null} while the very same {@code WITH} without the
+ * {@code ORDER BY} answered the file (issue #7182). Neo4j sorts the rows it was handed rather than building new
+ * ones, so the context rides through its sort untouched.
  */
 public class VariableProjectionStep extends AbstractExecutionStep {
   private final Set<String> keepVariables;
@@ -64,6 +73,7 @@ public class VariableProjectionStep extends AbstractExecutionStep {
           if (input.getPropertyNames().contains(var))
             projected.setProperty(var, input.getProperty(var));
         }
+        LoadCSVRowContext.carryOver(input, projected);
         return projected;
       }
 
