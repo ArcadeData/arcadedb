@@ -171,6 +171,31 @@ class RatisSnapshotDigestWarningFilterTest {
     assertThat(handler.messagesContaining(MISSING_DIGEST_TEXT)).isEmpty();
   }
 
+  /**
+   * The production sequence: {@code ArcadeStateMachine.initialize()} installs, and then
+   * {@code RaftHAServer.start()} installs again a moment later on the same JVM. The second call must
+   * leave the first filter in place rather than wrap it, or every subsequent restart in a long-lived
+   * process would add another layer. Unlike {@link #installIsIdempotentAndDoesNotStackFilters}, this
+   * drives the first install through the real state machine and then re-checks suppression end to end.
+   */
+  @Test
+  void theSecondInstallFromRaftHAServerStartChangesNothing(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = initializedStateMachine(tempDir);
+    final Filter afterStateMachineInit = ratisLogger.getFilter();
+    assertThat(afterStateMachineInit).isInstanceOf(RatisSnapshotDigestWarningFilter.class);
+
+    // What RaftHAServer.start() does, next to its org.apache.ratis level pin.
+    RatisSnapshotDigestWarningFilter.install();
+
+    assertThat(ratisLogger.getFilter()).isSameAs(afterStateMachineInit);
+    assertThat(((RatisSnapshotDigestWarningFilter) ratisLogger.getFilter()).getDelegate())
+        .as("the second install must not wrap the first")
+        .isNull();
+
+    registerMarkerAt(sm, 1L, 7293L);
+    assertThat(handler.messagesContaining(MISSING_DIGEST_TEXT)).isEmpty();
+  }
+
   @Test
   void aGenuineStorageWarningFromTheSameLoggerStillReachesTheLog(@TempDir final Path tempDir) throws Exception {
     initializedStateMachine(tempDir);
