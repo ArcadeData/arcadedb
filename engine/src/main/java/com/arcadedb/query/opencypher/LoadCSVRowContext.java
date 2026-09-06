@@ -87,6 +87,14 @@ public final class LoadCSVRowContext {
    * the row variable itself survived the projection. Pinned by
    * {@code CypherLoadCSVRowContextIssue6402Test.theRowContextSurvivesAProjectionThatDropsRowEntirely}
    * (issue #6402 code review).
+   * <p>
+   * <b>Aggregation is the boundary, deliberately.</b> An aggregating clause folds many rows into one rather than
+   * projecting a row from a row, so there is nothing for the folded row to inherit: three CSV lines have three line
+   * numbers and {@code linenumber()} cannot answer with one of them. Neo4j draws the line in the same place, so
+   * {@code file()} is {@code null} after {@code WITH collect(row) AS rows} and stays {@code null} through the
+   * {@code UNWIND} that expands the list back out. Reported as a bug in issue #7182 and pinned as the correct
+   * answer by {@code CypherLoadCSVRowContextIssue7182Test} - do not add a carry-over here without first deciding
+   * what {@code linenumber()} means on a folded row.
    */
   public static void carryOver(final Result source, final ResultInternal target) {
     if (source == null || target == null || !source.hasProperty(FILE))
