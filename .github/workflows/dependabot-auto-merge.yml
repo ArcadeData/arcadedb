@@ -1,0 +1,86 @@
+# Merges a Dependabot pull request once someone has approved it.
+#
+# This replaces the single rule .mergify.yml used to carry. The reason it is a workflow rather
+# than Mergify config: that rule stamped `[skip ci]` on the merge commit through the merge
+# action's `commit_message_template`, which Mergify deprecated with a 2026-09-30 deadline. Its
+# declarative replacement, `commit_message_format`, only takes `title: inherit|pr-title`,
+# `body: inherit|pr-body|empty` and a fixed three-value `trailers` enum, so there is nowhere left
+# to put arbitrary text, and no other Mergify action can edit a title. Mergify said as much when
+# it opened #4904: "This template has no exact commit_message_format equivalent."
+#
+# Merging from a workflow gets the same effect without the commit-message hack. A push made with
+# the repository's GITHUB_TOKEN starts no workflow run at all - "if a workflow run pushes code
+# using the repository's GITHUB_TOKEN, a new workflow will not run even when the repository
+# contains a workflow configured to run when push events occur" - so main's push-triggered jobs
+# stay quiet on a Dependabot merge exactly as they did under `[skip ci]`. The marker is kept in
+# the subject anyway: it costs nothing, it says out loud what the merge is doing, and it is what
+# would carry the behaviour if this ever has to merge with a PAT or an App token instead.
+name: Dependabot auto-merge
+
+on:
+  pull_request_review:
+    types: [ submitted ]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    # The Mergify conditions this reproduces: `author=dependabot[bot]` and
+    # `#approved-reviews-by>=1`. There is deliberately no green-CI condition, as there was none
+    # before. Note the actor here is the human who approved, not dependabot[bot], so this run gets
+    # a writable GITHUB_TOKEN rather than the read-only one Dependabot-triggered workflows get.
+    if: >-
+      github.event.review.state == 'approved' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      # native/pom.xml's native.graalvm.version MUST equal the builder JDK that native-image.yml
+      # installs, or the image build dies in TruffleBaseFeature with NoSuchMethodError
+      # getLoopNodeFactory(). Dependabot cannot move both sides, and this job merges on ONE
+      # approval with no green-CI condition, then suppresses main's CI - so neither the reviewer's
+      # attention nor `lint` is a backstop here. It has let the skew through twice (3fecba4bf,
+      # b53c48c1e2). A GraalVM PR is handled by hand instead: merge it only together with a
+      # matching bump in native-image.yml, otherwise close it.
+      - name: Decide whether this PR may be merged unattended
+        id: guard
+        run: |
+          set -euo pipefail
+          gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json files,mergeable,headRefOid > pr.json
+          # Everything below is decided about ONE commit, and the merge is pinned to it. Dependabot
+          # force-pushes the same branch when a grouped update gains a member, and the maven
+          # ecosystem is `directory: "/"`, so a group PR can acquire native/pom.xml in the seconds
+          # between this read and the merge. Pinning makes a head that moved fail the run instead
+          # of merging a commit the guard below never saw.
+          echo "head=$(jq -r '.headRefOid' pr.json)" >> "$GITHUB_OUTPUT"
+          if jq -r '.files[].path' pr.json | grep -qx 'native/pom\.xml'; then
+            echo "native/pom.xml is in this PR: the GraalVM pin moves by hand, together with" \
+                 "native-image.yml's builder. Leaving it open."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+          elif [ "$(jq -r '.mergeable' pr.json)" = "CONFLICTING" ]; then
+            echo "PR is in conflict with main. Leaving it open for Dependabot to rebase."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "merge=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge
+        if: steps.guard.outputs.merge == 'true'
+        env:
+          # Through the environment, never interpolated into the script: a pull request title is
+          # attacker-controlled text, and `${{ }}` would splice it straight into the shell.
+          TITLE: ${{ github.event.pull_request.title }}
+          # The commit the guard step inspected. Not github.event.pull_request.head.sha, which is
+          # the head as of the review and can be older still.
+          HEAD_SHA: ${{ steps.guard.outputs.head }}
+        run: |
+          set -euo pipefail
+          gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json body --jq '.body' |
+            gh pr merge "$PR" -R "$GITHUB_REPOSITORY" --merge \
+              --match-head-commit "$HEAD_SHA" \
+              --subject "$TITLE (#$PR) [skip ci]" --body-file -

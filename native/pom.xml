@@ -120,13 +120,14 @@
             numeric components, so findLatestGraalVMCEVersion skips it as an "unexpected GraalVM CE
             release", finds no jdk-25.3.4.1 either, and throws.
 
-            A comment is not a control: it did not stop attempt 2, because .mergify.yml auto-merged
-            a dependabot PR on one approval with no green-CI condition, and stamped [skip ci] on the
-            merge so main never re-tested it either. The enforcement now lives in
+            A comment is not a control: it did not stop attempt 2, because a dependabot PR was
+            auto-merged on one approval with no green-CI condition, and the merge suppressed main's
+            CI so main never re-tested it either. The enforcement now lives in
             .github/scripts/check-native-graalvm-pin.py, which fails the always-on `lint` job the
             moment this property and native-image.yml's setup step disagree (it reads `version` and
-            `java-version` both, preferring `version` as setup-graalvm itself does), and .mergify.yml
-            no longer auto-merges a PR that touches this file.
+            `java-version` both, preferring `version` as setup-graalvm itself does), and
+            .github/workflows/dependabot-auto-merge.yml no longer auto-merges a PR that touches
+            this file.
         -->
         <native.graalvm.version>25.0.2</native.graalvm.version>
         <!--

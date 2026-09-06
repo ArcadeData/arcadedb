@@ -69,8 +69,8 @@ updates:
       #
       # Two guards now back that up, because "reviewed by hand" was not one:
       # .github/scripts/check-native-graalvm-pin.py fails the always-on `lint`
-      # job on any skew, and .mergify.yml no longer auto-merges a Dependabot PR
-      # that touches native/pom.xml.
+      # job on any skew, and dependabot-auto-merge.yml no longer auto-merges a
+      # Dependabot PR that touches native/pom.xml.
       - dependency-name: "org.apache.groovy:*"
         update-types: ["version-update:semver-major"]
 
