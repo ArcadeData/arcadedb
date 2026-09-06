@@ -1871,6 +1871,28 @@ public enum GlobalConfiguration {
       Lower it to bound memory exposure on hostile inputs; raise it if a single transaction legitimately exceeds 128MB.""",
       Long.class, 128L * 1024 * 1024),
 
+  HA_SCHEMA_DELTA("arcadedb.ha.schemaDelta", SCOPE.SERVER,
+      """
+      Ship schema changes to the followers as a DELTA against the schema they already hold, instead of a \
+      complete serialization of the schema document on every single DDL (issue #6989). A one-property \
+      CREATE PROPERTY then costs a Raft entry proportional to the change rather than to the whole schema, \
+      which on a large schema is the difference between kilobytes and megabytes per entry - paid four times \
+      over, on the leader's CPU, on the wire, in every node's Raft log, and in the follower's rewrite of \
+      schema.json. The leader falls back to the whole document by itself whenever a delta cannot be trusted: \
+      the first schema entry after it becomes leader, an entry shipped in instalments, a compaction entry, or \
+      a change too large for a delta to be worth it. \
+      \
+      The leader keeps one parsed copy of the schema document per replicated database while this is on, to diff \
+      the next change against; on a multi-MB schema that is tens of MB of heap per database, released as soon as \
+      the setting goes back off. \
+      \
+      OFF BY DEFAULT, and it must stay off during a rolling upgrade. A node running a version that predates \
+      the delta section of SCHEMA_ENTRY cannot see it - it stops decoding after the sections it knows - and \
+      would apply an empty schema change and diverge SILENTLY. Reading a delta needs no configuration, so \
+      upgrade every node first, then turn this on: from that point every peer understands what the leader \
+      emits. Turning it back off is safe at any time.""",
+      Boolean.class, false),
+
   HA_BOOTSTRAP_FROM_LOCAL_DATABASE("arcadedb.ha.bootstrapFromLocalDatabase", SCOPE.SERVER,
       """
       When true (the default) and every peer's Raft log is empty at first cluster formation, peers exchange a \

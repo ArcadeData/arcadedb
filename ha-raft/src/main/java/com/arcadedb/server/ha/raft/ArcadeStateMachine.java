@@ -2046,11 +2046,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
 
     HALog.log(this, HALog.DETAILED,
-        "Applying schema entry to database '%s' (entryIndex=%d): filesToAdd=%d, filesToRemove=%d, hasSchemaJson=%s",
+        "Applying schema entry to database '%s' (entryIndex=%d): filesToAdd=%d, filesToRemove=%d, schemaPayload=%s",
         decoded.databaseName(), entryIndex,
         decoded.filesToAdd() != null ? decoded.filesToAdd().size() : 0,
         decoded.filesToRemove() != null ? decoded.filesToRemove().size() : 0,
-        decoded.schemaJson() != null && !decoded.schemaJson().isEmpty());
+        decoded.schemaDelta() != null ? "delta" :
+            decoded.schemaJson() != null && !decoded.schemaJson().isEmpty() ? "document" : "none");
 
     if (HALog.isEnabled(HALog.DETAILED)) {
       HALog.log(this, HALog.DETAILED, "Received SCHEMA_ENTRY filesToAdd=%s", decoded.filesToAdd());
@@ -2065,7 +2066,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // shard executors with a 30s awaitTermination) on the Raft apply thread, stalling replication.
     // installSealedFileBytes already reopened the sealed store and the clear WAL applies to the live
     // mutable-bucket pages, so neither the schema update nor the reload is needed.
+    // A schema delta (issue #6989) disqualifies an entry from this shortcut for the same reason it disqualifies
+    // it from walOnlyEntry below: the change is carried OUTSIDE schemaJson, so an entry holding one does publish
+    // a schema change and does need the reload. No producer ships both today - the compaction path always
+    // carries the whole document - and this keeps that from becoming a silent skip if one ever does.
     final boolean sealedOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
+        && decoded.schemaDelta() == null
         && (isNotEmpty(decoded.sealedFileBlobs()) || isNotEmpty(decoded.sealedFileChunks()));
 
     // A non-final chunk of a schema change split across several entries (see
@@ -2089,8 +2095,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // getFileByIdIfExists() - so the reload is pure cost on the single Raft apply thread, where it
     // re-instantiates every TimeSeries engine and closes shard executors with a 30s awaitTermination.
     // Same reasoning as sealedOnlyEntry above.
+    //
+    // A delta entry (issue #6989) carries its schema change OUTSIDE schemaJson, so it must not be mistaken for
+    // one of these: it publishes a schema change and the reload below is exactly what registers it.
     final boolean walOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
-        && (decoded.schemaJson() == null || decoded.schemaJson().isEmpty())
+        && (decoded.schemaJson() == null || decoded.schemaJson().isEmpty()) && decoded.schemaDelta() == null
         && !isNotEmpty(decoded.sealedFileBlobs()) && !isNotEmpty(decoded.sealedFileChunks())
         && decoded.walEntries() != null && !decoded.walEntries().isEmpty();
 
@@ -2109,7 +2118,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // data-loss window applySealedBlobs closes for a store that fits inline.
       applySealedChunks(db, decoded.sealedFileChunks());
 
-      if (!sealedOnlyEntry && decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
+      if (decoded.schemaDelta() != null)
+        applySchemaDelta(db, decoded);
+      else if (!sealedOnlyEntry && decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
         db.getSchema().getEmbedded().update(new JSONObject(decoded.schemaJson()));
 
       // Apply WAL entries BEFORE the schema reload. New files created above are initially empty;
@@ -2164,6 +2175,44 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     HALog.log(this, HALog.DETAILED, "Applied schema change to database '%s'", decoded.databaseName());
+  }
+
+  /**
+   * Applies a schema change that arrived as a DELTA rather than as a whole document (issue #6989): merges it
+   * into this node's own schema and hands the result to {@code LocalSchema.update()}, which is the same call the
+   * whole-document path makes, so everything downstream of it - the file rewrite, the plan-cache invalidation
+   * and the {@code load()} below - is unchanged.
+   * <p>
+   * <b>{@code baseVersion} is a diagnostic, not a gate.</b> A follower's {@code versionSerial} legitimately runs
+   * AHEAD of the document the leader shipped: the {@code load()} that follows every schema entry re-saves the
+   * schema whenever it repaired anything, and each save increments the counter. Refusing on a mismatch would
+   * therefore refuse the common case - and there is nothing to refuse INTO, because a delta entry carries no
+   * whole document to fall back to.
+   * <p>
+   * What makes that safe is the delta itself rather than the version: it carries the leader's authoritative key
+   * sets, so the merged document has the leader's structure whatever the receiver started from, and only the
+   * content of children the leader considered unchanged is inherited locally. Genuine divergence stays the
+   * business of the WAL-version-gap detection and {@code checkDatabase}, which is where it was before this
+   * entry type existed.
+   */
+  // @VisibleForTesting
+  void applySchemaDelta(final DatabaseInternal db, final RaftLogEntryCodec.DecodedEntry decoded)
+      throws IOException {
+    final SchemaDelta.Payload delta = decoded.schemaDelta();
+    final LocalSchema schema = db.getSchema().getEmbedded();
+
+    HALog.log(this, HALog.DETAILED,
+        "Applying a %d-char schema delta to database '%s' (leader base version %d, local version %d)",
+        delta.deltaJson().length(), db.getName(), delta.baseVersion(), schema.getVersion());
+
+    final JSONObject merged = SchemaDelta.apply(schema.toJSON(), new JSONObject(delta.deltaJson()));
+
+    // The MERGED document is what this entry publishes, so it - not the empty schemaJson slot - is what the
+    // #4083 cross-reference has to look at. Only reached at DETAILED.
+    if (HALog.isEnabled(HALog.DETAILED))
+      logFollowerSchemaPayloadDiagnostics(db.getName(), merged.toString(), decoded.filesToAdd());
+
+    schema.update(merged);
   }
 
   /**

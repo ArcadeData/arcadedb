@@ -199,6 +199,47 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private final        AtomicLong                                        sealedChunksMaxSequence  = new AtomicLong();
 
   /**
+   * The schema document this node last SHIPPED to the followers, and the length of the last WHOLE document it
+   * shipped (issue #6989). Together they are what lets the next schema change go out as a delta:
+   * {@link SchemaDelta#compute} diffs against the former, and the latter says whether the result is small
+   * enough to be worth shipping instead of the document.
+   * <p>
+   * Written only after {@code replicateSchema} has returned - an entry that never reached the log did not move
+   * the followers - and only from inside a recording session, which is exclusive per database. Volatile for
+   * visibility across the threads that take that session in turn, not for atomicity between the two.
+   * <p>
+   * <b>Staleness is caught by the RAFT TERM the cache was filled in.</b> Only the leader ships schema entries,
+   * and a new leader always runs in a strictly higher term, so within one term this node is the only node that
+   * can have moved the followers - and across a term boundary the cache says nothing about what the other leader
+   * shipped. {@link #schemaDeltaFor} therefore compares the cached term against the current one and falls back
+   * to the whole document when they differ, which covers leadership loss, a re-election, and a step-down that
+   * this node won again.
+   * <p>
+   * The schema VERSION cannot do that job: {@code saveConfiguration()} defers while a transaction is active, so
+   * the version a DDL run inside {@code db.transaction(...)} produces lands AFTER the entry has shipped, and a
+   * version-based guard would refuse every delta. It is carried in the payload for diagnostics only.
+   * <p>
+   * <b>Cost:</b> one parsed schema document retained per replicated database, which for the multi-MB schema this
+   * issue is about is tens of MB of heap. That is why it is held only while {@code arcadedb.ha.schemaDelta} is
+   * on - see {@link #rememberReplicatedSchema} - and why the base is kept parsed rather than as text: a diff
+   * against text would have to re-parse it on every DDL, which is one of the very costs the delta exists to
+   * avoid.
+   */
+  private volatile     JSONObject                                        lastReplicatedSchema     = null;
+  private volatile     long                                              lastReplicatedSchemaTerm = -1L;
+  private volatile     int                                               lastFullSchemaLength     = 0;
+
+  /**
+   * How many schema changes this database has shipped as a DELTA, and how many as a whole document (issue
+   * #6989). Read together they are the operator's answer to "is the delta path actually engaged?", which a
+   * boolean setting alone cannot give: the leader falls back to the document on its own whenever the cached
+   * base is not what the followers hold, so a cluster with {@code arcadedb.ha.schemaDelta} on can still be
+   * shipping documents - and a ratio that never moves is the symptom to chase.
+   */
+  private final        AtomicLong                                        schemaDeltasShipped      = new AtomicLong();
+  private final        AtomicLong                                        schemaDocumentsShipped   = new AtomicLong();
+
+  /**
    * Memoized unreferenced-file count behind the (file modification count, schema version) gate (issue #6168).
    * <p>
    * Lives HERE, on the database instance, rather than in a map on the server: the gauge that reads it is refreshed
@@ -1770,8 +1811,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       reconcileInstalmentFiles(instalmentState.shippedFiles, addFiles, removeFiles);
 
-      if (schemaChanged)
-        serializedSchema = proxied.getSchema().getEmbedded().toJSON().toString();
+      // Issue #6989: ship what the DDL changed rather than the whole schema document, when the cluster is
+      // configured for it and the cached base is still what the followers hold. schemaDeltaFor() returns null
+      // whenever either is not true, and then the whole document goes out exactly as before.
+      JSONObject fullSchema = null;
+      SchemaDelta.Payload schemaDelta = null;
+      if (schemaChanged) {
+        fullSchema = proxied.getSchema().getEmbedded().toJSON();
+        schemaDelta = schemaDeltaFor(fullSchema);
+        if (schemaDelta == null)
+          serializedSchema = fullSchema.toString();
+      }
 
       // Collect any WAL entries buffered by commit() calls that occurred inside the callback
       final List<byte[]> walEntries = new ArrayList<>(schemaWalBuffer.get());
@@ -1797,7 +1847,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged || !walEntries.isEmpty()
           || shippedInstalments > 0) {
         final RaftHAServer raft = requireRaftServer();
-        raft.getTransactionBroker().replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas);
+        raft.getTransactionBroker().replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries,
+            bucketDeltas, Collections.emptyList(), Collections.emptyList(), schemaDelta);
         // Set HERE, not after the logging below: the change is published the moment that call returns, and a
         // diagnostic that threw would otherwise send the finally block into retireAbandonedInstalments to report a
         // divergence that does not exist. Harmless for on-disk state - the compensation only ever targets files
@@ -1806,12 +1857,30 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // Assigned a SECOND time after this block, and neither assignment is redundant: this one covers a throw
         // between here and there, the other covers the path where this block is not entered at all.
         published = true;
-        HALog.log(this, HALog.DETAILED,
-            "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, embeddedWalEntries=%d, instalments=%d",
-            addFiles.size(), removeFiles.size(), schemaChanged, walEntries.size(), shippedInstalments);
 
+        // Deliberately BELOW the assignment above, for the reason it documents: this only records what the
+        // followers now hold so the NEXT change can be diffed against it (issue #6989), and it must not be able
+        // to send the finally block hunting a divergence that did not happen. It runs after the entry has gone
+        // out for the converse reason - an entry that threw on its way to the log did not move the followers, so
+        // the base must not advance past it.
+        if (fullSchema != null)
+          rememberReplicatedSchema(fullSchema, schemaDelta == null ? serializedSchema.length() : -1);
+
+        HALog.log(this, HALog.DETAILED,
+            "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, schemaPayload=%s, "
+                + "embeddedWalEntries=%d, instalments=%d",
+            addFiles.size(), removeFiles.size(), schemaChanged,
+            schemaDelta != null ?
+                "delta of " + schemaDelta.deltaJson().length() + " chars" :
+                "document of " + serializedSchema.length() + " chars",
+            walEntries.size(), shippedInstalments);
+
+        // The document, not the payload: with a delta the payload is not a schema document at all, and the
+        // #4083 cross-reference below is about the schema being published, not about how it is encoded. Only
+        // reached at DETAILED, so the render this costs is one an operator asked for.
         if (HALog.isEnabled(HALog.DETAILED))
-          logSchemaPayloadDiagnostics("recordFileChanges", serializedSchema, addFiles, removeFiles);
+          logSchemaPayloadDiagnostics("recordFileChanges",
+              fullSchema != null ? fullSchema.toString() : serializedSchema, addFiles, removeFiles);
       }
 
       // The SECOND of the two assignments (see the one inside the block above). This one covers the path where the
@@ -2609,7 +2678,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // here rather than by the splitter after the delivery-only slices are already in the Raft log. The schema
       // JSON is serialized early for the same reason - its encoded size is part of what the sealed payload has
       // to leave room for.
-      final String serializedSchema = proxied.getSchema().getEmbedded().toJSON().toString();
+      final JSONObject compactionSchema = proxied.getSchema().getEmbedded().toJSON();
+      final String serializedSchema = compactionSchema.toString();
       final long sealedChunkBudget = GlobalConfiguration.replicatedSealedChunkBudget(proxied.getConfiguration());
       final List<SealedSlicePlan> sealedPlans = planSealedShipping(recordedSealed, sealedChunkBudget,
           publishingSealedCapacity(sealedChunkBudget, broker.maxEntrySize(),
@@ -2642,6 +2712,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       broker.replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas,
           sealedBlobs, finalSealedChunks);
+
+      // A compaction entry always carries the whole document - its size is what the sealed payload was budgeted
+      // against, so there is nothing to gain from a delta here - but it still MOVES the followers, so the base a
+      // later delta is diffed against has to advance with it (issue #6989).
+      rememberReplicatedSchema(compactionSchema, serializedSchema.length());
 
       HALog.log(this, HALog.DETAILED,
           "Compaction for database '%s' replicated via Raft: addFiles=%d, removeFiles=%d, walEntries=%d, "
@@ -2768,6 +2843,100 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
     throw new TimeoutException("Timeout of " + timeout
         + "ms waiting for the file recording session to replicate a schema change on database '" + getName() + "'");
+  }
+
+  /**
+   * The schema change as a DELTA against what the followers already hold (issue #6989), or null when the whole
+   * document has to go out instead.
+   * <p>
+   * Null is returned - and the whole document shipped - whenever any of these is true:
+   * <ul>
+   *   <li>{@code arcadedb.ha.schemaDelta} is off (the default). A node running a version that predates the
+   *       delta section cannot see it, so emitting one is only safe once every peer understands it; see
+   *       {@link GlobalConfiguration#HA_SCHEMA_DELTA}.</li>
+   *   <li>Nothing has been shipped yet in this instance's lifetime, so there is no base to diff against.</li>
+   *   <li>The Raft term moved since the cache was filled, so another node has been leader in between and what
+   *       the followers hold is whatever IT shipped - see {@link #lastReplicatedSchema}. An unknown term
+   *       ({@code -1}, which is what a division being restarted in place reports) counts as moved.</li>
+   *   <li>The delta is not meaningfully smaller than the document - a bulk drop, a settings change that
+   *       rewrites everything - in which case shipping it would cost the size of the document plus the delta's
+   *       own key sets.</li>
+   * </ul>
+   */
+  private SchemaDelta.Payload schemaDeltaFor(final JSONObject fullSchema) {
+    if (!schemaDeltaEnabled())
+      return null;
+
+    final JSONObject base = lastReplicatedSchema;
+    if (base == null)
+      return null;
+
+    final long term = currentRaftTerm();
+    if (term < 0 || term != lastReplicatedSchemaTerm) {
+      HALog.log(this, HALog.DETAILED,
+          "Shipping the whole schema for database '%s': the cached base was shipped in term %d, this node is in "
+              + "term %d",
+          getName(), lastReplicatedSchemaTerm, term);
+      return null;
+    }
+
+    final String deltaJson = SchemaDelta.compute(base, fullSchema).toString();
+    // Halving is the bar because the entry is not the only cost a delta avoids: the follower still parses and
+    // rewrites whatever arrives, so a "delta" worth most of the document buys nothing and costs the key sets.
+    if (lastFullSchemaLength > 0 && deltaJson.length() * 2L >= lastFullSchemaLength)
+      return null;
+
+    return new SchemaDelta.Payload(base.getLong(SchemaDelta.SCHEMA_VERSION, -1L), deltaJson);
+  }
+
+  /**
+   * Whether this cluster wants schema deltas. Read off the SERVER's configuration, like every other
+   * {@code SCOPE.SERVER} setting this class consults ({@code HA_QUORUM_TIMEOUT},
+   * {@code HA_FORWARD_LEADER_WAIT_TIMEOUT_MS}): the per-database {@code ContextConfiguration} does not carry
+   * what a server-scoped setting was set to, so reading it there silently answers "default" - which for this
+   * setting means the feature never engages at all, and nothing fails.
+   */
+  private boolean schemaDeltaEnabled() {
+    return server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_SCHEMA_DELTA);
+  }
+
+  /** The Raft term this node is in, or {@code -1} when it cannot be read (no server, division restarting). */
+  private long currentRaftTerm() {
+    final RaftHAServer raft = raftHAServer;
+    return raft != null ? raft.getCurrentTerm() : -1L;
+  }
+
+  /**
+   * Records the schema document the followers now hold, so the NEXT change can be diffed against it (issue
+   * #6989). Call only once the entry carrying it has actually been replicated.
+   *
+   * @param fullSchemaLength the length of the whole document when that is what was shipped, or {@code -1} when a
+   *                         delta was shipped and the last known whole-document length therefore still stands as
+   *                         the yardstick {@link #schemaDeltaFor} sizes the next delta against
+   */
+  private void rememberReplicatedSchema(final JSONObject fullSchema, final int fullSchemaLength) {
+    // Only retained when deltas are actually wanted: the document is the size of the schema, and a cluster
+    // running the default configuration would otherwise pay several MB per replicated database for a base
+    // nothing will ever diff against. Turning the setting on at runtime costs one more whole-document entry -
+    // the base is null until then, which is already one of the fallback arms.
+    final boolean wanted = schemaDeltaEnabled();
+    lastReplicatedSchema = wanted ? fullSchema : null;
+    lastReplicatedSchemaTerm = wanted ? currentRaftTerm() : -1L;
+    if (fullSchemaLength >= 0) {
+      lastFullSchemaLength = fullSchemaLength;
+      schemaDocumentsShipped.incrementAndGet();
+    } else
+      schemaDeltasShipped.incrementAndGet();
+  }
+
+  /** Schema changes this database has shipped as a delta since it opened - see {@link #schemaDeltasShipped}. */
+  public long getSchemaDeltasShipped() {
+    return schemaDeltasShipped.get();
+  }
+
+  /** Schema changes this database has shipped as a whole document since it opened. */
+  public long getSchemaDocumentsShipped() {
+    return schemaDocumentsShipped.get();
   }
 
   /**
