@@ -108,6 +108,24 @@ public class LocalSchema implements Schema {
       "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",//
       "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9");
 
+  /**
+   * Components whose load has a side effect on ANOTHER component, so they cannot be added to an already-loaded
+   * schema in isolation (issue #6988):
+   * <ul>
+   *   <li>the dictionary is what every component resolves property names through;</li>
+   *   <li>a compacted index is claimed by the mutable index that names it in its page 0 - and the claim is what
+   *       {@link #sweepOrphanCompactedIndexFiles} distinguishes a live compacted file from an orphan by;</li>
+   *   <li>a bloom filter is in turn claimed by its compacted index.</li>
+   * </ul>
+   * An entry carrying one of these falls back to the full rebuild, where every component is re-instantiated and
+   * every claim is re-established in one pass.
+   */
+  private static final Set<String> NON_INCREMENTAL_COMPONENT_EXTENSIONS = Set.of(//
+      Dictionary.DICT_EXT, //
+      LSMTreeIndexCompacted.UNIQUE_INDEX_EXT, //
+      LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, //
+      LSMTreeIndexBloomFilter.FILE_EXT);
+
   final               IndexFactory                           indexFactory                  = new IndexFactory();
   final               Map<String, LocalDocumentType>         types                         = new ConcurrentHashMap<>();
   private             String                                 encoding                      = DEFAULT_ENCODING;
@@ -261,16 +279,8 @@ public class LocalSchema implements Schema {
       if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension())) {
         final Component pf = componentFactory.createComponent(file, mode);
 
-        if (pf != null) {
-          final Object mainComponent = pf.getMainComponent();
-
-          if (mainComponent instanceof LocalBucket bucket)
-            bucketMap.put(pf.getName(), bucket);
-          else if (mainComponent instanceof IndexInternal internal)
-            indexMap.put(pf.getName(), internal);
-
-          registerFile(pf);
-        }
+        if (pf != null)
+          registerLoadedComponent(pf);
       }
     }
 
@@ -294,6 +304,139 @@ public class LocalSchema implements Schema {
       sweepOrphanCompactedIndexFiles(snapshot);
 
     updateSecurity();
+  }
+
+  /**
+   * Registers a component instantiated by {@link ComponentFactory} into the by-name lookup map its main component
+   * belongs to, and into the file-id array. Shared by the full {@link #load(ComponentFile.MODE, boolean)} and by
+   * {@link #loadIncremental} so the two paths cannot drift apart on what "registered" means.
+   */
+  private void registerLoadedComponent(final Component component) {
+    final Object mainComponent = component.getMainComponent();
+
+    if (mainComponent instanceof LocalBucket bucket)
+      bucketMap.put(component.getName(), bucket);
+    else if (mainComponent instanceof IndexInternal internal)
+      indexMap.put(component.getName(), internal);
+
+    registerFile(component);
+  }
+
+  /**
+   * Incremental counterpart of {@link #load(ComponentFile.MODE, boolean)} for the HA follower apply path (issue
+   * #6988). {@code load()} is a from-scratch rebuild: it drops every {@code Component} instance and re-instantiates
+   * one per file in the database, reading page 0 of each. Running it once per committed DDL entry - which is what
+   * {@code ArcadeStateMachine.applySchemaEntry} used to do - makes a schema build cost O(entries x total files),
+   * i.e. quadratic in the number of types, all of it on the single Ratis apply thread (a 1209-type schema took
+   * about 2h53m to replicate in issue #6982).
+   * <p>
+   * This method instead instantiates a component only for the files that do not have one yet, re-runs the load hooks
+   * for the already-registered components this entry wrote pages into ({@code touchedFileIds} - that is what re-reads
+   * an LSM mutable index' page 0 for its key types, sub-index pointer and mutable page count), and then refreshes the
+   * logical schema from {@code schema.json} through the very same {@link #readConfiguration()} the full load runs.
+   * Every component instance that is already registered is left alone, so the cost is O(changed files) rather than
+   * O(total files) - the file walk itself stays O(total files) but touches no page and allocates no component.
+   * <p>
+   * WHY THE SET OF NEW COMPONENTS IS DERIVED FROM THE FILE MANAGER and not from the entry's {@code filesToAdd}. A
+   * schema change too large for one Raft entry is split (see {@code RaftTransactionBroker.splitSchemaEntry}): the
+   * leading chunks carry {@code filesToAdd} and NO schema JSON, and their apply deliberately skips the refresh
+   * entirely (issue #5443), so their files sit in the {@link com.arcadedb.engine.FileManager} with no component. Only
+   * the last chunk publishes the schema, and its own {@code filesToAdd} does not name them. Registering just that
+   * chunk's files would leave the index unregistered exactly when {@link #readConfiguration()} looks for it, and that
+   * is not a transient miss: the unresolvable index reference is dropped from the in-memory schema and SAVED, so the
+   * follower loses the index permanently (the #4083 self-heal path). Asking the file manager what has no component
+   * yet converges on precisely the set {@code load()} would have registered, whatever produced the files.
+   * <p>
+   * The logical refresh is deliberately NOT made incremental here: the leader ships the whole schema JSON in every
+   * entry, so parsing it is O(schema size) no matter what this method does. Removing that term is the separate
+   * "delta schema shipping" change.
+   *
+   * @param mode           open mode for the newly instantiated components
+   * @param removedFileIds file ids retired by this entry; any removal forces the full rebuild (see below)
+   * @param touchedFileIds file ids this entry wrote pages into; already-registered components among them get their
+   *                       load hooks re-run. May be {@code null}
+   *
+   * @return {@code true} when the schema was refreshed incrementally, {@code false} when the caller must fall back
+   * to {@link #load(ComponentFile.MODE, boolean)}. When {@code false} is returned nothing has been modified.
+   */
+  public boolean loadIncremental(final ComponentFile.MODE mode, final Collection<Integer> removedFileIds,
+      final Collection<Integer> touchedFileIds) throws IOException {
+
+    // Nothing was ever loaded in this lifecycle, so there is no baseline to add to.
+    if (dictionary == null || !loadInRamCompleted)
+      return false;
+
+    // A retired file leaves a stale entry behind in bucketMap/indexMap (removeFile() only clears the file-id array),
+    // and the mutable index that superseded it has to re-read its page 0 anyway. Both are what the full rebuild is
+    // for, and both are the ordering the comments on issues #4743 and #5443 in applySchemaEntry pin down.
+    if (removedFileIds != null && !removedFileIds.isEmpty())
+      return false;
+
+    // First pass decides, without modifying anything, so a refusal leaves the caller's fallback a consistent state.
+    final List<ComponentFile> unregistered = new ArrayList<>();
+    for (final ComponentFile file : database.getFileManager().getFiles()) {
+      if (file == null || getFileByIdIfExists(file.getFileId()) != null)
+        continue;
+
+      if (NON_INCREMENTAL_COMPONENT_EXTENSIONS.contains(file.getFileExtension()))
+        return false;
+
+      unregistered.add(file);
+    }
+
+    // Second pass instantiates only what is missing.
+    final List<Component> added = new ArrayList<>(unregistered.size());
+    final Set<Integer> addedFileIds = new HashSet<>(unregistered.size());
+    for (final ComponentFile file : unregistered) {
+      final Component component = componentFactory.createComponent(file, mode);
+      if (component == null)
+        continue;
+
+      registerLoadedComponent(component);
+      added.add(component);
+      addedFileIds.add(component.getFileId());
+    }
+
+    // A component just created above already ran its hooks below as part of `added`; listing it twice would read
+    // its page 0 twice for nothing.
+    final List<Component> touched = new ArrayList<>();
+    if (touchedFileIds != null)
+      for (final Integer fileId : touchedFileIds) {
+        if (addedFileIds.contains(fileId))
+          continue;
+        final Component component = getFileByIdIfExists(fileId);
+        if (component != null)
+          touched.add(component);
+      }
+
+    // Same ordering as load(): every load hook runs BEFORE readConfiguration(), because the logical schema binds
+    // to what the hooks published (an index' key types, a hash index' metadata).
+    for (final Component component : added)
+      component.onAfterLoad();
+    for (final Component component : touched)
+      component.onAfterLoad();
+
+    readConfiguration();
+
+    // ...and every schema hook runs AFTER it, because those read what readConfiguration() just set on the index
+    // metadata (a vector index loads its vectors only once its dimensions are known).
+    for (final Component component : added)
+      component.onAfterSchemaLoad();
+    for (final Component component : touched)
+      component.onAfterSchemaLoad();
+
+    // A compacted index can never be in `added` (NON_INCREMENTAL_COMPONENT_EXTENSIONS excludes it), so this is a
+    // no-op today; it is kept so the two load paths stay symmetric if that ever changes.
+    attachBloomFilters(added);
+
+    // sweepOrphanCompactedIndexFiles() is deliberately NOT run here. It proves a compacted file is an orphan by
+    // observing that no mutable index claimed it during the load - a proof that only holds when EVERY mutable index
+    // was re-instantiated in the same pass. On this path most of them were not, so the sweep would drop live files.
+    // An orphan left behind is reclaimed by the next full load (a restart, or any entry that takes the fallback).
+
+    updateSecurity();
+
+    return true;
   }
 
   /**

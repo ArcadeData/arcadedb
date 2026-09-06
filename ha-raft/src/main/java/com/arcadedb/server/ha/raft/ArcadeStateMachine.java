@@ -2112,6 +2112,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (!sealedOnlyEntry && decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
         db.getSchema().getEmbedded().update(new JSONObject(decoded.schemaJson()));
 
+      // File ids this entry wrote pages into. The incremental refresh below re-runs the load hooks of the
+      // already-registered components among them, which is what re-reads an LSM mutable index' page 0 - the full
+      // rebuild used to get that for free by re-instantiating every component in the database (#6988).
+      final Set<Integer> walTouchedFileIds = new HashSet<>();
+
       // Apply WAL entries BEFORE the schema reload. New files created above are initially empty;
       // reloading before writing pages would see empty files and silently ignore them, leaving
       // compaction indexes unregistered in the schema after this method returns. Writing the
@@ -2127,6 +2132,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
               ? bucketDeltas.get(i)
               : Collections.emptyMap();
           final WALFile.WALTransaction walTx = deserializeWalTransaction(walData);
+          if (walTx.pages != null)
+            for (final WALFile.WALPage page : walTx.pages)
+              walTouchedFileIds.add(page.fileId);
           // ignoreErrors=true: same rationale as applyTxEntry - replay safety during node restart
           db.getTransactionManager().applyChanges(walTx, bucketDelta, true);
         }
@@ -2156,8 +2164,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Skipped for sealed-only TimeSeries compaction entries (see sealedOnlyEntry above), for
       // delivery-only chunks of a split schema change (see deliveryOnlyEntry above) and for WAL-only
       // entries (see walOnlyEntry above).
-      if (!sealedOnlyEntry && !deliveryOnlyEntry && !walOnlyEntry)
-        db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
+      //
+      // The refresh is INCREMENTAL whenever the entry can be expressed that way (#6988): load() re-instantiates a
+      // Component for every file in the database and reads page 0 of each, so running it once per DDL statement
+      // costs O(entries x total files) - quadratic in the number of types, and all of it serialized on the single
+      // Ratis apply thread (a 1209-type schema took ~2h53m to replicate, issue #6982). loadIncremental() touches
+      // only the files this entry created or wrote to, and refuses - returning false, having changed nothing - for
+      // every entry whose effect it cannot express (a retired file, a compacted index, a bloom filter, a new
+      // dictionary), which is what keeps the ordering guarantees of #4743 and #5443 on the full-rebuild path.
+      if (!sealedOnlyEntry && !deliveryOnlyEntry && !walOnlyEntry) {
+        final LocalSchema schema = db.getSchema().getEmbedded();
+        final boolean incremental = incrementalSchemaApplyEnabled()
+            && schema.loadIncremental(ComponentFile.MODE.READ_WRITE, keysOrNull(decoded.filesToRemove()),
+            walTouchedFileIds);
+        if (!incremental)
+          schema.load(ComponentFile.MODE.READ_WRITE, true);
+      }
 
     } catch (final IOException e) {
       throw new RuntimeException("Failed to apply schema entry for database '" + decoded.databaseName() + "'", e);
@@ -2595,6 +2617,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   private static boolean isNotEmpty(final List<?> list) {
     return list != null && !list.isEmpty();
+  }
+
+  private static Set<Integer> keysOrNull(final Map<Integer, String> map) {
+    return map == null ? null : map.keySet();
+  }
+
+  /**
+   * Safety valve for {@link LocalSchema#loadIncremental} (issue #6988). Read per entry rather than cached so an
+   * operator can turn the incremental refresh off on a running server and have the very next applied entry go back
+   * to the full rebuild, without a restart.
+   */
+  private boolean incrementalSchemaApplyEnabled() {
+    // The server-scoped value when this state machine is wired to one, the global default otherwise: tests drive
+    // applySchemaEntry with no server attached, and they must exercise the same path production does.
+    final ArcadeDBServer currentServer = server;
+    return currentServer != null ?
+        currentServer.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_SCHEMA_INCREMENTAL_APPLY) :
+        GlobalConfiguration.HA_SCHEMA_INCREMENTAL_APPLY.getValueAsBoolean();
   }
 
   // @VisibleForTesting
