@@ -123,6 +123,8 @@ public enum PostgresType {
     names.put("character", BPCHAR);
     names.put("decimal", NUMERIC);
     names.put("timestamp without time zone", TIMESTAMP);
+    // No "timestamp with time zone" on purpose: timestamptz is a different type from timestamp, and this
+    // protocol has none. Mapping it here would answer a client asking for one with the wrong OID.
 
     return Map.copyOf(names);
   }

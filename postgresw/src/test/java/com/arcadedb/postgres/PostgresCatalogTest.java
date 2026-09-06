@@ -700,6 +700,26 @@ class PostgresCatalogTest {
   }
 
   @Test
+  void aThirdTypeFoldingToTheSameNameStaysAmbiguousRatherThanBecomingTheAnswer() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("ARTICLE").createProperty("code", Type.STRING);
+      database.getSchema().createDocumentType("aRticle").createProperty("slug", Type.STRING);
+    });
+
+    // Once a folded name is struck out it has to stay struck out. Removing the entry instead would leave the
+    // key absent, so the third name folding the same way would find nothing there and install itself - and
+    // "article" would resolve to whichever type the schema happened to iterate last.
+    assertThat(resolve(ADBC_GET_TABLE_SCHEMA, "article").rows).isEmpty();
+    assertThat(resolve(ADBC_GET_TABLE_SCHEMA, "artICLE").rows).isEmpty();
+
+    // An unquoted name that IS one of the three verbatim still resolves: the exact match runs first, and it
+    // is the only reading under which a case-sensitive schema stays addressable at all.
+    assertThat(names(resolve(ADBC_GET_TABLE_SCHEMA, "ARTICLE").rows, "attname")).containsExactly("code");
+    assertThat(names(resolve(ADBC_GET_TABLE_SCHEMA, "\"aRticle\"").rows, "attname")).containsExactly("slug");
+    assertThat(names(resolve(ADBC_GET_TABLE_SCHEMA, "\"Article\"").rows, "attname")).containsExactly("id", "title");
+  }
+
+  @Test
   void aRegclassCastOfANumericOidStringIsThatOid() {
     // PostgreSQL's regclass input accepts an OID spelled as digits, and the driver's parameter arrives as
     // text either way.

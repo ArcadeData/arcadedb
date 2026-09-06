@@ -755,11 +755,17 @@ public class PostgresCatalog {
       return database.getName();
     }
 
-    /** The relation an OID names, for the {@code attrelid::regclass} direction of the cast. */
+    /**
+     * The relation an OID names, for the {@code attrelid::regclass} direction of the cast. Built over the
+     * types in name order rather than in schema iteration order: {@link #oidOf} derives an OID from a hash,
+     * so two names can in principle land on the same one, and this is the first place such a collision
+     * would be externally visible - one type's name printed for another type's row. Which of the two wins
+     * has to at least not depend on the order a hash set happened to iterate in.
+     */
     String relationNamed(final int oid) {
       if (namesByOid == null) {
         namesByOid = new HashMap<>();
-        for (final DocumentType type : database.getSchema().getTypes())
+        for (final DocumentType type : sortedTypes(this))
           namesByOid.putIfAbsent(oidOf(type.getName()), type.getName());
       }
       return namesByOid.get(oid);
@@ -780,12 +786,19 @@ public class PostgresCatalog {
 
       if (typesByFoldedName == null) {
         typesByFoldedName = new HashMap<>();
-        // merge() drops the entry when the remapping function answers null, which is what a folded name two
-        // types answer to has to do: neither of them is the one meant.
-        for (final DocumentType type : database.getSchema().getTypes())
-          typesByFoldedName.merge(type.getName().toLowerCase(Locale.ENGLISH), type, (first, second) -> null);
+        for (final DocumentType type : sortedTypes(this)) {
+          final String folded = type.getName().toLowerCase(Locale.ENGLISH);
+          // A folded name stays in the map once it is struck out, mapped to null. containsKey is what tells
+          // "not seen yet" from "seen and struck out", and removing the entry instead would not: a third
+          // name folding the same way would find the key absent and install itself as the answer.
+          if (typesByFoldedName.containsKey(folded))
+            typesByFoldedName.put(folded, null);
+          else
+            typesByFoldedName.put(folded, type);
+        }
       }
 
+      // Absent and struck out both answer null here, and both mean the same thing: no type this name names.
       return typesByFoldedName.get(name.toLowerCase(Locale.ENGLISH));
     }
   }
@@ -1547,6 +1560,9 @@ public class PostgresCatalog {
         try {
           return Integer.valueOf(written);
         } catch (final NumberFormatException e) {
+          // PostgreSQL's OID space is unsigned 32-bit, and this one is int. A number too big to be an OID
+          // this catalog ever handed out is deliberately read as "no such relation" rather than as an
+          // error: oidOf never produces one, so nothing it could name exists.
           return null;
         }
 
