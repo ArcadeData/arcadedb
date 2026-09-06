@@ -72,6 +72,15 @@ public class RebuildIndexStatement extends DDLStatement {
   public RebuildIndexStatement() {
   }
 
+  /**
+   * Not batchable into a DDL script's bulk schema scope (issue #6990). A rebuild reads every record of the type and writes a whole index; it must not extend the batch's hold on the
+   * database write lock, nor have its WAL folded into the batch's single entry.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe() {
+    return false;
+  }
+
   @Override
   public ResultSet executeDDL(final CommandContext context) {
     // Index (re)build is a schema-maintenance operation, gated by UPDATE_SCHEMA like DROP INDEX. The full-rebuild path

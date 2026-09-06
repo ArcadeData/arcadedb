@@ -183,6 +183,35 @@ public interface Schema {
     return existsType(typeName) ? getType(typeName) : null;
   }
 
+  /**
+   * Runs a batch of schema changes inside ONE schema recording session, so the whole batch is persisted - and, under
+   * HA, replicated - once instead of once per statement (issue #6990).
+   * <p>
+   * Every DDL entry point opens its own session: {@code TypeBuilder.create()}, {@code TypeIndexBuilder.create()},
+   * {@code createProperty()} and friends. Under HA the OUTERMOST session on the calling thread is the Raft entry
+   * boundary, so N independent DDL calls are N entries, each one a serialized full schema and a synchronous quorum
+   * round trip taken with the database write lock held. Nesting is what collapses them: a session opened while one is
+   * already active on the same thread rides the outer frame. This method is the supported way to open that outer
+   * frame around code the caller writes, and it is the same machinery a DDL-only SQL script uses.
+   * <p>
+   * SEMANTICS OF A FAILURE. Schema DDL has no rollback, so a batch that throws part way cannot be undone on the node
+   * that ran it. What the scope guarantees instead is that the two sides do not disagree: the prefix the caller's code
+   * actually completed is published before the exception is rethrown, exactly the state a script of separate
+   * statements would have left. The exception the batch threw is what the caller sees.
+   * <p>
+   * COST. The database write lock is held for the whole batch, so every writer on this database waits it out. That is
+   * the trade this method exists to make - one long lock instead of N quorum round trips each holding the same lock -
+   * and it is why a batch should be a schema definition and not a data load.
+   * <p>
+   * The default implementation simply runs the callback: a schema with no recording session of its own (a remote
+   * schema, where each statement is its own HTTP round trip anyway) has nothing to batch.
+   *
+   * @param callback the schema changes to apply as one batch
+   */
+  default void bulkChange(final Runnable callback) {
+    callback.run();
+  }
+
   void dropType(String typeName);
 
   String getTypeNameByBucketId(int bucketId);

@@ -30,6 +30,15 @@ public class RefreshContinuousAggregateStatement extends DDLStatement {
   public RefreshContinuousAggregateStatement() {
   }
 
+  /**
+   * Not batchable into a DDL script's bulk schema scope (issue #6990). A refresh re-aggregates the source type; it must not extend the batch's hold on the database write lock, nor
+   * have its WAL folded into the batch's single entry.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe() {
+    return false;
+  }
+
   @Override
   public ResultSet executeDDL(final CommandContext context) {
     final Database database = context.getDatabase();

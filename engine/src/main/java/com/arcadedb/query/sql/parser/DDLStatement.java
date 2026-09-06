@@ -36,6 +36,31 @@ public abstract class DDLStatement extends Statement {
   public DDLStatement() {
   }
 
+  /**
+   * Whether this statement may run inside the single schema recording session a DDL-only script opens (issue #6990).
+   * <p>
+   * True for schema DEFINITION - creating, altering and dropping types, properties, buckets, indexes, triggers and
+   * views - which is what the bulk scope exists to batch: the work is small, the payload is the schema itself, and
+   * collapsing N of them into one Raft entry is the whole point.
+   * <p>
+   * False for the statements that do record-level work. Two distinct reasons, and both are silent rather than loud:
+   * <ul>
+   *   <li>{@code COMPACT INDEX} would be SKIPPED outright. Compaction goes through
+   *       {@code RaftReplicatedDatabase.runWithCompactionReplication}, which refuses to start while another recording
+   *       session is active on the node and returns false - the #4063 guard against sharing a session's recorded
+   *       changes. Inside a bulk scope that refusal is guaranteed, so the statement would report success having
+   *       compacted nothing;</li>
+   *   <li>rebuilds, refreshes and truncates read or write every record of a type. Their WAL is buffered into the
+   *       session instead of shipping as ordinary transactions, and the database write lock is held for the whole
+   *       batch, so folding one into a scope turns a bounded statement into an unbounded one at the expense of every
+   *       other writer.</li>
+   * </ul>
+   * A script containing any such statement keeps the pre-existing one-session-per-statement behaviour, whole.
+   */
+  public boolean isBulkSchemaScopeSafe() {
+    return true;
+  }
+
   public abstract ResultSet executeDDL(CommandContext context);
 
   public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {

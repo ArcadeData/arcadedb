@@ -77,6 +77,15 @@ public class RebuildTypeStatement extends DDLStatement {
   public RebuildTypeStatement() {
   }
 
+  /**
+   * Not batchable into a DDL script's bulk schema scope (issue #6990). A rebuild reads every record of the type; it must not extend the batch's hold on the database write lock, nor
+   * have its WAL folded into the batch's single entry.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe() {
+    return false;
+  }
+
   @Override
   public ResultSet executeDDL(final CommandContext context) {
     int batchSize = DEFAULT_BATCH_SIZE;

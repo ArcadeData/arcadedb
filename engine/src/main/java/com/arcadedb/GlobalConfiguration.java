@@ -242,6 +242,10 @@ public enum GlobalConfiguration {
   FREE_PAGE_RAM("arcadedb.freePageRAM", SCOPE.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,
       50),
 
+  SCHEMA_BULK_DDL_SCRIPT("arcadedb.schemaBulkDDLScript", SCOPE.DATABASE,
+      "Run a SQL script whose statements are ALL schema definition DDL inside a single schema recording session, so the batch is persisted - and, under HA, replicated as one Raft entry - once instead of once per statement (issue #6990). The trade is that the database write lock is held for the whole script instead of once per statement. Set to false to go back to one session per statement",
+      Boolean.class, true),
+
   TYPE_DEFAULT_BUCKETS("arcadedb.typeDefaultBuckets", SCOPE.DATABASE, "Default number of buckets to create per type", Integer.class,
       1),
 

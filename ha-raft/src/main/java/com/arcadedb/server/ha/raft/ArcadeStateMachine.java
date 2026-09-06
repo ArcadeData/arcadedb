@@ -127,6 +127,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   public static volatile AtomicInteger TEST_WAL_GAP_COUNTER = null;
 
+  /**
+   * Test-only counter of PUBLISHING schema entries applied on a follower (issue #6990). When non-null, incremented
+   * once per {@code SCHEMA_ENTRY} that tells the follower to reload its schema - the instalment/split chunks that only
+   * deliver pages are deliberately not counted, since they are not the unit a DDL batch is measured in.
+   * <p>
+   * Tests that set this MUST reset it to {@code null} in an {@code @AfterEach} method, otherwise it leaks into
+   * subsequent tests in the same JVM.
+   */
+  public static volatile AtomicInteger TEST_SCHEMA_ENTRY_COUNTER = null;
+
   private final    SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final    AtomicLong                lastAppliedIndex = new AtomicLong(-1);
   private final    AtomicLong                electionCount    = new AtomicLong(0);
@@ -2081,6 +2091,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // standalone DDL that adds files without changing the schema version - and skipping the reload for
     // that would leave the new files unregistered in the schema.
     final boolean deliveryOnlyEntry = decoded.moreChunksFollow();
+
+    final AtomicInteger schemaEntryCounter = TEST_SCHEMA_ENTRY_COUNTER;
+    if (schemaEntryCounter != null && !deliveryOnlyEntry)
+      schemaEntryCounter.incrementAndGet();
 
     // A commit that ran inside a recordFileChanges() callback but created no file and left the schema
     // version untouched ships as a SCHEMA_ENTRY carrying nothing but WAL, because the buffering in

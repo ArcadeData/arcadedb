@@ -55,6 +55,15 @@ public class CompactIndexStatement extends DDLStatement {
   public CompactIndexStatement() {
   }
 
+  /**
+   * Not batchable into a DDL script's bulk schema scope (issue #6990). Compaction refuses to run while a recording session is active (the #4063 guard in
+   * {@code runWithCompactionReplication}), so inside a bulk scope this statement would compact nothing and say it did.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe() {
+    return false;
+  }
+
   @Override
   public ResultSet executeDDL(final CommandContext context) {
     // Compaction is a schema-maintenance operation that mutates on-disk index files, gated by UPDATE_SCHEMA like
