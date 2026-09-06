@@ -26,8 +26,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.NoSuchElementException
-;
+import java.util.NoSuchElementException;
 import java.util.Set;
 
 /**
