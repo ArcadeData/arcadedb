@@ -2539,6 +2539,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.writeLock().lock();
       try {
         this.graphIndex = null;
+        // Cleared with the graph, for the same reason (issue #7190): the ordinals describe the generation being
+        // released, and a build that then fails would leave getStats() reporting them against no resident graph.
+        // The set on disk is untouched, so a later load reads it back from the manifest.
+        this.graphUnreachableOrdinals = EMPTY_ORDINALS;
         this.searchVectorCache = null;
         releasePooledSearchers();
       } finally {
@@ -2958,6 +2962,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         try {
           this.ordinalToVectorId = filteredVectorIds;
           this.graphIndex = null;
+          // Cleared with the graph it describes: this build published none, so the previous generation's orphans
+          // describe nothing that is resident any more, and getStats() would otherwise report unreachable nodes for
+          // an index that has no graph at all (issue #7190).
+          this.graphUnreachableOrdinals = EMPTY_ORDINALS;
           // Nulling the field is not enough to free the graph: a pooled searcher holds the graph it was pooled
           // under (issue #6503). Normally borrow() drains the pool when it notices the identity moved, but this
           // path leaves no graph to search, and findNeighborsFromVector() returns on `graphIndex == null` BEFORE
