@@ -78,7 +78,7 @@ Ratis logger:
 - a `SEVERE` record carrying the same text still gets through
 - installing twice does not stack filters, and a pre-existing filter still gets consulted
 
-## Follow-up noted, out of scope
+## Follow-up noted, out of scope - filed as #7209
 
 `SimpleStateMachineStorage.cleanupOldSnapshots` only ever sets `deleteIdx` after it has seen
 `numSnapshotsRetained` snapshots that *have* an md5. ArcadeDB writes none, so `deleteIdx` stays `-1`

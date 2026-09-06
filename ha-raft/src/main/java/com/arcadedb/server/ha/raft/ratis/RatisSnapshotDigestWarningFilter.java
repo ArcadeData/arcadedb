@@ -51,6 +51,19 @@ import java.util.logging.Logger;
  * <p>Only records at {@link Level#WARNING} or below are dropped: a future Ratis release that raised the
  * same text to {@link Level#SEVERE} would still be heard.
  *
+ * <p><b>What this depends on.</b> Two things, both of which fail <em>open</em> (the warning comes back)
+ * rather than silently swallowing something else:
+ * <ul>
+ *   <li>Ratis logs through SLF4J, and {@code ha-raft} binds SLF4J to {@code java.util.logging} with
+ *       {@code slf4j-jdk14}, so the record really does reach a JUL {@link Filter}. Swapping in a binding
+ *       that does not terminate in JUL (Logback, Log4j2) leaves this filter inert; the suppression would
+ *       then have to be re-expressed in that backend's configuration.</li>
+ *   <li>The Ratis message text. The match is on a substring shared by the raw SLF4J pattern and by the
+ *       formatted message the bridge produces, so it holds whether the record carries one or the other,
+ *       but a Ratis release that reworded the line would resurface the warning rather than hide a
+ *       different one.</li>
+ * </ul>
+ *
  * @see com.arcadedb.server.ha.raft.ArcadeStateMachine
  */
 public final class RatisSnapshotDigestWarningFilter implements Filter {
