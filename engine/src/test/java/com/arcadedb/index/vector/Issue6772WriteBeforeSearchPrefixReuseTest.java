@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -127,6 +128,14 @@ class Issue6772WriteBeforeSearchPrefixReuseTest {
     try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
       final Database db = factory.open();
       try {
+        // The reuse hands its gap to an async rebuild only when that gap crosses the ordinary rebuild threshold
+        // (issue #7183): rebuilding every node of a graph for a gap below it is exactly what the threshold exists
+        // to refuse, and doing it anyway meant a session that opened, searched once and exited paid a full rebuild
+        // for one vector. The gap here is 1% of the fixture, so the ratio-scaled threshold - 20% of the graph, 4,000
+        // here - would not be crossed. Disabling the scaling leaves the absolute floor of 100, which the 201 pending
+        // vectors genuinely exceed, so the fold-in this test asserts is triggered BY the policy, not in spite of it.
+        db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO, 0f);
+
         // count(`@rid`) rather than count(*): the latter answers from the maintained counter, which is written by
         // the very session kill() interrupted, so it can agree with the expected number while the records are
         // absent. This precondition is about what WAL recovery actually restored, so it has to count records.

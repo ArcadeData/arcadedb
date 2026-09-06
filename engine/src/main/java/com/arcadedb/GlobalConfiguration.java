@@ -1221,8 +1221,12 @@ public enum GlobalConfiguration {
       """
       Share of the currently AVAILABLE heap (percentage) that an online vector graph rebuild's estimated peak \
       footprint may occupy before the rebuild is deferred instead of attempted. An online rebuild keeps the old \
-      graph resident so searches keep working, and pays for a full new build's working set on top of it, so it \
-      costs roughly 1.7x what building the same corpus from nothing costs. With no gate at all it simply attempts \
+      graph resident so searches keep working, and pays for a full new build's working set on top of it. What \
+      keeping the old graph resident actually costs is measured rather than assumed, so a graph whose topology lives \
+      on disk - the shape a reopened database serves - is not charged as a second on-heap copy of itself; and the \
+      available heap it is judged against counts the page read cache as reclaimable, because it is: a rebuild that \
+      fits only by giving some of it up evicts those pages first, and they are read back from disk on demand. \
+      With no gate at all it simply attempts \
       the rebuild and dies with an OutOfMemoryError when it does not fit. A deferred cycle is not lost: the next \
       mutation-threshold or inactivity trigger retries it, and pending vectors stay exactly searchable through the \
       in-memory delta buffer meanwhile, so the cost of deferring is a longer delta scan per query rather than \

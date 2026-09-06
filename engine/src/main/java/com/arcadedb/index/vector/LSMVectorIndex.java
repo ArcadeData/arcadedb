@@ -37,6 +37,7 @@ import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
@@ -70,6 +71,7 @@ import io.github.jbellis.jvector.graph.GraphIndexBuilder;
 import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
 import io.github.jbellis.jvector.graph.NodesIterator;
+import io.github.jbellis.jvector.graph.OnHeapGraphIndex;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.SearchResult;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
@@ -357,6 +359,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   private volatile List<DeltaVectorEntry> deltaVectors = new ArrayList<>();
+
+  /**
+   * Ordinals of the RESIDENT graph that no path from its entry node reaches (issue #5615), or {@code null} when
+   * this session has not established the answer for the graph it is serving - it has neither built one nor loaded
+   * one from disk yet.
+   * <p>
+   * Set by a build (from its own connectivity walk) and by the load path (from the manifest next to the graph it
+   * loaded), so it always describes the graph {@link #graphIndex} currently holds. Two things read it: the manifest
+   * write, so the set survives the process that discovered it (issue #7190), and {@link #getStats()}, so an
+   * operator can see that N vectors are reachable only through the delta scan.
+   */
+  private volatile int[] graphUnreachableOrdinals = null;
 
   /**
    * Exponential moving average of the nodes a graph walk scores per query, from JVector's own
@@ -1527,9 +1541,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param liveOrdinalToVectorId    every live vector's id, in ordinal order - not only the ones the graph covers
    * @param graphSize                how many of {@code liveOrdinalToVectorId}'s leading entries the graph covers
    * @param vectorProp               the vector property name, for reading the gap vectors back
+   * @param unreachableOrdinals      ordinals of the loaded graph its own build could not link, from the manifest
+   *                                 (issue #7190) - never {@code null}
    */
   private record ReuseCandidate(ImmutableGraphIndex loadedGraph, int[] liveOrdinalToVectorId, int graphSize,
-                                 String vectorProp) {
+                                 String vectorProp, int[] unreachableOrdinals) {
   }
 
   /**
@@ -1831,7 +1847,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Deliberately not done here: reuseStalePrefixGraph() does real I/O for the gap and must run
           // unlocked (see the field javadoc above). Only the decision - not the read - belongs under this
           // lock, same as every other branch in this method.
-          return new PersistedGraphCheck(false, new ReuseCandidate(loadedGraph, prefix, graphSize, vectorProp));
+          return new PersistedGraphCheck(false,
+              new ReuseCandidate(loadedGraph, prefix, graphSize, vectorProp, persistedManifest.unreachableOrdinals()));
         }
         LogManager.instance().log(this, Level.INFO,
             "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
@@ -1843,10 +1860,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Graph is up to date - publish it under a brief write lock (issue #6713), then finish PQ
       // (if needed) unlocked, mirroring buildGraphFromScratchExclusively's own publish step.
+      final int[] unreachableOrdinals = persistedManifest != null ?
+          persistedManifest.unreachableOrdinals() : EMPTY_ORDINALS;
+
+      // Nodes the build that produced this graph could not link are physically in it and unreachable to every beam
+      // search, at any efSearch. The session that built it served them from the delta scan; this one has to do the
+      // same or they are simply gone while totalVectors still counts them (issue #7190). Read here, BEFORE the
+      // publish below and unlocked because it is real I/O, so the graph and the entries that complete it become
+      // visible in the same write lock: publishing first and queueing afterwards would leave a window in which a
+      // search sees the graph without them, which is the very thing this fix exists to stop. Same order as the
+      // stale-prefix path, which reads its gap before publishing for the identical reason.
+      final List<DeltaVectorEntry> unreachableEntries = readUnreachableEntries(unreachableOrdinals,
+          rebuiltOrdinalToVectorId, rebuiltOrdinalToVectorId.length, vectorProp);
+
+      final int queuedUnreachable;
       lock.writeLock().lock();
       try {
         this.graphIndex = loadedGraph;
+        this.graphUnreachableOrdinals = unreachableOrdinals;
         this.ordinalToVectorId = rebuiltOrdinalToVectorId;
+        // Appended, never counted as mutations and never promoting graphState - see readUnreachableEntries().
+        queuedUnreachable = appendToDeltaBuffer(unreachableEntries);
         if (graphState == GraphState.LOADING)
           this.graphState = GraphState.IMMUTABLE;
         // else: a concurrent put()/putBatch()/remove() already advanced graphState to MUTABLE while
@@ -1857,6 +1891,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       } finally {
         lock.writeLock().unlock();
       }
+
+      if (queuedUnreachable > 0)
+        LogManager.instance().log(this, Level.INFO,
+            "Queued %d of the %d vector(s) the persisted graph of index %s leaves unreachable into the delta scan, "
+                + "which is the only way a search can return them (issue #7190)", queuedUnreachable,
+            unreachableOrdinals.length, indexName);
 
       // Build PQ if PRODUCT quantization is enabled but PQ file doesn't exist
       // This handles the case where graph was built before PRODUCT quantization was added
@@ -1921,6 +1961,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int graphSize = candidate.graphSize();
     final String vectorProp = candidate.vectorProp();
 
+    // Declared out here rather than beside the publish below because the rebuild decision at the tail of this
+    // method - past graphBuildLock - is made on it (issue #7183).
+    int queuedIntoDelta = 0;
+
     graphBuildLock.lock();
     try {
       // Double-check that nobody published a graph while this call waited for graphBuildLock - a concurrent
@@ -1970,51 +2014,36 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int[] gapOrdinalToVectorId = gapCount == gapCandidates.length ? gapCandidates :
           Arrays.copyOf(gapCandidates, gapCount);
 
-      final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(),
-          metadata.dimensions, vectorProp,
-          snapshotOf(vectorIndex(), gapOrdinalToVectorId), gapOrdinalToVectorId, this,
-          computeGraphBuildCacheCapacity(gapOrdinalToVectorId.length));
-
       // Collected into a local list first, exactly the way buildGraphFromScratchExclusively collects its own
       // unreachable-node re-queue before its publish step: appended into the shared deltaVectors only once this
       // method holds lock.writeLock() below, never while unlocked.
-      final List<DeltaVectorEntry> gapEntries = new ArrayList<>(gapOrdinalToVectorId.length);
-      for (int ordinal = 0; ordinal < gapOrdinalToVectorId.length; ordinal++) {
-        final int vectorId = gapOrdinalToVectorId[ordinal];
-        final RID rid = vectorIndex().getRid(vectorId);
-        if (rid == null)
-          continue; // gone since the array above was built; the next mutation or rebuild picks it up
-        final VectorFloat<?> vector = vectors.getVector(ordinal);
-        if (vector == null || (vectors instanceof final ArcadePageVectorValues pageValues
-            && pageValues.isDeletedSentinel(vector)))
-          continue;
-        gapEntries.add(new DeltaVectorEntry(vectorId, rid, vector));
-      }
+      final List<DeltaVectorEntry> gapEntries = readDeltaEntriesFor(gapOrdinalToVectorId, vectorProp);
+
+      // The graph being reused is a prefix of the live set, so the nodes ITS build could not link are ordinals
+      // below graphSize and are covered by neither the gap above nor anything in memory (issue #7190). Read them
+      // here, with the gap, so one reopen produces one complete delta buffer.
+      final List<DeltaVectorEntry> unreachableEntries = readDeltaEntriesFor(
+          unreachableVectorIdsOf(candidate.unreachableOrdinals(), rebuiltOrdinalToVectorId, graphSize, alreadyQueued),
+          vectorProp);
 
       // Publish. The graph is not published for the whole unlocked read above - insert() does not wait on it -
       // so a concurrent write could have landed on this index in the meantime and already appended its own
       // entries to deltaVectors and its own count to mutationsSinceSerialize. Appending to the buffer rather
       // than replacing it, and addAndGet() rather than a plain set(), is what keeps those instead of silently
       // dropping them.
-      int queuedIntoDelta = 0;
+      final int queuedUnreachable;
       lock.writeLock().lock();
       try {
         this.graphIndex = loadedGraph;
+        this.graphUnreachableOrdinals = candidate.unreachableOrdinals();
         this.ordinalToVectorId = Arrays.copyOf(rebuiltOrdinalToVectorId, graphSize);
-        // Re-checked here against the buffer as it stands NOW, not only against the pre-read snapshot taken
-        // above: a concurrent put() could have queued one of these ids while the gap was being read unlocked,
-        // and queuing it a second time is the same duplicate the pre-filter exists to avoid (issue #6772).
-        if (!gapEntries.isEmpty()) {
-          final IntHashSet queued = new IntHashSet((deltaVectors.size() + gapEntries.size()) * 4 / 3 + 1);
-          for (final DeltaVectorEntry entry : deltaVectors)
-            queued.add(entry.vectorId);
-          for (final DeltaVectorEntry entry : gapEntries)
-            if (queued.add(entry.vectorId)) {
-              this.deltaVectors.add(entry);
-              queuedIntoDelta++;
-            }
-        }
+        queuedIntoDelta = appendToDeltaBuffer(gapEntries);
+        queuedUnreachable = appendToDeltaBuffer(unreachableEntries);
         this.graphState = GraphState.MUTABLE;
+        // Only the gap counts as pending work. A node the persisted graph leaves unreachable is not a mutation -
+        // it is already in that graph, a rebuild does not remove it, and counting it would let an index whose last
+        // build orphaned a node rebuild itself on every reopen. Same reasoning, and same consequences, as the
+        // re-queue buildGraphFromScratchExclusively does at the end of a build.
         this.mutationsSinceSerialize.addAndGet(queuedIntoDelta);
       } finally {
         lock.writeLock().unlock();
@@ -2023,8 +2052,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       metrics.incrementStalePrefixGraphReuses();
       LogManager.instance().log(this, Level.INFO,
           "Reusing persisted graph for index %s as a stale prefix: %d of %d live vectors are already in the "
-              + "graph, %d queued into the delta buffer pending an async rebuild (issues #6655, #6772)",
-          indexName, graphSize, rebuiltOrdinalToVectorId.length, queuedIntoDelta);
+              + "graph, %d queued into the delta buffer pending an async rebuild (issues #6655, #6772)%s",
+          indexName, graphSize, rebuiltOrdinalToVectorId.length, queuedIntoDelta,
+          queuedUnreachable > 0 ?
+              ", plus %d its build left unreachable and which the delta scan has to serve (issue #7190)".formatted(
+                  queuedUnreachable) : "");
     } finally {
       // ensureGraphAvailable() handed the latch over rather than clearing it at decision time, so this is where it
       // is released - after the publish above and, crucially, still under graphBuildLock, so the next thread to
@@ -2037,13 +2069,178 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
 
     // Outside graphBuildLock, the same scope buildGraphFromScratchWithRetry leaves for what runs after it
-    // publishes: only the build/reuse itself needs to be serialized, not its follow-up work. Kicks the same
-    // async rebuild rebuildGraphBeforeSearch() would eventually trigger anyway, so the gap just queued above is
-    // closed promptly instead of waiting on the ordinary mutation threshold, and arms the inactivity timer as a
-    // fallback for when the async attempt is skipped (already in progress, or still cooling down from a prior
-    // OOM deferral - see isCoolingDownFromRebuildDeferral()).
-    startAsyncGraphRebuild();
+    // publishes: only the build/reuse itself needs to be serialized, not its follow-up work.
+    //
+    // The gap queued above is served correctly by the delta scan, so folding it into the graph is a COST decision,
+    // and the mutation threshold is the decision (issue #7183). This used to call startAsyncGraphRebuild()
+    // unconditionally, "so the gap just queued is closed promptly instead of waiting on the ordinary mutation
+    // threshold" - which for a gap of one vector meant rebuilding every node in the graph for that one vector, on
+    // the first search of a session that had done nothing but insert it, with startAsyncGraphRebuild() itself
+    // logging the threshold it was ignoring. A process that opens, searches once and exits then paid a full
+    // rebuild plus the close()-time join on the thread running it, found the same one vector still queued on the
+    // next open (the rebuild was cancelled before it could persist), and did it all again. The inactivity timer had
+    // the same shape and learned the same lesson in #6857; this is that fix on this door. The triggers asked here
+    // are exactly rebuildGraphBeforeSearch()'s large-graph arm: enough mutations have piled up, or the delta scan
+    // those mutations left behind has outgrown the graph walk it supplements (issue #6797). A gap below both stays
+    // in the delta buffer, which is what the buffer is for.
+    //
+    // The inactivity timer is armed either way: as the fallback for when the async attempt above is skipped
+    // (already in progress, or still cooling down from a prior heap deferral - see
+    // isCoolingDownFromRebuildDeferral()), and as the path that eventually folds in a gap too small to trigger
+    // anything here once the index goes quiet.
+    if (queuedIntoDelta > 0
+        && (mutationsSinceSerialize.get() >= getEffectiveMutationsBeforeRebuild() || deltaScanOverBudget()))
+      startAsyncGraphRebuild();
     scheduleInactivityRebuild();
+  }
+
+  /**
+   * Reads the vectors behind {@code vectorIdsAscending} and wraps them as delta-buffer entries, skipping anything
+   * that cannot be read back as a real vector.
+   * <p>
+   * Does real per-vector I/O (a page read, or a document lookup for the non-quantized case) and so must be called
+   * WITHOUT {@link #lock}'s write lock, exactly like the gap read it was extracted from - holding it here would
+   * stall every reader and writer of this index for the duration. The entries are returned rather than appended for
+   * the same reason: the append is the only part that needs the lock, and it is
+   * {@link #appendToDeltaBuffer(List)}'s job.
+   *
+   * @param vectorIdsAscending vector ids to read, ascending - the order {@link #snapshotOf} assumes
+   * @param vectorProp         the vector property name, for the document-read fallback
+   *
+   * @return the readable entries, in the same order; empty when there was nothing to read
+   */
+  private List<DeltaVectorEntry> readDeltaEntriesFor(final int[] vectorIdsAscending, final String vectorProp) {
+    if (vectorIdsAscending == null || vectorIdsAscending.length == 0)
+      return List.of();
+
+    // Sized off the ids actually being read, never off the whole index: snapshotOf() and
+    // computeGraphBuildCacheCapacity() both scale their work with whatever array they are handed (PR #6712 review).
+    final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(),
+        metadata.dimensions, vectorProp,
+        snapshotOf(vectorIndex(), vectorIdsAscending), vectorIdsAscending, this,
+        computeGraphBuildCacheCapacity(vectorIdsAscending.length));
+
+    final List<DeltaVectorEntry> entries = new ArrayList<>(vectorIdsAscending.length);
+    for (int ordinal = 0; ordinal < vectorIdsAscending.length; ordinal++) {
+      final int vectorId = vectorIdsAscending[ordinal];
+      final RID rid = vectorIndex().getRid(vectorId);
+      if (rid == null)
+        continue; // gone since the array above was built; the next mutation or rebuild picks it up
+      // getVector() resolves the location through the snapshot and never returns null: an unreadable ordinal comes
+      // back as the sentinel, which would pair a genuine RID with a meaningless distance in the delta scan.
+      final VectorFloat<?> vector = vectors.getVector(ordinal);
+      if (vector == null || (vectors instanceof final ArcadePageVectorValues pageValues
+          && pageValues.isDeletedSentinel(vector)))
+        continue;
+      entries.add(new DeltaVectorEntry(vectorId, rid, vector));
+    }
+    return entries;
+  }
+
+  /**
+   * Appends the entries the buffer does not already hold. <b>The caller must hold {@link #lock}'s write lock.</b>
+   * <p>
+   * The membership test is made against the buffer as it stands NOW, not only against a snapshot taken before the
+   * unlocked read that produced {@code entries}: a concurrent {@code put()} could have queued one of these ids
+   * meanwhile, and queuing it twice would score the same vector twice in every delta scan (issue #6772).
+   *
+   * @return how many entries were actually added
+   */
+  private int appendToDeltaBuffer(final List<DeltaVectorEntry> entries) {
+    if (entries.isEmpty())
+      return 0;
+
+    // Sized in TABLE SLOTS, not elements: IntHashSet resizes at a 0.75 load factor, so handing it the element
+    // count alone would guarantee one rehash of the whole table on the way in.
+    final IntHashSet queued = new IntHashSet((deltaVectors.size() + entries.size()) * 4 / 3 + 1);
+    for (final DeltaVectorEntry entry : deltaVectors)
+      queued.add(entry.vectorId);
+
+    int added = 0;
+    for (final DeltaVectorEntry entry : entries)
+      if (queued.add(entry.vectorId)) {
+        this.deltaVectors.add(entry);
+        added++;
+      }
+    return added;
+  }
+
+  /**
+   * Reads the vectors of a loaded graph's unreachable ordinals, ready to be queued into the delta buffer so this
+   * session serves them exactly the way the session that built the graph did (issue #7190).
+   * <p>
+   * Returned rather than appended, and therefore called BEFORE the caller publishes the graph: appending is the only
+   * part that needs {@link #lock}'s write lock, and doing it in the same write lock that publishes the graph is what
+   * keeps a search from ever seeing that graph without the entries which complete it.
+   * <p>
+   * The caller must append these with {@link #appendToDeltaBuffer(List)} and touch neither
+   * {@code mutationsSinceSerialize} nor {@link #graphState} on their account: those nodes are not pending work. They
+   * are already in the graph on disk, a rebuild does not remove them - a Vamana build orphans a fresh set - and
+   * treating them as mutations would make an index whose last build orphaned one node rebuild itself on every open,
+   * and {@code flush()} rebuild on every close. The identical reasoning, and the identical pair of consequences, is
+   * spelled out where {@code buildGraphFromScratchExclusively} makes the same re-queue at the end of a build. The
+   * cost of leaving the state alone is that these entries are scanned by every query until some real mutation
+   * triggers a rebuild, which is the same cost the building session paid.
+   * <p>
+   * Called while holding {@link #graphBuildLock} (both call sites do) and NOT {@link #lock}'s write lock, which the
+   * per-vector read it performs must not run under.
+   *
+   * @param unreachableOrdinals   ordinals from the graph's manifest, ascending
+   * @param liveOrdinalToVectorId the live ordinal &rarr; vector id array those ordinals index into
+   * @param graphNodes            how many leading entries of that array the graph covers
+   * @param vectorProp            the vector property name, for the document-read fallback
+   *
+   * @return the entries to append; empty when there is nothing to re-queue
+   */
+  private List<DeltaVectorEntry> readUnreachableEntries(final int[] unreachableOrdinals,
+      final int[] liveOrdinalToVectorId, final int graphNodes, final String vectorProp) {
+    if (unreachableOrdinals == null || unreachableOrdinals.length == 0)
+      return List.of();
+
+    final IntHashSet alreadyQueued;
+    lock.readLock().lock();
+    try {
+      alreadyQueued = new IntHashSet(deltaVectors.size() * 4 / 3 + 1);
+      for (final DeltaVectorEntry entry : deltaVectors)
+        alreadyQueued.add(entry.vectorId);
+    } finally {
+      lock.readLock().unlock();
+    }
+
+    return readDeltaEntriesFor(
+        unreachableVectorIdsOf(unreachableOrdinals, liveOrdinalToVectorId, graphNodes, alreadyQueued), vectorProp);
+  }
+
+  /**
+   * Vector ids of the ordinals a persisted graph's own build could not link (issue #7190), ready for
+   * {@link #readDeltaEntriesFor}.
+   * <p>
+   * An ordinal at or past {@code graphNodes} is dropped rather than trusted: the manifest is verified against the
+   * live set before this runs, so it should not happen, but resolving an out-of-range ordinal through the live array
+   * would pair a delta entry with a record the graph never held.
+   *
+   * @param unreachableOrdinals    ordinals recorded in the manifest, ascending
+   * @param liveOrdinalToVectorId  the live ordinal &rarr; vector id array the graph's ordinals index into
+   * @param graphNodes             how many leading entries of that array the graph covers
+   * @param alreadyQueued          vector ids the delta buffer already holds, skipped before any read is paid for
+   *
+   * @return the ids to read, ascending; empty when there is nothing to re-queue
+   */
+  private static int[] unreachableVectorIdsOf(final int[] unreachableOrdinals, final int[] liveOrdinalToVectorId,
+      final int graphNodes, final IntHashSet alreadyQueued) {
+    if (unreachableOrdinals == null || unreachableOrdinals.length == 0)
+      return EMPTY_ORDINALS;
+
+    int count = 0;
+    final int[] candidates = new int[unreachableOrdinals.length];
+    for (final int ordinal : unreachableOrdinals) {
+      if (ordinal < 0 || ordinal >= graphNodes || ordinal >= liveOrdinalToVectorId.length)
+        continue;
+      final int vectorId = liveOrdinalToVectorId[ordinal];
+      if (!alreadyQueued.contains(vectorId))
+        candidates[count++] = vectorId;
+    }
+    return count == candidates.length ? candidates : Arrays.copyOf(candidates, count);
   }
 
   /**
@@ -2342,6 +2539,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.writeLock().lock();
       try {
         this.graphIndex = null;
+        // Cleared with the graph, for the same reason (issue #7190): the ordinals describe the generation being
+        // released, and a build that then fails would leave getStats() reporting them against no resident graph.
+        // The set on disk is untouched, so a later load reads it back from the manifest.
+        this.graphUnreachableOrdinals = EMPTY_ORDINALS;
         this.searchVectorCache = null;
         releasePooledSearchers();
       } finally {
@@ -2761,6 +2962,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         try {
           this.ordinalToVectorId = filteredVectorIds;
           this.graphIndex = null;
+          // Cleared with the graph it describes: this build published none, so the previous generation's orphans
+          // describe nothing that is resident any more, and getStats() would otherwise report unreachable nodes for
+          // an index that has no graph at all (issue #7190).
+          this.graphUnreachableOrdinals = EMPTY_ORDINALS;
           // Nulling the field is not enough to free the graph: a pooled searcher holds the graph it was pooled
           // under (issue #6503). Normally borrow() drains the pool when it notices the identity moved, but this
           // path leaves no graph to search, and findNeighborsFromVector() returns on `graphIndex == null` BEFORE
@@ -3069,12 +3274,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
       //  - the decrement just above may take the counter to zero and cancel the inactivity rebuild timer, so an
       //    otherwise idle index has no self-scheduled path out of scanning these entries until the next real
       //    mutation. That is the price of not spinning on rebuilds;
-      //  - deltaVectors is in-memory, so a restart drops the re-queue. The persisted graph still physically holds
-      //    the orphan and reports the same node count as the ordinal map, so the staleness check on load sees an
-      //    up-to-date graph and the vector is unsearchable again until some mutation triggers a rebuild. Closing
-      //    that would mean persisting the orphan set; it is left open because any rebuild re-detects it.
+      //  - deltaVectors is in-memory, so a restart drops the re-queue - and the persisted graph still physically
+      //    holds the orphan and reports the same node count as the ordinal map, so the staleness check on load sees
+      //    an up-to-date graph and nothing rebuilds. Those vectors were then gone from every search at any
+      //    efSearch while totalVectors still counted them, silently (issue #7190). The ordinals are therefore
+      //    recorded in the graph manifest below and re-queued by the load path, which is what makes a reopened
+      //    session serve them exactly the way this one does.
+      final int[] unreachableOrdinals = findUnreachableOrdinals(builtGraph);
       final List<DeltaVectorEntry> unreachableEntries = new ArrayList<>();
-      for (final int ordinal : findUnreachableOrdinals(builtGraph)) {
+      for (final int ordinal : unreachableOrdinals) {
         if (ordinal >= finalActiveVectorIds.length)
           continue;
         final int vectorId = finalActiveVectorIds[ordinal];
@@ -3097,14 +3305,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
       if (!unreachableEntries.isEmpty())
         LogManager.instance().log(this, Level.WARNING,
-            "Graph build left %d of %d vectors unreachable for index %s: serving them from the delta scan. A later "
-                + "rebuild does not repair this - a Vamana build orphans a fresh set - so the count does not "
-                + "converge downwards", unreachableEntries.size(), finalActiveVectorIds.length, indexName);
+            "Graph build left %d of %d vectors unreachable for index %s: serving them from the delta scan, and "
+                + "recording them in the graph manifest so a reopened session serves them the same way (issue "
+                + "#7190). A later rebuild does not repair this - a Vamana build orphans a fresh set - so the count "
+                + "does not converge downwards", unreachableEntries.size(), finalActiveVectorIds.length, indexName);
 
       // Reacquire write lock to update graph state
       lock.writeLock().lock();
       try {
         this.graphIndex = builtGraph;
+        // Published together with the graph they describe, and unconditionally - an empty set is the answer for
+        // almost every build, and leaving a previous build's set in place would make the manifest below vouch for
+        // ordinals this graph does not orphan (issue #7190).
+        this.graphUnreachableOrdinals = unreachableOrdinals;
         // Hand the PREVIOUS generation back now rather than at the next search. borrow() drains the pool when it
         // sees the identity has moved, so this is not a correctness fix - a stale searcher is never handed out -
         // but "the next search" is not a promise on an index that has just rebuilt and gone quiet, which is the
@@ -3466,8 +3679,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (persistedTo == null || graphOrdinalToVectorId == null || graphOrdinalToVectorId.length == 0)
       return;
 
+    // The ordinals the build that produced these pages could not link (issue #7190). Read from the field rather
+    // than passed in because both callers reach here right after a build published it, and only that build knows
+    // the answer: the connectivity walk runs over the graph object, not over anything on disk.
+    final int[] unreachable = graphUnreachableOrdinals;
+
     persistedTo.getManifest().write(graphOrdinalToVectorId.length,
-        LSMVectorIndexGraphManifest.fingerprintOf(graphOrdinalToVectorId, vectorIndex()::getRid));
+        LSMVectorIndexGraphManifest.fingerprintOf(graphOrdinalToVectorId, vectorIndex()::getRid),
+        unreachable != null ? unreachable : EMPTY_ORDINALS);
   }
 
   private long getTxChunkSize() {
@@ -3985,6 +4204,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code COMPACT INDEX} are lifecycle- or operator-driven, have no later trigger to retry them, and in the
    * close case have already released the old graph - declining one of those would turn "slower" into "never".
    * <p>
+   * <b>What issue #7184 changed, on both sides of the comparison.</b> A deferral costs every subsequent query a
+   * linear scan of a delta buffer that keeps growing, and nothing else bounds that scan, so a gate that refuses a
+   * rebuild which would in fact have fitted is not the conservative choice - it is the unbounded one. Two readings
+   * were producing exactly that at 10M vectors in a 24 GB heap, at every attempt. The COST side charged a second
+   * full on-heap graph for the graph kept resident, which a reopened session does not have: it serves an
+   * {@code OnDiskGraphIndex} whose topology lives in pages, so that term is now measured
+   * ({@code ramBytesUsed()}) instead of assumed. The HEAP side counted ArcadeDB's own page read cache as occupied -
+   * true - without saying it is evictable; the gate now asks how much of it must be given up and gives that up
+   * before admitting, rather than counting it as free and hoping.
+   * <p>
+   * <b>Two indexes do not normally race each other through this gate</b>, which is why the reclaimable figure can be
+   * read as a plain snapshot: {@link #startAsyncGraphRebuild()}'s thread calls this while HOLDING the JVM-wide
+   * {@code REBUILD_SEMAPHORE} permit, so at its default of one permit no other index is inside this method deciding
+   * against the same process-wide page cache. Widen that semaphore and two rebuilds could each be admitted on bytes
+   * only one of them gets - which is what the "did the cache actually give up what it was asked for" check below
+   * exists for, and past that the {@link OutOfMemoryError} handler and the deferral cooldown.
+   * <p>
    * Package-private so tests can drive the decision directly rather than through a background thread.
    *
    * @return true to proceed with the rebuild
@@ -4002,27 +4238,83 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final long nodes = Math.max(resident.getIdUpperBound(), vectorIndex().getActiveCount());
     final long buildCacheCapacity = computeGraphBuildCacheCapacity((int) Math.min(nodes, Integer.MAX_VALUE / 2));
 
-    final long estimate = VectorHeapBudget.estimateRebuildHeapBytes(nodes, metadata.dimensions, buildCacheCapacity,
-        true);
-    final long budget = VectorHeapBudget.budgetBytes(percent);
-    if (estimate <= budget)
+    // What the graph being kept resident actually costs, asked of the graph rather than assumed (issue #7184). A
+    // reopened session serves an OnDiskGraphIndex, whose topology is in pages: charging it a second full on-heap
+    // graph is how a rebuild the close path would run unconditionally came to be refused at every attempt.
+    final long residentGraphBytes = residentGraphHeapBytes(resident);
+    final long estimate = VectorHeapBudget.estimateOnlineRebuildHeapBytes(nodes, metadata.dimensions,
+        buildCacheCapacity, residentGraphBytes, resident.getIdUpperBound(), resident instanceof OnHeapGraphIndex,
+        metadata.neighborOverflowFactor);
+
+    // The page read cache is heap the last collection counted as live and that the engine can hand back on demand,
+    // so the gate asks how much of it has to go rather than pretending the heap is already free (issue #7184).
+    final PageManager pageManager = getDatabase().getPageManager();
+    final long reclaimable = pageManager != null ? pageManager.getReadCacheRAM() : 0L;
+    final long availableHeap = VectorHeapBudget.availableHeapBytes();
+    final long reclaimNeeded = VectorHeapBudget.reclaimNeededFor(estimate, percent, availableHeap, reclaimable);
+
+    if (reclaimNeeded == 0L)
       return true;
+
+    if (reclaimNeeded > 0L) {
+      // Admitted BECAUSE the cache counts as reclaimable, so reclaim it now, before the build allocates: the pages
+      // are strongly referenced and no collection would have taken them on the build's behalf. They are read back
+      // from disk as they are needed again, which is a cost paid in I/O by whoever touches them - against a rebuild
+      // that stops every query paying a linear delta scan.
+      final long freed = pageManager.reclaimReadCacheRAM(reclaimNeeded);
+      if (freed >= reclaimNeeded) {
+        LogManager.instance().log(this, Level.INFO,
+            "Freed %d MB of the %d MB page read cache so the graph rebuild of vector index %s (about %d MB for %d "
+                + "nodes) fits the %d MB of available heap that %s allows it. Those pages are read back from disk on "
+                + "demand, and the cache is process-wide, so some of them may belong to another database",
+            freed / (1024 * 1024), reclaimable / (1024 * 1024), indexName, estimate / (1024 * 1024), nodes,
+            availableHeap / (1024 * 1024), GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey());
+        return true;
+      }
+
+      // The cache was smaller by the time it was asked than when it was measured a moment earlier - it shrank on its
+      // own, or something else reclaimed from the same process-wide LRU first. The admission was conditional on
+      // getting those bytes, so not getting them means declining, not proceeding and relying on the
+      // OutOfMemoryError handler this gate exists to keep out of the picture.
+      LogManager.instance().log(this, Level.INFO,
+          "The page read cache of index %s gave up %d MB of the %d MB the graph rebuild needed, so the rebuild is "
+              + "deferred rather than attempted on heap it was not actually given",
+          indexName, freed / (1024 * 1024), reclaimNeeded / (1024 * 1024));
+    }
 
     metrics.incrementRebuildsDeferredForMemory();
     // Start the cooldown BEFORE logging, so the timestamp is set no matter what the log call does.
     lastRebuildDeferralMs = System.currentTimeMillis();
     LogManager.instance().log(this, Level.WARNING,
-        "Deferring the graph rebuild of vector index %s: it needs about %d MB (%d nodes, keeping the old graph "
-            + "resident so searches keep working) against %d MB of the %d MB currently available heap that %s "
-            + "allows it. The %d pending vectors stay searchable through the delta scan, and the next mutation or "
-            + "inactivity trigger retries - but until one fits, every query pays that scan. Give the JVM more "
-            + "heap, lower %s, or set %s to 0 to attempt the rebuild regardless",
-        indexName, estimate / (1024 * 1024), nodes, budget / (1024 * 1024),
-        VectorHeapBudget.availableHeapBytes() / (1024 * 1024),
-        GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey(), mutationsSinceSerialize.get(),
+        "Deferring the graph rebuild of vector index %s: it needs about %d MB (%d nodes, plus the %d MB the graph "
+            + "it replaces costs to keep resident so searches keep working) against %d MB of the %d MB currently "
+            + "available heap that %s allows it, and the %d MB of evictable page cache that could be given up does "
+            + "not close the gap. The %d pending vectors stay searchable through the delta scan, and the next "
+            + "mutation or inactivity trigger retries - but until one fits, every query pays that scan. Give the JVM "
+            + "more heap, lower %s, or set %s to 0 to attempt the rebuild regardless",
+        indexName, estimate / (1024 * 1024), nodes, residentGraphBytes / (1024 * 1024),
+        VectorHeapBudget.budgetBytes(percent) / (1024 * 1024), availableHeap / (1024 * 1024),
+        GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey(), reclaimable / (1024 * 1024),
+        mutationsSinceSerialize.get(),
         GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getKey(),
         GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey());
     return false;
+  }
+
+  /**
+   * What the resident graph costs to keep on the heap, from the graph itself. Every {@code ImmutableGraphIndex} is
+   * {@code Accountable}; a future implementation that refuses the question falls back to the flat per-node estimate
+   * this method exists to replace, so a throwing {@code ramBytesUsed()} costs accuracy rather than a rebuild.
+   */
+  private long residentGraphHeapBytes(final ImmutableGraphIndex resident) {
+    try {
+      return Math.max(0L, resident.ramBytesUsed());
+    } catch (final Exception | LinkageError e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Could not measure the resident graph of index %s (%s): falling back to the per-node estimate", indexName,
+          e.getMessage());
+      return VectorHeapBudget.estimateGraphBytes(resident.getIdUpperBound());
+    }
   }
 
   /**
@@ -7865,6 +8157,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // Delta vectors cached in RAM for brute-force scan between rebuilds
     stats.put("deltaVectorsCount", (long) deltaVectors.size());
+
+    // Nodes the build that produced the current graph could not link, which no beam search can return at any
+    // efSearch and which the delta scan therefore has to serve (issues #5615, #7190). Answered from the field
+    // while this session has resolved a graph, and from the manifest before it has - the same reason
+    // persistedGraphNodeCount above is read from there: "how many are only reachable by scan" is a question an
+    // operator has to be able to ask on a freshly reopened index too.
+    final int[] unreachableOrdinals = graphUnreachableOrdinals;
+    stats.put("unreachableGraphNodes", unreachableOrdinals != null ?
+        (long) unreachableOrdinals.length :
+        manifestContent != null ? (long) manifestContent.unreachableOrdinals().length : 0L);
 
     // The size-independent bound on that scan and the measured walk cost it is derived from (issue #6797).
     // deltaScanBudget is Long.MAX_VALUE when the policy is off or no search has walked this graph yet, which is
