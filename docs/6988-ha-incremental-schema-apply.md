@@ -58,9 +58,11 @@ Building a fresh component and handing it the slot in a single synchronized `set
 for that file, so it inherits the concurrency properties the full rebuild has always had, and the instance is fully
 constructed before anything can reach it.
 
-Only components whose main component is an `IndexInternal` are replaced: `LSMTreeIndexMutable`, `HashIndexBucket` and
-`LSMVectorIndexMutable` are the only classes with non-empty load hooks. A bucket write, or a dictionary write (which
-`TransactionManager.applyChanges` reloads on its own), costs nothing here. A touched *compacted* index or bloom filter
+Only components whose main component is an `IndexInternal` are replaced, because only three classes override a load
+hook at all: `LSMTreeIndexMutable` overrides `onAfterLoad()`, `HashIndexBucket` overrides both, and
+`LSMVectorIndexMutable` overrides `onAfterSchemaLoad()` **only** (it loads its vectors once `readConfiguration()` has
+set its dimensions). A bucket write, or a dictionary write (which `TransactionManager.applyChanges` reloads on its
+own), costs nothing here. A touched *compacted* index or bloom filter
 forces the full rebuild instead, because a compacted file is claimed by the mutable index holding it as its sub-index
 and a replacement would leave that claim pointing at the old instance.
 
@@ -175,6 +177,13 @@ Two-node cluster with `arcadedb.ha.schemaIncrementalApply=false`: the follower *
 proving the safety valve actually reaches the apply path. Without this the flag could be silently unread and nothing
 would notice, since both values produce a correct schema - only the instance identity tells them apart.
 
+### `ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue6988SchemaIncrementalApplySettingTest.java`
+
+The IT above sets the value once, at server start, so it cannot tell a per-entry read from a value latched during
+startup - and "takes effect on the next applied entry, not the next restart" is the whole operational value of the
+valve. This test pins that half: the same `ArcadeStateMachine` instance that answered "enabled" must answer
+"disabled" the moment the setting changes.
+
 **Why no wall-clock assertion.** The acceptance criteria suggested a `StallAwareStopwatch` budget. A timing bound can
 only separate linear from quadratic at a type count large enough to take hours to build, and at any smaller count it
 asserts nothing while still being at the mercy of whatever else the machine is running. The identity invariant is the
@@ -191,3 +200,10 @@ same claim made load-independently: it fails deterministically on the old code a
 - `engine/src/test/java/com/arcadedb/schema/Issue6988IncrementalSchemaLoadTest.java` (new).
 - `ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue6988IncrementalSchemaApplyIT.java` (new).
 - `ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue6988FullRebuildFallbackIT.java` (new).
+
+## Deferred review item
+
+One review finding was assessed and declined with justification rather than applied - the pre-existing
+publish-before-initialize window in the schema load, which this change narrows rather than introduces. The full
+assessment, including why fixing it belongs in its own issue alongside `load()`, is in
+[`review-deferred-ed21c54.md`](review-deferred-ed21c54.md).

@@ -403,11 +403,12 @@ public class LocalSchema implements Schema {
     }
 
     // Files this entry wrote pages into whose component is already registered AND caches on-disk state its load
-    // hooks re-derive. Only index components do: LSMTreeIndexMutable.onAfterLoad re-reads page 0 (key types,
-    // sub-index file id, mutable page count), HashIndexBucket re-reads its metadata and LSMVectorIndexMutable
-    // reloads its vectors. Every other component's hooks are the no-ops on Component, so writing pages into a
-    // bucket - or into the dictionary, which TransactionManager.applyChanges reloads on its own - needs nothing
-    // here.
+    // hooks re-derive. Only index components do, and only three classes override a hook at all:
+    // LSMTreeIndexMutable.onAfterLoad re-reads page 0 (key types, sub-index file id, mutable page count),
+    // HashIndexBucket re-reads its metadata in BOTH hooks, and LSMVectorIndexMutable overrides
+    // onAfterSchemaLoad ONLY, to load its vectors once readConfiguration has set its dimensions. Every other
+    // component inherits the no-ops on Component, so writing pages into a bucket - or into the dictionary, which
+    // TransactionManager.applyChanges reloads on its own - needs nothing here.
     final List<ComponentFile> toReplace = new ArrayList<>();
     if (touchedFileIds != null)
       for (final Integer fileId : touchedFileIds) {

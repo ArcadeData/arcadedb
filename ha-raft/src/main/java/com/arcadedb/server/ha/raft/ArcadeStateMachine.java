@@ -2628,7 +2628,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * operator can turn the incremental refresh off on a running server and have the very next applied entry go back
    * to the full rebuild, without a restart.
    */
-  private boolean incrementalSchemaApplyEnabled() {
+  // @VisibleForTesting - Issue6988SchemaIncrementalApplySettingTest pins the "read per entry, never cached" half,
+  // which is the half a reader cannot tell from the call site and which Issue6988FullRebuildFallbackIT cannot show
+  // (it sets the value once, at server start).
+  boolean incrementalSchemaApplyEnabled() {
     // The server-scoped value when this state machine is wired to one, the global default otherwise: tests drive
     // applySchemaEntry with no server attached, and they must exercise the same path production does.
     final ArcadeDBServer currentServer = server;
