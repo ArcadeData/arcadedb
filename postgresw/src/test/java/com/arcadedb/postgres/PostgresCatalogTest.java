@@ -720,6 +720,19 @@ class PostgresCatalogTest {
   }
 
   @Test
+  void anOidAliasLookupWrittenWithTheWrongNumberOfArgumentsIsDeclinedRatherThanGuessedAt() {
+    // The cast form can only ever produce one argument, but the function form is what a client writes by
+    // hand, and there it can be given any number. An unreadable projection declines the query whole rather
+    // than answering the rest of the row, which is what every other unknown function here already does.
+    assertThat(resolveRaw("SELECT regclass('Article', 'Author') FROM pg_class")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("SELECT to_regtype() FROM pg_class")).isSameAs(PostgresCatalog.DECLINED);
+
+    // The one-argument spelling of the same call is the cast, and still answers.
+    assertThat(resolve("SELECT to_regclass('Article') AS oid FROM pg_class LIMIT 1").rows.get(0).get("oid"))
+        .isEqualTo(resolve("SELECT oid FROM pg_class WHERE relname = 'Article'").rows.get(0).get("oid"));
+  }
+
+  @Test
   void aRegclassCastOfANumericOidStringIsThatOid() {
     // PostgreSQL's regclass input accepts an OID spelled as digits, and the driver's parameter arrives as
     // text either way.
