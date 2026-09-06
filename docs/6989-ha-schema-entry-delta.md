@@ -72,6 +72,19 @@ and there would be nothing to refuse into - a delta entry carries no whole docum
 that safe is `keys`/`rootKeys`: the merged document has the leader's structure whatever the receiver started
 from.
 
+## What "structure-authoritative" does and does not mean
+
+It is one-directional. A child the receiver has and the leader does not is dropped; a child the leader has and
+the receiver is MISSING is not backfilled, because neither `merge` nor `keys` mentions a child that did not
+change. A receiver that fell behind by more than the delta being applied stays behind, and that class of
+divergence is the business of the WAL-version-gap detection and `checkDatabase` - as it was before.
+
+Leader CPU is O(schema) rather than O(change), deliberately: deciding what did NOT change means touching every
+child once. Each comparison is a structural `JSONObject.equals` over an already-parsed tree - no string built,
+nothing allocated per child - against the full render of the whole document it replaces, so it is strictly less
+leader work than before. That is a complexity claim, not a measured one: it has NOT been benchmarked on the
+1209-type schema from #6982, and the savings this exists for are the wire, the Raft log and the follower.
+
 ## Known limitation
 
 A whole-document entry re-imposed the leader's rendering of EVERY type on the follower. A delta only replaces

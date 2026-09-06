@@ -1814,14 +1814,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // Issue #6989: ship what the DDL changed rather than the whole schema document, when the cluster is
       // configured for it and the cached base is still what the followers hold. schemaDeltaFor() returns null
       // whenever either is not true, and then the whole document goes out exactly as before.
-      JSONObject fullSchema = null;
-      SchemaDelta.Payload schemaDelta = null;
-      if (schemaChanged) {
-        fullSchema = proxied.getSchema().getEmbedded().toJSON();
-        schemaDelta = schemaDeltaFor(fullSchema);
-        if (schemaDelta == null)
-          serializedSchema = fullSchema.toString();
-      }
+      final JSONObject fullSchema = schemaChanged ? proxied.getSchema().getEmbedded().toJSON() : null;
+      final SchemaDelta.Payload schemaDelta = fullSchema != null ? schemaDeltaFor(fullSchema) : null;
+      if (fullSchema != null && schemaDelta == null)
+        serializedSchema = fullSchema.toString();
 
       // Collect any WAL entries buffered by commit() calls that occurred inside the callback
       final List<byte[]> walEntries = new ArrayList<>(schemaWalBuffer.get());

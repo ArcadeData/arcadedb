@@ -74,6 +74,20 @@ import java.util.Set;
  * 1209-type schema into a delta that only touched a setting, purely because {@code types} is a map present in
  * both documents.
  * <p>
+ * <b>Structure-authority is ONE-DIRECTIONAL</b>, and reading it as self-healing would be reading too much into
+ * it: a child the receiver has and the leader does not is dropped, but a child the leader has and the receiver
+ * is MISSING is not backfilled - neither {@code merge} nor {@code keys} mentions a child that did not change,
+ * so there is nothing to backfill it from. A receiver that fell behind by more than the delta being applied
+ * stays behind, and that class of divergence is the business of the WAL-version-gap detection and
+ * {@code checkDatabase}, exactly as it was before this entry type existed.
+ * <p>
+ * <b>Leader CPU is O(schema), not O(change)</b>, and deliberately so: deciding what did NOT change means
+ * touching every child once. Each comparison is a structural {@link JSONObject#equals} over an already-parsed
+ * tree - no string is built and nothing is allocated per child - against the full render of the whole document
+ * this replaces, so it is strictly less work than before on the leader as well. It is a complexity claim rather
+ * than a measured one: it has not been benchmarked on the 1209-type schema that motivated #6989, and the
+ * savings this class exists for are the wire, the Raft log, and the follower, not the leader's CPU.
+ * <p>
  * {@code base} is carried for diagnostics only, for exactly that reason: the applier warns on a mismatch
  * rather than refusing, because the delta entry does not carry a full document to fall back to, and a
  * receiver whose {@code schemaVersion} drifted by a purely local {@code saveConfiguration()} is far more

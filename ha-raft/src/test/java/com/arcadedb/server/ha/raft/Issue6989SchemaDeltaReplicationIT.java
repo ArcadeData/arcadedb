@@ -67,6 +67,7 @@ class Issue6989SchemaDeltaReplicationIT extends BaseRaftHATest {
     final int replicaIndex = leaderIndex == 0 ? 1 : 0;
 
     final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    requireAPristineDatabase(leaderDb, "DeltaSeed_0");
 
     // A schema worth having a delta for: the point of the fix is the ratio between one type and all of them.
     leaderDb.transaction(() -> {
@@ -120,6 +121,7 @@ class Issue6989SchemaDeltaReplicationIT extends BaseRaftHATest {
     final int leaderIndex = findLeaderIndex();
     final int replicaIndex = leaderIndex == 0 ? 1 : 0;
     final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    requireAPristineDatabase(leaderDb, "Doomed_0");
 
     leaderDb.transaction(() -> {
       final Schema schema = leaderDb.getSchema();
@@ -139,6 +141,21 @@ class Issue6989SchemaDeltaReplicationIT extends BaseRaftHATest {
     assertThat(replicaSchema.existsType("Doomed_7")).as("the dropped type is gone on the replica").isFalse();
     assertThat(replicaSchema.existsType("Doomed_6")).isTrue();
     assertThat(replicaSchema.existsType("Doomed_8")).isTrue();
+  }
+
+  /**
+   * The seed below assumes it is building the schema from nothing, and the whole test rests on that: the delta
+   * counters are read against a base this method primes. {@code BaseGraphServerTest} points the servers at
+   * {@code ./target/databasesN}, which the build's stale-database clean does NOT match (its fileset is
+   * {@code target/databases}, without the index) - so a run killed part-way leaves them behind and the seed
+   * fails with a bare "Cannot create type ... because already exists" that names neither the cause nor the fix.
+   * Say both here instead.
+   */
+  private void requireAPristineDatabase(final Database leaderDb, final String firstSeededType) {
+    assertThat(leaderDb.getSchema().existsType(firstSeededType))
+        .as("this test seeds its own schema and needs a pristine database; remove the leftover "
+            + "ha-raft/target/databases* directories an aborted run left behind")
+        .isFalse();
   }
 
   /** The leader can move between tests, so ask every node rather than guessing which one shipped. */
