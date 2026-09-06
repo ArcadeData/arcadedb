@@ -723,10 +723,90 @@ public class PostgresCatalog {
 
   // ---------------------------------------------------------------- rows
 
-  /** What the emulated catalog is a view of: one database, seen by one authenticated user. */
-  private record Context(Database database, String userName) {
+  /**
+   * What the emulated catalog is a view of: one database, seen by one authenticated user.
+   * <p>
+   * Also where the name/OID lookups a {@code regclass} cast needs are memoised. Both directions are
+   * evaluated once per row - the WHERE clause runs against every row of the family - so a linear scan of
+   * the schema inside them would make a table-schema query quadratic in the number of types. The maps are
+   * built at most once per statement, and only when a query actually casts to an OID-alias type.
+   */
+  private static final class Context {
+    private final Database database;
+    private final String   userName;
+
+    private Map<Integer, String>      namesByOid;
+    private Map<String, DocumentType> typesByFoldedName;
+
+    Context(final Database database, final String userName) {
+      this.database = database;
+      this.userName = userName;
+    }
+
+    Database database() {
+      return database;
+    }
+
+    String userName() {
+      return userName;
+    }
+
     String schema() {
       return database.getName();
+    }
+
+    /**
+     * The relation an OID names, for the {@code attrelid::regclass} direction of the cast. Built over the
+     * types in name order rather than in schema iteration order: {@link #oidOf} derives an OID from a hash,
+     * so two names can in principle land on the same one, and this is the first place such a collision
+     * would be externally visible - one type's name printed for another type's row. Which of the two wins
+     * has to at least not depend on the order a hash set happened to iterate in.
+     */
+    String relationNamed(final int oid) {
+      if (namesByOid == null) {
+        namesByOid = new HashMap<>();
+        for (final DocumentType type : sortedTypes(this))
+          namesByOid.putIfAbsent(oidOf(type.getName()), type.getName());
+      }
+      return namesByOid.get(oid);
+    }
+
+    /**
+     * The type a relation name names, given the name with its quoting already taken off by
+     * {@link RowResolver#unqualify} - so whether the client quoted it is not something this method can
+     * still tell, and the order the two lookups run in is what stands in for it.
+     * <p>
+     * The exact match runs first. For a quoted name that is what PostgreSQL means, since a quoted
+     * identifier is itself; for an unquoted one PostgreSQL would have folded it to lower case and found
+     * nothing, and taking the exact match anyway is the deliberate divergence that keeps a case-sensitive
+     * schema addressable - {@code SELECT * FROM Article} has to reach the type spelled that way.
+     * <p>
+     * Then the case-insensitive one, because a client that wrote an unquoted {@code article} still means
+     * the type spelled {@code Article}. Two or more types differing only in case answer nothing: none of
+     * them is the one meant, and picking one would be a guess.
+     */
+    DocumentType typeNamed(final String name) {
+      if (name.isEmpty())
+        return null;
+      if (database.getSchema().existsType(name))
+        return database.getSchema().getType(name);
+
+      if (typesByFoldedName == null) {
+        typesByFoldedName = new HashMap<>();
+        for (final DocumentType type : sortedTypes(this)) {
+          final String folded = type.getName().toLowerCase(Locale.ENGLISH);
+          // A folded name stays in the map once it is struck out, mapped to null. containsKey is what tells
+          // "not seen yet" from "seen and struck out", and removing the entry instead would not: a third
+          // name folding the same way would find the key absent and install itself as the answer.
+          if (typesByFoldedName.containsKey(folded))
+            typesByFoldedName.put(folded, null);
+          else
+            typesByFoldedName.put(folded, type);
+        }
+      }
+
+      // Absent and struck out both answer null here, and both mean the same thing: no type this name names.
+      return typesByFoldedName.get(name.toLowerCase(Locale.ENGLISH));
     }
   }
 
@@ -982,6 +1062,14 @@ public class PostgresCatalog {
     // an unreadable filter does not get to empty an answer whose every row is one of the user's own types.
     final PostgresCatalogExpression where = statement.where == null ? null :
         PostgresCatalogExpression.parse(statement.where);
+
+    // Unless the rows are pg_type's, where the permissive rule does not hold. A filter that cannot even be
+    // parsed has to be treated exactly like one that parses and then evaluates to UNKNOWN: both mean the
+    // same thing - this catalog does not know which subset was asked for - and only the second was declined,
+    // so a WHERE written with a construct the expression parser does not implement was the way back to
+    // "answer every type".
+    if (where == null && statement.where != null && !toleratesUnreadableFilter)
+      return DECLINED;
 
     final List<Row> surviving = new ArrayList<>(rows.size());
     for (final Row row : rows) {
@@ -1427,6 +1515,11 @@ public class PostgresCatalog {
         case "pg_table_is_visible", "pg_type_is_visible", "pg_function_is_visible" -> Boolean.TRUE;
         case "pg_encoding_to_char" -> "UTF8";
         case "format_type" -> formatType(arguments);
+        // PostgreSQL's OID-alias types, reached either as a cast ('Article'::regclass) or as the function
+        // spelling of the same lookup (to_regclass('Article')). See regClass for which direction each
+        // argument type means.
+        case "regclass", "to_regclass" -> regClass(arguments, context);
+        case "regtype", "to_regtype" -> regType(arguments);
         // Comments, defaults and ACLs have no ArcadeDB equivalent, and NULL is what PostgreSQL answers for an
         // object that has none.
         case "obj_description", "col_description", "shobj_description", "pg_get_expr", "pg_get_indexdef",
@@ -1440,6 +1533,114 @@ public class PostgresCatalog {
         return PostgresCatalogExpression.UNKNOWN;
       final PostgresType type = PostgresType.byCode(oid.intValue());
       return type == null ? null : type.typeName;
+    }
+
+    /**
+     * {@code regclass}: a relation's OID, and a relation's name, depending on which one it was given.
+     * <p>
+     * A real {@code regclass} is one value that holds an OID and prints as the name; there is no such value
+     * here, so the direction the client wrote decides which half it gets - and in both directions it gets
+     * the half it is about to use. A name is what a client casts in order to compare against an OID column
+     * ({@code cls.oid = 'Article'::regclass}, which is how the Apache Arrow ADBC driver asks for a table's
+     * columns, issue #7180), so text answers the OID. An OID is what a client casts in order to print a
+     * relation's name ({@code attrelid::regclass}), so a number answers the name. Digits given as text are
+     * an OID spelled out, which is how PostgreSQL reads them too.
+     * <p>
+     * A name no type carries answers NULL - {@code to_regclass}'s answer, rather than the error the cast
+     * raises in PostgreSQL. That matters for the WHERE clause: NULL makes the equality false and the query
+     * selects nothing, which is the honest answer to "describe the table that is not there", whereas
+     * declining to read the cast would leave the permissive-filter rule describing <b>every</b> table.
+     */
+    private static Object regClass(final List<Object> arguments, final Context context) {
+      if (arguments.size() != 1)
+        return PostgresCatalogExpression.UNKNOWN;
+
+      final Object value = arguments.get(0);
+      if (value == null || value == PostgresCatalogExpression.UNKNOWN)
+        return value;
+
+      if (value instanceof Number oid)
+        return context.relationNamed(oid.intValue());
+
+      final String written = PostgresCatalogExpression.asString(value).trim();
+      if (isDigits(written))
+        try {
+          return Integer.valueOf(written);
+        } catch (final NumberFormatException e) {
+          // PostgreSQL's OID space is unsigned 32-bit, and this one is int. A number too big to be an OID
+          // this catalog ever handed out is deliberately read as "no such relation" rather than as an
+          // error: oidOf never produces one, so nothing it could name exists.
+          return null;
+        }
+
+      final DocumentType type = context.typeNamed(unqualify(written));
+      return type == null ? null : oidOf(type.getName());
+    }
+
+    /**
+     * {@code regtype}: the same two directions as {@link #regClass}, over the types this protocol can
+     * produce. {@code atttypid::regtype} is how a client prints a column's type; {@code 'int4'::regtype} is
+     * how it names one to filter by.
+     */
+    private static Object regType(final List<Object> arguments) {
+      if (arguments.size() != 1)
+        return PostgresCatalogExpression.UNKNOWN;
+
+      final Object value = arguments.get(0);
+      if (value == null || value == PostgresCatalogExpression.UNKNOWN)
+        return value;
+
+      if (value instanceof Number)
+        return formatType(arguments);
+
+      final String written = PostgresCatalogExpression.asString(value).trim();
+      if (isDigits(written))
+        try {
+          return formatType(List.of(Integer.valueOf(written)));
+        } catch (final NumberFormatException e) {
+          return null;
+        }
+
+      final PostgresType type = PostgresType.byName(unqualify(written));
+      return type == null ? null : type.code;
+    }
+
+    /**
+     * The relation name out of what a client wrote inside a {@code regclass} literal: the last component of
+     * a qualified name, with the double quotes {@code PQescapeIdentifier} wraps it in taken off. An unquoted
+     * name is left as written rather than folded to lower case, because the fold is undone by
+     * {@link Context#typeNamed} anyway and the verbatim spelling is the one that can match exactly.
+     */
+    private static String unqualify(final String written) {
+      final StringBuilder current = new StringBuilder(written.length());
+      boolean quoted = false;
+
+      for (int i = 0; i < written.length(); i++) {
+        final char c = written.charAt(i);
+        if (c == '"') {
+          // "" inside a quoted identifier is one literal quote.
+          if (quoted && i + 1 < written.length() && written.charAt(i + 1) == '"') {
+            current.append('"');
+            ++i;
+          } else
+            quoted = !quoted;
+        } else if (c == '.' && !quoted)
+          // A new component starts here, so everything read so far was the schema qualification.
+          current.setLength(0);
+        else
+          current.append(c);
+      }
+
+      return current.toString();
+    }
+
+    private static boolean isDigits(final String text) {
+      if (text.isEmpty())
+        return false;
+      for (int i = 0; i < text.length(); i++)
+        if (text.charAt(i) < '0' || text.charAt(i) > '9')
+          return false;
+      return true;
     }
   }
 }
