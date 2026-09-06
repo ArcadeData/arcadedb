@@ -242,7 +242,8 @@ public class GraphImporter implements AutoCloseable {
    * </pre>
    * Property values: {@code "SourceAttr"} (string), {@code "int:SourceAttr"} (integer), {@code "bool:SourceAttr"} (boolean),
    * {@code "long:"}, {@code "double:"}, {@code "datetime:"}, {@code "vector:SourceAttr"} (dense {@code float[]} embedding)
-   * and {@code "list:SourceAttr"} (generic list).
+   * and {@code "list:SourceAttr"} (generic list). The same prefixes apply to a vertex's {@code "properties"} and to an
+   * {@code "edgeSources"} entry's {@code "properties"}.
    * File format auto-detected from extension (.xml, .csv, .jsonl). XML defaults to attribute-based {@code <row/>};
    * add {@code "element": "book"} to read child elements as fields.
    *
