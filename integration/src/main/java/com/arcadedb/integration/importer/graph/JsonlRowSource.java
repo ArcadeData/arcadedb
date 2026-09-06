@@ -78,9 +78,12 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
       final Object value = json.opt(attribute);
       if (value == null)
         return null;
+      if (value instanceof String text)
+        return text;
       if (value instanceof JSONArray || value instanceof JSONObject)
         return value.toString();
-      // scalar: go through getString() so numbers keep their exact source text
+      // a number or a boolean: getString() costs a second lookup but returns the exact source text,
+      // so a decimal imported as a string keeps its trailing zeros
       return json.getString(attribute);
     }
 
