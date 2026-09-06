@@ -772,11 +772,18 @@ public class PostgresCatalog {
     }
 
     /**
-     * The type a relation name names. An exact match first, because ArcadeDB type names are case-sensitive
-     * and a quoted name means exactly itself; then a case-insensitive one, because PostgreSQL folds an
-     * unquoted name to lower case and a client that wrote {@code Article} unquoted still means the type
-     * spelled that way. Two types differing only in case leave the folded lookup empty: neither of them is
-     * the one meant, and picking either would be a guess.
+     * The type a relation name names, given the name with its quoting already taken off by
+     * {@link RowResolver#unqualify} - so whether the client quoted it is not something this method can
+     * still tell, and the order the two lookups run in is what stands in for it.
+     * <p>
+     * The exact match runs first. For a quoted name that is what PostgreSQL means, since a quoted
+     * identifier is itself; for an unquoted one PostgreSQL would have folded it to lower case and found
+     * nothing, and taking the exact match anyway is the deliberate divergence that keeps a case-sensitive
+     * schema addressable - {@code SELECT * FROM Article} has to reach the type spelled that way.
+     * <p>
+     * Then the case-insensitive one, because a client that wrote an unquoted {@code article} still means
+     * the type spelled {@code Article}. Two or more types differing only in case answer nothing: none of
+     * them is the one meant, and picking one would be a guess.
      */
     DocumentType typeNamed(final String name) {
       if (name.isEmpty())
