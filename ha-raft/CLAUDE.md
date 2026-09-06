@@ -68,3 +68,20 @@ Two things about how it hid, both worth generalizing:
 Since #6220 `TRUNCATE` only batches when **it** owns the transaction - when none was active as it started. Inside a caller's transaction it commits nothing at all, because committing through a caller silently breaks that caller's `ROLLBACK`. So the shape that reproduces #5492 is now `command("sql", "TRUNCATE ...")` with **no** enclosing transaction; wrapping it in one, which `Issue5492TruncateBatchNotReplicatedIT` used to do, leaves nothing mid-execution to commit and the test passes for the wrong reason. `REBUILD INDEX` and `BatchStep` still commit unconditionally.
 
 When adding any code path that commits, ask which instance it holds. `Issue5492TruncateBatchNotReplicatedIT` guards the statement path; it asserts the WAL gap counter *before* querying the follower, because the resync reinstalls the follower's database and a stale handle then throws `DatabaseIsClosed`, which reads like infrastructure noise rather than divergence.
+
+## Adding a field to a Raft log entry: use `writeExtensionSection`, never bare trailing bytes
+
+A Raft log entry has no version field. The type byte is the whole envelope, and the decoder for each type reads exactly the fields it knows about. Anything left over is checked afterwards, and until #7138 that check was flat: for every type except `SCHEMA_ENTRY`, one trailing byte was a fatal `IllegalStateException`.
+
+Fatal in the worst arm, too. `RaftLogEntryCodec.decode` runs *outside* `applyWithRetry`, so the throw was neither a `NeedRetryException` nor a `ReplicationException`, could not be quarantined per database, and landed in `applyTransaction`'s `catch (Throwable)` node-halt - which deliberately does not advance the applied index, so the node halted again on the same entry on every restart. A newer leader adding one field to, say, `DROP_DATABASE_ENTRY` would therefore have permanently halted every not-yet-upgraded peer: on a three-node rolling upgrade, two nodes down.
+
+So: **append a new field with `RaftLogEntryCodec.writeExtensionSection(dos, payload)`**, after the type's own fields, and make its absence mean "the peer that wrote this predates the field". The frame is `[EXTENSION_MAGIC][length][payload]`, repeatable; a decoder skips every section it does not recognise. The magic is what keeps the corruption signal the old check existed for - a truncated entry does not carry it - which is why "just tolerate anything trailing", the thing `SCHEMA_ENTRY` does, was not the answer for the other five.
+
+Two constraints that are easy to miss:
+
+- **A version or length prefix on the envelope cannot fix this**, however much tidier it looks. No already-deployed decoder knows to look for one. The only change that helps an existing peer is one it can act on without being upgraded, which means tolerating what comes *after* what it understands.
+- **Tolerating is not the same as emitting.** Peers older than the release carrying this still halt on an extension section. A new field may only be *written* once every peer in the supported upgrade range tolerates them; from that release on, adding one is safe by construction.
+
+`SCHEMA_ENTRY` is **excluded**, not merely exempt, and the distinction matters: its optional sections are unframed and positional, so a decoder that has consumed the file maps reads whatever comes next as the #4382 WAL section's count. Append a frame to one and it is not skipped - the magic is read as that count and the entry is rejected as corrupt. Extend `SCHEMA_ENTRY` by adding another section to its own mechanism in `decodeSchemaEntry`, exactly as #5443 and #4416 did.
+
+The same issue moved decode failures off the node-halt path: a `RaftLogEntryDecodeException` naming a database quarantines that one database and resyncs it, and only a failure with no database name still halts the node. An *unknown type* is a different failure and still halts - skipping a committed mutation nobody can read is a silent divergence (#4798).

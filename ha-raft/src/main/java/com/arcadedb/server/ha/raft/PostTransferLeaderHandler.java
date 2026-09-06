@@ -73,7 +73,18 @@ public class PostTransferLeaderHandler extends AbstractServerHttpHandler {
     final long timeoutMs = payload.getLong("timeoutMs", 30_000);
 
     if (peerId.isEmpty()) {
-      // Transfer to any peer (Ratis picks the best candidate)
+      // Refuse here rather than inside the no-target transfer, whose boolean contract is published (#4809):
+      // both branches of this endpoint must answer "wrong node" the same way, and a bare 500 "Leadership
+      // transfer failed" names nothing the caller can act on and reads like a leader-side failure (issue #7134).
+      if (!raftHAServer.isLeader())
+        return ClusterLeadershipResponses.notTheLeader(new NotTheLeaderRefusalException("Refusing to transfer leadership",
+            raftHAServer.getLeaderId()));
+
+      // Transfer to any peer (Ratis picks the best candidate). A false from here is deliberately NOT folded
+      // into the 409 above, even though leadership may have moved in between: false means Ratis could not
+      // confirm a handoff to a concrete different peer, which during an election in flight is "the transfer did
+      // not happen", not "you dialled the wrong node" - there is no settled leader to name. #4809 exists
+      // precisely because "we stopped being the leader" is not evidence of a controlled handoff.
       final boolean success = raftHAServer.transferLeadership(timeoutMs);
       if (success)
         return new ExecutionResponse(200, new JSONObject().put("result", "Leadership transferred")
@@ -85,8 +96,13 @@ public class PostTransferLeaderHandler extends AbstractServerHttpHandler {
     // transferLeadership throws on failure (mapped to an error response by the base handler), and on
     // success the manager has confirmed the target is the leader - report it so callers can verify
     // the outcome instead of trusting a bare success string (issue #5276).
-    raftHAServer.transferLeadership(peerId, timeoutMs);
+    try {
+      raftHAServer.transferLeadership(peerId, timeoutMs);
+    } catch (final NotTheLeaderRefusalException e) {
+      return ClusterLeadershipResponses.notTheLeader(e);
+    }
     return new ExecutionResponse(200, new JSONObject().put("result", "Leadership transferred to " + peerId)
         .put("leaderId", peerId).toString());
   }
+
 }
