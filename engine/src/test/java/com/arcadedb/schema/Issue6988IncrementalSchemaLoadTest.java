@@ -22,11 +22,14 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.IndexInternal;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -146,8 +149,7 @@ class Issue6988IncrementalSchemaLoadTest extends TestHelper {
     final LocalSchema schema = schema();
 
     final String typeName = "Issue6988Type_0";
-    final IndexInternal index = schema.getType(typeName).getAllIndexes(false).iterator().next()
-        .getIndexesOnBuckets()[0];
+    final IndexInternal index = firstBucketIndexOf(schema, typeName);
     final String indexName = index.getName();
     final int indexFileId = index.getComponent().getFileId();
 
@@ -167,6 +169,62 @@ class Issue6988IncrementalSchemaLoadTest extends TestHelper {
         .isNotEmpty();
   }
 
+  /**
+   * A component this entry wrote pages into has to pick up what those pages changed - an LSM mutable index' page 0
+   * carries its key types, its sub-index file id and its mutable page count - but it must NOT do so by re-running
+   * {@code onAfterLoad()} on the live instance. Those hooks write plain, non-volatile fields that
+   * {@code LSMTreeIndex.getKeyTypes()}/{@code getBinaryKeyTypes()}/{@code convertKeys()} read WITHOUT the index
+   * lock, and their safety rests on publish-once, mutate-never-after: it is why a compaction's
+   * {@code splitIndex()} swaps in a NEW instance instead of updating the old one. On a follower the Raft apply
+   * thread runs concurrently with query threads, so this test pins the shape rather than trying to race it: the
+   * refreshed component must be a different object, and the surviving ones must not be.
+   */
+  @Test
+  void aTouchedIndexComponentIsRebuiltRatherThanRefreshedInPlace() throws Exception {
+    final LocalSchema schema = schema();
+
+    final int indexFileId = firstBucketIndexOf(schema, "Issue6988Type_0").getComponent().getFileId();
+    final Component indexBefore = schema.getFileByIdIfExists(indexFileId);
+    final Map<Integer, Component> before = componentsByFileId(schema);
+
+    assertThat(schema.loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(), Set.of(indexFileId))).isTrue();
+
+    assertThat(schema.getFileByIdIfExists(indexFileId))
+        .as("a touched index component must be REBUILT, never mutated in place while readers may hold it")
+        .isNotSameAs(indexBefore);
+
+    for (final Map.Entry<Integer, Component> entry : before.entrySet())
+      if (entry.getKey() != indexFileId)
+        assertThat(schema.getFileByIdIfExists(entry.getKey()))
+            .as("component for file %d was not touched by this entry and must survive it", entry.getKey())
+            .isSameAs(entry.getValue());
+
+    // The rebuilt component has to end up wired into the logical schema exactly as the full load would leave it.
+    assertThat(schema.getType("Issue6988Type_0").getAllIndexes(false)).isNotEmpty();
+    assertThat(firstBucketIndexOf(schema, "Issue6988Type_0").getComponent())
+        .isSameAs(schema.getFileByIdIfExists(indexFileId));
+  }
+
+  /**
+   * A bucket - or the dictionary - carries no state its load hooks would re-derive ({@code Component} leaves both
+   * hooks empty, and {@code TransactionManager.applyChanges} reloads the dictionary itself), so naming one in
+   * {@code touchedFileIds} must cost nothing at all.
+   */
+  @Test
+  void aTouchedNonIndexComponentIsLeftAlone() throws Exception {
+    final LocalSchema schema = schema();
+
+    final int bucketFileId = schema.getType("Issue6988Type_0").getBuckets(false).getFirst().getFileId();
+    final Map<Integer, Component> before = componentsByFileId(schema);
+
+    assertThat(schema.loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(), Set.of(bucketFileId))).isTrue();
+
+    for (final Map.Entry<Integer, Component> entry : before.entrySet())
+      assertThat(schema.getFileByIdIfExists(entry.getKey()))
+          .as("component for file %d must not be re-instantiated for a bucket write", entry.getKey())
+          .isSameAs(entry.getValue());
+  }
+
   @Test
   void retiredFilesForceTheFullRebuildWithoutTouchingAnything() throws Exception {
     final LocalSchema schema = schema();
@@ -179,6 +237,57 @@ class Issue6988IncrementalSchemaLoadTest extends TestHelper {
 
     // A refusal must be a no-op, otherwise the caller's fallback would run over half-applied state.
     assertThat(componentsByFileId(schema)).isEqualTo(before);
+  }
+
+  @Test
+  void aSchemaThatWasNeverLoadedForcesTheFullRebuild() throws Exception {
+    // A LocalSchema with no dictionary is what a database looks like before its first load(): there is no baseline
+    // for an incremental refresh to add to, so the only honest answer is to hand the caller back to load().
+    final LocalSchema neverLoaded = new LocalSchema((DatabaseInternal) database, database.getDatabasePath(), null);
+
+    assertThat(neverLoaded.loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(), Set.of())).isFalse();
+  }
+
+  /**
+   * The three component kinds whose load has a side effect on ANOTHER component. Each is planted as a file the
+   * {@code FileManager} knows and nothing is registered for - the state the follower is in when such a file arrives
+   * - and each must send the caller to the full rebuild rather than being instantiated in isolation.
+   */
+  @Test
+  void anUnregisteredDictionaryCompactedIndexOrBloomFilterForcesTheFullRebuild() throws Exception {
+    final LocalSchema schema = schema();
+
+    for (final String extension : List.of("dict", "uctidx", "nuctidx", "bfidx")) {
+      final Map<Integer, Component> before = componentsByFileId(schema);
+      final int ghostFileId = plantUnregisteredFile(extension);
+      try {
+        assertThat(schema.loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(), Set.of()))
+            .as("an unregistered '%s' file cannot be added to a live schema in isolation", extension)
+            .isFalse();
+
+        // A refusal must be a no-op, so the caller's fallback runs over consistent state.
+        assertThat(componentsByFileId(schema)).isEqualTo(before);
+      } finally {
+        ((DatabaseInternal) database).getFileManager().dropFile(ghostFileId);
+      }
+    }
+  }
+
+  /**
+   * Registers a file with the {@code FileManager} without building a component for it. The name shape is the one
+   * every component file on disk carries, {@code <name>.<fileId>.<pageSize>.v<version>.<ext>}, because that is what
+   * the file id and the extension are parsed back out of.
+   */
+  private int plantUnregisteredFile(final String extension) throws Exception {
+    final FileManager fileManager = ((DatabaseInternal) database).getFileManager();
+    final int fileId = fileManager.newFileId();
+    fileManager.getOrCreateFile(fileId,
+        database.getDatabasePath() + File.separator + "issue6988ghost." + fileId + ".65536.v0." + extension);
+    return fileId;
+  }
+
+  private static IndexInternal firstBucketIndexOf(final LocalSchema schema, final String typeName) {
+    return schema.getType(typeName).getAllIndexes(false).iterator().next().getIndexesOnBuckets()[0];
   }
 
   private LocalSchema schema() {

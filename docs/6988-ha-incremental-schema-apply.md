@@ -31,17 +31,38 @@ A new incremental counterpart of `load()`:
 
 1. **Eligibility is decided in a first pass that modifies nothing**, so a refusal leaves the caller's fallback a
    consistent state.
-2. Instantiates a `Component` only for the files the `FileManager` holds that have no component registered yet.
-3. Re-runs `onAfterLoad()` for those, plus for the already-registered components whose file this entry wrote pages into
-   (`touchedFileIds`). That is what re-reads an LSM mutable index' page 0 - its key types, its sub-index pointer and its
-   mutable page count - which the full rebuild used to get for free by re-instantiating everything.
+2. Instantiates a `Component` only for the files the `FileManager` holds that have no component registered yet, plus
+   a **replacement** for the already-registered *index* components whose file this entry wrote pages into
+   (`touchedFileIds`). That is what re-reads an LSM mutable index' page 0 - its key types, its sub-index pointer and
+   its mutable page count - which the full rebuild used to get for free by re-instantiating everything.
+3. Runs `onAfterLoad()` on those.
 4. Calls the very same `readConfiguration()` the full load calls, so the logical schema (types, properties, index
    links, bucket strategies, triggers, views, functions) is refreshed identically.
-5. Runs `onAfterSchemaLoad()` for the added and touched components only.
+5. Runs `onAfterSchemaLoad()` on those.
 6. `updateSecurity()`, as `load()` does.
 
-Every already-registered `Component` instance survives, so the per-entry cost drops from O(total files) to
-O(changed files). The file walk itself stays O(total files), but it touches no page and allocates no component.
+Every other `Component` instance survives, so the per-entry cost drops from O(total files) to O(changed files). The
+file walk itself stays O(total files), but it touches no page and allocates no component.
+
+### Why a touched component is REBUILT, not refreshed in place
+
+The first version re-ran `onAfterLoad()`/`onAfterSchemaLoad()` on the live instance. That is unsafe, and the PR review
+caught it: those hooks write plain, non-volatile fields - an LSM mutable index' `keyTypes`, `binaryKeyTypes`,
+`storageKeyTypes`, `subIndex`, `currentMutablePages` - which `LSMTreeIndex.getKeyTypes()`, `getBinaryKeyTypes()` and
+`convertKeys()` read **without** the index lock. Their safety rests entirely on publish-once, mutate-never-after,
+which is exactly why a compaction's `splitIndex()` builds a new `LSMTreeIndexMutable` and swaps the `volatile mutable`
+reference rather than updating the old one. A follower serves queries concurrently with the Raft apply thread, so
+re-running the hooks on a published instance could let a reader observe a torn combination of those fields.
+
+Building a fresh component and handing it the slot in a single synchronized `set` is what `load()` already produces
+for that file, so it inherits the concurrency properties the full rebuild has always had, and the instance is fully
+constructed before anything can reach it.
+
+Only components whose main component is an `IndexInternal` are replaced: `LSMTreeIndexMutable`, `HashIndexBucket` and
+`LSMVectorIndexMutable` are the only classes with non-empty load hooks. A bucket write, or a dictionary write (which
+`TransactionManager.applyChanges` reloads on its own), costs nothing here. A touched *compacted* index or bloom filter
+forces the full rebuild instead, because a compacted file is claimed by the mutable index holding it as its sub-index
+and a replacement would leave that claim pointing at the old instance.
 
 ### Why the new components come from the `FileManager`, not from the entry's `filesToAdd`
 
@@ -90,7 +111,7 @@ component instantiations, each with a page-0 read, per entry).
 
 ## Tests
 
-### `engine/src/test/java/com/arcadedb/schema/Issue6988IncrementalSchemaLoadTest.java`
+### `engine/src/test/java/com/arcadedb/schema/Issue6988IncrementalSchemaLoadTest.java` (9 tests)
 
 Pins the invariant by **identity**, not by elapsed time - a component the refresh did not touch must come back as the
 same instance:
@@ -106,8 +127,16 @@ same instance:
   `RaftSchemaWalInstalment3NodesIT` failure above: an index file with no component and no `indexMap` entry must be
   picked up by the refresh, and the index must still be attached to its type afterwards rather than dropped from the
   schema and saved away.
+- `aTouchedIndexComponentIsRebuiltRatherThanRefreshedInPlace` - the refreshed component is a *different* object and
+  every untouched one is not, and the rebuilt instance is the one the type's index resolves to. Pins the
+  publish-once invariant by shape rather than by racing the clock.
+- `aTouchedNonIndexComponentIsLeftAlone` - naming a bucket in `touchedFileIds` costs nothing.
 - `retiredFilesForceTheFullRebuildWithoutTouchingAnything` - a removal returns `false` and leaves the snapshot
   unchanged, so the caller's fallback runs over consistent state.
+- `aSchemaThatWasNeverLoadedForcesTheFullRebuild` - the no-baseline refusal.
+- `anUnregisteredDictionaryCompactedIndexOrBloomFilterForcesTheFullRebuild` - each of the four extensions in
+  `NON_INCREMENTAL_COMPONENT_EXTENSIONS` is planted as a file the `FileManager` knows and nothing is registered for,
+  and each must refuse without changing the component snapshot.
 
 ### `ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue6988IncrementalSchemaApplyIT.java`
 
@@ -136,8 +165,9 @@ same claim made load-independently: it fails deterministically on the old code a
 
 ## Files changed
 
-- `engine/src/main/java/com/arcadedb/schema/LocalSchema.java` - `loadIncremental`, `registerLoadedComponent`
-  (extracted, shared with `load()`), `NON_INCREMENTAL_COMPONENT_EXTENSIONS`.
+- `engine/src/main/java/com/arcadedb/schema/LocalSchema.java` - `loadIncremental`, `registerLoadedComponent` /
+  `replaceLoadedComponent` / `registerInLookupMaps` (the first shared with `load()`),
+  `NON_INCREMENTAL_COMPONENT_EXTENSIONS`.
 - `engine/src/main/java/com/arcadedb/GlobalConfiguration.java` - `HA_SCHEMA_INCREMENTAL_APPLY`.
 - `ha-raft/src/main/java/com/arcadedb/server/ha/raft/ArcadeStateMachine.java` - `applySchemaEntry` collects the WAL's
   touched file ids and calls `loadIncremental` with a `load()` fallback; `keysOrNull`, `incrementalSchemaApplyEnabled`.

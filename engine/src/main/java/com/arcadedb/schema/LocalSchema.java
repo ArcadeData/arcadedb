@@ -312,14 +312,29 @@ public class LocalSchema implements Schema {
    * {@link #loadIncremental} so the two paths cannot drift apart on what "registered" means.
    */
   private void registerLoadedComponent(final Component component) {
+    registerInLookupMaps(component);
+    registerFile(component);
+  }
+
+  /**
+   * Same as {@link #registerLoadedComponent} for a file id that ALREADY has a component: the new instance takes the
+   * old one's slot in a single set, so a concurrent {@link #getFileById} never observes the slot empty.
+   */
+  private void replaceLoadedComponent(final Component component) {
+    registerInLookupMaps(component);
+
+    synchronized (files) {
+      files.set(component.getFileId(), component);
+    }
+  }
+
+  private void registerInLookupMaps(final Component component) {
     final Object mainComponent = component.getMainComponent();
 
     if (mainComponent instanceof LocalBucket bucket)
       bucketMap.put(component.getName(), bucket);
     else if (mainComponent instanceof IndexInternal internal)
       indexMap.put(component.getName(), internal);
-
-    registerFile(component);
   }
 
   /**
@@ -330,11 +345,11 @@ public class LocalSchema implements Schema {
    * i.e. quadratic in the number of types, all of it on the single Ratis apply thread (a 1209-type schema took
    * about 2h53m to replicate in issue #6982).
    * <p>
-   * This method instead instantiates a component only for the files that do not have one yet, re-runs the load hooks
-   * for the already-registered components this entry wrote pages into ({@code touchedFileIds} - that is what re-reads
-   * an LSM mutable index' page 0 for its key types, sub-index pointer and mutable page count), and then refreshes the
-   * logical schema from {@code schema.json} through the very same {@link #readConfiguration()} the full load runs.
-   * Every component instance that is already registered is left alone, so the cost is O(changed files) rather than
+   * This method instead instantiates a component only for the files that do not have one yet, plus a replacement for
+   * the already-registered INDEX components this entry wrote pages into ({@code touchedFileIds} - that is what
+   * re-reads an LSM mutable index' page 0 for its key types, sub-index pointer and mutable page count), and then
+   * refreshes the logical schema from {@code schema.json} through the very same {@link #readConfiguration()} the full
+   * load runs. Every other component instance is left untouched, so the cost is O(changed files) rather than
    * O(total files) - the file walk itself stays O(total files) but touches no page and allocates no component.
    * <p>
    * WHY THE SET OF NEW COMPONENTS IS DERIVED FROM THE FILE MANAGER and not from the entry's {@code filesToAdd}. A
@@ -353,8 +368,9 @@ public class LocalSchema implements Schema {
    *
    * @param mode           open mode for the newly instantiated components
    * @param removedFileIds file ids retired by this entry; any removal forces the full rebuild (see below)
-   * @param touchedFileIds file ids this entry wrote pages into; already-registered components among them get their
-   *                       load hooks re-run. May be {@code null}
+   * @param touchedFileIds file ids this entry wrote pages into; an already-registered index component among them is
+   *                       rebuilt from its file rather than refreshed in place (see the second pass). May be
+   *                       {@code null}
    *
    * @return {@code true} when the schema was refreshed incrementally, {@code false} when the caller must fall back
    * to {@link #load(ComponentFile.MODE, boolean)}. When {@code false} is returned nothing has been modified.
@@ -372,8 +388,10 @@ public class LocalSchema implements Schema {
     if (removedFileIds != null && !removedFileIds.isEmpty())
       return false;
 
-    // First pass decides, without modifying anything, so a refusal leaves the caller's fallback a consistent state.
-    final List<ComponentFile> unregistered = new ArrayList<>();
+    // FIRST PASS decides, without modifying anything, so a refusal leaves the caller's fallback a consistent state.
+
+    // Files the file manager holds that no component is registered for yet.
+    final List<ComponentFile> toInstantiate = new ArrayList<>();
     for (final ComponentFile file : database.getFileManager().getFiles()) {
       if (file == null || getFileByIdIfExists(file.getFileId()) != null)
         continue;
@@ -381,58 +399,84 @@ public class LocalSchema implements Schema {
       if (NON_INCREMENTAL_COMPONENT_EXTENSIONS.contains(file.getFileExtension()))
         return false;
 
-      unregistered.add(file);
+      toInstantiate.add(file);
     }
 
-    // Second pass instantiates only what is missing.
-    final List<Component> added = new ArrayList<>(unregistered.size());
-    final Set<Integer> addedFileIds = new HashSet<>(unregistered.size());
-    for (final ComponentFile file : unregistered) {
+    // Files this entry wrote pages into whose component is already registered AND caches on-disk state its load
+    // hooks re-derive. Only index components do: LSMTreeIndexMutable.onAfterLoad re-reads page 0 (key types,
+    // sub-index file id, mutable page count), HashIndexBucket re-reads its metadata and LSMVectorIndexMutable
+    // reloads its vectors. Every other component's hooks are the no-ops on Component, so writing pages into a
+    // bucket - or into the dictionary, which TransactionManager.applyChanges reloads on its own - needs nothing
+    // here.
+    final List<ComponentFile> toReplace = new ArrayList<>();
+    if (touchedFileIds != null)
+      for (final Integer fileId : touchedFileIds) {
+        final Component current = getFileByIdIfExists(fileId);
+        if (current == null || !(current.getMainComponent() instanceof IndexInternal))
+          continue;
+
+        if (!database.getFileManager().existsFile(fileId))
+          return false;
+
+        final ComponentFile file = database.getFileManager().getFile(fileId);
+        // A compacted index is claimed by the mutable index holding it as its sub-index, so handing the file id a
+        // new instance would leave that claim pointing at the old one. Only the full rebuild re-establishes it.
+        if (NON_INCREMENTAL_COMPONENT_EXTENSIONS.contains(file.getFileExtension()))
+          return false;
+
+        toReplace.add(file);
+      }
+
+    // SECOND PASS instantiates. A touched component is REPLACED by a freshly built instance rather than having its
+    // load hooks re-run on it: those hooks write plain, non-volatile fields (an LSM mutable index' keyTypes,
+    // binaryKeyTypes, storageKeyTypes, subIndex) that readers reach WITHOUT the index lock through
+    // LSMTreeIndex.getKeyTypes()/getBinaryKeyTypes()/convertKeys(). Their safety rests on publish-once,
+    // mutate-never-after - which is exactly why LSMTreeIndexAbstract#splitIndex() builds a new instance and swaps
+    // the volatile reference instead of updating the old one in place. Re-running the hooks on an instance a
+    // follower's query threads are already reading could let one observe a torn combination of those fields. This
+    // way the component's construction is finished before anything can reach it, and the swap is the single
+    // synchronized set in replaceLoadedComponent - which is also what the full load() would have produced for
+    // that file.
+    final List<Component> loaded = new ArrayList<>(toInstantiate.size() + toReplace.size());
+
+    for (final ComponentFile file : toInstantiate) {
       final Component component = componentFactory.createComponent(file, mode);
       if (component == null)
         continue;
 
       registerLoadedComponent(component);
-      added.add(component);
-      addedFileIds.add(component.getFileId());
+      loaded.add(component);
     }
 
-    // A component just created above already ran its hooks below as part of `added`; listing it twice would read
-    // its page 0 twice for nothing.
-    final List<Component> touched = new ArrayList<>();
-    if (touchedFileIds != null)
-      for (final Integer fileId : touchedFileIds) {
-        if (addedFileIds.contains(fileId))
-          continue;
-        final Component component = getFileByIdIfExists(fileId);
-        if (component != null)
-          touched.add(component);
-      }
+    for (final ComponentFile file : toReplace) {
+      final Component component = componentFactory.createComponent(file, mode);
+      if (component == null)
+        continue;
+
+      replaceLoadedComponent(component);
+      loaded.add(component);
+    }
 
     // Same ordering as load(): every load hook runs BEFORE readConfiguration(), because the logical schema binds
-    // to what the hooks published (an index' key types, a hash index' metadata).
-    for (final Component component : added)
-      component.onAfterLoad();
-    for (final Component component : touched)
+    // to what the hooks published (an index' key types, a hash index' metadata)...
+    for (final Component component : loaded)
       component.onAfterLoad();
 
     readConfiguration();
 
     // ...and every schema hook runs AFTER it, because those read what readConfiguration() just set on the index
     // metadata (a vector index loads its vectors only once its dimensions are known).
-    for (final Component component : added)
-      component.onAfterSchemaLoad();
-    for (final Component component : touched)
+    for (final Component component : loaded)
       component.onAfterSchemaLoad();
 
-    // A compacted index can never be in `added` (NON_INCREMENTAL_COMPONENT_EXTENSIONS excludes it), so this is a
-    // no-op today; it is kept so the two load paths stay symmetric if that ever changes.
-    attachBloomFilters(added);
-
-    // sweepOrphanCompactedIndexFiles() is deliberately NOT run here. It proves a compacted file is an orphan by
-    // observing that no mutable index claimed it during the load - a proof that only holds when EVERY mutable index
-    // was re-instantiated in the same pass. On this path most of them were not, so the sweep would drop live files.
-    // An orphan left behind is reclaimed by the next full load (a restart, or any entry that takes the fallback).
+    // attachBloomFilters() is not called: it acts only on LSMTreeIndexCompacted, and a compacted index can never be
+    // in `loaded` - NON_INCREMENTAL_COMPONENT_EXTENSIONS refuses the entry instead, in both passes above. Relaxing
+    // that set means restoring the call.
+    //
+    // sweepOrphanCompactedIndexFiles() is deliberately NOT run here either. It proves a compacted file is an orphan
+    // by observing that no mutable index claimed it during the load - a proof that only holds when EVERY mutable
+    // index was re-instantiated in the same pass. On this path most of them were not, so the sweep would drop live
+    // files. An orphan left behind is reclaimed by the next full load (a restart, or any entry that falls back).
 
     updateSecurity();
 
