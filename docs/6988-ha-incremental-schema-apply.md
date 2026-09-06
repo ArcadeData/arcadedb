@@ -109,6 +109,23 @@ entry. Removing that term is the companion "delta schema shipping" change the is
 What this change removes is the O(total files) term, which is the one that dominated the #6982 measurement (~58,000
 component instantiations, each with a page-0 read, per entry).
 
+### The one part of that residual cost that is not a cheap JSON walk: TimeSeries types
+
+`readConfiguration()` starts by closing **every** `LocalTimeSeriesType` in the schema and ends by re-creating each of
+them with `initEngine()`, whether or not the entry touched them. `TimeSeriesEngine.close()` shuts its shard executor
+down with `awaitTermination(30, TimeUnit.SECONDS)` and then closes every shard and the tag dictionary; `initEngine()`
+reopens them. On an idle engine the executor drains at once and this is quick, but it is not a JSON walk, and it is
+the exact cost `ArcadeStateMachine` names when it justifies skipping the reload for `sealedOnlyEntry` and
+`walOnlyEntry`: *"re-instantiates every TimeSeries engine (closing shard executors with a 30s awaitTermination),
+stalling replication"*.
+
+So on a schema that mixes many TimeSeries types with many regular types, one unrelated `CREATE DOCUMENT TYPE` still
+pays a teardown-and-rebuild for every TimeSeries type. That is **unchanged** by this PR - the full rebuild ran the
+same `readConfiguration()` - so nothing regresses, but it does mean a TimeSeries-heavy schema can still show a shape
+of the #6982 problem after this fix. Making the logical refresh skip types whose JSON did not change is the natural
+follow-up, and it belongs with the delta-schema-shipping work rather than here: the TimeSeries close/reinit is load
+bearing for the repair paths of #6356 and #6839, so narrowing it needs its own reasoning and its own tests.
+
 ## Tests
 
 ### `engine/src/test/java/com/arcadedb/schema/Issue6988IncrementalSchemaLoadTest.java` (9 tests)

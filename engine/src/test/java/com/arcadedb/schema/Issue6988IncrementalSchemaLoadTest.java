@@ -20,10 +20,10 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.FileManager;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.IndexInternal;
 import org.junit.jupiter.api.Test;
 
