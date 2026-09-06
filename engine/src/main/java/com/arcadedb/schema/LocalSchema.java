@@ -319,6 +319,13 @@ public class LocalSchema implements Schema {
   /**
    * Same as {@link #registerLoadedComponent} for a file id that ALREADY has a component: the new instance takes the
    * old one's slot in a single set, so a concurrent {@link #getFileById} never observes the slot empty.
+   * <p>
+   * Like {@link #load(ComponentFile.MODE, boolean)}, this publishes the component BEFORE {@link #readConfiguration()}
+   * and the {@code onAfterSchemaLoad()} pass, so a reader can reach an index whose schema hook has not run yet - the
+   * one component for which that is observable is {@code LSMVectorIndexMutable}, which loads its vectors there.
+   * Pre-existing (the full load republishes EVERY index that way, once per applied entry on a follower) and narrowed
+   * by this path to the single index an entry touched; closing it needs a staged swap of the whole logical schema and
+   * is tracked by issue #7213.
    */
   private void replaceLoadedComponent(final Component component) {
     registerInLookupMaps(component);

@@ -206,6 +206,54 @@ class Issue6988IncrementalSchemaLoadTest extends TestHelper {
   }
 
   /**
+   * The rebuild gate keys on {@code getMainComponent() instanceof IndexInternal}, so it covers every index kind by
+   * construction - but the other tests only ever exercise an {@code LSM_TREE}, and the two index kinds that are NOT
+   * an LSM tree are precisely the ones with something to lose. {@code HashIndexBucket} re-reads its metadata in
+   * BOTH load hooks, and {@code LSMVectorIndexMutable} overrides {@code onAfterSchemaLoad()} only, loading its
+   * vectors there once {@code readConfiguration()} has set its dimensions - which makes it the one component whose
+   * usable state is established entirely after publication. This pins that both go through the same
+   * build-then-swap the LSM tree does, rather than being refreshed in place or skipped.
+   */
+  @Test
+  void aTouchedHashOrVectorIndexComponentIsRebuiltToo() throws Exception {
+    final LocalSchema schema = schema();
+
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Issue6988Hashed").createProperty("id", Type.STRING)
+          .createIndex(Schema.INDEX_TYPE.HASH, true);
+      database.getSchema().createDocumentType("Issue6988Vectored").createProperty("embedding", Type.ARRAY_OF_FLOATS);
+      database.command("sql",
+          "CREATE INDEX ON Issue6988Vectored (embedding) LSM_VECTOR METADATA {dimensions: 4, similarity: 'COSINE'}");
+    });
+
+    for (final String typeName : List.of("Issue6988Hashed", "Issue6988Vectored")) {
+      final int indexFileId = firstBucketIndexOf(schema, typeName).getComponent().getFileId();
+      final Component indexBefore = schema.getFileByIdIfExists(indexFileId);
+      final Map<Integer, Component> before = componentsByFileId(schema);
+
+      assertThat(schema.loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(), Set.of(indexFileId)))
+          .as("an entry writing pages into a '%s' index is expressible incrementally", typeName)
+          .isTrue();
+
+      assertThat(schema.getFileByIdIfExists(indexFileId))
+          .as("the touched %s index component must be rebuilt, not mutated in place", typeName)
+          .isNotSameAs(indexBefore);
+
+      for (final Map.Entry<Integer, Component> entry : before.entrySet())
+        if (entry.getKey() != indexFileId)
+          assertThat(schema.getFileByIdIfExists(entry.getKey()))
+              .as("component for file %d was not touched by this entry and must survive it", entry.getKey())
+              .isSameAs(entry.getValue());
+
+      // ...and it has to come back wired into the logical schema, which for a vector index means it also ran the
+      // onAfterSchemaLoad() that loads its vectors.
+      assertThat(schema.getType(typeName).getAllIndexes(false)).isNotEmpty();
+      assertThat(firstBucketIndexOf(schema, typeName).getComponent())
+          .isSameAs(schema.getFileByIdIfExists(indexFileId));
+    }
+  }
+
+  /**
    * A bucket - or the dictionary - carries no state its load hooks would re-derive ({@code Component} leaves both
    * hooks empty, and {@code TransactionManager.applyChanges} reloads the dictionary itself), so naming one in
    * {@code touchedFileIds} must cost nothing at all.
