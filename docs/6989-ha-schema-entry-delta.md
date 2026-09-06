@@ -128,3 +128,32 @@ understands deltas before any node is allowed to emit one.
 - The follower still parses and rewrites the whole document (`update()` + `load()` round-trip
   through `schema.json`) - that is the companion "incremental follower apply" issue, and it is why
   `LocalSchema.update()`'s write cannot simply be coalesced: `load()` reads the file back.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7211
+
+## Review cycles
+
+Four cycles against the `claude` reviewer (plus CodeRabbit on cycle 2). No cycle produced a blocking finding;
+every cycle produced something worth changing.
+
+| # | head | what the review asked for, and what changed |
+|---|---|---|
+| 1 | `cea6edb` | One coverage gap: the term-mismatch arm of `schemaDeltaFor` was reachable only by forcing a re-election. Split the decision into two static side-effect-free predicates (`baseIsUsable`, `deltaIsWorthShipping`) - the `partitionAbandonedFiles` idiom - and pinned every arm. Also spelled out that `lastFullSchemaLength` is a deliberately loose yardstick. |
+| 2 | `2eba89f` | **The one substantive finding.** A key set is proportional to its SECTION, and one was emitted for every root map unconditionally, so a change to `settings` or `functions` still serialized all 1209 type names into `keys.types`. Now emitted only for a section whose key set actually moved, with three tests over schemas large enough for the regression to show. Plus CodeRabbit: the codec test builds its JSON with `JSONObject`. |
+| 3 | `5c1c73e` | Two items asked for a maintainer's sign-off rather than flagging a defect. Both answered in the tree: per-child granularity is the "affected subtree" option the issue proposes (documented as scope, with recursive diffing named as the next step), and the recording-session exclusivity the three non-atomic writes rely on is now CHECKED in `rememberReplicatedSchema` rather than left in prose. |
+| 4 | `b898cc8` | `final` on the two new locals; "structure-authoritative" spelled out as ONE-DIRECTIONAL (drops enforced, gaps not backfilled); the leader-CPU cost stated as a complexity claim and explicitly NOT measured on the 1209-type schema. Also made the IT say what a leftover `target/databasesN` is, instead of failing with a bare "already exists". |
+
+Final head: `af1894d`. Final state: **max-cycles-reached** - the fourth review was non-blocking and everything
+actionable in it was applied, but the loop stops here by its own budget rather than on a clean pass.
+
+## Deferred, for the developer
+
+- **Automatic peer-capability negotiation.** Until it exists, `arcadedb.ha.schemaDelta` must stay off through a
+  rolling upgrade; turning it on early diverges older followers SILENTLY.
+- **Micrometer wiring** for `getSchemaDeltasShipped()` / `getSchemaDocumentsShipped()`. Worth a tracking issue
+  before the setting is turned on anywhere, since the ratio is the only way to see the path is engaged.
+- **A benchmark on the real 1209-type schema** from #6982, to replace the complexity claim about leader CPU
+  with a measured one.
+- **Recursive per-child diffing**, if a schema ever has types large enough for one type's JSON to matter.
