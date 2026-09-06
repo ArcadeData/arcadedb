@@ -25,8 +25,10 @@ import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
@@ -36,6 +38,7 @@ import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -239,7 +242,10 @@ public class GraphImporter implements AutoCloseable {
    *   "limit": 10000
    * }
    * </pre>
-   * Property values: {@code "SourceAttr"} (string), {@code "int:SourceAttr"} (integer), {@code "bool:SourceAttr"} (boolean).
+   * Property values: {@code "SourceAttr"} (string), {@code "int:SourceAttr"} (integer), {@code "bool:SourceAttr"} (boolean),
+   * {@code "long:"}, {@code "double:"}, {@code "datetime:"}, {@code "vector:SourceAttr"} (dense {@code float[]} embedding)
+   * and {@code "list:SourceAttr"} (generic list). The same prefixes apply to a vertex's {@code "properties"} and to an
+   * {@code "edgeSources"} entry's {@code "properties"}.
    * File format auto-detected from extension (.xml, .csv, .jsonl). XML defaults to attribute-based {@code <row/>};
    * add {@code "element": "book"} to read child elements as fields.
    *
@@ -338,20 +344,13 @@ public class GraphImporter implements AutoCloseable {
 
       if (ej.has("properties")) {
         final JSONObject props = ej.getJSONObject("properties");
-        for (final String propName : props.keySet()) {
-          final String spec = props.getString(propName);
-          if (spec.startsWith("int:"))
-            e.intProperty(propName, spec.substring(4));
-          else if (spec.startsWith("long:"))
-            e.longProperty(propName, spec.substring(5));
-          else if (spec.startsWith("double:"))
-            e.doubleProperty(propName, spec.substring(7));
-        }
+        for (final String propName : props.keySet())
+          parsePropertySpec(e, propName, props.getString(propName));
       }
     });
   }
 
-  private static void parsePropertySpec(final VertexConfig v, final String propName, final String spec) {
+  private static void parsePropertySpec(final PropertyConfig v, final String propName, final String spec) {
     if (spec.startsWith("int:"))
       v.intProperty(propName, spec.substring(4));
     else if (spec.startsWith("long:"))
@@ -360,6 +359,10 @@ public class GraphImporter implements AutoCloseable {
       v.doubleProperty(propName, spec.substring(7));
     else if (spec.startsWith("bool:"))
       v.boolProperty(propName, spec.substring(5));
+    else if (spec.startsWith("vector:"))
+      v.floatArrayProperty(propName, spec.substring(7));
+    else if (spec.startsWith("list:"))
+      v.listProperty(propName, spec.substring(5));
     else if (spec.startsWith("datetime:"))
       parseDatetimeSpec(v, propName, spec.substring(9));
     else
@@ -373,7 +376,7 @@ public class GraphImporter implements AutoCloseable {
    *   <li>{@code "datetime:yyyy-MM-dd'T'HH:mm:ss:pickup_time"} - custom format before the last {@code :attr}</li>
    * </ul>
    */
-  private static void parseDatetimeSpec(final VertexConfig v, final String propName, final String rest) {
+  private static void parseDatetimeSpec(final PropertyConfig v, final String propName, final String rest) {
     // If rest contains a ':' it could be format:attribute, but we need to be careful
     // because datetime formats themselves contain colons (e.g., HH:mm:ss).
     // Convention: if the rest contains no format separator, it's just the attribute name.
@@ -466,52 +469,12 @@ public class GraphImporter implements AutoCloseable {
   //  Configuration classes
   // ═══════════════════════════════════════════════════════════════════
 
-  public static class VertexConfig {
-    final String typeName;
-    String  idAttribute;
-    String  nameIdAttribute;
-    String  filterAttribute;
-    String  filterValue;
-    boolean deduplicate;
+  /**
+   * Property mappings shared by vertex and edge sources, so a property spec means the same thing
+   * wherever it is declared.
+   */
+  public abstract static class PropertyConfig {
     final List<PropDef> properties = new ArrayList<>();
-    final List<EdgeDef> edges      = new ArrayList<>();
-
-    VertexConfig(final String typeName) {
-      this.typeName = typeName;
-    }
-
-    /**
-     * Enable deduplication: only the first row with a given id/nameId is imported as a vertex.
-     * Subsequent rows with the same id/nameId are skipped. Useful when extracting a dimension
-     * table from a denormalized file (e.g., extracting unique cities from a trips CSV).
-     */
-    public void deduplicate(final boolean enabled) {
-      this.deduplicate = enabled;
-    }
-
-    /**
-     * Filter rows: only rows where the attribute equals the given value are imported.
-     * Enables splitting one file into multiple vertex types (e.g. Posts.xml → Question + Answer).
-     * Format: {@code filter("PostTypeId", "1")} or in JSON: {@code "filter": "PostTypeId=1"}.
-     */
-    public void filter(final String attribute, final String value) {
-      this.filterAttribute = attribute;
-      this.filterValue = value;
-    }
-
-    /**
-     * Primary ID attribute (integer-valued, used for edge resolution).
-     */
-    public void id(final String attribute) {
-      this.idAttribute = attribute;
-    }
-
-    /**
-     * Secondary name-based ID (string, for split-field edge resolution like tags).
-     */
-    public void idByName(final String attribute) {
-      this.nameIdAttribute = attribute;
-    }
 
     /**
      * Map a string property. Null source values are skipped.
@@ -549,6 +512,29 @@ public class GraphImporter implements AutoCloseable {
     }
 
     /**
+     * Map a dense float vector property (an embedding), stored as {@code float[]}. JSONL sources
+     * read the JSON array natively; the other sources parse the textual form
+     * {@code "[0.1,0.2,0.3]"}. See {@link RecordReader#getFloatArray(String)}.
+     * <p>
+     * On a CSV source pick a delimiter the array does not contain ({@code ';'} rather than the
+     * default {@code ','}): {@link CsvRowSource} splits on the delimiter with no quoting, so a
+     * comma-delimited file would cut an unquoted array across several fields.
+     */
+    public void floatArrayProperty(final String name, final String attribute) {
+      properties.add(new PropDef(name, attribute, PropType.FLOAT_ARRAY));
+    }
+
+    /**
+     * Map a generic list property (e.g. an array of tags). Use
+     * {@link #floatArrayProperty(String, String)} for numeric vectors: it avoids boxing every
+     * element and is what a vector index consumes without conversion. The CSV delimiter caveat on
+     * {@link #floatArrayProperty(String, String)} applies here too.
+     */
+    public void listProperty(final String name, final String attribute) {
+      properties.add(new PropDef(name, attribute, PropType.LIST));
+    }
+
+    /**
      * Map a datetime property. The value is parsed as {@link LocalDateTime} using the default
      * format {@code yyyy-MM-dd HH:mm:ss} or a custom format if provided.
      */
@@ -561,6 +547,53 @@ public class GraphImporter implements AutoCloseable {
      */
     public void datetimeProperty(final String name, final String attribute, final String format) {
       properties.add(new PropDef(name, attribute, PropType.DATETIME, format));
+    }
+  }
+
+  public static class VertexConfig extends PropertyConfig {
+    final String typeName;
+    String  idAttribute;
+    String  nameIdAttribute;
+    String  filterAttribute;
+    String  filterValue;
+    boolean deduplicate;
+    final List<EdgeDef> edges = new ArrayList<>();
+
+    VertexConfig(final String typeName) {
+      this.typeName = typeName;
+    }
+
+    /**
+     * Enable deduplication: only the first row with a given id/nameId is imported as a vertex.
+     * Subsequent rows with the same id/nameId are skipped. Useful when extracting a dimension
+     * table from a denormalized file (e.g., extracting unique cities from a trips CSV).
+     */
+    public void deduplicate(final boolean enabled) {
+      this.deduplicate = enabled;
+    }
+
+    /**
+     * Filter rows: only rows where the attribute equals the given value are imported.
+     * Enables splitting one file into multiple vertex types (e.g. Posts.xml → Question + Answer).
+     * Format: {@code filter("PostTypeId", "1")} or in JSON: {@code "filter": "PostTypeId=1"}.
+     */
+    public void filter(final String attribute, final String value) {
+      this.filterAttribute = attribute;
+      this.filterValue = value;
+    }
+
+    /**
+     * Primary ID attribute (integer-valued, used for edge resolution).
+     */
+    public void id(final String attribute) {
+      this.idAttribute = attribute;
+    }
+
+    /**
+     * Secondary name-based ID (string, for split-field edge resolution like tags).
+     */
+    public void idByName(final String attribute) {
+      this.nameIdAttribute = attribute;
     }
 
     /**
@@ -604,11 +637,10 @@ public class GraphImporter implements AutoCloseable {
     }
   }
 
-  public static class EdgeSourceConfig {
+  public static class EdgeSourceConfig extends PropertyConfig {
     final String edgeType;
     String fromAttribute, fromVertexType;
     String toAttribute, toVertexType;
-    final List<PropDef> properties = new ArrayList<>();
 
     EdgeSourceConfig(final String edgeType) {
       this.edgeType = edgeType;
@@ -622,18 +654,6 @@ public class GraphImporter implements AutoCloseable {
     public void to(final String attribute, final String vertexType) {
       this.toAttribute = attribute;
       this.toVertexType = vertexType;
-    }
-
-    public void intProperty(final String name, final String attribute) {
-      properties.add(new PropDef(name, attribute, PropType.INTEGER));
-    }
-
-    public void longProperty(final String name, final String attribute) {
-      properties.add(new PropDef(name, attribute, PropType.LONG));
-    }
-
-    public void doubleProperty(final String name, final String attribute) {
-      properties.add(new PropDef(name, attribute, PropType.DOUBLE));
     }
   }
 
@@ -673,6 +693,58 @@ public class GraphImporter implements AutoCloseable {
       final String v = get(attribute);
       return v != null && !v.isEmpty() ? Double.parseDouble(v) : 0.0;
     }
+
+    /**
+     * Reads an attribute as a dense {@code float} vector (an embedding). Returns {@code null} when
+     * the attribute is missing or empty, so the property is simply not set on the record.
+     * <p>
+     * The default implementation parses the textual form ({@code "[0.1,0.2,0.3]"}), which is how
+     * flat formats such as CSV and XML carry a vector. Sources with a native array representation
+     * (JSONL) override this to build the {@code float[]} without going through a string.
+     * <p>
+     * {@code float[]} rather than {@code List<Double>} is deliberate: a 768-dimension embedding
+     * costs ~3KB as {@code float[]} against ~18KB as boxed doubles, and it is the exact
+     * representation {@link VectorUtils#toFloatArray(Object)} hands to a
+     * vector index, so indexing the imported property converts nothing.
+     */
+    default float[] getFloatArray(final String attribute) {
+      final String v = get(attribute);
+      if (v == null || v.isEmpty())
+        return null;
+      checkNotSplit(attribute, v);
+      return VectorUtils.toFloatArray(v);
+    }
+
+    /**
+     * Reads an attribute as a generic list (e.g. an array of tags). Returns {@code null} when the
+     * attribute is missing or empty. The default implementation parses the textual JSON array form;
+     * sources with a native array representation override it.
+     */
+    default List<Object> getList(final String attribute) {
+      final String v = get(attribute);
+      if (v == null || v.isEmpty())
+        return null;
+      checkNotSplit(attribute, v);
+      return new JSONArray(v).toList();
+    }
+
+    /**
+     * A textual array that opens but never closes was almost certainly cut in half by the source's
+     * own field separator: {@link CsvRowSource} splits on the delimiter with no quoting, so an
+     * unquoted {@code [0.1,0.2,0.3]} in a comma-delimited file arrives as {@code "[0.1"}. Parsing
+     * that fragment fails with "does not hold a numeric array", which is true but points at the
+     * data rather than at the delimiter, so say which one it is.
+     */
+    private static void checkNotSplit(final String attribute, final String value) {
+      final String trimmed = value.trim();
+      final boolean opens = trimmed.startsWith("[");
+      if (opens == trimmed.endsWith("]"))
+        return;
+      throw new IllegalArgumentException("Attribute '" + attribute + "' holds "
+          + (opens ? "the start of an array that never closes" : "the end of an array that never opened") + " ("
+          + trimmed + "). A delimited source splits an unquoted array across fields when the delimiter also separates "
+          + "the array's elements: use a delimiter the values do not contain, such as ';'");
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -697,8 +769,8 @@ public class GraphImporter implements AutoCloseable {
     }
 
     // Process edge-only sources
-    for (final EdgeSourceDef esd : edgeSources)
-      processEdgeSource(esd);
+    for (int i = 0; i < edgeSources.size(); i++)
+      processEdgeSource(edgeSources.get(i), i);
 
     // Free ID maps (edges now use internal indices)
     for (final TypeState ts : typeStates.values()) {
@@ -941,7 +1013,7 @@ public class GraphImporter implements AutoCloseable {
   //  Pass 1: Process edge-only sources
   // ═══════════════════════════════════════════════════════════════════
 
-  private void processEdgeSource(final EdgeSourceDef esd) throws Exception {
+  private void processEdgeSource(final EdgeSourceDef esd, final int sourceIndex) throws Exception {
     final long t = System.currentTimeMillis();
     final EdgeSourceConfig cfg = esd.config;
     final TypeState fromTs = typeStates.get(cfg.fromVertexType);
@@ -949,7 +1021,14 @@ public class GraphImporter implements AutoCloseable {
     if (fromTs == null || toTs == null)
       return;
 
-    final EdgeCollector ec = getOrCreateEdgeCollector(cfg.edgeType, cfg.fromVertexType, cfg.toVertexType);
+    // Own collector per edge source, never the one vertex-derived edges of the same type and
+    // endpoints share. A collector's property buffers are indexed by the collector-wide edge index,
+    // and only an edge source contributes properties: sharing would start its buffers at index 0
+    // against a srcIdx that already holds the vertex-derived rows, silently assigning this source's
+    // values to those edges and then running off the end of the buffer. Two edge sources declaring
+    // the same edge type with different property sets would collide the same way
+    final EdgeCollector ec = getOrCreateEdgeCollector(cfg.edgeType, cfg.fromVertexType, cfg.toVertexType,
+        "src" + sourceIndex);
     final int[] count = {0};
 
     esd.source.forEach(record -> {
@@ -962,20 +1041,27 @@ public class GraphImporter implements AutoCloseable {
         ec.dstIdx.add(di);
         for (final PropDef pd : cfg.properties) {
           switch (pd.type) {
+          case INTEGER:
+            if (ec.intProps == null)
+              ec.intProps = new HashMap<>();
+            ec.intProps.computeIfAbsent(pd.name, k -> new IntList(BUFFER_INITIAL_CAPACITY)).add(readInt(record, pd));
+            break;
           case LONG:
             if (ec.longProps == null)
               ec.longProps = new HashMap<>();
-            ec.longProps.computeIfAbsent(pd.name, k -> new ArrayList<>(100_000)).add(record.getLong(pd.attribute));
+            ec.longProps.computeIfAbsent(pd.name, k -> new ArrayList<>(BUFFER_INITIAL_CAPACITY)).add(readLong(record, pd));
             break;
           case DOUBLE:
             if (ec.doubleProps == null)
               ec.doubleProps = new HashMap<>();
-            ec.doubleProps.computeIfAbsent(pd.name, k -> new DoubleList(100_000)).add(record.getDouble(pd.attribute));
+            ec.doubleProps.computeIfAbsent(pd.name, k -> new DoubleList(BUFFER_INITIAL_CAPACITY)).add(readDouble(record, pd));
             break;
           default:
-            if (ec.intProps == null)
-              ec.intProps = new HashMap<>();
-            ec.intProps.computeIfAbsent(pd.name, k -> new IntList(100_000)).add(record.getInt(pd.attribute));
+            // STRING, BOOLEAN, DATETIME, FLOAT_ARRAY and LIST all go through the same reader
+            // vertices use, so a spec means the same thing on an edge source as on a vertex
+            if (ec.objProps == null)
+              ec.objProps = new HashMap<>();
+            ec.objProps.computeIfAbsent(pd.name, k -> new ArrayList<>(BUFFER_INITIAL_CAPACITY)).add(readProperty(record, pd));
             break;
           }
         }
@@ -1033,9 +1119,21 @@ public class GraphImporter implements AutoCloseable {
   // ═══════════════════════════════════════════════════════════════════
 
   private EdgeCollector getOrCreateEdgeCollector(final String edgeType, final String srcType, final String dstType) {
-    // Key by (edgeType, srcType, dstType) — same edge type can connect different vertex type pairs
-    // (e.g. POSTED: User→Question and POSTED: User→Answer)
-    final String key = edgeType + "|" + srcType + "|" + dstType;
+    return getOrCreateEdgeCollector(edgeType, srcType, dstType, "");
+  }
+
+  /**
+   * Key by (edgeType, srcType, dstType) — the same edge type can connect different vertex type pairs
+   * (e.g. POSTED: User→Question and POSTED: User→Answer) — plus a discriminator that keeps each edge
+   * source's rows in a collector of its own. Vertex-derived edges carry no properties, so they all
+   * share the empty discriminator.
+   * <p>
+   * The parts are joined with a pipe, which a schema type name cannot contain, so two different
+   * triples cannot collide on one key.
+   */
+  private EdgeCollector getOrCreateEdgeCollector(final String edgeType, final String srcType, final String dstType,
+                                                 final String discriminator) {
+    final String key = edgeType + "|" + srcType + "|" + dstType + (discriminator.isEmpty() ? "" : "|" + discriminator);
     return edgeCollectors.computeIfAbsent(key, k -> new EdgeCollector(edgeType, srcType, dstType));
   }
 
@@ -1047,13 +1145,26 @@ public class GraphImporter implements AutoCloseable {
   private static Object readProperty(final RecordReader record, final PropDef pd) {
     switch (pd.type) {
     case INTEGER:
-      return record.getInt(pd.attribute);
+      return readInt(record, pd);
     case LONG:
-      return record.getLong(pd.attribute);
+      return readLong(record, pd);
     case DOUBLE:
-      return record.getDouble(pd.attribute);
+      return readDouble(record, pd);
     case BOOLEAN:
+      // get() returns a String, so there is no format to get wrong: anything but "True" is false
       return "True".equalsIgnoreCase(record.get(pd.attribute));
+    case FLOAT_ARRAY:
+      try {
+        return record.getFloatArray(pd.attribute);
+      } catch (final IllegalArgumentException | JSONException e) {
+        throw badValue(pd, "a vector", "a numeric array", e);
+      }
+    case LIST:
+      try {
+        return record.getList(pd.attribute);
+      } catch (final IllegalArgumentException | JSONException e) {
+        throw badValue(pd, "a list", "an array", e);
+      }
     case DATETIME: {
       final String v = record.get(pd.attribute);
       if (v == null)
@@ -1063,11 +1174,55 @@ public class GraphImporter implements AutoCloseable {
       final DateTimeFormatter fmt = pd.datetimeFormat != null
           ? DateUtils.getFormatter(pd.datetimeFormat)
           : DEFAULT_DATETIME_FMT;
-      return LocalDateTime.parse(v, fmt);
+      try {
+        return LocalDateTime.parse(v, fmt);
+      } catch (final DateTimeParseException e) {
+        throw badValue(pd, "a datetime", "one", e);
+      }
     }
     default:
       return record.get(pd.attribute);
     }
+  }
+
+  // The numeric readers return primitives, so an edge source can fill its primitive buffers without
+  // boxing every value through readProperty, and still report a bad value the same way.
+
+  private static int readInt(final RecordReader record, final PropDef pd) {
+    try {
+      return record.getInt(pd.attribute);
+    } catch (final IllegalArgumentException | JSONException e) {
+      throw badValue(pd, "an integer", "one", e);
+    }
+  }
+
+  private static long readLong(final RecordReader record, final PropDef pd) {
+    try {
+      return record.getLong(pd.attribute);
+    } catch (final IllegalArgumentException | JSONException e) {
+      throw badValue(pd, "a long", "one", e);
+    }
+  }
+
+  private static double readDouble(final RecordReader record, final PropDef pd) {
+    try {
+      return record.getDouble(pd.attribute);
+    } catch (final IllegalArgumentException | JSONException e) {
+      throw badValue(pd, "a double", "one", e);
+    }
+  }
+
+  /**
+   * Names the property and the source attribute, so a bad value in a bulk load says which mapping to
+   * look at instead of surfacing as a bare NumberFormatException or JSONException from inside the
+   * row loop. Only the exceptions a bad value actually produces are caught at the call sites, so an
+   * unrelated bug inside a custom {@link RecordReader} still surfaces as itself.
+   */
+  private static IllegalArgumentException badValue(final PropDef pd, final String declaredAs, final String expected,
+                                                   final Exception cause) {
+    return new IllegalArgumentException(
+        "Property '" + pd.name + "' is declared as " + declaredAs + " but attribute '" + pd.attribute
+            + "' does not hold " + expected + " (" + cause.getMessage() + ")", cause);
   }
 
   private long countEdgeRefs() {
@@ -1081,7 +1236,14 @@ public class GraphImporter implements AutoCloseable {
   //  Internal data structures
   // ═══════════════════════════════════════════════════════════════════
 
-  enum PropType {STRING, INTEGER, LONG, DOUBLE, BOOLEAN, DATETIME}
+  /**
+   * Two places dispatch on this: {@link #readProperty} materializes a value for a vertex, and
+   * {@code processEdgeSource} routes INTEGER, LONG and DOUBLE into the primitive buffers an edge
+   * collector keeps for them and everything else through {@code readProperty} into {@code objProps}.
+   * A new type added here needs a case in the first and, unless it belongs in a primitive buffer,
+   * nothing in the second - the default branch already carries it.
+   */
+  enum PropType {STRING, INTEGER, LONG, DOUBLE, BOOLEAN, DATETIME, FLOAT_ARRAY, LIST}
 
   static class PropDef {
     final String   name, attribute;
@@ -1156,11 +1318,15 @@ public class GraphImporter implements AutoCloseable {
 
   static class EdgeCollector {
     final String edgeTypeName, srcType, dstType;
-    final IntList srcIdx = new IntList(100_000);
-    final IntList dstIdx = new IntList(100_000);
-    Map<String, IntList>    intProps;
-    Map<String, List<Long>> longProps;
-    Map<String, DoubleList> doubleProps;
+    final IntList srcIdx = new IntList(BUFFER_INITIAL_CAPACITY);
+    final IntList dstIdx = new IntList(BUFFER_INITIAL_CAPACITY);
+    Map<String, IntList>      intProps;
+    Map<String, List<Long>>   longProps;
+    Map<String, DoubleList>   doubleProps;
+    // Everything the primitive lists above cannot hold without boxing it anyway: strings, booleans,
+    // datetimes, vectors and lists. A null entry keeps the index aligned with srcIdx for a row where
+    // the attribute was missing, and is skipped when the edge is created.
+    Map<String, List<Object>> objProps;
 
     EdgeCollector(final String edgeTypeName, final String src, final String dst) {
       this.edgeTypeName = edgeTypeName;
@@ -1171,7 +1337,8 @@ public class GraphImporter implements AutoCloseable {
     boolean hasProperties() {
       return (intProps != null && !intProps.isEmpty())
           || (longProps != null && !longProps.isEmpty())
-          || (doubleProps != null && !doubleProps.isEmpty());
+          || (doubleProps != null && !doubleProps.isEmpty())
+          || (objProps != null && !objProps.isEmpty());
     }
 
     void appendProperties(final List<Object> props, final int i) {
@@ -1189,6 +1356,14 @@ public class GraphImporter implements AutoCloseable {
         for (final Map.Entry<String, DoubleList> pe : doubleProps.entrySet()) {
           props.add(pe.getKey());
           props.add(pe.getValue().data[i]);
+        }
+      if (objProps != null)
+        for (final Map.Entry<String, List<Object>> pe : objProps.entrySet()) {
+          final Object value = pe.getValue().get(i);
+          if (value != null) {
+            props.add(pe.getKey());
+            props.add(value);
+          }
         }
     }
   }
@@ -1267,6 +1442,14 @@ public class GraphImporter implements AutoCloseable {
   /**
    * Growable int array.
    */
+  /**
+   * Initial capacity of an {@link EdgeCollector}'s buffers. Each edge source gets a collector of its
+   * own, so a file with several small sources of the same edge type holds several sets of these.
+   * Every list here doubles on growth: a large source reaches its size in a handful of copies, and
+   * a small one no longer sits on a buffer it will never fill.
+   */
+  static final int BUFFER_INITIAL_CAPACITY = 4_096;
+
   static final class IntList {
     int[] data;
     int   size;

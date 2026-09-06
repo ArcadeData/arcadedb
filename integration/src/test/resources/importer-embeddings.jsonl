@@ -1,0 +1,3 @@
+{"id": 1, "title": "The Hitchhiker's Guide to the Galaxy", "publication_year": 1979, "tags": ["scifi", "comedy"], "embedding": [-0.31142, 0.51346, -0.02326, -0.29451, 0.57215]}
+{"id": 2, "title": "Dune", "publication_year": 1965, "tags": ["scifi"], "embedding": [0.11142, -0.21346, 0.72326, 0.19451, -0.17215]}
+{"id": 3, "title": "Neuromancer", "publication_year": null, "tags": [], "embedding": [1, 2, 3, 4, 5], "author": {"name": "William Gibson"}}

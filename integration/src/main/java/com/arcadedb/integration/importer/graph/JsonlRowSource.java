@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.importer.graph;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -25,6 +26,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * {@link GraphImporter.RecordSource} that reads newline-delimited JSON (JSONL / NDJSON).
@@ -63,14 +65,62 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
   private static class JsonlRecordReader implements GraphImporter.RecordReader {
     JSONObject json;
 
+    /**
+     * A JSON array or nested object has no scalar form, but aborting the whole import on one is
+     * worse than handing back its raw JSON text: the text is what a caller mapping an embedding
+     * with {@code property(...)} rather than {@code floatArrayProperty(...)} expects, and
+     * {@code VectorUtils.toFloatArray()} parses it (#7185).
+     */
     @Override
     public String get(final String attribute) {
-      return json.has(attribute) ? json.getString(attribute) : null;
+      // opt() is null for both an absent attribute and an explicit JSON null, so one lookup covers
+      // the "not set" case that getString() would otherwise throw on
+      final Object value = json.opt(attribute);
+      if (value == null)
+        return null;
+      if (value instanceof String text)
+        return text;
+      if (value instanceof JSONArray || value instanceof JSONObject)
+        return value.toString();
+      // a number or a boolean: getString() costs a second lookup but returns the exact source text,
+      // so a decimal imported as a string keeps its trailing zeros
+      return json.getString(attribute);
     }
 
     @Override
     public int getInt(final String attribute) {
-      return json.has(attribute) ? json.getInt(attribute) : 0;
+      return json.isNull(attribute) ? 0 : json.getInt(attribute);
+    }
+
+    @Override
+    public long getLong(final String attribute) {
+      return json.isNull(attribute) ? 0L : json.getLong(attribute);
+    }
+
+    @Override
+    public double getDouble(final String attribute) {
+      return json.isNull(attribute) ? 0.0 : json.getDouble(attribute);
+    }
+
+    /**
+     * Reads the JSON array natively into a {@code float[]}: no intermediate string, no boxed
+     * element, one allocation of exactly the vector's size.
+     */
+    @Override
+    public float[] getFloatArray(final String attribute) {
+      if (json.isNull(attribute))
+        return null;
+      final JSONArray array = json.getJSONArray(attribute);
+      final int length = array.length();
+      final float[] result = new float[length];
+      for (int i = 0; i < length; i++)
+        result[i] = array.getFloat(i);
+      return result;
+    }
+
+    @Override
+    public List<Object> getList(final String attribute) {
+      return json.isNull(attribute) ? null : json.getJSONArray(attribute).toList();
     }
   }
 }
