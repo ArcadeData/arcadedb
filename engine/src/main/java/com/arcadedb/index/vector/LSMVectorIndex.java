@@ -4246,7 +4246,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.INFO,
           "Freed %d MB of the %d MB page read cache so the graph rebuild of vector index %s (about %d MB for %d "
               + "nodes) fits the %d MB of available heap that %s allows it. Those pages are read back from disk on "
-              + "demand",
+              + "demand, and the cache is process-wide, so some of them may belong to another database",
           freed / (1024 * 1024), reclaimable / (1024 * 1024), indexName, estimate / (1024 * 1024), nodes,
           availableHeap / (1024 * 1024), GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey());
       return true;

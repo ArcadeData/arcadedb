@@ -33,6 +33,9 @@ import org.junit.jupiter.api.TestInfo;
 
 import java.io.File;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -210,12 +213,12 @@ class Issue7183StalePrefixReuseRebuildThresholdTest {
     assertThat(idsNear(db, halfway(), 5)).as("the search returns neighbours").isNotEmpty();
   }
 
-  private static java.util.List<Integer> idsNear(final Database db, final float[] query, final int k) {
+  private static List<Integer> idsNear(final Database db, final float[] query, final int k) {
     final StringBuilder vector = new StringBuilder();
     for (int d = 0; d < DIMENSIONS; d++)
       vector.append(d == 0 ? "" : ", ").append(query[d]);
 
-    final java.util.List<Integer> ids = new java.util.ArrayList<>(k);
+    final List<Integer> ids = new ArrayList<>(k);
     try (final ResultSet rs = db.query("sql",
         "SELECT id FROM (SELECT expand(vectorNeighbors('Doc[vector]', [" + vector + "], " + k + ")))")) {
       while (rs.hasNext())
@@ -226,7 +229,7 @@ class Issue7183StalePrefixReuseRebuildThresholdTest {
 
   private static float[] halfway() {
     final float[] query = new float[DIMENSIONS];
-    java.util.Arrays.fill(query, 0.5f);
+    Arrays.fill(query, 0.5f);
     return query;
   }
 

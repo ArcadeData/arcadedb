@@ -1601,6 +1601,13 @@ public class PageManager extends LockContext {
    * them, and concurrent readers are free to cache pages of their own again immediately. Nothing here can promise a
    * caller that the heap it was given up for is still there when it asks - which is why this is used to correct a
    * reading that would otherwise be pessimistic, never to justify an allocation that only fits if it is exact.
+   * <p>
+   * <b>The cache is process-wide, so the eviction is too.</b> {@link #INSTANCE} serves every open database, and the
+   * pages given up here are simply the least recently used ones - which may well belong to a database other than the
+   * caller's. That is how {@code arcadedb.maxPageRAM} already works (one budget, one LRU, every database competing in
+   * it), so this adds no new sharing, but it does mean a large vector-index rebuild on one database can show up as a
+   * cache-miss spike on an unrelated one. Whoever adds the next caller should want that trade for the same reason
+   * this one does: the heap is shared whether or not the eviction policy admits it.
    *
    * @param bytesToFree how much to give up; anything not positive is a no-op
    *
