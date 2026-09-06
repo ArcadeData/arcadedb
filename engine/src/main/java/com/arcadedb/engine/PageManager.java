@@ -1572,6 +1572,53 @@ public class PageManager extends LockContext {
       totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
   }
 
+  /**
+   * On-heap bytes currently held by the page READ cache, across every open database.
+   * <p>
+   * Every one of them is evictable: {@link #evictOldestPages} drops the page and the next reader loads it from disk
+   * again. That makes this figure the reclaimable part of what a post-collection heap reading reports as live, which
+   * is what lets a caller about to allocate a lot of heap - the vector index graph rebuild of issue #7184 - tell "the
+   * heap is full" apart from "the heap is full of cached pages".
+   */
+  public long getReadCacheRAM() {
+    return totalReadCacheRAM.get();
+  }
+
+  /**
+   * Gives up at least {@code bytesToFree} bytes of the page read cache, oldest pages first, so a caller that is
+   * about to allocate that much heap for something else actually gets it (issue #7184).
+   * <p>
+   * The counterpart of {@link #getReadCacheRAM()}: a caller that treated the cache as reclaimable when deciding
+   * whether its allocation fits has to <em>reclaim</em> it, or the decision was merely optimistic - the cached pages
+   * are strongly referenced and no collection would have taken them. The pages come back from disk on the next read,
+   * so this costs I/O and nothing else.
+   * <p>
+   * Uses the ordinary eviction path, and therefore the ordinary eviction policy (least recently used, larger pages
+   * first on a tie). Deliberately not clamped to {@code maxRAM}: the point here is to go BELOW the configured cache
+   * size on purpose, temporarily, in exchange for something the caller values more.
+   * <p>
+   * A handover, not a reservation: the bytes are unreferenced when this returns, so the next collection can take
+   * them, and concurrent readers are free to cache pages of their own again immediately. Nothing here can promise a
+   * caller that the heap it was given up for is still there when it asks - which is why this is used to correct a
+   * reading that would otherwise be pessimistic, never to justify an allocation that only fits if it is exact.
+   *
+   * @param bytesToFree how much to give up; anything not positive is a no-op
+   *
+   * @return bytes actually freed, which can be less than asked for when the cache held less than that
+   */
+  public long reclaimReadCacheRAM(final long bytesToFree) {
+    if (bytesToFree <= 0)
+      return 0L;
+
+    final long before = totalReadCacheRAM.get();
+    if (before <= 0)
+      return 0L;
+
+    evictOldestPages(Math.min(bytesToFree, before), before);
+
+    return Math.max(0L, before - totalReadCacheRAM.get());
+  }
+
   public void writePages(final List<MutablePage> updatedPages, final boolean asyncFlush) throws IOException, InterruptedException {
     // Entry point of the asynchronous writers that do NOT go through publishPages (LSM index compaction): they hold
     // no page-manager lock, so the deferred-backlog cap of #4728 (issue #6200) and the flush-queue admission control

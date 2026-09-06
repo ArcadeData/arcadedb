@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -143,6 +144,15 @@ class Issue6657CloseTimeRebuildPendingStatTest {
       try {
         final LSMVectorIndex reopenedIndex = vectorIndex(db);
         assertThat(reopenedIndex).as("reopen must hand back a different Java instance").isNotSameAs(indexAtDeferralTime);
+
+        // This test's gap is ONE vector, and since issue #7183 the search that reuses the persisted graph as a
+        // prefix hands that gap to a rebuild only when it crosses the ordinary rebuild threshold - rebuilding all
+        // 1,006 nodes for one queued vector is precisely what the threshold exists to refuse, and doing it anyway
+        // meant close() then waited on the rebuild it had just started, cancelled it, and the next session found the
+        // same vector queued and repeated the whole thing. So the debt this stat records is paid by the next search
+        // only when a rebuild is actually warranted, which is what a threshold of one mutation says here.
+        db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 1);
+        db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO, 0f);
 
         assertThat(reopenedIndex.getStats().get("graphState"))
             .as("precondition: LOADING - nothing in this session has searched or written yet")

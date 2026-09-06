@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -154,6 +155,14 @@ class Issue6655StaleGraphPrefixReuseTest {
     try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
       final Database db = factory.open();
       try {
+        // The reuse hands its gap to an async rebuild only when that gap crosses the ordinary rebuild threshold
+        // (issue #7183): rebuilding every node of a graph for a gap below it is exactly what the threshold exists
+        // to refuse, and doing it anyway meant a session that opened, searched once and exited paid a full rebuild
+        // for one vector. GAP_VECTORS is 1% of this fixture, so the ratio-scaled threshold - 20% of the graph, 4,000
+        // here - would not be crossed. Disabling the scaling leaves the absolute floor of 100, which 200 genuinely
+        // exceeds, so the fold-in this test asserts is triggered BY the policy rather than in spite of it.
+        db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO, 0f);
+
         try (final ResultSet rs = db.query("sql", "SELECT count(*) as cnt FROM Doc")) {
           assertThat(rs.next().<Long>getProperty("cnt"))
               .as("precondition: WAL recovery must have restored every record from the crashed session")

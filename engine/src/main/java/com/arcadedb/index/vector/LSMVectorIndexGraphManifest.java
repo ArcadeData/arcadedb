@@ -20,6 +20,7 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
@@ -50,6 +51,7 @@ import java.util.logging.Level;
  * what two different generations both produce; it is the records behind those ids that differ.
  * <p>
  * Like {@link LSMVectorIndexPQFile} this is a plain file rather than a paginated component: it is a few dozen bytes
+ * (plus one number per node the last build left unreachable, normally none - see {@link Content#unreachableOrdinals()})
  * read once per graph load and rewritten once per graph persist, and keeping it out of the page system means it can
  * be removed before the graph pages are touched and written only after they are committed. That order is what makes
  * the check safe under a crash: a persist that fails observably replaces the manifest with one that refuses the
@@ -81,6 +83,9 @@ public class LSMVectorIndexGraphManifest {
    */
   static final int UNUSABLE_VECTOR_COUNT = -1;
 
+  /** Shared by a manifest that records no unreachable ordinal, which is the overwhelmingly common case. */
+  static final int[] NO_UNREACHABLE_ORDINALS = new int[0];
+
   /**
    * What a persisted manifest says about the graph next to it.
    *
@@ -90,12 +95,20 @@ public class LSMVectorIndexGraphManifest {
    * @param closeDeferredRebuild {@code true} when the pages this manifest describes are known stale because the
    *                             most recent {@code close()} chose to defer the rebuild that would otherwise have
    *                             brought them up to date (issue #6657), rather than run it synchronously. Always
-   *                             {@code false} again once a build actually completes - {@link #write(int, long)} and
-   *                             {@link #markUnusable(String)} both clear it - so it answers specifically "did the
+   *                             {@code false} again once a build actually completes - {@link #write(int, long, int[])}
+   *                             and {@link #markUnusable(String)} both clear it - so it answers specifically "did the
    *                             last close skip a rebuild", not the broader "is a rebuild owed" that
    *                             {@code vectorCount}/{@code fingerprint} against the live index already answers.
+   * @param unreachableOrdinals ordinals of the graph next to this manifest that no path from its entry node reaches
+   *                             (issue #5615), ascending, never {@code null}. Those nodes are physically in the graph
+   *                             but no beam search can return them at any {@code efSearch}, so the index serves them
+   *                             from the delta scan instead - and until issue #7190 that re-queue lived only in the
+   *                             heap of the session that built the graph. Recording the set here is what lets a
+   *                             reopened session make the same one, instead of leaving those vectors unreachable by
+   *                             any search while {@code totalVectors} still counts them.
    */
-  public record Content(int formatVersion, int vectorCount, long fingerprint, boolean closeDeferredRebuild) {
+  public record Content(int formatVersion, int vectorCount, long fingerprint, boolean closeDeferredRebuild,
+                        int[] unreachableOrdinals) {
   }
 
   private final Path path;
@@ -182,17 +195,19 @@ public class LSMVectorIndexGraphManifest {
    * @param reason human-readable note stored in the file; nothing reads it back
    */
   public void markUnusable(final String reason) {
-    write(UNUSABLE_VECTOR_COUNT, 0L, reason, false);
+    write(UNUSABLE_VECTOR_COUNT, 0L, reason, false, NO_UNREACHABLE_ORDINALS);
   }
 
   /**
-   * Records the correspondence the just-committed graph was built over. Written through a temporary file so a
-   * crash mid-write cannot leave a truncated manifest that reads as a valid one. Always clears
-   * {@link Content#closeDeferredRebuild()}: a build that reached this call completed, so whatever a previous
-   * {@code close()} deferred has now been paid for.
+   * Records the correspondence the just-committed graph was built over, and which of its ordinals that build left
+   * unreachable (issue #7190). Written through a temporary file so a crash mid-write cannot leave a truncated
+   * manifest that reads as a valid one. Always clears {@link Content#closeDeferredRebuild()}: a build that reached
+   * this call completed, so whatever a previous {@code close()} deferred has now been paid for.
+   *
+   * @param unreachableOrdinals see {@link Content#unreachableOrdinals()}; {@code null} is read as none
    */
-  public void write(final int vectorCount, final long fingerprint) {
-    write(vectorCount, fingerprint, null, false);
+  public void write(final int vectorCount, final long fingerprint, final int[] unreachableOrdinals) {
+    write(vectorCount, fingerprint, null, false, unreachableOrdinals);
   }
 
   /**
@@ -202,8 +217,8 @@ public class LSMVectorIndexGraphManifest {
    * or falls back to {@link #UNUSABLE_VECTOR_COUNT} when nothing has ever been persisted here, so a first-ever
    * build that a large index's close deferred is recorded too.
    * <p>
-   * Cleared automatically the next time {@link #write(int, long)} or {@link #markUnusable(String)} runs, which is
-   * exactly when a rebuild - deferred or not - actually completes.
+   * Cleared automatically the next time {@link #write(int, long, int[])} or {@link #markUnusable(String)} runs,
+   * which is exactly when a rebuild - deferred or not - actually completes.
    * <p>
    * {@code read() == null} is treated as "nothing persisted yet" and takes the {@link #UNUSABLE_VECTOR_COUNT}
    * fallback, which is also what a transient read failure or a format-version mismatch report (both logged as
@@ -222,7 +237,10 @@ public class LSMVectorIndexGraphManifest {
       return;
     final int vectorCount = existing != null ? existing.vectorCount() : UNUSABLE_VECTOR_COUNT;
     final long fingerprint = existing != null ? existing.fingerprint() : 0L;
-    write(vectorCount, fingerprint, null, true);
+    // Carried over with the count and the fingerprint, for the same reason they are: this is a note about pages
+    // that have not changed, so what those pages leave unreachable has not changed either (issue #7190).
+    write(vectorCount, fingerprint, null, true,
+        existing != null ? existing.unreachableOrdinals() : NO_UNREACHABLE_ORDINALS);
   }
 
   /**
@@ -233,7 +251,7 @@ public class LSMVectorIndexGraphManifest {
    * manifest. A unique name costs nothing and removes the assumption.
    */
   private void write(final int vectorCount, final long fingerprint, final String reason,
-      final boolean closeDeferredRebuild) {
+      final boolean closeDeferredRebuild, final int[] unreachableOrdinals) {
     final Path temporary = path.resolveSibling(
         path.getFileName() + "." + Long.toHexString(System.nanoTime()) + ".tmp");
     try {
@@ -254,6 +272,16 @@ public class LSMVectorIndexGraphManifest {
       // As a string: a 64-bit fingerprint is not representable in the double a JSON number decodes to.
       json.put("fingerprint", Long.toString(fingerprint));
       json.put("closeDeferredRebuild", closeDeferredRebuild);
+      // Written only when there is something to say, and as a bare int array rather than as a new formatVersion:
+      // an older build reads the keys it knows and ignores this one, which leaves it exactly at its own
+      // pre-issue-#7190 behaviour instead of forcing every existing index to rebuild on the first open after an
+      // upgrade - which is what bumping FORMAT_VERSION would cost, since read() refuses a version it does not know.
+      if (unreachableOrdinals != null && unreachableOrdinals.length > 0) {
+        final JSONArray ordinals = new JSONArray();
+        for (final int ordinal : unreachableOrdinals)
+          ordinals.put(ordinal);
+        json.put("unreachableOrdinals", ordinals);
+      }
       if (reason != null)
         json.put("reason", reason);
 
@@ -314,11 +342,40 @@ public class LSMVectorIndexGraphManifest {
       }
       return new Content(formatVersion, json.getInt("vectorCount", -1),
           Long.parseLong(json.getString("fingerprint", "0")),
-          json.getBoolean("closeDeferredRebuild", false));
+          json.getBoolean("closeDeferredRebuild", false),
+          unreachableOrdinalsOf(json));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Could not read the vector graph manifest '%s': %s", path,
           e.getMessage());
       return null;
+    }
+  }
+
+  /**
+   * The {@code unreachableOrdinals} array of a manifest, as primitive ints.
+   * <p>
+   * Absent in every manifest written before issue #7190 and in the overwhelming majority written after it, so the
+   * shared empty array is the answer on the common path. A malformed entry costs the set rather than the whole
+   * manifest: losing it puts the index back at the pre-#7190 behaviour for those nodes, while returning
+   * {@code null} from {@link #read()} would refuse a graph that is otherwise perfectly usable and force a full
+   * rebuild.
+   */
+  private int[] unreachableOrdinalsOf(final JSONObject json) {
+    final JSONArray persisted = json.getJSONArray("unreachableOrdinals", null);
+    if (persisted == null || persisted.length() == 0)
+      return NO_UNREACHABLE_ORDINALS;
+
+    try {
+      final int[] ordinals = new int[persisted.length()];
+      for (int i = 0; i < ordinals.length; i++)
+        ordinals[i] = persisted.getInt(i);
+      return ordinals;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Vector graph manifest '%s' carries an unreadable unreachableOrdinals entry (%s): ignoring it. Nodes the "
+              + "last build left unreachable will not be served from the delta scan in this session", path,
+          e.getMessage());
+      return NO_UNREACHABLE_ORDINALS;
     }
   }
 }
