@@ -459,6 +459,146 @@ class PostgresCatalogTest {
     assertThat(answer.columns.keySet()).containsExactly("relname", "current_database", "?column?");
   }
 
+  // ---------------------------------------------------------------- pg_type as a relation of its own
+
+  /**
+   * The Apache Arrow ADBC driver's type-resolver bootstrap, verbatim from arrow-adbc
+   * {@code c/driver/postgresql/database.cc}. Its WHERE clause is a conjunction of three inequalities, one of
+   * them behind a cast and one of them parenthesised - which is why answering it belongs to the expression
+   * evaluator rather than to {@link PostgresTypeCatalog}'s single-equality patterns (issue #7178).
+   */
+  private static final String ADBC_TYPE_RESOLVER_QUERY =
+      "SELECT oid, typname, typreceive, typbasetype, typrelid, typarray FROM "
+          + "pg_catalog.pg_type WHERE (typreceive != 0 OR typsend != 0) AND typtype != 'r' AND "
+          + "typreceive::TEXT != 'array_recv'";
+
+  @Test
+  void theArrowAdbcTypeResolverQueryIsAnswered() {
+    final PostgresCatalog.Answer answer = resolve(ADBC_TYPE_RESOLVER_QUERY);
+
+    assertThat(answer.columns.keySet())
+        .as("the driver validates the column count before it looks at a single row")
+        .containsExactly("oid", "typname", "typreceive", "typbasetype", "typrelid", "typarray");
+    assertThat(answer.rows).isNotEmpty();
+
+    assertThat(names(answer.rows, "typname")).contains("int4", "text", "bool", "timestamp", "numeric")
+        .as("typreceive::TEXT != 'array_recv' filters the array types out").doesNotContain("_int4", "_text");
+
+    final Map<String, Object> int4 = answer.rows.stream().filter(row -> "int4".equals(row.get("typname")))
+        .findFirst().orElseThrow();
+    assertThat(int4.get("oid")).isEqualTo(PostgresType.INTEGER.code);
+    assertThat(int4.get("typreceive")).isEqualTo("int4recv");
+    assertThat(int4.get("typarray")).isEqualTo(PostgresType.ARRAY_INT.code);
+    assertThat(int4.get("typbasetype")).isEqualTo(0);
+    assertThat(int4.get("typrelid")).isEqualTo(0);
+  }
+
+  @Test
+  void aPlainEnumerationOfPgTypeListsEveryTypeInOidOrder() {
+    final PostgresCatalog.Answer answer = resolve("SELECT oid, typname FROM pg_catalog.pg_type ORDER BY oid");
+
+    assertThat(answer.rows).hasSize(PostgresType.values().length);
+    assertThat(names(answer.rows, "oid")).isSorted();
+  }
+
+  @Test
+  void aFilteredLookupInPgTypeSelectsOneRow() {
+    final PostgresCatalog.Answer answer = resolve("SELECT typname, typlen FROM pg_type WHERE typcategory = 'N' AND typlen = 8");
+
+    assertThat(names(answer.rows, "typname")).containsExactlyInAnyOrder("int8", "float8");
+  }
+
+  @Test
+  void aColumnListJoiningPgTypeStillAnswersOneRowPerColumn() {
+    // pg_type carrying a family of its own must not turn the driver's column list - which joins pg_attribute
+    // to pg_type to name each column's type - into an enumeration of the type catalog.
+    final PostgresCatalog.Answer answer = resolve(JDBC_GET_COLUMNS, "Article", "%");
+
+    assertThat(names(answer.rows, "attname")).containsExactly("id", "title");
+    assertThat(names(answer.rows, "typtype")).containsOnly("b");
+  }
+
+  @Test
+  void aPgTypeFilterThisCatalogCannotReadDeclinesRatherThanAnsweringEveryType() {
+    // psycopg looks a type up by name to decide whether the server has it, and casts to ::regtype to do so.
+    // The permissive-WHERE rule - an unreadable predicate does not get to remove rows - is right for every
+    // other relation here, because their rows are the user's own types and such a predicate can only be
+    // excluding rows this catalog never produced. pg_type is a fixed set of built-in types where a filter
+    // selects a real subset, so keeping every row answers "all 23 types" to "the one named hstore", and
+    // psycopg fails outright with "found 23 different types named hstore" rather than concluding it is
+    // absent. An unanswerable filter over pg_type has to decline.
+    assertThat(resolveRaw(PSYCOPG_TYPE_LOOKUP)).isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  /**
+   * psycopg's {@code TypeInfo.fetch}, verbatim from {@code psycopg/_typeinfo.py}, with its {@code %(name)s}
+   * parameter bound. {@code to_regtype()} is a function this catalog does not implement, so the whole
+   * predicate evaluates to UNKNOWN - which is exactly the case the permissive-WHERE rule used to wave
+   * through, and pg_type is the one relation where waving it through fabricates an answer.
+   */
+  private static final String PSYCOPG_TYPE_LOOKUP =
+      "SELECT typname AS name, oid, typarray AS array_oid, oid::regtype::text AS regtype, typdelim AS delimiter "
+          + "FROM pg_type t WHERE t.oid = to_regtype('hstore'::text) ORDER BY t.oid";
+
+  @Test
+  void wrappingPgTypeInASubSelectDoesNotGetThePermissiveFilterBack() {
+    // The strictness has to travel with the rows, not with the statement that built them: the outer WHERE
+    // reads the same closed set of types, so a sub-select must not become the way back to "an unreadable
+    // predicate keeps every row" - which is the hole that answered psycopg with all 23 types.
+    assertThat(resolveRaw("SELECT * FROM (SELECT oid, typname FROM pg_type) t "
+        + "WHERE t.oid = to_regtype('hstore'::text)")).isSameAs(PostgresCatalog.DECLINED);
+
+    // A readable outer filter over the same sub-select still answers, so the strictness has not become a
+    // blanket refusal of derived tables over pg_type.
+    assertThat(names(resolve("SELECT * FROM (SELECT oid, typname FROM pg_type) t WHERE t.typname = 'int4'").rows,
+        "typname")).containsExactly("int4");
+  }
+
+  @Test
+  void aPgTypeFilterThisCatalogCanReadStillSelectsASubset() {
+    // Declining an unreadable filter must not become declining every filter: the readable ones still work,
+    // and a name this protocol does not produce correctly answers no rows rather than being declined.
+    assertThat(names(resolve("SELECT oid, typname FROM pg_type WHERE typname = 'hstore'").rows, "typname"))
+        .as("a type this protocol cannot produce is absent, not unanswerable").isEmpty();
+    assertThat(names(resolve("SELECT oid, typname FROM pg_type WHERE typname = 'int4'").rows, "typname"))
+        .containsExactly("int4");
+  }
+
+  @Test
+  void readingOneRelationThroughTwoAliasesIsDeclined() {
+    // Every Row carries one map per relation, so two aliases of the same relation read the same map. The
+    // second would answer with the first's values, and a projection naming a column through both announces
+    // one column where the client asked for two - a miscount that makes a strict client abort. There is no
+    // honest answer, so the query is declined rather than guessed at.
+    assertThat(resolveRaw("SELECT t.typname, e.typname FROM pg_type t, pg_type e WHERE t.typelem = e.oid"))
+        .isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("SELECT a.relname, b.relname FROM pg_class a, pg_class b WHERE a.oid = b.oid"))
+        .isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  @Test
+  void theDriverSelfJoinIsStillAnsweredByTheTypeCatalog() {
+    // The one self-join that matters is recognised by PostgresTypeCatalog, which runs before this class, so
+    // declining the shape here does not take it away: the projected columns describe the element type of the
+    // array the filter names, which is what the client's join asks for.
+    final List<Map<String, Object>> rows = PostgresTypeCatalog
+        .resolve("SELECT e.typdelim, e.typname FROM pg_type t, pg_type e WHERE t.oid = 1009 AND t.typelem = e.oid");
+
+    assertThat(rows).hasSize(1);
+    assertThat(rows.get(0)).containsEntry("typname", "text").containsEntry("typdelim", ",");
+  }
+
+  @Test
+  void aSecondAliasUsedOnlyInAJoinConditionDoesNotDeclineTheQuery() {
+    // The driver's getColumns() joins pg_class and pg_namespace a second time purely to look up a comment it
+    // never projects. Those aliases live only in ON conditions, which are skipped rather than evaluated, so
+    // they must not count as reading the relation twice - declining here would take out the column list of
+    // every JDBC client.
+    final PostgresCatalog.Answer answer = resolve(JDBC_GET_COLUMNS, "Article", "%");
+
+    assertThat(names(answer.rows, "attname")).containsExactly("id", "title");
+  }
+
   // ---------------------------------------------------------------- helpers
 
   private PostgresCatalog.Answer resolve(final String query, final Object... parameters) {

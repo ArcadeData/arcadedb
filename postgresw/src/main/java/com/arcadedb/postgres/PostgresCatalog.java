@@ -23,6 +23,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -82,11 +83,14 @@ public class PostgresCatalog {
   /** PostgreSQL's own first user OID: everything below it is a system object. */
   private static final int FIRST_USER_OID = 16384;
   private static final int OID_SPACE      = 1_000_000;
-  /** The OID of the bootstrap superuser in a stock PostgreSQL, used for every "owner" column. */
-  private static final int OWNER_OID      = 10;
+  /**
+   * The OID of the bootstrap superuser in a stock PostgreSQL, used for every "owner" column - here and in
+   * {@link PostgresTypeCatalog}'s {@code typowner}, so the two surfaces cannot drift apart on who owns what.
+   */
+  static final int OWNER_OID = 10;
 
   /** A catalog query whose shape this class will not answer. The caller sends an empty result set. */
-  public static final Answer DECLINED = new Answer(new LinkedHashMap<>(), null);
+  public static final Answer DECLINED = new Answer(new LinkedHashMap<>(), null, false);
 
   /**
    * The emulated relations and the columns each one has. A column outside its relation's set makes the query
@@ -105,16 +109,26 @@ public class PostgresCatalog {
   public static class Answer {
     public final LinkedHashMap<String, PostgresType> columns;
     public final List<Map<String, Object>>           rows;
+    /**
+     * Whether these rows are a closed set a filter selects a real subset of, rather than everything the
+     * connection can see anyway. It travels with the answer so that a query reading it through a derived
+     * table applies the same strictness to its outer WHERE as the inner one did - without it, wrapping
+     * pg_type in a sub-select would reach the permissive default and reopen the "answers every type" hole
+     * the strictness exists to close.
+     */
+    final boolean filtersExactly;
 
-    private Answer(final LinkedHashMap<String, PostgresType> columns, final List<Map<String, Object>> rows) {
+    private Answer(final LinkedHashMap<String, PostgresType> columns, final List<Map<String, Object>> rows,
+        final boolean filtersExactly) {
       this.columns = columns;
       this.rows = rows;
+      this.filtersExactly = filtersExactly;
     }
   }
 
   /** The families of rows a catalog query can be about. */
   private enum Family {
-    SCHEMAS, TABLES, COLUMNS, DATABASES, ROLES, PRIVILEGES, CHARACTER_SETS, COLLATIONS, VIEWS
+    SCHEMAS, TABLES, COLUMNS, DATABASES, ROLES, PRIVILEGES, CHARACTER_SETS, COLLATIONS, VIEWS, TYPES
   }
 
   private static void relation(final String name, final Family family, final String... columns) {
@@ -168,14 +182,20 @@ public class PostgresCatalog {
     relation("information_schema.views", Family.VIEWS, "table_catalog", "table_schema", "table_name", "view_definition",
         "check_option", "is_updatable", "is_insertable_into");
 
+    // pg_type is both: on its own it is a query about the types this protocol can produce (issue #7178), and
+    // joined to pg_attribute it decorates a column row with that column's type. Which of the two a query is
+    // about is decided by rank(): TYPES never outranks anything, so it only wins when nothing else is named.
+    relation("pg_type", Family.TYPES, "oid", "typname", "typnamespace", "typowner", "typlen", "typbyval", "typtype",
+        "typcategory", "typispreferred", "typisdefined", "typdelim", "typrelid", "typelem", "typarray", "typinput",
+        "typoutput", "typreceive", "typsend", "typmodin", "typmodout", "typanalyze", "typsubscript", "typalign",
+        "typstorage", "typbasetype", "typtypmod", "typnotnull", "typndims", "typcollation", "typdefaultbin",
+        "typdefault", "typacl");
+
     // Decorating relations: they never decide the family, they only contribute columns to a row. Every one of
     // them is something ArcadeDB has no equivalent of, so their columns are all NULL - which is exactly what a
     // LEFT JOIN against them yields in PostgreSQL when there is no comment, no default and no inheritance.
     relation("pg_description", null, "objoid", "classoid", "objsubid", "description");
     relation("pg_attrdef", null, "oid", "adrelid", "adnum", "adbin", "adsrc");
-    relation("pg_type", null, "oid", "typname", "typnamespace", "typowner", "typlen", "typbyval", "typtype",
-        "typcategory", "typispreferred", "typisdefined", "typdelim", "typrelid", "typelem", "typarray", "typinput",
-        "typoutput", "typbasetype", "typtypmod", "typnotnull", "typndims", "typcollation", "typdefault");
     relation("pg_collation", null, "oid", "collname", "collnamespace", "collowner", "collprovider", "collcollate",
         "collctype");
   }
@@ -274,6 +294,7 @@ public class PostgresCatalog {
 
     final Map<String, Collection<String>> columnsByRelation = new LinkedHashMap<>();
     final List<Row> rows;
+    boolean toleratesUnreadableFilter = true;
 
     if (from.size() == 1 && from.get(0).derived != null) {
       // A derived table: the inner SELECT is the catalog query and this one is a filter over its output. The
@@ -281,6 +302,10 @@ public class PostgresCatalog {
       final Answer inner = resolveStatement(from.get(0).derived, context);
       if (inner == null || inner.rows == null)
         return inner == null ? null : DECLINED;
+
+      // The inner query decides how its own rows may be filtered, and the outer WHERE reads those same
+      // rows: a sub-select over pg_type must not become the way to get the permissive filter back.
+      toleratesUnreadableFilter = !inner.filtersExactly;
 
       final String name = from.get(0).alias == null ? "" : from.get(0).alias;
       rows = new ArrayList<>(inner.rows.size());
@@ -318,10 +343,68 @@ public class PostgresCatalog {
       if (family == null)
         return DECLINED;
 
+      if (readsOneRelationThroughTwoAliases(statement, from))
+        return DECLINED;
+
+      // The permissive-WHERE rule rests on every row being one of the user's own types in the one database
+      // this connection is bound to, so a predicate that cannot be read can only be excluding rows this
+      // catalog never produced. pg_type breaks that premise: its rows are a fixed set of built-in types, and
+      // a filter over them selects a real subset. Answering "every type" to "the type named hstore" is the
+      // fabricated system-catalog row this class exists to avoid - psycopg asks exactly that and fails with
+      // "found 23 different types named hstore" - so here an unreadable predicate declines instead.
+      toleratesUnreadableFilter = family != Family.TYPES;
+
       rows = buildRows(family, context);
     }
 
-    return project(statement, from, rows, context, columnsByRelation);
+    return project(statement, from, rows, context, columnsByRelation, toleratesUnreadableFilter);
+  }
+
+  /**
+   * Whether the query reads columns through two different aliases of the same relation, which is a shape this
+   * row model cannot represent: a {@link Row} carries one map per relation, so both aliases read the same map.
+   * The second alias would answer with the first one's values, and a projection naming a column through both
+   * would announce one column where the client asked for two - which is precisely the kind of miscount that
+   * makes a strict client (the Arrow ADBC driver among them) abort. So the query is declined instead, and the
+   * caller sends the empty result set that any unreadable catalog shape gets.
+   * <p>
+   * The self-join that matters in practice - {@code FROM pg_type t, pg_type e WHERE t.oid = N AND t.typelem =
+   * e.oid}, where the projected columns describe a different row from the one the filter selects - is
+   * answered by {@link PostgresTypeCatalog}, which runs first and recognises it as its own shape.
+   * <p>
+   * Only aliases the query actually <b>reads through</b> count. An alias that appears solely in a join
+   * condition does not, because those conditions are skipped rather than evaluated: the JDBC driver's
+   * {@code getColumns()} joins {@code pg_class} and {@code pg_namespace} a second time purely to look up a
+   * comment it then never projects, and declining that would take out the column list of every JDBC client.
+   */
+  private static boolean readsOneRelationThroughTwoAliases(final Statement statement, final List<FromEntry> from) {
+    final Map<String, String> aliasesByRelation = new HashMap<>();
+
+    for (final List<PostgresCatalogToken> clause : Arrays.asList(statement.projection, statement.where,
+        statement.orderBy)) {
+      if (clause == null)
+        continue;
+
+      for (int i = 0; i + 1 < clause.size(); i++) {
+        final PostgresCatalogToken token = clause.get(i);
+        if (token.type != PostgresCatalogToken.Type.IDENTIFIER
+            && token.type != PostgresCatalogToken.Type.QUOTED_IDENTIFIER)
+          continue;
+        if (!clause.get(i + 1).isSymbol("."))
+          continue;
+
+        final String qualifier = token.text.toLowerCase(Locale.ENGLISH);
+        final FromEntry entry = entryFor(from, qualifier);
+        if (entry == null || entry.derived != null)
+          continue;
+
+        final String previous = aliasesByRelation.putIfAbsent(entry.relation, qualifier);
+        if (previous != null && !previous.equals(qualifier))
+          return true;
+      }
+    }
+
+    return false;
   }
 
   private static Family mostSpecific(final Family current, final Family candidate) {
@@ -336,6 +419,17 @@ public class PostgresCatalog {
     return current;
   }
 
+  /**
+   * How specific a family is, when a query names relations belonging to more than one. TYPES stays at the
+   * bottom on purpose: pg_type joined to pg_class or pg_attribute is a question about tables or columns that
+   * happens to name the type of each, and answering it with one row per type instead of one row per column
+   * would change what every such query means.
+   * <p>
+   * So TYPES loses to every ranked family. Against the other rank-0 ones - ROLES, DATABASES, PRIVILEGES,
+   * CHARACTER_SETS, COLLATIONS - it does not lose, it ties, and the FROM order settles it. That is what this
+   * scheme happens to give rather than a considered answer; no client joins pg_type to pg_roles, and if one
+   * ever does it is the tie that needs deciding, not the ranking above it.
+   */
   private static int rank(final Family family) {
     return switch (family) {
       case SCHEMAS -> 1;
@@ -682,9 +776,44 @@ public class PostgresCatalog {
       case PRIVILEGES -> List.of(privilegeRow(context).complete());
       case CHARACTER_SETS -> List.of(characterSetRow(context).complete());
       case COLLATIONS -> List.of(collationRow(context).complete());
+      case TYPES -> typeRows();
       // ArcadeDB has no relation that a PostgreSQL client would render as a view.
       case VIEWS -> List.of();
     };
+  }
+
+  /**
+   * One row per type this protocol can produce, which is the only set of types it can honestly describe. The
+   * values come from {@link PostgresTypeCatalog}, so a client reading pg_type through the generic catalog is
+   * told exactly what {@code SELECT ... FROM pg_type} tells it through the recogniser that runs first.
+   * <p>
+   * This is what makes the Apache Arrow ADBC driver able to connect (issue #7178). Its type-resolver
+   * bootstrap - {@code SELECT oid, typname, typreceive, typbasetype, typrelid, typarray FROM pg_catalog.pg_type
+   * WHERE (typreceive != 0 OR typsend != 0) AND typtype != 'r' AND typreceive::TEXT != 'array_recv'} - is a
+   * shape no regular expression should be asked to read, and the driver rejects the connection outright when
+   * the answer has no columns rather than falling back to anything.
+   */
+  private static List<Row> typeRows() {
+    final List<PostgresType> types = PostgresTypeCatalog.types();
+    final List<Row> rows = new ArrayList<>(types.size());
+
+    for (final PostgresType type : types)
+      rows.add(describeType(new Row(), type).complete());
+
+    return rows;
+  }
+
+  /**
+   * Fills a row's {@code pg_type} columns with the given type's, which is the one place that decides what
+   * this catalog says a type is. Both callers need it to be the same answer: a client that enumerates
+   * pg_type and one that reads a column's type off a {@code pg_attribute} join must not be told two
+   * different things about the same OID.
+   */
+  private static Row describeType(final Row row, final PostgresType type) {
+    final Map<String, Object> columns = row.of("pg_type");
+    for (final String column : PostgresTypeCatalog.COLUMNS)
+      columns.put(column, PostgresTypeCatalog.columnValue(type, column));
+    return row;
   }
 
   private static Row schemaRow(final Context context) {
@@ -754,12 +883,7 @@ public class PostgresCatalog {
 
         // The type row a client joins pg_attribute to in order to name the column's type. It describes the
         // column's own type, which is the only reading of that join that makes sense.
-        final Map<String, Object> typeColumns = row.of("pg_type");
-        for (final String column : PostgresTypeCatalog.COLUMNS)
-          typeColumns.put(column, PostgresTypeCatalog.columnValue(pgType, column));
-        typeColumns.put("typnamespace", 11);
-
-        rows.add(row.complete());
+        rows.add(describeType(row, pgType).complete());
       }
     }
 
@@ -848,7 +972,8 @@ public class PostgresCatalog {
   // ---------------------------------------------------------------- projection
 
   private static Answer project(final Statement statement, final List<FromEntry> from, final List<Row> rows,
-      final Context context, final Map<String, Collection<String>> columnsByRelation) {
+      final Context context, final Map<String, Collection<String>> columnsByRelation,
+      final boolean toleratesUnreadableFilter) {
     final List<ProjectionItem> projection = parseProjection(statement.projection, from, columnsByRelation);
     if (projection == null)
       return DECLINED;
@@ -859,9 +984,18 @@ public class PostgresCatalog {
         PostgresCatalogExpression.parse(statement.where);
 
     final List<Row> surviving = new ArrayList<>(rows.size());
-    for (final Row row : rows)
-      if (where == null || PostgresCatalogExpression.isTrue(where.evaluate(new RowResolver(row, from, context, null, 0))))
+    for (final Row row : rows) {
+      if (where == null) {
         surviving.add(row);
+        continue;
+      }
+
+      final Object matches = where.evaluate(new RowResolver(row, from, context, null, 0));
+      if (matches == PostgresCatalogExpression.UNKNOWN && !toleratesUnreadableFilter)
+        return DECLINED;
+      if (PostgresCatalogExpression.isTrue(matches))
+        surviving.add(row);
+    }
 
     // Window functions are the one thing that cannot be computed a row at a time: row_number() is defined by
     // the other rows of its partition. They are computed here, over the rows that survived the filter.
@@ -914,7 +1048,7 @@ public class PostgresCatalog {
     if (statement.limit != null && result.size() > statement.limit)
       result = new ArrayList<>(result.subList(0, statement.limit));
 
-    return new Answer(columnsOf(projection, result), result);
+    return new Answer(columnsOf(projection, result), result, !toleratesUnreadableFilter);
   }
 
   /** An all-null row carrying every column the query's relations have, used to validate a projection. */

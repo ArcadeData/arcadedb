@@ -109,7 +109,7 @@ class PostgresTypeCatalogTest {
       "SELECT oid FROM pg_type WHERE typtype = 'b' AND typlen > 4",
       "SELECT oid FROM pg_type ORDER BY oid",
       // A column this catalog cannot produce is declined whole rather than answered with a hole in it.
-      "SELECT oid, typcollation FROM pg_type",
+      "SELECT oid, typacl FROM pg_type",
       // Not pg_type at all.
       "SELECT oid FROM pg_class" })
   void shapesThisCatalogCannotAnswerAreDeclined(final String query) {
@@ -195,6 +195,90 @@ class PostgresTypeCatalogTest {
     assertThat(byOid).containsEntry(PostgresType.JSON.code, "json_in");
     assertThat(byOid).containsEntry(PostgresType.NUMERIC.code, "numeric_in");
     assertThat(byOid).containsEntry(PostgresType.ARRAY_TEXT.code, "array_in");
+  }
+
+  @Test
+  void binaryIoFunctionsAreSpelledTheWayPostgresSpellsThem() {
+    // issue #7178: the Apache Arrow ADBC driver picks a column's decoder by typreceive's name, so a plausible
+    // name is no better than none - the type is simply left out of its resolver.
+    final Map<Integer, Map<String, Object>> byOid = new HashMap<>();
+    for (final Map<String, Object> row : PostgresTypeCatalog.resolve("SELECT oid, typreceive, typsend, typoutput FROM pg_type"))
+      byOid.put((Integer) row.get("oid"), row);
+
+    assertThat(byOid.get(PostgresType.INTEGER.code)).containsEntry("typreceive", "int4recv")
+        .containsEntry("typsend", "int4send").containsEntry("typoutput", "int4out");
+    assertThat(byOid.get(PostgresType.BOOLEAN.code)).containsEntry("typreceive", "boolrecv");
+    assertThat(byOid.get(PostgresType.BYTEA.code)).containsEntry("typreceive", "bytearecv");
+    assertThat(byOid.get(PostgresType.VARCHAR.code)).containsEntry("typreceive", "varcharrecv");
+    assertThat(byOid.get(PostgresType.TIMESTAMP.code)).containsEntry("typreceive", "timestamp_recv")
+        .containsEntry("typsend", "timestamp_send");
+    assertThat(byOid.get(PostgresType.NUMERIC.code)).containsEntry("typreceive", "numeric_recv");
+    assertThat(byOid.get(PostgresType.JSON.code)).containsEntry("typreceive", "json_recv");
+    assertThat(byOid.get(PostgresType.ARRAY_TEXT.code))
+        .as("the driver excludes arrays with typreceive != 'array_recv' and rebuilds them from typarray")
+        .containsEntry("typreceive", "array_recv").containsEntry("typsend", "array_send");
+  }
+
+  @Test
+  void storageAttributesFollowEachTypesWidth() {
+    final Map<Integer, Map<String, Object>> byOid = new HashMap<>();
+    for (final Map<String, Object> row : PostgresTypeCatalog
+        .resolve("SELECT oid, typbyval, typalign, typstorage, typcollation FROM pg_type"))
+      byOid.put((Integer) row.get("oid"), row);
+
+    assertThat(byOid.get(PostgresType.SMALLINT.code)).containsEntry("typbyval", Boolean.TRUE)
+        .containsEntry("typalign", "s").containsEntry("typstorage", "p").containsEntry("typcollation", 0);
+    assertThat(byOid.get(PostgresType.LONG.code)).containsEntry("typalign", "d");
+    assertThat(byOid.get(PostgresType.BOOLEAN.code)).containsEntry("typalign", "c");
+    assertThat(byOid.get(PostgresType.TEXT.code)).containsEntry("typbyval", Boolean.FALSE)
+        .containsEntry("typstorage", "x")
+        .as("a collation-sensitive type carries the default collation's OID").containsEntry("typcollation", 100);
+    assertThat(byOid.get(PostgresType.NUMERIC.code))
+        .as("numeric is the one varlena type PostgreSQL keeps in the main table").containsEntry("typstorage", "m");
+  }
+
+  @Test
+  void anArrayTakesItsStorageAttributesFromItsElement() {
+    // PostgreSQL auto-generates each array type from its element (Catalog.pm, GenerateArrayTypes). Only the
+    // columns with a BKI_ARRAY_DEFAULT get a fixed array value; the rest are copied from the element, and
+    // typalign has a rule of its own: INT unless the element needs DOUBLE.
+    final Map<Integer, Map<String, Object>> byOid = new HashMap<>();
+    for (final Map<String, Object> row : PostgresTypeCatalog
+        .resolve("SELECT oid, typalign, typcollation, typstorage, typbyval, typcategory FROM pg_type"))
+      byOid.put((Integer) row.get("oid"), row);
+
+    assertThat(byOid.get(PostgresType.ARRAY_LONG.code))
+        .as("_int8's element is DOUBLE-aligned, so the array is too").containsEntry("typalign", "d");
+    assertThat(byOid.get(PostgresType.ARRAY_DOUBLE.code)).containsEntry("typalign", "d");
+    assertThat(byOid.get(PostgresType.ARRAY_INT.code))
+        .as("_int4's element is INT-aligned").containsEntry("typalign", "i");
+    assertThat(byOid.get(PostgresType.ARRAY_CHAR.code))
+        .as("an array never narrows to its element's CHAR alignment").containsEntry("typalign", "i");
+
+    assertThat(byOid.get(PostgresType.ARRAY_TEXT.code))
+        .as("typcollation has no BKI_ARRAY_DEFAULT, so _text copies text's collation rather than dropping it")
+        .containsEntry("typcollation", 100);
+    assertThat(byOid.get(PostgresType.ARRAY_INT.code))
+        .as("an array of a non-collatable element stays non-collatable").containsEntry("typcollation", 0);
+
+    assertThat(byOid.get(PostgresType.ARRAY_TEXT.code)).containsEntry("typstorage", "x")
+        .containsEntry("typbyval", Boolean.FALSE).containsEntry("typcategory", "A");
+  }
+
+  @Test
+  void noArrayTypeHasAnArrayForAnElement() {
+    // typalign and typcollation are derived by reading the element's, which is a single step only because
+    // this protocol has no array of arrays. The assumption is invisible in that code and would misbehave
+    // quietly rather than fail if one were ever added, so it is asserted here instead.
+    for (final PostgresType type : PostgresType.values()) {
+      if (!type.isArrayType())
+        continue;
+      final PostgresType element = PostgresType.byCode(type.elementCode);
+      assertThat(element).as("%s declares element OID %d, which is not a type this protocol produces",
+          type.typeName, type.elementCode).isNotNull();
+      assertThat(element.isArrayType()).as("%s's element %s must not itself be an array",
+          type.typeName, element.typeName).isFalse();
+    }
   }
 
   @Test
