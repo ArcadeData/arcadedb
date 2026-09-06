@@ -90,7 +90,7 @@ public class PostgresCatalog {
   static final int OWNER_OID = 10;
 
   /** A catalog query whose shape this class will not answer. The caller sends an empty result set. */
-  public static final Answer DECLINED = new Answer(new LinkedHashMap<>(), null);
+  public static final Answer DECLINED = new Answer(new LinkedHashMap<>(), null, false);
 
   /**
    * The emulated relations and the columns each one has. A column outside its relation's set makes the query
@@ -109,10 +109,20 @@ public class PostgresCatalog {
   public static class Answer {
     public final LinkedHashMap<String, PostgresType> columns;
     public final List<Map<String, Object>>           rows;
+    /**
+     * Whether these rows are a closed set a filter selects a real subset of, rather than everything the
+     * connection can see anyway. It travels with the answer so that a query reading it through a derived
+     * table applies the same strictness to its outer WHERE as the inner one did - without it, wrapping
+     * pg_type in a sub-select would reach the permissive default and reopen the "answers every type" hole
+     * the strictness exists to close.
+     */
+    final boolean filtersExactly;
 
-    private Answer(final LinkedHashMap<String, PostgresType> columns, final List<Map<String, Object>> rows) {
+    private Answer(final LinkedHashMap<String, PostgresType> columns, final List<Map<String, Object>> rows,
+        final boolean filtersExactly) {
       this.columns = columns;
       this.rows = rows;
+      this.filtersExactly = filtersExactly;
     }
   }
 
@@ -293,6 +303,10 @@ public class PostgresCatalog {
       if (inner == null || inner.rows == null)
         return inner == null ? null : DECLINED;
 
+      // The inner query decides how its own rows may be filtered, and the outer WHERE reads those same
+      // rows: a sub-select over pg_type must not become the way to get the permissive filter back.
+      toleratesUnreadableFilter = !inner.filtersExactly;
+
       final String name = from.get(0).alias == null ? "" : from.get(0).alias;
       rows = new ArrayList<>(inner.rows.size());
       for (final Map<String, Object> innerRow : inner.rows)
@@ -409,7 +423,12 @@ public class PostgresCatalog {
    * How specific a family is, when a query names relations belonging to more than one. TYPES stays at the
    * bottom on purpose: pg_type joined to pg_class or pg_attribute is a question about tables or columns that
    * happens to name the type of each, and answering it with one row per type instead of one row per column
-   * would change what every such query means. It wins only when nothing else in the FROM has a family.
+   * would change what every such query means.
+   * <p>
+   * So TYPES loses to every ranked family. Against the other rank-0 ones - ROLES, DATABASES, PRIVILEGES,
+   * CHARACTER_SETS, COLLATIONS - it does not lose, it ties, and the FROM order settles it. That is what this
+   * scheme happens to give rather than a considered answer; no client joins pg_type to pg_roles, and if one
+   * ever does it is the tie that needs deciding, not the ranking above it.
    */
   private static int rank(final Family family) {
     return switch (family) {
@@ -1029,7 +1048,7 @@ public class PostgresCatalog {
     if (statement.limit != null && result.size() > statement.limit)
       result = new ArrayList<>(result.subList(0, statement.limit));
 
-    return new Answer(columnsOf(projection, result), result);
+    return new Answer(columnsOf(projection, result), result, !toleratesUnreadableFilter);
   }
 
   /** An all-null row carrying every column the query's relations have, used to validate a projection. */
