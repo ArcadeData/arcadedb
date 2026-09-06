@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -40,6 +41,14 @@ public class DropTypeStatement extends DDLStatement {
   public boolean        unsafe   = false;
 
   public DropTypeStatement() {
+  }
+
+  /**
+   * Batchable into a DDL script's bulk schema scope (issue #6990). Dropping a type unregisters it and deletes its files. The one record-level touch is a single hasNext() probe that refuses to drop a populated vertex or edge type, which is bounded by one record.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    return true;
   }
 
   @Override

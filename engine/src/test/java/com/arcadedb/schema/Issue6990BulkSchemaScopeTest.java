@@ -24,13 +24,19 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.query.sql.parser.AlterTypeStatement;
 import com.arcadedb.query.sql.parser.CompactIndexStatement;
+import com.arcadedb.query.sql.parser.CreateContinuousAggregateStatement;
+import com.arcadedb.query.sql.parser.CreateMaterializedViewStatement;
+import com.arcadedb.query.sql.parser.DDLStatement;
 import com.arcadedb.query.sql.parser.CreateIndexStatement;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.CreatePropertyStatement;
 import com.arcadedb.query.sql.parser.CreateVertexTypeStatement;
 import com.arcadedb.query.sql.parser.RebuildIndexStatement;
 import com.arcadedb.query.sql.parser.RefreshMaterializedViewStatement;
+import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.TruncateTypeStatement;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.InvocationTargetException;
@@ -294,9 +300,11 @@ class Issue6990BulkSchemaScopeTest extends TestHelper {
   }
 
   /**
-   * The statements that must never be folded into a batch, pinned by the flag itself so a new subclass cannot inherit
-   * the wrong answer silently. COMPACT INDEX is the loudest of them: compaction refuses to start while a recording
-   * session is active (the #4063 guard), so inside a scope it would compact nothing and report success.
+   * The statements that must never be folded into a batch. They are excluded by the DEFAULT rather than by an
+   * override, which is the point: batching is opt in, so a statement is swept into a scope only if it says it may be.
+   * COMPACT INDEX is the loudest of them - compaction refuses to start while a recording session is active (the #4063
+   * guard), so inside a scope it would compact nothing and report success - and CREATE MATERIALIZED VIEW is the one an
+   * opt-out default actually missed: it runs the same full population REFRESH does, reached through a CREATE verb.
    */
   @Test
   void recordLevelDdlIsNotBatchable() {
@@ -306,9 +314,36 @@ class Issue6990BulkSchemaScopeTest extends TestHelper {
     assertThat(new RebuildIndexStatement().isBulkSchemaScopeSafe(db)).isFalse();
     assertThat(new TruncateTypeStatement().isBulkSchemaScopeSafe(db)).isFalse();
     assertThat(new RefreshMaterializedViewStatement().isBulkSchemaScopeSafe(db)).isFalse();
+    assertThat(new CreateMaterializedViewStatement().isBulkSchemaScopeSafe(db))
+        .as("creating a materialized view does a full initial population of its backing type").isFalse();
+    assertThat(new CreateContinuousAggregateStatement().isBulkSchemaScopeSafe(db))
+        .as("creating a continuous aggregate aggregates the whole source type first").isFalse();
 
     assertThat(new CreateVertexTypeStatement().isBulkSchemaScopeSafe(db)).isTrue();
     assertThat(new CreatePropertyStatement().isBulkSchemaScopeSafe(db)).isTrue();
+  }
+
+  /**
+   * The default is the safety property, so it is asserted directly: a {@link DDLStatement} that says nothing is NOT
+   * batched. Written against an anonymous subclass rather than an existing statement so that opting one of those in
+   * later cannot quietly disarm it.
+   */
+  @Test
+  void aStatementThatSaysNothingIsNotBatched() {
+    final DDLStatement silent = new DDLStatement() {
+      @Override
+      public ResultSet executeDDL(final CommandContext context) {
+        throw new UnsupportedOperationException("not executed");
+      }
+
+      @Override
+      public Statement copy() {
+        throw new UnsupportedOperationException("not copied");
+      }
+    };
+
+    assertThat(silent.isBulkSchemaScopeSafe((DatabaseInternal) database))
+        .as("batching is opt in: silence means the statement keeps its own session").isFalse();
   }
 
   /**

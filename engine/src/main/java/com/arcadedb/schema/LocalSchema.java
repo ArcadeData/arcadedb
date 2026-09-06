@@ -2645,26 +2645,31 @@ public class LocalSchema implements Schema {
    * session close normally - the prefix is saved locally and replicated as one entry, so both sides hold the same
    * thing - and the failure is then rethrown unchanged, so the caller still fails. "All of it, or the prefix that
    * succeeded, on every node" is the strongest atomicity available without transactional DDL.
+   * <p>
+   * ONLY {@link RuntimeException}, NEVER {@link Error}. The argument above rests on the failing statement having
+   * thrown from its own validation, before it mutated anything, so the prefix is a state somebody meant to reach.
+   * An {@code Error} carries no such promise: it can strike mid-mutation and leave a schema object half-written, and
+   * what this method does next - serialize the whole schema and take a synchronous quorum round trip - is exactly the
+   * allocation-heavy work an {@code OutOfMemoryError} is telling us not to do. So an {@code Error} propagates and
+   * aborts the session unpublished, which is what the per-statement path has always done with it.
    */
   @Override
   public void bulkChange(final Runnable callback) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    final Throwable[] failure = new Throwable[1];
+    final RuntimeException[] failure = new RuntimeException[1];
 
     recordFileChanges(() -> {
       try {
         callback.run();
-      } catch (final RuntimeException | Error e) {
+      } catch (final RuntimeException e) {
         failure[0] = e;
       }
       return null;
     }, true);
 
-    if (failure[0] instanceof RuntimeException e)
-      throw e;
-    if (failure[0] instanceof Error e)
-      throw e;
+    if (failure[0] != null)
+      throw failure[0];
   }
 
   protected <RET> RET recordFileChanges(final Callable<Object> callback) {

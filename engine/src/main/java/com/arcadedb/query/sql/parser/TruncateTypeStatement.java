@@ -22,7 +22,6 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -57,15 +56,6 @@ public class TruncateTypeStatement extends DDLStatement {
   public boolean    unsafe      = false;
 
   public TruncateTypeStatement() {
-  }
-
-  /**
-   * Not batchable into a DDL script's bulk schema scope (issue #6990). A truncate deletes every record of the type; it must not extend the batch's hold on the database write lock,
-   * nor have its WAL folded into the batch's single entry.
-   */
-  @Override
-  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
-    return false;
   }
 
   @Override

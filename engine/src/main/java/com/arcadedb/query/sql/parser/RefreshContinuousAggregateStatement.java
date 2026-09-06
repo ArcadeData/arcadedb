@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -29,15 +28,6 @@ public class RefreshContinuousAggregateStatement extends DDLStatement {
   public Identifier name;
 
   public RefreshContinuousAggregateStatement() {
-  }
-
-  /**
-   * Not batchable into a DDL script's bulk schema scope (issue #6990). A refresh re-aggregates the source type; it must not extend the batch's hold on the database write lock, nor
-   * have its WAL folded into the batch's single entry.
-   */
-  @Override
-  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
-    return false;
   }
 
   @Override

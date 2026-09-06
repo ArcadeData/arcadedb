@@ -34,15 +34,6 @@ public class RebuildGraphAnalyticalViewStatement extends DDLStatement {
   public RebuildGraphAnalyticalViewStatement() {
   }
 
-  /**
-   * Not batchable into a DDL script's bulk schema scope (issue #6990). A rebuild walks the whole graph; it must not extend the batch's hold on the database write lock, nor have its
-   * WAL folded into the batch's single entry.
-   */
-  @Override
-  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
-    return false;
-  }
-
   @Override
   public ResultSet executeDDL(final CommandContext context) {
     final DatabaseInternal database = context.getDatabase();

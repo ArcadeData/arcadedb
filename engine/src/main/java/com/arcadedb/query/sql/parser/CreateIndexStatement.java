@@ -166,6 +166,9 @@ public class CreateIndexStatement extends DDLStatement {
     if (name == null || name.startsWith("$"))
       return false;
 
+    // Asked ONCE, before the script's first statement runs (see ScriptExecutionPlan.batchableAsOneSchemaSession), so
+    // "does not exist" means "the script has not created it yet either" - which is what makes a from-scratch
+    // migration script batchable. Moving this check to execution time would invert the answer for exactly that case.
     return !database.getSchema().existsType(name);
   }
 
