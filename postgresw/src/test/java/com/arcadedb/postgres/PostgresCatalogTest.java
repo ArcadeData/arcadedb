@@ -541,6 +541,20 @@ class PostgresCatalogTest {
           + "FROM pg_type t WHERE t.oid = to_regtype('hstore'::text) ORDER BY t.oid";
 
   @Test
+  void wrappingPgTypeInASubSelectDoesNotGetThePermissiveFilterBack() {
+    // The strictness has to travel with the rows, not with the statement that built them: the outer WHERE
+    // reads the same closed set of types, so a sub-select must not become the way back to "an unreadable
+    // predicate keeps every row" - which is the hole that answered psycopg with all 23 types.
+    assertThat(resolveRaw("SELECT * FROM (SELECT oid, typname FROM pg_type) t "
+        + "WHERE t.oid = to_regtype('hstore'::text)")).isSameAs(PostgresCatalog.DECLINED);
+
+    // A readable outer filter over the same sub-select still answers, so the strictness has not become a
+    // blanket refusal of derived tables over pg_type.
+    assertThat(names(resolve("SELECT * FROM (SELECT oid, typname FROM pg_type) t WHERE t.typname = 'int4'").rows,
+        "typname")).containsExactly("int4");
+  }
+
+  @Test
   void aPgTypeFilterThisCatalogCanReadStillSelectsASubset() {
     // Declining an unreadable filter must not become declining every filter: the readable ones still work,
     // and a name this protocol does not produce correctly answers no rows rather than being declined.
