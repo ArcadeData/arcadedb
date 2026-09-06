@@ -88,16 +88,13 @@ public final class LoadCSVRowContext {
    * {@code CypherLoadCSVRowContextIssue6402Test.theRowContextSurvivesAProjectionThatDropsRowEntirely}
    * (issue #6402 code review).
    * <p>
-   * <b>Aggregation is where that stops, deliberately.</b> An aggregating clause does not project a row from a row,
-   * it folds many rows into one, and there is no row for the folded one to inherit from: three CSV lines have three
-   * line numbers and {@code linenumber()} cannot answer with one of them. Neo4j draws the boundary in exactly that
-   * place - its aggregation tables build the output row with {@code QueryState.newRow}, which starts from the
-   * query's initial row and therefore carries no {@code ResourceLinenumber} - so {@code file()} is {@code null}
-   * after {@code WITH collect(row) AS rows}, and stays {@code null} through the {@code UNWIND} that expands the
-   * list back out, because the row the {@code UNWIND} copies from never had the context to begin with. Reported as
-   * a bug in issue #7182 and pinned as the correct answer by
-   * {@code CypherLoadCSVRowContextIssue7182Test}: nothing is added here for it, and nothing may be added later
-   * without first changing what {@code linenumber()} is supposed to mean.
+   * <b>Aggregation is the boundary, deliberately.</b> An aggregating clause folds many rows into one rather than
+   * projecting a row from a row, so there is nothing for the folded row to inherit: three CSV lines have three line
+   * numbers and {@code linenumber()} cannot answer with one of them. Neo4j draws the line in the same place, so
+   * {@code file()} is {@code null} after {@code WITH collect(row) AS rows} and stays {@code null} through the
+   * {@code UNWIND} that expands the list back out. Reported as a bug in issue #7182 and pinned as the correct
+   * answer by {@code CypherLoadCSVRowContextIssue7182Test} - do not add a carry-over here without first deciding
+   * what {@code linenumber()} means on a folded row.
    */
   public static void carryOver(final Result source, final ResultInternal target) {
     if (source == null || target == null || !source.hasProperty(FILE))
