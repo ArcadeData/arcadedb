@@ -64,7 +64,9 @@ public abstract class DDLStatement extends Statement {
    *   <li>{@code CREATE MATERIALIZED VIEW} and {@code CREATE CONTINUOUS AGGREGATE} run that same full population as
    *       part of creating themselves;</li>
    *   <li>{@code CREATE GRAPH ANALYTICAL VIEW} hands its build to another thread, which would then be walking the
-   *       graph while this one holds the write lock.</li>
+   *       graph while this one holds the write lock, and {@code DROP GRAPH ANALYTICAL VIEW} waits for exactly that
+   *       thread ({@code shutdown -> awaitInFlightTasks}). {@code ALTER GRAPH ANALYTICAL VIEW} is left out with them
+   *       rather than audited separately - the whole family stays on the safe side of the default.</li>
    * </ul>
    * Two statements answer CONDITIONALLY, which is why this is asked of the database rather than of the statement
    * alone: {@code ALTER TYPE ... WITH repartition = true} runs {@code REBUILD TYPE}'s loop, and {@code CREATE INDEX}

@@ -243,7 +243,7 @@ public enum GlobalConfiguration {
       50),
 
   SCHEMA_BULK_DDL_SCRIPT("arcadedb.schemaBulkDDLScript", SCOPE.DATABASE,
-      "Run a SQL script whose statements are ALL schema definition DDL inside a single schema recording session, so the batch is persisted - and, under HA, replicated as one Raft entry - once instead of once per statement (issue #6990). The trade is that the database write lock is held for the whole script instead of once per statement. Set to false to go back to one session per statement",
+      "Run a SQL script whose statements are ALL schema definition DDL inside a single schema recording session, so the batch is persisted - and, under HA, replicated as one Raft entry - once instead of once per statement (issue #6990). The trade is that the database write lock, and the schema recording session with it, are held for the whole script instead of once per statement. Under HA an ordinary commit on the leader waits out an active recording session for at most arcadedb.ha.quorumTimeout before proceeding anyway, so a script whose execution outlasts that widens the window the #4083 guard covers - a window a long index build already opens today. Set to false to go back to one session per statement",
       Boolean.class, true),
 
   TYPE_DEFAULT_BUCKETS("arcadedb.typeDefaultBuckets", SCOPE.DATABASE, "Default number of buckets to create per type", Integer.class,
