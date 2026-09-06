@@ -1006,6 +1006,11 @@ public class GraphImporter implements AutoCloseable {
         ec.dstIdx.add(di);
         for (final PropDef pd : cfg.properties) {
           switch (pd.type) {
+          case INTEGER:
+            if (ec.intProps == null)
+              ec.intProps = new HashMap<>();
+            ec.intProps.computeIfAbsent(pd.name, k -> new IntList(100_000)).add(record.getInt(pd.attribute));
+            break;
           case LONG:
             if (ec.longProps == null)
               ec.longProps = new HashMap<>();
@@ -1017,9 +1022,11 @@ public class GraphImporter implements AutoCloseable {
             ec.doubleProps.computeIfAbsent(pd.name, k -> new DoubleList(100_000)).add(record.getDouble(pd.attribute));
             break;
           default:
-            if (ec.intProps == null)
-              ec.intProps = new HashMap<>();
-            ec.intProps.computeIfAbsent(pd.name, k -> new IntList(100_000)).add(record.getInt(pd.attribute));
+            // STRING, BOOLEAN, DATETIME, FLOAT_ARRAY and LIST all go through the same reader
+            // vertices use, so a spec means the same thing on an edge source as on a vertex
+            if (ec.objProps == null)
+              ec.objProps = new HashMap<>();
+            ec.objProps.computeIfAbsent(pd.name, k -> new ArrayList<>(100_000)).add(readProperty(record, pd));
             break;
           }
         }
@@ -1218,9 +1225,13 @@ public class GraphImporter implements AutoCloseable {
     final String edgeTypeName, srcType, dstType;
     final IntList srcIdx = new IntList(100_000);
     final IntList dstIdx = new IntList(100_000);
-    Map<String, IntList>    intProps;
-    Map<String, List<Long>> longProps;
-    Map<String, DoubleList> doubleProps;
+    Map<String, IntList>      intProps;
+    Map<String, List<Long>>   longProps;
+    Map<String, DoubleList>   doubleProps;
+    // Everything the primitive lists above cannot hold without boxing it anyway: strings, booleans,
+    // datetimes, vectors and lists. A null entry keeps the index aligned with srcIdx for a row where
+    // the attribute was missing, and is skipped when the edge is created.
+    Map<String, List<Object>> objProps;
 
     EdgeCollector(final String edgeTypeName, final String src, final String dst) {
       this.edgeTypeName = edgeTypeName;
@@ -1231,7 +1242,8 @@ public class GraphImporter implements AutoCloseable {
     boolean hasProperties() {
       return (intProps != null && !intProps.isEmpty())
           || (longProps != null && !longProps.isEmpty())
-          || (doubleProps != null && !doubleProps.isEmpty());
+          || (doubleProps != null && !doubleProps.isEmpty())
+          || (objProps != null && !objProps.isEmpty());
     }
 
     void appendProperties(final List<Object> props, final int i) {
@@ -1249,6 +1261,14 @@ public class GraphImporter implements AutoCloseable {
         for (final Map.Entry<String, DoubleList> pe : doubleProps.entrySet()) {
           props.add(pe.getKey());
           props.add(pe.getValue().data[i]);
+        }
+      if (objProps != null)
+        for (final Map.Entry<String, List<Object>> pe : objProps.entrySet()) {
+          final Object value = pe.getValue().get(i);
+          if (value != null) {
+            props.add(pe.getKey());
+            props.add(value);
+          }
         }
     }
   }
