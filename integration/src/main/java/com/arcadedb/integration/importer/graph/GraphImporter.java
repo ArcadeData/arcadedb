@@ -1175,6 +1175,13 @@ public class GraphImporter implements AutoCloseable {
   //  Internal data structures
   // ═══════════════════════════════════════════════════════════════════
 
+  /**
+   * Two places dispatch on this: {@link #readProperty} materializes a value for a vertex, and
+   * {@code processEdgeSource} routes INTEGER, LONG and DOUBLE into the primitive buffers an edge
+   * collector keeps for them and everything else through {@code readProperty} into {@code objProps}.
+   * A new type added here needs a case in the first and, unless it belongs in a primitive buffer,
+   * nothing in the second - the default branch already carries it.
+   */
   enum PropType {STRING, INTEGER, LONG, DOUBLE, BOOLEAN, DATETIME, FLOAT_ARRAY, LIST}
 
   static class PropDef {
