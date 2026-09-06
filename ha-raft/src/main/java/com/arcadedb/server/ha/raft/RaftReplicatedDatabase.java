@@ -2864,29 +2864,63 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * </ul>
    */
   private SchemaDelta.Payload schemaDeltaFor(final JSONObject fullSchema) {
-    if (!schemaDeltaEnabled())
-      return null;
-
     final JSONObject base = lastReplicatedSchema;
-    if (base == null)
-      return null;
-
     final long term = currentRaftTerm();
-    if (term < 0 || term != lastReplicatedSchemaTerm) {
-      HALog.log(this, HALog.DETAILED,
-          "Shipping the whole schema for database '%s': the cached base was shipped in term %d, this node is in "
-              + "term %d",
-          getName(), lastReplicatedSchemaTerm, term);
+
+    if (!baseIsUsable(schemaDeltaEnabled(), base != null, lastReplicatedSchemaTerm, term)) {
+      if (base != null)
+        HALog.log(this, HALog.DETAILED,
+            "Shipping the whole schema for database '%s': the cached base was shipped in term %d, this node is "
+                + "in term %d",
+            getName(), lastReplicatedSchemaTerm, term);
       return null;
     }
 
     final String deltaJson = SchemaDelta.compute(base, fullSchema).toString();
-    // Halving is the bar because the entry is not the only cost a delta avoids: the follower still parses and
-    // rewrites whatever arrives, so a "delta" worth most of the document buys nothing and costs the key sets.
-    if (lastFullSchemaLength > 0 && deltaJson.length() * 2L >= lastFullSchemaLength)
+    if (!deltaIsWorthShipping(deltaJson.length(), lastFullSchemaLength))
       return null;
 
     return new SchemaDelta.Payload(base.getLong(SchemaDelta.SCHEMA_VERSION, -1L), deltaJson);
+  }
+
+  /**
+   * Whether the cached base can be diffed against at all: the setting is on, a base exists, and the Raft term
+   * has not moved since it was cached.
+   * <p>
+   * Static and side-effect-free so the arms can be pinned without a cluster, the way
+   * {@link #partitionAbandonedFiles} is: forcing a re-election in an integration test to reach the term arm is
+   * expensive and flaky, and this is the branch whose failure mode is silent - it does not break replication,
+   * it just quietly stops the feature from ever engaging, which is exactly how the two defects the integration
+   * test caught behaved.
+   *
+   * @param currentTerm the term this node is in, or {@code -1} when it cannot be read (a division restarting in
+   *                    place). Unknown counts as moved: we cannot show the cache is still valid.
+   */
+  // @VisibleForTesting
+  static boolean baseIsUsable(final boolean enabled, final boolean hasBase, final long cachedTerm,
+      final long currentTerm) {
+    return enabled && hasBase && currentTerm >= 0 && currentTerm == cachedTerm;
+  }
+
+  /**
+   * Whether a delta is small enough to be worth shipping in place of the document.
+   * <p>
+   * Halving is the bar because the Raft entry is not the only cost a delta avoids: the follower still parses and
+   * rewrites whatever arrives, so a "delta" worth most of the document buys nothing and costs the authoritative
+   * key sets on top.
+   * <p>
+   * The yardstick is deliberately loose. {@code lastFullSchemaLength} is refreshed only when a WHOLE document
+   * ships, so on a schema that keeps growing through delta-only entries it drifts below the real document size
+   * and the bar tightens. That errs the safe way - the worst case is one extra whole-document entry, which
+   * immediately re-primes the yardstick - and tracking the true size would mean rendering the document on every
+   * DDL, which is the cost this whole path exists to avoid.
+   *
+   * @param lastFullSchemaLength the length of the last whole document shipped, or {@code 0} when none has been
+   *                             (nothing to compare against, so the delta is taken)
+   */
+  // @VisibleForTesting
+  static boolean deltaIsWorthShipping(final int deltaLength, final int lastFullSchemaLength) {
+    return lastFullSchemaLength <= 0 || deltaLength * 2L < lastFullSchemaLength;
   }
 
   /**
