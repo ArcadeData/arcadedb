@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -106,14 +107,14 @@ class Issue7183StalePrefixReuseRebuildThresholdTest {
             .as("and must not have completed one either")
             .isZero();
 
-        // The consequence a user sees: close() joins the rebuild thread for up to 5 s. Generous bound, and
-        // deliberately not a latency assertion - the point is "not five seconds", so a stall cannot make it wrong
-        // in the direction that matters.
-        final long startedAt = System.nanoTime();
+        // The consequence a user sees: close() joins the rebuild thread for up to 5 s. A tripwire between a close
+        // that waits on a rebuild and one that has nothing to wait on, not a latency target - so it is measured
+        // with StallAwareStopwatch, which discounts a JVM-wide stop-the-world pause inside the window rather than
+        // letting one turn "did close() join a rebuild thread" into a coin flip on the collector's mood (#6260).
+        final StallAwareStopwatch closing = StallAwareStopwatch.start();
         db.close();
-        assertThat((System.nanoTime() - startedAt) / 1_000_000L)
-            .as("close() must not wait on a rebuild that had no reason to start")
-            .isLessThan(4_000L);
+        closing.assertGaveUpWithin(4_000,
+            "a close() that has no rebuild to wait on from one that joins the rebuild thread for its full 5s");
       } finally {
         if (db.isOpen())
           db.close();
