@@ -60,7 +60,7 @@ public class CompactIndexStatement extends DDLStatement {
    * {@code runWithCompactionReplication}), so inside a bulk scope this statement would compact nothing and say it did.
    */
   @Override
-  public boolean isBulkSchemaScopeSafe() {
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
     return false;
   }
 

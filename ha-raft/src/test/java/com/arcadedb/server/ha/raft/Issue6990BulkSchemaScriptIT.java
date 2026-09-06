@@ -25,7 +25,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -97,7 +96,7 @@ class Issue6990BulkSchemaScriptIT extends BaseRaftHATest {
     // CONTROL: the pre-existing path, one session per statement. Measured first so the comparison is against this
     // cluster on this run and not against a remembered number.
     leaderDb.getConfiguration().setValue(GlobalConfiguration.SCHEMA_BULK_DDL_SCRIPT, false);
-    final AtomicInteger unbatched = new AtomicInteger(0);
+    final ArcadeStateMachine.SchemaEntryRecorder unbatched = new ArcadeStateMachine.SchemaEntryRecorder();
     ArcadeStateMachine.TEST_SCHEMA_ENTRY_COUNTER = unbatched;
     try {
       leaderDb.command("sqlscript", ddlScript("Unbatched"));
@@ -107,17 +106,17 @@ class Issue6990BulkSchemaScriptIT extends BaseRaftHATest {
     }
 
     assertReplicated(followerIndex, "Unbatched");
-    assertThat(unbatched.get())
+    assertThat(unbatched.count())
         .as("without the bulk scope the follower applies at least one schema entry per statement")
         .isGreaterThanOrEqualTo(TYPES * STATEMENTS_PER_TYPE);
 
     // THE FIX: the same script, batched.
-    final AtomicInteger batched = new AtomicInteger(0);
+    final ArcadeStateMachine.SchemaEntryRecorder batched = new ArcadeStateMachine.SchemaEntryRecorder();
     ArcadeStateMachine.TEST_SCHEMA_ENTRY_COUNTER = batched;
     leaderDb.command("sqlscript", ddlScript("Batched"));
     waitForAllServers();
 
-    assertThat(batched.get())
+    assertThat(batched.count())
         .as("a DDL-only script must reach the follower as ONE schema entry, whatever its statement count")
         .isEqualTo(1);
 
@@ -141,6 +140,9 @@ class Issue6990BulkSchemaScriptIT extends BaseRaftHATest {
 
     final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
 
+    final ArcadeStateMachine.SchemaEntryRecorder failed = new ArcadeStateMachine.SchemaEntryRecorder();
+    ArcadeStateMachine.TEST_SCHEMA_ENTRY_COUNTER = failed;
+
     assertThatThrownBy(() -> leaderDb.command("sqlscript", """
         CREATE VERTEX TYPE PartialA;
         CREATE PROPERTY PartialA.name STRING;
@@ -151,6 +153,10 @@ class Issue6990BulkSchemaScriptIT extends BaseRaftHATest {
         .hasMessageContaining("NoSuchTypeAtAll");
 
     waitForAllServers();
+
+    assertThat(failed.count())
+        .as("the prefix a failed script completed is published as ONE entry, not one per statement that succeeded")
+        .isEqualTo(1);
 
     for (final int serverIndex : new int[] { leaderIndex, followerIndex }) {
       final Database db = getServerDatabase(serverIndex, getDatabaseName());

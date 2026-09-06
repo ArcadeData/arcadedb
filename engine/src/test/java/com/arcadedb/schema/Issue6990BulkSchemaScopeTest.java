@@ -22,7 +22,10 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.query.sql.parser.AlterTypeStatement;
 import com.arcadedb.query.sql.parser.CompactIndexStatement;
+import com.arcadedb.query.sql.parser.CreateIndexStatement;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.CreatePropertyStatement;
 import com.arcadedb.query.sql.parser.CreateVertexTypeStatement;
 import com.arcadedb.query.sql.parser.RebuildIndexStatement;
@@ -89,17 +92,26 @@ class Issue6990BulkSchemaScopeTest extends TestHelper {
   }
 
   /**
-   * Runs {@code work} with the counting database installed, and returns how many outermost sessions it opened.
+   * Sessions opened by the last {@link #countSchemaSessions(Runnable)} call, readable even when the work threw. That is
+   * the only way to measure a script that fails part way, which is the case with the most to say about the scope.
+   */
+  private int lastSessionCount = -1;
+
+  /**
+   * Runs {@code work} with the counting database installed, and returns how many outermost sessions it opened. A
+   * failure propagates; the count is still available in {@link #lastSessionCount}.
    */
   private int countSchemaSessions(final Runnable work) {
     final LocalDatabase local = (LocalDatabase) database;
     final DatabaseInternal previous = local.getWrappedDatabaseInstance();
     final SessionCountingDatabase counter = new SessionCountingDatabase(local);
     local.setWrappedDatabaseInstance(counter.proxy);
+    lastSessionCount = -1;
     try {
       work.run();
     } finally {
       local.setWrappedDatabaseInstance(previous);
+      lastSessionCount = counter.outermost;
     }
     return counter.outermost;
   }
@@ -171,9 +183,7 @@ class Issue6990BulkSchemaScopeTest extends TestHelper {
    */
   @Test
   void aScriptThatFailsHalfWayPublishesThePrefixItCompletedAndStillThrows() {
-    final int[] sessions = new int[1];
-
-    assertThatThrownBy(() -> sessions[0] = countSchemaSessions(() -> database.command("sqlscript", """
+    assertThatThrownBy(() -> countSchemaSessions(() -> database.command("sqlscript", """
         CREATE VERTEX TYPE Half;
         CREATE PROPERTY Half.a STRING;
         CREATE PROPERTY NoSuchTypeHere.b STRING;
@@ -181,6 +191,10 @@ class Issue6990BulkSchemaScopeTest extends TestHelper {
         """)))
         .as("the statement that failed is still what the caller is told about")
         .hasMessageContaining("NoSuchTypeHere");
+
+    assertThat(lastSessionCount)
+        .as("the prefix that succeeded is published by the ONE session the script opened, not by one per statement")
+        .isEqualTo(1);
 
     // Exactly what a script of four separate statements would have left, on every node: the prefix, published once.
     reopenDatabase();
@@ -266,12 +280,14 @@ class Issue6990BulkSchemaScopeTest extends TestHelper {
    */
   @Test
   void bulkChangeRethrowsTheBatchFailureAfterPublishingThePrefix() {
-    assertThatThrownBy(() -> database.getSchema().bulkChange(() -> {
+    assertThatThrownBy(() -> countSchemaSessions(() -> database.getSchema().bulkChange(() -> {
       database.getSchema().createDocumentType("Kept");
       throw new IllegalStateException("boom from the batch");
-    }))
+    })))
         .isInstanceOf(IllegalStateException.class)
         .hasMessage("boom from the batch");
+
+    assertThat(lastSessionCount).as("the failing batch still published through exactly one session").isEqualTo(1);
 
     reopenDatabase();
     assertThat(database.getSchema().existsType("Kept")).as("the prefix is published, not discarded").isTrue();
@@ -284,12 +300,95 @@ class Issue6990BulkSchemaScopeTest extends TestHelper {
    */
   @Test
   void recordLevelDdlIsNotBatchable() {
-    assertThat(new CompactIndexStatement().isBulkSchemaScopeSafe()).isFalse();
-    assertThat(new RebuildIndexStatement().isBulkSchemaScopeSafe()).isFalse();
-    assertThat(new TruncateTypeStatement().isBulkSchemaScopeSafe()).isFalse();
-    assertThat(new RefreshMaterializedViewStatement().isBulkSchemaScopeSafe()).isFalse();
+    final DatabaseInternal db = (DatabaseInternal) database;
 
-    assertThat(new CreateVertexTypeStatement().isBulkSchemaScopeSafe()).isTrue();
-    assertThat(new CreatePropertyStatement().isBulkSchemaScopeSafe()).isTrue();
+    assertThat(new CompactIndexStatement().isBulkSchemaScopeSafe(db)).isFalse();
+    assertThat(new RebuildIndexStatement().isBulkSchemaScopeSafe(db)).isFalse();
+    assertThat(new TruncateTypeStatement().isBulkSchemaScopeSafe(db)).isFalse();
+    assertThat(new RefreshMaterializedViewStatement().isBulkSchemaScopeSafe(db)).isFalse();
+
+    assertThat(new CreateVertexTypeStatement().isBulkSchemaScopeSafe(db)).isTrue();
+    assertThat(new CreatePropertyStatement().isBulkSchemaScopeSafe(db)).isTrue();
+  }
+
+  /**
+   * {@code ALTER TYPE ... WITH repartition = true} does not merely alter the type: it runs
+   * {@code RebuildTypeStatement}'s scan-and-move loop directly, and inside the caller's transaction that loop takes
+   * the branch with no intermediate batch commits. It is a rebuild, so it is excluded like one - and a bare
+   * {@code ALTER TYPE} still is not.
+   */
+  @Test
+  void anAlterTypeThatRepartitionsIsNotBatchable() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    final AlterTypeStatement bare = new AlterTypeStatement();
+    assertThat(bare.isBulkSchemaScopeSafe(db)).as("an ordinary ALTER TYPE is schema definition").isTrue();
+
+    final AlterTypeStatement repartitioning = new AlterTypeStatement();
+    repartitioning.settings.put(new Identifier("repartition"), null);
+    assertThat(repartitioning.isBulkSchemaScopeSafe(db))
+        .as("WITH repartition runs REBUILD TYPE's scan-and-move loop, so it is excluded like REBUILD TYPE").isFalse();
+
+    // And the script-level effect, which is the one that matters: a script carrying it keeps one session per
+    // statement.
+    database.command("sql", "CREATE VERTEX TYPE Repart");
+    final int sessions = countSchemaSessions(() -> database.command("sqlscript", """
+        CREATE PROPERTY Repart.a STRING;
+        ALTER TYPE Repart BUCKET +Repart_extra;
+        """));
+    assertThat(sessions).as("control: an ALTER TYPE with no repartition setting still batches").isEqualTo(1);
+  }
+
+  /**
+   * {@code CREATE INDEX} is the statement whose cost depends entirely on WHEN it runs: on a type the same script just
+   * created there is nothing to scan, and on a pre-existing one it is a rebuild wearing a different verb.
+   */
+  @Test
+  void createIndexIsBatchableOnlyOnATypeTheScriptItselfCreates() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    final CreateIndexStatement onNewType = new CreateIndexStatement();
+    onNewType.typeName = new Identifier("NotYetThere");
+    assertThat(onNewType.isBulkSchemaScopeSafe(db))
+        .as("a type that does not exist yet has no records to scan").isTrue();
+
+    database.command("sql", "CREATE VERTEX TYPE AlreadyThere");
+    final CreateIndexStatement onExistingType = new CreateIndexStatement();
+    onExistingType.typeName = new Identifier("AlreadyThere");
+    assertThat(onExistingType.isBulkSchemaScopeSafe(db))
+        .as("indexing a pre-existing type scans it, so it is excluded like REBUILD INDEX").isFalse();
+
+    final CreateIndexStatement noTarget = new CreateIndexStatement();
+    assertThat(noTarget.isBulkSchemaScopeSafe(db)).as("an unresolvable target answers conservatively").isFalse();
+
+    final CreateIndexStatement variableTarget = new CreateIndexStatement();
+    variableTarget.typeName = new Identifier("$runtimeType");
+    assertThat(variableTarget.isBulkSchemaScopeSafe(db))
+        .as("a type name bound only at execution time answers conservatively").isFalse();
+  }
+
+  /**
+   * The script-level consequence of the rule above, both ways round, measured on the same run.
+   */
+  @Test
+  void aScriptIndexingAPreExistingTypeIsNotBatchedWhileOneCreatingItIs() {
+    final int fromScratch = countSchemaSessions(() -> database.command("sqlscript", """
+        CREATE VERTEX TYPE FromScratch;
+        CREATE PROPERTY FromScratch.a STRING;
+        CREATE INDEX ON FromScratch (a) NOTUNIQUE;
+        """));
+    assertThat(fromScratch).as("a script that creates the type it indexes has nothing to scan").isEqualTo(1);
+
+    database.command("sql", "CREATE VERTEX TYPE PreExisting");
+    final int onExisting = countSchemaSessions(() -> database.command("sqlscript", """
+        CREATE PROPERTY PreExisting.a STRING;
+        CREATE INDEX ON PreExisting (a) NOTUNIQUE;
+        """));
+    assertThat(onExisting)
+        .as("indexing a type that was already there runs a build, so the script keeps one session per statement")
+        .isEqualTo(2);
+
+    assertThat(database.getSchema().existsIndex("PreExisting[a]")).isTrue();
+    assertThat(database.getSchema().existsIndex("FromScratch[a]")).isTrue();
   }
 }

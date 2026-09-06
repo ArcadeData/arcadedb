@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -82,7 +83,7 @@ public class RebuildTypeStatement extends DDLStatement {
    * have its WAL folded into the batch's single entry.
    */
   @Override
-  public boolean isBulkSchemaScopeSafe() {
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
     return false;
   }
 

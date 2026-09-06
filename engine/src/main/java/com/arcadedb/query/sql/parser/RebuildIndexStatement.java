@@ -77,7 +77,7 @@ public class RebuildIndexStatement extends DDLStatement {
    * database write lock, nor have its WAL folded into the batch's single entry.
    */
   @Override
-  public boolean isBulkSchemaScopeSafe() {
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
     return false;
   }
 

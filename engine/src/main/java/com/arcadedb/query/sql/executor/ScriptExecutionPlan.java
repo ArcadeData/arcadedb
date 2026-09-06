@@ -126,8 +126,9 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
    * writes into one.
    * <p>
    * The batch is opted into, not assumed: {@link #batchableAsOneSchemaSession()} requires every statement to be a
-   * {@link DDLStatement} that answers {@link DDLStatement#isBulkSchemaScopeSafe()}, so a script that mixes in DML, or
-   * that contains a rebuild/refresh/truncate/compaction, keeps the pre-existing one-session-per-statement behaviour.
+   * {@link DDLStatement} that answers {@link DDLStatement#isBulkSchemaScopeSafe(DatabaseInternal)}, so a script that
+   * mixes in DML, that contains a rebuild/refresh/truncate/compaction, or that indexes or repartitions a type which
+   * already exists, keeps the pre-existing one-session-per-statement behaviour.
    */
   private void doExecute(final int n) {
     if (executed)
@@ -144,6 +145,11 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
    * <p>
    * A single-statement script is deliberately excluded: it already produces exactly one session, so wrapping it would
    * add a frame that changes nothing but the code path it takes.
+   * <p>
+   * Asked ONCE, before the first statement runs, so the statements whose answer depends on the schema
+   * ({@code CREATE INDEX} on an existing type) see the schema the script started from. Re-asking per statement would
+   * be worse than useless: the answer decides whether to open a frame around ALL of them, and by the time the second
+   * statement runs that decision has already been taken.
    */
   private boolean batchableAsOneSchemaSession() {
     if (statements == null || statements.size() < 2)
@@ -155,7 +161,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
       return false;
 
     for (final Statement statement : statements)
-      if (!(statement instanceof DDLStatement ddl) || !ddl.isBulkSchemaScopeSafe())
+      if (!(statement instanceof DDLStatement ddl) || !ddl.isBulkSchemaScopeSafe(database))
         return false;
 
     return true;

@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -55,9 +56,22 @@ public abstract class DDLStatement extends Statement {
    *       batch, so folding one into a scope turns a bounded statement into an unbounded one at the expense of every
    *       other writer.</li>
    * </ul>
+   * False, CONDITIONALLY, for the two statements that are ordinary schema definition in one shape and a full type scan
+   * in another - which is why this is asked of the database rather than of the statement alone:
+   * <ul>
+   *   <li>{@code ALTER TYPE ... WITH repartition = true} runs {@code RebuildTypeStatement}'s scan-and-move loop
+   *       directly, and inside a caller-supplied transaction it takes the branch with no intermediate batch commits,
+   *       so the whole move is one transaction. Every reason {@code REBUILD TYPE} is excluded applies to it verbatim;</li>
+   *   <li>{@code CREATE INDEX} on a type that ALREADY EXISTS scans that type's records to populate the new index. On a
+   *       type the same script created a moment earlier there is nothing to scan, which is the shape this feature
+   *       exists for; on a pre-existing one it is a rebuild wearing a different verb.</li>
+   * </ul>
    * A script containing any such statement keeps the pre-existing one-session-per-statement behaviour, whole.
+   *
+   * @param database the database the script is about to run against, for the statements whose answer depends on what
+   *                 is already in the schema. Never null.
    */
-  public boolean isBulkSchemaScopeSafe() {
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
     return true;
   }
 
