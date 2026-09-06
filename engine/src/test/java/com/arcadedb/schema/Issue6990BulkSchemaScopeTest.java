@@ -329,14 +329,31 @@ class Issue6990BulkSchemaScopeTest extends TestHelper {
     assertThat(repartitioning.isBulkSchemaScopeSafe(db))
         .as("WITH repartition runs REBUILD TYPE's scan-and-move loop, so it is excluded like REBUILD TYPE").isFalse();
 
-    // And the script-level effect, which is the one that matters: a script carrying it keeps one session per
-    // statement.
-    database.command("sql", "CREATE VERTEX TYPE Repart");
-    final int sessions = countSchemaSessions(() -> database.command("sqlscript", """
-        CREATE PROPERTY Repart.a STRING;
-        ALTER TYPE Repart BUCKET +Repart_extra;
+    // And the script-level effect, which is what exercises the parse and the routing rather than only the flag. The
+    // two scripts below have the SAME shape and the same statement count; the only difference is the repartition
+    // clause on the last one, so the difference in the counts is attributable to it and to nothing else.
+    database.command("sql", "CREATE DOCUMENT TYPE RepartParent");
+    database.command("sql", "CREATE DOCUMENT TYPE Repart");
+    database.command("sql", "CREATE DOCUMENT TYPE RepartControl");
+
+    final int batched = countSchemaSessions(() -> database.command("sqlscript", """
+        CREATE PROPERTY RepartControl.a STRING;
+        CREATE PROPERTY RepartControl.b STRING;
+        ALTER TYPE RepartControl SUPERTYPE +RepartParent;
         """));
-    assertThat(sessions).as("control: an ALTER TYPE with no repartition setting still batches").isEqualTo(1);
+    assertThat(batched).as("control: an ALTER TYPE with no repartition clause batches with the rest").isEqualTo(1);
+
+    final int notBatched = countSchemaSessions(() -> database.command("sqlscript", """
+        CREATE PROPERTY Repart.a STRING;
+        CREATE PROPERTY Repart.b STRING;
+        ALTER TYPE Repart WITH repartition = true;
+        """));
+    assertThat(notBatched)
+        .as("a script carrying WITH repartition = true opens a session per statement, as it did before this feature")
+        .isGreaterThan(batched);
+
+    assertThat(database.getSchema().getType("Repart").getPropertyNames()).contains("a", "b");
+    assertThat(database.getSchema().getType("RepartControl").getPropertyNames()).contains("a", "b");
   }
 
   /**
