@@ -133,6 +133,49 @@ final class VectorHeapBudget {
   }
 
   /**
+   * How much of the reclaimable page cache has to be given up for an allocation of {@code bytes} to fit inside
+   * {@code percent} of available heap (issue #7184).
+   * <p>
+   * {@link #liveHeapBytes()} counts ArcadeDB's own page read cache as live, because from the JVM's point of view it
+   * is: those pages are strongly referenced and no collection will take them. But they are <em>evictable</em> - the
+   * engine can drop any of them and read the page back from disk - so judging a rebuild against a reading that
+   * treats them as permanently occupied is what refused a rebuild that a 24 GB heap could have run, at every
+   * attempt, leaving the delta scan those pending vectors produce to grow without limit. Issue #7147 applied the
+   * same correction to the build cache's own sizing; this is the admission gate's half of it.
+   * <p>
+   * The answer is not "count the cache as free and hope". A caller told to reclaim N bytes must actually reclaim
+   * them before it allocates, or the reading is simply optimistic in the other direction - which is the failure mode
+   * (an {@link OutOfMemoryError}) issue #6503 built this gate to avoid. Hence the amount, rather than a boolean.
+   *
+   * @param bytes            what the caller wants to allocate
+   * @param percent          share of available heap it may occupy, clamped to {@code [0, 90]} as elsewhere here
+   * @param availableHeap    {@link #availableHeapBytes()}, or a pinned figure in a test
+   * @param reclaimableBytes evictable bytes the {@code availableHeap} reading counts as live - the page read cache
+   *
+   * @return {@code 0} when the allocation already fits and nothing need be given up, a positive number of bytes to
+   * reclaim first, or {@code -1} when it does not fit even with every reclaimable byte handed over
+   */
+  static long reclaimNeededFor(final long bytes, final int percent, final long availableHeap,
+      final long reclaimableBytes) {
+    if (percent <= 0)
+      return 0L; // gate disabled: nothing to decide, and nothing to reclaim on its behalf
+    if (bytes <= 0)
+      return 0L;
+    // Above this the multiplication below would wrap, and a request that large does not fit any heap anyway.
+    if (bytes > Long.MAX_VALUE / 100)
+      return -1L;
+
+    final int p = Math.min(percent, 90);
+    // The available-heap reading that would make budgetBytes(p) cover `bytes`, rounded up so the answer never
+    // lands one byte short of the budget it is derived from.
+    final long neededAvailable = (bytes * 100 + p - 1) / p;
+    final long shortfall = neededAvailable - Math.max(0L, availableHeap);
+    if (shortfall <= 0)
+      return 0L;
+    return shortfall <= Math.max(0L, reclaimableBytes) ? shortfall : -1L;
+  }
+
+  /**
    * The share of {@link #availableHeapBytes()} a caller is allowed to claim.
    *
    * @param percent share to claim, clamped into {@code [0, 90]}: a build is never allowed to plan on the whole
@@ -210,5 +253,64 @@ final class VectorHeapBudget {
     if (oldGraphStaysResident)
       estimate += estimateGraphBytes(nodes);                                // ...on top of the one being replaced
     return estimate;
+  }
+
+  /**
+   * Peak heap an ONLINE rebuild is expected to hold at once: the graph being built, its build cache, and whatever
+   * the graph it is replacing actually costs to keep resident (issue #7184).
+   * <p>
+   * That last term is the correction. {@link #estimateRebuildHeapBytes} charges a second full on-heap graph for it -
+   * {@code nodes x APPROX_GRAPH_BYTES_PER_NODE} again - which is right when the resident graph is the
+   * {@code OnHeapGraphIndex} a build just produced, and badly wrong on the far more common shape: a session that
+   * reopened the database serves an {@code OnDiskGraphIndex}, whose topology lives in pages, and keeping it resident
+   * costs a few caches rather than a gigabyte per million nodes. Charging a phantom second graph there is what made
+   * a 10M-vector index in a 24 GB heap ask for 24 GB and be refused at every attempt, when the rebuild it was
+   * refusing is the same size as the one the close path runs unconditionally. Asking the graph itself
+   * ({@link io.github.jbellis.jvector.util.Accountable#ramBytesUsed()}) replaces the guess with a measurement, and
+   * it is a measurement of exactly the object that will still be there while the new graph is built.
+   * <p>
+   * The graph being BUILT cannot be measured - it does not exist yet - so it is still estimated. When the resident
+   * graph is itself on-heap its measured cost per node is by far the best predictor available for it: same index,
+   * same {@code maxConnections}, same dimensions, measured on this JVM rather than on the 128-dimension index of
+   * issue #6503. Scaled by the neighbour overflow factor, because a build holds up to that many times the final
+   * out-degree per node before {@code cleanup()} trims it. With a disk-backed resident graph there is nothing to
+   * learn from, and the flat constant stands.
+   *
+   * @param nodes                  number of vectors the build will walk
+   * @param dimensions             vector width
+   * @param buildCacheCapacity     vectors the build cache will hold
+   * @param residentGraphBytes     {@code ramBytesUsed()} of the graph being replaced, which stays resident so
+   *                               searches keep working; 0 when there is none
+   * @param residentGraphNodes     how many nodes that measurement covers, 0 when unknown
+   * @param residentGraphOnHeap    whether that graph holds its topology on the heap, which is what makes its
+   *                               per-node cost transferable to the graph about to be built
+   * @param neighborOverflowFactor the index's configured neighbour overflow factor, values below 1 ignored
+   *
+   * @return the estimated peak in bytes
+   */
+  static long estimateOnlineRebuildHeapBytes(final long nodes, final int dimensions, final long buildCacheCapacity,
+      final long residentGraphBytes, final long residentGraphNodes, final boolean residentGraphOnHeap,
+      final float neighborOverflowFactor) {
+    long estimate = nodes > 0 ?
+        nodes * (buildBytesPerNode(residentGraphBytes, residentGraphNodes, residentGraphOnHeap,
+            neighborOverflowFactor) + ORDINAL_MAP_BYTES_PER_NODE) : 0L;
+    estimate += Math.max(0L, buildCacheCapacity) * bytesPerCachedVector(dimensions);
+    estimate += Math.max(0L, residentGraphBytes);
+    return estimate;
+  }
+
+  /**
+   * Bytes per node of the graph a rebuild is about to build: the resident graph's measured cost per node raised by
+   * the neighbour overflow a build holds transiently, or {@link #APPROX_GRAPH_BYTES_PER_NODE} when there is no
+   * on-heap graph to measure. Never below the measurement itself, and never zero.
+   */
+  static long buildBytesPerNode(final long residentGraphBytes, final long residentGraphNodes,
+      final boolean residentGraphOnHeap, final float neighborOverflowFactor) {
+    if (!residentGraphOnHeap || residentGraphBytes <= 0 || residentGraphNodes <= 0)
+      return APPROX_GRAPH_BYTES_PER_NODE;
+
+    final long measured = Math.max(1L, residentGraphBytes / residentGraphNodes);
+    final float overflow = neighborOverflowFactor > 1f ? neighborOverflowFactor : 1f;
+    return Math.max(measured, (long) (measured * overflow));
   }
 }

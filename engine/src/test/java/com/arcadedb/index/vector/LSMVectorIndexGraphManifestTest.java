@@ -19,6 +19,7 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -49,7 +50,7 @@ class LSMVectorIndexGraphManifestTest {
     final long fingerprint = LSMVectorIndexGraphManifest.fingerprintOf(new int[] { 0, 1, 2 },
         id -> new RID(3, id * 10L));
 
-    manifest.write(3, fingerprint);
+    manifest.write(3, fingerprint, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
 
     assertThat(manifest.exists()).isTrue();
     final LSMVectorIndexGraphManifest.Content content = manifest.read();
@@ -68,7 +69,7 @@ class LSMVectorIndexGraphManifestTest {
     final LSMVectorIndexGraphManifest manifest = manifest();
     final long awkward = -6_148_914_691_236_517_206L; // 0xAAAA...AAAA
 
-    manifest.write(7, awkward);
+    manifest.write(7, awkward, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
 
     assertThat(manifest.read().fingerprint()).isEqualTo(awkward);
   }
@@ -77,7 +78,7 @@ class LSMVectorIndexGraphManifestTest {
   @Test
   void anUnusableManifestCannotBeMatchedByAnyLiveSet() {
     final LSMVectorIndexGraphManifest manifest = manifest();
-    manifest.write(12, 1234L);
+    manifest.write(12, 1234L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
 
     manifest.markUnusable("simulated persist failure");
 
@@ -90,7 +91,7 @@ class LSMVectorIndexGraphManifestTest {
   @Test
   void aTruncatedOrCorruptedManifestReadsAsAbsent() throws Exception {
     final LSMVectorIndexGraphManifest manifest = manifest();
-    manifest.write(5, 99L);
+    manifest.write(5, 99L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
 
     Files.writeString(manifestPath(), "{\"formatVersion\": 1, \"vectorCou", StandardCharsets.UTF_8);
 
@@ -121,7 +122,7 @@ class LSMVectorIndexGraphManifestTest {
   @Test
   void invalidateRemovesTheManifestSoNothingVouchesForThePages() {
     final LSMVectorIndexGraphManifest manifest = manifest();
-    manifest.write(4, 7L);
+    manifest.write(4, 7L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
 
     manifest.invalidate();
 
@@ -140,7 +141,7 @@ class LSMVectorIndexGraphManifestTest {
     Files.writeString(leftover, "half written", StandardCharsets.UTF_8);
     Files.writeString(unrelated, "the graph itself", StandardCharsets.UTF_8);
 
-    manifest().write(1, 1L);
+    manifest().write(1, 1L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
 
     assertThat(leftover).as("the sweep must remove an abandoned temporary of this manifest").doesNotExist();
     assertThat(unrelated).as("and must match by name, so it cannot reach anything else").exists();
@@ -148,6 +149,98 @@ class LSMVectorIndexGraphManifestTest {
       assertThat(files.map(p -> p.getFileName().toString()).filter(n -> n.endsWith(".tmp")).toList())
           .as("and the write must leave no temporary of its own behind").isEqualTo(List.of());
     }
+  }
+
+  /**
+   * The ordinals a build could not link are part of what the manifest has to say about the pages next to it: the
+   * session that built the graph serves those vectors from the delta scan, and a reopened session can only do the
+   * same if it is told which ones they are (issue #7190).
+   */
+  @Test
+  void unreachableOrdinalsSurviveTheRoundTrip() {
+    final LSMVectorIndexGraphManifest manifest = manifest();
+
+    manifest.write(50_000, 42L, new int[] { 7, 39_896, 49_999 });
+
+    assertThat(manifest.read().unreachableOrdinals()).containsExactly(7, 39_896, 49_999);
+  }
+
+  @Test
+  void aManifestWithoutUnreachableOrdinalsReadsAsNoneRatherThanNull() {
+    final LSMVectorIndexGraphManifest manifest = manifest();
+
+    manifest.write(10, 5L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
+
+    assertThat(manifest.read().unreachableOrdinals())
+        .as("callers walk this array; an absent entry must read as empty, never as null").isEmpty();
+  }
+
+  /**
+   * The set is a new optional key inside the SAME format version, deliberately: bumping the version would make
+   * every manifest written by an older build read as absent, and every existing index rebuild its graph on the
+   * first open after an upgrade. A manifest from before issue #7190 therefore has to stay perfectly usable.
+   */
+  @Test
+  void aManifestWrittenBeforeThisFieldExistedIsStillUsable() throws Exception {
+    final JSONObject beforeIssue7190 = new JSONObject();
+    beforeIssue7190.put("formatVersion", LSMVectorIndexGraphManifest.FORMAT_VERSION);
+    beforeIssue7190.put("vectorCount", 1_500);
+    beforeIssue7190.put("fingerprint", "-6148914691236517206");
+    beforeIssue7190.put("closeDeferredRebuild", false);
+    Files.writeString(manifestPath(), beforeIssue7190.toString(), StandardCharsets.UTF_8);
+
+    final LSMVectorIndexGraphManifest.Content content = manifest().read();
+    assertThat(content).as("an older manifest must not be refused over a key it could not have written").isNotNull();
+    assertThat(content.vectorCount()).isEqualTo(1_500);
+    assertThat(content.fingerprint()).isEqualTo(-6_148_914_691_236_517_206L);
+    assertThat(content.unreachableOrdinals()).isEmpty();
+  }
+
+  /**
+   * A malformed set costs the set, not the manifest: ignoring it puts the index back at the pre-#7190 behaviour for
+   * those nodes, while refusing the manifest would force a full rebuild of a graph that is otherwise fine.
+   */
+  @Test
+  void anUnreadableUnreachableOrdinalsEntryIsIgnoredRatherThanFailingTheManifest() throws Exception {
+    final JSONObject damaged = new JSONObject();
+    damaged.put("formatVersion", LSMVectorIndexGraphManifest.FORMAT_VERSION);
+    damaged.put("vectorCount", 20);
+    damaged.put("fingerprint", "77");
+    damaged.put("unreachableOrdinals", new JSONArray(new Object[] { "not-a-number" }));
+    Files.writeString(manifestPath(), damaged.toString(), StandardCharsets.UTF_8);
+
+    final LSMVectorIndexGraphManifest.Content content = manifest().read();
+    assertThat(content).isNotNull();
+    assertThat(content.vectorCount()).isEqualTo(20);
+    assertThat(content.unreachableOrdinals()).isEmpty();
+  }
+
+  /**
+   * {@code markCloseDeferred()} is a note about pages that have NOT changed, so what those pages leave unreachable
+   * has not changed either. Losing the set there would make the very next open miss those vectors again.
+   */
+  @Test
+  void markingACloseAsDeferredKeepsTheUnreachableOrdinals() {
+    final LSMVectorIndexGraphManifest manifest = manifest();
+    manifest.write(1_000, 11L, new int[] { 3, 4 });
+
+    manifest.markCloseDeferred();
+
+    final LSMVectorIndexGraphManifest.Content content = manifest.read();
+    assertThat(content.closeDeferredRebuild()).isTrue();
+    assertThat(content.vectorCount()).isEqualTo(1_000);
+    assertThat(content.unreachableOrdinals()).containsExactly(3, 4);
+  }
+
+  /** A completed build supersedes whatever the previous one orphaned - a Vamana build orphans a fresh set. */
+  @Test
+  void aLaterWriteReplacesThePreviousUnreachableOrdinals() {
+    final LSMVectorIndexGraphManifest manifest = manifest();
+    manifest.write(1_000, 11L, new int[] { 3, 4 });
+
+    manifest.write(1_000, 12L, new int[] { 9 });
+
+    assertThat(manifest.read().unreachableOrdinals()).containsExactly(9);
   }
 
   private LSMVectorIndexGraphManifest manifest() {
