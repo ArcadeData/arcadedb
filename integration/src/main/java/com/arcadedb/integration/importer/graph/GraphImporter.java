@@ -737,11 +737,13 @@ public class GraphImporter implements AutoCloseable {
      */
     private static void checkNotSplit(final String attribute, final String value) {
       final String trimmed = value.trim();
-      if (trimmed.startsWith("[") == trimmed.endsWith("]"))
+      final boolean opens = trimmed.startsWith("[");
+      if (opens == trimmed.endsWith("]"))
         return;
-      throw new IllegalArgumentException("Attribute '" + attribute + "' holds an unterminated array (" + trimmed
-          + "). A delimited source splits an unquoted array across fields when the delimiter also separates the "
-          + "array's elements: use a delimiter the values do not contain, such as ';'");
+      throw new IllegalArgumentException("Attribute '" + attribute + "' holds "
+          + (opens ? "the start of an array that never closes" : "the end of an array that never opened") + " ("
+          + trimmed + "). A delimited source splits an unquoted array across fields when the delimiter also separates "
+          + "the array's elements: use a delimiter the values do not contain, such as ';'");
     }
   }
 
