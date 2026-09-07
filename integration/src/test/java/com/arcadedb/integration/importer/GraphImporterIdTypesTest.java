@@ -40,6 +40,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Identity keys that are not a positive {@code int}: string keys, keys wider than {@code int}, the
@@ -543,6 +544,117 @@ class GraphImporterIdTypesTest {
 
     assertThat(outgoingTargets("Node", "name", "Child", "ChildOf", "name")).containsExactly("Root");
     assertThat(outgoingTargets("Node", "name", "NoKeyOne", "ChildOf", "name")).isEmpty();
+  }
+
+  /**
+   * {@code edgeInByName} composes the two flags the deferred path reads independently: the target
+   * is matched by name AND the edge runs from it to this row.
+   */
+  @Test
+  void selfReferencingEdgeInByNameRunsFromTheNamedVertex() throws Exception {
+    final String vertices = write("named-parent-tree.csv",
+        "Code,Parent",
+        "root,",
+        "child-a,root",
+        "grandchild,child-a");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Category");
+      database.getSchema().createEdgeType("HasChild");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Category", new CsvRowSource(vertices), v -> {
+          v.idByName("Code");
+          v.property("code", "Code");
+          v.edgeInByName("Parent", "HasChild", "Category");
+        })
+        .build()) {
+
+      importer.run();
+
+      assertThat(importer.getEdgeCount()).isEqualTo(2);
+    }
+
+    assertThat(outgoingTargets("Category", "code", "root", "HasChild", "code")).containsExactly("child-a");
+    assertThat(outgoingTargets("Category", "code", "child-a", "HasChild", "code")).containsExactly("grandchild");
+    assertThat(outgoingTargets("Category", "code", "grandchild", "HasChild", "code")).isEmpty();
+  }
+
+  /**
+   * A vertex type that no source imports resolves nothing, so every edge naming it is lost. It used
+   * to be lost in silence, which is exactly what a mistyped type name looks like.
+   */
+  @Test
+  void anEdgeTargetingAnUnknownVertexTypeIsRejected() throws Exception {
+    final String vertices = write("typo-vertices.csv",
+        "Id,Name",
+        "1,One");
+    final String edges = write("typo-edges.csv",
+        "from_id,to_id",
+        "1,1");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Question");
+      database.getSchema().createEdgeType("AnswerOf");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Question", new CsvRowSource(vertices), v -> {
+          v.id("Id");
+          v.edgeOut("Id", "AnswerOf", "Qeustion");
+        })
+        .build()) {
+      assertThatThrownBy(importer::run)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Qeustion")
+          .hasMessageContaining("no vertex source imports");
+    }
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Question", new CsvRowSource(vertices), v -> v.id("Id"))
+        .edgeSource("AnswerOf", new CsvRowSource(edges), e -> {
+          e.from("from_id", "Question");
+          e.to("to_id", "Qeustion");
+        })
+        .build()) {
+      assertThatThrownBy(importer::run)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("'to' endpoint")
+          .hasMessageContaining("Qeustion");
+    }
+  }
+
+  /**
+   * A vertex source resolves references against the types imported before it, so naming one that
+   * comes later silently produced no edges at all.
+   */
+  @Test
+  void anEdgeTargetingAVertexTypeImportedLaterIsRejected() throws Exception {
+    final String employees = write("order-employees.csv",
+        "Id,DeptId",
+        "10,1");
+    final String departments = write("order-departments.csv",
+        "Id,Name",
+        "1,Engineering");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Department");
+      database.getSchema().createVertexType("Employee");
+      database.getSchema().createEdgeType("WORKS_IN");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Employee", new CsvRowSource(employees), v -> {
+          v.id("Id");
+          v.edgeOut("DeptId", "WORKS_IN", "Department");
+        })
+        .vertex("Department", new CsvRowSource(departments), v -> v.id("Id"))
+        .build()) {
+      assertThatThrownBy(importer::run)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("is imported after it");
+    }
   }
 
   /**
