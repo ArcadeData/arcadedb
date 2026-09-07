@@ -21,7 +21,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.Index;
@@ -139,37 +138,17 @@ public class CreateIndexStatement extends DDLStatement {
   }
 
   /**
-   * Not batchable into a DDL script's bulk schema scope when the target type ALREADY EXISTS (issue #6990).
+   * True when {@code existing} is declared on {@code requestedTypeName} or on one of its super types, and therefore
+   * already indexes every record the request is about (issue #7228).
    * <p>
-   * {@code TypeIndexBuilder.create()} populates the new index by scanning every record of the type, inside its own
-   * {@code recordFileChanges} session. On a type the same script created a moment earlier there is nothing to scan -
-   * that is the {@code CREATE TYPE; CREATE PROPERTY; CREATE INDEX} shape this feature exists for, and it stays
-   * batched. On a type that was already there the same statement is a rebuild wearing a different verb: it would run
-   * the full build under the batch's hold on the database write lock and fold its WAL into the batch's single Raft
-   * entry, which is exactly what {@code REBUILD INDEX} is excluded for.
-   * <p>
-   * EXISTENCE, NOT EMPTINESS, is the test, and deliberately so. Asking whether the type holds any record means
-   * {@code Bucket.count()}, which is O(1) only while its cached counter is warm and otherwise recomputes by scanning -
-   * a classification-time cost that could dwarf the saving it is deciding about. Existence is exact, free, and errs
-   * the harmless way: an existing but empty type loses the batching, which costs one Raft entry per statement and
-   * never costs correctness.
-   * <p>
-   * The same conservative answer is given when the target cannot be resolved cheaply at all - no ON clause, or a
-   * {@code $variable} type name that is only bound at execution time.
+   * A missing type is NOT a match: the statement would go on to fail on the type anyway, and answering the guard for
+   * a type that does not exist would report success for an index nothing can use.
    */
-  @Override
-  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
-    if (typeName == null)
-      return false;
-
-    final String name = typeName.getStringValue();
-    if (name == null || name.startsWith("$"))
-      return false;
-
-    // Asked ONCE, before the script's first statement runs (see ScriptExecutionPlan.batchableAsOneSchemaSession), so
-    // "does not exist" means "the script has not created it yet either" - which is what makes a from-scratch
-    // migration script batchable. Moving this check to execution time would invert the answer for exactly that case.
-    return !database.getSchema().existsType(name);
+  private static boolean coversRequestedType(final Database database, final Index existing, final String requestedTypeName) {
+    if (existing.getTypeName().equals(requestedTypeName))
+      return true;
+    final Schema schema = database.getSchema();
+    return schema.existsType(requestedTypeName) && schema.getType(requestedTypeName).instanceOf(existing.getTypeName());
   }
 
   @Override
@@ -244,7 +223,16 @@ public class CreateIndexStatement extends DDLStatement {
         // property list, so a name match implies both already match. Index names are global, so a manual one can name
         // an index on ANOTHER type, or on other properties of this one - either way it is a different index, and
         // answering "already exists" would leave the requested one uncreated with nothing said about why.
-        if (!existing.getTypeName().equals(typeName.getStringValue())
+        //
+        // "Another type" excludes a SUPER type of the requested one (issue #7228). A type index is built over
+        // {@code getBuckets(true)}, the POLYMORPHIC bucket list, so an index declared on a super type already indexes
+        // every record of this one: there is nothing left for the statement to create, and the guard has to answer
+        // the same way {@link TypeIndexBuilder#create} answers an unnamed request over an inherited index - which
+        // finds it through {@code getPolymorphicIndexByProperties} and returns it. Refusing here instead made a
+        // schema script that names its indexes non-idempotent the moment one of them moved up the hierarchy, which
+        // is exactly what IF NOT EXISTS is written to prevent. The relation is checked in one direction only: an
+        // index on a SUB type covers strictly fewer buckets than the request, so it does not satisfy it.
+        if (!coversRequestedType(database, existing, typeName.getStringValue())
             || !existing.getPropertyNames().equals(requestedProperties))
           throw new IllegalArgumentException(
               "Cannot create the index '" + name.getValue() + "' on type '" + typeName.getStringValue() + "' properties "

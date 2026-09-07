@@ -43,18 +43,18 @@ class Issue7121SnapshotMaxEntrySizeTest {
   @Test
   void theConfiguredLimitIsTheOneEnforced() {
     GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE.setValue(4_096L);
-    assertThat(SnapshotInstaller.maxZipEntryUncompressedBytes()).isEqualTo(4_096L);
+    assertThat(SnapshotInstaller.maxZipEntryUncompressedBytes(null)).isEqualTo(4_096L);
   }
 
   @Test
   void aNonPositiveLimitFallsBackToTheCompiledDefaultInsteadOfDisablingTheGuard() {
     GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE.setValue(0L);
-    assertThat(SnapshotInstaller.maxZipEntryUncompressedBytes())
+    assertThat(SnapshotInstaller.maxZipEntryUncompressedBytes(null))
         .as("a zip-bomb guard an operator can switch off by typing 0 is not a guard")
         .isEqualTo(SnapshotInstaller.MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES);
 
     GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE.setValue(-1L);
-    assertThat(SnapshotInstaller.maxZipEntryUncompressedBytes())
+    assertThat(SnapshotInstaller.maxZipEntryUncompressedBytes(null))
         .isEqualTo(SnapshotInstaller.MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES);
   }
 

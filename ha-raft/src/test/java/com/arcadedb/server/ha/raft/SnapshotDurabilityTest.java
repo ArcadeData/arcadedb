@@ -92,7 +92,7 @@ class SnapshotDurabilityTest {
 
     final SnapshotInstaller.CountingInputStream counter = new SnapshotInstaller.CountingInputStream(
         new ByteArrayInputStream(baos.toByteArray()));
-    SnapshotInstaller.extractAndVerifySnapshot(counter, counter, dir, false);
+    SnapshotInstaller.extractAndVerifySnapshot(counter, counter, dir, false, null);
 
     for (final Map.Entry<String, byte[]> e : files.entrySet())
       assertThat(Files.readAllBytes(dir.resolve(e.getKey()))).isEqualTo(e.getValue());
