@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -31,6 +32,8 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 
 /**
  * Asks one peer what wire-format sections it can decode, by calling its
@@ -38,7 +41,10 @@ import java.util.Set;
  * <p>
  * Transport, authentication and endpoint selection are {@link LeaderDatabaseQuery}'s, because this is the same
  * kind of call: the {@code X-ArcadeDB-Cluster-Token} + {@code X-ArcadeDB-Forwarded-User} pair every peer-to-peer
- * cluster RPC uses, and the peer's HTTPS endpoint preferred when {@code arcadedb.ssl.enabled} is set.
+ * cluster RPC uses, the peer's HTTPS endpoint preferred when {@code arcadedb.ssl.enabled} is set, and the same
+ * one-time warning when that preference cannot be honoured and the token goes over plain HTTP instead. That
+ * warning carries more weight here than at its origin: this query repeats for as long as the node leads, so the
+ * fallback is a standing condition rather than one request.
  * <p>
  * <b>A node that predates this route answers 404</b>, which arrives here as an {@link IOException} exactly like an
  * unreachable peer. That is the whole discriminator: no separate version comparison is needed, and none would be
@@ -61,6 +67,9 @@ public final class PeerCapabilityQuery {
   private static final HttpClient HTTP = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(5))
       .build();
+
+  /** One-time warning that SSL is enabled but the probe fell back to plain HTTP for lack of an HTTPS address. */
+  private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
 
   private PeerCapabilityQuery() {
   }
@@ -87,6 +96,17 @@ public final class PeerCapabilityQuery {
     final String url = chooseUrl(httpAddr, httpsAddr, useSSL);
     if (url == null)
       throw new IOException("no peer address available for a capability query");
+    if (useSSL && !url.startsWith("https://") && PLAIN_HTTP_FALLBACK_WARNED.compareAndSet(false, true))
+      // The same one-time warning LeaderDatabaseQuery emits on the same fallback, and it matters MORE here: that
+      // query runs at a join or on an operator's request, while this one repeats every
+      // PeerCapabilityRegistry.REFRESH_PERIOD_MS for as long as the node leads. On a cluster that enables SSL but
+      // declares no 'https' ports, the cluster token would otherwise go out in clear text on this RPC
+      // indefinitely with nothing in the log to point at it. Named for the peer that first hit it, because the
+      // remedy is per-peer configuration; one line, because the cause is a configuration fact and not an event.
+      LogManager.instance().log(PeerCapabilityQuery.class, Level.WARNING,
+          "SSL is enabled but no HTTPS address is known for peer '%s'; its capability query - and the cluster "
+              + "token it carries - go over plain HTTP. Declare each node's 'https' port in %s.",
+          expectedPeerId, GlobalConfiguration.HA_SERVER_LIST.getKey());
 
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(url))
