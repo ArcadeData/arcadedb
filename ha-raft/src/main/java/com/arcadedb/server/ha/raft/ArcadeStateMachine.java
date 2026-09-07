@@ -36,6 +36,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
 import com.arcadedb.server.security.SecurityUserFileRepository;
 import com.arcadedb.utility.FileUtils;
@@ -558,6 +559,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // lifecycle stays in NEW and that precondition throws IllegalStateException (issue #4754).
     getLifeCycle().transition(LifeCycle.State.STARTING);
     getLifeCycle().transition(LifeCycle.State.RUNNING);
+    // From here on this state machine writes zero-byte snapshot markers with no .md5 companion by
+    // design (see registerSnapshotMarker), which makes Ratis warn once per marker on every checkpoint
+    // and every restart. Silence just that one message before the storage that emits it is opened
+    // (issue #6991). Idempotent, so the RaftHAServer.start() call and this one cannot stack.
+    RatisSnapshotDigestWarningFilter.install();
     storage.init(raftStorage);
     reinitialize();
     // Recover any snapshot installations that were interrupted by a crash
