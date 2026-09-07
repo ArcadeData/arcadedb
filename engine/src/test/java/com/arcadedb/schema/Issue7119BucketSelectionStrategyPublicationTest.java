@@ -1,0 +1,114 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.schema;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
+
+import org.junit.jupiter.api.Test;
+
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Issue #7119: {@code LocalDocumentType.bucketSelectionStrategy} is the fifth copy-on-write member of the class, next
+ * to the four bucket lists issues #6678/#7033 made {@code volatile}. It is reassigned by
+ * {@code setBucketSelectionStrategy} and read lock-free by {@code getBucketIdByRecord}/{@code getBucketIndexByKeys}
+ * on the record-write path and by the planner's partition pruning, so it needs the same happens-before edge. It was
+ * also published before it was bound: the field was assigned first and {@code setType(this)} called afterwards, so a
+ * concurrent insert could reach a strategy whose bucket count was still 0 or whose type was still null.
+ * <p>
+ * The first test pins the modifier, like the sibling {@link Issue6678PolymorphicBucketCacheVisibilityTest} does for
+ * the four lists. The second uses a strategy that records what the type was publishing at the moment it was bound:
+ * with the fix it is still the previous strategy, never the half-bound one. The third checks the rollback contract
+ * the old try/catch provided survives the reordering: a strategy the type refuses is never published.
+ */
+class Issue7119BucketSelectionStrategyPublicationTest extends TestHelper {
+
+  @Test
+  void bucketSelectionStrategyMustBeVolatileForLockFreeReaders() throws Exception {
+    final Field field = LocalDocumentType.class.getDeclaredField("bucketSelectionStrategy");
+    assertThat(Modifier.isVolatile(field.getModifiers()))
+        .as("bucketSelectionStrategy is copy-on-write reassigned by setBucketSelectionStrategy and read lock-free by "
+            + "the record-write path and the planner - it must be volatile like its four sibling bucket lists (issue #7119)")
+        .isTrue();
+  }
+
+  @Test
+  void strategyIsBoundBeforeItIsPublished() {
+    database.transaction(() -> database.getSchema().createDocumentType("Product", 2));
+
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType("Product");
+    final BucketSelectionStrategy previous = type.getBucketSelectionStrategy();
+    final RecordingStrategy recording = new RecordingStrategy();
+
+    database.transaction(() -> type.setBucketSelectionStrategy(recording));
+
+    assertThat(recording.publishedWhenBound)
+        .as("setType(this) must run before the field is assigned, so the type still publishes the previous strategy")
+        .isSameAs(previous);
+    assertThat(recording.bucketsWhenBound).isEqualTo(2);
+    assertThat(type.getBucketSelectionStrategy()).isSameAs(recording);
+
+    // LEAVE THE TYPE ON A BUILT-IN STRATEGY SO THE PERSISTED SCHEMA DOES NOT NAME A TEST CLASS
+    database.transaction(() -> type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy()));
+  }
+
+  @Test
+  void strategyRefusedWhileBindingIsNeverPublished() {
+    database.transaction(() -> database.getSchema().createDocumentType("Product", 2));
+
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType("Product");
+    final BucketSelectionStrategy previous = type.getBucketSelectionStrategy();
+
+    assertThatThrownBy(() -> database.transaction(() -> type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy() {
+      @Override
+      public void setType(final LocalDocumentType type) {
+        throw new IllegalStateException("refused");
+      }
+    }))).isInstanceOf(IllegalStateException.class).hasMessage("refused");
+
+    assertThat(type.getBucketSelectionStrategy()).isSameAs(previous);
+  }
+
+  /**
+   * Public with a public no-arg constructor so that, should the schema be reloaded while it is assigned, the strategy
+   * can be re-instantiated by name the way {@code setBucketSelectionStrategy(String, Object...)} does.
+   */
+  public static class RecordingStrategy extends RoundRobinBucketSelectionStrategy {
+    BucketSelectionStrategy publishedWhenBound;
+    int                     bucketsWhenBound;
+
+    @Override
+    public void setType(final LocalDocumentType type) {
+      publishedWhenBound = type.getBucketSelectionStrategy();
+      bucketsWhenBound = type.getBuckets(false).size();
+      super.setType(type);
+    }
+
+    @Override
+    public String getName() {
+      return getClass().getName();
+    }
+  }
+}

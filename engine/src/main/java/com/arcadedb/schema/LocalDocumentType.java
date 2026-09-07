@@ -80,7 +80,10 @@ public class LocalDocumentType implements DocumentType {
   protected volatile List<Bucket>                   cachedPolymorphicBuckets     = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
   protected volatile List<Integer>                  bucketIds                    = new ArrayList<>();
   protected volatile List<Integer>                  cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
-  protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
+  // Fifth member of the same copy-on-write family: reassigned by setBucketSelectionStrategy, read lock-free by
+  // getBucketIdByRecord/getBucketIndexByKeys on the record-write path and by the planner's partition pruning through
+  // getBucketSelectionStrategy(), so it is volatile for the same reason as the four lists above (issue #7119).
+  protected volatile BucketSelectionStrategy        bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
   // Names of the OWN properties that declare a DEFAULT. A cache: the authority is the per-property default value, but
   // record creation would otherwise pay an O(properties) scan to find the (usually empty) subset that has one.
   // Copy-on-write, and read through getPolymorphicPropertiesWithDefaultDefined() by ApplyDefaultsStep (the SQL insert
@@ -883,23 +886,20 @@ public class LocalDocumentType implements DocumentType {
   private DocumentType setBucketSelectionStrategy(final BucketSelectionStrategy selectionStrategy,
       final boolean persistOnItsOwn) {
     checkForSchemaMutation();
+    // Bind and vet the strategy BEFORE publishing it (issue #7119). The field is read lock-free by
+    // getBucketIdByRecord/getBucketIndexByKeys, so assigning first would let a concurrent insert reach a strategy
+    // whose bucket count is still 0 (ThreadBucketSelectionStrategy divides by it) or whose type is still null
+    // (PartitionedBucketSelectionStrategy dereferences it). Binding only reads the bucket lists, never this field,
+    // so nothing here needs the assignment to have happened - and a refusal from the suitability check now leaves
+    // the field untouched instead of needing a rollback. Binding itself no longer validates anything (see
+    // PartitionedBucketSelectionStrategy.setType); every refusal comes out of the suitability check, which is also
+    // what makes the reaction depend on how we got here.
+    selectionStrategy.setType(this);
+    if (selectionStrategy instanceof PartitionedBucketSelectionStrategy partitioned)
+      reportPartitionSuitability(partitioned,
+          schema.isReadingFromFile() ? PartitionReport.RELOAD : PartitionReport.ASSIGNMENT);
     final BucketSelectionStrategy previous = this.bucketSelectionStrategy;
     this.bucketSelectionStrategy = selectionStrategy;
-    try {
-      // The field is assigned before this so the strategy can read back the type it is being bound to, which means
-      // anything thrown from here would otherwise leave the type carrying a strategy the DDL went on to reject.
-      // Binding no longer validates anything (see PartitionedBucketSelectionStrategy.setType); every refusal comes
-      // out of the suitability check below, which is also what makes the reaction depend on how we got here.
-      this.bucketSelectionStrategy.setType(this);
-      if (selectionStrategy instanceof PartitionedBucketSelectionStrategy partitioned)
-        reportPartitionSuitability(partitioned,
-            schema.isReadingFromFile() ? PartitionReport.RELOAD : PartitionReport.ASSIGNMENT);
-    } catch (final RuntimeException e) {
-      // Restoring the reference is the whole rollback: previous was bound to this type when it was assigned, and
-      // nothing here unbinds it, so re-invoking previous.setType(this) would be a no-op.
-      this.bucketSelectionStrategy = previous;
-      throw e;
-    }
     // Strategy-change flag flip (issue #4087). Switching the bucket-selection strategy on a
     // populated type can leave existing records in buckets that no longer match the new
     // strategy's hash. Two cases set the flag:
