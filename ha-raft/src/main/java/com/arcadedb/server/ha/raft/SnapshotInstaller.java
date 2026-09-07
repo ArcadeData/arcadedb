@@ -558,8 +558,9 @@ public final class SnapshotInstaller {
    * <p>
    * <b>{@code server} must not be null.</b> Both branches dereference it - the first for
    * {@code existsDatabase}, the second for {@code getConfiguration} - so there is no path that could
-   * usefully tolerate a null, and every caller today reaches this only after something else has already
-   * established that the state machine is wired. Stated here rather than enforced with a check, because
+   * usefully tolerate a null: every caller reaches this from a state machine that {@code createStateMachine}
+   * wired before its reference escaped, so nothing can apply an entry against a half-wired one. Stated here
+   * rather than enforced with a check, because
    * a null would mean the caller is unwired, and an unwired caller has nowhere to install a snapshot to:
    * the loud dereference is the correct outcome, and only the precondition was missing.
    */

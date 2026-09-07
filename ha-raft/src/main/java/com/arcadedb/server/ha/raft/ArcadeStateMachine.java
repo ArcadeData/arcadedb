@@ -2775,12 +2775,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // rather than two independent ones - which is why they get the same treatment here instead of one being
       // captured and the other re-read.
       //
-      // That ordering is what keeps SnapshotInstaller.resolveDatabasePath below from seeing a null server, and
-      // it is a guarantee rather than luck: both fields are volatile and the single writer sets server BEFORE
-      // raftHAServer, so a thread that observed a non-null raftHAServer - which it must have, or
-      // resolveSnapshotSource refuses and this arm throws first - also observes the server write. The
-      // precondition is now written down on resolveDatabasePath itself, since six other call sites lean on it
-      // without saying so.
+      // What keeps SnapshotInstaller.resolveDatabasePath below from seeing a null server is safe publication,
+      // NOT a chain of volatile reads: this arm reads server BEFORE it reads raftHAServer, and observing the
+      // later-written field non-null says nothing about a read that already happened, so that argument would
+      // not hold. The one that does: createStateMachine() sets both fields on the machine before the reference
+      // escapes it (RaftHAServer:1416-1421, assigned at :384 and :1478), so Ratis has no state machine to call
+      // applyTransaction on until both writes are done. The precondition is now written down on
+      // resolveDatabasePath itself, since six other call sites lean on it without saying so.
       final ArcadeDBServer localServer = this.server;
 
       final long persistedApplied = readPersistedAppliedIndex(databaseName);
