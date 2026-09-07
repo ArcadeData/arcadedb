@@ -532,7 +532,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           || recordSize[0] == FIRST_CHUNK);
 
     } catch (final IOException e) {
-      throw new DatabaseOperationException("Error on checking record existence for " + rid);
+      // Chain the cause: an existence check runs on the ordinary query and traversal path, so an I/O failure here is
+      // exactly when the caller needs to tell a permissions problem, a full volume and a corrupt page apart - and the
+      // message alone tells it none of them (issues #7141, #7227).
+      throw new DatabaseOperationException("Error on checking record existence for " + rid, e);
     }
   }
 

@@ -3463,8 +3463,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * failure is confined to one file of server-local configuration. It is also not a security hole, because
    * {@code applyReplicatedUsers} publishes the new list in memory BEFORE reporting the write failure, so a
    * revoked account or a changed password takes effect on this node immediately - only the durability of that
-   * change is outstanding, and the entry replays on the next start. What is lost is confidence that the file
-   * survives a restart, which is an operational problem, and the SEVERE below is what says so.
+   * change is outstanding.
+   * <p>
+   * <b>That durability does not come back on its own, and this is the comment an operator reads while deciding
+   * what to do</b> (issue #7227). The failing entry does not record itself as applied, but it does not halt the
+   * node either - that is the whole point of this arm - so the NEXT entry writes its own higher index over both
+   * the persisted applied position and the Ratis-side one, and {@link #reinitialize()} resumes above the failed
+   * index. Nothing replays it. Fixing the volume is therefore only half the repair: the user change has to be
+   * REISSUED on the leader, exactly as the SEVERE below and the contract note on
+   * {@code ServerSecurity.applyReplicatedUsers} say. Pinned by
+   * {@code Issue7227SecurityEntryIsNotReplayedTest}.
    * <p>
    * The classification lives here, at the apply site, rather than in the generic handler: whether a failure
    * can diverge replicated state is a property of the apply, not of the entry's database scoping, so a future
