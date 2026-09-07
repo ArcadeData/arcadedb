@@ -835,6 +835,89 @@ class GraphImporterIdTypesTest {
   }
 
   /**
+   * The convention wraps a split field in delimiters, but the value after the last one is still a
+   * value. It used to be dropped, and not even counted as an edge lost - on both the inline and the
+   * deferred path.
+   */
+  @Test
+  void aSplitFieldNeedsNoWrappingDelimiters() throws Exception {
+    final String topics = write("unwrapped-topics.csv",
+        "Code",
+        "java",
+        "python",
+        "css");
+    final String posts = write("unwrapped-posts.csv",
+        "Id,Tags",
+        "1,|java|python",
+        "2,css",
+        "3,|java|");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Topic");
+      database.getSchema().createVertexType("Post");
+      database.getSchema().createEdgeType("Tagged");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Topic", new CsvRowSource(topics), v -> {
+          v.idByName("Code");
+          v.property("code", "Code");
+        })
+        .vertex("Post", new CsvRowSource(posts), v -> {
+          v.id("Id");
+          v.intProperty("postId", "Id");
+          v.splitEdge("Tags", "Tagged", "Topic", "|");
+        })
+        .build()) {
+
+      importer.run();
+
+      assertThat(importer.getEdgeCount()).isEqualTo(4);
+      assertThat(importer.getUnresolvedEdgeCount()).isZero();
+    }
+
+    assertThat(outgoingTargets("Post", "postId", 1, "Tagged", "code"))
+        .containsExactlyInAnyOrder("java", "python");
+    assertThat(outgoingTargets("Post", "postId", 2, "Tagged", "code")).containsExactly("css");
+    assertThat(outgoingTargets("Post", "postId", 3, "Tagged", "code")).containsExactly("java");
+  }
+
+  /**
+   * The same on the deferred path, where the split field points at the type it lives on.
+   */
+  @Test
+  void aSelfReferencingSplitFieldNeedsNoWrappingDelimiters() throws Exception {
+    final String vertices = write("unwrapped-tree.csv",
+        "Code,Related",
+        "a,b|c",
+        "b,c",
+        "c,");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Topic");
+      database.getSchema().createEdgeType("RelatedTo");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Topic", new CsvRowSource(vertices), v -> {
+          v.idByName("Code");
+          v.property("code", "Code");
+          v.splitEdge("Related", "RelatedTo", "Topic", "|");
+        })
+        .build()) {
+
+      importer.run();
+
+      assertThat(importer.getEdgeCount()).isEqualTo(3);
+      assertThat(importer.getUnresolvedEdgeCount()).isZero();
+    }
+
+    assertThat(outgoingTargets("Topic", "code", "a", "RelatedTo", "code"))
+        .containsExactlyInAnyOrder("b", "c");
+    assertThat(outgoingTargets("Topic", "code", "b", "RelatedTo", "code")).containsExactly("c");
+  }
+
+  /**
    * An endpoint that matches no vertex is still skipped, but it is now counted and reported
    * instead of quietly shrinking the graph.
    */

@@ -636,8 +636,9 @@ public class GraphImporter implements AutoCloseable {
     }
 
     /**
-     * Split-field edge: a delimited field (e.g. "|java|python|") creates one edge per value.
-     * Values are resolved by name against the target type's nameId.
+     * Split-field edge: a delimited field (e.g. {@code "|java|python|"}) creates one edge per
+     * value, resolved by name against the target type's nameId. The wrapping delimiters are
+     * optional on either end, so {@code "java|python"} yields the same two values.
      */
     public void splitEdge(final String attribute, final String edgeType, final String targetType,
                           final String delimiter) {
@@ -1055,26 +1056,32 @@ public class GraphImporter implements AutoCloseable {
     final EdgeCollector ec = edgeCollectors.get(ed.edgeType + "|" + srcType + "|" + dstType);
 
     if (ed.isSplit) {
-      // Split field: e.g. "|java|python|css|"
+      // Split field: e.g. "|java|python|css|". Kept in step with collectSplitKeys(), which walks a
+      // field the same way for a self-referencing split - a shared walker would have to hand each
+      // value to a closure, and this runs once per row
       final String fieldVal = record.get(ed.fkAttribute);
-      if (fieldVal == null || fieldVal.length() <= 1)
+      if (fieldVal == null || fieldVal.isEmpty())
         return;
       final TypeState targetTs = typeStates.get(ed.targetType);
       if (targetTs == null)
         return;
-      int start = fieldVal.charAt(0) == ed.delimiter.charAt(0) ? 1 : 0;
       final char delim = ed.delimiter.charAt(0);
+      int start = fieldVal.charAt(0) == delim ? 1 : 0;
       int pos;
-      while ((pos = fieldVal.indexOf(delim, start)) != -1) {
-        if (pos > start) {
-          final int ti = targetTs.nameToIdx.get(fieldVal.substring(start, pos));
+      while (start < fieldVal.length()) {
+        pos = fieldVal.indexOf(delim, start);
+        // the convention wraps the field in delimiters, but a last value without a closing one is
+        // still a value: it used to be dropped, and not even counted as an edge lost
+        final int end = pos == -1 ? fieldVal.length() : pos;
+        if (end > start) {
+          final int ti = targetTs.nameToIdx.get(fieldVal.substring(start, end));
           if (ti >= 0) {
             ec.srcIdx.add(thisIdx);
             ec.dstIdx.add(ti);
           } else
             unresolvedEdges++;
         }
-        start = pos + 1;
+        start = end + 1;
       }
     } else {
       // An absent or empty attribute means "this row has no such reference" and is not an
@@ -1121,16 +1128,18 @@ public class GraphImporter implements AutoCloseable {
    */
   private static void collectSplitKeys(final String fieldVal, final char delimiter,
                                        final DeferredSelfEdges deferred, final int thisIdx) {
-    if (fieldVal.length() <= 1)
+    if (fieldVal.isEmpty())
       return;
     int start = fieldVal.charAt(0) == delimiter ? 1 : 0;
     int pos;
-    while ((pos = fieldVal.indexOf(delimiter, start)) != -1) {
-      if (pos > start) {
+    while (start < fieldVal.length()) {
+      pos = fieldVal.indexOf(delimiter, start);
+      final int end = pos == -1 ? fieldVal.length() : pos;
+      if (end > start) {
         deferred.srcIdx.add(thisIdx);
-        deferred.targetKeys.add(fieldVal.substring(start, pos));
+        deferred.targetKeys.add(fieldVal.substring(start, end));
       }
-      start = pos + 1;
+      start = end + 1;
     }
   }
 
@@ -1863,9 +1872,6 @@ public class GraphImporter implements AutoCloseable {
   }
 
   /**
-   * Growable int array.
-   */
-  /**
    * Initial capacity of an {@link EdgeCollector}'s buffers. Each edge source gets a collector of its
    * own, so a file with several small sources of the same edge type holds several sets of these.
    * Every list here doubles on growth: a large source reaches its size in a handful of copies, and
@@ -1873,6 +1879,9 @@ public class GraphImporter implements AutoCloseable {
    */
   static final int BUFFER_INITIAL_CAPACITY = 4_096;
 
+  /**
+   * Growable int array.
+   */
   static final class IntList {
     int[] data;
     int   size;
