@@ -770,6 +770,34 @@ class GraphImporterIdTypesTest {
   }
 
   /**
+   * An edge source that never declared an endpoint: the same descriptive failure as every other
+   * misconfiguration here, rather than a NullPointerException out of the validation itself.
+   */
+  @Test
+  void anEdgeSourceMissingAnEndpointIsRejected() throws Exception {
+    final String vertices = write("endpoint-vertices.csv",
+        "Id,Name",
+        "1,One");
+    final String edges = write("endpoint-edges.csv",
+        "from_id,to_id",
+        "1,1");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Node");
+      database.getSchema().createEdgeType("Knows");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Node", new CsvRowSource(vertices), v -> v.id("Id"))
+        .edgeSource("Knows", new CsvRowSource(edges), e -> e.from("from_id", "Node"))
+        .build()) {
+      assertThatThrownBy(importer::run)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("declares no 'to' endpoint");
+    }
+  }
+
+  /**
    * A split field pointing at the type it lives on. Resolving it while the file is still being read
    * kept only the references that happened to point at an earlier row, so a forward reference was
    * dropped without a word.
