@@ -825,13 +825,21 @@ public class GraphImporter implements AutoCloseable {
    * after every vertex source and can name any of them.
    */
   private void validateEdgeTargets() {
+    // A type may be imported by more than one source, and only one of them need carry the key
     final Set<String> allTypes = new HashSet<>(vertexSources.size());
-    for (final VertexSourceDef vsd : vertexSources)
+    final Set<String> typesWithId = new HashSet<>(vertexSources.size());
+    final Set<String> typesWithNameId = new HashSet<>(vertexSources.size());
+    for (final VertexSourceDef vsd : vertexSources) {
       allTypes.add(vsd.typeName);
+      if (vsd.config.idAttribute != null)
+        typesWithId.add(vsd.typeName);
+      if (vsd.config.nameIdAttribute != null)
+        typesWithNameId.add(vsd.typeName);
+    }
 
     final Set<String> importedSoFar = new HashSet<>(vertexSources.size());
     for (final VertexSourceDef vsd : vertexSources) {
-      for (final EdgeDef ed : vsd.config.edges)
+      for (final EdgeDef ed : vsd.config.edges) {
         if (!ed.targetType.equals(vsd.typeName) && !importedSoFar.contains(ed.targetType))
           throw new IllegalArgumentException("Edge '" + ed.edgeType + "' declared on vertex source '"
               + vsd.typeName + "' targets vertex type '" + ed.targetType + "', which "
@@ -839,21 +847,39 @@ public class GraphImporter implements AutoCloseable {
               "is imported after it: declare the vertex source of '" + ed.targetType + "' before '" + vsd.typeName
                   + "', because a vertex source resolves references against the types already imported" :
               "no vertex source imports. Declared vertex types: " + allTypes));
+
+        final boolean resolvesByName = ed.byName || ed.isSplit;
+        if (!(resolvesByName ? typesWithNameId : typesWithId).contains(ed.targetType))
+          throw new IllegalArgumentException("Edge '" + ed.edgeType + "' declared on vertex source '"
+              + vsd.typeName + "' resolves against the " + (resolvesByName ? "idByName()" : "id()")
+              + " of vertex type '" + ed.targetType + "', which declares none");
+      }
       importedSoFar.add(vsd.typeName);
     }
 
     for (final EdgeSourceDef esd : edgeSources) {
-      checkEdgeSourceEndpoint(esd, esd.config.fromVertexType, "from", allTypes);
-      checkEdgeSourceEndpoint(esd, esd.config.toVertexType, "to", allTypes);
+      checkEdgeSourceEndpoint(esd, esd.config.fromVertexType, "from", allTypes, typesWithId);
+      checkEdgeSourceEndpoint(esd, esd.config.toVertexType, "to", allTypes, typesWithId);
     }
   }
 
+  /**
+   * A standalone edge source resolves both endpoints through {@link VertexConfig#id(String)} - a
+   * type that declares only {@code idByName()} would match nothing, row after row. Since the
+   * unified index takes a string key, such a type wants {@code id()} on that same attribute;
+   * {@code idByName()} is for a type referenced through two different keys.
+   */
   private static void checkEdgeSourceEndpoint(final EdgeSourceDef esd, final String vertexType,
-                                              final String endpoint, final Set<String> allTypes) {
+                                              final String endpoint, final Set<String> allTypes,
+                                              final Set<String> typesWithId) {
     if (!allTypes.contains(vertexType))
       throw new IllegalArgumentException("Edge source '" + esd.edgeType + "' resolves its '" + endpoint
           + "' endpoint against vertex type '" + vertexType + "', which no vertex source imports. "
           + "Declared vertex types: " + allTypes);
+    if (!typesWithId.contains(vertexType))
+      throw new IllegalArgumentException("Edge source '" + esd.edgeType + "' resolves its '" + endpoint
+          + "' endpoint against the id() of vertex type '" + vertexType + "', which declares none: an edge "
+          + "source matches id(), not idByName(), and id() takes a string key just as well");
   }
 
   public long getVertexCount() {
@@ -936,21 +962,19 @@ public class GraphImporter implements AutoCloseable {
           return;
       }
 
-      // Deduplication: skip if this id/nameId was already imported
-      if (vc.deduplicate) {
-        if (vc.idAttribute != null && ts.idToIdx.get(identity(record, vc.idAttribute)) >= 0)
-          return;
-        if (vc.nameIdAttribute != null && ts.nameToIdx.get(identity(record, vc.nameIdAttribute)) >= 0)
-          return;
-      }
+      // The raw text is the key: an identity is whatever the source wrote, so reading it as an int
+      // would reject a string key and truncate one wider than an int. Read once - deduplication
+      // looks the same key up that registration then stores
+      final String id = vc.idAttribute != null ? identity(record, vc.idAttribute) : null;
+      final String nameId = vc.nameIdAttribute != null ? identity(record, vc.nameIdAttribute) : null;
 
-      // Register ID. The raw text is the key: an identity is whatever the source wrote, so reading
-      // it as an int would reject a string key and truncate one wider than an int
+      // Deduplication: skip if this id/nameId was already imported
+      if (vc.deduplicate && (ts.idToIdx.get(id) >= 0 || ts.nameToIdx.get(nameId) >= 0))
+        return;
+
       final int idx = count[0];
-      if (vc.idAttribute != null)
-        ts.idToIdx.put(identity(record, vc.idAttribute), idx);
-      if (vc.nameIdAttribute != null)
-        ts.nameToIdx.put(identity(record, vc.nameIdAttribute), idx);
+      ts.idToIdx.put(id, idx);
+      ts.nameToIdx.put(nameId, idx);
 
       // Build vertex properties
       propBuf.clear();
