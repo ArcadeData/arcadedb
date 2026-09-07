@@ -543,10 +543,12 @@ public class FileUtils {
    * <ul>
    * <li>the configured directory does not necessarily exist yet - at startup it has not been created - so the walk
    * goes up to the closest existing ancestor, which sits on the filesystem the databases are going to land on;</li>
-   * <li>if that walk bottoms out at the filesystem ROOT, the whole chain is absent and the configuration has said
+   * <li>if that WALK bottoms out at the filesystem ROOT, the whole chain is absent and the configuration has said
    * nothing about where the databases will be. That is what an embedded JVM gets, where nobody sets
    * {@code arcadedb.server.rootPath} and the default expands to {@code /databases}; measuring {@code /} there would
-   * describe a filesystem chosen by accident, so the working directory is used instead.</li>
+   * describe a filesystem chosen by accident, so the working directory is used instead. The test is on having
+   * walked, not on the answer being the root: a directory configured AS {@code /} and existing is a deliberate
+   * choice and is honoured.</li>
    * </ul>
    *
    * @param configuration the configuration to read {@code arcadedb.server.databaseDirectory} from, or {@code null}
@@ -560,10 +562,13 @@ public class FileUtils {
         final String configured = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
         if (configured != null && !configured.isBlank()) {
           File dir = new File(configured.trim()).getAbsoluteFile();
-          while (dir != null && !dir.exists())
+          boolean walked = false;
+          while (dir != null && !dir.exists()) {
             dir = dir.getParentFile();
+            walked = true;
+          }
 
-          if (dir != null && dir.getParentFile() != null)
+          if (dir != null && !(walked && dir.getParentFile() == null))
             return dir;
         }
       } catch (final Exception e) {
