@@ -41,6 +41,7 @@ class ConsoleBatchTest {
     final Database db = new DatabaseFactory("./target/databases/console").open();
     assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
     db.drop();
+    assertThat(Console.isErrored()).isFalse();
   }
 
   @Test
@@ -106,6 +107,21 @@ class ConsoleBatchTest {
     // the ConsoleOnlyVertex is created
     assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
     db.drop();
+    assertThat(Console.isErrored()).isTrue();
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/7115: in asyncMode a failed statement is reported by the async callback
+   * on a worker thread. It must mark the run as errored exactly like the synchronous path does, otherwise the process exits 0.
+   */
+  @Test
+  void batchModeWithErrorInAsyncMode() throws Exception {
+    Console.execute(new String[] { "-b", """
+        create database console;
+        set asyncMode = true;
+        insert into NoSuchType set a = 1;
+        """ });
+    assertThat(Console.isErrored()).isTrue();
   }
 
   /**
