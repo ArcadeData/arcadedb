@@ -120,6 +120,13 @@ function displayServerSettings() {
   });
 }
 
+// #7223: the disk figures on the summary describe the filesystem the DATABASES live on, which on a container is a
+// mounted volume and not the one the process was started in - so the card has to name it. A server that predates the
+// field, or a reading taken before it existed, answers "" rather than "undefined".
+function diskDirectoryOf(profiler) {
+  return (profiler && profiler.diskDirectory && profiler.diskDirectory.value) || "";
+}
+
 function displayServerSummary() {
   var p = serverData.metrics.profiler || {};
   var ev = serverData.metrics.events || {};
@@ -151,8 +158,10 @@ function displayServerSummary() {
   $("#summDiskBar").css("width", Math.round(diskUsed / diskTotal * 100) + "%");
   // #7223: the figures above describe the filesystem the databases live on, which on a container is a mounted
   // volume and not the one the process was started in. Naming it is what makes them readable.
-  var diskDir = (p.diskDirectory && p.diskDirectory.value) || "";
-  $("#summDiskDir").text(diskDir || " ").attr("title", diskDir);
+  var diskDir = diskDirectoryOf(p);
+  // A non-breaking space keeps the line's height when there is nothing to name, so the card does not resize
+  // between refreshes. Written as an escape because an invisible character in source is a trap.
+  $("#summDiskDir").text(diskDir || "\u00a0").attr("title", diskDir);
 
   // Read Cache
   var cacheUsed = (p.readCacheUsed && p.readCacheUsed.space) || 0;
