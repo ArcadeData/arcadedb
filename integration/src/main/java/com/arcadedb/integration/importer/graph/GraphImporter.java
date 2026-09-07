@@ -1710,15 +1710,20 @@ public class GraphImporter implements AutoCloseable {
     private static final long   EMPTY = Long.MIN_VALUE;
     private              long[] keys;
     private              int[]  values;
-    private int mask, size, threshold;
+    private int mask, shift, size, threshold;
 
     LongIntMap(final int expected) {
       final int cap = Integer.highestOneBit(Math.max(16, (int) (expected / 0.7))) << 1;
       keys = new long[cap];
       values = new int[cap];
-      mask = cap - 1;
-      threshold = (int) (cap * 0.7);
+      capacity(cap);
       Arrays.fill(keys, EMPTY);
+    }
+
+    private void capacity(final int cap) {
+      mask = cap - 1;
+      shift = Long.SIZE - Integer.numberOfTrailingZeros(cap);
+      threshold = (int) (cap * 0.7);
     }
 
     void put(final long key, final int value) {
@@ -1744,13 +1749,15 @@ public class GraphImporter implements AutoCloseable {
     }
 
     /**
-     * Fibonacci hashing: the high bits of the product, never the low ones. Masking the low bits of
-     * {@code key * odd} makes the slot a function of the key's low bits alone, so keys that differ
-     * only above the table's width - ids allocated in blocks, or with a fixed stride - all land in
-     * the same slot and the map degrades to a linear scan.
+     * Fibonacci hashing: the top {@code log2(capacity)} bits of the product, which every bit of the
+     * key influences. Any lower window is a trap, because a key can zero it. Masking the low bits
+     * of {@code key * odd} makes the slot a function of the key's low bits alone; a fixed
+     * {@code >>> 32} reads better but still leaves a key with 45 trailing zeros zeroing bits 32
+     * through 44 of the product, sending every such key to slot 0. Ids allocated in blocks or
+     * carrying a fixed stride are ordinary, and either way the map degrades to a linear scan.
      */
-    private int hash(final long key) {
-      return (int) ((key * 0x9E3779B97F4A7C15L) >>> 32) & mask;
+    int hash(final long key) {
+      return (int) ((key * 0x9E3779B97F4A7C15L) >>> shift);
     }
 
     private void resize() {
@@ -1759,8 +1766,7 @@ public class GraphImporter implements AutoCloseable {
       final int[] ov = values;
       keys = new long[newCap];
       values = new int[newCap];
-      mask = newCap - 1;
-      threshold = (int) (newCap * 0.7);
+      capacity(newCap);
       Arrays.fill(keys, EMPTY);
       for (int i = 0; i < ok.length; i++)
         if (ok[i] != EMPTY) {
@@ -1780,10 +1786,16 @@ public class GraphImporter implements AutoCloseable {
     // see LongIntMap.hash(): the same scramble, and the same reason for taking the high bits
     private static final int   EMPTY = Integer.MIN_VALUE;
     private              int[] keys, values;
-    private int mask, size, threshold;
+    private int mask, shift, size, threshold;
 
-    private int hash(final int key) {
-      return (int) ((key * 0x9E3779B97F4A7C15L) >>> 32) & mask;
+    int hash(final int key) {
+      return (int) ((key * 0x9E3779B97F4A7C15L) >>> shift);
+    }
+
+    private void capacity(final int cap) {
+      mask = cap - 1;
+      shift = Long.SIZE - Integer.numberOfTrailingZeros(cap);
+      threshold = (int) (cap * 0.7);
     }
 
     int size() {
@@ -1798,11 +1810,10 @@ public class GraphImporter implements AutoCloseable {
     }
 
     IntIntMap(final int expected) {
-      int cap = Integer.highestOneBit(Math.max(16, (int) (expected / 0.7))) << 1;
+      final int cap = Integer.highestOneBit(Math.max(16, (int) (expected / 0.7))) << 1;
       keys = new int[cap];
       values = new int[cap];
-      mask = cap - 1;
-      threshold = (int) (cap * 0.7);
+      capacity(cap);
       Arrays.fill(keys, EMPTY);
     }
 
@@ -1833,8 +1844,7 @@ public class GraphImporter implements AutoCloseable {
       final int[] ok = keys, ov = values;
       keys = new int[newCap];
       values = new int[newCap];
-      mask = newCap - 1;
-      threshold = (int) (newCap * 0.7);
+      capacity(newCap);
       Arrays.fill(keys, EMPTY);
       for (int i = 0; i < ok.length; i++)
         if (ok[i] != EMPTY) {
