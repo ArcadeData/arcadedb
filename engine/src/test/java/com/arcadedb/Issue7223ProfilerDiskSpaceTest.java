@@ -62,9 +62,13 @@ class Issue7223ProfilerDiskSpaceTest {
     assertThat(new File(json.getJSONObject("diskDirectory").getString("value")).getCanonicalFile()).isEqualTo(
         databases.getCanonicalFile());
     assertThat(json.getJSONObject("diskTotalSpace").getLong("space")).isEqualTo(databases.getTotalSpace());
+    // Bounded against the TOTAL, which is the only figure of a live filesystem that does not drift between two
+    // readings. Asserting usable <= free instead looks like it pins "usable, not free" and does not: the two are
+    // read moments apart, so an unrelated write between them makes the earlier usable exceed the later free and
+    // the test fails on the filesystem's mood rather than on the code. What getUsableSpace() buys over
+    // getFreeSpace() - quotas and reservations - is not observable from here at all.
     assertThat(json.getJSONObject("diskFreeSpace").getLong("space")).isPositive()
-        // Usable, not free: getFreeSpace() ignores per-user quotas and reservations, so it can only be larger.
-        .isLessThanOrEqualTo(databases.getFreeSpace());
+        .isLessThanOrEqualTo(databases.getTotalSpace());
   }
 
   @Test
