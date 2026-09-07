@@ -3998,6 +3998,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       if (host != null)
         memberHosts.add(host);
     }
+    // Defensive, and not expected to fire: a committed configuration carries at least the local node, and
+    // allowlistHostOf only returns null for an address with no host part at all. It is here so that a peer
+    // list this method cannot reduce to a single host - whatever produced it - can never be mistaken for an
+    // empty cluster and wipe the membership the previous tick learned.
     if (memberHosts.isEmpty()) {
       LogManager.instance().log(this, Level.FINE,
           "The Raft configuration carried no usable peer host this tick; keeping the current peer allowlist membership");

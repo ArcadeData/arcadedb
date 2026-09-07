@@ -222,3 +222,30 @@ rather than by a fresh subagent. Findings:
    `refreshPeerAllowlist()` before any lifecycle branch.
 4. **"`learnedHosts` could drift from its two components"** - not real. `grep -n "pinnedHosts =|memberHosts ="`
    returns exactly the two writers, and both call `republishLearnedHosts()` under the same monitor.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/7251
+
+## Review cycles
+
+### Cycle 1 - 9b0b7547b2
+
+Reviewer: `claude`. No blocking findings; three items applied, none deferred.
+
+1. **`learnPeerHosts` did not exclude `memberHosts` from its dedup, so pinning a live member would defeat
+   unlearning for that host.** Real interaction, unreachable today. Not fixed by refusing the pin - that would
+   make a pin evaporate at the next shrink, which is exactly when the caller wanted it. Instead the contract is
+   now stated on `learnPeerHosts` (a pin beats membership, deliberately), and
+   `aPinnedHostStaysAdmittedEvenWhenMembershipDropsIt` pins it as a test. This is also the interleaving the
+   reviewer noted the suite did not touch.
+2. **The `dropped` log line would have claimed a host stopped being admitted when a pin still admitted it.**
+   Fixed: `dropped.removeAll(pinnedHosts)`, so the one line an operator reads to confirm a revocation cannot
+   lie.
+3. **The `memberHosts.isEmpty()` guard deserved a comment about joint-consensus reachability.** Added, phrased
+   as "defensive, not expected to fire" rather than as an unreachability claim - `RaftConfiguration.getCurrentPeers()`
+   during joint consensus was not exhaustively verified here.
+4. Cosmetic javadoc wording on `getResolvedPeerHostCount()` - applied.
+
+Re-run: `Issue7225AllowlistUnlearnsRemovedPeersTest` 9/9,
+`Issue7132AllowlistLearnsRuntimePeersTest` 9/9 (unmodified), `PeerAddressAllowlistFilterTest` 41/41.

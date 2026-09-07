@@ -143,6 +143,33 @@ class Issue7225AllowlistUnlearnsRemovedPeersTest {
         .doesNotContain("10.0.0.9");
   }
 
+  /**
+   * Pinning and membership can name the same host, and the contract is that the pin wins: it keeps the host
+   * admitted after the member leaves. Refusing the pin instead would make it evaporate at the next shrink,
+   * which is exactly when the caller wanted it. Nothing in the tree pins a peer hostname today - the one
+   * production caller pins the static Kubernetes headless-service domain - so this pins the contract rather
+   * than a live scenario, and it is the interaction the rest of the suite does not touch.
+   */
+  @Test
+  void aPinnedHostStaysAdmittedEvenWhenMembershipDropsIt() {
+    final AtomicLong clock = new AtomicLong(0);
+    final PeerAddressAllowlistFilterTest.FakeResolver dns = new PeerAddressAllowlistFilterTest.FakeResolver();
+    dns.table.put("peerA", List.of("10.0.0.1"));
+    dns.table.put("both", List.of("10.0.0.7"));
+    final PeerAddressAllowlistFilter f = new PeerAddressAllowlistFilter(List.of("peerA"), 30_000L, 0L, 300_000L,
+        clock::get, dns);
+
+    f.setMemberHosts(List.of("both"));
+    assertThat(f.learnPeerHosts(List.of("both"))).as("a pin is accepted even for a host that is a member").isTrue();
+    assertThat(f.getPinnedHosts()).containsExactly("both");
+    assertThat(f.getMemberHosts()).containsExactly("both");
+
+    f.setMemberHosts(List.of());
+    assertThat(f.getMemberHosts()).isEmpty();
+    assertThat(f.getPinnedHosts()).as("a pin outlives the membership that shared its name").containsExactly("both");
+    assertThat(f.isAllowed("10.0.0.7")).isTrue();
+  }
+
   // ---------------------------------------------------------------------------
   // Finding 2: the startup fail-open log line counts configured hosts only
   // ---------------------------------------------------------------------------

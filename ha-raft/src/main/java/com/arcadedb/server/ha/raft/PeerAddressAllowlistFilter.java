@@ -269,6 +269,15 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
    * cannot be subject to the membership reconciliation in {@link #setMemberHosts}. Idempotent: a call that
    * pins nothing new costs one set comparison and does not touch DNS.
    * <p>
+   * <b>A pin beats membership, deliberately.</b> Pinning a host that is also a current member keeps it
+   * admitted after that member leaves, which is the one way to defeat the unlearning this class exists to do.
+   * The alternative - silently refusing to pin a host that happens to be a member today - is worse: the pin
+   * would then evaporate at the next shrink, which is exactly when the caller wanted it. So the contract is
+   * that a pin is permanent, and a caller that does not want permanence calls {@link #setMemberHosts}
+   * instead. Nothing in the tree pins a peer hostname: {@code grep -rn "learnPeerHosts" --exclude-dir=target}
+   * finds one production caller, {@code RaftHAServer.installPeerAllowlist}, and it pins the static Kubernetes
+   * headless-service domain.
+   * <p>
    * Learned hosts do not count towards {@link #isQuorumResolved()} or {@link #isEverCompletelyResolved()}:
    * those gates describe the CONFIGURED cluster (issue #4828), and a name that does not resolve yet must not
    * hold the fail-open window open, nor - once it does resolve - retroactively widen the quorum a returning
@@ -337,8 +346,12 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
       if (memberHosts.equals(current))
         return false;
 
+      // What actually stopped being admitted, which is not the same as what left the membership: a host that
+      // is also pinned stays in the allowlist, and reporting it as dropped would be a lie in the one log line
+      // an operator reads to confirm a revocation landed.
       dropped = new HashSet<>(memberHosts);
       dropped.removeAll(current);
+      dropped.removeAll(pinnedHosts);
       memberHosts = Collections.unmodifiableSet(current);
       republishLearnedHosts();
       // Unconditional for the same reason learnPeerHosts is: this is a membership change, not the periodic
@@ -383,7 +396,10 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     return memberHosts;
   }
 
-  /** How many CONFIGURED hosts the last resolution covered; never more than the configured total. Testing. */
+  /**
+   * How many CONFIGURED hosts the last resolution covered; never more than the configured total. Exposed for
+   * testing.
+   */
   int getResolvedPeerHostCount() {
     return resolvedPeerHosts;
   }
