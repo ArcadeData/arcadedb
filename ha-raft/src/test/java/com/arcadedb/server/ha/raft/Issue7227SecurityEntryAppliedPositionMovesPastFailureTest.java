@@ -46,20 +46,28 @@ import static org.mockito.Mockito.when;
  * Issue #7227, item 2: what happens to a {@code SECURITY_USERS_ENTRY} whose local persist failed, AFTER the
  * node kept running.
  * <p>
- * The javadoc on {@code applySecurityUsersEntry} used to tell operators the entry "replays on the next start",
- * which is the opposite of what the same method's SEVERE and the contract note on
- * {@code ServerSecurity.applyReplicatedUsers} say - and the opposite of what the code does. The comment was
- * corrected; this test pins the BEHAVIOUR it now describes, so a later change that makes the entry genuinely
- * replayable is caught here rather than by an operator waiting for a replay that never comes.
+ * The javadoc on {@code applySecurityUsersEntry} used to tell operators the entry "replays on the next start".
+ * It does not, for free: the failed entry does not advance the applied position itself, but it does not halt
+ * the node either (#7137), so the very NEXT entry moves {@code lastAppliedIndex} past it - and that counter is
+ * what {@code takeSnapshot()} checkpoints from, so any snapshot after this point puts the entry permanently
+ * out of replay range.
  * <p>
- * The mechanism: the failed entry does not advance the applied position itself, but it does not halt the node
- * either (#7137), so the very NEXT entry writes its own higher index over both the persisted position and the
- * Ratis-side one. A restart therefore resumes above the failed index with nothing left to replay, and the user
- * change has to be reissued.
+ * <b>What this test does and does not cover.</b> It pins the in-process half: the counter that feeds
+ * {@code takeSnapshot()} ends up past the failed index. It does NOT exercise a restart. Per
+ * {@code ha-raft/CLAUDE.md} the replay position comes solely from the Ratis snapshot marker, so whether the
+ * entry actually comes back depends on whether a snapshot was taken between the failure and the restart -
+ * always on a graceful stop, on the compaction scheduler's interval otherwise, possibly never before a kill.
+ * Covering that needs a snapshot-and-replay integration test; issue #7252 tracks its absence. The corrected
+ * javadoc is worded for that uncertainty rather than around it.
+ * <p>
+ * Note which counter is asserted, because the module note calls confusing them the most common wrong turn
+ * here: {@code readAppliedIndexCounter()} is the one that decides replay; {@code readPersistedAppliedIndex()}
+ * is the {@code .raft/applied-index} file, which feeds bootstrap decisions and never the replay position. Both
+ * are checked below, for what each is actually for.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue7227SecurityEntryIsNotReplayedTest {
+class Issue7227SecurityEntryAppliedPositionMovesPastFailureTest {
 
   private static final String USERS_JSON = "[{\"name\":\"root\",\"password\":\"x\"}]";
 
@@ -97,12 +105,12 @@ class Issue7227SecurityEntryIsNotReplayedTest {
   }
 
   /**
-   * The claim the corrected comment makes: the entry is gone, not pending. Both positions a restart consults -
-   * the persisted applied index and the Ratis-side last applied term/index - end up ABOVE the failed entry, so
-   * {@code reinitialize()} resumes past it.
+   * The half of the claim that is unconditional: the counter {@code takeSnapshot()} checkpoints from ends up
+   * above the failed entry, so from the next snapshot onwards there is nothing left to replay. What that
+   * snapshot's timing does to a particular restart is out of this test's reach (see the class javadoc).
    */
   @Test
-  void aFailedSecurityEntryIsNotReplayedBecauseTheNextEntryMovesThePositionPastIt(@TempDir final Path databaseDirectory) {
+  void theCounterThatFeedsTheSnapshotMovesPastAFailedSecurityEntry(@TempDir final Path databaseDirectory) {
     final AtomicBoolean firstWriteFailed = new AtomicBoolean();
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(serverWhoseUsersFileFailsOnce(firstWriteFailed, databaseDirectory));
@@ -111,21 +119,26 @@ class Issue7227SecurityEntryIsNotReplayedTest {
     assertThat(failed.isCompletedExceptionally()).as("the entry itself still fails").isTrue();
     assertThat(firstWriteFailed).isTrue();
 
-    // On its own, the failed entry leaves the position where it was: this is what made the old comment
-    // plausible, and it is only half the story.
-    assertThat(sm.readPersistedAppliedIndex())
+    // On its own, the failed entry leaves every position where it was: this is what made the old comment
+    // plausible, and it is only half the story. It is also what arms the assertions below - without it, a
+    // counter that read 6 afterwards could have read 6 all along.
+    assertThat(sm.readAppliedIndexCounter())
         .as("the failing entry does not record itself as applied")
         .isLessThan(5L);
+    assertThat(sm.readPersistedAppliedIndex()).isLessThan(5L);
 
-    // The other half: the node stayed up (#7137), so the next entry applies and writes ITS index everywhere.
+    // The other half: the node stayed up (#7137), so the next entry applies and writes ITS index.
     final CompletableFuture<Message> next = sm.applyTransaction(securityUsersEntry(sm, 6L));
     assertThat(next.isCompletedExceptionally()).as("the volume is writable again").isFalse();
 
+    assertThat(sm.readAppliedIndexCounter())
+        .as("takeSnapshot() checkpoints from this counter, so a snapshot from here on puts index 5 out of reach")
+        .isEqualTo(6L);
     assertThat(sm.readPersistedAppliedIndex())
-        .as("the persisted replay floor is now past index 5, so a restart never revisits it")
+        .as("the .raft/applied-index file moves too - bootstrap bookkeeping, NOT the replay position")
         .isEqualTo(6L);
     assertThat(sm.getLastAppliedTermIndex().getIndex())
-        .as("and so is the position reported to Ratis")
+        .as("and so does the position reported to Ratis while this process runs")
         .isEqualTo(6L);
   }
 }

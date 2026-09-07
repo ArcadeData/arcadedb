@@ -3465,15 +3465,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * revoked account or a changed password takes effect on this node immediately - only the durability of that
    * change is outstanding.
    * <p>
-   * <b>That durability does not come back on its own</b> (issue #7227). The failing entry does not record
-   * itself as applied, but it does not halt the node either - that is the whole point of this arm - so the
-   * NEXT entry writes its own higher index over both the persisted applied position and the Ratis-side one,
-   * and {@link #reinitialize()} resumes above the failed index. Nothing replays it.
+   * <b>That durability cannot be counted on to come back on its own</b> (issue #7227). The failing entry does
+   * not record itself as applied, but it does not halt the node either - that is the whole point of this arm -
+   * so the NEXT entry moves {@link #lastAppliedIndex} past it, and {@link #takeSnapshot()} checkpoints from
+   * that counter. Whether the entry is ever replayed therefore depends entirely on the SNAPSHOT MARKER, which
+   * is the only thing {@link #reinitialize()} seeds the replay position from (see {@code ha-raft/CLAUDE.md}):
+   * once any snapshot past this index is taken the entry is gone for good, and a graceful {@code stop()} takes
+   * one unconditionally, as does {@code RaftLogCompactionScheduler} on its interval. A restart that beats all
+   * of those - a kill shortly after the failure - does replay it.
    * <p>
-   * So fixing the volume is only half the repair: <b>the user change has to be REISSUED on the leader</b>,
-   * exactly as the SEVERE below and the contract note on {@code ServerSecurity.applyReplicatedUsers} say.
-   * This paragraph is what an operator reads while deciding what to do, which is why it is here and not only
-   * in the log line; the behaviour it describes is pinned by {@code Issue7227SecurityEntryIsNotReplayedTest}.
+   * The operator cannot know which of those two happened, so the instruction does not depend on it:
+   * <b>reissue the user change on the leader</b> once the volume is fixed. Reapplying a list the node already
+   * holds is a no-op, and waiting for a replay that may never come leaves the file stale indefinitely - which
+   * is what the SEVERE below and the contract note on {@code ServerSecurity.applyReplicatedUsers} say too.
+   * Pinned by {@code Issue7227SecurityEntryAppliedPositionMovesPastFailureTest}, which covers the
+   * in-process half; the restart half needs a snapshot-and-replay integration test and does not have one
+   * (issue #7252).
    * <p>
    * The classification lives here, at the apply site, rather than in the generic handler: whether a failure
    * can diverge replicated state is a property of the apply, not of the entry's database scoping, so a future
@@ -3518,6 +3525,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
   long readPersistedAppliedIndex() {
     ensureAppliedIndexLoaded();
     return globalAppliedIndex;
+  }
+
+  /**
+   * The in-memory applied counter {@link #takeSnapshot()} checkpoints from. This - not
+   * {@link #readPersistedAppliedIndex()} - is the value that decides what a restarted node replays, because the
+   * replay position comes solely from the snapshot marker and the marker comes from here. Package-private for
+   * tests; see {@code ha-raft/CLAUDE.md} on why the two must not be confused.
+   */
+  // @VisibleForTesting
+  long readAppliedIndexCounter() {
+    return lastAppliedIndex.get();
   }
 
   /**
