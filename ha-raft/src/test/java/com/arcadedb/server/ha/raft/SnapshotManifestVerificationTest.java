@@ -94,7 +94,7 @@ class SnapshotManifestVerificationTest {
   private static void extract(final byte[] zip, final Path targetDir, final boolean manifestRequired) throws Exception {
     final SnapshotInstaller.CountingInputStream counter = new SnapshotInstaller.CountingInputStream(
         new ByteArrayInputStream(zip));
-    SnapshotInstaller.extractAndVerifySnapshot(counter, counter, targetDir, manifestRequired);
+    SnapshotInstaller.extractAndVerifySnapshot(counter, counter, targetDir, manifestRequired, null);
   }
 
   // -- happy path --

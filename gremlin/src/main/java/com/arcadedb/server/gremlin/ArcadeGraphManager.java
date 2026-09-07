@@ -52,6 +52,8 @@ public class ArcadeGraphManager implements GraphManager {
 
   private final Map<String, Graph>           graphs           = new ConcurrentHashMap<>();
   private final Map<String, TraversalSource> traversalSources = new ConcurrentHashMap<>();
+  // Targets the 'g' alias has already been announced for, see announceAliasMappingLevel().
+  private final Set<String>                  announcedAliasTargets = ConcurrentHashMap.newKeySet();
 
   public ArcadeGraphManager(final Settings settings) {
     // Settings can define pre-configured graphs, but we primarily use dynamic registration
@@ -122,12 +124,31 @@ public class ArcadeGraphManager implements GraphManager {
     return traversalSourceName;
   }
 
+  /**
+   * The level the {@code 'g'} alias mapping is announced at: {@link Level#INFO} the first time this manager resolves
+   * the alias onto {@code dbName}, {@link Level#FINE} for every later query that resolves onto the same database.
+   * <p>
+   * The mapping is a property of the deployment, not of the request: a driver whose {@code traversal_source} is left
+   * at the gremlinpython default resolves it identically on every single query, so announcing it per query turned a
+   * one-off "this is where 'g' points" note into an INFO line per query and flooded the server log (issue #7230).
+   * The first occurrence is still the useful one - it is what tells an operator which database an unqualified
+   * traversal reaches - so it keeps INFO rather than the DEBUG the report asked for, and only the repetitions are
+   * demoted.
+   * <p>
+   * Keyed on the resolved database rather than latched once, so a mapping that later resolves ONTO A DIFFERENT
+   * database - the default database was dropped, or a database sorting ahead of it was created - is announced again
+   * instead of changing silently. The set is bounded by the number of databases the server hosts.
+   */
+  Level announceAliasMappingLevel(final String dbName) {
+    return announcedAliasTargets.add(dbName) ? Level.INFO : Level.FINE;
+  }
+
   @Override
   public TraversalSource getTraversalSource(final String traversalSourceName) {
     final String dbName = resolveDatabaseName(traversalSourceName);
 
     if (!dbName.equals(traversalSourceName))
-      LogManager.instance().log(this, Level.INFO, "Mapping 'g' alias to database '%s'", dbName);
+      LogManager.instance().log(this, announceAliasMappingLevel(dbName), "Mapping 'g' alias to database '%s'", dbName);
 
     // Return the cached traversal source only when the graph it wraps is still open. If the
     // underlying database was closed and reopened (see getOrCreateArcadeGraph) the cached source
@@ -162,6 +183,9 @@ public class ArcadeGraphManager implements GraphManager {
   public Graph removeGraph(final String graphName) {
     final Graph graph = graphs.remove(graphName);
     traversalSources.remove(graphName);
+    // A database that goes away takes its announcement with it, so should 'g' ever be resolved back onto a database
+    // by this name again it is announced rather than mapped silently (issue #7230).
+    announcedAliasTargets.remove(graphName);
     if (graph instanceof ArcadeGraph) {
       try {
         ((ArcadeGraph) graph).close();
