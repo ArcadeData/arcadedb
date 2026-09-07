@@ -3992,11 +3992,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (filter == null || committedPeers == null)
       return;
 
-    final List<String> memberHosts = new ArrayList<>(committedPeers.size());
+    // committedHosts, not memberHosts: PeerAddressAllowlistFilter has a field by the latter name, and the two
+    // classes' vocabulary overlaps enough now that reusing it here reads like the same thing.
+    final List<String> committedHosts = new ArrayList<>(committedPeers.size());
     for (final RaftPeer peer : committedPeers) {
       final String host = allowlistHostOf(peer.getAddress());
       if (host != null)
-        memberHosts.add(host);
+        committedHosts.add(host);
     }
     // Defensive, and not expected to fire: a committed configuration carries at least the local node, and
     // allowlistHostOf only returns null for an address with no host part at all. It is here so that a peer
@@ -4006,14 +4008,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // silently skipping the reconciliation is how a genuine bug in address parsing or in the membership read
     // would hide, and the unreadable-membership case - the one that IS expected - returns above without
     // reaching this line, so an ordinary #5271 restart window does not log here at all.
-    if (memberHosts.isEmpty()) {
+    if (committedHosts.isEmpty()) {
       LogManager.instance().log(this, Level.WARNING,
           "The Raft configuration carried %d peer(s) but no usable host this tick; keeping the current peer "
               + "allowlist membership rather than treating it as an empty cluster", committedPeers.size());
       return;
     }
 
-    filter.setMemberHosts(memberHosts);
+    filter.setMemberHosts(committedHosts);
   }
 
   /**

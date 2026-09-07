@@ -289,3 +289,29 @@ of the field section - so EVERY field in this class already violated the rule, a
 ones a diff touches. Moved the interface to the bottom of the class, which clears all three and stops the
 next field added to this file inheriting the same report. No semantic change; the allowlist tests, the #7132
 tests and `Issue3890RaftParametersPublicationTest` are green after it.
+
+### Cycle 4 - 47e4830991
+
+Reviewer: `claude`. "Nothing here blocks merging." Codacy went green on this SHA. Two nits:
+
+1. **The local `memberHosts` in `RaftHAServer.reconcileAllowlistMembership` shadows the *concept* of
+   `PeerAddressAllowlistFilter.memberHosts`** (different classes, so no real collision - a readability nit
+   given how much vocabulary the two now share). Applied: renamed to `committedHosts`, with a comment saying
+   why the obvious name was avoided.
+2. **The tracking doc is long for a contained fix.** The reviewer withdrew this itself - it matches the
+   convention of `docs/6989-*.md` and `docs/7122-*.md`. No change.
+
+The review also re-raised, without finding a concrete failure mode, whether Ratis joint consensus could make
+`getCurrentPeers()` reduce to zero usable hosts. Unchanged from cycle 2: the guard is commented as defensive
+rather than as an unreachability claim, and it now logs at WARNING so it cannot fire unnoticed.
+
+## Final state
+
+`max-cycles-reached` - the loop ran its full 4 cycles rather than exiting early. No blocking feedback remains:
+cycle 4's review states nothing blocks merging, CodeRabbit reported no actionable comments, and Codacy passes.
+
+No `review-deferred-*.md` file was produced: every actionable item in every cycle was applied in the cycle
+that raised it.
+
+**The final commit is unreviewed** - it carries cycle 4's variable rename and this doc update, and no bot has
+seen it. Merge remains the developer's call.
