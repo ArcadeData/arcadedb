@@ -4002,9 +4002,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // allowlistHostOf only returns null for an address with no host part at all. It is here so that a peer
     // list this method cannot reduce to a single host - whatever produced it - can never be mistaken for an
     // empty cluster and wipe the membership the previous tick learned.
+    // WARNING rather than FINE, matching the getCommittedPeersOrNull catch this method reads from: the guard
+    // silently skipping the reconciliation is how a genuine bug in address parsing or in the membership read
+    // would hide, and the unreadable-membership case - the one that IS expected - returns above without
+    // reaching this line, so an ordinary #5271 restart window does not log here at all.
     if (memberHosts.isEmpty()) {
-      LogManager.instance().log(this, Level.FINE,
-          "The Raft configuration carried no usable peer host this tick; keeping the current peer allowlist membership");
+      LogManager.instance().log(this, Level.WARNING,
+          "The Raft configuration carried %d peer(s) but no usable host this tick; keeping the current peer "
+              + "allowlist membership rather than treating it as an empty cluster", committedPeers.size());
       return;
     }
 

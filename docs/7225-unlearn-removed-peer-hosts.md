@@ -249,3 +249,20 @@ Reviewer: `claude`. No blocking findings; three items applied, none deferred.
 
 Re-run: `Issue7225AllowlistUnlearnsRemovedPeersTest` 9/9,
 `Issue7132AllowlistLearnsRuntimePeersTest` 9/9 (unmodified), `PeerAddressAllowlistFilterTest` 41/41.
+
+### Cycle 2 - 735788b509
+
+Reviewer: `claude`. No blocking findings; two items applied, none deferred.
+
+1. **`HealthMonitor.HealthTarget.refreshPeerAllowlist()`'s default-method javadoc had drifted** - it still
+   described only the #4696 DNS reconciliation while the `RaftHAServer` override describes membership. Updated
+   to name all three behaviours (#4696, #7132, #7225).
+2. **The degenerate-membership guard logged at FINE.** Bumped to WARNING, matching the precedent a few lines
+   above it: the `getCommittedPeersOrNull()` catch was deliberately raised from FINE to WARNING so a genuine
+   bug could not hide behind a silent degradation, and this guard skipping a reconciliation is the same shape
+   of hiding place. The message now also reports how many peers the configuration carried. The expected case -
+   an unreadable membership during a #5271 restart window - returns before this line, so an ordinary restart
+   logs nothing here.
+
+Re-run: `Issue7225AllowlistUnlearnsRemovedPeersTest` 9/9, `Issue7132AllowlistLearnsRuntimePeersTest` 9/9,
+`PeerAddressAllowlistFilterTest` 41/41, `HealthMonitorTest` 29/29.
