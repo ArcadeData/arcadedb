@@ -43,10 +43,12 @@ import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -83,16 +85,26 @@ import java.util.logging.Level;
  */
 public class GraphImporter implements AutoCloseable {
 
+  /**
+   * A key that is not the canonical decimal text of a {@code long}, and the empty slot marker of
+   * {@link LongIntMap}. {@code Long.MIN_VALUE} therefore never reaches the primitive maps: a key
+   * spelled {@code "-9223372036854775808"} is kept with the textual keys, which resolve it the
+   * same way, only boxed.
+   *
+   * @see #canonicalLong(String)
+   */
+  static final long NOT_CANONICAL_LONG = Long.MIN_VALUE;
+
   private final Database                            database;
   private final List<VertexSourceDef>               vertexSources;
   private final List<EdgeSourceDef>                 edgeSources;
   private final long                                limit;
   private final Map<String, TypeState>              typeStates     = new LinkedHashMap<>();
   private final Map<String, EdgeCollector>          edgeCollectors = new LinkedHashMap<>();
-  private final Map<String, List<DeferredEdgePair>> deferredEdges  = new HashMap<>();
 
   private long totalVertices;
   private long totalEdges;
+  private long unresolvedEdges;
 
   private GraphImporter(final Database database, final List<VertexSourceDef> vertexSources,
                         final List<EdgeSourceDef> edgeSources, final long limit) {
@@ -583,14 +595,20 @@ public class GraphImporter implements AutoCloseable {
     }
 
     /**
-     * Primary ID attribute (integer-valued, used for edge resolution).
+     * Primary ID attribute, used to resolve edges. The key is the attribute's text exactly as the
+     * source wrote it, so an integer, a value wider than an {@code int} and a string such as
+     * {@code "W13696992"} all work, and two spellings the source kept apart (e.g. {@code "007"}
+     * and {@code "7"}) stay two identities. An empty or absent value registers no key.
      */
     public void id(final String attribute) {
       this.idAttribute = attribute;
     }
 
     /**
-     * Secondary name-based ID (string, for split-field edge resolution like tags).
+     * Secondary ID, matched by {@code edgeOutByName}/{@code edgeInByName} and by
+     * {@code splitEdge}. Declare it when a type is referenced through two different keys - a
+     * numeric id from one file and a name from another; a single string key needs nothing more
+     * than {@link #id(String)}.
      */
     public void idByName(final String attribute) {
       this.nameIdAttribute = attribute;
@@ -628,8 +646,9 @@ public class GraphImporter implements AutoCloseable {
     }
 
     /**
-     * Split-field edge: a delimited field (e.g. "|java|python|") creates one edge per value.
-     * Values are resolved by name against the target type's nameId.
+     * Split-field edge: a delimited field (e.g. {@code "|java|python|"}) creates one edge per
+     * value, resolved by name against the target type's nameId. The wrapping delimiters are
+     * optional on either end, so {@code "java|python"} yields the same two values.
      */
     public void splitEdge(final String attribute, final String edgeType, final String targetType,
                           final String delimiter) {
@@ -646,11 +665,18 @@ public class GraphImporter implements AutoCloseable {
       this.edgeType = edgeType;
     }
 
+    /**
+     * Source endpoint: the attribute holding the key of a {@code vertexType} vertex, matched
+     * against that type's {@link VertexConfig#id(String)} attribute by its text, whatever its type.
+     */
     public void from(final String attribute, final String vertexType) {
       this.fromAttribute = attribute;
       this.fromVertexType = vertexType;
     }
 
+    /**
+     * Destination endpoint. See {@link #from(String, String)}.
+     */
     public void to(final String attribute, final String vertexType) {
       this.toAttribute = attribute;
       this.toVertexType = vertexType;
@@ -754,6 +780,8 @@ public class GraphImporter implements AutoCloseable {
   public void run() throws Exception {
     final long start = System.currentTimeMillis();
 
+    validateEdgeTargets();
+
     // ── Pass 1: Create vertices + collect topology ──
     LogManager.instance().log(this, Level.INFO, "Pass 1: Vertices + Topology");
 
@@ -790,6 +818,93 @@ public class GraphImporter implements AutoCloseable {
     final long elapsed = System.currentTimeMillis() - start;
     LogManager.instance().log(this, Level.INFO, "Import complete: %,d vertices, %,d edges in %d.%ds",
         totalVertices, totalEdges, elapsed / 1000, (elapsed % 1000) / 100);
+    if (unresolvedEdges > 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "%,d edges named an identity no vertex carries and were skipped: check that the referenced rows "
+              + "are not filtered out and that both files spell the identity the same way", unresolvedEdges);
+  }
+
+  /**
+   * Every edge names the vertex type at its other end, and an edge whose target type is not there
+   * to resolve against contributes nothing at all - it used to do so silently, leaving a smaller
+   * graph and no diagnostic, which is the same failure a mistyped type name produces. Nothing has
+   * been written when this runs, so the name is reported as the configuration mistake it is.
+   * <p>
+   * A vertex source resolves a reference against the types imported so far, so naming another
+   * vertex source only works when that source is declared first; a self-reference is resolved once
+   * the source has been read to the end and needs no such ordering. A standalone edge source runs
+   * after every vertex source and can name any of them.
+   * <p>
+   * Passing this is what lets {@link #collectEdge} and {@link #processEdgeSource} read a
+   * {@link TypeState} without testing it for null: every type an edge names has one by the time
+   * they run, and a name that could not is an error here rather than an edge quietly dropped.
+   */
+  private void validateEdgeTargets() {
+    // One source per vertex type: processVertexSource() replaces the type's TypeState rather than
+    // appending to it, so a second source for a name already taken leaves pass 2 resolving edges
+    // collected against the first source's row indices into the second source's row arrays - an
+    // out-of-bounds read, or worse an edge silently pointing at an unrelated vertex. Splitting one
+    // type across files is a plausible thing to try, so it is refused rather than left to corrupt
+    final Set<String> allTypes = new HashSet<>(vertexSources.size());
+    final Set<String> typesWithId = new HashSet<>(vertexSources.size());
+    final Set<String> typesWithNameId = new HashSet<>(vertexSources.size());
+    for (final VertexSourceDef vsd : vertexSources) {
+      if (!allTypes.add(vsd.typeName))
+        throw new IllegalArgumentException("Vertex type '" + vsd.typeName + "' is declared by more than one "
+            + "vertex source, which is not supported: one source imports a type. Give the sources distinct "
+            + "type names, or read the files through a single source");
+      if (vsd.config.idAttribute != null)
+        typesWithId.add(vsd.typeName);
+      if (vsd.config.nameIdAttribute != null)
+        typesWithNameId.add(vsd.typeName);
+    }
+
+    final Set<String> importedSoFar = new HashSet<>(vertexSources.size());
+    for (final VertexSourceDef vsd : vertexSources) {
+      for (final EdgeDef ed : vsd.config.edges) {
+        if (!ed.targetType.equals(vsd.typeName) && !importedSoFar.contains(ed.targetType))
+          throw new IllegalArgumentException("Edge '" + ed.edgeType + "' declared on vertex source '"
+              + vsd.typeName + "' targets vertex type '" + ed.targetType + "', which "
+              + (allTypes.contains(ed.targetType) ?
+              "is imported after it: declare the vertex source of '" + ed.targetType + "' before '" + vsd.typeName
+                  + "', because a vertex source resolves references against the types already imported" :
+              "no vertex source imports. Declared vertex types: " + allTypes));
+
+        final boolean resolvesByName = ed.byName || ed.isSplit;
+        if (!(resolvesByName ? typesWithNameId : typesWithId).contains(ed.targetType))
+          throw new IllegalArgumentException("Edge '" + ed.edgeType + "' declared on vertex source '"
+              + vsd.typeName + "' resolves against the " + (resolvesByName ? "idByName()" : "id()")
+              + " of vertex type '" + ed.targetType + "', which declares none");
+      }
+      importedSoFar.add(vsd.typeName);
+    }
+
+    for (final EdgeSourceDef esd : edgeSources) {
+      checkEdgeSourceEndpoint(esd, esd.config.fromVertexType, "from", allTypes, typesWithId);
+      checkEdgeSourceEndpoint(esd, esd.config.toVertexType, "to", allTypes, typesWithId);
+    }
+  }
+
+  /**
+   * A standalone edge source resolves both endpoints through {@link VertexConfig#id(String)} - a
+   * type that declares only {@code idByName()} would match nothing, row after row. Since the
+   * unified index takes a string key, such a type wants {@code id()} on that same attribute;
+   * {@code idByName()} is for a type referenced through two different keys.
+   */
+  private static void checkEdgeSourceEndpoint(final EdgeSourceDef esd, final String vertexType,
+                                              final String endpoint, final Set<String> allTypes,
+                                              final Set<String> typesWithId) {
+    if (vertexType == null)
+      throw new IllegalArgumentException("Edge source '" + esd.edgeType + "' declares no '" + endpoint
+          + "' endpoint: call " + endpoint + "(attribute, vertexType) on it");
+    if (!allTypes.contains(vertexType))
+      throw new IllegalArgumentException("Edge source '" + esd.edgeType + "' resolves its '" + endpoint
+          + "' endpoint against vertex type '" + vertexType + "', which no vertex source imports. "
+          + "Declared vertex types: " + allTypes);
+    if (!typesWithId.contains(vertexType))
+      throw new IllegalArgumentException("Edge source '" + esd.edgeType + "' resolves its '" + endpoint
+          + "' endpoint against the id() of vertex type '" + vertexType + "', which declares none: an edge "
+          + "source matches id(), not idByName(), and id() takes a string key just as well");
   }
 
   public long getVertexCount() {
@@ -800,11 +915,23 @@ public class GraphImporter implements AutoCloseable {
     return totalEdges;
   }
 
+  /**
+   * Edges that could not be created because an endpoint named a key no vertex of the referenced
+   * type carries. One per edge, not per endpoint: a row of an edge source whose {@code from} and
+   * {@code to} both fail to resolve is one edge lost, and counts once - while a split field, where
+   * every value is an edge of its own, counts once per value that resolved to nothing. The edge is
+   * skipped - there is nothing to attach it to - but the count is what tells a caller that the
+   * graph it got is smaller than the file it handed over, rather than leaving the import to look
+   * complete.
+   */
+  public long getUnresolvedEdgeCount() {
+    return unresolvedEdges;
+  }
+
   @Override
   public void close() {
     typeStates.clear();
     edgeCollectors.clear();
-    deferredEdges.clear();
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -830,16 +957,20 @@ public class GraphImporter implements AutoCloseable {
         getOrCreateEdgeCollector(ed.edgeType, ed.targetType, vc.typeName);
       else
         getOrCreateEdgeCollector(ed.edgeType, vc.typeName, ed.targetType);
-      if (ed.targetType.equals(vc.typeName) && !ed.isSplit)
+      // A self-referencing edge can point at a row further down the same file, so its target key
+      // is resolved after the pass. That includes a split field: resolving it inline would silently
+      // keep only the references that happen to point backwards
+      if (ed.targetType.equals(vc.typeName))
         deferredEdgeDefs.add(ed);
       else
         resolvedEdges.add(ed);
     }
 
-    // Deferred raw soId pairs for self-referencing edges
-    final Map<String, IntList[]> deferredRaw = new HashMap<>();
-    for (final EdgeDef ed : deferredEdgeDefs)
-      deferredRaw.put(ed.edgeType, new IntList[]{new IntList(100_000), new IntList(100_000)});
+    // One buffer of unresolved target keys per deferred definition, positionally aligned with
+    // deferredEdgeDefs: two definitions of the same edge type must not share a buffer
+    final List<DeferredSelfEdges> deferredSelf = new ArrayList<>(deferredEdgeDefs.size());
+    for (int i = 0; i < deferredEdgeDefs.size(); i++)
+      deferredSelf.add(new DeferredSelfEdges());
 
     final int[] count = {0};
     database.begin();
@@ -858,29 +989,19 @@ public class GraphImporter implements AutoCloseable {
           return;
       }
 
-      // Deduplication: skip if this id/nameId was already imported
-      if (vc.deduplicate) {
-        if (vc.idAttribute != null) {
-          final int id = record.getInt(vc.idAttribute);
-          if (ts.idToIdx.get(id, -1) >= 0)
-            return;
-        }
-        if (vc.nameIdAttribute != null) {
-          final String name = record.get(vc.nameIdAttribute);
-          if (name != null && ts.nameToIdx.containsKey(name))
-            return;
-        }
-      }
+      // The raw text is the key: an identity is whatever the source wrote, so reading it as an int
+      // would reject a string key and truncate one wider than an int. Read once - deduplication
+      // looks the same key up that registration then stores
+      final String id = vc.idAttribute != null ? identity(record, vc.idAttribute) : null;
+      final String nameId = vc.nameIdAttribute != null ? identity(record, vc.nameIdAttribute) : null;
 
-      // Register ID
+      // Deduplication: skip if this id/nameId was already imported
+      if (vc.deduplicate && (ts.idToIdx.get(id) >= 0 || ts.nameToIdx.get(nameId) >= 0))
+        return;
+
       final int idx = count[0];
-      if (vc.idAttribute != null)
-        ts.idToIdx.put(record.getInt(vc.idAttribute), idx);
-      if (vc.nameIdAttribute != null) {
-        final String name = record.get(vc.nameIdAttribute);
-        if (name != null)
-          ts.nameToIdx.put(name, idx);
-      }
+      ts.idToIdx.put(id, idx);
+      ts.nameToIdx.put(nameId, idx);
 
       // Build vertex properties
       propBuf.clear();
@@ -900,14 +1021,19 @@ public class GraphImporter implements AutoCloseable {
       for (final EdgeDef ed : resolvedEdges)
         collectEdge(record, ed, vc.typeName, idx);
 
-      // Collect deferred (self-referencing) edges as raw soIds
-      for (final EdgeDef ed : deferredEdgeDefs) {
-        final int fk = record.getInt(ed.fkAttribute);
-        if (fk != 0) {
-          final int thisSoId = record.getInt(vc.idAttribute);
-          final IntList[] pair = deferredRaw.get(ed.edgeType);
-          pair[0].add(thisSoId);
-          pair[1].add(fk);
+      // Collect deferred (self-referencing) edges: this row's index is already final, only the
+      // target key has to wait for the rest of the file
+      for (int i = 0; i < deferredEdgeDefs.size(); i++) {
+        final EdgeDef ed = deferredEdgeDefs.get(i);
+        final String fieldVal = ed.isSplit ? record.get(ed.fkAttribute) : identity(record, ed.fkAttribute);
+        if (fieldVal == null)
+          continue;
+        final DeferredSelfEdges deferred = deferredSelf.get(i);
+        if (ed.isSplit)
+          collectSplitKeys(fieldVal, ed.delimiter.charAt(0), deferred, idx);
+        else {
+          deferred.srcIdx.add(idx);
+          deferred.targetKeys.add(fieldVal);
         }
       }
 
@@ -925,17 +1051,11 @@ public class GraphImporter implements AutoCloseable {
     totalVertices += ts.count;
 
     // Resolve deferred self-referencing edges (srcType == dstType == thisType)
-    for (final Map.Entry<String, IntList[]> entry : deferredRaw.entrySet()) {
-      final IntList[] pair = entry.getValue();
-      final EdgeCollector ec = edgeCollectors.get(entry.getKey() + "|" + vc.typeName + "|" + vc.typeName);
-      for (int i = 0; i < pair[0].size; i++) {
-        final int si = ts.idToIdx.get(pair[0].data[i], -1);
-        final int di = ts.idToIdx.get(pair[1].data[i], -1);
-        if (si >= 0 && di >= 0) {
-          ec.srcIdx.add(si);
-          ec.dstIdx.add(di);
-        }
-      }
+    for (int i = 0; i < deferredEdgeDefs.size(); i++) {
+      final EdgeDef ed = deferredEdgeDefs.get(i);
+      final EdgeCollector ec = edgeCollectors.get(ed.edgeType + "|" + vc.typeName + "|" + vc.typeName);
+      final IdIndex index = ed.byName || ed.isSplit ? ts.nameToIdx : ts.idToIdx;
+      unresolvedEdges += deferredSelf.get(i).resolveInto(index, ec, ed.incoming);
     }
 
     LogManager.instance().log(this, Level.INFO, "  %-12s %,d vertices (%,d ms)", vc.typeName, ts.count,
@@ -950,54 +1070,44 @@ public class GraphImporter implements AutoCloseable {
     final EdgeCollector ec = edgeCollectors.get(ed.edgeType + "|" + srcType + "|" + dstType);
 
     if (ed.isSplit) {
-      // Split field: e.g. "|java|python|css|"
+      // Split field: e.g. "|java|python|css|". Kept in step with collectSplitKeys(), which walks a
+      // field the same way for a self-referencing split - a shared walker would have to hand each
+      // value to a closure, and this runs once per row
       final String fieldVal = record.get(ed.fkAttribute);
-      if (fieldVal == null || fieldVal.length() <= 1)
+      if (fieldVal == null || fieldVal.isEmpty())
         return;
       final TypeState targetTs = typeStates.get(ed.targetType);
-      if (targetTs == null)
-        return;
-      int start = fieldVal.charAt(0) == ed.delimiter.charAt(0) ? 1 : 0;
       final char delim = ed.delimiter.charAt(0);
+      int start = fieldVal.charAt(0) == delim ? 1 : 0;
       int pos;
-      while ((pos = fieldVal.indexOf(delim, start)) != -1) {
-        if (pos > start) {
-          final Integer ti = targetTs.nameToIdx.get(fieldVal.substring(start, pos));
-          if (ti != null) {
+      while (start < fieldVal.length()) {
+        pos = fieldVal.indexOf(delim, start);
+        // the convention wraps the field in delimiters, but a last value without a closing one is
+        // still a value: it used to be dropped, and not even counted as an edge lost
+        final int end = pos == -1 ? fieldVal.length() : pos;
+        if (end > start) {
+          final int ti = targetTs.nameToIdx.get(fieldVal.substring(start, end));
+          if (ti >= 0) {
             ec.srcIdx.add(thisIdx);
             ec.dstIdx.add(ti);
-          }
+          } else
+            unresolvedEdges++;
         }
-        start = pos + 1;
-      }
-    } else if (ed.byName) {
-      final String name = record.get(ed.fkAttribute);
-      if (name == null)
-        return;
-      final TypeState targetTs = typeStates.get(ed.targetType);
-      if (targetTs == null)
-        return;
-      final Integer targetIdx = targetTs.nameToIdx.get(name);
-      if (targetIdx == null)
-        return;
-
-      if (ed.incoming) {
-        ec.srcIdx.add(targetIdx);
-        ec.dstIdx.add(thisIdx);
-      } else {
-        ec.srcIdx.add(thisIdx);
-        ec.dstIdx.add(targetIdx);
+        start = end + 1;
       }
     } else {
-      final int fk = record.getInt(ed.fkAttribute);
-      if (fk == 0)
+      // An absent or empty attribute means "this row has no such reference" and is not an
+      // unresolved endpoint. It is the only way to say so: 0 used to double as that marker, which
+      // made a vertex whose key really is 0 impossible to point at
+      final String key = identity(record, ed.fkAttribute);
+      if (key == null)
         return;
       final TypeState targetTs = typeStates.get(ed.targetType);
-      if (targetTs == null)
+      final int targetIdx = (ed.byName ? targetTs.nameToIdx : targetTs.idToIdx).get(key);
+      if (targetIdx < 0) {
+        unresolvedEdges++;
         return;
-      final int targetIdx = targetTs.idToIdx.get(fk, -1);
-      if (targetIdx < 0)
-        return;
+      }
 
       if (ed.incoming) {
         ec.srcIdx.add(targetIdx);
@@ -1006,6 +1116,40 @@ public class GraphImporter implements AutoCloseable {
         ec.srcIdx.add(thisIdx);
         ec.dstIdx.add(targetIdx);
       }
+    }
+  }
+
+  /**
+   * Reads an identity attribute, reporting an attribute that is absent or empty as {@code null} -
+   * "this row carries no such key". The readers disagree on which of the two an empty field is:
+   * {@link CsvRowSource} already hands back {@code null}, while {@link JsonlRowSource} and
+   * {@link XmlRowSource} hand back the empty string for {@code "id": ""} and {@code id=""}. Left to
+   * each reader, an empty id would be a key of its own, and every row carrying one would collide on
+   * it - the last silently winning any edge that referenced it.
+   */
+  private static String identity(final RecordReader record, final String attribute) {
+    final String value = record.get(attribute);
+    return value == null || value.isEmpty() ? null : value;
+  }
+
+  /**
+   * Appends one deferred key per value of a delimited field (e.g. {@code "|java|python|"}), all
+   * sharing the same source vertex.
+   */
+  private static void collectSplitKeys(final String fieldVal, final char delimiter,
+                                       final DeferredSelfEdges deferred, final int thisIdx) {
+    if (fieldVal.isEmpty())
+      return;
+    int start = fieldVal.charAt(0) == delimiter ? 1 : 0;
+    int pos;
+    while (start < fieldVal.length()) {
+      pos = fieldVal.indexOf(delimiter, start);
+      final int end = pos == -1 ? fieldVal.length() : pos;
+      if (end > start) {
+        deferred.srcIdx.add(thisIdx);
+        deferred.targetKeys.add(fieldVal.substring(start, end));
+      }
+      start = end + 1;
     }
   }
 
@@ -1018,8 +1162,6 @@ public class GraphImporter implements AutoCloseable {
     final EdgeSourceConfig cfg = esd.config;
     final TypeState fromTs = typeStates.get(cfg.fromVertexType);
     final TypeState toTs = typeStates.get(cfg.toVertexType);
-    if (fromTs == null || toTs == null)
-      return;
 
     // Own collector per edge source, never the one vertex-derived edges of the same type and
     // endpoints share. A collector's property buffers are indexed by the collector-wide edge index,
@@ -1030,13 +1172,16 @@ public class GraphImporter implements AutoCloseable {
     final EdgeCollector ec = getOrCreateEdgeCollector(cfg.edgeType, cfg.fromVertexType, cfg.toVertexType,
         "src" + sourceIndex);
     final int[] count = {0};
+    final long unresolvedBefore = unresolvedEdges;
 
     esd.source.forEach(record -> {
       if (limit > 0 && count[0] >= limit)
         return;
-      final int si = fromTs.idToIdx.get(record.getInt(cfg.fromAttribute), -1);
-      final int di = toTs.idToIdx.get(record.getInt(cfg.toAttribute), -1);
-      if (si >= 0 && di >= 0) {
+      final int si = fromTs.idToIdx.get(identity(record, cfg.fromAttribute));
+      final int di = toTs.idToIdx.get(identity(record, cfg.toAttribute));
+      if (si < 0 || di < 0)
+        unresolvedEdges++;
+      else {
         ec.srcIdx.add(si);
         ec.dstIdx.add(di);
         for (final PropDef pd : cfg.properties) {
@@ -1069,8 +1214,14 @@ public class GraphImporter implements AutoCloseable {
       count[0]++;
     });
 
+    final long unresolved = unresolvedEdges - unresolvedBefore;
     LogManager.instance().log(this, Level.INFO, "  %-12s %,d edges (%,d ms)",
         cfg.edgeType, ec.srcIdx.size, System.currentTimeMillis() - t);
+    if (unresolved > 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "  %-12s %,d rows name an identity no %s vertex carries: those edges were skipped",
+          cfg.edgeType, unresolved,
+          cfg.fromVertexType.equals(cfg.toVertexType) ? cfg.fromVertexType : cfg.fromVertexType + "/" + cfg.toVertexType);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1309,11 +1460,11 @@ public class GraphImporter implements AutoCloseable {
   }
 
   static class TypeState {
-    IntIntMap            idToIdx   = new IntIntMap(100_000);
-    Map<String, Integer> nameToIdx = new HashMap<>();
-    int[]                buckets;
-    long[]               positions;
-    int                  count;
+    IdIndex idToIdx   = new IdIndex();
+    IdIndex nameToIdx = new IdIndex();
+    int[]   buckets;
+    long[]  positions;
+    int     count;
   }
 
   static class EdgeCollector {
@@ -1368,40 +1519,329 @@ public class GraphImporter implements AutoCloseable {
     }
   }
 
-  static class DeferredEdgePair {
-    final int srcSoId, dstSoId;
-
-    DeferredEdgePair(final int s, final int d) {
-      this.srcSoId = s;
-      this.dstSoId = d;
-    }
-  }
-
   // ═══════════════════════════════════════════════════════════════════
   //  Primitive collections (zero boxing, minimal GC)
   // ═══════════════════════════════════════════════════════════════════
 
   /**
+   * Reads {@code text} as the canonical decimal form of a {@code long}, returning
+   * {@link #NOT_CANONICAL_LONG} when it is not one. Neither allocates nor throws: an identity
+   * column is read once per row, and {@code Long.parseLong} in a {@code try} block would fill in a
+   * stack trace for every row of a string-keyed file.
+   * <p>
+   * "Canonical" is what keeps the primitive fast path from merging keys the source kept apart:
+   * {@code "007"} and {@code "7"} are two different identities, so only the form
+   * {@code Long.toString} would produce is allowed to become a number. Everything else - leading
+   * zeros, a leading {@code +}, {@code "-0"}, surrounding space, anything non-numeric - stays text.
+   */
+  static long canonicalLong(final String text) {
+    if (text == null)
+      return NOT_CANONICAL_LONG;
+    final int len = text.length();
+    if (len == 0)
+      return NOT_CANONICAL_LONG;
+
+    final boolean negative = text.charAt(0) == '-';
+    final int first = negative ? 1 : 0;
+    if (len - first < 1 || len - first > 19)
+      return NOT_CANONICAL_LONG;
+
+    final char firstDigit = text.charAt(first);
+    if (firstDigit < '0' || firstDigit > '9')
+      return NOT_CANONICAL_LONG;
+    // "0" is canonical, "00" and "007" are not, and "-0" is not the canonical form of zero
+    if (firstDigit == '0' && (len - first > 1 || negative))
+      return NOT_CANONICAL_LONG;
+
+    // Accumulate negatively: the negative range is the wider one, so this overflows only on values
+    // that genuinely do not fit, and Long.MIN_VALUE itself is rejected because it is the sentinel
+    long value = 0;
+    for (int i = first; i < len; i++) {
+      final char c = text.charAt(i);
+      if (c < '0' || c > '9')
+        return NOT_CANONICAL_LONG;
+      if (value < -922337203685477580L)
+        return NOT_CANONICAL_LONG;
+      value *= 10;
+      final int digit = c - '0';
+      if (value < Long.MIN_VALUE + digit)
+        return NOT_CANONICAL_LONG;
+      value -= digit;
+    }
+    if (value == NOT_CANONICAL_LONG)
+      return NOT_CANONICAL_LONG;
+    return negative ? value : -value;
+  }
+
+  /**
+   * Maps a vertex identity, as the source spelled it, to the vertex's index within its type.
+   * <p>
+   * Behaves exactly like a {@code Map<String, Integer>} - two keys are the same identity when their
+   * text is the same - but stores a key that is the canonical decimal form of a {@code long}
+   * unboxed, which is what almost every real import consists of. The numeric side starts as an
+   * {@code int} map and widens to a {@code long} one only when a key that does not fit arrives, so
+   * an import whose keys fit in an {@code int} pays exactly what it paid before; a textual key
+   * lands in a {@link HashMap} that is not allocated at all until one appears.
+   */
+  static final class IdIndex {
+    /**
+     * {@link IntIntMap} reserves {@code Integer.MIN_VALUE} to mark an empty slot, so that one value
+     * goes to the {@code long} map instead of being stored as an {@code int}.
+     */
+    private static final int INT_KEY_MIN = Integer.MIN_VALUE + 1;
+
+    private IntIntMap            intKeys;
+    private LongIntMap           longKeys;
+    private Map<String, Integer> textKeys;
+
+    void put(final String key, final int idx) {
+      if (key == null || key.isEmpty())
+        return;
+      final long numeric = canonicalLong(key);
+      if (numeric == NOT_CANONICAL_LONG) {
+        if (textKeys == null)
+          textKeys = new HashMap<>();
+        textKeys.put(key, idx);
+      } else
+        putNumeric(numeric, idx);
+    }
+
+    /**
+     * @return the vertex index, or -1 when the key is null or empty (the row carries no such
+     * reference) or no vertex was registered under it
+     */
+    int get(final String key) {
+      if (key == null || key.isEmpty())
+        return -1;
+      final long numeric = canonicalLong(key);
+      if (numeric != NOT_CANONICAL_LONG)
+        return getNumeric(numeric);
+      return textKeys == null ? -1 : textKeys.getOrDefault(key, -1);
+    }
+
+    int getNumeric(final long key) {
+      if (longKeys != null)
+        return longKeys.get(key, -1);
+      if (intKeys == null || key < INT_KEY_MIN || key > Integer.MAX_VALUE)
+        return -1;
+      return intKeys.get((int) key, -1);
+    }
+
+    private void putNumeric(final long key, final int idx) {
+      if (longKeys == null && key >= INT_KEY_MIN && key <= Integer.MAX_VALUE) {
+        if (intKeys == null)
+          // Sized like the edge buffers rather than for a large import: the map doubles on growth,
+          // so a big source reaches its size in a handful of rehashes, while a schema with many
+          // small types no longer pays a multi-megabyte table per type for a few hundred keys
+          intKeys = new IntIntMap(BUFFER_INITIAL_CAPACITY);
+        intKeys.put((int) key, idx);
+        return;
+      }
+      if (longKeys == null)
+        widenToLongKeys();
+      longKeys.put(key, idx);
+    }
+
+    /** One-shot, on the first key outside the {@code int} range: rehashes what is already there. */
+    private void widenToLongKeys() {
+      longKeys = new LongIntMap(intKeys == null ? BUFFER_INITIAL_CAPACITY : intKeys.size());
+      if (intKeys != null) {
+        intKeys.copyInto(longKeys);
+        intKeys = null;
+      }
+    }
+  }
+
+  /**
+   * Target keys of self-referencing edges, held until the source has been read to the end because
+   * the row they point at may still be ahead. The source index is already final and stays an
+   * {@code int}; only the key has to survive the pass.
+   */
+  static final class DeferredSelfEdges {
+    final IntList srcIdx     = new IntList(BUFFER_INITIAL_CAPACITY);
+    final KeyList targetKeys = new KeyList(BUFFER_INITIAL_CAPACITY);
+
+    /**
+     * Resolves every buffered key against {@code index} and appends the edges to {@code ec}.
+     *
+     * @return how many keys matched no vertex
+     */
+    int resolveInto(final IdIndex index, final EdgeCollector ec, final boolean incoming) {
+      int unresolved = 0;
+      int textPos = 0;
+      for (int i = 0; i < srcIdx.size; i++) {
+        final long numeric = targetKeys.keys.data[i];
+        final int di = numeric == NOT_CANONICAL_LONG ?
+            index.get(targetKeys.text.get(textPos++)) :
+            index.getNumeric(numeric);
+        if (di < 0) {
+          unresolved++;
+          continue;
+        }
+        if (incoming) {
+          ec.srcIdx.add(di);
+          ec.dstIdx.add(srcIdx.data[i]);
+        } else {
+          ec.srcIdx.add(srcIdx.data[i]);
+          ec.dstIdx.add(di);
+        }
+      }
+      return unresolved;
+    }
+  }
+
+  /**
+   * An append-only list of identity keys that keeps the canonical numeric ones in a primitive
+   * array and boxes only the rest. A textual key is marked in place with
+   * {@link #NOT_CANONICAL_LONG} and appended to {@link #text}, which stays null while there is
+   * none: replaying the list is a single forward walk, so the two run in step without a per-entry
+   * back-reference.
+   */
+  static final class KeyList {
+    final LongList     keys;
+    List<String>       text;
+
+    KeyList(final int cap) {
+      keys = new LongList(cap);
+    }
+
+    void add(final String key) {
+      final long numeric = canonicalLong(key);
+      if (numeric == NOT_CANONICAL_LONG) {
+        if (text == null)
+          text = new ArrayList<>();
+        text.add(key);
+      }
+      keys.add(numeric);
+    }
+  }
+
+  /**
+   * Open-addressing long→int hash map with Fibonacci hashing, the widened twin of
+   * {@link IntIntMap}.
+   */
+  static final class LongIntMap {
+    private static final long   EMPTY = Long.MIN_VALUE;
+    private              long[] keys;
+    private              int[]  values;
+    private int mask;
+    private int shift;
+    private int size;
+    private int threshold;
+
+    LongIntMap(final int expected) {
+      final int cap = Integer.highestOneBit(Math.max(16, (int) (expected / 0.7))) << 1;
+      keys = new long[cap];
+      values = new int[cap];
+      capacity(cap);
+      Arrays.fill(keys, EMPTY);
+    }
+
+    private void capacity(final int cap) {
+      mask = cap - 1;
+      shift = Long.SIZE - Integer.numberOfTrailingZeros(cap);
+      threshold = (int) (cap * 0.7);
+    }
+
+    void put(final long key, final int value) {
+      if (size >= threshold)
+        resize();
+      int i = hash(key);
+      while (keys[i] != EMPTY && keys[i] != key)
+        i = (i + 1) & mask;
+      if (keys[i] == EMPTY)
+        size++;
+      keys[i] = key;
+      values[i] = value;
+    }
+
+    int get(final long key, final int def) {
+      int i = hash(key);
+      while (keys[i] != EMPTY) {
+        if (keys[i] == key)
+          return values[i];
+        i = (i + 1) & mask;
+      }
+      return def;
+    }
+
+    /**
+     * Fibonacci hashing: the top {@code log2(capacity)} bits of the product, which every bit of the
+     * key influences. Any lower window is a trap, because a key can zero it. Masking the low bits
+     * of {@code key * odd} makes the slot a function of the key's low bits alone; a fixed
+     * {@code >>> 32} reads better but still leaves a key with 45 trailing zeros zeroing bits 32
+     * through 44 of the product, sending every such key to slot 0. Ids allocated in blocks or
+     * carrying a fixed stride are ordinary, and either way the map degrades to a linear scan.
+     */
+    int hash(final long key) {
+      return (int) ((key * 0x9E3779B97F4A7C15L) >>> shift);
+    }
+
+    private void resize() {
+      final int newCap = keys.length << 1;
+      final long[] ok = keys;
+      final int[] ov = values;
+      keys = new long[newCap];
+      values = new int[newCap];
+      capacity(newCap);
+      Arrays.fill(keys, EMPTY);
+      for (int i = 0; i < ok.length; i++)
+        if (ok[i] != EMPTY) {
+          int j = hash(ok[i]);
+          while (keys[j] != EMPTY)
+            j = (j + 1) & mask;
+          keys[j] = ok[i];
+          values[j] = ov[i];
+        }
+    }
+  }
+
+  /**
    * Open-addressing int→int hash map with Fibonacci hashing.
    */
   static final class IntIntMap {
+    // see LongIntMap.hash(): the same scramble, and the same reason for taking the high bits
     private static final int   EMPTY = Integer.MIN_VALUE;
-    private              int[] keys, values;
-    private int mask, size, threshold;
+    private              int[] keys;
+    private              int[] values;
+    private int mask;
+    private int shift;
+    private int size;
+    private int threshold;
+
+    int hash(final int key) {
+      return (int) ((key * 0x9E3779B97F4A7C15L) >>> shift);
+    }
+
+    private void capacity(final int cap) {
+      mask = cap - 1;
+      shift = Long.SIZE - Integer.numberOfTrailingZeros(cap);
+      threshold = (int) (cap * 0.7);
+    }
+
+    int size() {
+      return size;
+    }
+
+    /** Rehashes every entry into {@code target}, for {@link IdIndex}'s one-shot widening. */
+    void copyInto(final LongIntMap target) {
+      for (int i = 0; i < keys.length; i++)
+        if (keys[i] != EMPTY)
+          target.put(keys[i], values[i]);
+    }
 
     IntIntMap(final int expected) {
-      int cap = Integer.highestOneBit(Math.max(16, (int) (expected / 0.7))) << 1;
+      final int cap = Integer.highestOneBit(Math.max(16, (int) (expected / 0.7))) << 1;
       keys = new int[cap];
       values = new int[cap];
-      mask = cap - 1;
-      threshold = (int) (cap * 0.7);
+      capacity(cap);
       Arrays.fill(keys, EMPTY);
     }
 
     void put(final int key, final int value) {
       if (size >= threshold)
         resize();
-      int i = (key * 0x9E3779B9) & mask;
+      int i = hash(key);
       while (keys[i] != EMPTY && keys[i] != key)
         i = (i + 1) & mask;
       if (keys[i] == EMPTY)
@@ -1411,7 +1851,7 @@ public class GraphImporter implements AutoCloseable {
     }
 
     int get(final int key, final int def) {
-      int i = (key * 0x9E3779B9) & mask;
+      int i = hash(key);
       while (keys[i] != EMPTY) {
         if (keys[i] == key)
           return values[i];
@@ -1425,12 +1865,11 @@ public class GraphImporter implements AutoCloseable {
       final int[] ok = keys, ov = values;
       keys = new int[newCap];
       values = new int[newCap];
-      mask = newCap - 1;
-      threshold = (int) (newCap * 0.7);
+      capacity(newCap);
       Arrays.fill(keys, EMPTY);
       for (int i = 0; i < ok.length; i++)
         if (ok[i] != EMPTY) {
-          int j = (ok[i] * 0x9E3779B9) & mask;
+          int j = hash(ok[i]);
           while (keys[j] != EMPTY)
             j = (j + 1) & mask;
           keys[j] = ok[i];
@@ -1440,9 +1879,6 @@ public class GraphImporter implements AutoCloseable {
   }
 
   /**
-   * Growable int array.
-   */
-  /**
    * Initial capacity of an {@link EdgeCollector}'s buffers. Each edge source gets a collector of its
    * own, so a file with several small sources of the same edge type holds several sets of these.
    * Every list here doubles on growth: a large source reaches its size in a handful of copies, and
@@ -1450,6 +1886,9 @@ public class GraphImporter implements AutoCloseable {
    */
   static final int BUFFER_INITIAL_CAPACITY = 4_096;
 
+  /**
+   * Growable int array.
+   */
   static final class IntList {
     int[] data;
     int   size;
