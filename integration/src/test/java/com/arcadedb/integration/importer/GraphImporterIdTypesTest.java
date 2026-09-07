@@ -25,6 +25,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.importer.graph.CsvRowSource;
 import com.arcadedb.integration.importer.graph.GraphImporter;
 import com.arcadedb.integration.importer.graph.JsonlRowSource;
+import com.arcadedb.integration.importer.graph.XmlRowSource;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 
@@ -502,6 +503,46 @@ class GraphImporterIdTypesTest {
       assertThat(importer.getEdgeCount()).isZero();
       assertThat(importer.getUnresolvedEdgeCount()).isEqualTo(2);
     }
+  }
+
+  /**
+   * The same as above through the XML reader, which returns {@code ""} for {@code id=""} exactly
+   * as the JSONL one does. A self-referencing foreign key spelled empty is "no parent", not a
+   * reference to whatever registered the empty key.
+   */
+  @Test
+  void anEmptyIdentityRegistersNoKeyFromXml() throws Exception {
+    final String vertices = write("empty-id.xml",
+        "<rows>",
+        "  <row Id=\"\" Parent=\"\" Name=\"NoKeyOne\"/>",
+        "  <row Id=\"\" Parent=\"\" Name=\"NoKeyTwo\"/>",
+        "  <row Id=\"1\" Parent=\"\" Name=\"Root\"/>",
+        "  <row Id=\"2\" Parent=\"1\" Name=\"Child\"/>",
+        "</rows>");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Node");
+      database.getSchema().createEdgeType("ChildOf");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Node", new XmlRowSource(vertices), v -> {
+          v.id("Id");
+          v.property("name", "Name");
+          v.edgeOut("Parent", "ChildOf", "Node");
+        })
+        .build()) {
+
+      importer.run();
+
+      assertThat(importer.getVertexCount()).isEqualTo(4);
+      // only 2 -> 1: the two empty ids registered nothing, and an empty Parent is no edge at all
+      assertThat(importer.getEdgeCount()).isEqualTo(1);
+      assertThat(importer.getUnresolvedEdgeCount()).isZero();
+    }
+
+    assertThat(outgoingTargets("Node", "name", "Child", "ChildOf", "name")).containsExactly("Root");
+    assertThat(outgoingTargets("Node", "name", "NoKeyOne", "ChildOf", "name")).isEmpty();
   }
 
   /**
