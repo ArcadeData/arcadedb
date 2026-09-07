@@ -879,6 +879,9 @@ public class GraphImporter implements AutoCloseable {
   private static void checkEdgeSourceEndpoint(final EdgeSourceDef esd, final String vertexType,
                                               final String endpoint, final Set<String> allTypes,
                                               final Set<String> typesWithId) {
+    if (vertexType == null)
+      throw new IllegalArgumentException("Edge source '" + esd.edgeType + "' declares no '" + endpoint
+          + "' endpoint: call " + endpoint + "(attribute, vertexType) on it");
     if (!allTypes.contains(vertexType))
       throw new IllegalArgumentException("Edge source '" + esd.edgeType + "' resolves its '" + endpoint
           + "' endpoint against vertex type '" + vertexType + "', which no vertex source imports. "
@@ -900,9 +903,11 @@ public class GraphImporter implements AutoCloseable {
   /**
    * Edges that could not be created because an endpoint named a key no vertex of the referenced
    * type carries. One per edge, not per endpoint: a row of an edge source whose {@code from} and
-   * {@code to} both fail to resolve is one edge lost, and counts once. The edge is skipped - there
-   * is nothing to attach it to - but the count is what tells a caller that the graph it got is
-   * smaller than the file it handed over, rather than leaving the import to look complete.
+   * {@code to} both fail to resolve is one edge lost, and counts once - while a split field, where
+   * every value is an edge of its own, counts once per value that resolved to nothing. The edge is
+   * skipped - there is nothing to attach it to - but the count is what tells a caller that the
+   * graph it got is smaller than the file it handed over, rather than leaving the import to look
+   * complete.
    */
   public long getUnresolvedEdgeCount() {
     return unresolvedEdges;
