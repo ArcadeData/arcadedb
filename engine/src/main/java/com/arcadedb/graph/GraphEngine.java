@@ -2515,6 +2515,7 @@ public class GraphEngine {
         db.begin();
 
       // SAVE OLD VERTEX PROPERTIES AND EDGES
+      final RID oldIdentity = vertex.getIdentity();
       final Map<String, Object> properties = vertex.propertiesAsMap();
       final List<Edge> outEdges = new ArrayList<>();
       for (Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
@@ -2534,7 +2535,7 @@ public class GraphEngine {
       final RID newIdentity = newVertex.getIdentity();
 
       for (Edge oe : outEdges) {
-        final RID inV = oe.getIn();
+        final RID inV = oe.getIn().equals(oldIdentity) ? newIdentity : oe.getIn();
         if (oe instanceof LightEdge)
           newVertex.newLightEdge(oe.getTypeName(), inV);
         else {
@@ -2547,10 +2548,15 @@ public class GraphEngine {
 
       for (Edge ie : inEdges) {
         final RID outV = ie.getOut();
+        // A self-loop is present in both collections and was already recreated from newVertex above.
+        if (outV.equals(oldIdentity))
+          continue;
+
+        final Vertex outVertex = outV.asVertex(true);
         if (ie instanceof LightEdge)
-          newVertex.newLightEdge(ie.getTypeName(), outV);
+          outVertex.newLightEdge(ie.getTypeName(), newIdentity);
         else {
-          final MutableEdge e = newVertex.newEdge(ie.getTypeName(), outV);
+          final MutableEdge e = outVertex.newEdge(ie.getTypeName(), newIdentity);
           final Map<String, Object> edgeProperties = ie.propertiesAsMap();
           if (!edgeProperties.isEmpty())
             e.set(edgeProperties).save();
