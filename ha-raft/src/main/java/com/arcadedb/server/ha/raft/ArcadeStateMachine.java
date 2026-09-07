@@ -2774,6 +2774,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // consecutive lines, so "server is null" and "raftHAServer is null" are the same not-yet-wired state
       // rather than two independent ones - which is why they get the same treatment here instead of one being
       // captured and the other re-read.
+      //
+      // That ordering is what keeps SnapshotInstaller.resolveDatabasePath below from seeing a null server, and
+      // it is a guarantee rather than luck: both fields are volatile and the single writer sets server BEFORE
+      // raftHAServer, so a thread that observed a non-null raftHAServer - which it must have, or
+      // resolveSnapshotSource refuses and this arm throws first - also observes the server write. The
+      // precondition is now written down on resolveDatabasePath itself, since six other call sites lean on it
+      // without saying so.
       final ArcadeDBServer localServer = this.server;
 
       final long persistedApplied = readPersistedAppliedIndex(databaseName);

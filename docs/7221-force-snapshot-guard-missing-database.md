@@ -278,3 +278,35 @@ the asymmetry as an oversight.
 Tests after the cycle-2 change: the six state-machine/snapshot classes = 48 green; full `ha-raft` unit
 lane again 389 run / 0 failures / 0 errors, with the same environmental `LeaveClusterTest` fork crash
 from the externally-held port 2480.
+
+### Cycle 3 - `bc228a43ce`
+
+`claude` re-verified `existsDatabase`, the sibling-file claim, the cycle-1 null fix, the consecutive-line
+wiring, and the fall-through logic. One item:
+
+> `SnapshotInstaller.resolveDatabasePath` [...] dereferences `server.existsDatabase(...)` with no null
+> guard. The new code passes `localServer` there, which *can* be null [...] It's only safe today because
+> `resolveSnapshotSource(null)` short-circuits with a refusal [...] but that safety is incidental to the
+> ordering of two independently-nulled volatile fields.
+
+**Applied, with a correction to the reason.** The reachability analysis is right, but the safety is a
+guarantee rather than an accident, and the difference matters for whether a null check is warranted:
+both fields are declared `volatile` (`ArcadeStateMachine.java:197-198`) and the single writer sets
+`server` **before** `raftHAServer` (`RaftHAServer.java:1418-1419`), so a thread that observed a non-null
+`raftHAServer` - which it must have, or `resolveSnapshotSource` refuses and the arm throws before
+`resolveDatabasePath` is reached - is guaranteed by the JMM to observe the `server` write too.
+
+The reviewer offered "a comment at `resolveDatabasePath` (or a defensive null check there)"; the comment
+is the right half of that choice, and the null check is declined with a reason rather than skipped.
+`grep -rn --include='*.java' "resolveDatabasePath(" .` shows **seven** call sites (five more in
+`ArcadeStateMachine`, two in `DatabaseReconciler`), all passing the field directly. A null check added
+for this PR would change the behaviour every one of them sees, in service of an issue about a replay
+guard - and both of the method's branches dereference `server` anyway (`existsDatabase`, then
+`getConfiguration`), so no useful behaviour exists behind such a check: a null server means the caller is
+unwired, and an unwired caller has nowhere to install a snapshot to. The loud dereference is the correct
+outcome; only the precondition was missing, so the precondition is what was added, on
+`resolveDatabasePath`'s own javadoc where all seven callers can see it.
+
+Tests after the cycle-3 change: the seven snapshot/state-machine classes = 57 green; full `ha-raft` unit
+lane again 389 run / 0 failures / 0 errors, with the same environmental `LeaveClusterTest` fork crash
+(port 2480 still held by three foreign listeners at the time of the run).
