@@ -11,12 +11,32 @@ version: 2
 # is a Security -> Dependabot -> auto-triage rules setting in the GitHub UI and
 # cannot be expressed in this file.
 
+# Cooldown
+# --------
+# Every update block below carries `cooldown: default-days: 3`, so Dependabot
+# will not propose a release until it has been public for three days. The
+# window is the cheapest defence against the npm/PyPI-style supply-chain
+# attacks that publish a malicious version and get it yanked within hours:
+# a compromised release is usually pulled well inside three days, and one
+# that is not has at least been seen by somebody other than us.
+#
+# It costs nothing in security terms: `cooldown` applies to VERSION updates
+# only. Dependabot security updates, the PRs raised from an advisory, ignore
+# it entirely and still open the moment the advisory lands.
+#
+# Three days is the floor GitHub itself defaults to when `cooldown` is
+# present with no `default-days`; it is spelled out here so the intent is
+# visible rather than inherited.
+
 updates:
   - package-ecosystem: "maven"
     directory: "/"
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 20
     ignore:
       # Groovy's version is dictated by TinkerPop, not by ArcadeDB. It appears
@@ -79,6 +99,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
     groups:
       github-actions:
@@ -93,6 +116,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
     ignore:
       - dependency-name: "eclipse-temurin"
@@ -106,6 +132,9 @@ updates:
       day: "sunday"
       time: "09:00"
       timezone: "UTC"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 15
     target-branch: "main"
     commit-message:
@@ -173,6 +202,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
     groups:
       pre-commit-hooks:
@@ -194,6 +226,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
     groups:
       e2e-js-deps:
@@ -212,6 +247,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
     groups:
       e2e-studio-deps:
@@ -227,6 +265,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
 
   # Bindings Python
@@ -235,6 +276,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
 
   # E2E Go Testing Dependencies
@@ -243,6 +287,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
     # Go's transitive tree (testcontainers-go pulls docker/containerd/grpc/otel)
     # is large; group minor/patch bumps into a single PR to keep noise down,
