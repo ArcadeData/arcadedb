@@ -2752,13 +2752,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // machine multiplexes every database, so a co-located database that advanced the global index must
       // not suppress this one's reinstall (issue #4824) - and a legacy plain-number applied-index file
       // yields -1, which re-installs exactly as before.
+      //
+      // Both halves of that evidence are statements about a PREVIOUS session, and neither says the database
+      // is here NOW (issue #7221). The index lives in <databaseDirectory>/.raft/applied-index, a sibling of
+      // the per-database directories rather than a file inside them, so deleting one database's directory
+      // leaves its entry in the map intact. The wipe-and-resync recovery an operator reaches for when a
+      // follower's copy is bad - stop the node, delete the copy, start it again - then hit a guard that
+      // skipped the reinstall and a log line claiming a reinstall the filesystem contradicted. So the skip
+      // also requires the database to be registered here, the same question the normal-create arm below
+      // asks; a node whose registry has no such database re-downloads, as it did before #7143.
+      //
+      // The registry, not the filesystem, is what is consulted - so the wording below says "registered"
+      // rather than "present", which is the check that actually ran. A database dropped through Raft is
+      // not the case this re-opens: applyTransaction routes a DROP_DATABASE_ENTRY through
+      // writePersistedAppliedIndexDroppingDatabase, which evicts the per-database entry, so the read
+      // below already returns -1 for a dropped database and the skip was never reachable for one.
       final long persistedApplied = readPersistedAppliedIndex(databaseName);
       if (persistedApplied >= entryIndex) {
-        LogManager.instance().log(this, Level.INFO,
-            "Database '%s' already reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
-                + "entryIndex=%d); skipping the snapshot re-download",
+        if (server != null && server.existsDatabase(databaseName)) {
+          LogManager.instance().log(this, Level.INFO,
+              "Database '%s' already reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
+                  + "entryIndex=%d) and is registered on this node; skipping the snapshot re-download",
+              databaseName, persistedApplied, entryIndex);
+          return;
+        }
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s' was reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
+                + "entryIndex=%d) but is not registered on this node now; reinstalling it from the leader",
             databaseName, persistedApplied, entryIndex);
-        return;
       }
 
       // Restore flow: replace files from the leader's snapshot even if the DB exists.
