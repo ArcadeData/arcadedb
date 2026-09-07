@@ -1,10 +1,42 @@
 version: 2
+
+# Alert triage note
+# -----------------
+# The repository's Dependabot auto-triage rule dismisses development-scope
+# alerts for CWE-400 / CWE-770 / CWE-835 / CWE-674 (resource exhaustion), but
+# NOT CWE-407 (inefficient algorithmic complexity) or CWE-22. That gap is why
+# ReDoS-class advisories against test-only packages such as brace-expansion and
+# js-yaml still surface as open alerts even though they are unreachable from any
+# shipped artifact. Widening the rule to include CWE-407 for development scope
+# is a Security -> Dependabot -> auto-triage rules setting in the GitHub UI and
+# cannot be expressed in this file.
+
+# Cooldown
+# --------
+# Every update block below carries `cooldown: default-days: 3`, so Dependabot
+# will not propose a release until it has been public for three days. The
+# window is the cheapest defence against the npm/PyPI-style supply-chain
+# attacks that publish a malicious version and get it yanked within hours:
+# a compromised release is usually pulled well inside three days, and one
+# that is not has at least been seen by somebody other than us.
+#
+# It costs nothing in security terms: `cooldown` applies to VERSION updates
+# only. Dependabot security updates, the PRs raised from an advisory, ignore
+# it entirely and still open the moment the advisory lands.
+#
+# Three days is the floor GitHub itself defaults to when `cooldown` is
+# present with no `default-days`; it is spelled out here so the intent is
+# visible rather than inherited.
+
 updates:
   - package-ecosystem: "maven"
     directory: "/"
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 20
     ignore:
       # Groovy's version is dictated by TinkerPop, not by ArcadeDB. It appears
@@ -67,6 +99,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
     groups:
       github-actions:
@@ -81,6 +116,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
     ignore:
       - dependency-name: "eclipse-temurin"
@@ -94,6 +132,9 @@ updates:
       day: "sunday"
       time: "09:00"
       timezone: "UTC"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 15
     target-branch: "main"
     commit-message:
@@ -161,6 +202,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
     groups:
       pre-commit-hooks:
@@ -171,20 +215,49 @@ updates:
           - "patch"
 
   # E2E JavaScript Testing Dependencies
+  #
+  # Everything here is test-harness only and never ships in a distribution.
+  # Jest and testcontainers drag in a wide transitive tree (glob, minimatch,
+  # brace-expansion, babel), so ungrouped patch bumps exhaust the PR limit and
+  # bury the updates that matter. Group minor/patch into one PR per week and
+  # let majors open individually, matching the /e2e-go convention.
   - package-ecosystem: "npm"
     directory: "/e2e-js"
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
+    groups:
+      e2e-js-deps:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # E2E Studio Testing Dependencies
+  #
+  # Playwright and testcontainers only; test-harness scope, never shipped.
+  # Grouped for the same reason as /e2e-js above.
   - package-ecosystem: "npm"
     directory: "/e2e-studio"
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
+    groups:
+      e2e-studio-deps:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # E2E Python Testing Dependencies
   - package-ecosystem: "uv"
@@ -192,6 +265,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
 
   # Bindings Python
@@ -200,6 +276,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
 
   # E2E Go Testing Dependencies
@@ -208,6 +287,9 @@ updates:
     schedule:
       interval: weekly
       day: "sunday"
+    # See the shared cooldown note at the head of this file.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
     # Go's transitive tree (testcontainers-go pulls docker/containerd/grpc/otel)
     # is large; group minor/patch bumps into a single PR to keep noise down,
@@ -219,3 +301,10 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    # Every file in /e2e-go is a *_test.go, so the module declares only three
+    # direct requirements (neo4j-go-driver, testify, testcontainers-go) and
+    # everything else is marked `// indirect`. Without this, version updates
+    # only ever consider those three, and the transitive tree silently drifts
+    # however far behind the direct deps' own floors allow.
+    allow:
+      - dependency-type: "all"
