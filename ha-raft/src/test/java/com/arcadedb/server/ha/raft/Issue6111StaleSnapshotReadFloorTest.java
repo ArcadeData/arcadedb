@@ -476,10 +476,12 @@ class Issue6111StaleSnapshotReadFloorTest {
       // is no proof it was submitted: with no databases present the retry completes at once, and
       // clearStaleSnapshotFloor() resets the mark to 0 on that thread - reading it here races the reset and
       // failed CI on exactly that (run 34088696222). The resolved floor is the race-free proof of both.
-      for (int i = 0; i < 100 && sm.getStaleSnapshotAppliedFloor() >= 0; i++)
+      // The bound is a give-up tripwire, not a latency claim: a full-suite run shares this JVM, so it is sized
+      // for a stop-the-world pause rather than for how long the hand-off actually takes.
+      for (int i = 0; i < 500 && sm.getStaleSnapshotAppliedFloor() >= 0; i++)
         Thread.sleep(20);
       assertThat(sm.getStaleSnapshotAppliedFloor())
-          .as("the retry really reached triggerSnapshotDownload(), which resolved the floor")
+          .as("the retry really reached triggerSnapshotDownload(), which resolved the floor, within 10s")
           .isEqualTo(-1L);
     } finally {
       sm.close();
