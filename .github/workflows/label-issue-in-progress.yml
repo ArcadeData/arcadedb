@@ -1,0 +1,90 @@
+# Marks an issue as being worked on the moment a pull request references it.
+#
+# The "in progress" label is how the issue list says "someone already has this". Applying it by
+# hand is the step that gets skipped, so the same issue gets picked up twice. A pull request
+# that references the issue is the earliest reliable signal that work started, so that is the
+# trigger.
+#
+# `pull_request_target` rather than `pull_request` because a fork's `pull_request` run gets a
+# read-only token and could not label anything. Nothing from the pull request head is checked
+# out or executed here - the job only reads the title and body of the event payload and calls
+# the issues API - so the elevated token never touches contributor-controlled code.
+#
+# `edited` is included alongside `opened`: the reference is very often added to the body a minute
+# after the pull request is opened, and without that trigger those issues stay unlabelled.
+name: Label referenced issue as in progress
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited]
+
+permissions:
+  issues: write
+
+concurrency:
+  group: label-in-progress-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Add "in progress" to referenced issues
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label the issues this pull request references
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const LABEL = 'in progress';
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request;
+            const text = `${pr.title || ''}\n${pr.body || ''}`;
+
+            // Bare "#123" plus the full issue URL, which is what a paste of the address bar
+            // leaves in the body. Only this repository's URLs count: a cross-repository
+            // reference is not ours to label.
+            const numbers = new Set();
+            for (const m of text.matchAll(/(?:^|[\s([{,;:])#(\d+)\b/g))
+              numbers.add(Number(m[1]));
+            const urlPattern = new RegExp(
+              `https?://github\\.com/${owner}/${repo}/issues/(\\d+)`, 'gi');
+            for (const m of text.matchAll(urlPattern))
+              numbers.add(Number(m[1]));
+
+            numbers.delete(pr.number);
+
+            if (numbers.size === 0) {
+              core.info('No issue reference found in the title or body.');
+              return;
+            }
+
+            for (const number of [...numbers].sort((a, b) => a - b)) {
+              let issue;
+              try {
+                issue = (await github.rest.issues.get({ owner, repo, issue_number: number })).data;
+              } catch (error) {
+                // A number that matches nothing, or a private cross-reference: not an error
+                // worth failing the run over.
+                core.info(`#${number}: not readable (${error.status}), skipped.`);
+                continue;
+              }
+
+              // The issues API answers for pull requests too; a pull request referencing a
+              // pull request is not an issue to mark in progress.
+              if (issue.pull_request) {
+                core.info(`#${number}: is a pull request, skipped.`);
+                continue;
+              }
+              if (issue.state !== 'open') {
+                core.info(`#${number}: closed, skipped.`);
+                continue;
+              }
+              if (issue.labels.some(l => (l.name || l) === LABEL)) {
+                core.info(`#${number}: already labelled "${LABEL}".`);
+                continue;
+              }
+
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: number, labels: [LABEL],
+              });
+              core.info(`#${number}: added "${LABEL}".`);
+            }
