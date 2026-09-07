@@ -3465,14 +3465,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * revoked account or a changed password takes effect on this node immediately - only the durability of that
    * change is outstanding.
    * <p>
-   * <b>That durability does not come back on its own, and this is the comment an operator reads while deciding
-   * what to do</b> (issue #7227). The failing entry does not record itself as applied, but it does not halt the
-   * node either - that is the whole point of this arm - so the NEXT entry writes its own higher index over both
-   * the persisted applied position and the Ratis-side one, and {@link #reinitialize()} resumes above the failed
-   * index. Nothing replays it. Fixing the volume is therefore only half the repair: the user change has to be
-   * REISSUED on the leader, exactly as the SEVERE below and the contract note on
-   * {@code ServerSecurity.applyReplicatedUsers} say. Pinned by
-   * {@code Issue7227SecurityEntryIsNotReplayedTest}.
+   * <b>That durability does not come back on its own</b> (issue #7227). The failing entry does not record
+   * itself as applied, but it does not halt the node either - that is the whole point of this arm - so the
+   * NEXT entry writes its own higher index over both the persisted applied position and the Ratis-side one,
+   * and {@link #reinitialize()} resumes above the failed index. Nothing replays it.
+   * <p>
+   * So fixing the volume is only half the repair: <b>the user change has to be REISSUED on the leader</b>,
+   * exactly as the SEVERE below and the contract note on {@code ServerSecurity.applyReplicatedUsers} say.
+   * This paragraph is what an operator reads while deciding what to do, which is why it is here and not only
+   * in the log line; the behaviour it describes is pinned by {@code Issue7227SecurityEntryIsNotReplayedTest}.
    * <p>
    * The classification lives here, at the apply site, rather than in the generic handler: whether a failure
    * can diverge replicated state is a property of the apply, not of the entry's database scoping, so a future
