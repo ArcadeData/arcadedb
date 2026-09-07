@@ -732,6 +732,44 @@ class GraphImporterIdTypesTest {
   }
 
   /**
+   * Two sources for one vertex type. The second replaces the first's TypeState, so pass 2 resolves
+   * edges collected against the first source's row indices into the second source's row arrays -
+   * out of bounds, or an edge silently pointing at an unrelated vertex.
+   */
+  @Test
+  void twoVertexSourcesForOneTypeAreRejected() throws Exception {
+    final String first = write("split-part1.csv",
+        "Id,Name",
+        "1,One",
+        "2,Two",
+        "3,Three");
+    final String second = write("split-part2.csv",
+        "Id,Name",
+        "4,Four");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Node");
+      database.getSchema().createEdgeType("Knows");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Node", new CsvRowSource(first), v -> {
+          v.id("Id");
+          v.property("name", "Name");
+        })
+        .vertex("Node", new CsvRowSource(second), v -> {
+          v.id("Id");
+          v.property("name", "Name");
+        })
+        .build()) {
+      assertThatThrownBy(importer::run)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("more than one")
+          .hasMessageContaining("Node");
+    }
+  }
+
+  /**
    * A split field pointing at the type it lives on. Resolving it while the file is still being read
    * kept only the references that happened to point at an earlier row, so a forward reference was
    * dropped without a word.
