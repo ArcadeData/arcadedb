@@ -658,6 +658,80 @@ class GraphImporterIdTypesTest {
   }
 
   /**
+   * An edge source matches {@code id()}, never {@code idByName()}, so a type carrying only the
+   * latter would match nothing row after row. The unified index takes a string key, so such a type
+   * wants {@code id()} on that attribute - and is told so rather than left to import no edges.
+   */
+  @Test
+  void anEdgeSourceTargetingANameOnlyVertexTypeIsRejected() throws Exception {
+    final String vertices = write("name-only-vertices.csv",
+        "Code,Name",
+        "a,Alpha");
+    final String edges = write("name-only-edges.csv",
+        "from_id,to_id",
+        "a,a");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Topic");
+      database.getSchema().createEdgeType("RelatedTo");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Topic", new CsvRowSource(vertices), v -> {
+          v.idByName("Code");
+          v.property("code", "Code");
+        })
+        .edgeSource("RelatedTo", new CsvRowSource(edges), e -> {
+          e.from("from_id", "Topic");
+          e.to("to_id", "Topic");
+        })
+        .build()) {
+      assertThatThrownBy(importer::run)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("declares none")
+          .hasMessageContaining("id()");
+    }
+  }
+
+  /**
+   * The same on the vertex-record side: an edge resolving by name against a type that declares no
+   * {@code idByName()}, and one resolving by id against a type that declares no {@code id()}.
+   */
+  @Test
+  void aVertexEdgeTargetingTheWrongKindOfKeyIsRejected() throws Exception {
+    final String vertices = write("kind-vertices.csv",
+        "Id,Code,Ref",
+        "1,a,a");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Node");
+      database.getSchema().createEdgeType("Link");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Node", new CsvRowSource(vertices), v -> {
+          v.id("Id");
+          v.edgeOutByName("Ref", "Link", "Node");
+        })
+        .build()) {
+      assertThatThrownBy(importer::run)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("idByName()");
+    }
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Node", new CsvRowSource(vertices), v -> {
+          v.idByName("Code");
+          v.edgeOut("Ref", "Link", "Node");
+        })
+        .build()) {
+      assertThatThrownBy(importer::run)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("id()");
+    }
+  }
+
+  /**
    * A split field pointing at the type it lives on. Resolving it while the file is still being read
    * kept only the references that happened to point at an earlier row, so a forward reference was
    * dropped without a word.
@@ -708,7 +782,8 @@ class GraphImporterIdTypesTest {
         "from_id,to_id",
         "1,2",
         "1,404",
-        "999,2");
+        "999,2",
+        "999,404");
 
     database.transaction(() -> {
       database.getSchema().createVertexType("Node");
@@ -730,7 +805,8 @@ class GraphImporterIdTypesTest {
       importer.run();
 
       assertThat(importer.getEdgeCount()).isEqualTo(1);
-      assertThat(importer.getUnresolvedEdgeCount()).isEqualTo(2);
+      // one per edge lost, not per endpoint: the last row fails on both and is still one edge
+      assertThat(importer.getUnresolvedEdgeCount()).isEqualTo(3);
     }
   }
 
