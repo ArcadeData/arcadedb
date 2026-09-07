@@ -135,6 +135,20 @@ class Issue7223ProfilerDiskSpaceTest {
         new File(".").getCanonicalFile());
   }
 
+  /**
+   * The fallback above tests having WALKED, not the answer being the root: a directory configured AS the filesystem
+   * root and existing is a deliberate choice, and silently measuring somewhere else instead would be the same class
+   * of defect #7223 is about - reporting a filesystem the operator did not name.
+   */
+  @Test
+  void anExplicitlyConfiguredFilesystemRootIsHonoured() throws Exception {
+    final File root = new File(File.separator);
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, root.getAbsolutePath());
+
+    assertThat(FileUtils.resolveDiskSpaceDirectory(configuration).getCanonicalFile()).isEqualTo(root.getCanonicalFile());
+  }
+
   @Test
   void aBlankOrAbsentConfigurationFallsBackToTheWorkingDirectory() throws Exception {
     final ContextConfiguration blank = new ContextConfiguration();

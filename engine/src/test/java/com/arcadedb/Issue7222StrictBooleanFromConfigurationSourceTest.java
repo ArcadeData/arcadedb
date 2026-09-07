@@ -117,6 +117,21 @@ class Issue7222StrictBooleanFromConfigurationSourceTest {
     assertThat(GlobalConfiguration.ASYNC_WORKER_THREADS.getValueAsInteger()).isEqualTo(previous);
   }
 
+  /**
+   * The refusal REPORTS the value it refused, which is what makes the warning actionable - and the value is text an
+   * operator typed, so a hidden setting must not put it in a log. No hidden setting is of a type that can fail to
+   * coerce today (they are all {@code String}), which is exactly why the rule has to be pinned now rather than
+   * discovered by the first one that is not.
+   */
+  @Test
+  void aHiddenSettingsValueIsNotWrittenToTheLog() {
+    assertThat(GlobalConfiguration.SERVER_ROOT_PASSWORD.isHidden()).isTrue();
+    assertThat(GlobalConfiguration.SERVER_ROOT_PASSWORD.redactIfHidden("hunter2")).isEqualTo("<hidden>");
+
+    assertThat(BOOLEAN_SETTING_DEFAULTING_TO_TRUE.isHidden()).isFalse();
+    assertThat(BOOLEAN_SETTING_DEFAULTING_TO_TRUE.redactIfHidden("yes")).isEqualTo("'yes'");
+  }
+
   /** A value that arrives already typed - a callback's return, a programmatic write - is not text and is stored. */
   @Test
   void anAlreadyTypedValueIsStored() {

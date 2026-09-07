@@ -105,6 +105,13 @@ public class Profiler {
    */
   private final long[] retainedStats = new long[MONOTONIC_STATS];
 
+  /**
+   * The last {@code {absolute, canonical}} pair {@link #diskSpaceDirectory()} computed, or null before the first
+   * call. Volatile rather than synchronized: it is a pure function of its first element, so a reader that misses a
+   * write only pays for one more canonicalisation.
+   */
+  private static volatile File[] canonicalDiskSpaceDirectory;
+
   protected Profiler() {
   }
 
@@ -465,14 +472,29 @@ public class Profiler {
    * <p>
    * Canonicalised, because the path is REPORTED here and not only measured: the working-directory fallback is
    * {@code "."}, which names no filesystem to a reader looking at a disk figure they do not believe.
+   * <p>
+   * The canonicalisation is memoised on the absolute path it was computed from, because it is the expensive half -
+   * it resolves every symlink in the path, and both callers hold this class's monitor while Studio polls them.
+   * The resolution itself is NOT cached: it is a couple of {@code exists()} calls, and caching it would keep
+   * reporting the parent directory after the configured one is finally created.
    */
   private static File diskSpaceDirectory() {
-    final File dir = FileUtils.resolveDiskSpaceDirectory(new ContextConfiguration());
+    final File dir = FileUtils.resolveDiskSpaceDirectory(new ContextConfiguration()).getAbsoluteFile();
+
+    final File[] memo = canonicalDiskSpaceDirectory;
+    if (memo != null && memo[0].equals(dir))
+      return memo[1];
+
+    File canonical;
     try {
-      return dir.getCanonicalFile();
+      canonical = dir.getCanonicalFile();
     } catch (final IOException e) {
-      return dir.getAbsoluteFile();
+      canonical = dir;
     }
+
+    // Racing threads compute the same answer from the same input, so last writer wins costs nothing.
+    canonicalDiskSpaceDirectory = new File[] { dir, canonical };
+    return canonical;
   }
 
   public synchronized void dumpMetrics(final PrintStream out) {

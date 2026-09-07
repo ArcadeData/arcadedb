@@ -2794,11 +2794,26 @@ public enum GlobalConfiguration {
       return true;
     } catch (final Exception e) {
       if (LogManager.instance() != null)
-        LogManager.instance().log(this, Level.WARNING,
-            "Invalid value '%s' for setting '%s' of type %s set as %s: %s. Keeping '%s'", iValue, key,
-            type.getSimpleName(), source, e.getMessage(), getValue());
+        LogManager.instance().log(this, Level.WARNING, "Invalid value %s for setting '%s' of type %s set as %s: %s. Keeping %s",
+            redactIfHidden(iValue), key, type.getSimpleName(), source,
+            // The cause is redacted along with the value: its message quotes the value back.
+            isHidden() ? "not a valid " + type.getSimpleName() : e.getMessage(), redactIfHidden(getValue()));
       return false;
     }
+  }
+
+  /**
+   * How a value of this setting may be written into a log. The rejected TEXT is what makes the message above
+   * actionable - "'yes' is not a boolean" is the whole point of reporting it - but it is text an operator typed, so
+   * a {@link #isHidden() hidden} setting reports only that there was one. Same rule {@link #dumpConfiguration} is
+   * already under for the values it prints.
+   * <p>
+   * No hidden setting is currently of a type that can fail to coerce - they are all {@code String}, which accepts
+   * anything - so this does not redact anything today. It is here so the first hidden setting that is not a
+   * {@code String} does not have to notice.
+   */
+  String redactIfHidden(final Object value) {
+    return isHidden() ? "<hidden>" : "'" + value + "'";
   }
 
   public <T> T getValue() {
