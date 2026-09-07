@@ -127,8 +127,22 @@ public class RaftTransactionBroker {
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
       final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs,
       final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks) {
+    replicateSchema(dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs,
+        sealedFileChunks, null);
+  }
+
+  /**
+   * @param schemaDelta the schema change as a delta against the document the followers hold (issue #6989), or
+   *                    null to carry the whole document in {@code schemaJson}. It publishes, exactly like the
+   *                    schema JSON it replaces, so on a split it rides the LAST chunk.
+   */
+  public void replicateSchema(final String dbName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs,
+      final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks, final SchemaDelta.Payload schemaDelta) {
     final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(dbName, schemaJson,
-        filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs, false, sealedFileChunks);
+        filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs, false, sealedFileChunks, schemaDelta);
 
     final long cap = groupCommitter.maxEntrySize();
     if (entry.size() <= cap) {
@@ -137,7 +151,7 @@ public class RaftTransactionBroker {
     }
 
     for (final ByteString chunk : splitSchemaEntry(dbName, schemaJson, filesToAdd, filesToRemove, walEntries,
-        bucketDeltas, sealedFileBlobs, sealedFileChunks, cap, entry.size(), false))
+        bucketDeltas, sealedFileBlobs, sealedFileChunks, cap, entry.size(), false, schemaDelta))
       groupCommitter.submitAndWait(chunk.toByteArray());
   }
 
@@ -268,6 +282,22 @@ public class RaftTransactionBroker {
       final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs,
       final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks, final long cap, final int singleEntrySize,
       final boolean moreAfterLast) {
+    return splitSchemaEntry(dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
+        sealedFileBlobs, sealedFileChunks, cap, singleEntrySize, moreAfterLast, null);
+  }
+
+  /**
+   * @param schemaDelta the delta the change is carried by (issue #6989), or null when the whole document rides
+   *                    {@code schemaJson}. It publishes, so it goes on the LAST chunk and is measured into that
+   *                    chunk's header budget.
+   */
+  // @VisibleForTesting
+  static List<ByteString> splitSchemaEntry(final String dbName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs,
+      final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks, final long cap, final int singleEntrySize,
+      final boolean moreAfterLast, final SchemaDelta.Payload schemaDelta) {
 
     // Worst-case non-WAL payload: the first entry carries filesToAdd, the last one the schema JSON,
     // filesToRemove, the sealed blobs and the final sealed slices. Measured by encoding both headers with no
@@ -276,7 +306,7 @@ public class RaftTransactionBroker {
         Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(), Collections.emptyList()).size();
     final int lastHeaderSize = RaftLogEntryCodec.encodeSchemaEntry(dbName, schemaJson, Collections.emptyMap(),
         filesToRemove, Collections.emptyList(), Collections.emptyList(), sealedFileBlobs, moreAfterLast,
-        sealedFileChunks).size();
+        sealedFileChunks, schemaDelta).size();
     final long walBudget = cap - Math.max(firstHeaderSize, lastHeaderSize);
 
     if (walEntries == null || walEntries.isEmpty() || walBudget <= 0)
@@ -284,10 +314,12 @@ public class RaftTransactionBroker {
       throw new ReplicatedEntryTooLargeException(String.format(
           """
           Schema change for database '%s' needs a %d bytes Raft entry, above the maximum replicated entry \
-          size of %d bytes, and cannot be split (schema JSON %d bytes, %d file(s) to add, %d file(s) to \
-          remove, %d WAL entry/entries, %d sealed blob(s)). Raise arcadedb.ha.appendBufferSize - and with it \
-          arcadedb.ha.writeBufferSize, which must stay >= appendBufferSize + 8 bytes.""",
+          size of %d bytes, and cannot be split (schema JSON %d bytes, schema delta %d bytes, %d file(s) to \
+          add, %d file(s) to remove, %d WAL entry/entries, %d sealed blob(s)). Raise \
+          arcadedb.ha.appendBufferSize - and with it arcadedb.ha.writeBufferSize, which must stay >= \
+          appendBufferSize + 8 bytes.""",
           dbName, singleEntrySize, cap, schemaJson != null ? schemaJson.length() : 0,
+          schemaDelta != null ? schemaDelta.deltaJson().length() : 0,
           filesToAdd != null ? filesToAdd.size() : 0, filesToRemove != null ? filesToRemove.size() : 0,
           walEntries != null ? walEntries.size() : 0,
           (sealedFileBlobs != null ? sealedFileBlobs.size() : 0)
@@ -339,7 +371,8 @@ public class RaftTransactionBroker {
           walGroups.get(g), deltaGroups.get(g),
           last ? sealedFileBlobs : Collections.emptyList(),
           !last || moreAfterLast,
-          last ? sealedFileChunks : Collections.emptyList());
+          last ? sealedFileChunks : Collections.emptyList(),
+          last ? schemaDelta : null);
 
       if (chunk.size() > cap)
         // A single WAL entry (or the header plus one WAL entry) still does not fit. Fail loudly rather

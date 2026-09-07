@@ -312,7 +312,14 @@ public final class RaftLogEntryCodec {
        * whose sealed stores fit inline - those arrive as {@code sealedFileBlobs} - and on entries produced by a
        * node that predates this section.
        */
-      List<TsSealedChunk> sealedFileChunks
+      List<TsSealedChunk> sealedFileChunks,
+      /**
+       * The schema change carried as a DELTA rather than as a whole document (issue #6989). Null on every
+       * entry whose {@code schemaJson} is the full document - which is every entry produced by a node that
+       * predates this section, and every entry produced with {@code arcadedb.ha.schemaDelta} off. When it is
+       * set, {@code schemaJson} is empty and the applier merges the delta into its own schema instead.
+       */
+      SchemaDelta.Payload schemaDelta
   ) {
   }
 
@@ -475,6 +482,31 @@ public final class RaftLogEntryCodec {
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
       final List<TsSealedBlob> sealedFileBlobs, final boolean moreChunksFollow,
       final List<TsSealedChunk> sealedFileChunks) {
+    return encodeSchemaEntry(databaseName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
+        sealedFileBlobs, moreChunksFollow, sealedFileChunks, null);
+  }
+
+  /**
+   * @param schemaDelta the schema change expressed as a DELTA against the document the followers already hold
+   *                    (issue #6989), or null to carry the whole document in {@code schemaJson} as before. When
+   *                    it is set, {@code schemaJson} MUST be empty: the two are alternatives, not a belt and
+   *                    braces, and shipping both would defeat the point.
+   *                    <p>
+   *                    Written as the last trailing section, after the sealed slices, with the same presence
+   *                    rule as every section before it. That makes it invisible to a node running an older
+   *                    codec - which stops after the slices - and such a node would therefore see a
+   *                    {@code SCHEMA_ENTRY} with an EMPTY schema JSON and apply NOTHING, diverging silently.
+   *                    <b>That is why emitting a delta is gated on {@code arcadedb.ha.schemaDelta}, which is
+   *                    off by default</b>: the leader keeps shipping whole documents until an operator turns
+   *                    deltas on, which is safe only once every peer understands them. Decoding is
+   *                    unconditional, so the upgrade is a one-way ratchet - every node can read a delta before
+   *                    any node is allowed to write one.
+   */
+  public static ByteString encodeSchemaEntry(final String databaseName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<TsSealedBlob> sealedFileBlobs, final boolean moreChunksFollow,
+      final List<TsSealedChunk> sealedFileChunks, final SchemaDelta.Payload schemaDelta) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
@@ -537,8 +569,13 @@ public final class RaftLogEntryCodec {
 
       // TimeSeries sealed-store SLICE section (issue #4416). Trailing, self-describing, and written only when
       // non-empty, so an entry with nothing to slice is byte-identical to what the previous codec produced.
+      //
+      // A schema delta (issue #6989) forces the count out even when it is zero: the delta section sits AFTER
+      // this one and the reads are positional, so a decoder must be able to consume an explicit "no slices"
+      // before it. Writing a zero here is understood by every decoder that already handles this section - it
+      // is the same value an entry with an empty slice list would carry - so the entry stays readable.
       final int chunkCount = sealedFileChunks != null ? sealedFileChunks.size() : 0;
-      if (chunkCount > 0) {
+      if (chunkCount > 0 || schemaDelta != null) {
         dos.writeInt(chunkCount);
         for (int i = 0; i < chunkCount; i++) {
           final TsSealedChunk chunk = sealedFileChunks.get(i);
@@ -560,6 +597,18 @@ public final class RaftLogEntryCodec {
           dos.writeInt(compressed.length);   // compressed length
           dos.write(compressed);
         }
+      }
+
+      // Schema delta section (issue #6989). Last, so every section that predates it keeps its position, and
+      // compressed like the sections above it: a delta is JSON, which LZ4 shrinks well.
+      if (schemaDelta != null) {
+        final byte[] deltaBytes = schemaDelta.deltaJson().getBytes(StandardCharsets.UTF_8);
+        checkProducedPayloadLength(deltaBytes.length, databaseName, "Schema delta");
+        final byte[] compressedDelta = CompressionFactory.getDefault().compress(deltaBytes);
+        dos.writeLong(schemaDelta.baseVersion());
+        dos.writeInt(deltaBytes.length);        // uncompressed length
+        dos.writeInt(compressedDelta.length);   // compressed length
+        dos.write(compressedDelta);
       }
 
       dos.flush();
@@ -695,7 +744,7 @@ public final class RaftLogEntryCodec {
       final RaftLogEntryType type = RaftLogEntryType.fromId(typeByte);
       if (type == null)
         return new DecodedEntry(null, null, null, null, null, null, null, null, null, null, false, null, -1L,
-            Collections.emptyList(), false, Collections.emptyList());
+            Collections.emptyList(), false, Collections.emptyList(), null);
       final String databaseName = dis.readUTF();
 
       try {
@@ -730,7 +779,7 @@ public final class RaftLogEntryCodec {
       case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
       case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
           null, null, null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false,
-          Collections.emptyList());
+          Collections.emptyList(), null);
       case SECURITY_USERS_ENTRY -> decodeSecurityUsersEntry(dis);
       case BOOTSTRAP_FINGERPRINT_ENTRY -> decodeBootstrapFingerprintEntry(dis, databaseName);
     };
@@ -795,7 +844,8 @@ public final class RaftLogEntryCodec {
     }
 
     return new DecodedEntry(RaftLogEntryType.TX_ENTRY, databaseName, walData, bucketRecordDelta,
-        null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false, Collections.emptyList());
+        null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false, Collections.emptyList(),
+        null);
   }
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -915,9 +965,25 @@ public final class RaftLogEntryCodec {
       }
     }
 
+    // Schema delta section (issue #6989). Same presence rule as every section above: absent on entries
+    // produced by an older codec and on entries that carry the whole document, which decode with a null
+    // delta and keep the pre-#6989 behaviour exactly.
+    SchemaDelta.Payload schemaDelta = null;
+    if (dis.available() > 0) {
+      final long baseVersion = dis.readLong();
+      final int uncompressedLen = dis.readInt();
+      final int compressedLen = dis.readInt();
+      checkByteLength(compressedLen, dis.available(), "SCHEMA_ENTRY schema delta compressed");
+      checkDecompressedLength(uncompressedLen, compressedLen, "SCHEMA_ENTRY schema delta uncompressed");
+      final byte[] compressed = new byte[compressedLen];
+      dis.readFully(compressed);
+      final byte[] raw = CompressionFactory.getDefault().decompress(compressed, uncompressedLen);
+      schemaDelta = new SchemaDelta.Payload(baseVersion, new String(raw, StandardCharsets.UTF_8));
+    }
+
     return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null,
         schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false, null, -1L, sealedFileBlobs,
-        moreChunksFollow, sealedFileChunks);
+        moreChunksFollow, sealedFileChunks, schemaDelta);
   }
 
   private static DecodedEntry decodeInstallDatabaseEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -929,7 +995,7 @@ public final class RaftLogEntryCodec {
     }
     return new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName,
         null, null, null, null, null, null, null, null, forceSnapshot, null, -1L, Collections.emptyList(), false,
-        Collections.emptyList());
+        Collections.emptyList(), null);
   }
 
   private static DecodedEntry decodeBootstrapFingerprintEntry(final DataInputStream dis, final String databaseName)
@@ -942,7 +1008,7 @@ public final class RaftLogEntryCodec {
     final long lastTxId = dis.readLong();
     return new DecodedEntry(RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY, databaseName,
         null, null, null, null, null, null, null, null, false, fingerprint, lastTxId, Collections.emptyList(), false,
-        Collections.emptyList());
+        Collections.emptyList(), null);
   }
 
   private static DecodedEntry decodeSecurityUsersEntry(final DataInputStream dis) throws IOException {
@@ -953,7 +1019,7 @@ public final class RaftLogEntryCodec {
     final String usersJson = new String(bytes, StandardCharsets.UTF_8);
     return new DecodedEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, "",
         null, null, null, null, null, null, null, usersJson, false, null, -1L, Collections.emptyList(), false,
-        Collections.emptyList());
+        Collections.emptyList(), null);
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {
