@@ -186,11 +186,37 @@ public class CreateIndexStatement extends DDLStatement {
     return !database.getSchema().existsType(name);
   }
 
+  /**
+   * Runs the statement with its own {@code typeName} and {@code name} restored afterwards, whichever way
+   * {@link #executeDDLInternal} leaves.
+   * <p>
+   * Both fields are MUTATED during execution - a {@code $variable} type name is replaced by what it resolved to, and
+   * an unnamed statement has {@code name} backfilled with the auto-derived {@code typeName[properties]} form - and a
+   * parsed statement is a CACHED, SHARED object: {@link StatementCache#get} hands the same instance back for the same
+   * text, execution after execution. So a mutation that outlives one execution is read as the statement's own text by
+   * the next.
+   * <p>
+   * There used to be a single {@code typeName = prevName} at the end of the success path, which restored nothing for
+   * any of the {@code return}s and {@code throw}s before it - the {@code IF NOT EXISTS} shortcut chief among them.
+   * A statement whose type name is a variable and whose index already exists therefore kept the FIRST execution's
+   * resolved type, and every later execution silently indexed that type instead of the one the variable now names,
+   * with no error to say so.
+   */
   @Override
   public ResultSet executeDDL(final CommandContext context) {
+    final Identifier declaredTypeName = typeName;
+    final Identifier declaredIndexName = name;
+    try {
+      return executeDDLInternal(context);
+    } finally {
+      typeName = declaredTypeName;
+      name = declaredIndexName;
+    }
+  }
+
+  private ResultSet executeDDLInternal(final CommandContext context) {
     final Database database = context.getDatabase();
 
-    Identifier prevName = typeName;
     if (typeName.getStringValue().startsWith("$")) {
       String variable = (String) context.getVariable(typeName.getStringValue());
       typeName = new Identifier(variable);
@@ -455,7 +481,6 @@ public class CreateIndexStatement extends DDLStatement {
             "METADATA is not supported by index type '" + typeAsString + "'");
       resultingIndex = builder.create();
     }
-    typeName = prevName;
 
     // A guarded statement that named an index NOT yet in the schema gets past the existsIndex shortcut above and
     // reaches the builder, which answers it with the index already on those properties whenever that one provides
