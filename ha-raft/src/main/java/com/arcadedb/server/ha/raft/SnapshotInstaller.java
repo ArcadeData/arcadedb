@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
@@ -131,9 +132,21 @@ public final class SnapshotInstaller {
    * limit but had no reader anywhere in the tree, so the only way to change it was to recompile this class
    * (issue #7121). A non-positive configured value falls back to the compiled default rather than disabling the
    * defense - a zip-bomb guard that an operator can switch off by typing 0 is not a guard.
+   * <p>
+   * Read from the SERVER's {@link ContextConfiguration} rather than from the {@link GlobalConfiguration}
+   * enum, as the sibling reads in this class do. The enum is populated by {@code readConfiguration()} alone, which
+   * consults {@code System.getProperty} and {@code System.getenv}: the server configuration file, {@code SET SERVER
+   * SETTING} and the MCP {@code set_server_setting} tool all write into the overlay and never touch it, so an enum
+   * read silently ignores every channel this {@code SCOPE.SERVER} setting advertises except a raw {@code -D}
+   * (issue #7226). The overlay falls back to the enum for a key nobody set, so {@code -D} keeps working through it.
+   *
+   * @param configuration the server's configuration overlay; {@code null} in unit tests and in the non-Raft install
+   *                      callers, which then see the enum (and therefore {@code -D}) alone
    */
-  static long maxZipEntryUncompressedBytes() {
-    final long configured = GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE.getValueAsLong();
+  static long maxZipEntryUncompressedBytes(final ContextConfiguration configuration) {
+    final long configured = configuration != null
+        ? configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE)
+        : GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE.getValueAsLong();
     return configured > 0 ? configured : MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES;
   }
 
@@ -956,7 +969,7 @@ public final class SnapshotInstaller {
             : 5000L;
         source = new ProgressReportingInputStream(rawCounter, new SnapshotDownloadProgressMeter(dbName, intervalMs));
       }
-      extractAndVerifySnapshot(source, rawCounter, targetDir, manifestRequired);
+      extractAndVerifySnapshot(source, rawCounter, targetDir, manifestRequired, server);
     } finally {
       connection.disconnect();
     }
@@ -1061,15 +1074,16 @@ public final class SnapshotInstaller {
    * @param rawCounter       the underlying byte counter, used for the per-entry compression-ratio check
    * @param targetDir        the staging directory the entries are extracted into
    * @param manifestRequired when true, a missing manifest is treated as a truncated download and rejected
+   * @param server           the server whose configuration carries the per-entry cap; may be {@code null}
    */
   static void extractAndVerifySnapshot(final InputStream source, final CountingInputStream rawCounter,
-      final Path targetDir, final boolean manifestRequired) throws IOException {
+      final Path targetDir, final boolean manifestRequired, final ArcadeDBServer server) throws IOException {
     // Records the size+CRC32 of each file actually extracted, used to verify against the manifest.
     final Map<String, long[]> extracted = new HashMap<>();
     byte[] manifestBytes = null;
     // Read once for the whole install rather than per entry: the limit must not change mid-extraction, and a
     // snapshot with many small entries should not pay a configuration lookup for each of them.
-    final long maxEntryBytes = maxZipEntryUncompressedBytes();
+    final long maxEntryBytes = maxZipEntryUncompressedBytes(server != null ? server.getConfiguration() : null);
 
     try (final ZipInputStream zipIn = new ZipInputStream(source)) {
       ZipEntry zipEntry;
