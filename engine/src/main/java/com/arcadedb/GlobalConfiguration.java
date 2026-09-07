@@ -1632,6 +1632,18 @@ public enum GlobalConfiguration {
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 
+  HA_SCHEMA_INCREMENTAL_APPLY("arcadedb.ha.schemaIncrementalApply", SCOPE.SERVER,
+      """
+      When true (default) a follower applying a committed DDL entry instantiates only the components for the \
+      files that entry created, instead of rebuilding every component in the database from scratch. The full \
+      rebuild is O(total files) per entry, which makes building a large schema quadratic in the number of types \
+      and serializes all of it on the single Raft apply thread (issue #6988: a 1209-type schema took ~2h53m to \
+      replicate). Entries the incremental path cannot express - anything that retires a file, ships a compacted \
+      index, a bloom filter or a new dictionary - still fall back to the full rebuild automatically. Set to false \
+      to force the full rebuild for every entry, which is only useful to isolate a suspected incremental-apply \
+      regression.""",
+      Boolean.class, true),
+
   HA_ELECTION_TIMEOUT_MIN("arcadedb.ha.electionTimeoutMin", SCOPE.SERVER,
       """
       Minimum election timeout in milliseconds: a follower starts a new election if it has not heard from \
