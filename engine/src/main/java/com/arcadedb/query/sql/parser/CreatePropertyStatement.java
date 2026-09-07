@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -49,6 +50,14 @@ public class CreatePropertyStatement extends DDLStatement {
   public final Map<Identifier, Expression> customProperties = new LinkedHashMap<>();
 
   public CreatePropertyStatement() {
+  }
+
+  /**
+   * Batchable into a DDL script's bulk schema scope (issue #6990). Adding a property writes the type's definition and nothing else - existing records are not visited, they are simply read against the new definition from then on.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    return true;
   }
 
   @Override

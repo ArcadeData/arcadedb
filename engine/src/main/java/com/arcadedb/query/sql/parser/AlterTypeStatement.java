@@ -110,6 +110,28 @@ public class AlterTypeStatement extends DDLStatement {
         customValue };
   }
 
+  /**
+   * Not batchable into a DDL script's bulk schema scope when a {@code repartition} setting is present (issue #6990).
+   * <p>
+   * {@code WITH repartition = true} does not merely alter the type: it constructs a {@link RebuildTypeStatement} and
+   * runs its scan-and-move loop directly, and because a DDL statement runs inside the caller's transaction that loop
+   * takes the branch with NO intermediate batch commits - the entire scan and move is one transaction. Every reason
+   * {@code REBUILD TYPE} is excluded therefore applies here verbatim, and inside a bulk scope it would also hold the
+   * database write lock for the whole batch and fold its WAL into the batch's single Raft entry.
+   * <p>
+   * Decided on the PRESENCE of the key rather than on its value. Reading the value means evaluating an
+   * {@link Expression} against a {@link CommandContext} that does not exist yet at classification time, and
+   * {@code WITH repartition = false} is a spelling nobody writes; a script that does write it loses the batching and
+   * nothing else.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    for (final Identifier key : settings.keySet())
+      if ("repartition".equalsIgnoreCase(key.getStringValue()))
+        return false;
+    return true;
+  }
+
   @Override
   public ResultSet executeDDL(final CommandContext context) {
     final DocumentType type = context.getDatabase().getSchema().getType(name.getStringValue());

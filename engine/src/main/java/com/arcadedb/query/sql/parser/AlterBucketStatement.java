@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -56,6 +57,14 @@ public class AlterBucketStatement extends DDLStatement {
     result.starred = starred;
     result.attributeValue = attributeValue == null ? null : attributeValue.copy();
     return result;
+  }
+
+  /**
+   * Batchable into a DDL script's bulk schema scope (issue #6990). Altering a bucket rewrites its definition.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    return true;
   }
 
   @Override

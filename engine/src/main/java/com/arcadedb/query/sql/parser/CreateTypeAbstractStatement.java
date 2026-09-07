@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -80,6 +81,14 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   protected abstract String commandType();
 
   protected abstract DocumentType createType(Schema schema);
+
+  /**
+   * Batchable into a DDL script's bulk schema scope (issue #6990). Creating a type registers it and creates its buckets. No record is read or written, so a batch of them is exactly the case this feature exists for.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    return true;
+  }
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {

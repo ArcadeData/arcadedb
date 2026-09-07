@@ -183,6 +183,49 @@ public interface Schema {
     return existsType(typeName) ? getType(typeName) : null;
   }
 
+  /**
+   * Runs a batch of schema changes inside ONE schema recording session, so the whole batch is persisted - and, under
+   * HA, replicated - once instead of once per statement (issue #6990).
+   * <p>
+   * Every DDL entry point opens its own session: {@code TypeBuilder.create()}, {@code TypeIndexBuilder.create()},
+   * {@code createProperty()} and friends. Under HA the OUTERMOST session on the calling thread is the Raft entry
+   * boundary, so N independent DDL calls are N entries, each one a serialized full schema and a synchronous quorum
+   * round trip taken with the database write lock held. Nesting is what collapses them: a session opened while one is
+   * already active on the same thread rides the outer frame. This method is the supported way to open that outer
+   * frame around code the caller writes, and it is the same machinery a DDL-only SQL script uses.
+   * <p>
+   * SEMANTICS OF A FAILURE. Schema DDL has no rollback, so a batch that throws part way cannot be undone on the node
+   * that ran it. What the scope guarantees instead is that the two sides do not disagree: the prefix the caller's code
+   * actually completed is published before the exception is rethrown, exactly the state a script of separate
+   * statements would have left. The exception the batch threw is what the caller sees.
+   * <p>
+   * COST, and it is a window rather than only a latency. {@code LocalDatabase.recordFileChanges} is
+   * {@code executeInWriteLock}, so the database write lock is held for the whole batch and every writer on this
+   * database waits it out - one long lock instead of N quorum round trips each holding the same lock, which is the
+   * trade this method exists to make.
+   * <p>
+   * Under HA the same session is also what {@code RaftReplicatedDatabase.commit()} keys off: an ordinary commit on
+   * the leader first calls {@code waitForActiveRecordingSession()}, which polls for the session and, after
+   * {@code arcadedb.ha.quorumTimeout} (10s by default), GIVES UP and proceeds with its {@code TX_ENTRY}. That wait is
+   * the #4083 guard that keeps a transaction's entry from reaching Raft before the {@code SCHEMA_ENTRY} creating the
+   * files it references. A batch whose local execution outlasts that timeout therefore reaches the give-up branch,
+   * and the writer then races this session's publish to the broker.
+   * <p>
+   * That hazard is not introduced here: {@code TypeIndexBuilder.create()} already holds one session for a whole index
+   * build, which on a populated type is minutes rather than seconds, and the instalment work of issue #6136 names the
+   * same concurrent-writer wait. What a bulk scope adds is a new shape that can reach it - a long DDL script - so a
+   * batch should be schema definition and not a data load, and {@code arcadedb.schemaBulkDDLScript} turns the
+   * script-level batching off for an operator who cannot accept the widened window.
+   * <p>
+   * The default implementation simply runs the callback: a schema with no recording session of its own (a remote
+   * schema, where each statement is its own HTTP round trip anyway) has nothing to batch.
+   *
+   * @param callback the schema changes to apply as one batch
+   */
+  default void bulkChange(final Runnable callback) {
+    callback.run();
+  }
+
   void dropType(String typeName);
 
   String getTypeNameByBucketId(int bucketId);

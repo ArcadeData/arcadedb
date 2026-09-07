@@ -40,6 +40,14 @@ public class DropBucketStatement extends DDLStatement {
   public DropBucketStatement() {
   }
 
+  /**
+   * Batchable into a DDL script's bulk schema scope (issue #6990). Dropping a bucket deletes its file.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    return true;
+  }
+
   @Override
   public ResultSet executeDDL(final CommandContext context) {
     final DatabaseInternal database = context.getDatabase();

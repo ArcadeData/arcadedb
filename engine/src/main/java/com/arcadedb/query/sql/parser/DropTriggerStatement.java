@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -40,6 +41,14 @@ public class DropTriggerStatement extends DDLStatement {
   public boolean ifExists = false;
 
   public DropTriggerStatement() {
+  }
+
+  /**
+   * Batchable into a DDL script's bulk schema scope (issue #6990). Unregistering a trigger visits no record.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    return true;
   }
 
   @Override

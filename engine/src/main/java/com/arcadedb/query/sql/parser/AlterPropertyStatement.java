@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -42,6 +43,14 @@ public class AlterPropertyStatement extends DDLStatement {
   public Identifier settingName;
 
   public AlterPropertyStatement() {
+  }
+
+  /**
+   * Batchable into a DDL script's bulk schema scope (issue #6990). Altering a property rewrites the type's definition. Existing records are not revisited or revalidated.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    return true;
   }
 
   @Override

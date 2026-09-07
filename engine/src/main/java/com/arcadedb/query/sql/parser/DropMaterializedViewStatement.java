@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -30,6 +31,14 @@ public class DropMaterializedViewStatement extends DDLStatement {
   public boolean ifExists = false;
 
   public DropMaterializedViewStatement() {
+  }
+
+  /**
+   * Batchable into a DDL script's bulk schema scope (issue #6990). Dropping a view unregisters it and drops its backing type; nothing is re-materialized.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    return true;
   }
 
   @Override

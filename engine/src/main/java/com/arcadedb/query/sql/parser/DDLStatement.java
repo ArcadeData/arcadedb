@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -34,6 +35,51 @@ import java.util.Map;
 public abstract class DDLStatement extends Statement {
 
   public DDLStatement() {
+  }
+
+  /**
+   * Whether this statement may run inside the single schema recording session a DDL-only script opens (issue #6990).
+   * <p>
+   * OPT IN, and the default is NO. A statement is batchable only if it says so, because the two answers fail in
+   * opposite directions: a statement wrongly left out of a batch costs one Raft entry, while a statement wrongly
+   * swept into one runs unbounded work while the batch holds the database write lock and folds its WAL into the
+   * batch's single entry. The first is a missed optimisation; the second is the hazard this method exists to prevent.
+   * An opt-out default made every future {@code DDLStatement} batchable by silence, and had already missed two
+   * statements in this repository - {@code CREATE MATERIALIZED VIEW} and {@code CREATE CONTINUOUS AGGREGATE} both do
+   * a full initial population of their backing type, exactly what {@code REFRESH} is excluded for, reached through a
+   * {@code CREATE} verb.
+   * <p>
+   * SAY YES when the statement only writes schema: creating, altering and dropping types, properties, buckets,
+   * indexes, triggers and view definitions. Say nothing at all when it reads or writes records. The notable members
+   * of the second group, and why:
+   * <ul>
+   *   <li>{@code COMPACT INDEX} would be SKIPPED outright, not merely slowed. Compaction goes through
+   *       {@code RaftReplicatedDatabase.runWithCompactionReplication}, which refuses to start while another recording
+   *       session is active on the node and returns false - the #4063 guard against sharing a session's recorded
+   *       changes. Inside a bulk scope that refusal is guaranteed, so the statement would report success having
+   *       compacted nothing;</li>
+   *   <li>{@code REBUILD INDEX}, {@code REBUILD TYPE}, {@code REBUILD GRAPH ANALYTICAL VIEW},
+   *       {@code REFRESH MATERIALIZED VIEW}, {@code REFRESH CONTINUOUS AGGREGATE}, {@code TRUNCATE TYPE} and
+   *       {@code TRUNCATE BUCKET} read or write every record of a type;</li>
+   *   <li>{@code CREATE MATERIALIZED VIEW} and {@code CREATE CONTINUOUS AGGREGATE} run that same full population as
+   *       part of creating themselves;</li>
+   *   <li>{@code CREATE GRAPH ANALYTICAL VIEW} hands its build to another thread, which would then be walking the
+   *       graph while this one holds the write lock, and {@code DROP GRAPH ANALYTICAL VIEW} waits for exactly that
+   *       thread ({@code shutdown -> awaitInFlightTasks}). {@code ALTER GRAPH ANALYTICAL VIEW} is left out with them
+   *       rather than audited separately - the whole family stays on the safe side of the default.</li>
+   * </ul>
+   * Two statements answer CONDITIONALLY, which is why this is asked of the database rather than of the statement
+   * alone: {@code ALTER TYPE ... WITH repartition = true} runs {@code REBUILD TYPE}'s loop, and {@code CREATE INDEX}
+   * on a type that already exists scans it. Both are ordinary schema definition in their other shape.
+   * <p>
+   * A script containing any statement that does not opt in keeps the pre-existing one-session-per-statement
+   * behaviour, whole.
+   *
+   * @param database the database the script is about to run against, for the statements whose answer depends on what
+   *                 is already in the schema. Never null.
+   */
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    return false;
   }
 
   public abstract ResultSet executeDDL(CommandContext context);
