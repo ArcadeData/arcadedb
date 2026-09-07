@@ -109,6 +109,11 @@ public class Profiler {
    * The last {@code {absolute, canonical}} pair {@link #diskSpaceDirectory()} computed, or null before the first
    * call. Volatile rather than synchronized: it is a pure function of its first element, so a reader that misses a
    * write only pays for one more canonicalisation.
+   * <p>
+   * Deliberately safe WITHOUT a lock, rather than safe because of one. Both current readers reach it under this
+   * class's instance monitor - {@link #toJSON()} and {@link #dumpMetrics} are {@code synchronized} and the class is
+   * used as {@link #INSTANCE} - but this field is {@code static}, so a future caller that is neither would still be
+   * correct: the worst a race costs is a duplicated canonicalisation, and the array is published whole.
    */
   private static volatile File[] canonicalDiskSpaceDirectory;
 
