@@ -64,7 +64,7 @@
             .github/scripts/check-native-graalvm-pin.py fails the always-on `lint` job whenever
             native.graalvm.version and native-image.yml disagree.
         -->
-        <graalvm.version>25.0.2</graalvm.version>
+        <graalvm.version>25.3.4.1</graalvm.version>
         <!--
             Bumping this requires re-checking several things LSMVectorIndex relies on that jvector does not
             contractually guarantee across versions:
