@@ -118,6 +118,13 @@ class RatisSnapshotDigestWarningFilterTest {
   /**
    * Arming check: the warning really is emitted by the real code path, so the suppression assertions
    * below cannot pass vacuously.
+   * <p>
+   * The emitting call site is {@code SimpleStateMachineStorage.cleanupOldSnapshots()}, which Ratis's
+   * own {@code StateMachineUpdater.takeSnapshot()} invokes after every snapshot (ratis-server 3.3.0,
+   * {@code StateMachineUpdater.java:301}). It used to be reachable from ArcadeDB's marker registration
+   * too, until #7209 removed that call - it deleted nothing, because Ratis's retention needs an
+   * {@code .md5} companion ArcadeDB does not write. Driving the surviving call site keeps this check
+   * armed against the path that still runs in production.
    */
   @Test
   void withoutTheFilterTheMissingDigestWarningReachesTheLog(@TempDir final Path tempDir) throws Exception {
@@ -126,6 +133,14 @@ class RatisSnapshotDigestWarningFilterTest {
     ratisLogger.setFilter(null);
 
     registerMarkerAt(sm, 1L, 7293L);
+    // Exactly what StateMachineUpdater.takeSnapshot() invokes right after the state machine's own
+    // takeSnapshot() returns.
+    sm.getStateMachineStorage().cleanupOldSnapshots(new SnapshotRetentionPolicy() {
+      @Override
+      public int getNumSnapshotsRetained() {
+        return 1;
+      }
+    });
 
     assertThat(handler.messagesContaining(MISSING_DIGEST_TEXT))
         .as("stock Ratis warns once per md5-less snapshot marker")
