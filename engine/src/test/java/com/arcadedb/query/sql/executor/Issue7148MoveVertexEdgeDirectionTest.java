@@ -26,6 +26,9 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
+import java.util.Set;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -126,6 +129,153 @@ class Issue7148MoveVertexEdgeDirectionTest extends TestHelper {
       assertThat(light).isInstanceOf(LightEdge.class);
       assertThat(light.getOut()).isEqualTo(moved);
       assertThat(light.getIn()).isEqualTo(moved);
+    });
+  }
+
+  /**
+   * Every incoming edge of a super-node is recreated from the same source vertex, whose outgoing edge list is
+   * rewritten once per edge. Reusing one cached source instance across the whole loop must not lose any of those
+   * appends, and the moved vertex must end up with all of them on its IN side and none on its OUT side.
+   */
+  @Test
+  void manyIncomingEdgesFromASingleSourceAreAllPreserved() {
+    final int edges = 25;
+    final RID[] vertices = new RID[2];
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Issue7148FanSource");
+      database.getSchema().createVertexType("Issue7148FanOld");
+      database.getSchema().createVertexType("Issue7148FanNew");
+      database.getSchema().createEdgeType("Issue7148Fan");
+
+      final MutableVertex source = database.newVertex("Issue7148FanSource");
+      source.save();
+      vertices[0] = source.getIdentity();
+
+      final MutableVertex target = database.newVertex("Issue7148FanOld");
+      target.save();
+      vertices[1] = target.getIdentity();
+
+      for (int i = 0; i < edges; i++)
+        source.newEdge("Issue7148Fan", target, "seq", i).save();
+    });
+
+    final RID moved = moveVertex(vertices[1], "Issue7148FanNew");
+
+    database.transaction(() -> {
+      final Vertex source = vertices[0].asVertex(true);
+      assertThat(source.countEdges(Vertex.DIRECTION.OUT, "Issue7148Fan")).isEqualTo(edges);
+
+      final Vertex movedVertex = moved.asVertex(true);
+      assertThat(movedVertex.countEdges(Vertex.DIRECTION.IN, "Issue7148Fan")).isEqualTo(edges);
+      assertThat(movedVertex.countEdges(Vertex.DIRECTION.OUT, "Issue7148Fan")).isZero();
+
+      final Set<Integer> sequences = new HashSet<>();
+      for (final Edge edge : source.getEdges(Vertex.DIRECTION.OUT, "Issue7148Fan")) {
+        assertThat(edge.getOut()).isEqualTo(vertices[0]);
+        assertThat(edge.getIn()).isEqualTo(moved);
+        sequences.add(edge.getInteger("seq"));
+      }
+      assertThat(sequences).hasSize(edges);
+    });
+  }
+
+  /**
+   * The same neighbour on both sides: the moved vertex holds one edge towards it and one edge from it. The
+   * neighbour appears in the outgoing and the incoming collection with a different edge each time, so neither may
+   * be mistaken for a self-loop and skipped.
+   */
+  @Test
+  void anEdgePairWithTheSameNeighbourKeepsBothDirections() {
+    final RID[] vertices = new RID[2];
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Issue7148PairPeer");
+      database.getSchema().createVertexType("Issue7148PairOld");
+      database.getSchema().createVertexType("Issue7148PairNew");
+      database.getSchema().createEdgeType("Issue7148Pair");
+
+      final MutableVertex peer = database.newVertex("Issue7148PairPeer");
+      peer.save();
+      vertices[0] = peer.getIdentity();
+
+      final MutableVertex target = database.newVertex("Issue7148PairOld");
+      target.save();
+      vertices[1] = target.getIdentity();
+
+      peer.newEdge("Issue7148Pair", target, "dir", "incoming").save();
+      target.newEdge("Issue7148Pair", peer, "dir", "outgoing").save();
+    });
+
+    final RID moved = moveVertex(vertices[1], "Issue7148PairNew");
+
+    database.transaction(() -> {
+      final Vertex movedVertex = moved.asVertex(true);
+      assertThat(movedVertex.countEdges(Vertex.DIRECTION.IN, "Issue7148Pair")).isEqualTo(1);
+      assertThat(movedVertex.countEdges(Vertex.DIRECTION.OUT, "Issue7148Pair")).isEqualTo(1);
+
+      final Edge incoming = movedVertex.getEdges(Vertex.DIRECTION.IN, "Issue7148Pair").getFirstOrNull();
+      assertThat(incoming).isNotNull();
+      assertThat(incoming.getOut()).isEqualTo(vertices[0]);
+      assertThat(incoming.getIn()).isEqualTo(moved);
+      assertThat(incoming.getString("dir")).isEqualTo("incoming");
+
+      final Edge outgoing = movedVertex.getEdges(Vertex.DIRECTION.OUT, "Issue7148Pair").getFirstOrNull();
+      assertThat(outgoing).isNotNull();
+      assertThat(outgoing.getOut()).isEqualTo(moved);
+      assertThat(outgoing.getIn()).isEqualTo(vertices[0]);
+      assertThat(outgoing.getString("dir")).isEqualTo("outgoing");
+
+      final Vertex peer = vertices[0].asVertex(true);
+      assertThat(peer.countEdges(Vertex.DIRECTION.OUT, "Issue7148Pair")).isEqualTo(1);
+      assertThat(peer.countEdges(Vertex.DIRECTION.IN, "Issue7148Pair")).isEqualTo(1);
+    });
+  }
+
+  /**
+   * {@code MOVE VERTEX ... TO BUCKET:} goes through the very same {@code moveTo()} as the {@code TO TYPE:} form, so
+   * it reversed incoming edges in exactly the same way and needs its own coverage.
+   */
+  @Test
+  void movingToAnotherBucketPreservesIncomingEdgeDirection() {
+    final RID[] vertices = new RID[2];
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Issue7148BucketSource");
+      database.getSchema().createVertexType("Issue7148BucketTarget")
+          .addBucket(database.getSchema().createBucket("Issue7148Bucket_extra"));
+      database.getSchema().createEdgeType("Issue7148BucketEdge");
+
+      final MutableVertex source = database.newVertex("Issue7148BucketSource");
+      source.save();
+      vertices[0] = source.getIdentity();
+
+      final MutableVertex target = database.newVertex("Issue7148BucketTarget");
+      target.save();
+      vertices[1] = target.getIdentity();
+
+      source.newEdge("Issue7148BucketEdge", target, "tag", "preserved").save();
+    });
+
+    database.setAutoTransaction(true);
+    final RID moved;
+    try (final ResultSet result = database.command("sql",
+        "MOVE VERTEX " + vertices[1] + " TO BUCKET:Issue7148Bucket_extra")) {
+      assertThat(result.hasNext()).isTrue();
+      moved = result.next().getIdentity().orElseThrow();
+      assertThat(result.hasNext()).isFalse();
+    }
+    assertThat(moved.getBucketId())
+        .isEqualTo(database.getSchema().getBucketByName("Issue7148Bucket_extra").getFileId());
+
+    database.transaction(() -> {
+      final Vertex source = vertices[0].asVertex(true);
+      final Edge edge = source.getEdges(Vertex.DIRECTION.OUT, "Issue7148BucketEdge").getFirstOrNull();
+      assertThat(edge).isNotNull();
+      assertThat(edge.getOut()).isEqualTo(vertices[0]);
+      assertThat(edge.getIn()).isEqualTo(moved);
+      assertThat(edge.getString("tag")).isEqualTo("preserved");
+
+      final Vertex movedVertex = moved.asVertex(true);
+      assertThat(movedVertex.countEdges(Vertex.DIRECTION.IN, "Issue7148BucketEdge")).isEqualTo(1);
+      assertThat(movedVertex.countEdges(Vertex.DIRECTION.OUT, "Issue7148BucketEdge")).isZero();
     });
   }
 

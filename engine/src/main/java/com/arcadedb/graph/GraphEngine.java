@@ -2535,6 +2535,8 @@ public class GraphEngine {
       final RID newIdentity = newVertex.getIdentity();
 
       for (Edge oe : outEdges) {
+        // A SELF-LOOP NAMES THE OLD RID AS ITS DESTINATION TOO: RE-POINT IT AT THE NEW RECORD, WHICH IS THE ONLY
+        // ENDPOINT LEFT. THE MATCHING ENTRY IN inEdges IS SKIPPED BELOW SO THE LOOP IS NOT RECREATED TWICE.
         final RID inV = oe.getIn().equals(oldIdentity) ? newIdentity : oe.getIn();
         if (oe instanceof LightEdge)
           newVertex.newLightEdge(oe.getTypeName(), inV);
@@ -2546,13 +2548,20 @@ public class GraphEngine {
         }
       }
 
+      // AN INCOMING EDGE MUST BE RECREATED FROM ITS ORIGINAL SOURCE VERTEX, NOT FROM newVertex: BUILDING IT FROM
+      // newVertex WOULD SWAP @out AND @in AND SILENTLY REVERSE THE EDGE (ISSUE #7148). THE SOURCE HAS TO BE LOADED
+      // TO REACH ITS OUTGOING EDGE LIST, SO CACHE IT PER RID - A SUPER-NODE CAN HOLD THOUSANDS OF INCOMING EDGES
+      // FROM THE SAME FEW VERTICES, AND ON A UNIQUE LIGHTWEIGHT TYPE EACH newLightEdge() ALSO WALKS THAT LIST.
+      final Map<RID, Vertex> sourceVertices = inEdges.isEmpty() ? Collections.emptyMap() : new HashMap<>();
       for (Edge ie : inEdges) {
         final RID outV = ie.getOut();
         // A self-loop is present in both collections and was already recreated from newVertex above.
         if (outV.equals(oldIdentity))
           continue;
 
-        final Vertex outVertex = outV.asVertex(true);
+        // THIS DEREFERENCES THE SOURCE, SO A DANGLING INCOMING EDGE NOW FAILS THE WHOLE MOVE WITH
+        // RecordNotFoundException INSTEAD OF SILENTLY RECREATING AN EDGE THAT POINTS AT NOTHING.
+        final Vertex outVertex = sourceVertices.computeIfAbsent(outV, rid -> rid.asVertex(true));
         if (ie instanceof LightEdge)
           outVertex.newLightEdge(ie.getTypeName(), newIdentity);
         else {
