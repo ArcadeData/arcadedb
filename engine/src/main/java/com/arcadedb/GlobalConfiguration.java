@@ -3070,6 +3070,7 @@ public enum GlobalConfiguration {
 
   public void setValue(final Object iValue) {
     final Object oldValue = value;
+    final boolean wasExplicitlySet = explicitlySet;
     explicitlySet = true;
 
     try {
@@ -3083,8 +3084,12 @@ public enum GlobalConfiguration {
               "Global setting '" + key + "=" + value + "' is not valid. Allowed values are " + allowed);
 
     } catch (final Exception e) {
-      // RESTORE THE PREVIOUS VALUE
+      // RESTORE THE PREVIOUS VALUE - INCLUDING WHETHER THERE WAS ONE. A WRITE THAT WAS ROLLED BACK IS NOT A CHOICE
+      // ANYONE MADE, AND LEAVING explicitlySet ON AFTER ONE MADE isChanged() REPORT A SETTING AS CONFIGURED WHILE IT
+      // SAT AT ITS DEFAULT. THAT IS WHAT setValueFromConfigurationSource PROMISES ABOUT A REFUSED VALUE (#7222), AND
+      // IT COULD ONLY HOLD FOR SETTINGS WHOSE callback AND allowed SET CANNOT THROW.
       value = oldValue;
+      explicitlySet = wasExplicitlySet;
       throw e;
     }
   }

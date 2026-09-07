@@ -22,6 +22,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #7222.
@@ -157,6 +158,29 @@ class Issue7222StrictBooleanFromConfigurationSourceTest {
       assertThat(autoSized.getValueAsInteger()).isEqualTo(whenAbsent);
     } finally {
       autoSized.reset();
+    }
+  }
+
+  /**
+   * The "nothing was chosen" half of a refusal has to survive a throw from INSIDE {@link GlobalConfiguration#setValue}
+   * too, not only from the strict parse that runs before it. {@code setValue} marked the setting explicitly-set
+   * before doing the work and, on failure, rolled back the value but not that flag - so a rejected write left
+   * {@code isChanged()} reporting a setting as configured while it sat at its default. The strict parse catches a bad
+   * Boolean first, so no setting here could reach it; a callback or an {@code allowed} set that throws can.
+   */
+  @Test
+  void aWriteThatWasRolledBackIsNotRecordedAsAChoice() {
+    final GlobalConfiguration withAllowedValues = GlobalConfiguration.BUCKET_REUSE_SPACE_MODE;
+    try {
+      assertThat(withAllowedValues.isChanged()).isFalse();
+
+      assertThatThrownBy(() -> withAllowedValues.setValue("not-an-allowed-value")).isInstanceOf(
+          IllegalArgumentException.class);
+
+      assertThat(withAllowedValues.isChanged()).as("a refused write was recorded as an explicit choice").isFalse();
+      assertThat(withAllowedValues.getValueAsString()).isEqualTo(withAllowedValues.getDefValue());
+    } finally {
+      withAllowedValues.reset();
     }
   }
 
