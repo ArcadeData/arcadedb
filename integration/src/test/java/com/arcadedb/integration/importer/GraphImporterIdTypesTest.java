@@ -507,6 +507,45 @@ class GraphImporterIdTypesTest {
   }
 
   /**
+   * The other half of the same normalisation, on the reader that started this: an edge foreign key
+   * carried on a JSONL vertex record and spelled {@code ""}. It is "no parent", not a reference to
+   * whatever the empty key registered.
+   */
+  @Test
+  void anEmptyForeignKeyOnAJsonlRecordIsNoEdge() throws Exception {
+    final String vertices = write("empty-fk.jsonl",
+        "{\"id\": \"W1\", \"name\": \"Root\", \"parent\": \"\"}",
+        "{\"id\": \"W2\", \"name\": \"Child\", \"parent\": \"W1\"}",
+        "{\"id\": \"W3\", \"name\": \"Loose\"}");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Doc");
+      database.getSchema().createEdgeType("ChildOf");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Doc", new JsonlRowSource(vertices), v -> {
+          v.id("id");
+          v.property("name", "name");
+          v.edgeOut("parent", "ChildOf", "Doc");
+        })
+        .build()) {
+
+      importer.run();
+
+      assertThat(importer.getVertexCount()).isEqualTo(3);
+      // only W2 -> W1: an empty parent and a missing one are both "no edge", and neither is
+      // an endpoint that failed to resolve
+      assertThat(importer.getEdgeCount()).isEqualTo(1);
+      assertThat(importer.getUnresolvedEdgeCount()).isZero();
+    }
+
+    assertThat(outgoingTargets("Doc", "name", "Child", "ChildOf", "name")).containsExactly("Root");
+    assertThat(outgoingTargets("Doc", "name", "Root", "ChildOf", "name")).isEmpty();
+    assertThat(outgoingTargets("Doc", "name", "Loose", "ChildOf", "name")).isEmpty();
+  }
+
+  /**
    * The same as above through the XML reader, which returns {@code ""} for {@code id=""} exactly
    * as the JSONL one does. A self-referencing foreign key spelled empty is "no parent", not a
    * reference to whatever registered the empty key.
