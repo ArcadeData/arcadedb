@@ -85,6 +85,16 @@ import java.util.logging.Level;
  */
 public class GraphImporter implements AutoCloseable {
 
+  /**
+   * A key that is not the canonical decimal text of a {@code long}, and the empty slot marker of
+   * {@link LongIntMap}. {@code Long.MIN_VALUE} therefore never reaches the primitive maps: a key
+   * spelled {@code "-9223372036854775808"} is kept with the textual keys, which resolve it the
+   * same way, only boxed.
+   *
+   * @see #canonicalLong(String)
+   */
+  static final long NOT_CANONICAL_LONG = Long.MIN_VALUE;
+
   private final Database                            database;
   private final List<VertexSourceDef>               vertexSources;
   private final List<EdgeSourceDef>                 edgeSources;
@@ -1516,14 +1526,6 @@ public class GraphImporter implements AutoCloseable {
   // ═══════════════════════════════════════════════════════════════════
 
   /**
-   * A key that is not the canonical decimal text of a {@code long}, and the empty slot marker of
-   * {@link LongIntMap}. {@code Long.MIN_VALUE} therefore never reaches the primitive maps: a key
-   * spelled {@code "-9223372036854775808"} is kept with the textual keys, which resolve it the
-   * same way, only boxed.
-   */
-  static final long NOT_CANONICAL_LONG = Long.MIN_VALUE;
-
-  /**
    * Reads {@code text} as the canonical decimal form of a {@code long}, returning
    * {@link #NOT_CANONICAL_LONG} when it is not one. Neither allocates nor throws: an identity
    * column is read once per row, and {@code Long.parseLong} in a {@code try} block would fill in a
@@ -1584,6 +1586,12 @@ public class GraphImporter implements AutoCloseable {
    * lands in a {@link HashMap} that is not allocated at all until one appears.
    */
   static final class IdIndex {
+    /**
+     * {@link IntIntMap} reserves {@code Integer.MIN_VALUE} to mark an empty slot, so that one value
+     * goes to the {@code long} map instead of being stored as an {@code int}.
+     */
+    private static final int INT_KEY_MIN = Integer.MIN_VALUE + 1;
+
     private IntIntMap            intKeys;
     private LongIntMap           longKeys;
     private Map<String, Integer> textKeys;
@@ -1645,12 +1653,6 @@ public class GraphImporter implements AutoCloseable {
       }
     }
   }
-
-  /**
-   * {@link IntIntMap} reserves {@code Integer.MIN_VALUE} to mark an empty slot, so that one value
-   * goes to the {@code long} map instead of being stored as an {@code int}.
-   */
-  static final int INT_KEY_MIN = Integer.MIN_VALUE + 1;
 
   /**
    * Target keys of self-referencing edges, held until the source has been read to the end because
@@ -1724,7 +1726,10 @@ public class GraphImporter implements AutoCloseable {
     private static final long   EMPTY = Long.MIN_VALUE;
     private              long[] keys;
     private              int[]  values;
-    private int mask, shift, size, threshold;
+    private int mask;
+    private int shift;
+    private int size;
+    private int threshold;
 
     LongIntMap(final int expected) {
       final int cap = Integer.highestOneBit(Math.max(16, (int) (expected / 0.7))) << 1;
@@ -1799,8 +1804,12 @@ public class GraphImporter implements AutoCloseable {
   static final class IntIntMap {
     // see LongIntMap.hash(): the same scramble, and the same reason for taking the high bits
     private static final int   EMPTY = Integer.MIN_VALUE;
-    private              int[] keys, values;
-    private int mask, shift, size, threshold;
+    private              int[] keys;
+    private              int[] values;
+    private int mask;
+    private int shift;
+    private int size;
+    private int threshold;
 
     int hash(final int key) {
       return (int) ((key * 0x9E3779B97F4A7C15L) >>> shift);
