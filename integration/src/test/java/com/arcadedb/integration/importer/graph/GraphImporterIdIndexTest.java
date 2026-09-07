@@ -162,6 +162,29 @@ class GraphImporterIdIndexTest {
   }
 
   /**
+   * Keys that differ only above the table's width - ids allocated in blocks, or carrying a fixed
+   * stride - must still spread. Masking the low bits of {@code key * odd} makes the slot depend on
+   * the key's low bits alone, which sends every one of these to the same slot and turns the lookup
+   * into a linear scan of the whole table.
+   */
+  @Test
+  void stridedKeysDoNotAllLandInOneSlot() {
+    final IdIndex index = new IdIndex();
+    final int stride = 1 << 16;
+    for (int i = 0; i < 2_000; i++)
+      index.put(String.valueOf((long) i * stride), i);
+    for (int i = 0; i < 2_000; i++)
+      assertThat(index.get(String.valueOf((long) i * stride))).isEqualTo(i);
+
+    // and past the int boundary, so the widened table is exercised the same way
+    final IdIndex wide = new IdIndex();
+    for (int i = 0; i < 2_000; i++)
+      wide.put(String.valueOf(Integer.MAX_VALUE + (long) i * stride), i);
+    for (int i = 0; i < 2_000; i++)
+      assertThat(wide.get(String.valueOf(Integer.MAX_VALUE + (long) i * stride))).isEqualTo(i);
+  }
+
+  /**
    * The widened map is new code on the hot path, so it is checked against {@link HashMap} over
    * enough keys to resize several times and to collide.
    */

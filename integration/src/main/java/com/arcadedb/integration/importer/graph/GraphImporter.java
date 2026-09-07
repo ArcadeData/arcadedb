@@ -1736,6 +1736,12 @@ public class GraphImporter implements AutoCloseable {
       return def;
     }
 
+    /**
+     * Fibonacci hashing: the high bits of the product, never the low ones. Masking the low bits of
+     * {@code key * odd} makes the slot a function of the key's low bits alone, so keys that differ
+     * only above the table's width - ids allocated in blocks, or with a fixed stride - all land in
+     * the same slot and the map degrades to a linear scan.
+     */
     private int hash(final long key) {
       return (int) ((key * 0x9E3779B97F4A7C15L) >>> 32) & mask;
     }
@@ -1764,9 +1770,14 @@ public class GraphImporter implements AutoCloseable {
    * Open-addressing int→int hash map with Fibonacci hashing.
    */
   static final class IntIntMap {
+    // see LongIntMap.hash(): the same scramble, and the same reason for taking the high bits
     private static final int   EMPTY = Integer.MIN_VALUE;
     private              int[] keys, values;
     private int mask, size, threshold;
+
+    private int hash(final int key) {
+      return (int) ((key * 0x9E3779B97F4A7C15L) >>> 32) & mask;
+    }
 
     int size() {
       return size;
@@ -1791,7 +1802,7 @@ public class GraphImporter implements AutoCloseable {
     void put(final int key, final int value) {
       if (size >= threshold)
         resize();
-      int i = (key * 0x9E3779B9) & mask;
+      int i = hash(key);
       while (keys[i] != EMPTY && keys[i] != key)
         i = (i + 1) & mask;
       if (keys[i] == EMPTY)
@@ -1801,7 +1812,7 @@ public class GraphImporter implements AutoCloseable {
     }
 
     int get(final int key, final int def) {
-      int i = (key * 0x9E3779B9) & mask;
+      int i = hash(key);
       while (keys[i] != EMPTY) {
         if (keys[i] == key)
           return values[i];
@@ -1820,7 +1831,7 @@ public class GraphImporter implements AutoCloseable {
       Arrays.fill(keys, EMPTY);
       for (int i = 0; i < ok.length; i++)
         if (ok[i] != EMPTY) {
-          int j = (ok[i] * 0x9E3779B9) & mask;
+          int j = hash(ok[i]);
           while (keys[j] != EMPTY)
             j = (j + 1) & mask;
           keys[j] = ok[i];
