@@ -424,6 +424,87 @@ class GraphImporterIdTypesTest {
   }
 
   /**
+   * A self-referencing edge declared {@code edgeIn}: the foreign key names the vertex that points
+   * TO this row, so the edge runs parent to child. The deferred path used to write this row as the
+   * source whatever the direction said, building every such edge backwards without failing.
+   */
+  @Test
+  void selfReferencingEdgeInRunsFromTheReferencedVertex() throws Exception {
+    final String vertices = write("parent-tree.csv",
+        "Id,ParentId",
+        "1,",
+        "2,1",
+        "3,1",
+        "4,2");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Node");
+      database.getSchema().createEdgeType("HasChild");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Node", new CsvRowSource(vertices), v -> {
+          v.id("Id");
+          v.intProperty("nodeId", "Id");
+          v.edgeIn("ParentId", "HasChild", "Node");
+        })
+        .build()) {
+
+      importer.run();
+
+      assertThat(importer.getEdgeCount()).isEqualTo(3);
+    }
+
+    // 1 -> 2, 1 -> 3, 2 -> 4: the parent is the source, never the row that named it
+    assertThat(outgoingProperties("Node", "nodeId", 1, "HasChild", "nodeId"))
+        .containsExactlyInAnyOrder(2, 3);
+    assertThat(outgoingProperties("Node", "nodeId", 2, "HasChild", "nodeId")).containsExactly(4);
+    assertThat(outgoingProperties("Node", "nodeId", 4, "HasChild", "nodeId")).isEmpty();
+  }
+
+  /**
+   * An empty identity is no identity. CSV reports an empty field as absent, but JSONL and XML hand
+   * back the empty string, so without normalising it two rows with {@code "id": ""} would collide
+   * on a key of their own and an edge naming it would reach whichever of them registered last.
+   */
+  @Test
+  void anEmptyIdentityRegistersNoKey() throws Exception {
+    final String vertices = write("empty-id-vertices.jsonl",
+        "{\"id\": \"\", \"name\": \"NoKeyOne\"}",
+        "{\"id\": \"\", \"name\": \"NoKeyTwo\"}",
+        "{\"id\": \"W1\", \"name\": \"Real\"}");
+    final String edges = write("empty-id-edges.csv",
+        "from_id,to_id",
+        "W1,",
+        ",W1");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Document");
+      database.getSchema().createEdgeType("Cites");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Document", new JsonlRowSource(vertices), v -> {
+          v.id("id");
+          v.property("id", "id");
+          v.property("name", "name");
+        })
+        .edgeSource("Cites", new CsvRowSource(edges), e -> {
+          e.from("from_id", "Document");
+          e.to("to_id", "Document");
+        })
+        .build()) {
+
+      importer.run();
+
+      // all three rows are vertices; neither endpoint naming an empty key resolves to one of them
+      assertThat(importer.getVertexCount()).isEqualTo(3);
+      assertThat(importer.getEdgeCount()).isZero();
+      assertThat(importer.getUnresolvedEdgeCount()).isEqualTo(2);
+    }
+  }
+
+  /**
    * A split field pointing at the type it lives on. Resolving it while the file is still being read
    * kept only the references that happened to point at an earlier row, so a forward reference was
    * dropped without a word.
@@ -531,6 +612,21 @@ class GraphImporterIdTypesTest {
         assertThat(rs.next().<String>getProperty("title")).isEqualTo("First");
       }
     });
+  }
+
+  private List<Integer> outgoingProperties(final String vertexType, final String keyProperty, final Object key,
+                                           final String edgeType, final String targetProperty) {
+    final List<Integer> result = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql",
+          "SELECT FROM " + vertexType + " WHERE " + keyProperty + " = ?", key)) {
+        assertThat(rs.hasNext()).as("vertex %s.%s = %s", vertexType, keyProperty, key).isTrue();
+        final Vertex v = rs.next().getVertex().get();
+        for (final Edge e : v.getEdges(Vertex.DIRECTION.OUT, edgeType))
+          result.add(e.getInVertex().asVertex().getInteger(targetProperty));
+      }
+    });
+    return result;
   }
 
   private List<String> outgoingTargets(final String vertexType, final String keyProperty, final Object key,

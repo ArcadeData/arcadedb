@@ -889,9 +889,9 @@ public class GraphImporter implements AutoCloseable {
 
       // Deduplication: skip if this id/nameId was already imported
       if (vc.deduplicate) {
-        if (vc.idAttribute != null && ts.idToIdx.get(record.get(vc.idAttribute)) >= 0)
+        if (vc.idAttribute != null && ts.idToIdx.get(identity(record, vc.idAttribute)) >= 0)
           return;
-        if (vc.nameIdAttribute != null && ts.nameToIdx.get(record.get(vc.nameIdAttribute)) >= 0)
+        if (vc.nameIdAttribute != null && ts.nameToIdx.get(identity(record, vc.nameIdAttribute)) >= 0)
           return;
       }
 
@@ -899,9 +899,9 @@ public class GraphImporter implements AutoCloseable {
       // it as an int would reject a string key and truncate one wider than an int
       final int idx = count[0];
       if (vc.idAttribute != null)
-        ts.idToIdx.put(record.get(vc.idAttribute), idx);
+        ts.idToIdx.put(identity(record, vc.idAttribute), idx);
       if (vc.nameIdAttribute != null)
-        ts.nameToIdx.put(record.get(vc.nameIdAttribute), idx);
+        ts.nameToIdx.put(identity(record, vc.nameIdAttribute), idx);
 
       // Build vertex properties
       propBuf.clear();
@@ -925,7 +925,7 @@ public class GraphImporter implements AutoCloseable {
       // target key has to wait for the rest of the file
       for (int i = 0; i < deferredEdgeDefs.size(); i++) {
         final EdgeDef ed = deferredEdgeDefs.get(i);
-        final String fieldVal = record.get(ed.fkAttribute);
+        final String fieldVal = ed.isSplit ? record.get(ed.fkAttribute) : identity(record, ed.fkAttribute);
         if (fieldVal == null)
           continue;
         final DeferredSelfEdges deferred = deferredSelf.get(i);
@@ -995,7 +995,7 @@ public class GraphImporter implements AutoCloseable {
       // An absent or empty attribute means "this row has no such reference" and is not an
       // unresolved endpoint. It is the only way to say so: 0 used to double as that marker, which
       // made a vertex whose key really is 0 impossible to point at
-      final String key = record.get(ed.fkAttribute);
+      final String key = identity(record, ed.fkAttribute);
       if (key == null)
         return;
       final TypeState targetTs = typeStates.get(ed.targetType);
@@ -1015,6 +1015,19 @@ public class GraphImporter implements AutoCloseable {
         ec.dstIdx.add(targetIdx);
       }
     }
+  }
+
+  /**
+   * Reads an identity attribute, reporting an attribute that is absent or empty as {@code null} -
+   * "this row carries no such key". The readers disagree on which of the two an empty field is:
+   * {@link CsvRowSource} already hands back {@code null}, while {@link JsonlRowSource} and
+   * {@link XmlRowSource} hand back the empty string for {@code "id": ""} and {@code id=""}. Left to
+   * each reader, an empty id would be a key of its own, and every row carrying one would collide on
+   * it - the last silently winning any edge that referenced it.
+   */
+  private static String identity(final RecordReader record, final String attribute) {
+    final String value = record.get(attribute);
+    return value == null || value.isEmpty() ? null : value;
   }
 
   /**
@@ -1062,8 +1075,8 @@ public class GraphImporter implements AutoCloseable {
     esd.source.forEach(record -> {
       if (limit > 0 && count[0] >= limit)
         return;
-      final int si = fromTs.idToIdx.get(record.get(cfg.fromAttribute));
-      final int di = toTs.idToIdx.get(record.get(cfg.toAttribute));
+      final int si = fromTs.idToIdx.get(identity(record, cfg.fromAttribute));
+      final int di = toTs.idToIdx.get(identity(record, cfg.toAttribute));
       if (si < 0 || di < 0)
         unresolvedEdges++;
       else {
@@ -1482,7 +1495,7 @@ public class GraphImporter implements AutoCloseable {
     private Map<String, Integer> textKeys;
 
     void put(final String key, final int idx) {
-      if (key == null)
+      if (key == null || key.isEmpty())
         return;
       final long numeric = canonicalLong(key);
       if (numeric == NOT_CANONICAL_LONG) {
@@ -1494,11 +1507,11 @@ public class GraphImporter implements AutoCloseable {
     }
 
     /**
-     * @return the vertex index, or -1 when the key is null (the row carries no such reference) or
-     * no vertex was registered under it
+     * @return the vertex index, or -1 when the key is null or empty (the row carries no such
+     * reference) or no vertex was registered under it
      */
     int get(final String key) {
-      if (key == null)
+      if (key == null || key.isEmpty())
         return -1;
       final long numeric = canonicalLong(key);
       if (numeric != NOT_CANONICAL_LONG)
