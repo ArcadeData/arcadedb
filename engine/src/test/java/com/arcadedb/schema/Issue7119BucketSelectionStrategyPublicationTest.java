@@ -20,12 +20,15 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
+import com.arcadedb.exception.SchemaException;
 
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -40,8 +43,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * The first test pins the modifier, like the sibling {@link Issue6678PolymorphicBucketCacheVisibilityTest} does for
  * the four lists. The second uses a strategy that records what the type was publishing at the moment it was bound:
- * with the fix it is still the previous strategy, never the half-bound one. The third checks the rollback contract
- * the old try/catch provided survives the reordering: a strategy the type refuses is never published.
+ * with the fix it is still the previous strategy, never the half-bound one. The last two check the rollback contract
+ * the old try/catch provided survives the reordering, once per exit of the block it wrapped: a strategy that throws
+ * while binding, and a real {@link PartitionedBucketSelectionStrategy} the suitability check refuses after binding
+ * succeeded, are both never published.
  */
 class Issue7119BucketSelectionStrategyPublicationTest extends TestHelper {
 
@@ -87,6 +92,23 @@ class Issue7119BucketSelectionStrategyPublicationTest extends TestHelper {
         throw new IllegalStateException("refused");
       }
     }))).isInstanceOf(IllegalStateException.class).hasMessage("refused");
+
+    assertThat(type.getBucketSelectionStrategy()).isSameAs(previous);
+  }
+
+  @Test
+  void strategyRefusedBySuitabilityCheckIsNeverPublished() {
+    database.transaction(() -> database.getSchema().createDocumentType("Product", 2));
+
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType("Product");
+    final BucketSelectionStrategy previous = type.getBucketSelectionStrategy();
+
+    // NO UNIQUE AUTOMATIC INDEX ON `id`, SO checkSuitability() REPORTS A BLOCKER AND THE ASSIGNMENT IS REFUSED AFTER
+    // setType(this) HAS ALREADY BOUND THE STRATEGY - THE OTHER EXIT OF THE BLOCK THAT USED TO NEED THE ROLLBACK
+    assertThatThrownBy(() -> database.transaction(
+        () -> type.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(List.of("id")))))
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("cannot find a unique automatic index");
 
     assertThat(type.getBucketSelectionStrategy()).isSameAs(previous);
   }
