@@ -43,10 +43,12 @@ import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -767,6 +769,8 @@ public class GraphImporter implements AutoCloseable {
   public void run() throws Exception {
     final long start = System.currentTimeMillis();
 
+    validateEdgeTargets();
+
     // ── Pass 1: Create vertices + collect topology ──
     LogManager.instance().log(this, Level.INFO, "Pass 1: Vertices + Topology");
 
@@ -805,8 +809,51 @@ public class GraphImporter implements AutoCloseable {
         totalVertices, totalEdges, elapsed / 1000, (elapsed % 1000) / 100);
     if (unresolvedEdges > 0)
       LogManager.instance().log(this, Level.WARNING,
-          "%,d edge endpoints matched no vertex and were skipped: check that the referenced vertex sources "
-              + "are declared, are not filtered, and use the same identity attribute", unresolvedEdges);
+          "%,d edges named an identity no vertex carries and were skipped: check that the referenced rows "
+              + "are not filtered out and that both files spell the identity the same way", unresolvedEdges);
+  }
+
+  /**
+   * Every edge names the vertex type at its other end, and an edge whose target type is not there
+   * to resolve against contributes nothing at all - it used to do so silently, leaving a smaller
+   * graph and no diagnostic, which is the same failure a mistyped type name produces. Nothing has
+   * been written when this runs, so the name is reported as the configuration mistake it is.
+   * <p>
+   * A vertex source resolves a reference against the types imported so far, so naming another
+   * vertex source only works when that source is declared first; a self-reference is resolved once
+   * the source has been read to the end and needs no such ordering. A standalone edge source runs
+   * after every vertex source and can name any of them.
+   */
+  private void validateEdgeTargets() {
+    final Set<String> allTypes = new HashSet<>(vertexSources.size());
+    for (final VertexSourceDef vsd : vertexSources)
+      allTypes.add(vsd.typeName);
+
+    final Set<String> importedSoFar = new HashSet<>(vertexSources.size());
+    for (final VertexSourceDef vsd : vertexSources) {
+      for (final EdgeDef ed : vsd.config.edges)
+        if (!ed.targetType.equals(vsd.typeName) && !importedSoFar.contains(ed.targetType))
+          throw new IllegalArgumentException("Edge '" + ed.edgeType + "' declared on vertex source '"
+              + vsd.typeName + "' targets vertex type '" + ed.targetType + "', which "
+              + (allTypes.contains(ed.targetType) ?
+              "is imported after it: declare the vertex source of '" + ed.targetType + "' before '" + vsd.typeName
+                  + "', because a vertex source resolves references against the types already imported" :
+              "no vertex source imports. Declared vertex types: " + allTypes));
+      importedSoFar.add(vsd.typeName);
+    }
+
+    for (final EdgeSourceDef esd : edgeSources) {
+      checkEdgeSourceEndpoint(esd, esd.config.fromVertexType, "from", allTypes);
+      checkEdgeSourceEndpoint(esd, esd.config.toVertexType, "to", allTypes);
+    }
+  }
+
+  private static void checkEdgeSourceEndpoint(final EdgeSourceDef esd, final String vertexType,
+                                              final String endpoint, final Set<String> allTypes) {
+    if (!allTypes.contains(vertexType))
+      throw new IllegalArgumentException("Edge source '" + esd.edgeType + "' resolves its '" + endpoint
+          + "' endpoint against vertex type '" + vertexType + "', which no vertex source imports. "
+          + "Declared vertex types: " + allTypes);
   }
 
   public long getVertexCount() {
@@ -818,9 +865,11 @@ public class GraphImporter implements AutoCloseable {
   }
 
   /**
-   * Endpoints that named a key no vertex of the referenced type carries. Such an edge is skipped -
-   * there is nothing to attach it to - but the count is what tells a caller that the graph it got
-   * is smaller than the file it handed over, rather than leaving the import to look complete.
+   * Edges that could not be created because an endpoint named a key no vertex of the referenced
+   * type carries. One per edge, not per endpoint: a row of an edge source whose {@code from} and
+   * {@code to} both fail to resolve is one edge lost, and counts once. The edge is skipped - there
+   * is nothing to attach it to - but the count is what tells a caller that the graph it got is
+   * smaller than the file it handed over, rather than leaving the import to look complete.
    */
   public long getUnresolvedEdgeCount() {
     return unresolvedEdges;
