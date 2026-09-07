@@ -461,7 +461,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
       "GET /api/v1/cluster", "POST /api/v1/cluster/peer", "DELETE /api/v1/cluster/peer/{peerId}",
       "POST /api/v1/cluster/leader", "POST /api/v1/cluster/stepdown", "POST /api/v1/cluster/leave",
       "POST /api/v1/cluster/verify/{database}", "POST /api/v1/cluster/resync/{database}",
-      "POST /api/v1/cluster/bootstrap-state",
+      "POST /api/v1/cluster/bootstrap-state", "POST /api/v1/cluster/capabilities",
       "GET /api/v1/ha/snapshot/{database}", "GET /api/v1/ha/snapshot/{database}/checksums");
 
   private static final List<String> EXPECTED_OPERATIONS =

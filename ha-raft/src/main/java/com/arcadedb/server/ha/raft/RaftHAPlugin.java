@@ -241,6 +241,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // Issue #4147: pre-bootstrap state RPC, used by the bootstrap leader at first cluster
     // formation to collect each peer's (fingerprint, lastTxId) per database.
     routes.addExactPath("/api/v1/cluster/bootstrap-state", new PostBootstrapStateHandler(httpServer, this));
+    // Issue #7219: peer-capability advertisement RPC, polled by the leader so it can decide for itself whether
+    // an optional wire-format section is safe to write. A node predating this route answers 404, and that 404 is
+    // the answer - see PostCapabilitiesHandler.
+    routes.addExactPath("/api/v1/cluster/capabilities", new PostCapabilitiesHandler(httpServer, this));
     LogManager.instance().log(this, Level.INFO, "Raft cluster management endpoints registered");
   }
 
