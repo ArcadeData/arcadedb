@@ -2767,9 +2767,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // not the case this re-opens: applyTransaction routes a DROP_DATABASE_ENTRY through
       // writePersistedAppliedIndexDroppingDatabase, which evicts the per-database entry, so the read
       // below already returns -1 for a dropped database and the skip was never reachable for one.
+      //
+      // Both volatile collaborators are read once into locals and used from there for the rest of this
+      // forceSnapshot branch (the normal-create arm below is untouched and keeps reading the field).
+      // createStateMachine() (RaftHAServer:1416-1421) is the single production wiring point and sets the two on
+      // consecutive lines, so "server is null" and "raftHAServer is null" are the same not-yet-wired state
+      // rather than two independent ones - which is why they get the same treatment here instead of one being
+      // captured and the other re-read.
+      final ArcadeDBServer localServer = this.server;
+
       final long persistedApplied = readPersistedAppliedIndex(databaseName);
       if (persistedApplied >= entryIndex) {
-        if (server != null && server.existsDatabase(databaseName)) {
+        if (localServer != null && localServer.existsDatabase(databaseName)) {
           LogManager.instance().log(this, Level.INFO,
               "Database '%s' already reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
                   + "entryIndex=%d) and is registered on this node; skipping the snapshot re-download",
@@ -2818,8 +2827,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       try {
         // install() keeps the database open during the download and rolls back on failure, so a
         // failed restore never leaves it closed.
-        SnapshotInstaller.install(databaseName, SnapshotInstaller.resolveDatabasePath(server, databaseName),
-            leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+        SnapshotInstaller.install(databaseName, SnapshotInstaller.resolveDatabasePath(localServer, databaseName),
+            leaderHttpAddr, leaderHttpsAddr, clusterToken, localServer);
       } catch (final IOException e) {
         throw new RuntimeException("Failed to install snapshot for restored database '" + databaseName + "'", e);
       }

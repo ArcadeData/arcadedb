@@ -247,3 +247,34 @@ Tests after the cycle-1 change: `Issue7221` + `Issue7143` + `Issue6202SnapshotIn
 `Issue6111StaleSnapshotReadFloorTest` + `Issue6760PartialSnapshotInstallTest` = 44 green; full `ha-raft`
 unit lane again 389 run / 0 failures / 0 errors, with the same environmental `LeaveClusterTest` fork
 crash from the externally-held port 2480.
+
+### Cycle 2 - `514e90ff26`
+
+`claude` re-verified the sibling-directory claim, the `existsDatabase` mirror of the create arm, both
+"argued, not fixed" rows, and the cycle-1 null fix ("a genuine, separate bug fix, not defensive
+padding"). Two non-blocking notes, both about the *other* volatile collaborator:
+
+> `server != null && server.existsDatabase(databaseName)` [...] reads the volatile `server` field twice
+> [...] the same pattern the second commit just applied to `raftHAServer` two lines below.
+
+> if `server` were ever null when this branch's `persistedApplied >= entryIndex` is true, execution now
+> falls through to the restore flow and eventually calls
+> `SnapshotInstaller.resolveDatabasePath(server, databaseName)`, which dereferences `server` unguarded.
+
+**Both applied, as one change**, because they are one inconsistency: the force branch now reads
+`this.server` once into `localServer` and uses it for the guard, for `resolveDatabasePath` and for the
+`install` call. The reviewer's "server and raftHAServer are wired together in the same factory method"
+was checked rather than accepted: `grep -rn --include='*.java' "\.setServer(" ha-raft/src/main/java
+server/src/main/java` gives exactly one production call, `RaftHAServer:1418`, on the line before
+`sm.setRaftHAServer(this)` in `createStateMachine()`, whose own javadoc says both collaborators must be
+set. So the two nulls are the same not-yet-wired state, and the comment at the call site says that with
+the line reference.
+
+The normal-create arm below was deliberately left reading the field: it is a different branch, it is
+not what this issue is about, and widening the diff into working code to make an unrelated arm
+symmetrical is not a trade this PR should make. The comment says so, so the next reader does not read
+the asymmetry as an oversight.
+
+Tests after the cycle-2 change: the six state-machine/snapshot classes = 48 green; full `ha-raft` unit
+lane again 389 run / 0 failures / 0 errors, with the same environmental `LeaveClusterTest` fork crash
+from the externally-held port 2480.
