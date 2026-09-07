@@ -266,3 +266,26 @@ Reviewer: `claude`. No blocking findings; two items applied, none deferred.
 
 Re-run: `Issue7225AllowlistUnlearnsRemovedPeersTest` 9/9, `Issue7132AllowlistLearnsRuntimePeersTest` 9/9,
 `PeerAddressAllowlistFilterTest` 41/41, `HealthMonitorTest` 29/29.
+
+### Cycle 3 - fad2d2706e
+
+The `claude` comment on this SHA was the single word `test` - a degenerate bot run carrying no review
+content, not an approval and not a finding. CodeRabbit reported "no actionable comments were generated".
+
+The one thing on the PR that WAS actionable was the red `Codacy Static Code Analysis` check, which the same
+check passes on comparable merged PRs (#7246, #7212, #7210). Its three findings, read from the Codacy API:
+
+```
+$ curl -s 'https://app.codacy.com/api/v3/analysis/organizations/gh/ArcadeData/repositories/arcadedb/pull-requests/7251/issues'
+PMD_category_java_codestyle_FieldDeclarationsShouldBeAtStartOfClass x3
+  PeerAddressAllowlistFilter.java:121  private volatile Set<String> pinnedHosts
+  PeerAddressAllowlistFilter.java:124  private volatile Set<String> memberHosts
+  PeerAddressAllowlistFilter.java:154  private volatile int         resolvedPeerHosts
+```
+
+All three are the same rule, and the cause is structural rather than anything about the new fields: the
+`HostResolver` nested interface was declared before the field block, and PMD counts a nested type as the end
+of the field section - so EVERY field in this class already violated the rule, and Codacy reports only the
+ones a diff touches. Moved the interface to the bottom of the class, which clears all three and stops the
+next field added to this file inheriting the same report. No semantic change; the allowlist tests, the #7132
+tests and `Issue3890RaftParametersPublicationTest` are green after it.

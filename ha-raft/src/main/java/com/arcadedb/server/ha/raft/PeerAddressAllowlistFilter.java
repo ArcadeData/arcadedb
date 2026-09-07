@@ -102,12 +102,6 @@ import java.util.logging.Level;
  */
 final class PeerAddressAllowlistFilter extends ServerTransportFilter {
 
-  /** Pluggable host resolver so tests can drive resolution deterministically without real DNS. */
-  @FunctionalInterface
-  interface HostResolver {
-    InetAddress[] resolve(String host) throws UnknownHostException;
-  }
-
   // Minimum spacing between miss-triggered re-resolutions. Bounds DNS load under a connection flood
   // (at startup or from a non-peer) while letting the allowlist converge within ~1s.
   private static final long        MISS_RESOLVE_FLOOR_MS = 1_000L;
@@ -582,5 +576,17 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   public String toString() {
     return "PeerAddressAllowlistFilter{peerHosts=" + peerHosts + ", pinnedHosts=" + pinnedHosts + ", memberHosts="
         + memberHosts + ", allowed=" + allowedIps.get() + "}";
+  }
+
+  /**
+   * Pluggable host resolver so tests can drive resolution deterministically without real DNS.
+   * <p>
+   * Declared last rather than first so it does not sit between the class header and the fields: PMD's
+   * {@code FieldDeclarationsShouldBeAtStartOfClass} counts a nested type as the start of the method section,
+   * so every field declared after it is reported, and Codacy reports the ones a diff happens to touch.
+   */
+  @FunctionalInterface
+  interface HostResolver {
+    InetAddress[] resolve(String host) throws UnknownHostException;
   }
 }
