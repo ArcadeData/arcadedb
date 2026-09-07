@@ -29,6 +29,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
@@ -415,7 +416,7 @@ class Issue7209SnapshotMarkerPruningTest {
    * has something to checkpoint.
    */
   private static void setLastApplied(final ArcadeStateMachine sm, final long term, final long index) throws Exception {
-    final java.lang.reflect.Field f = ArcadeStateMachine.class.getDeclaredField("lastAppliedIndex");
+    final Field f = ArcadeStateMachine.class.getDeclaredField("lastAppliedIndex");
     f.setAccessible(true);
     ((AtomicLong) f.get(sm)).set(index);
 

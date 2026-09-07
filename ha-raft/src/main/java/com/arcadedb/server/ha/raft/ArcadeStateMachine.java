@@ -1314,6 +1314,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@link #notifyInstallSnapshotFromLeader} (follower-side install). Markers below {@code index} are
    * pruned best-effort before returning, see {@link #pruneObsoleteSnapshotMarkers}.
    *
+   * <b>Not synchronised, deliberately.</b> Both callers can in principle register concurrently, and a
+   * low-index registration whose file lands after a concurrent high-index prune leaves that one marker
+   * behind: its own prune runs with its own (lower) {@code keepIndex} and so removes nothing. It is
+   * self-healing - any later prune runs with a higher {@code keepIndex} and sweeps it - and it costs a
+   * zero-byte file in the meantime. A lock here would add serialisation to the snapshot path to buy
+   * that back. What the prune must never do is delete a marker that is still the latest, and the
+   * strictly-below comparison in {@link #pruneObsoleteSnapshotMarkers} guarantees that without a lock:
+   * {@code keepIndex} is never above the index {@code storage} reports as latest.
+   *
    * @return {@code true} if the marker was written and registered, {@code false} on I/O failure
    */
   private boolean registerSnapshotMarker(final long term, final long index) {
