@@ -36,6 +36,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
 import com.arcadedb.server.security.SecurityUserFileRepository;
 import com.arcadedb.utility.FileUtils;
@@ -126,6 +127,39 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * it leaks into subsequent tests in the same JVM.
    */
   public static volatile AtomicInteger TEST_WAL_GAP_COUNTER = null;
+
+  /**
+   * Test-only recorder of the PUBLISHING schema entries applied on a follower (issue #6990). When non-null, every
+   * {@code SCHEMA_ENTRY} that tells the follower to reload its schema is recorded - the instalment/split chunks that
+   * only deliver pages are deliberately not, since they are not the unit a DDL batch is measured in.
+   * <p>
+   * Records ENTRY INDEXES rather than counting occurrences, because {@code applyWithRetry} can re-run an apply that
+   * failed: a plain counter would report a retried entry twice and turn an exact assertion into a flake.
+   * <p>
+   * Tests that set this MUST reset it to {@code null} in an {@code @AfterEach} method, otherwise it leaks into
+   * subsequent tests in the same JVM.
+   */
+  public static volatile SchemaEntryRecorder TEST_SCHEMA_ENTRY_COUNTER = null;
+
+  /**
+   * See {@link #TEST_SCHEMA_ENTRY_COUNTER}. Deduplicating by Raft entry index is what makes
+   * {@link #count()} the number of schema entries the leader PUBLISHED, rather than the number of times this node
+   * happened to apply one.
+   */
+  public static final class SchemaEntryRecorder {
+    private final Set<Long> appliedIndexes = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Number of distinct publishing schema entries applied so far.
+     */
+    public int count() {
+      return appliedIndexes.size();
+    }
+
+    private void record(final long entryIndex) {
+      appliedIndexes.add(entryIndex);
+    }
+  }
 
   private final    SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final    AtomicLong                lastAppliedIndex = new AtomicLong(-1);
@@ -558,6 +592,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // lifecycle stays in NEW and that precondition throws IllegalStateException (issue #4754).
     getLifeCycle().transition(LifeCycle.State.STARTING);
     getLifeCycle().transition(LifeCycle.State.RUNNING);
+    // From here on this state machine writes zero-byte snapshot markers with no .md5 companion by
+    // design (see registerSnapshotMarker), which makes Ratis warn once per marker on every checkpoint
+    // and every restart. Silence just that one message before the storage that emits it is opened
+    // (issue #6991). Idempotent, so the RaftHAServer.start() call and this one cannot stack.
+    RatisSnapshotDigestWarningFilter.install();
     storage.init(raftStorage);
     reinitialize();
     // Recover any snapshot installations that were interrupted by a crash
@@ -2046,11 +2085,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
 
     HALog.log(this, HALog.DETAILED,
-        "Applying schema entry to database '%s' (entryIndex=%d): filesToAdd=%d, filesToRemove=%d, hasSchemaJson=%s",
+        "Applying schema entry to database '%s' (entryIndex=%d): filesToAdd=%d, filesToRemove=%d, schemaPayload=%s",
         decoded.databaseName(), entryIndex,
         decoded.filesToAdd() != null ? decoded.filesToAdd().size() : 0,
         decoded.filesToRemove() != null ? decoded.filesToRemove().size() : 0,
-        decoded.schemaJson() != null && !decoded.schemaJson().isEmpty());
+        decoded.schemaDelta() != null ? "delta" :
+            decoded.schemaJson() != null && !decoded.schemaJson().isEmpty() ? "document" : "none");
 
     if (HALog.isEnabled(HALog.DETAILED)) {
       HALog.log(this, HALog.DETAILED, "Received SCHEMA_ENTRY filesToAdd=%s", decoded.filesToAdd());
@@ -2065,7 +2105,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // shard executors with a 30s awaitTermination) on the Raft apply thread, stalling replication.
     // installSealedFileBytes already reopened the sealed store and the clear WAL applies to the live
     // mutable-bucket pages, so neither the schema update nor the reload is needed.
+    // A schema delta (issue #6989) disqualifies an entry from this shortcut for the same reason it disqualifies
+    // it from walOnlyEntry below: the change is carried OUTSIDE schemaJson, so an entry holding one does publish
+    // a schema change and does need the reload. No producer ships both today - the compaction path always
+    // carries the whole document - and this keeps that from becoming a silent skip if one ever does.
     final boolean sealedOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
+        && decoded.schemaDelta() == null
         && (isNotEmpty(decoded.sealedFileBlobs()) || isNotEmpty(decoded.sealedFileChunks()));
 
     // A non-final chunk of a schema change split across several entries (see
@@ -2082,6 +2127,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // that would leave the new files unregistered in the schema.
     final boolean deliveryOnlyEntry = decoded.moreChunksFollow();
 
+    final SchemaEntryRecorder schemaEntryRecorder = TEST_SCHEMA_ENTRY_COUNTER;
+    if (schemaEntryRecorder != null && !deliveryOnlyEntry)
+      schemaEntryRecorder.record(entryIndex);
+
     // A commit that ran inside a recordFileChanges() callback but created no file and left the schema
     // version untouched ships as a SCHEMA_ENTRY carrying nothing but WAL, because the buffering in
     // RaftReplicatedDatabase.commit() is what preserves ordering against the enclosing DDL. Such an
@@ -2089,8 +2138,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // getFileByIdIfExists() - so the reload is pure cost on the single Raft apply thread, where it
     // re-instantiates every TimeSeries engine and closes shard executors with a 30s awaitTermination.
     // Same reasoning as sealedOnlyEntry above.
+    //
+    // A delta entry (issue #6989) carries its schema change OUTSIDE schemaJson, so it must not be mistaken for
+    // one of these: it publishes a schema change and the reload below is exactly what registers it.
     final boolean walOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
-        && (decoded.schemaJson() == null || decoded.schemaJson().isEmpty())
+        && (decoded.schemaJson() == null || decoded.schemaJson().isEmpty()) && decoded.schemaDelta() == null
         && !isNotEmpty(decoded.sealedFileBlobs()) && !isNotEmpty(decoded.sealedFileChunks())
         && decoded.walEntries() != null && !decoded.walEntries().isEmpty();
 
@@ -2109,8 +2161,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // data-loss window applySealedBlobs closes for a store that fits inline.
       applySealedChunks(db, decoded.sealedFileChunks());
 
-      if (!sealedOnlyEntry && decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
+      if (decoded.schemaDelta() != null)
+        applySchemaDelta(db, decoded);
+      else if (!sealedOnlyEntry && decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
         db.getSchema().getEmbedded().update(new JSONObject(decoded.schemaJson()));
+
+      // File ids this entry wrote pages into. The incremental refresh below re-runs the load hooks of the
+      // already-registered components among them, which is what re-reads an LSM mutable index' page 0 - the full
+      // rebuild used to get that for free by re-instantiating every component in the database (#6988).
+      final Set<Integer> walTouchedFileIds = new HashSet<>();
 
       // Apply WAL entries BEFORE the schema reload. New files created above are initially empty;
       // reloading before writing pages would see empty files and silently ignore them, leaving
@@ -2127,6 +2186,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
               ? bucketDeltas.get(i)
               : Collections.emptyMap();
           final WALFile.WALTransaction walTx = deserializeWalTransaction(walData);
+          if (walTx.pages != null)
+            for (final WALFile.WALPage page : walTx.pages)
+              walTouchedFileIds.add(page.fileId);
           // ignoreErrors=true: same rationale as applyTxEntry - replay safety during node restart
           db.getTransactionManager().applyChanges(walTx, bucketDelta, true);
         }
@@ -2156,14 +2218,66 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Skipped for sealed-only TimeSeries compaction entries (see sealedOnlyEntry above), for
       // delivery-only chunks of a split schema change (see deliveryOnlyEntry above) and for WAL-only
       // entries (see walOnlyEntry above).
-      if (!sealedOnlyEntry && !deliveryOnlyEntry && !walOnlyEntry)
-        db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
+      //
+      // The refresh is INCREMENTAL whenever the entry can be expressed that way (#6988): load() re-instantiates a
+      // Component for every file in the database and reads page 0 of each, so running it once per DDL statement
+      // costs O(entries x total files) - quadratic in the number of types, and all of it serialized on the single
+      // Ratis apply thread (a 1209-type schema took ~2h53m to replicate, issue #6982). loadIncremental() touches
+      // only the files this entry created or wrote to, and refuses - returning false, having changed nothing - for
+      // every entry whose effect it cannot express (a retired file, a compacted index, a bloom filter, a new
+      // dictionary), which is what keeps the ordering guarantees of #4743 and #5443 on the full-rebuild path.
+      if (!sealedOnlyEntry && !deliveryOnlyEntry && !walOnlyEntry) {
+        final LocalSchema schema = db.getSchema().getEmbedded();
+        final boolean incremental = incrementalSchemaApplyEnabled()
+            && schema.loadIncremental(ComponentFile.MODE.READ_WRITE, keysOrNull(decoded.filesToRemove()),
+            walTouchedFileIds);
+        if (!incremental)
+          schema.load(ComponentFile.MODE.READ_WRITE, true);
+      }
 
     } catch (final IOException e) {
       throw new RuntimeException("Failed to apply schema entry for database '" + decoded.databaseName() + "'", e);
     }
 
     HALog.log(this, HALog.DETAILED, "Applied schema change to database '%s'", decoded.databaseName());
+  }
+
+  /**
+   * Applies a schema change that arrived as a DELTA rather than as a whole document (issue #6989): merges it
+   * into this node's own schema and hands the result to {@code LocalSchema.update()}, which is the same call the
+   * whole-document path makes, so everything downstream of it - the file rewrite, the plan-cache invalidation
+   * and the {@code load()} below - is unchanged.
+   * <p>
+   * <b>{@code baseVersion} is a diagnostic, not a gate.</b> A follower's {@code versionSerial} legitimately runs
+   * AHEAD of the document the leader shipped: the {@code load()} that follows every schema entry re-saves the
+   * schema whenever it repaired anything, and each save increments the counter. Refusing on a mismatch would
+   * therefore refuse the common case - and there is nothing to refuse INTO, because a delta entry carries no
+   * whole document to fall back to.
+   * <p>
+   * What makes that safe is the delta itself rather than the version: it carries the leader's authoritative key
+   * sets, so the merged document has the leader's structure whatever the receiver started from, and only the
+   * content of children the leader considered unchanged is inherited locally. Genuine divergence stays the
+   * business of the WAL-version-gap detection and {@code checkDatabase}, which is where it was before this
+   * entry type existed.
+   */
+  // @VisibleForTesting
+  void applySchemaDelta(final DatabaseInternal db, final RaftLogEntryCodec.DecodedEntry decoded)
+      throws IOException {
+    final SchemaDelta.Payload delta = decoded.schemaDelta();
+    final LocalSchema schema = db.getSchema().getEmbedded();
+
+    HALog.log(this, HALog.DETAILED,
+        "Applying a %d-char schema delta to database '%s' (leader base version %d, local version %d)",
+        delta.deltaJson().length(), db.getName(), delta.baseVersion(), schema.getVersion());
+
+    final JSONObject merged = SchemaDelta.apply(schema.toJSON(), new JSONObject(delta.deltaJson()));
+
+    // The MERGED document is what this entry publishes, so it - not the empty schemaJson slot - is what the
+    // #4083 cross-reference has to look at. Only reached at DETAILED.
+    if (HALog.isEnabled(HALog.DETAILED))
+      logFollowerSchemaPayloadDiagnostics(db.getName(), merged.toString(), decoded.filesToAdd());
+
+    schema.update(merged);
   }
 
   /**
@@ -2595,6 +2709,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   private static boolean isNotEmpty(final List<?> list) {
     return list != null && !list.isEmpty();
+  }
+
+  private static Set<Integer> keysOrNull(final Map<Integer, String> map) {
+    return map == null ? null : map.keySet();
+  }
+
+  /**
+   * Safety valve for {@link LocalSchema#loadIncremental} (issue #6988). Read per entry rather than cached so an
+   * operator can turn the incremental refresh off on a running server and have the very next applied entry go back
+   * to the full rebuild, without a restart.
+   */
+  // @VisibleForTesting - Issue6988SchemaIncrementalApplySettingTest pins the "read per entry, never cached" half,
+  // which is the half a reader cannot tell from the call site and which Issue6988FullRebuildFallbackIT cannot show
+  // (it sets the value once, at server start).
+  boolean incrementalSchemaApplyEnabled() {
+    // The server-scoped value when this state machine is wired to one, the global default otherwise: tests drive
+    // applySchemaEntry with no server attached, and they must exercise the same path production does.
+    final ArcadeDBServer currentServer = server;
+    return currentServer != null ?
+        currentServer.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_SCHEMA_INCREMENTAL_APPLY) :
+        GlobalConfiguration.HA_SCHEMA_INCREMENTAL_APPLY.getValueAsBoolean();
   }
 
   // @VisibleForTesting

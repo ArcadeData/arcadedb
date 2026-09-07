@@ -242,6 +242,10 @@ public enum GlobalConfiguration {
   FREE_PAGE_RAM("arcadedb.freePageRAM", SCOPE.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,
       50),
 
+  SCHEMA_BULK_DDL_SCRIPT("arcadedb.schemaBulkDDLScript", SCOPE.DATABASE,
+      "Run a SQL script whose statements are ALL schema definition DDL inside a single schema recording session, so the batch is persisted - and, under HA, replicated as one Raft entry - once instead of once per statement (issue #6990). The trade is that the database write lock, and the schema recording session with it, are held for the whole script instead of once per statement. Under HA an ordinary commit on the leader waits out an active recording session for at most arcadedb.ha.quorumTimeout before proceeding anyway, so a script whose execution outlasts that widens the window the #4083 guard covers - a window a long index build already opens today. Set to false to go back to one session per statement",
+      Boolean.class, true),
+
   TYPE_DEFAULT_BUCKETS("arcadedb.typeDefaultBuckets", SCOPE.DATABASE, "Default number of buckets to create per type", Integer.class,
       1),
 
@@ -1628,6 +1632,18 @@ public enum GlobalConfiguration {
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 
+  HA_SCHEMA_INCREMENTAL_APPLY("arcadedb.ha.schemaIncrementalApply", SCOPE.SERVER,
+      """
+      When true (default) a follower applying a committed DDL entry instantiates only the components for the \
+      files that entry created, instead of rebuilding every component in the database from scratch. The full \
+      rebuild is O(total files) per entry, which makes building a large schema quadratic in the number of types \
+      and serializes all of it on the single Raft apply thread (issue #6988: a 1209-type schema took ~2h53m to \
+      replicate). Entries the incremental path cannot express - anything that retires a file, ships a compacted \
+      index, a bloom filter or a new dictionary - still fall back to the full rebuild automatically. Set to false \
+      to force the full rebuild for every entry, which is only useful to isolate a suspected incremental-apply \
+      regression.""",
+      Boolean.class, true),
+
   HA_ELECTION_TIMEOUT_MIN("arcadedb.ha.electionTimeoutMin", SCOPE.SERVER,
       """
       Minimum election timeout in milliseconds: a follower starts a new election if it has not heard from \
@@ -1874,6 +1890,28 @@ public enum GlobalConfiguration {
       Defaults to 128MB, higher than Ratis's 64MB stock default, so reasonable bulk-load batches do not get rejected. \
       Lower it to bound memory exposure on hostile inputs; raise it if a single transaction legitimately exceeds 128MB.""",
       Long.class, 128L * 1024 * 1024),
+
+  HA_SCHEMA_DELTA("arcadedb.ha.schemaDelta", SCOPE.SERVER,
+      """
+      Ship schema changes to the followers as a DELTA against the schema they already hold, instead of a \
+      complete serialization of the schema document on every single DDL (issue #6989). A one-property \
+      CREATE PROPERTY then costs a Raft entry proportional to the change rather than to the whole schema, \
+      which on a large schema is the difference between kilobytes and megabytes per entry - paid four times \
+      over, on the leader's CPU, on the wire, in every node's Raft log, and in the follower's rewrite of \
+      schema.json. The leader falls back to the whole document by itself whenever a delta cannot be trusted: \
+      the first schema entry after it becomes leader, an entry shipped in instalments, a compaction entry, or \
+      a change too large for a delta to be worth it. \
+      \
+      The leader keeps one parsed copy of the schema document per replicated database while this is on, to diff \
+      the next change against; on a multi-MB schema that is tens of MB of heap per database, released as soon as \
+      the setting goes back off. \
+      \
+      OFF BY DEFAULT, and it must stay off during a rolling upgrade. A node running a version that predates \
+      the delta section of SCHEMA_ENTRY cannot see it - it stops decoding after the sections it knows - and \
+      would apply an empty schema change and diverge SILENTLY. Reading a delta needs no configuration, so \
+      upgrade every node first, then turn this on: from that point every peer understands what the leader \
+      emits. Turning it back off is safe at any time.""",
+      Boolean.class, false),
 
   HA_BOOTSTRAP_FROM_LOCAL_DATABASE("arcadedb.ha.bootstrapFromLocalDatabase", SCOPE.SERVER,
       """

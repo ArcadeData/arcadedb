@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -43,6 +44,14 @@ public class AlterTimeSeriesTypeStatement extends DDLStatement {
   public List<DownsamplingTier>  tiers = new ArrayList<>();
 
   public AlterTimeSeriesTypeStatement() {
+  }
+
+  /**
+   * Batchable into a DDL script's bulk schema scope (issue #6990). Altering a TimeSeries type rewrites its definition; samples are untouched.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    return true;
   }
 
   @Override

@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import org.apache.ratis.client.RaftClient;
@@ -938,6 +939,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public void start() throws IOException {
     // Suppress verbose Ratis internal logs - operators see ArcadeDB-level cluster events instead
     Logger.getLogger("org.apache.ratis").setLevel(Level.WARNING);
+    // Drop the one by-design SimpleStateMachineStorage warning about the missing snapshot digest,
+    // without silencing that logger's genuine failures (issue #6991).
+    RatisSnapshotDigestWarningFilter.install();
 
     final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
 

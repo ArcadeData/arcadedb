@@ -22,7 +22,10 @@ package com.arcadedb.query.sql.executor;
  * Created by luigidellaquila on 08/08/16.
  */
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.parser.BreakStatement;
+import com.arcadedb.query.sql.parser.DDLStatement;
 import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.Statement;
 
@@ -111,7 +114,60 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     };
   }
 
+  /**
+   * Runs the whole script, once, inside a single schema recording session when every statement in it is batchable
+   * schema definition DDL (issue #6990).
+   * <p>
+   * Each DDL statement opens a session of its own, and under HA the OUTERMOST session on the thread is the Raft entry
+   * boundary - so {@code CREATE TYPE; CREATE PROPERTY; CREATE PROPERTY; CREATE INDEX} is four entries, four serialized
+   * copies of the full schema and four synchronous quorum round trips, each taken with the database write lock held.
+   * A script is neither a session nor a transaction, so nothing collapsed them. Opening one outer frame here makes
+   * all four nest into it and publish once. On a non-replicated database the same frame collapses N schema-file
+   * writes into one.
+   * <p>
+   * The batch is opted into, not assumed: {@link #batchableAsOneSchemaSession()} requires every statement to be a
+   * {@link DDLStatement} that answers {@link DDLStatement#isBulkSchemaScopeSafe(DatabaseInternal)}, so a script that
+   * mixes in DML, that contains a rebuild/refresh/truncate/compaction, or that indexes or repartitions a type which
+   * already exists, keeps the pre-existing one-session-per-statement behaviour.
+   */
   private void doExecute(final int n) {
+    if (executed)
+      return;
+
+    if (batchableAsOneSchemaSession())
+      context.getDatabase().getSchema().bulkChange(() -> doExecuteInternal(n));
+    else
+      doExecuteInternal(n);
+  }
+
+  /**
+   * Whether this script is a batch of schema definition and nothing else, and may therefore run as one session.
+   * <p>
+   * A single-statement script is deliberately excluded: it already produces exactly one session, so wrapping it would
+   * add a frame that changes nothing but the code path it takes.
+   * <p>
+   * Asked ONCE, before the first statement runs, so the statements whose answer depends on the schema
+   * ({@code CREATE INDEX} on an existing type) see the schema the script started from. Re-asking per statement would
+   * be worse than useless: the answer decides whether to open a frame around ALL of them, and by the time the second
+   * statement runs that decision has already been taken.
+   */
+  private boolean batchableAsOneSchemaSession() {
+    if (statements == null || statements.size() < 2)
+      return false;
+
+    final DatabaseInternal database = context.getDatabase();
+    if (database == null
+        || !database.getConfiguration().getValueAsBoolean(GlobalConfiguration.SCHEMA_BULK_DDL_SCRIPT))
+      return false;
+
+    for (final Statement statement : statements)
+      if (!(statement instanceof DDLStatement ddl) || !ddl.isBulkSchemaScopeSafe(database))
+        return false;
+
+    return true;
+  }
+
+  private void doExecuteInternal(final int n) {
     if (!executed) {
       executeUntilReturn();
       executed = true;

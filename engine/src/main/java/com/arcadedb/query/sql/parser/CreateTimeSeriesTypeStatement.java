@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -51,6 +52,14 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
   public List<ColumnDef> fields = new ArrayList<>();
 
   public CreateTimeSeriesTypeStatement() {
+  }
+
+  /**
+   * Batchable into a DDL script's bulk schema scope (issue #6990). Creating a TimeSeries type builds its engine and registers the type. Nothing is ingested at creation.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    return true;
   }
 
   @Override

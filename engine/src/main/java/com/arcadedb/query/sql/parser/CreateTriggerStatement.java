@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -89,6 +90,14 @@ public class CreateTriggerStatement extends DDLStatement {
     if (actionCode == null || actionCode.trim().isEmpty()) {
       throw new CommandSQLParsingException("Trigger action code is required");
     }
+  }
+
+  /**
+   * Batchable into a DDL script's bulk schema scope (issue #6990). A trigger is schema metadata; registering one visits no record.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    return true;
   }
 
   @Override
