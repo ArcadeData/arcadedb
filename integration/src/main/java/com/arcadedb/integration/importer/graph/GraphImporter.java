@@ -834,6 +834,10 @@ public class GraphImporter implements AutoCloseable {
    * vertex source only works when that source is declared first; a self-reference is resolved once
    * the source has been read to the end and needs no such ordering. A standalone edge source runs
    * after every vertex source and can name any of them.
+   * <p>
+   * Passing this is what lets {@link #collectEdge} and {@link #processEdgeSource} read a
+   * {@link TypeState} without testing it for null: every type an edge names has one by the time
+   * they run, and a name that could not is an error here rather than an edge quietly dropped.
    */
   private void validateEdgeTargets() {
     // One source per vertex type: processVertexSource() replaces the type's TypeState rather than
@@ -1073,8 +1077,6 @@ public class GraphImporter implements AutoCloseable {
       if (fieldVal == null || fieldVal.isEmpty())
         return;
       final TypeState targetTs = typeStates.get(ed.targetType);
-      if (targetTs == null)
-        return;
       final char delim = ed.delimiter.charAt(0);
       int start = fieldVal.charAt(0) == delim ? 1 : 0;
       int pos;
@@ -1101,8 +1103,6 @@ public class GraphImporter implements AutoCloseable {
       if (key == null)
         return;
       final TypeState targetTs = typeStates.get(ed.targetType);
-      if (targetTs == null)
-        return;
       final int targetIdx = (ed.byName ? targetTs.nameToIdx : targetTs.idToIdx).get(key);
       if (targetIdx < 0) {
         unresolvedEdges++;
@@ -1162,8 +1162,6 @@ public class GraphImporter implements AutoCloseable {
     final EdgeSourceConfig cfg = esd.config;
     final TypeState fromTs = typeStates.get(cfg.fromVertexType);
     final TypeState toTs = typeStates.get(cfg.toVertexType);
-    if (fromTs == null || toTs == null)
-      return;
 
     // Own collector per edge source, never the one vertex-derived edges of the same type and
     // endpoints share. A collector's property buffers are indexed by the collector-wide edge index,
