@@ -128,6 +128,39 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   public static volatile AtomicInteger TEST_WAL_GAP_COUNTER = null;
 
+  /**
+   * Test-only recorder of the PUBLISHING schema entries applied on a follower (issue #6990). When non-null, every
+   * {@code SCHEMA_ENTRY} that tells the follower to reload its schema is recorded - the instalment/split chunks that
+   * only deliver pages are deliberately not, since they are not the unit a DDL batch is measured in.
+   * <p>
+   * Records ENTRY INDEXES rather than counting occurrences, because {@code applyWithRetry} can re-run an apply that
+   * failed: a plain counter would report a retried entry twice and turn an exact assertion into a flake.
+   * <p>
+   * Tests that set this MUST reset it to {@code null} in an {@code @AfterEach} method, otherwise it leaks into
+   * subsequent tests in the same JVM.
+   */
+  public static volatile SchemaEntryRecorder TEST_SCHEMA_ENTRY_COUNTER = null;
+
+  /**
+   * See {@link #TEST_SCHEMA_ENTRY_COUNTER}. Deduplicating by Raft entry index is what makes
+   * {@link #count()} the number of schema entries the leader PUBLISHED, rather than the number of times this node
+   * happened to apply one.
+   */
+  public static final class SchemaEntryRecorder {
+    private final Set<Long> appliedIndexes = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Number of distinct publishing schema entries applied so far.
+     */
+    public int count() {
+      return appliedIndexes.size();
+    }
+
+    private void record(final long entryIndex) {
+      appliedIndexes.add(entryIndex);
+    }
+  }
+
   private final    SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final    AtomicLong                lastAppliedIndex = new AtomicLong(-1);
   private final    AtomicLong                electionCount    = new AtomicLong(0);
@@ -2093,6 +2126,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // standalone DDL that adds files without changing the schema version - and skipping the reload for
     // that would leave the new files unregistered in the schema.
     final boolean deliveryOnlyEntry = decoded.moreChunksFollow();
+
+    final SchemaEntryRecorder schemaEntryRecorder = TEST_SCHEMA_ENTRY_COUNTER;
+    if (schemaEntryRecorder != null && !deliveryOnlyEntry)
+      schemaEntryRecorder.record(entryIndex);
 
     // A commit that ran inside a recordFileChanges() callback but created no file and left the schema
     // version untouched ships as a SCHEMA_ENTRY carrying nothing but WAL, because the buffering in

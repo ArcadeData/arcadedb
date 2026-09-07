@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.Index;
@@ -135,6 +136,40 @@ public class CreateIndexStatement extends DDLStatement {
     for (final String directive : DIRECTIVE_METADATA_KEYS)
       json.remove(directive);
     return json;
+  }
+
+  /**
+   * Not batchable into a DDL script's bulk schema scope when the target type ALREADY EXISTS (issue #6990).
+   * <p>
+   * {@code TypeIndexBuilder.create()} populates the new index by scanning every record of the type, inside its own
+   * {@code recordFileChanges} session. On a type the same script created a moment earlier there is nothing to scan -
+   * that is the {@code CREATE TYPE; CREATE PROPERTY; CREATE INDEX} shape this feature exists for, and it stays
+   * batched. On a type that was already there the same statement is a rebuild wearing a different verb: it would run
+   * the full build under the batch's hold on the database write lock and fold its WAL into the batch's single Raft
+   * entry, which is exactly what {@code REBUILD INDEX} is excluded for.
+   * <p>
+   * EXISTENCE, NOT EMPTINESS, is the test, and deliberately so. Asking whether the type holds any record means
+   * {@code Bucket.count()}, which is O(1) only while its cached counter is warm and otherwise recomputes by scanning -
+   * a classification-time cost that could dwarf the saving it is deciding about. Existence is exact, free, and errs
+   * the harmless way: an existing but empty type loses the batching, which costs one Raft entry per statement and
+   * never costs correctness.
+   * <p>
+   * The same conservative answer is given when the target cannot be resolved cheaply at all - no ON clause, or a
+   * {@code $variable} type name that is only bound at execution time.
+   */
+  @Override
+  public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
+    if (typeName == null)
+      return false;
+
+    final String name = typeName.getStringValue();
+    if (name == null || name.startsWith("$"))
+      return false;
+
+    // Asked ONCE, before the script's first statement runs (see ScriptExecutionPlan.batchableAsOneSchemaSession), so
+    // "does not exist" means "the script has not created it yet either" - which is what makes a from-scratch
+    // migration script batchable. Moving this check to execution time would invert the answer for exactly that case.
+    return !database.getSchema().existsType(name);
   }
 
   @Override
