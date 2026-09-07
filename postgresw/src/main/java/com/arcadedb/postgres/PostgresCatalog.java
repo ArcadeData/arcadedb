@@ -89,9 +89,13 @@ public class PostgresCatalog {
    */
   static final int OWNER_OID = 10;
   /**
-   * The schema PostgreSQL's built-in types live in, which is what {@code pg_type.typnamespace} answers here
+   * The schema PostgreSQL's own built-in objects live in, which is what {@code pg_type.typnamespace} answers here
    * (issue #7224). It is deliberately NOT the one schema this catalog emulates for the user's own types: a
    * type row joined to pg_namespace must report the namespace its own typnamespace column names.
+   * <p>
+   * Every place this catalog names that schema uses this constant - the type rows, a column's {@code udt_schema},
+   * and the collation rows - so the answer cannot come out one way on one surface and another way on the next,
+   * which is the failure mode #7224 itself was.
    */
   private static final String PG_CATALOG_SCHEMA = "pg_catalog";
 
@@ -987,7 +991,7 @@ public class PostgresCatalog {
                 type.getName(), "column_name", property.getName(), "ordinal_position", ordinal,//
                 "column_default", defaultValue == null ? null : defaultValue.toString(),//
                 "is_nullable", notNull ? "NO" : "YES", "data_type", pgType.typeName, "udt_catalog", schema,//
-                "udt_schema", "pg_catalog", "udt_name", pgType.typeName, "is_identity", "NO", "is_generated", "NEVER",//
+                "udt_schema", PG_CATALOG_SCHEMA, "udt_name", pgType.typeName, "is_identity", "NO", "is_generated", "NEVER",//
                 "is_updatable", "YES", "numeric_precision_radix", numericPrecisionRadix(pgType));
 
         // The type row a client joins pg_attribute to in order to name the column's type. It describes the
@@ -1040,13 +1044,13 @@ public class PostgresCatalog {
   private static Row characterSetRow(final Context context) {
     return new Row().with("information_schema.character_sets", "character_set_catalog", null, "character_set_schema",
         null, "character_set_name", "UTF8", "character_repertoire", "UCS", "form_of_use", "UTF8",
-        "default_collate_catalog", context.schema(), "default_collate_schema", "pg_catalog", "default_collate_name",
+        "default_collate_catalog", context.schema(), "default_collate_schema", PG_CATALOG_SCHEMA, "default_collate_name",
         "default");
   }
 
   private static Row collationRow(final Context context) {
     return new Row().with("information_schema.collations", "collation_catalog", context.schema(), "collation_schema",
-        "pg_catalog", "collation_name", "default", "pad_attribute", "NO PAD");
+        PG_CATALOG_SCHEMA, "collation_name", "default", "pad_attribute", "NO PAD");
   }
 
   private static List<DocumentType> sortedTypes(final Context context) {
