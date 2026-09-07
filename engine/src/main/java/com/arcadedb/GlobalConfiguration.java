@@ -2867,33 +2867,6 @@ public enum GlobalConfiguration {
   }
 
   /**
-   * Converts {@code iValue} to this setting's declared {@link #getType() type}, or throws
-   * {@link IllegalArgumentException} naming the key, the type and the offending value when it does not parse.
-   * <p>
-   * Issue #6875: this is the single place a value is turned into a setting's type, so that {@link #setValue(Object)}
-   * and the administrative writers that store into a {@link ContextConfiguration} instead
-   * ({@code set_server_setting} and {@code POST /api/v1/server "set server setting"}) accept and refuse exactly
-   * the same strings. Before it existed the writers stored whatever they were handed and the
-   * {@code NumberFormatException} surfaced later, inside whichever component read the setting next.
-   * <p>
-   * The integral parse is {@link FileUtils#getSizeAsNumber(Object)} on the trimmed text, which is what
-   * {@link #getValueAsInteger()} and {@link #getValueAsLong()} have always used to read one back; it is a strict
-   * superset of {@code Integer.parseInt}/{@code Long.parseLong}, so nothing that parsed before stops parsing.
-   * <p>
-   * {@code Boolean} stays as permissive as {@code Boolean.parseBoolean}, because this method cannot be the place
-   * that refuses: it is reachable from this class's static initializer, where a throw becomes an
-   * {@code ExceptionInInitializerError} that takes the whole engine down instead of the setting. The refusal lives
-   * one level up, in {@link #coerceFromAdminCommand(Object)} and
-   * {@link #setValueFromConfigurationSource(Object, String)}, which every writer of raw external text now goes
-   * through - {@link #readConfiguration()} included, since issue #7222.
-   *
-   * @param iValue the value to convert, or {@code null}
-   *
-   * @return the value as an instance of {@link #getType()}, or {@code null} when {@code iValue} is {@code null}
-   *
-   * @throws IllegalArgumentException if {@code iValue} cannot be represented as this setting's type
-   */
-  /**
    * The conversion {@link #coerce(Object)} performs, but STRICT about a {@code Boolean} setting: a text value that is
    * neither {@code true} nor {@code false} is refused instead of silently reading as {@code false}.
    * <p>
@@ -2936,6 +2909,33 @@ public enum GlobalConfiguration {
     return coerce(iValue);
   }
 
+  /**
+   * Converts {@code iValue} to this setting's declared {@link #getType() type}, or throws
+   * {@link IllegalArgumentException} naming the key, the type and the offending value when it does not parse.
+   * <p>
+   * Issue #6875: this is the single place a value is turned into a setting's type, so that {@link #setValue(Object)}
+   * and the administrative writers that store into a {@link ContextConfiguration} instead
+   * ({@code set_server_setting} and {@code POST /api/v1/server "set server setting"}) accept and refuse exactly
+   * the same strings. Before it existed the writers stored whatever they were handed and the
+   * {@code NumberFormatException} surfaced later, inside whichever component read the setting next.
+   * <p>
+   * The integral parse is {@link FileUtils#getSizeAsNumber(Object)} on the trimmed text, which is what
+   * {@link #getValueAsInteger()} and {@link #getValueAsLong()} have always used to read one back; it is a strict
+   * superset of {@code Integer.parseInt}/{@code Long.parseLong}, so nothing that parsed before stops parsing.
+   * <p>
+   * {@code Boolean} stays as permissive as {@code Boolean.parseBoolean}, because this method cannot be the place
+   * that refuses: it is reachable from this class's static initializer, where a throw becomes an
+   * {@code ExceptionInInitializerError} that takes the whole engine down instead of the setting. The refusal lives
+   * one level up, in {@link #coerceFromAdminCommand(Object)} and
+   * {@link #setValueFromConfigurationSource(Object, String)}, which every writer of raw external text now goes
+   * through - {@link #readConfiguration()} included, since issue #7222.
+   *
+   * @param iValue the value to convert, or {@code null}
+   *
+   * @return the value as an instance of {@link #getType()}, or {@code null} when {@code iValue} is {@code null}
+   *
+   * @throws IllegalArgumentException if {@code iValue} cannot be represented as this setting's type
+   */
   public Object coerce(final Object iValue) {
     if (iValue == null)
       return null;

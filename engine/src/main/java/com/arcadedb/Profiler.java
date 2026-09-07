@@ -112,6 +112,13 @@ public class Profiler {
    */
   private static volatile File[] canonicalDiskSpaceDirectory;
 
+  /**
+   * The overlay {@link #diskSpaceDirectory()} reads the database directory through. An empty
+   * {@link ContextConfiguration} is a pure proxy for the process-wide settings - it holds nothing and nothing here
+   * writes to it - so one shared instance is what a per-call {@code new} was already asking for.
+   */
+  private static final ContextConfiguration GLOBAL_SETTINGS = new ContextConfiguration();
+
   protected Profiler() {
   }
 
@@ -465,7 +472,7 @@ public class Profiler {
    * The directory whose filesystem the disk figures describe (issue #7223).
    * <p>
    * The profiler has no {@link ContextConfiguration} of its own - it is a JVM-wide singleton that predates any
-   * server - so it reads the process-wide setting through an empty one, which is what
+   * server - so it reads the process-wide setting through {@link #GLOBAL_SETTINGS}, an empty one, which is what
    * {@link ContextConfiguration#getValueAsString(GlobalConfiguration)} falls back to. That resolves to the same
    * directory the server's own low-disk warning measures, so the two never describe different filesystems while
    * reporting the same thing.
@@ -479,7 +486,7 @@ public class Profiler {
    * reporting the parent directory after the configured one is finally created.
    */
   private static File diskSpaceDirectory() {
-    final File dir = FileUtils.resolveDiskSpaceDirectory(new ContextConfiguration()).getAbsoluteFile();
+    final File dir = FileUtils.resolveDiskSpaceDirectory(GLOBAL_SETTINGS).getAbsoluteFile();
 
     final File[] memo = canonicalDiskSpaceDirectory;
     if (memo != null && memo[0].equals(dir))
