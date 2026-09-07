@@ -19,13 +19,16 @@
 package com.arcadedb.integration.importer.graph;
 
 import com.arcadedb.integration.importer.graph.GraphImporter.IdIndex;
+import com.arcadedb.integration.importer.graph.GraphImporter.IntIntMap;
 import com.arcadedb.integration.importer.graph.GraphImporter.LongIntMap;
 
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 
 import static com.arcadedb.integration.importer.graph.GraphImporter.NOT_CANONICAL_LONG;
 import static com.arcadedb.integration.importer.graph.GraphImporter.canonicalLong;
@@ -162,26 +165,50 @@ class GraphImporterIdIndexTest {
   }
 
   /**
-   * Keys that differ only above the table's width - ids allocated in blocks, or carrying a fixed
-   * stride - must still spread. Masking the low bits of {@code key * odd} makes the slot depend on
-   * the key's low bits alone, which sends every one of these to the same slot and turns the lookup
-   * into a linear scan of the whole table.
+   * Ids allocated in blocks, or carrying a fixed stride, differ only above the low bits - and a
+   * hash that reads any window but the top of the product can be zeroed by one. Both maps used to
+   * do exactly that, so a stride sent every key to the same slot and every lookup became a scan of
+   * the whole table; the map still answers correctly, which is why this asserts the spread rather
+   * than the round trip.
+   * <p>
+   * A stride of {@code 2^13} defeats masking the low bits, and one of {@code 2^45} defeats the
+   * fixed {@code >>> 32} that replaced it.
    */
   @Test
-  void stridedKeysDoNotAllLandInOneSlot() {
-    final IdIndex index = new IdIndex();
-    final int stride = 1 << 16;
-    for (int i = 0; i < 2_000; i++)
-      index.put(String.valueOf((long) i * stride), i);
-    for (int i = 0; i < 2_000; i++)
-      assertThat(index.get(String.valueOf((long) i * stride))).isEqualTo(i);
+  void stridedKeysSpreadAcrossTheTable() {
+    // the top stride is bounded so that 500 multiples of it still fit a long: a stride any wider
+    // wraps, and the keys stop being distinct before the slots do
+    for (final long stride : new long[] { 1L << 13, 1L << 20, 1L << 45, 1L << 53 }) {
+      final LongIntMap longKeys = new LongIntMap(1_000);
+      final Set<Integer> longSlots = new HashSet<>();
+      for (int i = 1; i <= 500; i++)
+        longSlots.add(longKeys.hash(i * stride));
+      assertThat(longSlots).as("LongIntMap slots for 500 keys spaced %d apart", stride).hasSizeGreaterThan(100);
 
-    // and past the int boundary, so the widened table is exercised the same way
+      if (stride > Integer.MAX_VALUE)
+        continue;
+      final IntIntMap intKeys = new IntIntMap(1_000);
+      final Set<Integer> intSlots = new HashSet<>();
+      for (int i = 1; i <= 500; i++)
+        intSlots.add(intKeys.hash((int) (i * stride)));
+      assertThat(intSlots).as("IntIntMap slots for 500 keys spaced %d apart", stride).hasSizeGreaterThan(100);
+    }
+  }
+
+  /** And the index resolves them, through both the int table and the widened one. */
+  @Test
+  void stridedKeysResolveOnBothSidesOfTheIntBoundary() {
+    final IdIndex index = new IdIndex();
+    for (int i = 1; i <= 2_000; i++)
+      index.put(String.valueOf((long) i << 13), i);
+    for (int i = 1; i <= 2_000; i++)
+      assertThat(index.get(String.valueOf((long) i << 13))).isEqualTo(i);
+
     final IdIndex wide = new IdIndex();
-    for (int i = 0; i < 2_000; i++)
-      wide.put(String.valueOf(Integer.MAX_VALUE + (long) i * stride), i);
-    for (int i = 0; i < 2_000; i++)
-      assertThat(wide.get(String.valueOf(Integer.MAX_VALUE + (long) i * stride))).isEqualTo(i);
+    for (int i = 1; i <= 2_000; i++)
+      wide.put(String.valueOf((long) i << 45), i);
+    for (int i = 1; i <= 2_000; i++)
+      assertThat(wide.get(String.valueOf((long) i << 45))).isEqualTo(i);
   }
 
   /**
