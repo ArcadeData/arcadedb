@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.exception.SchemaException;
 
 import org.junit.jupiter.api.Test;
@@ -111,6 +112,48 @@ class Issue7119BucketSelectionStrategyPublicationTest extends TestHelper {
         .hasMessageContaining("cannot find a unique automatic index");
 
     assertThat(type.getBucketSelectionStrategy()).isSameAs(previous);
+  }
+
+  @Test
+  void strategyBucketCountMustBeVolatileForTheInPlaceRebind() throws Exception {
+    final Field field = ThreadBucketSelectionStrategy.class.getDeclaredField("total");
+    assertThat(Modifier.isVolatile(field.getModifiers()))
+        .as("addBucketInternal()/removeBucket() rebind the strategy that is ALREADY published, by calling setType() on "
+            + "it and making no volatile write afterwards, so the bucket count it caches must carry its own "
+            + "happens-before edge to the lock-free readers of getBucketIdByRecord() (issue #7119)")
+        .isTrue();
+  }
+
+  @Test
+  void inPlaceRebindTracksABucketCountThatGrows() {
+    database.transaction(() -> database.getSchema().createDocumentType("Product", 2));
+
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType("Product");
+    final ThreadBucketSelectionStrategy strategy = new ThreadBucketSelectionStrategy();
+    database.transaction(() -> type.setBucketSelectionStrategy(strategy));
+    assertThat(readTotal(strategy)).isEqualTo(2);
+
+    database.transaction(
+        () -> type.addBucket(database.getSchema().createBucket("Product_extra")));
+
+    assertThat(readTotal(strategy))
+        .as("the strategy published on the type is rebound in place when the bucket list grows")
+        .isEqualTo(3);
+    // AND THE PLACEMENT IT HANDS OUT IS STILL AN INDEX INTO THE CURRENT LIST
+    assertThat(strategy.getBucketIdByRecord(null, false)).isBetween(0, 2);
+
+    // LEAVE THE TYPE ON A BUILT-IN STRATEGY SO THE PERSISTED SCHEMA DOES NOT NAME A TEST-LOCAL SETUP
+    database.transaction(() -> type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy()));
+  }
+
+  private static int readTotal(final ThreadBucketSelectionStrategy strategy) {
+    try {
+      final Field total = ThreadBucketSelectionStrategy.class.getDeclaredField("total");
+      total.setAccessible(true);
+      return total.getInt(strategy);
+    } catch (final ReflectiveOperationException e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   /**
