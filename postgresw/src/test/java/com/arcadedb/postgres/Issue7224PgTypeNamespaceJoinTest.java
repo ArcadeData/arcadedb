@@ -120,6 +120,26 @@ class Issue7224PgTypeNamespaceJoinTest {
     assertThat(names(columns.rows, "attname")).contains("id");
   }
 
+  /**
+   * The families that used to TIE with TYPES at rank 0 - ROLES, DATABASES, PRIVILEGES, CHARACTER_SETS, COLLATIONS -
+   * now lose to it, so the FROM order no longer settles them. That is a side effect of the ranking this issue
+   * changed, and it is the same reading: pg_roles joined to pg_type reads an owner for each type, so it qualifies.
+   * The old javadoc admitted the tie was accidental rather than considered, which is precisely why it needs pinning
+   * now that it is neither.
+   */
+  @Test
+  void typesWinsOverTheFamiliesItUsedToTieWith() {
+    for (final String from : new String[] { "pg_type t, pg_roles r", "pg_roles r, pg_type t" }) {
+      final PostgresCatalog.Answer answer = resolve("SELECT t.typname, r.rolname FROM " + from);
+
+      assertThat(answer.rows).as("FROM %s", from).hasSize(PostgresTypeCatalog.types().size());
+      assertThat(names(answer.rows, "typname")).doesNotContainNull();
+    }
+
+    // And pg_roles on its own is still a question about roles: one row, not one per type.
+    assertThat(resolve("SELECT rolname FROM pg_roles").rows).hasSize(1);
+  }
+
   /** And pg_namespace alone is still a question about schemas. */
   @Test
   void pgNamespaceOnItsOwnIsStillASchemaQuery() {

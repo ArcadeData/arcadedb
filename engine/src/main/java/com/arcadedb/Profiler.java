@@ -116,8 +116,11 @@ public class Profiler {
    * The overlay {@link #diskSpaceDirectory()} reads the database directory through. An empty
    * {@link ContextConfiguration} is a pure proxy for the process-wide settings - it holds nothing and nothing here
    * writes to it - so one shared instance is what a per-call {@code new} was already asking for.
+   * <p>
+   * <b>Never write to it.</b> A {@code setValue} here would be a process-wide override installed by whoever happened
+   * to be reading a disk figure, which is not what any caller of this class means to do.
    */
-  private static final ContextConfiguration GLOBAL_SETTINGS = new ContextConfiguration();
+  private static final ContextConfiguration GLOBAL_SETTINGS = new ContextConfiguration(); // READ-ONLY: see above
 
   protected Profiler() {
   }
