@@ -160,6 +160,21 @@ abstract class PostgresCatalogExpression {
     }
   }
 
+  /**
+   * An operand this catalog cannot compute, which evaluates to {@link #UNKNOWN} rather than aborting the parse
+   * of the predicate that contains it. Issue #7224: a scalar sub-select used to make the whole WHERE unreadable,
+   * and an unreadable WHERE over pg_type declines the query outright - so {@code DatabaseMetaData.getTypeInfo()},
+   * whose predicate is {@code t.typrelid = 0 OR (SELECT ...)}, lost its readable half along with the subquery.
+   * Reading it as UNKNOWN lets three-valued logic settle it: {@code TRUE OR UNKNOWN} is TRUE, and a predicate
+   * that is still UNKNOWN once the whole tree has been evaluated is declined exactly as it was before.
+   */
+  private static class Unreadable extends PostgresCatalogExpression {
+    @Override
+    Object evaluate(final Resolver resolver) {
+      return UNKNOWN;
+    }
+  }
+
   static class ColumnReference extends PostgresCatalogExpression {
     final String qualifier;
     final String name;
@@ -616,7 +631,11 @@ abstract class PostgresCatalogExpression {
     }
 
     PostgresCatalogToken peek() {
-      return position < tokens.size() ? tokens.get(position) : null;
+      return peek(0);
+    }
+
+    PostgresCatalogToken peek(final int ahead) {
+      return position + ahead < tokens.size() ? tokens.get(position + ahead) : null;
     }
 
     boolean skipKeyword(final String keyword) {
@@ -931,6 +950,10 @@ abstract class PostgresCatalogExpression {
         return null;
 
       if (token.isSymbol("(")) {
+        final PostgresCatalogToken next = peek(1);
+        if (next != null && next.isKeyword("SELECT"))
+          return parseScalarSubquery();
+
         ++position;
         final PostgresCatalogExpression inner = parseExpression();
         if (inner == null || !skipSymbol(")"))
@@ -1091,6 +1114,25 @@ abstract class PostgresCatalogExpression {
         return null;
 
       return new WindowCall(functionName, partitionBy, orderBy, orderByDescending);
+    }
+
+    /**
+     * Skips a parenthesised sub-select and reads it as an operand whose value is unknown (issue #7224). The
+     * tokens are skipped rather than parsed: planning a subquery is well outside what a catalog emulation
+     * should pretend to do, and the point is only to stop one operand from making the whole predicate
+     * unreadable. The scan is iterative, so however deeply the subquery nests it costs no stack, and an
+     * unbalanced tail declines the query as it did before.
+     */
+    private PostgresCatalogExpression parseScalarSubquery() {
+      int open = 0;
+      while (position < tokens.size()) {
+        final PostgresCatalogToken token = tokens.get(position++);
+        if (token.isSymbol("("))
+          ++open;
+        else if (token.isSymbol(")") && --open == 0)
+          return new Unreadable();
+      }
+      return null;
     }
 
     private PostgresCatalogExpression parseCase() {
