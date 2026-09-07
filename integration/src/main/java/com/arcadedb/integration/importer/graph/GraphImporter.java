@@ -825,12 +825,19 @@ public class GraphImporter implements AutoCloseable {
    * after every vertex source and can name any of them.
    */
   private void validateEdgeTargets() {
-    // A type may be imported by more than one source, and only one of them need carry the key
+    // One source per vertex type: processVertexSource() replaces the type's TypeState rather than
+    // appending to it, so a second source for a name already taken leaves pass 2 resolving edges
+    // collected against the first source's row indices into the second source's row arrays - an
+    // out-of-bounds read, or worse an edge silently pointing at an unrelated vertex. Splitting one
+    // type across files is a plausible thing to try, so it is refused rather than left to corrupt
     final Set<String> allTypes = new HashSet<>(vertexSources.size());
     final Set<String> typesWithId = new HashSet<>(vertexSources.size());
     final Set<String> typesWithNameId = new HashSet<>(vertexSources.size());
     for (final VertexSourceDef vsd : vertexSources) {
-      allTypes.add(vsd.typeName);
+      if (!allTypes.add(vsd.typeName))
+        throw new IllegalArgumentException("Vertex type '" + vsd.typeName + "' is declared by more than one "
+            + "vertex source, which is not supported: one source imports a type. Give the sources distinct "
+            + "type names, or read the files through a single source");
       if (vsd.config.idAttribute != null)
         typesWithId.add(vsd.typeName);
       if (vsd.config.nameIdAttribute != null)
