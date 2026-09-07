@@ -94,7 +94,7 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
     await expect(page.locator('#summRamUsed')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#summRamTotal')).toBeVisible({ timeout: 10000 });
 
-    // OS Disk card
+    // Databases Disk card
     await expect(page.locator('#summDiskUsed')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#summDiskTotal')).toBeVisible({ timeout: 10000 });
 

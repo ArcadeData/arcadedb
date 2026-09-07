@@ -1356,8 +1356,10 @@ public enum GlobalConfiguration {
   SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION("arcadedb.serverMetrics.prometheus.requireAuthentication", SCOPE.SERVER, """
       True (the default) to require authentication on the /prometheus scrape endpoint. Issue #7124: the plugin \
       reads this setting with a STRICT parse and treats anything that is neither `true` nor `false` as `true`, so a \
-      typo cannot silently publish the endpoint unauthenticated - unlike the permissive coercion every other \
-      Boolean setting gets, which reads an unparseable value as false.""", Boolean.class, true),
+      typo cannot silently publish the endpoint unauthenticated. Issue #7222 made that promise hold on every \
+      writer: a value that is neither `true` nor `false` is refused where it enters - by an admin command, and by \
+      a system property or environment variable - and the setting keeps its default of true.""", Boolean.class,
+      true),
 
   SERVER_METRICS_TRACING_ENABLED("arcadedb.serverMetrics.tracing.enabled", SCOPE.SERVER,
       "Enable OpenTelemetry distributed tracing (requires the optional tracing plugin on the classpath). Note: query/command spans include the statement text as the db.statement span attribute, which may contain sensitive data, so secure the OTLP collector endpoint",
@@ -2730,21 +2732,72 @@ public enum GlobalConfiguration {
   }
 
   /**
-   * Assign configuration values by reading system properties.
+   * Assign configuration values by reading system properties and environment variables.
+   * <p>
+   * Both go through {@link #setValueFromConfigurationSource(Object, String)} rather than {@link #setValue(Object)},
+   * so a value the setting's type cannot read is reported and dropped instead of being coerced into whatever the
+   * type's permissive parse makes of it - which for a {@code Boolean} was {@code false}, for every input (#7222).
    */
   public static void readConfiguration() {
     String prop;
 
     for (final GlobalConfiguration config : values()) {
+      String source = "system property";
+
       prop = System.getProperty(config.key);
-      if (prop == null)
+      if (prop == null) {
         prop = System.getenv(config.key);
+        source = "environment variable";
+      }
 
       if (prop != null)
-        config.setValue(prop);
+        config.setValueFromConfigurationSource(prop, source);
       else if (config.callbackIfNoSet != null) {
         config.setValue(config.callbackIfNoSet.call(null));
       }
+    }
+  }
+
+  /**
+   * Stores a value that arrived from the PROCESS's own configuration - a system property or an environment variable
+   * - applying the strict parse of {@link #coerceFromAdminCommand(Object)} but REPORTING what it cannot read
+   * instead of throwing, so the setting is dropped rather than the engine.
+   * <p>
+   * Issue #7222. {@code arcadedb.serverMetrics.prometheus.requireAuthentication} is documented as parsed strictly
+   * "so a typo cannot silently publish the endpoint unauthenticated", and that held on the administrative writers
+   * and not here: this path used {@link #setValue(Object)}, whose {@code Boolean} arm is
+   * {@code Boolean.parseBoolean} and therefore maps {@code yes}, {@code 1}, {@code on} and every typo to
+   * {@code false} without a word. The value then reached the plugin ALREADY a {@code Boolean}, where the strict
+   * guard is skipped because the text that produced it is gone - so {@code requireAuthentication=yes} published
+   * {@code /prometheus} unauthenticated while the operator believed they had turned the protection on. A
+   * Kubernetes deployment configures exactly through this path.
+   * <p>
+   * A refusal leaves the setting exactly as it was, which from {@link #readConfiguration()} is its compiled-in
+   * DEFAULT. Reading an unparseable boolean as {@code true} instead would fail closed for this one setting and flip
+   * every setting whose safe side is the other one; refusing to guess is the property that holds for all of them,
+   * and it is what makes this one fail closed, its default being {@code true}. {@link #isChanged()} stays
+   * {@code false} too, because nothing was chosen.
+   * <p>
+   * This cannot throw: {@link #readConfiguration()} runs inside this class's static initializer, where an exception
+   * becomes an {@code ExceptionInInitializerError} that takes the whole engine down over one mistyped variable.
+   * That is the constraint {@link #coerce(Object)} was left permissive for, and the reason the strictness lives in
+   * a separate method here rather than in {@code coerce} itself.
+   *
+   * @param iValue the value to store, typically the raw text of the property or variable
+   * @param source what to name as its origin when reporting a value that cannot be read
+   *
+   * @return {@code true} when the value was stored, {@code false} when it was refused and the default kept
+   */
+  public boolean setValueFromConfigurationSource(final Object iValue, final String source) {
+    try {
+      setValue(coerceFromAdminCommand(iValue));
+      return true;
+    } catch (final Exception e) {
+      if (LogManager.instance() != null)
+        LogManager.instance().log(this, Level.WARNING,
+            "Invalid value '%s' for setting '%s' of type %s set as %s: %s. Keeping '%s'", iValue, key,
+            type.getSimpleName(), source, e.getMessage(), getValue());
+      return false;
     }
   }
 
@@ -2812,10 +2865,12 @@ public enum GlobalConfiguration {
    * {@link #getValueAsInteger()} and {@link #getValueAsLong()} have always used to read one back; it is a strict
    * superset of {@code Integer.parseInt}/{@code Long.parseLong}, so nothing that parsed before stops parsing.
    * <p>
-   * {@code Boolean} stays as permissive as {@code Boolean.parseBoolean}, deliberately: {@link #readConfiguration()}
-   * feeds every system property and environment variable through here during this class's static initializer, so
-   * turning a boolean typo into a throw would turn it into an {@code ExceptionInInitializerError} that takes the
-   * whole engine down instead of the setting.
+   * {@code Boolean} stays as permissive as {@code Boolean.parseBoolean}, because this method cannot be the place
+   * that refuses: it is reachable from this class's static initializer, where a throw becomes an
+   * {@code ExceptionInInitializerError} that takes the whole engine down instead of the setting. The refusal lives
+   * one level up, in {@link #coerceFromAdminCommand(Object)} and
+   * {@link #setValueFromConfigurationSource(Object, String)}, which every writer of raw external text now goes
+   * through - {@link #readConfiguration()} included, since issue #7222.
    *
    * @param iValue the value to convert, or {@code null}
    *
@@ -2836,10 +2891,19 @@ public enum GlobalConfiguration {
    * cannot read here ({@code abc} for an {@code Integer} throws); {@code Boolean} was the one that did not.
    * <p>
    * This is the entry point for a value that arrived from an administrative command, where refusing loudly is an
-   * error the operator can read and act on. All four writers use it: the {@code set server setting} and
+   * error the operator can read and act on. All four such writers use it: the {@code set server setting} and
    * {@code set database setting} HTTP commands, the {@code set_server_setting} MCP tool, and
-   * {@code ALTER DATABASE ... SETTING} in SQL. Every other conversion path keeps using {@link #coerce(Object)} -
-   * notably this class's own static initializer, which is the reason the two have to be separate methods.
+   * {@code ALTER DATABASE ... SETTING} in SQL.
+   * <p>
+   * There is a FIFTH writer of raw text, and issue #7222 is what it cost to leave it out of that list:
+   * {@link #readConfiguration()}, the system-property and environment-variable path, which used
+   * {@link #setValue(Object)} and so got the permissive {@code Boolean.parseBoolean} - a container deployment
+   * configures through exactly that path, and {@code requireAuthentication=yes} silently became {@code false}. It
+   * now applies this same strict parse through {@link #setValueFromConfigurationSource(Object, String)}, which
+   * differs only in what it does with a refusal: it cannot throw, so it reports and keeps the default.
+   * <p>
+   * {@link #coerce(Object)} therefore remains the conversion of a value that is already typed, or one whose caller
+   * has its own reason to be lenient; nothing routes raw external text through it any more.
    *
    * @param iValue the value to convert, or {@code null}
    *

@@ -19,9 +19,9 @@
 package com.arcadedb.server.monitor;
 
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.event.ServerEventLog;
+import com.arcadedb.utility.FileUtils;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
@@ -149,30 +149,13 @@ public class ServerMonitor {
 	 * normal container and Kubernetes layout - that reports the container filesystem and the warning stays quiet
 	 * while the data volume fills, which is precisely the condition it exists to precede.
 	 * <p>
-	 * The configured directory does not necessarily exist yet: a not-yet-created path reports 0 usable and 0 total
-	 * bytes, which the {@code totalSpace > 0} guard reads as "cannot tell" and the check goes silent. Walking up to
-	 * the closest existing ancestor measures the filesystem the databases are going to land on, which is the number
-	 * the operator needs. The working directory remains the fallback so the check never has nothing to measure.
+	 * Issue #7223 moved the resolution itself into {@link FileUtils#resolveDiskSpaceDirectory(ContextConfiguration)},
+	 * where the engine can reach it: {@code Profiler} - what feeds {@code GET /api/v1/server} and the Studio disk
+	 * bar - carried its own copy of the original defect. One implementation is what keeps the warning an operator
+	 * gets and the number they then go and read describing the same filesystem.
 	 */
 	static File resolveDiskSpaceDirectory(final ContextConfiguration configuration) {
-		if (configuration != null) {
-			try {
-				final String configured = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
-				if (configured != null && !configured.isBlank()) {
-					File dir = new File(configured.trim()).getAbsoluteFile();
-					while (dir != null && !dir.exists())
-						dir = dir.getParentFile();
-
-					if (dir != null)
-						return dir;
-				}
-			}
-			catch (Exception e) {
-				LOGGER.log(Level.FINE, "Cannot resolve the configured database directory, falling back to the working directory", e);
-			}
-		}
-
-		return new File(".");
+		return FileUtils.resolveDiskSpaceDirectory(configuration);
 	}
 
 	private void checkHeapRAM() {

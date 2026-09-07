@@ -388,13 +388,20 @@ public class Profiler {
     json.put("deferredRAM", new JSONObject().put("space", pStats.deferredRAMBytes));
     json.put("pageFlushQueueWaits", new JSONObject().put("count", pStats.flushQueueWaits));
 
-    final long freeSpace = new File(".").getFreeSpace();
-    final long totalSpace = new File(".").getTotalSpace();
-    final float freeSpacePerc = freeSpace * 100F / totalSpace;
+    // #7223: the databases' filesystem, not the JVM working directory, and usable rather than free space - the same
+    // measurement #7124 fixed in ServerMonitor. This is the copy that actually reaches an operator, through
+    // GET /api/v1/server and the Studio disk bar.
+    final File diskDir = diskSpaceDirectory();
+    final long freeSpace = diskDir.getUsableSpace();
+    final long totalSpace = diskDir.getTotalSpace();
+    final float freeSpacePerc = totalSpace > 0 ? freeSpace * 100F / totalSpace : 0F;
 
     json.put("diskFreeSpace", new JSONObject().put("space", freeSpace));
     json.put("diskTotalSpace", new JSONObject().put("space", totalSpace));
     json.put("diskFreeSpacePerc", new JSONObject().put("perc", freeSpacePerc));
+    // Which filesystem the three figures above describe. Without it the reader cannot tell a nearly-full data
+    // volume from a nearly-full root filesystem, which is the first thing they need to know.
+    json.put("diskDirectory", new JSONObject().put("value", diskDir.getPath()));
 
     json.put("gcTime", new JSONObject().put("count", getGarbageCollectionTime()));
 
@@ -447,12 +454,35 @@ public class Profiler {
     return json;
   }
 
+  /**
+   * The directory whose filesystem the disk figures describe (issue #7223).
+   * <p>
+   * The profiler has no {@link ContextConfiguration} of its own - it is a JVM-wide singleton that predates any
+   * server - so it reads the process-wide setting through an empty one, which is what
+   * {@link ContextConfiguration#getValueAsString(GlobalConfiguration)} falls back to. That resolves to the same
+   * directory the server's own low-disk warning measures, so the two never describe different filesystems while
+   * reporting the same thing.
+   * <p>
+   * Canonicalised, because the path is REPORTED here and not only measured: the working-directory fallback is
+   * {@code "."}, which names no filesystem to a reader looking at a disk figure they do not believe.
+   */
+  private static File diskSpaceDirectory() {
+    final File dir = FileUtils.resolveDiskSpaceDirectory(new ContextConfiguration());
+    try {
+      return dir.getCanonicalFile();
+    } catch (final IOException e) {
+      return dir.getAbsoluteFile();
+    }
+  }
+
   public synchronized void dumpMetrics(final PrintStream out) {
 
     final StringBuilder buffer = new StringBuilder("\n");
 
-    final long freeSpaceInMB = new File(".").getFreeSpace();
-    final long totalSpaceInMB = new File(".").getTotalSpace();
+    // #7223: same measurement as toJSON() - the databases' filesystem, read as usable rather than free space.
+    final File diskDir = diskSpaceDirectory();
+    final long freeSpaceInMB = diskDir.getUsableSpace();
+    final long totalSpaceInMB = diskDir.getTotalSpace();
 
     try {
       final long[] dbStats = collectDatabaseStats();
@@ -600,9 +630,9 @@ public class Profiler {
         "%n WAL totalFiles=%d pagesWritten=%d bytesWritten=%s".formatted(walTotalFiles, walPagesWritten,
           FileUtils.getSizeAsString(walBytesWritten)));
 
-      buffer.append(
-        "%n FILE-MANAGER FS=%s/%s openFiles=%d maxFilesOpened=%d".formatted(FileUtils.getSizeAsString(freeSpaceInMB),
-          FileUtils.getSizeAsString(totalSpaceInMB), totalOpenFiles, maxOpenFiles));
+      buffer.append("%n FILE-MANAGER FS=%s/%s on '%s' openFiles=%d maxFilesOpened=%d".formatted(
+        FileUtils.getSizeAsString(freeSpaceInMB), FileUtils.getSizeAsString(totalSpaceInMB), diskDir.getPath(),
+        totalOpenFiles, maxOpenFiles));
 
       out.println(buffer);
     } catch (final Exception e) {
