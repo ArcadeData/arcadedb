@@ -92,10 +92,14 @@ class Issue7221ForceSnapshotGuardMissingDatabaseTest {
         .isEqualTo(ENTRY_INDEX + 8);
 
     // Reaching the download path is what this asserts; it cannot complete in a unit test with no Raft server
-    // to resolve a leader from, and that failure is the proof the guard did not swallow the entry. The guard
-    // firing would instead return normally, which is exactly what this test used to observe.
-    assertThatThrownBy(() -> after.applyInstallDatabaseEntry(forceSnapshotEntry(), ENTRY_INDEX),
-        "an applied index at or beyond the entry must not skip the reinstall of an absent database");
+    // to resolve a leader from, and that refusal is the proof the guard did not swallow the entry. The guard
+    // firing would instead return normally, which is exactly what this test used to observe. The message is
+    // asserted rather than only the throw, so the discriminator is the refusal the install path is supposed
+    // to raise and not any incidental failure on the way to it.
+    assertThatThrownBy(() -> after.applyInstallDatabaseEntry(forceSnapshotEntry(), ENTRY_INDEX))
+        .as("an applied index at or beyond the entry must not skip the reinstall of an absent database")
+        .isInstanceOf(RuntimeException.class)
+        .hasMessageContaining("Cannot reinstall database '" + DB + "' from the leader");
   }
 
   @Test

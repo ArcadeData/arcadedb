@@ -202,3 +202,48 @@ rather than hidden. Findings:
    the discriminator is throw-vs-return - the guard firing returns normally, which is what the test
    observed before the fix. Pinning the exception type would couple the test to the accident that this
    unit test has no Raft server wired. Same form as the neighbouring #7143 tests.
+
+## Review cycles
+
+### Cycle 1 - `cf7ea5ab2b`
+
+`claude` reviewed the diff and independently re-verified three of the PR's claims (that `existsDatabase`
+is a pure registry lookup, that the `DROP_DATABASE_ENTRY` eviction makes resurrection unreachable, and
+that the bootstrap-guard row is correctly argued rather than blanket-fixed). One non-blocking
+observation, and it was a real defect:
+
+> Now the WARNING branch falls through into [the restore block] for a database that's merely
+> un-registered. That block calls `raftHAServer.getLeaderId()` with no null-guard on `raftHAServer`
+> itself [...] it is now reachable from more states than before.
+
+**Applied.** Checked before agreeing, and the finding is sharper than the sandbox could see:
+`resolveSnapshotSource` is *already* carefully null-safe - it reads the volatile once into a local and
+returns `PeerDialAddress.refuse("the HA server is not available on this node")` - but the argument
+expression `raftHAServer.getLeaderId()` is evaluated **before** the call, dereferencing the very field
+that guard exists to tolerate. `getClusterToken()` below it had the same shape. The force arm now reads
+the volatile once into a local and passes `raftHA != null ? raftHA.getLeaderId() : null`;
+`PeerDialAddress.resolve` refuses a null peer id as "the leader is unknown"
+(`PeerDialAddress.java:91-92`), so the refusal path is reached instead of an NPE.
+
+On the reviewer's "worth a quick sanity check that `raftHAServer` truly can't be null in production" -
+checked rather than assumed, and the neighbouring comment's "a teardown can null it" was *not* adopted
+as fact: `grep -rn --include='*.java' "setRaftHAServer" .` shows no production caller passing null
+(`RaftHAServer.java:1419` is the only production call at all). The reachable window is the other one -
+the field starts null, and a state machine that has not been rewired yet still carries null, which is
+precisely the regression `Issue4839RecoveryRewiresStateMachineIT` exists to catch. The comment at the
+call site says that, not the teardown story.
+
+Knock-on improvement to this PR's own test: with the refusal reached instead of an NPE, the
+discriminator in `aReplayedForceSnapshotEntryStillReinstallsWhenTheDatabaseIsGone` stopped being
+accidental, so it now asserts `hasMessageContaining("Cannot reinstall database 'db-wiped' from the
+leader")` rather than merely "something was thrown" - which also answers the reviewer's parenthetical
+about the test passing on an incidental NPE. The three existing `Issue7143ForceSnapshotReplayGuardTest`
+cases were left untouched and still pass on the new exception.
+
+Everything else in the review was confirmation or praise; nothing was deferred, and no notes file was
+produced.
+
+Tests after the cycle-1 change: `Issue7221` + `Issue7143` + `Issue6202SnapshotInstallGuardTest` +
+`Issue6111StaleSnapshotReadFloorTest` + `Issue6760PartialSnapshotInstallTest` = 44 green; full `ha-raft`
+unit lane again 389 run / 0 failures / 0 errors, with the same environmental `LeaveClusterTest` fork
+crash from the externally-held port 2480.

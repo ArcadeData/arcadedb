@@ -2785,7 +2785,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Restore flow: replace files from the leader's snapshot even if the DB exists.
       // The leader's own files are already authoritative, so the leader skips the reinstall;
       // replicas close their local copy and pull the fresh snapshot from the leader.
-      if (raftHAServer != null && raftHAServer.isLeader()) {
+      //
+      // The volatile field is read ONCE into a local. resolveSnapshotSource guards a null HA server and refuses
+      // cleanly, but evaluating raftHAServer.getLeaderId() as its ARGUMENT dereferenced the field before that
+      // guard could run, so the refusal it exists to produce arrived as a NullPointerException instead; the
+      // same held for getClusterToken() below. A null local yields a null leader id, which
+      // PeerDialAddress.resolve refuses as "the leader is unknown".
+      //
+      // Null is reachable, not hypothetical: no production caller nulls the field (grep for setRaftHAServer -
+      // RaftHAServer:1419 is the only one), but it starts null and a state machine that has not been rewired
+      // yet still carries null. Forgetting exactly that rewire on the recovery path is the regression
+      // Issue4839RecoveryRewiresStateMachineIT exists to catch.
+      final RaftHAServer raftHA = this.raftHAServer;
+      if (raftHA != null && raftHA.isLeader()) {
         HALog.log(this, HALog.TRACE, "Leader skips forceSnapshot reinstall for '%s'", databaseName);
         return;
       }
@@ -2793,7 +2805,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Same refusals as every other path that pulls a snapshot, through the same helper (issue #6202): a
       // derived address that names this node would "restore" the local copy from itself and report success,
       // which is worse than the failure the caller already handles below.
-      final PeerDialAddress source = resolveSnapshotSource(raftHAServer.getLeaderId());
+      final PeerDialAddress source = resolveSnapshotSource(raftHA != null ? raftHA.getLeaderId() : null);
       if (source.refused())
         throw new RuntimeException("Cannot reinstall database '" + databaseName + "' from the leader: "
             + source.refusal());
@@ -2802,7 +2814,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // The guard's own HTTPS endpoint rather than the raw resolver's: it is declared and derived independently
       // of the HTTP one, so the HTTP verdict does not cover it (issue #6221). Null falls back to plain HTTP.
       final String leaderHttpsAddr = source.httpsAddress();
-      final String clusterToken = raftHAServer.getClusterToken();
+      final String clusterToken = raftHA != null ? raftHA.getClusterToken() : null;
       try {
         // install() keeps the database open during the download and rolls back on failure, so a
         // failed restore never leaves it closed.
