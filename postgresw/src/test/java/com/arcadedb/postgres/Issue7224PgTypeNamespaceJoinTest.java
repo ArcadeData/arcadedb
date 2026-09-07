@@ -129,12 +129,14 @@ class Issue7224PgTypeNamespaceJoinTest {
    */
   @Test
   void typesWinsOverTheFamiliesItUsedToTieWith() {
-    for (final String from : new String[] { "pg_type t, pg_roles r", "pg_roles r, pg_type t" }) {
-      final PostgresCatalog.Answer answer = resolve("SELECT t.typname, r.rolname FROM " + from);
+    final PostgresCatalog.Answer typeFirst = resolve("SELECT t.typname, r.rolname FROM pg_type t, pg_roles r");
+    final PostgresCatalog.Answer rolesFirst = resolve("SELECT t.typname, r.rolname FROM pg_roles r, pg_type t");
 
-      assertThat(answer.rows).as("FROM %s", from).hasSize(PostgresTypeCatalog.types().size());
-      assertThat(names(answer.rows, "typname")).doesNotContainNull();
-    }
+    assertThat(typeFirst.rows).hasSize(PostgresTypeCatalog.types().size());
+    assertThat(names(typeFirst.rows, "typname")).doesNotContainNull();
+    // The two orders have to agree on the ROWS, not merely on how many there are: a ranking regression could keep
+    // the count and the non-null names while answering about a different relation.
+    assertThat(rolesFirst.rows).containsExactlyElementsOf(typeFirst.rows);
 
     // And pg_roles on its own is still a question about roles: one row, not one per type.
     assertThat(resolve("SELECT rolname FROM pg_roles").rows).hasSize(1);

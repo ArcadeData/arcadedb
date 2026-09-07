@@ -2908,6 +2908,18 @@ public enum GlobalConfiguration {
    * <p>
    * {@link #coerce(Object)} therefore remains the conversion of a value that is already typed, or one whose caller
    * has its own reason to be lenient; nothing routes raw external text through it any more.
+   * <p>
+   * <b>One writer is still outside all of this, and counting it is the point:</b> #7222 happened because an
+   * enumeration of writers went stale, so this one says what it does not cover.
+   * {@link ContextConfiguration#fromJSON(String)} - the server configuration FILE - stores what it read straight
+   * into the overlay map with a plain {@code put}, touching neither this method nor {@link #setValue(Object)}, so a
+   * {@code "yes"} written there survives as the string {@code "yes"}. That is not the #7222 failure, which was a
+   * value silently BECOMING {@code false}: the text is still intact, so a reader can still refuse it, and
+   * {@code PrometheusMetricsPlugin.isAuthenticationRequired} does exactly that by re-applying this method at its own
+   * read site. A reader that instead trusts "the strict parse already happened on entry" and calls
+   * {@link ContextConfiguration#getValueAsBoolean(GlobalConfiguration)} would get {@code Boolean.parseBoolean} and
+   * reopen the bug through the configuration file. Until the file path coerces too, the read-site re-parse is what
+   * a security-relevant Boolean has to keep doing.
    *
    * @param iValue the value to convert, or {@code null}
    *
