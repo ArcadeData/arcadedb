@@ -610,6 +610,33 @@ class RemoteSchemaTest {
     assertThatThrownBy(() -> schema.getOrCreateVertexType("Person")).isInstanceOf(SchemaException.class);
   }
 
+  @Test
+  void getOrCreateVertexTypeReportsTheKindMismatchInsteadOfCastingBlindly() {
+    // IF NOT EXISTS is satisfied by a type of ANY kind, so the server answers this with a no-op and the client is
+    // left holding a DocumentType. A bare cast would surface that as a ClassCastException from inside the client.
+    final ResultSet noRows = buildSchemaResultSet();
+    final ResultSet schemaRs = buildSchemaResultSet(buildTypeRecord("Person", "document"));
+    when(mockDatabase.command("sql", "create vertex type `Person` if not exists")).thenReturn(noRows);
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(schemaRs);
+
+    assertThatThrownBy(() -> schema.getOrCreateVertexType("Person"))
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("Type 'Person' is not a vertex type");
+  }
+
+  @Test
+  void getOrCreateEdgeTypeReportsTheKindMismatchInsteadOfCastingBlindly() {
+    final ResultSet noRows = buildSchemaResultSet();
+    final ResultSet schemaRs = buildSchemaResultSet(buildTypeRecord("Knows", "vertex"));
+    when(mockDatabase.command("sql", "create edge type `Knows` if not exists")).thenReturn(noRows);
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(schemaRs);
+
+    assertThatThrownBy(() -> schema.getOrCreateEdgeType("Knows"))
+        .isInstanceOf(SchemaException.class)
+        // THE WORDING IS THE EMBEDDED API'S, VERBATIM (TypeBuilder.checkExistingIsCompatible), GRAMMAR AND ALL
+        .hasMessageContaining("Type 'Knows' is not a edge type");
+  }
+
   private static ResultSet buildTypeRecordWithBucket(final String typeName, final String typeCode, final String bucketName) {
     final ResultInternal r = new ResultInternal();
     r.setProperty("name", typeName);

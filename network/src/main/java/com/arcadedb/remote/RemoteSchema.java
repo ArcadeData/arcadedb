@@ -281,7 +281,11 @@ public class RemoteSchema implements Schema {
   // The getOrCreate*() methods below do not read the row count of the IF NOT EXISTS command: servers up to 26.9.1
   // answer zero rows when the type already exists, so treating an empty result as a failure threw on the exact case
   // the guard is there for (issue #7172). The schema is the authority: command() throws on a server error, and
-  // getType() throws SchemaException if the type is still missing afterwards.
+  // getType() throws SchemaException if the type is still missing afterwards. The kind is checked here rather than
+  // left to a bare cast, because IF NOT EXISTS is satisfied by a type of ANY kind: asking for a vertex type whose
+  // name is already taken by a document type is a no-op on the server, and the embedded API answers that with
+  // SchemaException("Type 'x' is not a vertex type") (TypeBuilder.checkExistingIsCompatible) rather than with a
+  // ClassCastException from inside the client.
   @Override
   public DocumentType getOrCreateDocumentType(final String typeName) {
     remoteDatabase.command("sql", "create document type `" + typeName + "` if not exists");
@@ -298,27 +302,27 @@ public class RemoteSchema implements Schema {
   public VertexType createVertexType(final String typeName) {
     final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "`");
     if (result.hasNext())
-      return (VertexType) reload().getType(typeName);
+      return asKind(reload().getType(typeName), VertexType.class, "vertex");
     throw new SchemaException("Error on creating vertex type '" + typeName + "'");
   }
 
   @Override
   public VertexType getOrCreateVertexType(String typeName, int buckets) {
     remoteDatabase.command("sql", "create vertex type `" + typeName + "` if not exists buckets " + buckets);
-    return (VertexType) reload().getType(typeName);
+    return asKind(reload().getType(typeName), VertexType.class, "vertex");
   }
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName) {
     remoteDatabase.command("sql", "create vertex type `" + typeName + "` if not exists");
-    return (VertexType) reload().getType(typeName);
+    return asKind(reload().getType(typeName), VertexType.class, "vertex");
   }
 
   @Override
   public VertexType createVertexType(String typeName, int buckets) {
     final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "` buckets " + buckets);
     if (result.hasNext())
-      return (VertexType) reload().getType(typeName);
+      return asKind(reload().getType(typeName), VertexType.class, "vertex");
     throw new SchemaException("Error on creating vertex type '" + typeName + "'");
   }
 
@@ -326,28 +330,39 @@ public class RemoteSchema implements Schema {
   public EdgeType createEdgeType(final String typeName) {
     final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "`");
     if (result.hasNext())
-      return (EdgeType) reload().getType(typeName);
+      return asKind(reload().getType(typeName), EdgeType.class, "edge");
     throw new SchemaException("Error on creating edge type '" + typeName + "'");
   }
 
   @Override
   public EdgeType getOrCreateEdgeType(String typeName) {
     remoteDatabase.command("sql", "create edge type `" + typeName + "` if not exists");
-    return (EdgeType) reload().getType(typeName);
+    return asKind(reload().getType(typeName), EdgeType.class, "edge");
   }
 
   @Override
   public EdgeType createEdgeType(String typeName, int buckets) {
     final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "` buckets " + buckets);
     if (result.hasNext())
-      return (EdgeType) reload().getType(typeName);
+      return asKind(reload().getType(typeName), EdgeType.class, "edge");
     throw new SchemaException("Error on creating edge type '" + typeName + "'");
   }
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName, final int buckets) {
     remoteDatabase.command("sql", "create edge type `" + typeName + "` if not exists buckets " + buckets);
-    return (EdgeType) reload().getType(typeName);
+    return asKind(reload().getType(typeName), EdgeType.class, "edge");
+  }
+
+  /**
+   * Answers {@code type} narrowed to {@code expected}, or throws the same {@link SchemaException} the embedded API
+   * throws when a {@code getOrCreate*Type()} call finds the name already taken by a type of another kind.
+   */
+  private static <T extends DocumentType> T asKind(final DocumentType type, final Class<T> expected,
+      final String expectedLabel) {
+    if (!expected.isInstance(type))
+      throw new SchemaException("Type '" + type.getName() + "' is not a " + expectedLabel + " type");
+    return expected.cast(type);
   }
 
   @Override
