@@ -23,7 +23,9 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -551,6 +553,61 @@ class RemoteSchemaTest {
 
     assertThatThrownBy(() -> schema.getBucketByName("does_not_exist")).isInstanceOf(SchemaException.class);
     verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+  }
+
+  // Issue #7172: servers up to 26.9.1 answer "create ... type X if not exists" with ZERO rows when X already
+  // exists (26.10.1 answers one row with created=false, #7143). getOrCreate*() read the empty answer as a failure
+  // and threw SchemaException on the exact case it exists for. The schema, not the row count, decides.
+
+  @Test
+  void getOrCreateDocumentTypeReturnsExistingTypeWhenServerAnswersNoRows() {
+    final ResultSet noRows = buildSchemaResultSet();
+    final ResultSet schemaRs = buildSchemaResultSet(buildTypeRecord("Doc", "document"));
+    when(mockDatabase.command("sql", "create document type `Doc` if not exists")).thenReturn(noRows);
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(schemaRs);
+
+    final DocumentType type = schema.getOrCreateDocumentType("Doc");
+
+    assertThat(type.getName()).isEqualTo("Doc");
+    verify(mockDatabase).command("sql", "create document type `Doc` if not exists");
+  }
+
+  @Test
+  void getOrCreateVertexTypeReturnsExistingTypeWhenServerAnswersNoRows() {
+    final ResultSet noRows = buildSchemaResultSet();
+    final ResultSet schemaRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
+    when(mockDatabase.command("sql", "create vertex type `Person` if not exists")).thenReturn(noRows);
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(schemaRs);
+
+    final VertexType type = schema.getOrCreateVertexType("Person");
+
+    assertThat(type.getName()).isEqualTo("Person");
+    verify(mockDatabase).command("sql", "create vertex type `Person` if not exists");
+  }
+
+  @Test
+  void getOrCreateEdgeTypeReturnsExistingTypeWhenServerAnswersNoRows() {
+    final ResultSet noRows = buildSchemaResultSet();
+    final ResultSet schemaRs = buildSchemaResultSet(buildTypeRecord("Knows", "edge"));
+    when(mockDatabase.command("sql", "create edge type `Knows` if not exists")).thenReturn(noRows);
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(schemaRs);
+
+    final EdgeType type = schema.getOrCreateEdgeType("Knows");
+
+    assertThat(type.getName()).isEqualTo("Knows");
+    verify(mockDatabase).command("sql", "create edge type `Knows` if not exists");
+  }
+
+  @Test
+  void getOrCreateVertexTypeStillThrowsWhenTypeIsMissingAfterTheCommand() {
+    final ResultSet noRows = buildSchemaResultSet();
+    // Neither the eager reload nor getType()'s one-shot retry finds it: the command really did not create it.
+    final ResultSet emptySchema = buildSchemaResultSet();
+    final ResultSet emptySchemaRetry = buildSchemaResultSet();
+    when(mockDatabase.command("sql", "create vertex type `Person` if not exists")).thenReturn(noRows);
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(emptySchema, emptySchemaRetry);
+
+    assertThatThrownBy(() -> schema.getOrCreateVertexType("Person")).isInstanceOf(SchemaException.class);
   }
 
   private static ResultSet buildTypeRecordWithBucket(final String typeName, final String typeCode, final String bucketName) {

@@ -278,21 +278,20 @@ public class RemoteSchema implements Schema {
     throw new SchemaException("Error on creating document type '" + typeName + "'");
   }
 
+  // The getOrCreate*() methods below do not read the row count of the IF NOT EXISTS command: servers up to 26.9.1
+  // answer zero rows when the type already exists, so treating an empty result as a failure threw on the exact case
+  // the guard is there for (issue #7172). The schema is the authority: command() throws on a server error, and
+  // getType() throws SchemaException if the type is still missing afterwards.
   @Override
   public DocumentType getOrCreateDocumentType(final String typeName) {
-    final ResultSet result = remoteDatabase.command("sql", "create document type `" + typeName + "` if not exists");
-    if (result.hasNext())
-      return reload().getType(typeName);
-    throw new SchemaException("Error on creating document type '" + typeName + "'");
+    remoteDatabase.command("sql", "create document type `" + typeName + "` if not exists");
+    return reload().getType(typeName);
   }
 
   @Override
   public DocumentType getOrCreateDocumentType(final String typeName, final int buckets) {
-    final ResultSet result = remoteDatabase.command("sql",
-        "create document type `" + typeName + "` if not exists buckets " + buckets);
-    if (result.hasNext())
-      return reload().getType(typeName);
-    throw new SchemaException("Error on creating document type '" + typeName + "'");
+    remoteDatabase.command("sql", "create document type `" + typeName + "` if not exists buckets " + buckets);
+    return reload().getType(typeName);
   }
 
   @Override
@@ -305,19 +304,14 @@ public class RemoteSchema implements Schema {
 
   @Override
   public VertexType getOrCreateVertexType(String typeName, int buckets) {
-    final ResultSet result = remoteDatabase.command("sql",
-        "create vertex type `" + typeName + "` if not exists buckets " + buckets);
-    if (result.hasNext())
-      return (VertexType) reload().getType(typeName);
-    throw new SchemaException("Error on creating vertex type '" + typeName + "'");
+    remoteDatabase.command("sql", "create vertex type `" + typeName + "` if not exists buckets " + buckets);
+    return (VertexType) reload().getType(typeName);
   }
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName) {
-    final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "` if not exists");
-    if (result.hasNext())
-      return (VertexType) reload().getType(typeName);
-    throw new SchemaException("Error on creating vertex type '" + typeName + "'");
+    remoteDatabase.command("sql", "create vertex type `" + typeName + "` if not exists");
+    return (VertexType) reload().getType(typeName);
   }
 
   @Override
@@ -338,10 +332,8 @@ public class RemoteSchema implements Schema {
 
   @Override
   public EdgeType getOrCreateEdgeType(String typeName) {
-    final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "` if not exists");
-    if (result.hasNext())
-      return (EdgeType) reload().getType(typeName);
-    throw new SchemaException("Error on creating edge type '" + typeName + "'");
+    remoteDatabase.command("sql", "create edge type `" + typeName + "` if not exists");
+    return (EdgeType) reload().getType(typeName);
   }
 
   @Override
@@ -354,10 +346,8 @@ public class RemoteSchema implements Schema {
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName, final int buckets) {
-    final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "` if not exists buckets " + buckets);
-    if (result.hasNext())
-      return (EdgeType) reload().getType(typeName);
-    throw new SchemaException("Error on creating edge type '" + typeName + "'");
+    remoteDatabase.command("sql", "create edge type `" + typeName + "` if not exists buckets " + buckets);
+    return (EdgeType) reload().getType(typeName);
   }
 
   @Override
