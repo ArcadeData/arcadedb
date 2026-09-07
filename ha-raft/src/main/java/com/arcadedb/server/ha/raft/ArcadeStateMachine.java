@@ -1374,13 +1374,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * orphaned {@code .md5} files itself on the {@code cleanupOldSnapshots()} call its
    * {@code StateMachineUpdater} makes after every snapshot.
    * <p>
-   * Best-effort by design: a failed delete costs one stale directory entry, never correctness, so it is
-   * logged at FINE and the caller's snapshot registration still succeeds. Failing a checkpoint over a
-   * cosmetic cleanup would block log purge, which is strictly worse than a leftover file.
+   * Best-effort by design, and the guarantee lives here rather than at the call sites: a failed delete
+   * costs one stale directory entry, never correctness, so every failure - a {@code false} from
+   * {@link File#delete()}, and any {@link RuntimeException} the filesystem raises on the way, such as a
+   * {@code SecurityException} from {@link File#listFiles()} - is logged at FINE and swallowed. The
+   * caller's snapshot registration still succeeds. Failing a checkpoint over a cosmetic cleanup would
+   * block log purge, which is strictly worse than a leftover file.
    *
-   * @return the number of markers actually deleted
+   * @return the number of markers actually deleted, {@code 0} if the sweep could not run at all
    */
   private int pruneObsoleteSnapshotMarkers(final File stateMachineDir, final long keepIndex) {
+    try {
+      return pruneObsoleteSnapshotMarkers0(stateMachineDir, keepIndex);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Could not prune obsolete Raft snapshot markers in %s: %s", stateMachineDir, e.getMessage());
+      return 0;
+    }
+  }
+
+  /** The sweep itself; {@link #pruneObsoleteSnapshotMarkers} is the guard that makes it best-effort. */
+  private int pruneObsoleteSnapshotMarkers0(final File stateMachineDir, final long keepIndex) {
     if (stateMachineDir == null)
       return 0;
     final File[] entries = stateMachineDir.listFiles();
@@ -1443,7 +1457,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
             "Removed %d obsolete Raft snapshot marker(s) left by earlier checkpoints; the newest, at index %d, is retained",
             pruned, latest.getIndex());
     } catch (final RuntimeException e) {
-      // Never let a housekeeping sweep fail a state-machine start.
+      // The sweep guards itself; this covers the lookups above it (getSnapshotFile throws when Ratis
+      // has no state-machine directory). Never let housekeeping fail a state-machine start.
       LogManager.instance().log(this, Level.FINE,
           "Could not prune obsolete Raft snapshot markers at startup: %s", e.getMessage());
     }

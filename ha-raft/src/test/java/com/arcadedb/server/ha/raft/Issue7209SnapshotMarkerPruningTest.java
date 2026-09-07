@@ -365,6 +365,39 @@ class Issue7209SnapshotMarkerPruningTest {
     }
   }
 
+  /**
+   * "Never fail a checkpoint over a cosmetic cleanup" has to hold for more than a {@code false} return
+   * from {@code delete()}: the sweep walks the filesystem, and a filesystem can raise unchecked. A
+   * {@code SecurityException} out of {@code listFiles()} must degrade to "pruned nothing", not
+   * propagate out of {@code registerSnapshotMarker} and cost the node its log purge.
+   */
+  @Test
+  void aFilesystemFailureDuringTheSweepIsSwallowed(@TempDir final Path tempDir) throws Exception {
+    final RaftStorage raftStorage = newFormattedStorage(tempDir);
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    try {
+      sm.initialize(stubServer(), RaftGroupId.valueOf(UUID.randomUUID()), raftStorage);
+
+      final Method prune = ArcadeStateMachine.class.getDeclaredMethod(
+          "pruneObsoleteSnapshotMarkers", File.class, long.class);
+      prune.setAccessible(true);
+
+      final File throwing = new File(stateMachineDir(sm).getPath()) {
+        @Override
+        public File[] listFiles() {
+          throw new SecurityException("denied");
+        }
+      };
+
+      assertThat((Integer) prune.invoke(sm, throwing, 100L))
+          .as("a filesystem failure must report 'pruned nothing', not escape the sweep")
+          .isZero();
+    } finally {
+      sm.close();
+      raftStorage.close();
+    }
+  }
+
   private static List<String> markerNames(final File dir) {
     final List<String> names = new ArrayList<>();
     for (final String name : names(dir))
