@@ -120,6 +120,13 @@ function displayServerSettings() {
   });
 }
 
+// #7223: the disk figures on the summary describe the filesystem the DATABASES live on, which on a container is a
+// mounted volume and not the one the process was started in - so the card has to name it. A server that predates the
+// field, or a reading taken before it existed, answers "" rather than "undefined".
+function diskDirectoryOf(profiler) {
+  return (profiler && profiler.diskDirectory && profiler.diskDirectory.value) || "";
+}
+
 function displayServerSummary() {
   var p = serverData.metrics.profiler || {};
   var ev = serverData.metrics.events || {};
@@ -149,6 +156,12 @@ function displayServerSummary() {
   $("#summDiskUsed").text(globalFormatSpace(diskUsed));
   $("#summDiskTotal").text(globalFormatSpace(diskTotal));
   $("#summDiskBar").css("width", Math.round(diskUsed / diskTotal * 100) + "%");
+  // #7223: the figures above describe the filesystem the databases live on, which on a container is a mounted
+  // volume and not the one the process was started in. Naming it is what makes them readable.
+  var diskDir = diskDirectoryOf(p);
+  // A non-breaking space keeps the line's height when there is nothing to name, so the card does not resize
+  // between refreshes. Written as an escape because an invisible character in source is a trap.
+  $("#summDiskDir").text(diskDir || "\u00a0").attr("title", diskDir);
 
   // Read Cache
   var cacheUsed = (p.readCacheUsed && p.readCacheUsed.space) || 0;
@@ -257,7 +270,7 @@ function displayMetrics() {
 
   // Profiler details table (remaining metrics without rate tracking)
   var skipProfiler = { cpuLoad: 1, ramHeapUsed: 1, ramHeapMax: 1, ramOsUsed: 1, ramOsTotal: 1,
-    diskFreeSpace: 1, diskTotalSpace: 1, readCacheUsed: 1, cacheMax: 1, configuration: 1,
+    diskFreeSpace: 1, diskTotalSpace: 1, diskDirectory: 1, readCacheUsed: 1, cacheMax: 1, configuration: 1,
     writeTx: 1, readTx: 1, txRollbacks: 1, queries: 1, concurrentModificationExceptions: 1,
     edgeAppendMerges: 1, txPageSlotMerges: 1, mergesDeclinedByCoverage: 1 };
   var profilerHtml = "";

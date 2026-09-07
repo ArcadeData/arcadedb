@@ -89,12 +89,16 @@ public class PrometheusMetricsPlugin implements ServerPlugin {
    * a throw there becomes an {@code ExceptionInInitializerError} that takes the whole engine down instead of the
    * setting. An authentication switch is worth the extra care at the one site that reads it.
    * <p>
-   * A value that arrives ALREADY a {@link Boolean} is trusted, and that is only sound because the two paths that
-   * store one - {@code SET SERVER SETTING} and the {@code set_server_setting} MCP tool - both go through
-   * {@link GlobalConfiguration#coerceFromAdminCommand(Object)}, which refuses a boolean it cannot read rather than
-   * folding it to {@code false}. Were either to fall back to the permissive {@code coerce}, a typo would reach here
-   * as {@code Boolean.FALSE} with the text that produced it already lost, and no parse at this end could tell it
-   * from a deliberate {@code false}.
+   * A value that arrives ALREADY a {@link Boolean} is trusted, and that is only sound because every path that
+   * stores one applies the strict parse first, where the text still exists: {@code SET SERVER SETTING}, the
+   * {@code set_server_setting} MCP tool and the two SQL/HTTP setting commands through
+   * {@link GlobalConfiguration#coerceFromAdminCommand(Object)}, and - since issue #7222 - a system property or
+   * environment variable through {@link GlobalConfiguration#setValueFromConfigurationSource(Object, String)}. Any
+   * path falling back to the permissive {@code coerce} reopens this: a typo would reach here as
+   * {@code Boolean.FALSE} with the text that produced it already lost, and no parse at this end could tell it from
+   * a deliberate {@code false}. That is exactly what #7222 was - {@code -Darcadedb...requireAuthentication=yes}
+   * stored {@code Boolean.FALSE} and published this endpoint unauthenticated, and the fail-closed reader below had
+   * nothing left to reject.
    *
    * @return {@code true} unless the configured value is unambiguously {@code false}
    */

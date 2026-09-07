@@ -18,6 +18,8 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
@@ -519,5 +521,63 @@ public class FileUtils {
         return Arrays.copyOf(bytes, read);
     }
     return bytes;
+  }
+
+  /**
+   * Returns the directory whose filesystem a disk-space reading must measure, which is the one the databases live
+   * on rather than the one the JVM happens to have been started in.
+   * <p>
+   * Issue #7124 established this for the server's low-disk warning; issue #7223 moved it here because
+   * {@code Profiler} - which is what feeds {@code GET /api/v1/server} and the Studio disk bar, and is therefore the
+   * number an operator actually reads - was still measuring {@code new File(".")}. On the normal container layout
+   * the databases sit on a mounted volume and the process starts in the image's {@code WORKDIR}, so the two are
+   * different filesystems and the reported figure described the wrong one in both directions: a nearly-full data
+   * volume reads as comfortably empty, a small root filesystem makes a large data volume look critical.
+   * <p>
+   * Callers must read the returned directory with {@link File#getUsableSpace()} rather than
+   * {@link File#getFreeSpace()}: the latter ignores per-user quotas and reservations, so it reports space this
+   * process cannot actually write to.
+   * <p>
+   * Two fallbacks, both because a path that describes no filesystem measures 0 usable and 0 total, which a reader
+   * cannot tell apart from a full disk:
+   * <ul>
+   * <li>the configured directory does not necessarily exist yet - at startup it has not been created - so the walk
+   * goes up to the closest existing ancestor, which sits on the filesystem the databases are going to land on;</li>
+   * <li>if that WALK bottoms out at the filesystem ROOT, the whole chain is absent and the configuration has said
+   * nothing about where the databases will be. That is what an embedded JVM gets, where nobody sets
+   * {@code arcadedb.server.rootPath} and the default expands to {@code /databases}; measuring {@code /} there would
+   * describe a filesystem chosen by accident, so the working directory is used instead. The test is on having
+   * walked, not on the answer being the root: a directory configured AS {@code /} and existing is a deliberate
+   * choice and is honoured.</li>
+   * </ul>
+   *
+   * @param configuration the configuration to read {@code arcadedb.server.databaseDirectory} from, or {@code null}
+   *                      to measure the working directory without consulting any setting
+   *
+   * @return a directory to measure, never {@code null}
+   */
+  public static File resolveDiskSpaceDirectory(final ContextConfiguration configuration) {
+    if (configuration != null) {
+      try {
+        final String configured = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
+        if (configured != null && !configured.isBlank()) {
+          File dir = new File(configured.trim()).getAbsoluteFile();
+          boolean walked = false;
+          while (dir != null && !dir.exists()) {
+            dir = dir.getParentFile();
+            walked = true;
+          }
+
+          if (dir != null && !(walked && dir.getParentFile() == null))
+            return dir;
+        }
+      } catch (final Exception e) {
+        LogManager.instance()
+            .log(FileUtils.class, Level.FINE, "Cannot resolve the configured database directory, falling back to the "
+                + "working directory", e);
+      }
+    }
+
+    return new File(".");
   }
 }

@@ -94,9 +94,11 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
     await expect(page.locator('#summRamUsed')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#summRamTotal')).toBeVisible({ timeout: 10000 });
 
-    // OS Disk card
+    // Databases Disk card - the directory (#7223) names the filesystem the two figures beside it describe, so it
+    // has to reach the page and not only displayServerSummary()
     await expect(page.locator('#summDiskUsed')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#summDiskTotal')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#summDiskDir')).toBeVisible({ timeout: 10000 });
 
     // Read Cache card
     await expect(page.locator('#summCacheUsed')).toBeVisible({ timeout: 10000 });

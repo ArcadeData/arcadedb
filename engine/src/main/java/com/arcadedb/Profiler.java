@@ -105,6 +105,28 @@ public class Profiler {
    */
   private final long[] retainedStats = new long[MONOTONIC_STATS];
 
+  /**
+   * The last {@code {absolute, canonical}} pair {@link #diskSpaceDirectory()} computed, or null before the first
+   * call. Volatile rather than synchronized: it is a pure function of its first element, so a reader that misses a
+   * write only pays for one more canonicalisation.
+   * <p>
+   * Deliberately safe WITHOUT a lock, rather than safe because of one. Both current readers reach it under this
+   * class's instance monitor - {@link #toJSON()} and {@link #dumpMetrics} are {@code synchronized} and the class is
+   * used as {@link #INSTANCE} - but this field is {@code static}, so a future caller that is neither would still be
+   * correct: the worst a race costs is a duplicated canonicalisation, and the array is published whole.
+   */
+  private static volatile File[] canonicalDiskSpaceDirectory;
+
+  /**
+   * The overlay {@link #diskSpaceDirectory()} reads the database directory through. An empty
+   * {@link ContextConfiguration} is a pure proxy for the process-wide settings - it holds nothing and nothing here
+   * writes to it - so one shared instance is what a per-call {@code new} was already asking for.
+   * <p>
+   * <b>Never write to it.</b> A {@code setValue} here would be a process-wide override installed by whoever happened
+   * to be reading a disk figure, which is not what any caller of this class means to do.
+   */
+  private static final ContextConfiguration GLOBAL_SETTINGS = new ContextConfiguration(); // READ-ONLY: see above
+
   protected Profiler() {
   }
 
@@ -388,13 +410,20 @@ public class Profiler {
     json.put("deferredRAM", new JSONObject().put("space", pStats.deferredRAMBytes));
     json.put("pageFlushQueueWaits", new JSONObject().put("count", pStats.flushQueueWaits));
 
-    final long freeSpace = new File(".").getFreeSpace();
-    final long totalSpace = new File(".").getTotalSpace();
-    final float freeSpacePerc = freeSpace * 100F / totalSpace;
+    // #7223: the databases' filesystem, not the JVM working directory, and usable rather than free space - the same
+    // measurement #7124 fixed in ServerMonitor. This is the copy that actually reaches an operator, through
+    // GET /api/v1/server and the Studio disk bar.
+    final File diskDir = diskSpaceDirectory();
+    final long freeSpace = diskDir.getUsableSpace();
+    final long totalSpace = diskDir.getTotalSpace();
+    final float freeSpacePerc = totalSpace > 0 ? freeSpace * 100F / totalSpace : 0F;
 
     json.put("diskFreeSpace", new JSONObject().put("space", freeSpace));
     json.put("diskTotalSpace", new JSONObject().put("space", totalSpace));
     json.put("diskFreeSpacePerc", new JSONObject().put("perc", freeSpacePerc));
+    // Which filesystem the three figures above describe. Without it the reader cannot tell a nearly-full data
+    // volume from a nearly-full root filesystem, which is the first thing they need to know.
+    json.put("diskDirectory", new JSONObject().put("value", diskDir.getPath()));
 
     json.put("gcTime", new JSONObject().put("count", getGarbageCollectionTime()));
 
@@ -447,12 +476,50 @@ public class Profiler {
     return json;
   }
 
+  /**
+   * The directory whose filesystem the disk figures describe (issue #7223).
+   * <p>
+   * The profiler has no {@link ContextConfiguration} of its own - it is a JVM-wide singleton that predates any
+   * server - so it reads the process-wide setting through {@link #GLOBAL_SETTINGS}, an empty one, which is what
+   * {@link ContextConfiguration#getValueAsString(GlobalConfiguration)} falls back to. That resolves to the same
+   * directory the server's own low-disk warning measures, so the two never describe different filesystems while
+   * reporting the same thing.
+   * <p>
+   * Canonicalised, because the path is REPORTED here and not only measured: the working-directory fallback is
+   * {@code "."}, which names no filesystem to a reader looking at a disk figure they do not believe.
+   * <p>
+   * The canonicalisation is memoised on the absolute path it was computed from, because it is the expensive half -
+   * it resolves every symlink in the path, and both callers hold this class's monitor while Studio polls them.
+   * The resolution itself is NOT cached: it is a couple of {@code exists()} calls, and caching it would keep
+   * reporting the parent directory after the configured one is finally created.
+   */
+  private static File diskSpaceDirectory() {
+    final File dir = FileUtils.resolveDiskSpaceDirectory(GLOBAL_SETTINGS).getAbsoluteFile();
+
+    final File[] memo = canonicalDiskSpaceDirectory;
+    if (memo != null && memo[0].equals(dir))
+      return memo[1];
+
+    File canonical;
+    try {
+      canonical = dir.getCanonicalFile();
+    } catch (final IOException e) {
+      canonical = dir;
+    }
+
+    // Racing threads compute the same answer from the same input, so last writer wins costs nothing.
+    canonicalDiskSpaceDirectory = new File[] { dir, canonical };
+    return canonical;
+  }
+
   public synchronized void dumpMetrics(final PrintStream out) {
 
     final StringBuilder buffer = new StringBuilder("\n");
 
-    final long freeSpaceInMB = new File(".").getFreeSpace();
-    final long totalSpaceInMB = new File(".").getTotalSpace();
+    // #7223: same measurement as toJSON() - the databases' filesystem, read as usable rather than free space.
+    final File diskDir = diskSpaceDirectory();
+    final long freeSpaceInMB = diskDir.getUsableSpace();
+    final long totalSpaceInMB = diskDir.getTotalSpace();
 
     try {
       final long[] dbStats = collectDatabaseStats();
@@ -600,9 +667,9 @@ public class Profiler {
         "%n WAL totalFiles=%d pagesWritten=%d bytesWritten=%s".formatted(walTotalFiles, walPagesWritten,
           FileUtils.getSizeAsString(walBytesWritten)));
 
-      buffer.append(
-        "%n FILE-MANAGER FS=%s/%s openFiles=%d maxFilesOpened=%d".formatted(FileUtils.getSizeAsString(freeSpaceInMB),
-          FileUtils.getSizeAsString(totalSpaceInMB), totalOpenFiles, maxOpenFiles));
+      buffer.append("%n FILE-MANAGER FS=%s/%s on '%s' openFiles=%d maxFilesOpened=%d".formatted(
+        FileUtils.getSizeAsString(freeSpaceInMB), FileUtils.getSizeAsString(totalSpaceInMB), diskDir.getPath(),
+        totalOpenFiles, maxOpenFiles));
 
       out.println(buffer);
     } catch (final Exception e) {

@@ -88,6 +88,16 @@ public class PostgresCatalog {
    * {@link PostgresTypeCatalog}'s {@code typowner}, so the two surfaces cannot drift apart on who owns what.
    */
   static final int OWNER_OID = 10;
+  /**
+   * The schema PostgreSQL's own built-in objects live in, which is what {@code pg_type.typnamespace} answers here
+   * (issue #7224). It is deliberately NOT the one schema this catalog emulates for the user's own types: a
+   * type row joined to pg_namespace must report the namespace its own typnamespace column names.
+   * <p>
+   * Every place this catalog names that schema uses this constant - the type rows, a column's {@code udt_schema},
+   * and the collation rows - so the answer cannot come out one way on one surface and another way on the next,
+   * which is the failure mode #7224 itself was.
+   */
+  private static final String PG_CATALOG_SCHEMA = "pg_catalog";
 
   /** A catalog query whose shape this class will not answer. The caller sends an empty result set. */
   public static final Answer DECLINED = new Answer(new LinkedHashMap<>(), null, false);
@@ -184,7 +194,9 @@ public class PostgresCatalog {
 
     // pg_type is both: on its own it is a query about the types this protocol can produce (issue #7178), and
     // joined to pg_attribute it decorates a column row with that column's type. Which of the two a query is
-    // about is decided by rank(): TYPES never outranks anything, so it only wins when nothing else is named.
+    // about is decided by rank(), and by whether the other relation CONSTRAINS the row set or only QUALIFIES it
+    // (issue #7224): TYPES loses to pg_class and pg_attribute, which select the rows, and wins over pg_namespace,
+    // which only names a schema for each type.
     relation("pg_type", Family.TYPES, "oid", "typname", "typnamespace", "typowner", "typlen", "typbyval", "typtype",
         "typcategory", "typispreferred", "typisdefined", "typdelim", "typrelid", "typelem", "typarray", "typinput",
         "typoutput", "typreceive", "typsend", "typmodin", "typmodout", "typanalyze", "typsubscript", "typalign",
@@ -420,21 +432,32 @@ public class PostgresCatalog {
   }
 
   /**
-   * How specific a family is, when a query names relations belonging to more than one. TYPES stays at the
-   * bottom on purpose: pg_type joined to pg_class or pg_attribute is a question about tables or columns that
-   * happens to name the type of each, and answering it with one row per type instead of one row per column
-   * would change what every such query means.
+   * How specific a family is, when a query names relations belonging to more than one. The ladder ranks by what
+   * the other relation DOES to the row set, which is the only thing that decides what the query is about:
+   * <ul>
+   * <li>a relation that CONSTRAINS it outranks the one it is joined to - pg_class or pg_attribute joined to
+   * pg_type is a question about tables or columns that happens to name the type of each, and answering it with
+   * one row per type instead of one row per column would change what every such query means;</li>
+   * <li>a relation that only QUALIFIES it does not - pg_namespace joined to pg_type attaches a schema to each
+   * type and selects nothing, so the query is still about types.</li>
+   * </ul>
+   * Issue #7224: SCHEMAS used to outrank TYPES, so {@code DatabaseMetaData.getTypeInfo()} - pg_type joined to
+   * pg_namespace, which is pure qualification - was answered with the one schema row, whose pg_type columns
+   * {@link Row#complete()} then filled with NULL. The client got one nameless type instead of the type list,
+   * and no error. SCHEMAS therefore sits BELOW TYPES: pg_namespace is the one relation here that can never be
+   * the subject of a query naming anything else, because this catalog models exactly one schema.
    * <p>
-   * So TYPES loses to every ranked family. Against the other rank-0 ones - ROLES, DATABASES, PRIVILEGES,
-   * CHARACTER_SETS, COLLATIONS - it does not lose, it ties, and the FROM order settles it. That is what this
-   * scheme happens to give rather than a considered answer; no client joins pg_type to pg_roles, and if one
-   * ever does it is the tie that needs deciding, not the ranking above it.
+   * TYPES still loses to TABLES, VIEWS and COLUMNS, which is the half of the old ranking that was right. It now
+   * beats the unranked families - ROLES, DATABASES, PRIVILEGES, CHARACTER_SETS, COLLATIONS - rather than tying
+   * with them and letting the FROM order settle it, and that is the same reading: pg_type joined to pg_roles
+   * reads an owner for each type, so it qualifies.
    */
   private static int rank(final Family family) {
     return switch (family) {
       case SCHEMAS -> 1;
-      case TABLES, VIEWS -> 2;
-      case COLUMNS -> 3;
+      case TYPES -> 2;
+      case TABLES, VIEWS -> 3;
+      case COLUMNS -> 4;
       default -> 0;
     };
   }
@@ -872,13 +895,23 @@ public class PostgresCatalog {
    * WHERE (typreceive != 0 OR typsend != 0) AND typtype != 'r' AND typreceive::TEXT != 'array_recv'} - is a
    * shape no regular expression should be asked to read, and the driver rejects the connection outright when
    * the answer has no columns rather than falling back to anything.
+   * <p>
+   * Issue #7224: each row carries the {@code pg_namespace} row of the schema the type lives in, because a type
+   * query that names pg_namespace does so to qualify each type - {@code DatabaseMetaData.getTypeInfo()} joins
+   * it and then filters on {@code n.nspname != 'pg_toast'}. Left to {@link Row#complete()}'s null fill that
+   * predicate would read as UNKNOWN and, TYPES being the family that does not tolerate an unreadable filter,
+   * the whole query would be declined. The schema is pg_catalog rather than the database's own, which is what
+   * {@code pg_type.typnamespace} already says these types are in, so the join column and the joined row agree.
    */
   private static List<Row> typeRows() {
     final List<PostgresType> types = PostgresTypeCatalog.types();
     final List<Row> rows = new ArrayList<>(types.size());
 
-    for (final PostgresType type : types)
-      rows.add(describeType(new Row(), type).complete());
+    for (final PostgresType type : types) {
+      final Row row = describeType(new Row(), type);
+      rows.add(row.with("pg_namespace", "oid", row.of("pg_type").get("typnamespace"), "nspname", PG_CATALOG_SCHEMA,
+          "nspowner", OWNER_OID).complete());
+    }
 
     return rows;
   }
@@ -958,7 +991,7 @@ public class PostgresCatalog {
                 type.getName(), "column_name", property.getName(), "ordinal_position", ordinal,//
                 "column_default", defaultValue == null ? null : defaultValue.toString(),//
                 "is_nullable", notNull ? "NO" : "YES", "data_type", pgType.typeName, "udt_catalog", schema,//
-                "udt_schema", "pg_catalog", "udt_name", pgType.typeName, "is_identity", "NO", "is_generated", "NEVER",//
+                "udt_schema", PG_CATALOG_SCHEMA, "udt_name", pgType.typeName, "is_identity", "NO", "is_generated", "NEVER",//
                 "is_updatable", "YES", "numeric_precision_radix", numericPrecisionRadix(pgType));
 
         // The type row a client joins pg_attribute to in order to name the column's type. It describes the
@@ -1011,13 +1044,13 @@ public class PostgresCatalog {
   private static Row characterSetRow(final Context context) {
     return new Row().with("information_schema.character_sets", "character_set_catalog", null, "character_set_schema",
         null, "character_set_name", "UTF8", "character_repertoire", "UCS", "form_of_use", "UTF8",
-        "default_collate_catalog", context.schema(), "default_collate_schema", "pg_catalog", "default_collate_name",
+        "default_collate_catalog", context.schema(), "default_collate_schema", PG_CATALOG_SCHEMA, "default_collate_name",
         "default");
   }
 
   private static Row collationRow(final Context context) {
     return new Row().with("information_schema.collations", "collation_catalog", context.schema(), "collation_schema",
-        "pg_catalog", "collation_name", "default", "pad_attribute", "NO PAD");
+        PG_CATALOG_SCHEMA, "collation_name", "default", "pad_attribute", "NO PAD");
   }
 
   private static List<DocumentType> sortedTypes(final Context context) {

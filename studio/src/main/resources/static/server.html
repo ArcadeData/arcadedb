@@ -97,13 +97,16 @@
         </div>
         <div class="col-md-2">
           <div class="card">
-            <div class="card-header">OS Disk</div>
+            <div class="card-header">Databases Disk</div>
             <div class="card-body text-center">
               <div class="fs-4" id="summDiskUsed">-</div>
               <div class="text-muted small">of <span id="summDiskTotal">-</span></div>
               <div class="progress mt-2" style="height: 6px;">
                 <div class="progress-bar" id="summDiskBar" role="progressbar" style="width: 0%; background-color: #48C392;"></div>
               </div>
+              <!-- #7223: which filesystem the figures above describe. On a container the databases sit on a mounted
+                   volume while the process starts elsewhere, so "how full is the disk" has more than one answer. -->
+              <div class="text-muted small text-truncate mt-1" id="summDiskDir" title="">&nbsp;</div>
             </div>
           </div>
         </div>
