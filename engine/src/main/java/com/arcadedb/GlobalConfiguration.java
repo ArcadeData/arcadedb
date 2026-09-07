@@ -2750,12 +2750,28 @@ public enum GlobalConfiguration {
         source = "environment variable";
       }
 
-      if (prop != null)
-        config.setValueFromConfigurationSource(prop, source);
-      else if (config.callbackIfNoSet != null) {
-        config.setValue(config.callbackIfNoSet.call(null));
-      }
+      config.applyConfigurationSource(prop, source);
     }
+  }
+
+  /**
+   * Applies one setting's system property or environment variable, or its absence, as {@link #readConfiguration()}
+   * does. Split out so the composition below is reachable from a test: what it does with a value it cannot read is
+   * not visible from either half alone.
+   * <p>
+   * A REFUSED value takes the same branch as an ABSENT one, which is the only reading of "keep the default" that is
+   * true for every setting: a setting with a {@code callbackIfNoSet} has no compiled-in default worth having, it has
+   * one it computes. {@code QUERY_MAX_RANGE_SIZE} scales its cap with the JVM heap that way, and its
+   * {@code defValue} is the unbounded-heap figure - so leaving a refused value to fall through to {@code defValue}
+   * would RAISE the cap on a small-heap JVM, which for a setting that exists to bound the memory one query can ask
+   * for is the wrong direction. A typo must not do that.
+   *
+   * @param prop   the raw text the property or variable carried, or {@code null} when neither was set
+   * @param source what to name as its origin when reporting a value that cannot be read
+   */
+  void applyConfigurationSource(final String prop, final String source) {
+    if ((prop == null || !setValueFromConfigurationSource(prop, source)) && callbackIfNoSet != null)
+      setValue(callbackIfNoSet.call(null));
   }
 
   /**

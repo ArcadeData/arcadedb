@@ -25,8 +25,10 @@
 //
 //     node --test studio/test/server-disk-directory.test.js
 //
-// displayServerSummary() is extracted from studio-server.js and run against stubs for the globals it touches, so
-// the assertion is on what it hands to each element. Studio has no bundler for application JS.
+// The normalization lives in diskDirectoryOf(), a pure function taking the profiler payload, which is where
+// studio/CLAUDE.md asks for the logic worth testing. displayServerSummary() is also exercised, against stubs for the
+// globals it touches, because "the pure function is right" and "the card shows it" are different claims and the
+// wiring between them is exactly what a rename would break. Studio has no bundler for application JS.
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
@@ -103,6 +105,7 @@ var opsPerSecHistory = {};
 var serverChartCommands = null;
 var serverData = {};
 
+eval(extractFn("diskDirectoryOf"));
 eval(extractFn("displayServerSummary"));
 
 function render(profiler) {
@@ -110,6 +113,19 @@ function render(profiler) {
   opsPerSecHistory = {};
   displayServerSummary();
 }
+
+test("the reported directory is read off the profiler payload", () => {
+  assert.strictEqual(diskDirectoryOf({ diskDirectory: { value: "/mnt/data/databases" } }), "/mnt/data/databases");
+});
+
+test("a payload without the field answers empty rather than undefined", () => {
+  // An older server, a reading taken before the field existed, or a profiler that could not resolve a directory.
+  // Each has to leave the card blank; "undefined" rendered under a disk bar reads as a broken server.
+  assert.strictEqual(diskDirectoryOf({}), "");
+  assert.strictEqual(diskDirectoryOf({ diskDirectory: {} }), "");
+  assert.strictEqual(diskDirectoryOf(null), "");
+  assert.strictEqual(diskDirectoryOf(undefined), "");
+});
 
 test("the disk card names the filesystem the figures describe", () => {
   render({

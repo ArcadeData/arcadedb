@@ -132,6 +132,34 @@ class Issue7222StrictBooleanFromConfigurationSourceTest {
     assertThat(BOOLEAN_SETTING_DEFAULTING_TO_TRUE.redactIfHidden("yes")).isEqualTo("'yes'");
   }
 
+  /**
+   * "Keeps the default" has to mean the default the setting would have had, and for a setting that AUTO-SIZES one
+   * that is not its compiled-in {@code defValue}. {@code QUERY_MAX_RANGE_SIZE} scales its cap with the JVM heap
+   * through {@code callbackIfNoSet}, and its {@code defValue} is the unbounded-heap figure - so a refused value
+   * that fell through to {@code defValue} would RAISE the cap on a small-heap JVM, which for a setting whose whole
+   * job is to bound the memory one query can ask for is the wrong direction to move on a typo.
+   */
+  @Test
+  void aRefusedValueTakesTheSameBranchAsAnAbsentOne() {
+    // SERVER_HTTP_IO_THREADS rather than QUERY_MAX_RANGE_SIZE: its auto-sized value is availableProcessors(), which
+    // is never its defValue of 0 on any machine. Sizing QUERY_MAX_RANGE_SIZE off the heap would make this test
+    // silently vacuous on a JVM whose heap happens to land on the compiled-in figure.
+    final GlobalConfiguration autoSized = GlobalConfiguration.SERVER_HTTP_IO_THREADS;
+    try {
+      autoSized.applyConfigurationSource(null, "system property");
+      final int whenAbsent = autoSized.getValueAsInteger();
+
+      // The value the auto-sizing exists to avoid, so a refusal falling through to it is visible here.
+      assertThat(whenAbsent).isNotEqualTo(autoSized.getDefValue());
+
+      autoSized.applyConfigurationSource("not-a-number", "environment variable");
+
+      assertThat(autoSized.getValueAsInteger()).isEqualTo(whenAbsent);
+    } finally {
+      autoSized.reset();
+    }
+  }
+
   /** A value that arrives already typed - a callback's return, a programmatic write - is not text and is stored. */
   @Test
   void anAlreadyTypedValueIsStored() {
