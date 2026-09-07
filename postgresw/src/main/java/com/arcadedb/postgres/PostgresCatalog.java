@@ -190,7 +190,9 @@ public class PostgresCatalog {
 
     // pg_type is both: on its own it is a query about the types this protocol can produce (issue #7178), and
     // joined to pg_attribute it decorates a column row with that column's type. Which of the two a query is
-    // about is decided by rank(): TYPES never outranks anything, so it only wins when nothing else is named.
+    // about is decided by rank(), and by whether the other relation CONSTRAINS the row set or only QUALIFIES it
+    // (issue #7224): TYPES loses to pg_class and pg_attribute, which select the rows, and wins over pg_namespace,
+    // which only names a schema for each type.
     relation("pg_type", Family.TYPES, "oid", "typname", "typnamespace", "typowner", "typlen", "typbyval", "typtype",
         "typcategory", "typispreferred", "typisdefined", "typdelim", "typrelid", "typelem", "typarray", "typinput",
         "typoutput", "typreceive", "typsend", "typmodin", "typmodout", "typanalyze", "typsubscript", "typalign",
