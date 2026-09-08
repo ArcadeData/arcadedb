@@ -496,11 +496,13 @@ public final class RaftLogEntryCodec {
    *                    rule as every section before it. That makes it invisible to a node running an older
    *                    codec - which stops after the slices - and such a node would therefore see a
    *                    {@code SCHEMA_ENTRY} with an EMPTY schema JSON and apply NOTHING, diverging silently.
-   *                    <b>That is why emitting a delta is gated on {@code arcadedb.ha.schemaDelta}, which is
-   *                    off by default</b>: the leader keeps shipping whole documents until an operator turns
-   *                    deltas on, which is safe only once every peer understands them. Decoding is
+   *                    <b>That is why the leader asks before it emits one</b>: since issue #7219 it polls every
+   *                    peer in its Raft configuration over {@code POST /api/v1/cluster/capabilities} and ships
+   *                    the whole document unless all of them advertise {@link PeerCapabilities#SCHEMA_DELTA}. A
+   *                    node predating that endpoint answers 404, which is the answer. Decoding stays
    *                    unconditional, so the upgrade is a one-way ratchet - every node can read a delta before
-   *                    any node is allowed to write one.
+   *                    any node is allowed to write one - and {@code arcadedb.ha.schemaDelta} is now a kill
+   *                    switch on top of that rather than the interlock itself.
    */
   public static ByteString encodeSchemaEntry(final String databaseName, final String schemaJson,
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
@@ -980,6 +982,23 @@ public final class RaftLogEntryCodec {
       final byte[] raw = CompressionFactory.getDefault().decompress(compressed, uncompressedLen);
       schemaDelta = new SchemaDelta.Payload(baseVersion, new String(raw, StandardCharsets.UTF_8));
     }
+
+    // Nothing is written after the delta section by any producer in this codec, so bytes left here belong to a
+    // section a NEWER node added. Refusing beats accepting (issue #7219): every other section of this entry has
+    // already been read, so accepting would apply a change this node can only see part of - and the part it
+    // cannot see is, by construction, the part that carries meaning. A refusal is a RaftLogEntryDecodeException
+    // naming this database, which quarantines and resyncs that one database (#7138) - loud, scoped and
+    // self-healing, where the alternative is a schema that quietly stopped matching the leader's.
+    //
+    // A node predating the section it does not understand cannot be given this check retroactively, which is why
+    // it is only the backstop: the guarantee is peer-capability negotiation on the LEADER, which does not write a
+    // section until every peer has advertised it. This is what catches the release that forgets to declare one.
+    if (dis.available() > 0)
+      throw new IllegalStateException("SCHEMA_ENTRY for database '" + databaseName + "' carries " + dis.available()
+          + " trailing bytes after every section this version knows about; they belong to a section written by a "
+          + "newer node. Refusing the entry rather than applying the part that could be read. Whoever added that "
+          + "section must gate emitting it on a PeerCapabilities token (issue #7219), so a leader never writes it "
+          + "to a peer that cannot read it");
 
     return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null,
         schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false, null, -1L, sealedFileBlobs,

@@ -83,6 +83,11 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     final RaftPeerId localPeerId = raftHAServer.getLocalPeerId();
     response.put("localPeerId", localPeerId.toString());
 
+    // What THIS node can decode (issue #7219). Published next to the peer list below, which carries the same
+    // field per peer on the leader, so "which node is holding the cluster back" is one diff rather than a poll
+    // of every node in turn.
+    response.put("capabilities", capabilitiesArray(raftHAServer.getAdvertisedCapabilities()));
+
     // Local Raft lifecycle state (division-aware, issue #5271): a node whose group member is CLOSED
     // or EXCEPTION cannot vote or accept a leader's contact - surfacing it here is the only way an
     // operator can see that the cluster is running without failover margin.
@@ -177,6 +182,17 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
       // A peer outside the configuration is not a follower: the leader does not replicate to it and it cannot
       // vote. Naming that state in the role keeps a consumer that only reads roles from mistaking it for one.
       peerJson.put("role", peerIsLeader ? "LEADER" : inConfiguration ? "FOLLOWER" : ROLE_NOT_IN_CONFIGURATION);
+
+      // Only the leader polls for capabilities, so only the leader has an answer to report; a follower simply
+      // omits the field rather than reporting an empty set that would read as "this peer can decode nothing".
+      final PeerCapabilityRegistry.Advertisement advertisement =
+          raftHAServer.getPeerCapabilityRegistry().freshAdvertisementOf(peerId);
+      if (advertisement != null) {
+        peerJson.put("capabilities", capabilitiesArray(advertisement.capabilities()));
+        if (!advertisement.version().isEmpty())
+          peerJson.put("version", advertisement.version());
+      } else if (peerIsLeader)
+        peerJson.put("capabilities", capabilitiesArray(raftHAServer.getAdvertisedCapabilities()));
 
       final HAReplicationStatsProvider.FollowerSample health = followerHealth.get(peerId);
       if (!peerIsLeader && health != null) {
@@ -283,6 +299,14 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         .put("divergedDatabases", ClusterAlerts.namesArray(ClusterAlerts.visible(state.divergedDatabases(), visibleDatabases)))
         .put("snapshotAppliedFloor", state.snapshotAppliedFloor())
         .put("databaseAppliedFloors", ClusterAlerts.visibleFloors(state.databaseAppliedFloors(), visibleDatabases));
+  }
+
+  /** A capability set as a stable, sorted JSON array, so two peers' documents can be diffed by eye. */
+  private static JSONArray capabilitiesArray(final Set<String> capabilities) {
+    final JSONArray array = new JSONArray();
+    for (final String capability : new TreeSet<>(capabilities))
+      array.put(capability);
+    return array;
   }
 
   private static boolean isPresenceRequested(final HttpServerExchange exchange) {

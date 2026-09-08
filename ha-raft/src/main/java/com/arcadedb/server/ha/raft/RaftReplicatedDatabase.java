@@ -220,8 +220,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * version-based guard would refuse every delta. It is carried in the payload for diagnostics only.
    * <p>
    * <b>Cost:</b> one parsed schema document retained per replicated database, which for the multi-MB schema this
-   * issue is about is tens of MB of heap. That is why it is held only while {@code arcadedb.ha.schemaDelta} is
-   * on - see {@link #rememberReplicatedSchema} - and why the base is kept parsed rather than as text: a diff
+   * issue is about is tens of MB of heap. That is why it is held only while a delta could actually ship - the
+   * setting on AND every peer advertising the capability, issue #7219; see {@link #rememberReplicatedSchema} -
+   * and why the base is kept parsed rather than as text: a diff
    * against text would have to re-parse it on every DDL, which is one of the very costs the delta exists to
    * avoid.
    */
@@ -238,6 +239,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private final        AtomicLong                                        schemaDeltasShipped      = new AtomicLong();
   private final        AtomicLong                                        schemaDocumentsShipped   = new AtomicLong();
+
+  /** Throttle window for the "deltas are on but withheld" report (issue #7219), per database. */
+  private static final long                                              SCHEMA_DELTA_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
+
+  /**
+   * When {@link #logSchemaDeltaWithheld} last reported that a peer is holding deltas back. Plain volatile rather
+   * than an atomic: a duplicate line costs nothing and the schema-replication path should not take a lock for a
+   * diagnostic.
+   */
+  private volatile     long                                              lastSchemaDeltaWithheldLog = 0L;
 
   /**
    * Memoized unreferenced-file count behind the (file modification count, schema version) gate (issue #6168).
@@ -2847,9 +2858,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * <p>
    * Null is returned - and the whole document shipped - whenever any of these is true:
    * <ul>
-   *   <li>{@code arcadedb.ha.schemaDelta} is off (the default). A node running a version that predates the
-   *       delta section cannot see it, so emitting one is only safe once every peer understands it; see
-   *       {@link GlobalConfiguration#HA_SCHEMA_DELTA}.</li>
+   *   <li>{@code arcadedb.ha.schemaDelta} is off, or some peer in the Raft configuration has not proved it can
+   *       decode a delta - unknown, unreachable, stale, or running a build that predates the section (issue
+   *       #7219). See {@link #schemaDeltaEnabled()}; both halves of that answer land in this one arm.</li>
    *   <li>Nothing has been shipped yet in this instance's lifetime, so there is no base to diff against.</li>
    *   <li>The Raft term moved since the cache was filled, so another node has been leader in between and what
    *       the followers hold is whatever IT shipped - see {@link #lastReplicatedSchema}. An unknown term
@@ -2920,14 +2931,65 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * Whether this cluster wants schema deltas. Read off the SERVER's configuration, like every other
-   * {@code SCOPE.SERVER} setting this class consults ({@code HA_QUORUM_TIMEOUT},
-   * {@code HA_FORWARD_LEADER_WAIT_TIMEOUT_MS}): the per-database {@code ContextConfiguration} does not carry
-   * what a server-scoped setting was set to, so reading it there silently answers "default" - which for this
-   * setting means the feature never engages at all, and nothing fails.
+   * Whether this cluster may ship schema deltas right now: the setting allows it AND every peer in the Raft
+   * configuration has proved it can decode one (issue #7219).
+   * <p>
+   * The setting is read off the SERVER's configuration, like every other {@code SCOPE.SERVER} setting this class
+   * consults ({@code HA_QUORUM_TIMEOUT}, {@code HA_FORWARD_LEADER_WAIT_TIMEOUT_MS}): the per-database
+   * {@code ContextConfiguration} does not carry what a server-scoped setting was set to, so reading it there
+   * silently answers "default".
+   * <p>
+   * <b>The capability half is what makes the setting safe to default to on.</b> A delta rides an optional trailing
+   * section of {@code SCHEMA_ENTRY}; a node predating that section stops decoding before it, sees an entry with an
+   * empty {@code schemaJson}, applies nothing and diverges with no error. Until #7219 nothing could tell the leader
+   * that such a peer was in the cluster, so the setting carried an operator instruction ("upgrade every node
+   * first") that nothing enforced. Now the leader asks - {@link RaftHAServer#peersMissingCapability} - and any peer
+   * that is unknown, unreachable, stale or explicitly without the capability sends the whole document instead.
+   * <p>
+   * Read on every schema change rather than cached, so a peer that stops answering stops receiving deltas from the
+   * next DDL on, and one that finishes upgrading starts receiving them without a leader restart.
    */
   private boolean schemaDeltaEnabled() {
-    return server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_SCHEMA_DELTA);
+    if (server == null || !server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_SCHEMA_DELTA))
+      return false;
+
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      // No Raft server to ask, so nothing has proved it can decode a delta. The same answer the capability
+      // registry gives for an unknown peer, for the same reason.
+      return false;
+
+    final List<String> missing = raft.peersMissingCapability(PeerCapabilities.SCHEMA_DELTA);
+    if (missing.isEmpty())
+      return true;
+
+    logSchemaDeltaWithheld(missing);
+    return false;
+  }
+
+  /**
+   * Reports, at most once per {@link #SCHEMA_DELTA_WITHHELD_LOG_THROTTLE_MS} per database, that deltas are
+   * configured but withheld and WHICH peers withheld them.
+   * <p>
+   * The whole failure mode this replaces was silent, and a mechanism that silently declines to engage is only
+   * marginally better than one that silently diverges: an operator who has turned the setting on and sees no
+   * change in entry sizes needs to be told that peer {@code arcadedb2} has not answered, not left to infer it.
+   * Throttled because the alternative is a line per DDL, and a bulk migration is thousands of them.
+   */
+  private void logSchemaDeltaWithheld(final List<String> peersMissingTheCapability) {
+    final long now = System.currentTimeMillis();
+    final long last = lastSchemaDeltaWithheldLog;
+    if (now - last < SCHEMA_DELTA_WITHHELD_LOG_THROTTLE_MS)
+      return;
+    // Racy by design: two DDL threads crossing the window at the same instant cost one duplicate line, which is
+    // a far better trade than a lock on the schema-replication path.
+    lastSchemaDeltaWithheldLog = now;
+    LogManager.instance().log(this, Level.INFO,
+        "Schema changes on database '%s' are shipping as whole documents even though %s is on: peer(s) %s have not "
+            + "advertised the '%s' capability, so a delta could not be decoded there (issue #7219). Upgrade or "
+            + "restore contact with those peers and deltas resume by themselves.",
+        getName(), GlobalConfiguration.HA_SCHEMA_DELTA.getKey(), peersMissingTheCapability,
+        PeerCapabilities.SCHEMA_DELTA);
   }
 
   /** The Raft term this node is in, or {@code -1} when it cannot be read (no server, division restarting). */
@@ -2960,10 +3022,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           "Schema delta base for database '%s' updated outside a file recording session; the session is what "
               + "serializes the two writers, so this cache can now be torn (issue #6989)", getName());
 
-    // Only retained when deltas are actually wanted: the document is the size of the schema, and a cluster
-    // running the default configuration would otherwise pay several MB per replicated database for a base
-    // nothing will ever diff against. Turning the setting on at runtime costs one more whole-document entry -
-    // the base is null until then, which is already one of the fallback arms.
+    // Only retained when deltas can actually ship: the document is the size of the schema, and a cluster that
+    // cannot use it would otherwise pay several MB per replicated database for a base nothing will ever diff
+    // against. Deliberately the SAME predicate the emission gate uses (issue #7219), so a cluster holding a base
+    // is exactly a cluster that could ship a delta from it - a peer that has not advertised the capability
+    // releases the base too, rather than leaving the leader paying for a diff it may not send.
+    //
+    // The cost of the predicate flipping back to true - the setting turned on at runtime, or the last peer
+    // finishing its upgrade - is one more whole-document entry, because the base is null until then, which is
+    // already one of the fallback arms.
     final boolean wanted = schemaDeltaEnabled();
     lastReplicatedSchema = wanted ? fullSchema : null;
     lastReplicatedSchemaTerm = wanted ? currentRaftTerm() : -1L;

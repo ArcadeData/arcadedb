@@ -85,3 +85,23 @@ Two constraints that are easy to miss:
 `SCHEMA_ENTRY` is **excluded**, not merely exempt, and the distinction matters: its optional sections are unframed and positional, so a decoder that has consumed the file maps reads whatever comes next as the #4382 WAL section's count. Append a frame to one and it is not skipped - the magic is read as that count and the entry is rejected as corrupt. Extend `SCHEMA_ENTRY` by adding another section to its own mechanism in `decodeSchemaEntry`, exactly as #5443 and #4416 did.
 
 The same issue moved decode failures off the node-halt path: a `RaftLogEntryDecodeException` naming a database quarantines that one database and resyncs it, and only a failure with no database name still halts the node. An *unknown type* is a different failure and still halts - skipping a committed mutation nobody can read is a silent divergence (#4798).
+
+## A new optional wire-format section needs a capability, not a setting
+
+`SCHEMA_ENTRY` is the one entry type that can be extended with unframed trailing sections (see above), and #6989 used that to append a schema delta. That is safe to *read* on any build that has the decoder, and unsafe to *write* to any build that does not: a peer that predates the section stops decoding before it, sees an entry with an empty `schemaJson`, applies nothing, logs nothing, and diverges. The divergence surfaces much later, as a WAL version gap or a `checkDatabase`.
+
+The first answer was a setting - `arcadedb.ha.schemaDelta`, off by default, with "upgrade every node first, then turn it on" in its javadoc. That is an operator instruction enforced by nothing, which is #7219.
+
+**Do not add another one.** Since #7219 a node publishes what it can decode at `POST /api/v1/cluster/capabilities`, the leader polls every peer in its Raft configuration every `PeerCapabilityRegistry.REFRESH_PERIOD_MS`, and an optional section is written only when every peer has answered that it understands it. To add a section:
+
+1. add a token to `PeerCapabilities` (permanent spelling - renaming one makes every older peer read as incapable, which is safe but silently turns the feature off cluster-wide) and put it in `PeerCapabilities.LOCAL`;
+2. gate the *emission* on `RaftHAServer.peersMissingCapability(token).isEmpty()`, the way `RaftReplicatedDatabase.schemaDeltaEnabled()` does;
+3. leave decoding unconditional, so the upgrade stays a one-way ratchet - every node reads the section before any node writes one.
+
+Three things about that mechanism that are easy to get wrong:
+
+- **A 404 is the answer, not an error.** A peer running a build with no capability route replies 404, which `PeerCapabilityQuery` raises as an `IOException` exactly like an unreachable peer, and the refresh *forgets* that peer. Forgetting rather than keeping matters: the peer may have been replaced by an older build, and believing its last answer until the TTL expires would be believing it for a reason that has gone away. Every unknown - never probed, unreachable, ambiguous address, stale - is a "no".
+- **It cannot ride the Raft log.** The obvious design, a `PEER_CAPABILITIES_ENTRY` every node applies, halts every not-yet-upgraded peer: an unrecognised type byte is a deliberate `triggerCriticalHalt()` in `ArcadeStateMachine.applyTransaction` (#4798), not a skip. HTTP is the module's other node-to-node transport for exactly this reason.
+- **The answer is bound to the peer that gave it.** `PeerDialAddress` withholds an address that identifies no single peer, and `PeerCapabilityQuery.parse` independently refuses an advertisement whose `peerId` is not the peer being probed. On a cluster that declares no `http` ports, several peers derive onto one address (#6202, #6267), and crediting one peer's answer to another is how a capability gets believed for a node that never claimed it.
+
+The cost of getting it wrong is asymmetric and worth restating: withholding a section that a peer could actually have read costs one larger Raft entry. Writing one a peer cannot read costs a silent schema divergence. Every arm of `PeerCapabilityRegistry` is written to fail the cheap way.

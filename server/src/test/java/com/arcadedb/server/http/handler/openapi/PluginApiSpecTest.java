@@ -44,7 +44,7 @@ class PluginApiSpecTest {
   }
 
   @Test
-  void allTwelvePluginOperationsAreDeclared() {
+  void allThirteenPluginOperationsAreDeclared() {
     assertThat(openAPI.getPaths().keySet()).containsExactlyInAnyOrder(
         "/prometheus",
         "/api/v1/cluster",
@@ -56,12 +56,13 @@ class PluginApiSpecTest {
         "/api/v1/cluster/verify/{database}",
         "/api/v1/cluster/resync/{database}",
         "/api/v1/cluster/bootstrap-state",
+        "/api/v1/cluster/capabilities",
         "/api/v1/ha/snapshot/{database}",
         "/api/v1/ha/snapshot/{database}/checksums");
 
     final long operations = openAPI.getPaths().values().stream()
         .mapToLong(item -> item.readOperations().size()).sum();
-    assertThat(operations).isEqualTo(12);
+    assertThat(operations).isEqualTo(13);
   }
 
   @Test
@@ -116,18 +117,18 @@ class PluginApiSpecTest {
   void clusterStatusSchemaCarriesTheLeadershipAndPeerFields() {
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("ClusterStatus");
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
-        "implementation", "clusterName", "localPeerId", "raftState", "isLeader", "leaderReady",
+        "implementation", "clusterName", "localPeerId", "capabilities", "raftState", "isLeader", "leaderReady",
         "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime", "uptime",
         "peers", "databases", "databasePresence", "alerts");
 
-    // Pinned to the exact set (not .contains(...)): GetClusterHandler writes exactly these 14 fields
+    // Pinned to the exact set (not .contains(...)): GetClusterHandler writes exactly these 16 fields
     // per peer, no more, no fewer.
     final Schema<?> peersProperty = schema.getProperties().get("peers");
     final Schema<?> peerItemSchema = peersProperty.getItems();
     assertThat(peerItemSchema.getProperties().keySet()).containsExactlyInAnyOrder(
         "id", "address", "httpAddress", "httpAddressAmbiguous", "role", "matchIndex", "nextIndex",
         "replicationLag", "lastContactMs", "replicaStatus", "laggingForMs", "lagging", "replicationRttMs",
-        "replicationRttP99Ms");
+        "replicationRttP99Ms", "capabilities", "version");
   }
 
   @Test

@@ -67,7 +67,7 @@ public class PluginApiSpec implements OpenApiContributor {
       "/api/v1/cluster", "/api/v1/cluster/peer", "/api/v1/cluster/peer/{peerId}",
       "/api/v1/cluster/leader", "/api/v1/cluster/stepdown", "/api/v1/cluster/leave",
       "/api/v1/cluster/verify/{database}", "/api/v1/cluster/resync/{database}",
-      "/api/v1/cluster/bootstrap-state",
+      "/api/v1/cluster/bootstrap-state", "/api/v1/cluster/capabilities",
       "/api/v1/ha/snapshot/{database}", "/api/v1/ha/snapshot/{database}/checksums");
 
   /**
@@ -94,6 +94,7 @@ public class PluginApiSpec implements OpenApiContributor {
     openAPI.getPaths().addPathItem("/api/v1/cluster/verify/{database}", createVerifyPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/resync/{database}", createResyncPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/bootstrap-state", createBootstrapStatePath());
+    openAPI.getPaths().addPathItem("/api/v1/cluster/capabilities", createCapabilitiesPath());
     openAPI.getPaths().addPathItem("/api/v1/ha/snapshot/{database}", createSnapshotPath());
     openAPI.getPaths().addPathItem("/api/v1/ha/snapshot/{database}/checksums", createChecksumsPath());
 
@@ -103,6 +104,7 @@ public class PluginApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("ClusterActionResponse", createClusterActionResponseSchema());
     openAPI.getComponents().addSchemas("VerifyDatabaseResponse", createVerifyResponseSchema());
     openAPI.getComponents().addSchemas("BootstrapStateResponse", createBootstrapStateResponseSchema());
+    openAPI.getComponents().addSchemas("PeerCapabilitiesResponse", createPeerCapabilitiesResponseSchema());
   }
 
   private PathItem createScrapePath() {
@@ -305,6 +307,30 @@ public class PluginApiSpec implements OpenApiContributor {
     return pathItem;
   }
 
+  private PathItem createCapabilitiesPath() {
+    final Operation post = SpecBuilders.operation("getClusterPeerCapabilities", "Cluster",
+        "Report the wire-format capabilities of this peer",
+        """
+            Reports the optional replication wire-format sections this node can DECODE, as short stable \
+            tokens. The leader polls it on every peer of its Raft configuration and writes an optional \
+            section only when every peer has advertised it, so a rolling upgrade needs no ordering by \
+            hand (issue #7219).
+
+            A node running a release without this route answers 404, and the caller reads that as 'this \
+            peer can decode nothing optional' - which is why the route is safe to add and why no version \
+            comparison takes part in the decision.
+
+            Restricted to the root user; peers satisfy this by forwarding as root with the cluster \
+            token. """ + RAFT_REQUIRED);
+    post.setResponses(SpecBuilders.standardResponses("200",
+        SpecBuilders.jsonResponse("Peer capabilities", "PeerCapabilitiesResponse"),
+        "400", "401", "403", "500"));
+
+    final PathItem pathItem = new PathItem();
+    pathItem.setPost(post);
+    return pathItem;
+  }
+
   private PathItem createSnapshotPath() {
     final Operation get = SpecBuilders.operation("downloadDatabaseSnapshot", "Cluster",
         "Download a database snapshot",
@@ -404,6 +430,13 @@ public class PluginApiSpec implements OpenApiContributor {
         "Mean replication round-trip time. Absent when no sample exists."));
     peer.addProperty("replicationRttP99Ms", SpecBuilders.integer(
         "99th percentile replication round-trip time. Absent when no sample exists."));
+    peer.addProperty("capabilities", SpecBuilders.arrayOf(SpecBuilders.string("Capability token"),
+        "Optional wire-format sections this peer can decode, as last observed by the leader (issue #7219). "
+            + "Absent on a follower, which does not poll, and on the leader for a peer it has not reached: an "
+            + "absent array means 'not known', which the leader treats exactly like 'cannot decode'."));
+    peer.addProperty("version", SpecBuilders.string(
+        "Server version this peer reported alongside its capabilities. Absent when the leader has no fresh "
+            + "answer from it."));
 
     final Schema<Object> database = SpecBuilders.object("One database's cluster state");
     database.addProperty("name", SpecBuilders.string("Database name"));
@@ -422,6 +455,8 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("implementation", SpecBuilders.string("Always 'raft'"));
     schema.addProperty("clusterName", SpecBuilders.string("Configured cluster name"));
     schema.addProperty("localPeerId", SpecBuilders.string("This server's peer identifier"));
+    schema.addProperty("capabilities", SpecBuilders.arrayOf(SpecBuilders.string("Capability token"),
+        "Optional wire-format sections THIS node can decode, sorted (issue #7219)"));
     schema.addProperty("raftState", SpecBuilders.string("Raft lifecycle state"));
     schema.addProperty("isLeader", SpecBuilders.bool("True when this server is the leader"));
     schema.addProperty("leaderReady", SpecBuilders.bool(
@@ -546,6 +581,18 @@ public class PluginApiSpec implements OpenApiContributor {
     final Schema<Object> schema = SpecBuilders.object("Per-database bootstrap state of one peer");
     schema.addProperty("databases", SpecBuilders.arrayOf(database, "Databases on this peer"));
     schema.addProperty("peerId", SpecBuilders.string("Peer that reported the state"));
+    return schema;
+  }
+
+  private Schema<?> createPeerCapabilitiesResponseSchema() {
+    final Schema<Object> schema = SpecBuilders.object("The wire-format sections one peer can decode");
+    schema.addProperty("peerId", SpecBuilders.string(
+        "Peer that answered. A caller must check this against the peer it meant to ask: on a cluster that "
+            + "declares no explicit 'http' ports several peers can resolve to one address."));
+    schema.addProperty("version", SpecBuilders.string("Server version of the answering peer, for operators; "
+        + "nothing decides on it"));
+    schema.addProperty("capabilities", SpecBuilders.arrayOf(SpecBuilders.string("Capability token"),
+        "Capability tokens this peer can decode, sorted"));
     return schema;
   }
 }

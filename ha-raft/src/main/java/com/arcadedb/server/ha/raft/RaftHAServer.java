@@ -79,8 +79,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -200,6 +202,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
   private          ScheduledExecutorService  lagMonitorExecutor;
+  // Peer-capability discovery (issue #7219). Leader-only: a follower writes no optional wire-format section,
+  // so it has no question to ask. Refreshed on its OWN scheduled thread rather than the lag monitor's, because
+  // a probe round is a sequential HTTP fan-out that can take peers x PROBE_TIMEOUT_MS, and replica
+  // classification must not be delayed by an unreachable peer's connect timeout - the same reasoning that keeps
+  // channelRecoveryExecutor off the resync executor below.
+  private          ScheduledExecutorService  capabilityMonitorExecutor;
+  private final    PeerCapabilityRegistry    peerCapabilities = new PeerCapabilityRegistry();
+  // What THIS node tells its peers it can decode. A field rather than PeerCapabilities.LOCAL read directly, so an
+  // integration test can stand a node up that behaves like a build predating a section - which is the only way to
+  // exercise a mixed-version cluster inside one JVM.
+  private volatile Set<String>               advertisedCapabilities = PeerCapabilities.LOCAL;
+  // Last capability set logged per peer, so the refresh reports a CHANGE (first observation, a peer losing a
+  // capability, an advertisement expiring) instead of a line per peer per five seconds.
+  private final    Map<String, Set<String>>  lastLoggedCapabilities = new ConcurrentHashMap<>();
+  // Sentinel stored in lastLoggedCapabilities for a peer whose last probe FAILED, so a repeated failure is
+  // distinguishable from a first one by identity. Not a capability set anyone reads - only ever compared with ==.
+  private static final Set<String>           PROBE_FAILED = Set.of("<probe-failed>");
   // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728). One worker is
   // enough since at most one resync fires per replica per stall streak; a small bounded queue with a
   // caller-runs policy degrades to running on the lag-monitor thread under the (unlikely) burst.
@@ -3846,6 +3865,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return t;
     });
     lagMonitorExecutor.scheduleAtFixedRate(statusExporter::checkReplicaLag, 5, 5, TimeUnit.SECONDS);
+    startCapabilityMonitor();
   }
 
   /**
@@ -3856,6 +3876,166 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       lagMonitorExecutor.shutdownNow();
       lagMonitorExecutor = null;
     }
+    stopCapabilityMonitor();
+  }
+
+  /**
+   * Starts the leader-side peer-capability refresh (issue #7219).
+   * <p>
+   * The first round runs with NO initial delay, because until it lands every peer reads as incapable and the
+   * leader ships whole schema documents: correct, but it is the state the whole mechanism exists to leave, and a
+   * leader that has just been elected is precisely when a burst of DDL tends to arrive.
+   */
+  private void startCapabilityMonitor() {
+    if (capabilityMonitorExecutor != null)
+      return;
+    // A fresh term says nothing about what the peers can decode - a build does not change because an election
+    // happened - but the advertisements were observed under the previous leadership and their timestamps are
+    // what the TTL is measured against, so they are re-asked immediately rather than inherited silently.
+    lastLoggedCapabilities.clear();
+    capabilityMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+      final Thread t = new Thread(r, "arcadedb-raft-capability-monitor");
+      t.setDaemon(true);
+      return t;
+    });
+    capabilityMonitorExecutor.scheduleWithFixedDelay(this::refreshPeerCapabilities, 0,
+        PeerCapabilityRegistry.REFRESH_PERIOD_MS, TimeUnit.MILLISECONDS);
+  }
+
+  /** Stops the peer-capability refresh. Called when this node loses leadership. */
+  private void stopCapabilityMonitor() {
+    if (capabilityMonitorExecutor != null) {
+      capabilityMonitorExecutor.shutdownNow();
+      capabilityMonitorExecutor = null;
+    }
+  }
+
+  /**
+   * Asks every peer in the current Raft configuration what it can decode, and records the answers (issue #7219).
+   * <p>
+   * Sequential on the capability-monitor thread with a short per-peer timeout, so one unreachable peer costs the
+   * round {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} and nothing else - {@code scheduleWithFixedDelay} (not
+   * {@code AtFixedRate}) keeps a slow round from queueing the next one behind it.
+   * <p>
+   * <b>Every failure forgets rather than keeps.</b> A peer that stopped answering may have been replaced by an
+   * older build, so continuing to believe its last answer until the TTL expires would be believing it for a
+   * reason that no longer holds.
+   */
+  // @VisibleForTesting
+  void refreshPeerCapabilities() {
+    try {
+      final List<RaftPeer> peers = configuredPeers();
+      final List<String> peerIds = new ArrayList<>(peers.size());
+      for (final RaftPeer peer : peers)
+        peerIds.add(peer.getId().toString());
+      // Bound the map by the live configuration: a long-lived leader of a cluster that has added and removed
+      // peers must not accumulate their advertisements for its whole uptime.
+      peerCapabilities.retainOnly(peerIds);
+
+      final String clusterToken = getClusterToken();
+      for (final RaftPeer peer : peers) {
+        final RaftPeerId peerId = peer.getId();
+        if (peerId.equals(localPeerId))
+          continue;
+
+        // The guarded address, not the best-effort one (issues #6202, #6267): an address that resolves to the
+        // wrong node would answer for a node that was never asked. PeerCapabilityQuery re-checks the peer id in
+        // the reply, so the two halves of the guard are independent.
+        final PeerDialAddress dial = PeerDialAddress.resolve(this, peerId, "peer");
+        if (dial.refused()) {
+          forgetPeerCapabilities(peerId.toString(), dial.refusal());
+          continue;
+        }
+
+        try {
+          final PeerCapabilityQuery.Advertisement advertisement = PeerCapabilityQuery.fetch(peerId.toString(),
+              dial.httpAddress(), dial.httpsAddress(), clusterToken, PeerCapabilityRegistry.PROBE_TIMEOUT_MS,
+              arcadeServer);
+          recordPeerCapabilities(peerId.toString(), advertisement);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          forgetPeerCapabilities(peerId.toString(), "the capability query was interrupted");
+          return;
+        } catch (final Exception e) {
+          // A peer running a build without the capability route answers 404 and lands here, which is exactly the
+          // discriminator this mechanism turns on - so this arm is the NORMAL one during a rolling upgrade, not
+          // an error. forgetPeerCapabilities logs it once per change rather than once per round.
+          forgetPeerCapabilities(peerId.toString(), e.getMessage());
+        }
+      }
+    } catch (final Exception e) {
+      // Never let the scheduled task die: scheduleWithFixedDelay cancels the schedule on an escaped throwable,
+      // and a cancelled refresh is a leader that silently stops re-checking its peers.
+      LogManager.instance().log(this, Level.WARNING, "Peer-capability refresh round failed: %s", e.getMessage());
+    }
+  }
+
+  private void recordPeerCapabilities(final String peerId, final PeerCapabilityQuery.Advertisement advertisement) {
+    peerCapabilities.record(peerId, advertisement.capabilities(), advertisement.version());
+    final Set<String> previous = lastLoggedCapabilities.put(peerId, Set.copyOf(advertisement.capabilities()));
+    if (!advertisement.capabilities().equals(previous))
+      LogManager.instance().log(this, Level.INFO,
+          "Peer '%s' (version %s) advertises the cluster capabilities %s", peerId, advertisement.version(),
+          new TreeSet<>(advertisement.capabilities()));
+  }
+
+  private void forgetPeerCapabilities(final String peerId, final String reason) {
+    peerCapabilities.forget(peerId);
+    // Reported on the TRANSITION into the failed state and not once per refresh period: a peer that is
+    // permanently on an older build is the steady state of a half-finished rolling upgrade, and a line every five
+    // seconds about it would be noise. It is reported the FIRST time as well as on a regression from a known-good
+    // answer, because "no peer ever answered" and "a peer stopped answering" are both things an operator who has
+    // noticed their entries are not shrinking needs told - and the first of the two is otherwise completely
+    // silent, which is the failure mode this whole issue is about.
+    if (lastLoggedCapabilities.put(peerId, PROBE_FAILED) != PROBE_FAILED)
+      LogManager.instance().log(this, Level.WARNING,
+          "Peer '%s' does not advertise any cluster capability (%s); optional wire-format sections will not be "
+              + "written to this cluster until it answers again", peerId, reason);
+  }
+
+  /** The peer-capability cache this leader decides on (issue #7219). */
+  public PeerCapabilityRegistry getPeerCapabilityRegistry() {
+    return peerCapabilities;
+  }
+
+  /**
+   * Whether EVERY peer in the current Raft configuration has proved it can decode {@code capability}
+   * (issue #7219). False whenever any peer is unknown, unreachable, stale or explicitly without it, which is what
+   * makes an optional wire-format section safe to write without an operator sequencing the upgrade by hand.
+   */
+  public boolean allPeersSupport(final String capability) {
+    return peersMissingCapability(capability).isEmpty();
+  }
+
+  /**
+   * The peers of the current Raft configuration that have NOT proved they can decode {@code capability}, in
+   * configuration order (issue #7219). Empty means every peer is covered, so the section may be written.
+   * <p>
+   * The list rather than a boolean, because the peer that withholds the answer is the only actionable thing an
+   * operator can be told: "deltas are off" sends them to the setting, "peer arcadedb2 does not advertise
+   * schema-delta" sends them to the node that has not been upgraded.
+   */
+  public List<String> peersMissingCapability(final String capability) {
+    final List<String> peerIds = new ArrayList<>();
+    for (final RaftPeer peer : configuredPeers())
+      if (!peer.getId().equals(localPeerId))
+        peerIds.add(peer.getId().toString());
+    return peerCapabilities.peersMissing(peerIds, capability);
+  }
+
+  /** What this node tells its peers it can decode. */
+  public Set<String> getAdvertisedCapabilities() {
+    return advertisedCapabilities;
+  }
+
+  /**
+   * Overrides what this node advertises, so an integration test can stand up a node that behaves like a build
+   * predating a wire-format section. There is no other way to build a mixed-version cluster inside one JVM, and
+   * the mixed-version case is the one this mechanism exists for.
+   */
+  // @VisibleForTesting
+  void setAdvertisedCapabilities(final Set<String> capabilities) {
+    this.advertisedCapabilities = Set.copyOf(capabilities);
   }
 
   /**
