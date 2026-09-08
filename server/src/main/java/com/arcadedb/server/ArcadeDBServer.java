@@ -48,6 +48,7 @@ import com.arcadedb.server.monitor.MicrometerQueryMetricsRecorder;
 import com.arcadedb.server.monitor.MicrometerQueryTracer;
 import com.arcadedb.server.monitor.HAReplicationMetrics;
 import com.arcadedb.server.monitor.PoolMetrics;
+import com.arcadedb.server.monitor.ServerMonitor;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.plugin.PluginManager;
 import com.arcadedb.server.security.ServerSecurity;
@@ -197,12 +198,12 @@ public class ArcadeDBServer {
   // Holds the per-follower gauge refresh scheduler open; must be closed on stop or the daemon
   // thread it starts leaks one instance per restart (issue #5850).
   private              HAReplicationMetrics haReplicationMetrics;
-  // The server-health monitor (low disk, heap pressure, JVM safepoint spikes) is NOT started: nothing constructs
-  // ServerMonitor, so none of its checks run. Issue #7124 fixed two defects in it - the low-disk warning measured
-  // the JVM working directory rather than the configured database directory, and the safepoint "spike" check
-  // compared two lifetime cumulative averages - which means the class is now correct but still inert. Re-enabling it
-  // is a separate decision: it starts one more daemon thread and begins writing WARNING events to the event log.
-//  private             ServerMonitor                         serverMonitor;
+  // The server-health monitor (low disk, heap pressure, JVM safepoint spikes). Issue #7124 fixed two defects in
+  // it - the low-disk warning measured the JVM working directory rather than the configured database directory,
+  // and the safepoint "spike" check compared two lifetime cumulative averages - on a class nothing constructed:
+  // the field used to be commented out here, so none of its checks ran. Issue #7160 turned it back on, behind
+  // arcadedb.server.healthCheck.enabled. Written under the lifecycle lock, read by stopInternal.
+  private volatile    ServerMonitor                         serverMonitor;
 
   static {
     // must be called before any Logger method is used.
@@ -234,6 +235,14 @@ public class ArcadeDBServer {
 
   public ContextConfiguration getConfiguration() {
     return configuration;
+  }
+
+  /**
+   * The server-health monitor, or {@code null} when the server is not running or
+   * {@code arcadedb.server.healthCheck.enabled} is false (issue #7160).
+   */
+  public ServerMonitor getServerMonitor() {
+    return serverMonitor;
   }
 
   /**
@@ -425,12 +434,31 @@ public class ArcadeDBServer {
       }
     }
 
+    startHealthCheck();
+
     try {
       lifecycleEvent(ReplicationCallback.TYPE.SERVER_UP, null);
     } catch (final Exception e) {
       stop();
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
+  }
+
+  /**
+   * Starts the server-health monitor (issue #7160), unless {@code arcadedb.server.healthCheck.enabled} is false.
+   * <p>
+   * Last in the startup sequence, after the databases are open: the low-disk check measures the filesystem the
+   * CONFIGURED database directory sits on, and the whole point of the warning is that it precedes a database
+   * that can no longer write. Its thread is a daemon, so a monitor left running cannot hold the JVM up; it is
+   * stopped explicitly in {@link #stopInternal()} all the same, because an embedded start/stop cycle would
+   * otherwise leak one thread per restart.
+   */
+  private void startHealthCheck() {
+    if (!configuration.getValueAsBoolean(GlobalConfiguration.SERVER_HEALTH_CHECK_ENABLED))
+      return;
+
+    serverMonitor = new ServerMonitor(this);
+    serverMonitor.start();
   }
 
   private void logProductionChecklist() {
@@ -876,6 +904,13 @@ public class ArcadeDBServer {
     }
 
     status = STATUS.SHUTTING_DOWN;
+
+    // Before anything it reports on goes away: the monitor reads the event log and the configured database
+    // directory, and one restart per leaked daemon thread is what an embedded start/stop cycle would cost.
+    if (serverMonitor != null) {
+      CodeUtils.executeIgnoringExceptions(serverMonitor::stop, "Error on stopping the server health monitor", false);
+      serverMonitor = null;
+    }
 
     // Stop plugins managed by PluginManager first
     if (pluginManager != null)

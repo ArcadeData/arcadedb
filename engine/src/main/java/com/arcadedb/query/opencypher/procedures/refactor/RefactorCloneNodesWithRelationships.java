@@ -26,6 +26,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -139,11 +140,16 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
       if (!cloneOf.containsKey(original.getIdentity()))
         continue;
 
-      for (final Edge edge : original.getEdges()) {
+      // The instance the row carries was loaded before the rows ahead of it applied their writes, and the
+      // clone of another node appends its copy of an edge to whichever endpoint was NOT cloned - which is
+      // this node, on the row that reaches it. Appending rewrites the vertex record's edge-list head pointer,
+      // so enumerating the row's own instance reads a pre-append snapshot and skips the edges earlier rows
+      // added (issue #7177, the defect #7174 fixed in merge.relationship).
+      for (final Edge edge : CypherVertexReload.latest(database, original).getEdges()) {
         if (!processedEdges.add(edge.getIdentity()))
           continue;
         try {
-          cloneEdge(edge, cloneOf);
+          cloneEdge(database, edge, cloneOf);
         } catch (final Exception e) {
           // best-effort: one bad edge (e.g. a mandatory-property violation on the new edge) must not
           // cost the rows already produced for the nodes that cloned successfully
@@ -155,11 +161,16 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
     return results.stream();
   }
 
-  private void cloneEdge(final Edge edge, final Map<RID, Vertex> cloneOf) {
+  private void cloneEdge(final Database database, final Edge edge, final Map<RID, Vertex> cloneOf) {
     final RID originalOut = edge.getOut();
     final RID originalIn = edge.getIn();
 
-    final Vertex newOutVertex = cloneOf.containsKey(originalOut) ? cloneOf.get(originalOut) : originalOut.asVertex(true);
+    // A clone this call already created is reused as the source of every edge cloned onto it, and each append
+    // moves its edge-list head: the map still holds the instance as it was when the clone was saved, so the
+    // second append against it would work from a stale head (issue #7177).
+    final Vertex newOutVertex = cloneOf.containsKey(originalOut) ?
+        CypherVertexReload.latest(database, cloneOf.get(originalOut)) :
+        originalOut.asVertex(true);
     final Identifiable newInTarget = cloneOf.containsKey(originalIn) ? cloneOf.get(originalIn) : originalIn;
 
     final MutableEdge newEdge = newOutVertex.newEdge(edge.getTypeName(), newInTarget);

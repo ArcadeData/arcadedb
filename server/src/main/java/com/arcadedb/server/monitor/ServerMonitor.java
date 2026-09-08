@@ -34,7 +34,16 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Monitor ArcadeDB's server health.
+ * Monitor ArcadeDB's server health: free disk space on the databases' filesystem, available heap, and the
+ * average JVM safepoint pause. A degradation is reported as a WARNING in the server event log.
+ * <p>
+ * Started by {@link ArcadeDBServer} unless {@code arcadedb.server.healthCheck.enabled} is false. Issue #7160:
+ * for a long time nothing constructed this class - the field that would have held it was commented out - so
+ * none of the three checks ran, including the low-disk warning that is the signal preceding a database that
+ * can no longer write.
+ * <p>
+ * Every warning is rate limited so a server that stays degraded reports it periodically rather than on every
+ * 10-second sampling interval: 24h for low disk, 30 minutes for heap pressure and for safepoint spikes.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -52,6 +61,10 @@ public class ServerMonitor {
 	// WRITTEN BY THE MONITOR THREAD, READ BY getStatus() FROM ANY THREAD: volatile GUARANTEES VISIBILITY.
 	private volatile long lastHeapWarningReported = 0L;
 	private volatile long lastDiskSpaceWarningReported = 0L;
+	// Issue #7160: the safepoint check runs on the same 10s loop as the others but had NO rate limit, so a JVM
+	// whose pauses stay elevated wrote a WARNING to the event log every interval - 8640 a day against the two the
+	// other checks are capped at. Same 30-minute window as the heap warning.
+	private volatile long lastSafepointWarningReported = 0L;
 
 	// JMX related fields
 	private MBeanServer mBeanServer;
@@ -206,42 +219,22 @@ public class ServerMonitor {
 			Long hotspotSafepointCount = (Long) mBeanServer.getAttribute(hotspotRuntimeMBean, "SafepointCount");
 
 			if (hotspotSafepointTime != null && hotspotSafepointCount != null && hotspotSafepointCount > 0) {
+				// SAMPLE UNCONDITIONALLY: THE DETECTOR NEEDS EVERY INTERVAL TO KEEP ITS BASELINE, SO THE RATE
+				// LIMIT BELONGS ON THE REPORT AND NOT ON THE MEASUREMENT.
 				final SafepointSpike spike = safepointSpikeDetector.sample(hotspotSafepointTime, hotspotSafepointCount);
-				if (spike != null)
+				if (spike != null && System.currentTimeMillis() - lastSafepointWarningReported >= MINS_30) {
 					// REPORT THE SPIKE
 					server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null, String.format(
 							"Server overloaded: JVM Safepoint spiked up %.1f%% from the last sampling (avg time: %.2fms -> %.2fms)",
 							spike.deltaPerc(), spike.previousIntervalAvgMs(), spike.currentIntervalAvgMs()));
+					lastSafepointWarningReported = System.currentTimeMillis();
+				}
 			}
 		}
 		catch (Exception e) {
 			// If we can't access safepoint metrics, disable future attempts
 			safepointMonitoringAvailable = false;
 			LOGGER.log(Level.FINE, "Cannot access HotSpot safepoint metrics, disabling this monitoring", e);
-		}
-	}
-
-	/**
-	 * Alternative monitoring using GC metrics if safepoint monitoring is not
-	 * available
-	 */
-	private void checkGCMetrics() {
-		try {
-			var gcBeans = ManagementFactory.getGarbageCollectorMXBeans();
-			long totalGCTime = 0;
-			long totalGCCount = 0;
-
-			for (var gcBean : gcBeans) {
-				totalGCTime += gcBean.getCollectionTime();
-				totalGCCount += gcBean.getCollectionCount();
-			}
-
-			// You can add logic here to track and report on GC spikes
-			// similar to safepoint monitoring
-
-		}
-		catch (Exception e) {
-			LOGGER.log(Level.FINE, "Error checking GC metrics", e);
 		}
 	}
 
