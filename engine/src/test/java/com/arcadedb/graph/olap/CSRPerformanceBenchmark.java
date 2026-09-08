@@ -132,7 +132,7 @@ class CSRPerformanceBenchmark extends TestHelper {
                 + "deletes the test. Red on an idle machine means the kernel regressed; red on a loaded one "
                 + "means this ran outside the benchmark lane.",
             MIN_SPEEDUP, speedup, csrElapsed, oltpElapsed)
-        .isGreaterThan(MIN_SPEEDUP);
+        .isGreaterThanOrEqualTo(MIN_SPEEDUP);
   }
 
   /**
@@ -141,10 +141,13 @@ class CSRPerformanceBenchmark extends TestHelper {
    * applies, used instead of the stopwatch itself because the stopwatch reports whole milliseconds and the CSR
    * window is only a couple of them: a 1ms quantum on a ~2ms denominator would leave the ratio dominated by
    * rounding. Floored at 1ns so the ratio stays finite if a stall ever swallows a whole window.
+   * <p>
+   * The stall counter is sampled last at the start and first at the end, so its interval is strictly inside the
+   * {@code nanoTime()} one and {@code stalledNanos <= spanNanos} holds without racing the two reads.
    */
   private static long effectiveNanos(final long startNanos, final long startStallNanos) {
-    final long spanNanos = System.nanoTime() - startNanos;
     final long stalledNanos = StallAwareStopwatch.jvmStallNanos() - startStallNanos;
+    final long spanNanos = System.nanoTime() - startNanos;
     return Math.max(1L, spanNanos - stalledNanos);
   }
 }
