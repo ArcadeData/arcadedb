@@ -48,7 +48,9 @@ class Issue7281TracingPluginDiscoveryIT extends BaseGraphServerTest {
 
   @Test
   void theTracingPluginIsInstalledWithoutAServerPluginsEntry() {
-    assertThat(GlobalConfiguration.SERVER_PLUGINS.getValueAsString()).doesNotContain("Tracing");
+    // Read THIS server's configuration - the one PluginManager was handed - not the JVM-wide default.
+    assertThat(getServer(0).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_PLUGINS))
+        .doesNotContain("Tracing");
 
     assertThat(getServer(0).getPlugins())
         .filteredOn(plugin -> plugin instanceof TracingPlugin)

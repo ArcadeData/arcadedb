@@ -49,8 +49,10 @@ class Issue7281OtlpPluginDiscoveryIT extends BaseGraphServerTest {
 
   @Test
   void theOtlpPluginIsInstalledWithoutAServerPluginsEntry() {
-    // The test is only meaningful while nothing names the plugin: otherwise the old code path would install it too.
-    assertThat(GlobalConfiguration.SERVER_PLUGINS.getValueAsString()).doesNotContain("Otlp");
+    // The test is only meaningful while nothing names the plugin: otherwise the old code path would install it
+    // too. Read THIS server's configuration - the one PluginManager was handed - not the JVM-wide default.
+    assertThat(getServer(0).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_PLUGINS))
+        .doesNotContain("Otlp");
 
     assertThat(getServer(0).getPlugins())
         .filteredOn(plugin -> plugin instanceof OtlpMetricsPlugin)

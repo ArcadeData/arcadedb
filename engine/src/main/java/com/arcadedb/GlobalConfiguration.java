@@ -2748,9 +2748,13 @@ public enum GlobalConfiguration {
    * so a value the setting's type cannot read is reported and dropped instead of being coerced into whatever the
    * type's permissive parse makes of it - which for a {@code Boolean} was {@code false}, for every input (#7222).
    */
-  public static void readConfiguration() {
+  public static synchronized void readConfiguration() {
     String prop;
 
+    // Synchronized because the pass has state that spans it: readingConfiguration/dumpPending are JVM-wide, so two
+    // interleaved passes could clear the flag while the other is still walking values() and dump mid-pass - the very
+    // thing #7281 fixed. Today the only callers are this class's static initializer (single-threaded by class-init
+    // semantics) and tests, but a future "reload configuration" entry point must not have to rediscover that.
     readingConfiguration = true;
     try {
       for (final GlobalConfiguration config : values()) {
