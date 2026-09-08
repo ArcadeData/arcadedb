@@ -3918,6 +3918,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // records of every pod backing it, at any replica count and without an ordinal to guess, and it covers a
     // pod that is not Ready yet because the service that publishes it sets publishNotReadyAddresses (which
     // the shipped manifest documents as required, since a pod is Ready only once it has joined).
+    // learnPeerHosts PINS it: it is the one host that has to outlive a membership shrink, because admitting a
+    // pod that is not a member yet is its entire purpose (issue #7225).
     final String serviceDomain = headlessServiceDomain(k8sDnsSuffix);
     if (serviceDomain != null)
       filter.learnPeerHosts(List.of(serviceDomain));
@@ -3950,11 +3952,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Proactively reconciles the inbound Raft gRPC peer allowlist with current DNS (issue #4696).
-   * Invoked from the health monitor tick on every node so a peer that restarted with a new pod IP is
-   * admitted without first having to be rejected on an inbound connection - which a leader with a
-   * wedged outbound appender channel may never receive. No-op when the allowlist is disabled. The
-   * filter throttles the actual DNS re-resolution to its configured refresh interval.
+   * Proactively reconciles the inbound Raft gRPC peer allowlist with cluster membership and with current DNS
+   * (issues #4696, #7132, #7225). Invoked from the health monitor tick on every node so a peer that restarted
+   * with a new pod IP is admitted without first having to be rejected on an inbound connection - which a
+   * leader with a wedged outbound appender channel may never receive - and so a peer removed from the group
+   * loses its access without waiting for a process restart. No-op when the allowlist is disabled. The filter
+   * throttles the actual DNS re-resolution to its configured refresh interval.
    */
   @Override
   public void refreshPeerAllowlist() {
@@ -3962,20 +3965,57 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (filter == null)
       return;
 
-    // Reconcile the allowlist with cluster MEMBERSHIP, not with the boot-time configuration (issue #7132).
-    // getLivePeers() reads the committed Raft configuration - the same authority the cluster status endpoint
-    // uses - so a peer added at runtime (addPeer, the Kubernetes auto-join) is admitted from here on instead
-    // of being rejected forever by every node that had already latched everQuorumResolved. A tick that finds
-    // nothing new is a set comparison and does not touch DNS.
-    final List<String> memberHosts = new ArrayList<>();
-    for (final RaftPeer peer : getLivePeers()) {
-      final String host = allowlistHostOf(peer.getAddress());
-      if (host != null)
-        memberHosts.add(host);
-    }
-    filter.learnPeerHosts(memberHosts);
+    reconcileAllowlistMembership(getCommittedPeersOrNull());
 
     filter.proactiveRefresh();
+  }
+
+  /**
+   * Makes the allowlist's membership-derived hosts equal the hosts of {@code committedPeers} (issue #7225).
+   * Package-private so a test can drive a membership change without a running Ratis division.
+   * <p>
+   * Replace, not merge: #7132 taught the allowlist to learn a peer that joined at runtime, but nothing ever
+   * unlearned one, so a peer removed by {@code DELETE /api/v1/cluster/peer/&#123;id&#125;} or by a StatefulSet
+   * scale-down kept inbound Raft gRPC access - and a DNS lookup per tick - until the process restarted.
+   * <p>
+   * The input is {@link #getCommittedPeersOrNull()} rather than {@link #getLivePeers()} exactly because the
+   * two differ on the case replace semantics is sensitive to: {@code getLivePeers()} substitutes the DECLARED
+   * server list when the division cannot be read (before startup, and throughout an in-place restart - issue
+   * #5271), and replacing membership with the declared list would unlearn every runtime-joined peer every time
+   * that window opens. {@code null} means "no membership information this tick", which is not the same as "no
+   * members", and is the same distinction {@code RaftClusterStatusExporter.everCommitted} draws (issue #7136).
+   * A peer list that reduces to no usable host is treated the same way: a committed configuration always
+   * carries at least this node, so an empty one is a read that went wrong rather than an empty cluster.
+   */
+  void reconcileAllowlistMembership(final Collection<RaftPeer> committedPeers) {
+    final PeerAddressAllowlistFilter filter = allowlistFilter;
+    if (filter == null || committedPeers == null)
+      return;
+
+    // committedHosts, not memberHosts: PeerAddressAllowlistFilter has a field by the latter name, and the two
+    // classes' vocabulary overlaps enough now that reusing it here reads like the same thing.
+    final List<String> committedHosts = new ArrayList<>(committedPeers.size());
+    for (final RaftPeer peer : committedPeers) {
+      final String host = allowlistHostOf(peer.getAddress());
+      if (host != null)
+        committedHosts.add(host);
+    }
+    // Defensive, and not expected to fire: a committed configuration carries at least the local node, and
+    // allowlistHostOf only returns null for an address with no host part at all. It is here so that a peer
+    // list this method cannot reduce to a single host - whatever produced it - can never be mistaken for an
+    // empty cluster and wipe the membership the previous tick learned.
+    // WARNING rather than FINE, matching the getCommittedPeersOrNull catch this method reads from: the guard
+    // silently skipping the reconciliation is how a genuine bug in address parsing or in the membership read
+    // would hide, and the unreadable-membership case - the one that IS expected - returns above without
+    // reaching this line, so an ordinary #5271 restart window does not log here at all.
+    if (committedHosts.isEmpty()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "The Raft configuration carried %d peer(s) but no usable host this tick; keeping the current peer "
+              + "allowlist membership rather than treating it as an empty cluster", committedPeers.size());
+      return;
+    }
+
+    filter.setMemberHosts(committedHosts);
   }
 
   /**
