@@ -96,7 +96,7 @@ public class SetServerSettingTool {
     // setValue also runs the side effect of a declared SCOPE.SERVER setting, so one whose effect is not a value
     // somebody later reads - arcadedb.server.logFormat swapping the console formatter - takes effect here too
     // rather than being stored and ignored (issue #7121).
-    server.getConfiguration().setValue(cfg.getKey(), coerced);
+    server.getConfiguration().setValue(cfg, coerced);
 
     // Re-read rather than echo `coerced`: since issue #7163 the callback's result is what the overlay stores, so
     // a setting whose callback NORMALISES its argument (arcadedb.maxPageRAM clamps a page cache larger than 80%
