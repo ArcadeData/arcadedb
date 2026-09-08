@@ -101,11 +101,16 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
      * Only an empty {@code String} counts. A JSON {@code 0}, {@code false} or {@code []} is a value
      * in its own right, and a whitespace-only string is a data error, exactly as it is on every
      * other source: {@code isEmpty()}, not {@code isBlank()}, is what the defaults test.
+     * <p>
+     * One map lookup, not the three an {@code isNull()} pre-check would cost on the row loop:
+     * {@code opt()} is already {@code null} for an absent attribute and for an explicit JSON null
+     * alike, because {@code JSONObject.elementToObject} screens {@code JsonNull.INSTANCE} - and
+     * {@code json} here only ever holds the {@code new JSONObject(line)} the parser built, so that
+     * screen is by the same singleton GSON parses a null into. {@link #get} relies on it already.
      */
     private boolean notSet(final String attribute) {
-      if (json.isNull(attribute))
-        return true;
-      return json.opt(attribute) instanceof String text && text.isEmpty();
+      final Object value = json.opt(attribute);
+      return value == null || (value instanceof String text && text.isEmpty());
     }
 
     @Override
