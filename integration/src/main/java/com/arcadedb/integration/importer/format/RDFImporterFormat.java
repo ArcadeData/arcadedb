@@ -46,9 +46,13 @@ public class RDFImporterFormat extends CSVImporterFormat {
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
 
-    // Whether this call is the one that opened the transaction it is about to use, as opposed to reusing one
-    // that predates it (see ImporterContext#callerTransactionActiveOnEntry) - a failure below must resolve only
-    // the transaction this call owns, never a caller's pre-existing one.
+    // Whether the transaction this method is about to use belongs to the import, as opposed to predating it.
+    // Not the same as "this call pushed it": in the CLI pipeline AbstractImporter.openDatabase() ends with a
+    // begin() that is deliberately left open for the whole import, so the begin() below finds one active and
+    // reuses it. Rolling that one back on failure is still right - the import aborts with it either way, and
+    // the alternative is AbstractImporter.closeDatabase() committing a half-finished import. What must never
+    // be rolled back is a transaction that predates the import, which is exactly what
+    // ImporterContext#callerTransactionActiveOnEntry records.
     final boolean ownsTransaction = !context.callerTransactionActiveOnEntry;
 
     // Whether a transaction this call owns is still the current one. Cleared right before every commit -

@@ -21,6 +21,7 @@ package com.arcadedb.integration.importer.format;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
@@ -36,6 +37,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -156,4 +159,88 @@ class RDFImporterFormatTransactionLeakTest {
         .as("the caller's own pending work must survive a failure inside a transaction it owns")
         .isEqualTo(1);
   }
+
+  /**
+   * The CLI pipeline's shape, which is not the same as either of the two above:
+   * {@code AbstractImporter.openDatabase()} ends with a {@code database.begin()} deliberately left open for the
+   * whole import, so {@code load()} finds a transaction already active and reuses it - while
+   * {@code callerTransactionActiveOnEntry} stays {@code false}, because that transaction belongs to the import
+   * and not to an external caller. A failing row must still resolve it: leaving it active is what let
+   * {@code AbstractImporter.closeDatabase()} commit a half-finished import.
+   */
+  @Test
+  void aFailedRowResolvesTheTransactionTheImportPipelineLeftOpen() throws Exception {
+    final RDFImporterFormat format = new RDFImporterFormat();
+    final ImporterContext context = new ImporterContext();
+    context.callerTransactionActiveOnEntry = false;
+
+    // What AbstractImporter.openDatabase() leaves behind before the format runs.
+    database.begin();
+
+    final Parser parser = rdfParser("""
+        s,p,o
+        v1,rel,v2
+        v3,rel,TOOLONGVALUEHERE
+        """);
+
+    assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settingsWithTinyMaxPropertySize()))
+        .isInstanceOf(TextParsingException.class);
+
+    assertThat(database.isTransactionActive())
+        .as("the import pipeline's own transaction is the import's to resolve, and a failure must resolve it")
+        .isFalse();
+    assertThat(countOf("Node"))
+        .as("nothing from the aborted import may survive to be committed by closeDatabase()")
+        .isZero();
+  }
+
+  /**
+   * A {@code database.commit()} that fails is a different path from a row that throws:
+   * {@code LocalDatabase.commit()} pops the transaction inside its own {@code finally}, so there is nothing
+   * left to roll back and the {@code txOpen} flag is already {@code false} - only the {@code completed} flag
+   * can still bring the counter back. The proxy reproduces that state exactly.
+   */
+  private DatabaseInternal databaseWhoseCommitFails() {
+    return (DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
+        new Class<?>[] { DatabaseInternal.class }, (proxy, method, args) -> {
+          if ("commit".equals(method.getName()) && (args == null || args.length == 0)) {
+            // What a real commit failure leaves behind: the transaction gone, its records not durable.
+            database.rollback();
+            throw new TransactionException("Simulated commit failure");
+          }
+          try {
+            return method.invoke(database, args);
+          } catch (final InvocationTargetException e) {
+            throw e.getCause();
+          }
+        });
+  }
+
+  @Test
+  void aFailedCommitReportsOnlyTheEdgesThatSurvived() throws Exception {
+    final RDFImporterFormat format = new RDFImporterFormat();
+    final ImporterContext context = new ImporterContext();
+    context.callerTransactionActiveOnEntry = false;
+
+    // Every row is valid, so the loop completes and the only failure is the trailing commit itself.
+    final Parser parser = rdfParser("""
+        s,p,o
+        v1,rel,v2
+        """);
+
+    assertThatThrownBy(
+        () -> format.load(null, null, parser, databaseWhoseCommitFails(), context, settingsWithTinyMaxPropertySize()))
+        .isInstanceOf(TransactionException.class);
+
+    assertThat(database.isTransactionActive())
+        .as("a failed commit still leaves its own transaction off the stack")
+        .isFalse();
+    assertThat(countOf("Node"))
+        .as("the failed commit made nothing durable")
+        .isZero();
+    assertThat(context.createdEdges.get())
+        .as("the report must not credit the import with the batch the failed commit never wrote")
+        .isZero();
+  }
+
 }
