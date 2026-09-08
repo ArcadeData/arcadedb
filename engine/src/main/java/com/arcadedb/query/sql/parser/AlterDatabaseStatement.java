@@ -61,6 +61,18 @@ public class AlterDatabaseStatement extends DDLStatement {
     if (cfg == null)
       throw new DatabaseOperationException("Database setting '" + settingNameAsString + "' not found");
 
+    // ALTER DATABASE alters DATABASE settings. The key lookup above accepts any declared key, and this command
+    // is gated only by the per-database UPDATE_DATABASE_SETTINGS permission - far below the server-admin check
+    // SET SERVER SETTING requires - so without this a database administrator reaches settings that belong to the
+    // whole process. Issue #7163 made that concrete: a declared setting's callback now runs on every channel its
+    // scope advertises, so `ALTER DATABASE `arcadedb.server.logFormat`` would have swapped the console log
+    // format of the entire server, and saved a SCOPE.SERVER setting into one database's configuration where
+    // nothing would ever read it back.
+    if (cfg.getScope() != GlobalConfiguration.SCOPE.DATABASE)
+      throw new DatabaseOperationException(
+          "Setting '" + settingNameAsString + "' has " + cfg.getScope() + " scope and cannot be set per database"
+              + (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER ? ": use SET SERVER SETTING instead" : ""));
+
     final Object oldValue = db.getConfiguration().getValue(cfg);
     Object finalValue = settingValue.execute((Identifiable) null, context);
 

@@ -3025,6 +3025,25 @@ public enum GlobalConfiguration {
     if (type == Long.class)
       return coerceToIntegral(iValue);
 
+    // Issue #7163: a Class-typed setting reaches here as the class NAME from every external channel - a
+    // configuration file, ALTER DATABASE, a system property - and used to be converted by a per-setting callback,
+    // which meant the conversion happened on the enum's own setValue and nowhere else. Doing it here gives the
+    // SAME conversion to setValue, to the strict admin parse (an unknown class name is now refused where it
+    // enters instead of surfacing from whichever component read the setting next) and to the overlay hook.
+    //
+    // OUTSIDE the wrapping below, for the reason the integral parse is: "class 'x.y.Z' not found" is the whole
+    // answer, and re-wrapping it as "not valid for a setting of type Class" would bury it in a cause.
+    if (type == Class.class) {
+      if (iValue instanceof Class)
+        return iValue;
+      try {
+        return Class.forName(iValue.toString().trim());
+      } catch (final ClassNotFoundException | RuntimeException e) {
+        throw new IllegalArgumentException(
+            "Value '" + iValue + "' of setting '" + key + "' does not name a class that can be loaded", e);
+      }
+    }
+
     try {
       if (type == Boolean.class)
         return iValue instanceof Boolean b ? b : Boolean.parseBoolean(iValue.toString().trim());
@@ -3034,22 +3053,6 @@ public enum GlobalConfiguration {
 
       if (type == String.class)
         return iValue.toString();
-
-      // Issue #7163: a Class-typed setting reaches here as the class NAME from every external channel - a
-      // configuration file, ALTER DATABASE, a system property - and used to be converted by a per-setting
-      // callback, which meant the conversion happened on the enum's own setValue and nowhere else. Doing it
-      // here gives the SAME conversion to setValue, to the strict admin parse (an unknown class name is now
-      // refused where it enters instead of surfacing from whichever component read the setting next) and to
-      // the overlay hook.
-      if (type == Class.class) {
-        if (iValue instanceof Class)
-          return iValue;
-        try {
-          return Class.forName(iValue.toString().trim());
-        } catch (final ClassNotFoundException e) {
-          throw new IllegalArgumentException("class '" + iValue + "' not found", e);
-        }
-      }
 
       if (type.isEnum()) {
         if (type.isInstance(iValue))

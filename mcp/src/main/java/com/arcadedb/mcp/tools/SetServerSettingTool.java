@@ -98,6 +98,13 @@ public class SetServerSettingTool {
     // rather than being stored and ignored (issue #7121).
     server.getConfiguration().setValue(cfg.getKey(), coerced);
 
+    // Re-read rather than echo `coerced`: since issue #7163 the callback's result is what the overlay stores, so
+    // a setting whose callback NORMALISES its argument (arcadedb.maxPageRAM clamps a page cache larger than 80%
+    // of the heap) is now worth something other than what was asked for. Reporting the request as the new value
+    // would tell automation driving this tool that an out-of-range number took effect. Same re-read
+    // AlterDatabaseStatement does for its own result row.
+    final Object storedValue = server.getConfiguration().getValue(cfg);
+
     final JSONObject result = new JSONObject();
     result.put("key", key);
     // A secret is masked on the way out here for the same reason it is masked when read: this response
@@ -110,7 +117,7 @@ public class SetServerSettingTool {
     // masked for a secret on the same terms as previousValue above, so that a response the caller may log, cache
     // or hand on does not carry a credential this server otherwise refuses to hand back
     result.put("newValue",
-        cfg.isHidden() ? "*****" : coerced != null ? coerced.toString() : JSONObject.NULL);
+        cfg.isHidden() ? "*****" : storedValue != null ? storedValue.toString() : JSONObject.NULL);
     result.put("message", "Setting '" + key + "' updated successfully.");
     return result;
   }
