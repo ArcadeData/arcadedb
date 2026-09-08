@@ -2835,24 +2835,19 @@ public class LocalSchema implements Schema {
   }
 
   public synchronized void update(final JSONObject newSchema) throws IOException {
-    if (newSchema.has("schemaVersion"))
-      versionSerial.set(newSchema.getLong("schemaVersion"));
-
+    final long newVersion = newSchema.has("schemaVersion") ? newSchema.getLong("schemaVersion") : versionSerial.get();
     final String latestSchema = newSchema.toString();
 
     if (configurationFile.exists()) {
       final File copy = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
-      if (copy.exists())
-        if (!copy.delete())
-          LogManager.instance().log(this, Level.WARNING, "Error on deleting previous schema file '%s'", null, copy);
-
-      if (!configurationFile.renameTo(copy))
-        LogManager.instance().log(this, Level.WARNING, "Error on renaming previous schema file '%s'", null, copy);
+      // Keep the primary in place while saving the previous generation. Moving it aside exposes a
+      // missing/partial schema to readers and to recovery after an interrupted write (issue #6114).
+      FileUtils.atomicWriteFile(copy, FileUtils.readFileAsString(configurationFile, encoding), true);
     }
 
-    try (final FileWriter file = new FileWriter(databasePath + File.separator + SCHEMA_FILE_NAME)) {
-      file.write(latestSchema);
-    }
+    FileUtils.atomicWriteFile(configurationFile, latestSchema, true);
+
+    versionSerial.set(newVersion);
 
     database.getExecutionPlanCache().invalidate();
     // The OpenCypher plan cache embeds schema-derived physical operators (index-seek vs scan, bucket
