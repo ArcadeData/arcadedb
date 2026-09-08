@@ -2407,6 +2407,16 @@ public enum GlobalConfiguration {
   private final        String                   description;
   private final        Boolean                  canChangeAtRuntime;
   private final        boolean                  hidden;
+  /**
+   * The values this setting accepts, or {@code null} when it accepts anything its type can read.
+   * <p>
+   * <b>Entries must be LOWERCASE.</b> Every check against this set - {@link #setValue(Object)} and
+   * {@link #checkAllowed(Object)} - compares {@code value.toString().toLowerCase(Locale.ENGLISH)}, and
+   * {@link #coerce(Object)} normalises a {@code String} setting's value to the entry it matches, so a set built
+   * with mixed case would refuse every value including the ones it names. The convention holds for all of them
+   * today ({@code SERVER_MODE}'s modes, {@code integerRangeAsStrings}' digit strings); it is stated here because
+   * nothing enforces it and the failure is total and silent-looking.
+   */
   private final        Set<Object>              allowed;
   public final static  String                   PREFIX = "arcadedb.";
   private static final Timer                    TIMER;

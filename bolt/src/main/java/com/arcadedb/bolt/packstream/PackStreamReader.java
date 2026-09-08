@@ -104,6 +104,10 @@ public class PackStreamReader {
    * even a bare HELLO struct, since its extra map is already one level deeper than the top-level struct itself -
    * so it is treated as a misconfiguration rather than an intentional (if impractical) lockdown.
    */
+  // The setting arrives as a PARAMETER, so the SCOPE.SERVER guard test (Issue7233ServerScopeSettingReadsTest)
+  // cannot see this read: it matches the literal GlobalConfiguration.NAME.getValueAs* shape. This site, and any
+  // future helper of the same shape, has to be checked by hand - reading through the ContextConfiguration here is
+  // not something the build will keep true for you.
   private static int sanitizedLimit(final ContextConfiguration configuration, final GlobalConfiguration setting) {
     // Through the caller's ContextConfiguration: every setting passed here is SCOPE.SERVER, so the enum only ever
     // carries what a system property or an environment variable put there (issue #7233).

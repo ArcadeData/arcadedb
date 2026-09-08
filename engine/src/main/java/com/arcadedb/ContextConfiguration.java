@@ -227,9 +227,14 @@ public class ContextConfiguration implements Serializable {
    * @return the configured value, or {@code iConfig}'s default when the configured one is not boolean text
    */
   public boolean getValueAsBoolean(final GlobalConfiguration iConfig) {
-    // One map lookup, reused by the refusal branch below to tell an overlay value from the enum's own.
-    final boolean fromOverlay = config.containsKey(iConfig.getKey());
-    final Object v = fromOverlay ? config.get(iConfig.getKey()) : iConfig.getValue();
+    // ONE lookup, and it doubles as the "did this come from the overlay" question the refusal branch below asks:
+    // a ConcurrentHashMap cannot hold a null value, so a non-null answer IS an overlay hit. Asking containsKey and
+    // then get would be two lookups AND a race - a concurrent setValue/merge between them can return null for a key
+    // that had just answered true, which would take the null branch below and read false for a setting whose
+    // default is the protection.
+    final Object overlaid = config.get(iConfig.getKey());
+    final boolean fromOverlay = overlaid != null;
+    final Object v = fromOverlay ? overlaid : iConfig.getValue();
     if (v == null)
       return false;
     if (v instanceof Boolean b)
