@@ -759,6 +759,18 @@ public class GraphImporter implements AutoCloseable {
    */
   public interface RecordSource {
     void forEach(RecordVisitor visitor) throws Exception;
+
+    /**
+     * The single character this source splits a row into fields on, or {@code null} when the format
+     * has none - JSONL and XML values are already distinct, with nothing cutting a row apart on a
+     * delimiter character. Used only so {@code validateEdgeTargets()} can refuse a split-edge
+     * delimiter that contains it (issue #7268): without this, a delimiter such as {@code ", "} over
+     * a comma-delimited CSV is cut into columns before the split-edge walker ever runs, and the
+     * operator sees only an unresolved-edge count pointing at the data files.
+     */
+    default Character fieldSeparator() {
+      return null;
+    }
   }
 
   @FunctionalInterface
@@ -946,6 +958,23 @@ public class GraphImporter implements AutoCloseable {
               + vsd.typeName + "' for attribute '" + ed.fkAttribute + "' declares "
               + (ed.delimiter == null ? "no delimiter" : "an empty delimiter")
               + ": give it the text that separates the field's values, such as \"|\" or \", \"");
+
+        // A delimited source (CsvRowSource) cuts a row into fields on its own field separator before
+        // any GraphImporter code sees it. A split delimiter that contains that character is therefore
+        // cut apart the same way checkNotSplit() diagnoses for an array-valued property: only the
+        // fragment up to the separator survives, and the rest is gone before the split-edge walker
+        // ever runs. Sources with no field-separator concept (XML, JSONL) answer null and are exempt
+        // (issue #7268)
+        if (ed.isSplit) {
+          final Character separator = vsd.source.fieldSeparator();
+          if (separator != null && ed.delimiter.indexOf(separator) >= 0)
+            throw new IllegalArgumentException("Split edge '" + ed.edgeType + "' declared on vertex source '"
+                + vsd.typeName + "' for attribute '" + ed.fkAttribute + "' uses delimiter \"" + ed.delimiter
+                + "\", which contains the source's own field separator '" + separator
+                + "': the source already cut the field into columns using that character, so the split-edge "
+                + "walker never sees the values it is supposed to split. Use a delimiter the field separator "
+                + "does not contain, such as ';'");
+        }
 
         final boolean resolvesByName = ed.byName || ed.isSplit;
         if (!(resolvesByName ? typesWithNameId : typesWithId).contains(ed.targetType))
