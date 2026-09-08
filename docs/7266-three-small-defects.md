@@ -351,3 +351,40 @@ genuinely unmatchable on CSV and meaningful on the other two. Three minor points
    branch's business, and doing it here would bury the fix.
 
 No deferred items in either cycle.
+
+### Cycle 3 - `c91dee2` - clean approval
+
+No actionable items. The bot re-derived the three load-bearing facts from the source rather than
+from this branch's claims: that every malformed endpoint shape lands in the `parts.length != 2`
+branch before any indexing, so the new guard cannot throw the exception it exists to prevent; that
+`JSONObject.getString(name, default)` routes both an absent key and an explicit JSON null through
+the guarded path; and that `LSMTreeIndexBloomFilter.getMainComponent()` answers `this` while
+`LSMTreeIndexCompacted` answers its `mainIndex` only after `onAfterLoad` wired it - which is exactly
+the reading that makes the old ordering let a touched `.bfidx` through. It also confirmed the
+"returns false implies nothing modified" contract still holds, since every early return happens
+before `toReplace` or `registerLoadedComponent` are touched.
+
+Three observations, none requiring a change:
+
+- the extra `getFreeSpace()` syscall - "negligible at the polling interval this runs at, not worth
+  restructuring";
+- the `existsFile` reordering - "the reasoning holds up", and the case is only reachable when the
+  `FileManager` already disagrees with the schema's registered components. The full `engine` and
+  `ha-raft` suites passing is the evidence that nothing depended on the narrower ordering;
+- the tracking-doc convention - raised for the third time and each time framed as a repo-wide
+  question rather than something this branch should settle.
+
+## Final state
+
+**clean-approval** after 3 review cycles. Every finding fixed, every coverage row accounted for, no
+follow-up issue needed and none filed, no deferred items.
+
+| Cycle | Head | Outcome |
+|---|---|---|
+| 1 | `5926c3d` | 2 actionable: document the deliberate filter asymmetry, surface the `existsFile` behaviour change in the PR body. Both applied. |
+| 2 | `9d0c308` | 2 actionable: size the schema fixture down rather than tag it slow (measured 1.56 s -> 1.10 s), document the asymmetry on `Builder.filter`. Both applied. |
+| 3 | `c91dee2` | No actionable items. Clean approval. |
+
+PR: <https://github.com/ArcadeData/arcadedb/pull/7274>
+
+Merge is the developer's.
