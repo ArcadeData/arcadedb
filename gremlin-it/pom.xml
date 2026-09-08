@@ -213,4 +213,103 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- Coverage for the arcadedb-gremlin classes. The gremlin module skips its own tests
+             (antlr 4.13.2 vs 4.9.1 cannot share the unshaded test classpath), so the only JVM
+             that ever executes com.arcadedb.gremlin.* is this module's - and its execution data
+             used to be thrown away. jacoco:report only ever reports
+             ${project.build.outputDirectory}, which in this test-only module is empty, and the
+             goal exposes no classDirectories parameter to aim it somewhere else.
+
+             So put the classes there. JaCoCo keys execution data on the CRC64 of the class file,
+             so they have to be the same bytes the tests loaded, which came from the shaded
+             uber-jar. In practice maven-shade rewrites only the classes that actually reference
+             a relocated package - today exactly one, ArcadeDBGremlinSettings - and copies the
+             rest through verbatim. Hence two unpacks: the plain jar for the complete and
+             self-maintaining set of the module's own classes (the uber-jar would need a
+             hand-kept include list to keep its ~7,400 bundled third-party classes out), then the
+             uber-jar over the top of it for the rewritten ones. -->
+        <profile>
+            <id>coverage</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <version>${maven-dependency-plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>unpack-gremlin-classes-for-jacoco</id>
+                                <!-- prepare-package, NOT an earlier phase: this module's output
+                                     directory is on its own test classpath, so classes unpacked
+                                     before the test phase would shadow the shaded jar the tests
+                                     are meant to exercise, and ShadedJarLayoutTest rightly fails
+                                     when they do. The report execution below moves to `package`
+                                     so it still runs after this. -->
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>unpack</goal>
+                                </goals>
+                                <configuration>
+                                    <artifactItems>
+                                        <artifactItem>
+                                            <groupId>com.arcadedb</groupId>
+                                            <artifactId>arcadedb-gremlin</artifactId>
+                                            <version>${project.parent.version}</version>
+                                            <type>jar</type>
+                                            <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                                            <includes>**/*.class</includes>
+                                        </artifactItem>
+                                        <artifactItem>
+                                            <groupId>com.arcadedb</groupId>
+                                            <artifactId>arcadedb-gremlin</artifactId>
+                                            <version>${project.parent.version}</version>
+                                            <classifier>shaded</classifier>
+                                            <type>jar</type>
+                                            <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                                            <!-- Ours only: everything under the relocation prefix
+                                                 is bundled third-party, not code to report on. -->
+                                            <includes>com/arcadedb/**/*.class</includes>
+                                            <excludes>com/arcadedb/gremlin/shaded/**</excludes>
+                                        </artifactItem>
+                                    </artifactItems>
+                                    <overWriteReleases>true</overWriteReleases>
+                                    <overWriteSnapshots>true</overWriteSnapshots>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.jacoco</groupId>
+                        <artifactId>jacoco-maven-plugin</artifactId>
+                        <executions>
+                            <!-- Same id as the parent's, so this only moves the phase: the report
+                                 has to run after the unpack above, and the parent binds it to
+                                 prepare-package, the same phase. -->
+                            <execution>
+                                <id>report</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>report</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-jar-plugin</artifactId>
+                        <configuration>
+                            <!-- The unpacked classes are there for JaCoCo, not to be republished:
+                                 keep arcadedb-gremlin-it.jar empty so skipIfEmpty skips it. -->
+                            <excludes>
+                                <exclude>com/**</exclude>
+                                <exclude>org/**</exclude>
+                            </excludes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
