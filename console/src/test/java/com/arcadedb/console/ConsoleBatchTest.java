@@ -125,6 +125,52 @@ class ConsoleBatchTest {
   }
 
   /**
+   * The other half of the same contract: a script that succeeds in asyncMode must NOT be marked errored. A false
+   * positive here is worse than the bug, because it fails every green script in CI rather than passing a red one.
+   */
+  @Test
+  void batchModeInAsyncModeIsNotErroredWhenEveryStatementSucceeds() throws Exception {
+    // THE TYPE IS CREATED BEFORE asyncMode IS TURNED ON, ON PURPOSE: THE ASYNC EXECUTOR HAS SEVERAL WORKERS AND DOES
+    // NOT ORDER THE STATEMENTS IT IS HANDED, SO AN async INSERT THAT DEPENDS ON AN async DDL RACES IT AND FAILS WITH
+    // "type not found" ON A LOADED MACHINE - WHICH WOULD MAKE THIS TEST RED FOR A REASON THAT IS NOT ITS SUBJECT
+    Console.execute(new String[] { "-b", """
+        create database console;
+        create vertex type ConsoleOnlyVertex;
+        set asyncMode = true;
+        insert into ConsoleOnlyVertex set a = 1;
+        """ });
+    assertThat(Console.isErrored()).isFalse();
+
+    final Database db = new DatabaseFactory("./target/databases/console").open();
+    assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
+    db.drop();
+  }
+
+  /**
+   * The flag is static, so a failed run must not decide the exit code of the next one in the same JVM - which is what
+   * an embedder calling {@link Console#execute(String[])} twice, and this very test class, both do.
+   */
+  @Test
+  void aFailedRunDoesNotLeaveTheNextRunErrored() throws Exception {
+    Console.execute(new String[] { "-b", """
+        create database console;
+        set asyncMode = true;
+        insert into NoSuchType set a = 1;
+        """ });
+    assertThat(Console.isErrored()).isTrue();
+
+    FileUtils.deleteRecursively(new File("./target/databases"));
+
+    Console.execute(new String[] { "-b", "create database console; create vertex type ConsoleOnlyVertex;" });
+    assertThat(Console.isErrored())
+        .as("execute() starts every run clean, so the previous failure cannot decide this run's exit code")
+        .isFalse();
+
+    final Database db = new DatabaseFactory("./target/databases/console").open();
+    db.drop();
+  }
+
+  /**
    * Issue https://github.com/ArcadeData/arcadedb/issues/5457: comments (even when they contain a semicolon) must not break the
    * script, and a comment at the end of an argument must not swallow the following argument.
    */
