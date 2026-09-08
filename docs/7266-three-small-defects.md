@@ -182,6 +182,7 @@ engine/src/test/.../Issue6988IncrementalSchemaLoadTest.java  # 9 call sites
 | 1 | ... -> `"from"` with more than one colon / an empty half | yes | yes - `#anEndpointWithTheWrongNumberOfPartsIsReported` |
 | 1 | `GraphImporter.fromJSON(db, String, dir)` (String overload -> same parser) | yes | yes - `#theStringOverloadReportsItToo` |
 | 1 | `parseVertexSource` -> `"filter"` without `=` (sibling) | yes | yes - `#aFilterWithoutAnEqualsIsReported` |
+| 1 | `parseVertexSource` -> `"filter"` with an empty VALUE (`"attr="`) | deliberately accepted | yes - `#aFilterWithAnEmptyValueIsAccepted` pins the asymmetry |
 | 1 | `parseEdgeSource` -> `"from"` / `"to"` key ABSENT (found by the adversarial pass) | yes | yes - `#anAbsentEndpointKeyIsReportedAsTheMissingEndpointItIs` |
 | 1 | `GraphImporter.main()` | yes, via `fromJSON` | argued: `main()` is a two-line wrapper over `createSchemaFromConfig` + `fromJSON`; it adds no parsing of its own (`GraphImporter.java:127-157`) |
 | 1 | a well-formed config still parses | n/a | yes - `#aWellFormedConfigStillParses` |
@@ -294,3 +295,33 @@ run by the same agent reading only the diff, which is weaker and is recorded as 
    config format, and no recently-added validation is being bypassed by it - which is what makes
    finding 1 a defect rather than a wish. Widening the fix to every key would be a different
    change.
+
+## Review cycles
+
+### Cycle 1 - `5926c3d` (PR #7274)
+
+The `claude` bot reviewed and raised nothing blocking. It independently confirmed three things this
+branch relies on: that `split(":")` on `":"` collapses to a zero-length array so `parts.length != 2`
+short-circuits before any indexing (the new guard cannot itself throw the exception it exists to
+catch), that `getString(name, default)` reaches the default through `isNull()` for an absent key as
+well as a null value, and that the new extension set names the right constants. Two points were
+actionable:
+
+1. **The `"filter"` guard checks an empty half on the attribute only, while the endpoint guard
+   checks both sides** - an asymmetry between two guards added in the same commit "for the same
+   shape" of bug. The reviewer asked for either a comment confirming it is deliberate or an
+   alignment of the two. It IS deliberate, and the evidence decides it: `"attr="` selects rows whose
+   attribute is empty, and two of the three record sources can answer that - `XmlRowSource:142-144`
+   returns the raw attribute value, `JsonlRowSource:75-85` returns `""` for an explicit empty
+   string - while only `CsvRowSource:98-101` folds empty to null. Rejecting it would refuse a config
+   that is meaningful on two of three sources. Added the comment naming those three sites, plus
+   `#aFilterWithAnEmptyValueIsAccepted` so the asymmetry stays deliberate rather than drifting.
+2. **The `existsFile` reordering changes behaviour for a touched non-index component** whose file
+   the `FileManager` has lost. Already argued in the adversarial pass above; the reviewer asked for
+   it to be visible in the PR description rather than only here, which is right - it is the kind of
+   thing a reader of the PR should not have to find in a doc. Added to the PR body.
+
+Not actioned, with the reason: the reviewer noted the tracking doc "reads more like an internal
+working log than user-facing documentation" and then answered itself - `docs/6989-*.md`,
+`docs/7122-*.md` and `docs/7225-*.md` are the same shape, so this follows the repo's convention.
+No deferred items.

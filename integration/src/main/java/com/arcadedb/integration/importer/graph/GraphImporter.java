@@ -307,6 +307,13 @@ public class GraphImporter implements AutoCloseable {
         final String[] parts = spec.split("=", 2);
         // Issue #7266: the same unguarded [1] the edge endpoints carried. A filter written without its '=' is a
         // configuration mistake, and it has to read as one rather than as an array index out of bounds.
+        //
+        // The EMPTY HALF is checked on the attribute only, deliberately, and not on both sides as
+        // splitEdgeSourceEndpoint checks them: "attr=" filters for rows whose attribute IS empty, which two of the
+        // three record sources can actually answer - XmlRowSource returns the raw attribute value, so attr="" is a
+        // match, and JsonlRowSource returns "" for an explicit empty string. Only CsvRowSource folds empty to null
+        // (CsvRowSource:98-101), where such a filter selects nothing. Rejecting it here would refuse a config that
+        // is meaningful for the other two.
         if (parts.length != 2 || parts[0].isEmpty())
           throw new IllegalArgumentException("Vertex source '" + typeName + "' declares its filter as '" + spec
               + "': the form is \"filter\": \"attribute=value\", naming the attribute to test and the value that "

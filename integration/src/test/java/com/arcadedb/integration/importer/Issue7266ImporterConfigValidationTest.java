@@ -164,6 +164,28 @@ class Issue7266ImporterConfigValidationTest {
   }
 
   /**
+   * The asymmetry between the two guards added in the same commit, pinned so it stays deliberate: the edge-endpoint
+   * guard rejects an empty half on either side, the filter guard rejects it on the attribute only. {@code "attr="}
+   * selects the rows whose attribute IS empty, and two of the three record sources can answer that -
+   * {@code XmlRowSource} hands back the raw attribute value and {@code JsonlRowSource} returns {@code ""} for an
+   * explicit empty string, while only {@code CsvRowSource} folds empty to null.
+   */
+  @Test
+  void aFilterWithAnEmptyValueIsAccepted() {
+    final JSONObject vertex = new JSONObject()
+        .put("type", "Post")
+        .put("file", "issue7266-posts.xml")
+        .put("id", "Id")
+        .put("filter", "PostTypeId=");
+
+    final JSONObject config = new JSONObject().put("vertices", new JSONArray().put(vertex));
+
+    try (final GraphImporter importer = GraphImporter.fromJSON(database, config, baseDir())) {
+      assertThat(importer).as("filtering for an empty attribute is meaningful on an XML or JSONL source").isNotNull();
+    }
+  }
+
+  /**
    * The guard has to refuse only what is malformed. Without this the four tests above would all pass against a
    * parser that refused every config it was handed.
    */
