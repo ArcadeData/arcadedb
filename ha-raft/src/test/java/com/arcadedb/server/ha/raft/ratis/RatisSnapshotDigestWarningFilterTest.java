@@ -150,8 +150,10 @@ class RatisSnapshotDigestWarningFilterTest {
   }
 
   /**
-   * A second marker means a second md5-less file in the directory, and Ratis warns once per file - the
-   * exact "once per rediscovered snapshot marker" growth reported in the issue. All of it stays hidden.
+   * Every checkpoint runs the warn loop again over the md5-less marker it just wrote, so the warning
+   * recurs for as long as the node keeps checkpointing - the growth reported in the issue. (Before
+   * #7209 it grew per checkpoint AND per accumulated marker, because none were ever pruned; now the
+   * directory holds one, so it is once per checkpoint.) All of it stays hidden.
    */
   @Test
   void everyRediscoveredMarkerStaysSuppressed(@TempDir final Path tempDir) throws Exception {
@@ -290,13 +292,28 @@ class RatisSnapshotDigestWarningFilterTest {
   }
 
   /**
-   * Writes a real zero-byte {@code snapshot.<term>_<index>} marker through the state machine's own
-   * registration path, which is what calls {@code SimpleStateMachineStorage.cleanupOldSnapshots()}.
+   * Reproduces one production checkpoint: the state machine writes a real zero-byte
+   * {@code snapshot.<term>_<index>} marker through its own registration path, and then Ratis's
+   * {@code StateMachineUpdater.takeSnapshot()} calls {@code cleanupOldSnapshots(snapshotRetentionPolicy)}
+   * on it with no ArcadeDB code in between (ratis-server 3.3.0, {@code StateMachineUpdater.java:301}).
+   * <p>
+   * Both halves are needed. {@code cleanupOldSnapshots()} is the only place the "has missing MD5 file."
+   * warning is emitted, and #7209 removed ArcadeDB's own call to it from {@code registerSnapshotMarker}
+   * - it deleted nothing, because Ratis's retention needs an {@code .md5} companion ArcadeDB does not
+   * write. Registration alone would therefore reach no warn loop at all, and every suppression
+   * assertion built on this helper would pass whether the filter worked or not.
    */
   private static void registerMarkerAt(final ArcadeStateMachine sm, final long term, final long index) throws Exception {
     final Method m = ArcadeStateMachine.class.getDeclaredMethod("registerSnapshotMarker", long.class, long.class);
     m.setAccessible(true);
     assertThat((Boolean) m.invoke(sm, term, index)).as("snapshot marker written").isTrue();
+
+    sm.getStateMachineStorage().cleanupOldSnapshots(new SnapshotRetentionPolicy() {
+      @Override
+      public int getNumSnapshotsRetained() {
+        return 1;
+      }
+    });
   }
 
   /**
