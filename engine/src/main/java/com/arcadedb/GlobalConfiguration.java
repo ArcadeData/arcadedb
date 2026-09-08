@@ -2873,7 +2873,9 @@ public enum GlobalConfiguration {
   }
 
   /**
-   * Refuses a value outside this setting's declared {@code allowed} set, exactly as {@link #setValue(Object)} does.
+   * Refuses a value outside this setting's declared {@code allowed} set. Shared by BOTH writers -
+   * {@link #setValue(Object)} and {@link #coerceFromConfigurationSource(Object, String)} - so the two cannot come
+   * to disagree about what is allowed, or report it differently when they refuse.
    * <p>
    * {@link #coerce(Object)} converts a value to the setting's TYPE and stops there, so a {@code String} setting with
    * an allow-list accepted anything that was a string. That was invisible while the only writer of raw external
@@ -2886,7 +2888,7 @@ public enum GlobalConfiguration {
   private void checkAllowed(final Object coerced) {
     if (allowed != null && coerced != null && !allowed.contains(coerced.toString().toLowerCase(Locale.ENGLISH)))
       throw new IllegalArgumentException(
-          "Setting '" + key + "=" + coerced + "' is not valid. Allowed values are " + allowed);
+          "Global setting '" + key + "=" + coerced + "' is not valid. Allowed values are " + allowed);
   }
 
   /**
@@ -3195,10 +3197,7 @@ public enum GlobalConfiguration {
 
       value = invokeCallback(value);
 
-      if (allowed != null && value != null)
-        if (!allowed.contains(value.toString().toLowerCase(Locale.ENGLISH)))
-          throw new IllegalArgumentException(
-              "Global setting '" + key + "=" + value + "' is not valid. Allowed values are " + allowed);
+      checkAllowed(value);
 
     } catch (final Exception e) {
       // RESTORE THE PREVIOUS VALUE - INCLUDING WHETHER THERE WAS ONE. A WRITE THAT WAS ROLLED BACK IS NOT A CHOICE
