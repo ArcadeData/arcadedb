@@ -43,23 +43,13 @@ import java.util.logging.Level;
  */
 public enum GlobalConfiguration {
   // ENVIRONMENT
+  // The dump is DEFERRED while readConfiguration() is running (issue #7281). This is the first constant of the
+  // enum, so its callback used to fire while that pass was still walking values(), printing the compiled-in default
+  // of every setting declared after it - a reporter read `serverMetrics.tracing.enabled = false` out of the startup
+  // log while /api/v1/server correctly answered true for the same setting, and concluded the flag had been ignored.
   DUMP_CONFIG_AT_STARTUP("arcadedb.dumpConfigAtStartup", SCOPE.JVM, "Dumps the configuration at startup", Boolean.class, false,
       value -> {
-        //dumpConfiguration(System.out);
-
-        try {
-          final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-          dumpConfiguration(new PrintStream(buffer));
-          if (LogManager.instance() != null)
-            LogManager.instance().log(buffer, Level.WARNING, new String(buffer.toByteArray()));
-          else
-            System.out.println(new String(buffer.toByteArray()));
-
-          buffer.close();
-        } catch (IOException e) {
-          System.out.println("Error on printing initial configuration to log (error=" + e + ")");
-        }
-
+        dumpConfigurationOrDefer();
         return value;
       }),
 
@@ -1361,6 +1351,13 @@ public enum GlobalConfiguration {
       a system property or environment variable - and the setting keeps its default of true.""", Boolean.class,
       true),
 
+  SERVER_METRICS_OTLP_ENABLED("arcadedb.serverMetrics.otlp.enabled", SCOPE.SERVER,
+      "Enable pushing the server metrics to an OTLP endpoint, alongside (never replacing) the Prometheus scrape endpoint. Requires the optional metrics plugin on the classpath and arcadedb.serverMetrics to be true",
+      Boolean.class, false),
+
+  SERVER_METRICS_OTLP_ENDPOINT("arcadedb.serverMetrics.otlp.endpoint", SCOPE.SERVER, "OTLP metrics export endpoint",
+      String.class, "http://localhost:4317"),
+
   SERVER_METRICS_TRACING_ENABLED("arcadedb.serverMetrics.tracing.enabled", SCOPE.SERVER,
       "Enable OpenTelemetry distributed tracing (requires the optional tracing plugin on the classpath). Note: query/command spans include the statement text as the db.statement span attribute, which may contain sensitive data, so secure the OTLP collector endpoint",
       Boolean.class, false),
@@ -2410,6 +2407,12 @@ public enum GlobalConfiguration {
   private final        Set<Object>              allowed;
   public final static  String                   PREFIX = "arcadedb.";
   private static final Timer                    TIMER;
+  // Issue #7281: set for the duration of readConfiguration(), so DUMP_CONFIG_AT_STARTUP's callback can tell a
+  // startup pass that has not finished applying the other settings from a later write it can dump straight away.
+  // Left without an initializer on purpose: an enum's constants are constructed before any static field
+  // initializer runs, and these two have to read as false from the very first callback.
+  private static volatile boolean               readingConfiguration;
+  private static volatile boolean               dumpPending;
 
   public enum SCOPE {JVM, SERVER, DATABASE}
 
@@ -2748,16 +2751,60 @@ public enum GlobalConfiguration {
   public static void readConfiguration() {
     String prop;
 
-    for (final GlobalConfiguration config : values()) {
-      String source = "system property";
+    readingConfiguration = true;
+    try {
+      for (final GlobalConfiguration config : values()) {
+        String source = "system property";
 
-      prop = System.getProperty(config.key);
-      if (prop == null) {
-        prop = System.getenv(config.key);
-        source = "environment variable";
+        prop = System.getProperty(config.key);
+        if (prop == null) {
+          prop = System.getenv(config.key);
+          source = "environment variable";
+        }
+
+        config.applyConfigurationSource(prop, source);
       }
+    } finally {
+      readingConfiguration = false;
+    }
 
-      config.applyConfigurationSource(prop, source);
+    // Issue #7281: the dump describes the configuration this pass PRODUCED. Firing it from the callback, as the
+    // first constant of the enum, described the one the pass started from.
+    if (dumpPending) {
+      dumpPending = false;
+      dumpConfigurationToLog();
+    }
+  }
+
+  /**
+   * Dumps the configuration now, or marks it to be dumped by {@link #readConfiguration()} when that pass is the
+   * caller: mid-pass, every setting declared after {@code DUMP_CONFIG_AT_STARTUP} still holds its compiled-in
+   * default, so a dump taken there describes a configuration that never existed (issue #7281).
+   */
+  private static void dumpConfigurationOrDefer() {
+    if (readingConfiguration)
+      dumpPending = true;
+    else
+      dumpConfigurationToLog();
+  }
+
+  /**
+   * Writes {@link #dumpConfiguration(PrintStream)} to the log, or to stdout when the log is not up yet. A failure
+   * to print the configuration must never take the process down: this runs from a static initializer, where a throw
+   * becomes an {@code ExceptionInInitializerError}.
+   */
+  private static void dumpConfigurationToLog() {
+    try {
+      final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+      dumpConfiguration(new PrintStream(buffer));
+      if (LogManager.instance() != null)
+        LogManager.instance().log(buffer, Level.WARNING, new String(buffer.toByteArray()));
+      else
+        System.out.println(new String(buffer.toByteArray()));
+
+      buffer.close();
+    } catch (IOException e) {
+      System.out.println("Error on printing initial configuration to log (error=" + e + ")");
     }
   }
 

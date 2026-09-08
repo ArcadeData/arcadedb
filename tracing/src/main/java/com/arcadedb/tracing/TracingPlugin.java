@@ -66,6 +66,16 @@ public class TracingPlugin implements ServerPlugin {
   private SdkTracerProvider             tracerProvider;
   private DeactivatableObservationHandler attachedHandler;
 
+  /**
+   * The enable flag is the whole opt-in: a deployment that sets it does not also have to name this plugin in
+   * {@code arcadedb.server.plugins} (issue #7281). Before this, the flag governed what {@code configure()} did and
+   * nothing governed whether {@code configure()} ran, so setting it alone produced no span and no log line.
+   */
+  @Override
+  public boolean isAutoDiscovered(final ContextConfiguration configuration) {
+    return configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_TRACING_ENABLED);
+  }
+
   @Override
   public void configure(final ArcadeDBServer server, final ContextConfiguration configuration) {
     enabled = configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_TRACING_ENABLED);
