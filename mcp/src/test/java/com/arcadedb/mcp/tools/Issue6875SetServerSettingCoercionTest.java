@@ -85,6 +85,29 @@ class Issue6875SetServerSettingCoercionTest extends BaseGraphServerTest {
         .hasMessageContaining("Float");
   }
 
+  /**
+   * Issue #7163: a setting whose callback NORMALISES its argument is now normalised on this channel too, because
+   * what the overlay stores is the callback's result. The response has to report the value that TOOK EFFECT -
+   * echoing the request would tell automation an out-of-range number was accepted as sent.
+   */
+  @Test
+  void reportsTheValueThatTookEffectRatherThanTheOneRequested() {
+    final long absurd = Runtime.getRuntime().maxMemory() / 1024 / 1024 * 100;
+    try {
+      final JSONObject result = SetServerSettingTool.execute(getServer(0), user,
+          new JSONObject().put("key", GlobalConfiguration.MAX_PAGE_RAM.getKey()).put("value", Long.toString(absurd)),
+          config);
+
+      final long reported = Long.parseLong(result.getString("newValue"));
+      assertThat(reported).as("clamped to fit the heap, not the number that was sent").isLessThan(absurd);
+      assertThat(reported).as("and it is what was actually stored")
+          .isEqualTo(getServer(0).getConfiguration().getValueAsLong(GlobalConfiguration.MAX_PAGE_RAM));
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.MAX_PAGE_RAM, null);
+      GlobalConfiguration.MAX_PAGE_RAM.reset();
+    }
+  }
+
   /** What the tool stores is the setting's type, so neither accessor has to re-parse a string to read it back. */
   @Test
   void storesACoercedTypedValue() {

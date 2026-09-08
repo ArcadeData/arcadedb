@@ -20,6 +20,7 @@ package com.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -199,6 +200,39 @@ class Issue7163DatabaseScopeCallbackTest {
         .containsExactlyInAnyOrder(GlobalConfiguration.DUMP_CONFIG_AT_STARTUP.getKey(),
             GlobalConfiguration.DUMP_METRICS_EVERY.getKey(), GlobalConfiguration.PROFILE.getKey(),
             GlobalConfiguration.LOG_IMPL.getKey());
+  }
+
+  /**
+   * ALTER DATABASE alters DATABASE settings, and now says so. Its key lookup accepts any declared key while the
+   * command is gated only by the per-database UPDATE_DATABASE_SETTINGS permission, so once a declared callback
+   * runs on every channel its scope advertises (this issue), reaching a SCOPE.SERVER key from here would have
+   * swapped the console log format of the whole server under a database-level permission - and saved a server
+   * setting into one database's configuration, where nothing reads it back.
+   */
+  @Test
+  void alterDatabaseRefusesASettingThatIsNotDatabaseScoped() {
+    final String logFormatBefore = GlobalConfiguration.SERVER_LOG_FORMAT.getValueAsString();
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER DATABASE `arcadedb.server.logFormat` 'json'").close())
+        .isInstanceOf(DatabaseOperationException.class)
+        .hasMessageContaining("SERVER")
+        .hasMessageContaining("SET SERVER SETTING");
+
+    assertThat(GlobalConfiguration.SERVER_LOG_FORMAT.getValueAsString())
+        .as("the refused command must not have run the setting's process-wide side effect").isEqualTo(logFormatBefore);
+    assertThat(database.getConfiguration().hasValue(GlobalConfiguration.SERVER_LOG_FORMAT.getKey()))
+        .as("nor stored a server setting in this database").isFalse();
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER DATABASE `arcadedb.profile` 'low-ram'").close())
+        .isInstanceOf(DatabaseOperationException.class).hasMessageContaining("JVM");
+  }
+
+  /** The DATABASE-scoped settings it exists for keep working. */
+  @Test
+  void alterDatabaseStillSetsADatabaseScopedSetting() {
+    database.command("sql", "ALTER DATABASE `arcadedb.txWAL` false").close();
+
+    assertThat(database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL)).isFalse();
   }
 
   /** A SCOPE.JVM setting is deliberately NOT reached through an overlay: it is not what an overlay holds. */

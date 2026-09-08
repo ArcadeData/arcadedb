@@ -98,11 +98,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
                         final String userPassword, final ContextConfiguration configuration) {
     super(server, port, userName, userPassword, configuration);
     this.databaseName = databaseName;
-    try {
-      this.serializer = new BinarySerializer(configuration);
-    } catch (ClassNotFoundException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error creating BinarySerializer", e);
-    }
+    // Issue #7163: no longer wrapped in a catch that logged and carried on with a NULL serializer. An
+    // unresolvable arcadedb.dateImplementation now fails the construction with a ConfigurationException naming
+    // the class, which is the better of the two: the degraded path only deferred the failure to the first
+    // record this database tried to serialize, as a NullPointerException with nothing to say about the cause.
+    this.serializer = new BinarySerializer(configuration);
     this.electionRetryCount = configuration.getValueAsInteger(GlobalConfiguration.HA_CLIENT_ELECTION_RETRY_COUNT);
     this.electionRetryDelayMs = configuration.getValueAsLong(GlobalConfiguration.HA_CLIENT_ELECTION_RETRY_DELAY_MS);
   }

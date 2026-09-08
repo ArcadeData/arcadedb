@@ -106,7 +106,12 @@ public class BinarySerializer {
     return externalRidScanFailures.get();
   }
 
-  public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
+  /**
+   * Issue #7163: no longer declares a checked {@code ClassNotFoundException}. An unresolvable date-implementation
+   * class name is a configuration error and is reported as {@link ConfigurationException}, so no caller has to
+   * decide what to do with a checked exception that only ever meant "this server is misconfigured".
+   */
+  public BinarySerializer(final ContextConfiguration configuration) {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
     setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
   }
