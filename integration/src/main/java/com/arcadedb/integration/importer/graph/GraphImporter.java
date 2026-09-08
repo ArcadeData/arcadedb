@@ -95,6 +95,14 @@ public class GraphImporter implements AutoCloseable {
    */
   static final long NOT_CANONICAL_LONG = Long.MIN_VALUE;
 
+  /**
+   * Rows the vertex pass buffers before committing. The commit is what bounds the transaction's
+   * memory on a large source, and it is also what makes a failed import PARTIAL rather than atomic:
+   * everything up to the last multiple of this stays on the disk when a later row throws, which is
+   * why {@link #processVertexSource} reports the committed count rather than the count read.
+   */
+  private static final int COMMIT_EVERY_ROWS = 50_000;
+
   private final Database                            database;
   private final List<VertexSourceDef>               vertexSources;
   private final List<EdgeSourceDef>                 edgeSources;
@@ -304,7 +312,21 @@ public class GraphImporter implements AutoCloseable {
       if (vj.has("nameId"))
         v.idByName(vj.getString("nameId"));
       if (vj.has("filter")) {
-        final String[] parts = vj.getString("filter").split("=", 2);
+        final String spec = vj.getString("filter");
+        final String[] parts = spec.split("=", 2);
+        // Issue #7266: the same unguarded [1] the edge endpoints carried. A filter written without its '=' is a
+        // configuration mistake, and it has to read as one rather than as an array index out of bounds.
+        //
+        // The EMPTY HALF is checked on the attribute only, deliberately, and not on both sides as
+        // splitEdgeSourceEndpoint checks them: "attr=" filters for rows whose attribute IS empty, which two of the
+        // three record sources can actually answer - XmlRowSource returns the raw attribute value, so attr="" is a
+        // match, and JsonlRowSource returns "" for an explicit empty string. Only CsvRowSource folds empty to null
+        // (CsvRowSource:98-101), where such a filter selects nothing. Rejecting it here would refuse a config that
+        // is meaningful for the other two.
+        if (parts.length != 2 || parts[0].isEmpty())
+          throw new IllegalArgumentException("Vertex source '" + typeName + "' declares its filter as '" + spec
+              + "': the form is \"filter\": \"attribute=value\", naming the attribute to test and the value that "
+              + "selects the rows to import");
         v.filter(parts[0], parts[1]);
       }
       if (vj.getBoolean("deduplicate", false))
@@ -350,9 +372,9 @@ public class GraphImporter implements AutoCloseable {
 
     b.edgeSource(edgeType, source, e -> {
       // "from": "PostId:Post" → attribute:vertexType
-      final String[] fromParts = ej.getString("from").split(":");
+      final String[] fromParts = splitEdgeSourceEndpoint(edgeType, "from", ej.getString("from", null));
       e.from(fromParts[0], fromParts[1]);
-      final String[] toParts = ej.getString("to").split(":");
+      final String[] toParts = splitEdgeSourceEndpoint(edgeType, "to", ej.getString("to", null));
       e.to(toParts[0], toParts[1]);
 
       if (ej.has("properties")) {
@@ -361,6 +383,35 @@ public class GraphImporter implements AutoCloseable {
           parsePropertySpec(e, propName, props.getString(propName));
       }
     });
+  }
+
+  /**
+   * Splits an edge source's {@code "from"} / {@code "to"} value, whose form is {@code attribute:VertexType}.
+   * <p>
+   * Issue #7266: this used to be a bare {@code split(":")} followed by {@code [1]}. A value that forgot the
+   * {@code :VertexType} half - precisely the mistake {@link #checkEdgeSourceEndpoint} was added to describe in a
+   * sentence - answered one element and threw {@code ArrayIndexOutOfBoundsException} here, inside the consumer
+   * {@link Builder#edgeSource} runs eagerly, so the validation never got the chance to report it. The two other
+   * mis-shapes were worse than a crash because they were silent: a third colon was dropped on the floor, and an
+   * empty half became an attribute or a vertex type that matches nothing, row after row.
+   * <p>
+   * An ABSENT key is the same mistake one step earlier, and reaches the reader the same way {@code
+   * checkEdgeSourceEndpoint} phrases it: {@code getString(key)} throws a {@code JSONException} naming the key and
+   * nothing else, so the value is read with a {@code null} default and answered here instead.
+   */
+  private static String[] splitEdgeSourceEndpoint(final String edgeType, final String endpoint, final String value) {
+    if (value == null)
+      throw new IllegalArgumentException("Edge source '" + edgeType + "' declares no '" + endpoint
+          + "' endpoint: add \"" + endpoint + "\": \"attribute:VertexType\" to it, naming the attribute that holds "
+          + "the key and the vertex type it resolves against");
+
+    final String[] parts = value.split(":");
+    if (parts.length != 2 || parts[0].isEmpty() || parts[1].isEmpty())
+      throw new IllegalArgumentException("Edge source '" + edgeType + "' declares its '" + endpoint
+          + "' endpoint as '" + value + "': the form is \"" + endpoint + "\": \"attribute:VertexType\", naming the "
+          + "attribute that holds the key and the vertex type it resolves against");
+
+    return parts;
   }
 
   private static void parsePropertySpec(final PropertyConfig v, final String propName, final String spec) {
@@ -593,6 +644,12 @@ public class GraphImporter implements AutoCloseable {
      * Filter rows: only rows where the attribute equals the given value are imported.
      * Enables splitting one file into multiple vertex types (e.g. Posts.xml → Question + Answer).
      * Format: {@code filter("PostTypeId", "1")} or in JSON: {@code "filter": "PostTypeId=1"}.
+     * <p>
+     * An EMPTY value is accepted and selects the rows whose attribute is empty - {@code "filter": "PostTypeId="}
+     * in JSON. Which rows those are depends on the source: {@link XmlRowSource} hands back the raw attribute value
+     * and {@link JsonlRowSource} an explicit empty string, so both can match, while {@link CsvRowSource} reads an
+     * empty cell as absent, where such a filter selects nothing. An empty ATTRIBUTE is refused, because there is
+     * no row it could ever test.
      */
     public void filter(final String attribute, final String value) {
       this.filterAttribute = attribute;
@@ -993,82 +1050,143 @@ public class GraphImporter implements AutoCloseable {
       deferredSelf.add(new DeferredSelfEdges());
 
     final int[] count = {0};
+
+    // Rows an intermediate commit already made durable. Counted apart from count[0] because a
+    // failure rolls back the transaction in flight: what the report owes the operator is the number
+    // of vertices that survived, which is what decides whether to resume, truncate or start over
+    final int[] committed = {0};
+
+    // Whether the transaction opened below is still the current one. database.rollback() pops
+    // whatever transaction is on top of the stack, and this one nests inside the caller's when the
+    // caller holds one (see LocalDatabase#begin()), so rolling back after it has already been
+    // committed and popped would discard the CALLER's transaction instead of this method's
+    final boolean[] txOpen = {false};
+
     database.begin();
+    txOpen[0] = true;
 
     final String filterAttr = vc.filterAttribute;
     final String filterVal = vc.filterValue;
 
-    vsd.source.forEach(record -> {
-      if (limit > 0 && count[0] >= limit)
-        return;
-
-      // Apply row filter (e.g. PostTypeId=1 for questions only)
-      if (filterAttr != null) {
-        final String v = record.get(filterAttr);
-        if (v == null || !v.equals(filterVal))
+    try {
+      vsd.source.forEach(record -> {
+        if (limit > 0 && count[0] >= limit)
           return;
-      }
 
-      // The raw text is the key: an identity is whatever the source wrote, so reading it as an int
-      // would reject a string key and truncate one wider than an int. Read once - deduplication
-      // looks the same key up that registration then stores
-      final String id = vc.idAttribute != null ? identity(record, vc.idAttribute) : null;
-      final String nameId = vc.nameIdAttribute != null ? identity(record, vc.nameIdAttribute) : null;
+        // Apply row filter (e.g. PostTypeId=1 for questions only)
+        if (filterAttr != null) {
+          final String v = record.get(filterAttr);
+          if (v == null || !v.equals(filterVal))
+            return;
+        }
 
-      // Deduplication: skip if this id/nameId was already imported
-      if (vc.deduplicate && (ts.idToIdx.get(id) >= 0 || ts.nameToIdx.get(nameId) >= 0))
-        return;
+        // The raw text is the key: an identity is whatever the source wrote, so reading it as an int
+        // would reject a string key and truncate one wider than an int. Read once - deduplication
+        // looks the same key up that registration then stores
+        final String id = vc.idAttribute != null ? identity(record, vc.idAttribute) : null;
+        final String nameId = vc.nameIdAttribute != null ? identity(record, vc.nameIdAttribute) : null;
 
-      final int idx = count[0];
-      ts.idToIdx.put(id, idx);
-      ts.nameToIdx.put(nameId, idx);
+        // Deduplication: skip if this id/nameId was already imported
+        if (vc.deduplicate && (ts.idToIdx.get(id) >= 0 || ts.nameToIdx.get(nameId) >= 0))
+          return;
 
-      // Build vertex properties
-      propBuf.clear();
-      for (final PropDef pd : vc.properties) {
-        final Object val = readProperty(record, pd);
-        if (val != null) {
-          propBuf.add(pd.name);
-          propBuf.add(val);
+        final int idx = count[0];
+        ts.idToIdx.put(id, idx);
+        ts.nameToIdx.put(nameId, idx);
+
+        // Build vertex properties
+        propBuf.clear();
+        for (final PropDef pd : vc.properties) {
+          final Object val = readProperty(record, pd);
+          if (val != null) {
+            propBuf.add(pd.name);
+            propBuf.add(val);
+          }
+        }
+
+        final MutableVertex v = batch.createVertex(vc.typeName, propBuf.toArray());
+        bk.add(v.getIdentity().getBucketId());
+        ps.add(v.getIdentity().getPosition());
+
+        // Collect edges
+        for (final EdgeDef ed : resolvedEdges)
+          collectEdge(record, ed, vc.typeName, idx);
+
+        // Collect deferred (self-referencing) edges: this row's index is already final, only the
+        // target key has to wait for the rest of the file
+        for (int i = 0; i < deferredEdgeDefs.size(); i++) {
+          final EdgeDef ed = deferredEdgeDefs.get(i);
+          final String fieldVal = ed.isSplit ? record.get(ed.fkAttribute) : identity(record, ed.fkAttribute);
+          if (fieldVal == null)
+            continue;
+          final DeferredSelfEdges deferred = deferredSelf.get(i);
+          if (ed.isSplit)
+            collectSplitKeys(fieldVal, ed.delimiter, deferred, idx);
+          else {
+            deferred.srcIdx.add(idx);
+            deferred.targetKeys.add(fieldVal);
+          }
+        }
+
+        count[0]++;
+        if (count[0] % COMMIT_EVERY_ROWS == 0) {
+          // Cleared before the call, not after: LocalDatabase#commit() pops the transaction in a
+          // finally, so a commit that throws still leaves this method's transaction off the stack
+          txOpen[0] = false;
+          database.commit();
+          committed[0] = count[0];
+          database.begin();
+          txOpen[0] = true;
+        }
+      });
+
+      txOpen[0] = false;
+      database.commit();
+      committed[0] = count[0];
+    } catch (final Exception e) {
+      // Only when something was committed: below the first COMMIT_EVERY_ROWS the rollback takes the
+      // whole source with it, so there is no partial import to warn about and the exception on its
+      // own says everything there is to say
+      if (committed[0] > 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "  %-12s failed after importing %,d rows: the import is PARTIAL - %,d of them an earlier batch commit "
+                + "made durable and they stay on the disk, the other %,d were rolled back along with the row that "
+                + "failed. Resume the source after the committed rows, or empty the type before running it again",
+            vc.typeName, count[0], committed[0], count[0] - committed[0]);
+      throw e;
+    } finally {
+      // In the finally rather than in the catch so that an Error - an OutOfMemoryError is the one a
+      // large import can realistically raise - resolves the transaction too. txOpen[0] is false on
+      // every path that already committed, which is what keeps this from rolling back the caller's
+      if (txOpen[0]) {
+        txOpen[0] = false;
+        try {
+          database.rollback();
+        } catch (final Exception rollbackFailure) {
+          // A throw here would replace the exception on its way out with one about the cleanup, and
+          // would skip the counter assignment below - which is this issue's own symptom, reached
+          // through the code that fixes it. Reported and swallowed instead: the caller keeps the
+          // failure it can act on, and this line says the transaction may still be pushed
+          LogManager.instance().log(this, Level.SEVERE,
+              "  %-12s could not roll back after the import failed: the transaction it opened may still be on the "
+                  + "stack", rollbackFailure, vc.typeName);
         }
       }
 
-      final MutableVertex v = batch.createVertex(vc.typeName, propBuf.toArray());
-      bk.add(v.getIdentity().getBucketId());
-      ps.add(v.getIdentity().getPosition());
-
-      // Collect edges
-      for (final EdgeDef ed : resolvedEdges)
-        collectEdge(record, ed, vc.typeName, idx);
-
-      // Collect deferred (self-referencing) edges: this row's index is already final, only the
-      // target key has to wait for the rest of the file
-      for (int i = 0; i < deferredEdgeDefs.size(); i++) {
-        final EdgeDef ed = deferredEdgeDefs.get(i);
-        final String fieldVal = ed.isSplit ? record.get(ed.fkAttribute) : identity(record, ed.fkAttribute);
-        if (fieldVal == null)
-          continue;
-        final DeferredSelfEdges deferred = deferredSelf.get(i);
-        if (ed.isSplit)
-          collectSplitKeys(fieldVal, ed.delimiter, deferred, idx);
-        else {
-          deferred.srcIdx.add(idx);
-          deferred.targetKeys.add(fieldVal);
-        }
-      }
-
-      count[0]++;
-      if (count[0] % 50_000 == 0) {
-        database.commit();
-        database.begin();
-      }
-    });
-    database.commit();
-
-    ts.buckets = bk.trim();
-    ts.positions = ps.trim();
-    ts.count = count[0];
-    totalVertices += ts.count;
+      // The counters are assigned whatever happened: the number of vertices actually on the disk is
+      // most valuable precisely when the import failed, and leaving it at zero reads as "nothing was
+      // written" for a source that committed hundreds of thousands of rows.
+      //
+      // On the failure path the two arrays hold every row READ while ts.count names only the
+      // committed prefix, so the tail addresses records the rollback took away. Nothing reads them
+      // there: run() has no per-source catch, so the failure aborts the import before pass 2 and
+      // before the deferred self-edge resolution below, and close() clears typeStates. Give run() a
+      // continue-on-error mode and this has to become a trim to committed[0] on the failure path
+      ts.buckets = bk.trim();
+      ts.positions = ps.trim();
+      ts.count = committed[0];
+      totalVertices += ts.count;
+    }
 
     // Resolve deferred self-referencing edges (srcType == dstType == thisType)
     for (int i = 0; i < deferredEdgeDefs.size(); i++) {
@@ -1346,7 +1464,13 @@ public class GraphImporter implements AutoCloseable {
       }
     case DATETIME: {
       final String v = record.get(pd.attribute);
-      if (v == null)
+      // Empty means "not set", as it does in the RecordReader defaults above: getInt/getLong/
+      // getDouble answer 0 and getFloatArray/getList answer null for an empty value, so a blank
+      // cell in an optional datetime column must not abort the import either. null is already this
+      // branch's "not set" answer and both call sites drop it, so returning it needs nothing else.
+      // A value that is present but not whitespace-free is still a data error: isEmpty(), not
+      // isBlank(), is what every accessor above tests (#7265)
+      if (v == null || v.isEmpty())
         return null;
       // DateUtils.getFormatter(), not DateTimeFormatter.ofPattern(): the latter binds the JVM default locale, so the
       // same file imported on two machines would parse a textual month/day name differently, or not at all (#7144)

@@ -418,7 +418,18 @@ public class Profiler {
     final long totalSpace = diskDir.getTotalSpace();
     final float freeSpacePerc = totalSpace > 0 ? freeSpace * 100F / totalSpace : 0F;
 
+    // #7266: how much of the volume is ALLOCATED, reported rather than left to the reader to subtract. The three
+    // File readings do not agree on what the blocks a filesystem reserves for root are: getTotalSpace() counts them
+    // in the total, getFreeSpace() counts them as free, and getUsableSpace() counts them as neither. So
+    // `total - usable` - which is what the Studio card computed - charges that reservation, 5% of an ext4 by
+    // default, to the databases: a 100 GB volume holding 1 GB reported around 6 GB used, a constant offset an
+    // operator watching the card for growth reads as data. `total - free` is the pair that describes the same
+    // thing, and is what df calls Used. diskFreeSpace stays usable space on purpose: "how much room is left" is a
+    // different question, and the answer to it is the one this process can actually write into.
+    final long usedSpace = Math.max(0L, totalSpace - diskDir.getFreeSpace());
+
     json.put("diskFreeSpace", new JSONObject().put("space", freeSpace));
+    json.put("diskUsedSpace", new JSONObject().put("space", usedSpace));
     json.put("diskTotalSpace", new JSONObject().put("space", totalSpace));
     json.put("diskFreeSpacePerc", new JSONObject().put("perc", freeSpacePerc));
     // Which filesystem the three figures above describe. Without it the reader cannot tell a nearly-full data
