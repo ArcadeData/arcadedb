@@ -195,15 +195,22 @@ public class PluginManager {
           continue;
         }
 
-        if (configuredPlugins.contains(name) ||
+        final boolean configured = configuredPlugins.contains(name) ||
             configuredPlugins.contains(pluginName) ||
-            configuredPlugins.contains(pluginInstance.getClass().getName())) {
+            configuredPlugins.contains(pluginInstance.getClass().getName());
+
+        // A jar in the plugins directory answers isAutoDiscovered the same way one on the main class path does
+        // (issue #7281). The two loaders differ in class isolation, not in what makes a plugin opt in, and
+        // ServerPlugin.isAutoDiscovered promises activation "on classpath presence alone" without qualifying which
+        // of the two the plugin arrived through - a promise this branch used to break for the plugins directory.
+        if (configured || pluginInstance.isAutoDiscovered(configuration)) {
           // Register the plugin
           plugins.put(name, descriptor);
           classLoaderMap.put(classLoader, descriptor);
           registered = true;
 
-          LogManager.instance().log(this, Level.INFO, "Loaded plugin: %s from %s", name, pluginJar.getName());
+          LogManager.instance().log(this, Level.INFO, "Loaded plugin: %s from %s%s", name, pluginJar.getName(),
+              !configured ? " (auto-discovered)" : "");
         } else {
           LogManager.instance().log(this, Level.INFO, "Skipping plugin: %s as not registered in configuration", name);
         }

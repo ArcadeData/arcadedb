@@ -32,6 +32,11 @@ import io.undertow.server.handlers.PathHandler;
 import java.util.logging.Level;
 
 public class PrometheusMetricsPlugin implements ServerPlugin {
+  // Deliberately does NOT override isAutoDiscovered, unlike its OTLP and tracing siblings (issue #7281). Their
+  // enable flags default to false, so auto-discovery only honours something an operator asked for; this plugin's
+  // gate is arcadedb.serverMetrics, which defaults to TRUE, so the same change would publish /prometheus on every
+  // default server. What that endpoint exposes and who may read it is the subject of #7124 and #7222; changing its
+  // default exposure is a decision of its own, not a symmetry to restore.
 
   private PrometheusMeterRegistry registry;
   private boolean                 enabled;

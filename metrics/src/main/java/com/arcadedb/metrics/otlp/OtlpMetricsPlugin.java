@@ -40,15 +40,23 @@ public class OtlpMetricsPlugin implements ServerPlugin {
   private OtlpMeterRegistry registry;
   private boolean           enabled;
 
+  /**
+   * The enable flag is the whole opt-in: a deployment that sets it does not also have to name this plugin in
+   * {@code arcadedb.server.plugins} (issue #7281). Before this, the flag governed what {@code configure()} did and
+   * nothing governed whether {@code configure()} ran, so setting it alone produced no exporter and no log line.
+   */
+  @Override
+  public boolean isAutoDiscovered(final ContextConfiguration configuration) {
+    return isEnabledBy(configuration);
+  }
+
   @Override
   public void configure(final ArcadeDBServer server, final ContextConfiguration configuration) {
-    final boolean metricsOn = configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS);
-    final boolean otlpOn = asBoolean(configuration.getValue("arcadedb.serverMetrics.otlp.enabled", (Object) Boolean.FALSE));
-    enabled = metricsOn && otlpOn;
+    enabled = isEnabledBy(configuration);
     if (!enabled)
       return;
 
-    final String endpoint = asString(configuration.getValue("arcadedb.serverMetrics.otlp.endpoint", (Object) "http://localhost:4317"));
+    final String endpoint = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT);
     final OtlpConfig otlpConfig = key -> "otlp.url".equals(key) ? endpoint : null;
     registry = new OtlpMeterRegistry(otlpConfig, Clock.SYSTEM);
     Metrics.addRegistry(registry);
@@ -70,16 +78,11 @@ public class OtlpMetricsPlugin implements ServerPlugin {
   }
 
   /**
-   * Coerces a config value to a boolean. The value may be a {@link Boolean} (set programmatically /
-   * in tests) or a {@link String} (read from a config file or system property).
+   * The one reading of "OTLP is on", shared by the activation gate and by {@code configure()} so the two cannot
+   * disagree: the global metrics kill switch wins over the OTLP flag, exactly as it did before.
    */
-  private static boolean asBoolean(final Object value) {
-    if (value instanceof Boolean b)
-      return b;
-    return value != null && Boolean.parseBoolean(value.toString());
-  }
-
-  private static String asString(final Object value) {
-    return value != null ? value.toString() : null;
+  private static boolean isEnabledBy(final ContextConfiguration configuration) {
+    return configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)
+        && configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_OTLP_ENABLED);
   }
 }
