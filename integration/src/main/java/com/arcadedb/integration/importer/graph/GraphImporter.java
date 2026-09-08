@@ -1075,6 +1075,9 @@ public class GraphImporter implements AutoCloseable {
       database.commit();
       committed[0] = count[0];
     } catch (final Exception e) {
+      // Only when something was committed: below the first COMMIT_EVERY_ROWS the rollback takes the
+      // whole source with it, so there is no partial import to warn about and the exception on its
+      // own says everything there is to say
       if (committed[0] > 0)
         LogManager.instance().log(this, Level.WARNING,
             "  %-12s failed after reading %,d rows: the import is PARTIAL - %,d vertices an earlier batch commit "
@@ -1093,7 +1096,13 @@ public class GraphImporter implements AutoCloseable {
 
       // The counters are assigned whatever happened: the number of vertices actually on the disk is
       // most valuable precisely when the import failed, and leaving it at zero reads as "nothing was
-      // written" for a source that committed hundreds of thousands of rows
+      // written" for a source that committed hundreds of thousands of rows.
+      //
+      // On the failure path the two arrays hold every row READ while ts.count names only the
+      // committed prefix, so the tail addresses records the rollback took away. Nothing reads them
+      // there: run() has no per-source catch, so the failure aborts the import before pass 2 and
+      // before the deferred self-edge resolution below, and close() clears typeStates. Give run() a
+      // continue-on-error mode and this has to become a trim to committed[0] on the failure path
       ts.buckets = bk.trim();
       ts.positions = ps.trim();
       ts.count = committed[0];
