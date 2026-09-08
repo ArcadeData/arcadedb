@@ -98,10 +98,15 @@ public class AlterDatabaseStatement extends DDLStatement {
       // result row and turn the write-ahead log OFF for this database - a durability hazard produced by a typo,
       // reported as a success, and saved to the database configuration.
       finalValue = cfg.coerceFromAdminCommand(finalValue);
-      if (finalValue instanceof Class<?> clazz)
+
+      Class<?> resolvedClass = null;
+      if (finalValue instanceof Class<?> clazz) {
         // A Class-typed setting is stored by NAME: the database configuration is a JSON document, and the name
-        // is what ContextConfiguration.fromJSON reads back (issue #7163).
+        // is what ContextConfiguration.fromJSON reads back (issue #7163). The resolved class is kept for the
+        // per-database side effect below, so nothing has to resolve the name a second time.
+        resolvedClass = clazz;
         finalValue = clazz.getName();
+      }
 
       db.getConfiguration().setValue(cfg, finalValue);
 
@@ -110,7 +115,7 @@ public class AlterDatabaseStatement extends DDLStatement {
       // of the heap), and the result row has to report the value that took effect (issue #7163).
       finalValue = db.getConfiguration().getValue(cfg);
 
-      applyDatabaseSideEffect(db, cfg, finalValue);
+      applyDatabaseSideEffect(db, cfg, resolvedClass);
 
       try {
         db.saveConfiguration();
@@ -139,20 +144,22 @@ public class AlterDatabaseStatement extends DDLStatement {
    * - unlike the class-name conversion, which did (issue #7163). {@code LocalDatabase.open} performs the same
    * two calls from the stored configuration, so a database reopened later ends up in this state anyway; this is
    * what makes the change take effect without waiting for that.
+   *
+   * @param resolvedClass the class {@code coerceFromAdminCommand} resolved, or {@code null} for a setting whose
+   *                      type is not a class. Passed already resolved so this takes the {@code Class} overload
+   *                      of the setters and no {@code ClassNotFoundException} can arise to be caught here.
    */
-  private void applyDatabaseSideEffect(final DatabaseInternal db, final GlobalConfiguration cfg, final Object value) {
-    try {
-      switch (cfg) {
-      case DATE_IMPLEMENTATION -> db.getSerializer().setDateImplementation(value);
-      case DATE_TIME_IMPLEMENTATION -> db.getSerializer().setDateTimeImplementation(value);
-      default -> {
-        // no per-database side effect
-      }
-      }
-    } catch (final ClassNotFoundException e) {
-      // Unreachable: coerceFromAdminCommand above already resolved the class name, so a value that got this far
-      // names a class this classloader can see.
-      throw new DatabaseOperationException("Invalid date implementation '" + value + "'", e);
+  private void applyDatabaseSideEffect(final DatabaseInternal db, final GlobalConfiguration cfg,
+      final Class<?> resolvedClass) {
+    if (resolvedClass == null)
+      return;
+
+    switch (cfg) {
+    case DATE_IMPLEMENTATION -> db.getSerializer().setDateImplementation(resolvedClass);
+    case DATE_TIME_IMPLEMENTATION -> db.getSerializer().setDateTimeImplementation(resolvedClass);
+    default -> {
+      // no per-database side effect
+    }
     }
   }
 

@@ -110,11 +110,13 @@ public class RefactorMergeNodes implements CypherProcedure {
 
     final Database database = context.getDatabase();
 
-    // Every node here arrives as the instance its row carried, loaded before the rows ahead of it applied
-    // their merges. The survivor is the one the rows share: it collects the properties and the edges of
-    // everything absorbed so far, and an edge appended to it rewrites its record's edge-list head pointer.
-    // Working from the row's own snapshot would copy properties onto a stale record and write that record
-    // back. Re-read it, exactly as merge.relationship does for its endpoints (issues #7174 and #7177).
+    // Every node here arrives as the instance its row carried, loaded before the rows ahead of it applied their
+    // merges. The survivor is the one the rows share: mergeProperties READS its properties and save() writes the
+    // record back, so a row working from a stale snapshot would drop what earlier rows accumulated - and a read
+    // has no safety net, unlike an edge APPEND, which substitutes the transaction's own written copy by RID.
+    // Today's rows happen to carry a fresh survivor, so no reproducer exists for this one (see the test); the
+    // re-read is what stops the procedure depending on that. Same re-read merge.relationship does for its
+    // endpoints (issues #7174 and #7177).
     final Vertex survivor = CypherVertexReload.latest(database, nodes.get(0));
     final MutableVertex survivorMutable = survivor.modify();
 

@@ -28,6 +28,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Date;
 
@@ -173,6 +175,30 @@ class Issue7163DatabaseScopeCallbackTest {
           .as("and reachable without the prefix: " + setting.getKey()).isSameAs(setting);
     }
     assertThat(GlobalConfiguration.findByKey("arcadedb.thereIsNoSuchSetting")).isNull();
+  }
+
+  /**
+   * Pins which settings the overlay hook now reaches. Widening it past SCOPE.SERVER means the callback of ANY
+   * non-JVM setting fires on every channel its scope advertises, which is what this issue asked for - and a
+   * callback written on the assumption that it only ever runs from the enum's own {@code setValue}, the way the
+   * date implementations' used to be, would quietly start running everywhere. Asserting the list makes adding
+   * one a decision rather than a discovery.
+   */
+  @Test
+  void onlyTheAuditedSettingsCarryACallbackTheOverlayHookReaches() {
+    final List<String> reached = new ArrayList<>();
+    final List<String> notReached = new ArrayList<>();
+    for (final GlobalConfiguration setting : GlobalConfiguration.values())
+      if (setting.hasCallback())
+        (setting.getScope() == GlobalConfiguration.SCOPE.JVM ? notReached : reached).add(setting.getKey());
+
+    assertThat(reached).as("reached by ContextConfiguration.setValue/fromJSON")
+        .containsExactlyInAnyOrder(GlobalConfiguration.MAX_PAGE_RAM.getKey(),
+            GlobalConfiguration.SERVER_LOG_FORMAT.getKey());
+    assertThat(notReached).as("SCOPE.JVM: process-wide, so an overlay is not a channel for them")
+        .containsExactlyInAnyOrder(GlobalConfiguration.DUMP_CONFIG_AT_STARTUP.getKey(),
+            GlobalConfiguration.DUMP_METRICS_EVERY.getKey(), GlobalConfiguration.PROFILE.getKey(),
+            GlobalConfiguration.LOG_IMPL.getKey());
   }
 
   /** A SCOPE.JVM setting is deliberately NOT reached through an overlay: it is not what an overlay holds. */

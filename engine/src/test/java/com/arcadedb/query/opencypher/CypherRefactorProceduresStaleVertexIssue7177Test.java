@@ -25,6 +25,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -93,9 +95,14 @@ class CypherRefactorProceduresStaleVertexIssue7177Test {
   }
 
   /**
-   * A single clone call whose node list holds both endpoints of many parallel edges: the clone of the source
-   * is reused as the origin of every copied edge, and each append moves its edge-list head, so the second
-   * append onto it works from what the map stored when the clone was saved.
+   * A single clone call whose node list holds both endpoints of many parallel edges: the clone of the source is
+   * reused as the ORIGIN of every copied edge, and each append moves its edge-list head, so the second append
+   * onto it works from what the map stored when the clone was saved.
+   * <p>
+   * It stays green because the append path substitutes the transaction's own written copy of a vertex by RID
+   * ({@code GraphEngine.getOrCreateEdgeList}), which is why {@code cloneEdge} re-reads neither endpoint. This
+   * test and its IN-side twin below are what say so: remove that substitution and both go red, while the
+   * row-carried enumeration above is the one place with no such safety net.
    */
   @Test
   void cloneNodesWithRelationshipsCopiesEveryParallelEdgeOfOneCall() {
@@ -111,6 +118,30 @@ class CypherRefactorProceduresStaleVertexIssue7177Test {
 
     assertThat(countOf("MATCH ()-[r:LINK]->() RETURN count(r) AS c"))
         .as("300 originals and 300 copies between the two clones").isEqualTo(600);
+  }
+
+  /**
+   * The same call with the reuse on the other side: 200 distinct sources, all cloned, every one of them
+   * pointing at ONE target that is cloned too, so the clone of that target is the IN endpoint of 200 appends
+   * in a single call. The counterpart of the test above, and the case that settles that neither end of
+   * {@code cloneEdge} needs a re-read.
+   */
+  @Test
+  void cloneNodesWithRelationshipsCopiesEveryEdgeIntoOneSharedTargetOfOneCall() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Target {id: 0})");
+      database.command("opencypher",
+          "UNWIND range(1, 200) AS i MATCH (t:Target) CREATE (s:Spoke {id: i})-[:LINK {seq: i}]->(t)");
+    });
+
+    database.command("opencypher",
+        "MATCH (t:Target) WITH t MATCH (s:Spoke) WITH collect(s) + [t] AS nodes "
+            + "CALL refactor.cloneNodesWithRelationships(nodes, {}) YIELD output RETURN output").close();
+
+    assertThat(countOf("MATCH (:Spoke)-[r:LINK]->(:Target) RETURN count(r) AS c"))
+        .as("200 originals and 200 copies, none lost to a stale edge-list head on the shared target")
+        .isEqualTo(400);
+    assertThat(countOf("MATCH (t:Target) RETURN count(t) AS c")).as("the target and its clone").isEqualTo(2);
   }
 
   /**
@@ -136,8 +167,35 @@ class CypherRefactorProceduresStaleVertexIssue7177Test {
     assertThat(countOf("MATCH (h:Hub)-[r:LINK]->(:Target) RETURN count(r) AS c"))
         .as("every absorbed node's edge rewired onto the survivor").isEqualTo(120);
     assertThat(countOf("MATCH (s:Spoke) RETURN count(s) AS c")).as("every absorbed node deleted").isZero();
-    assertThat(this.<java.util.List<?>>propertyOf("MATCH (h:Hub) RETURN h.tag AS c"))
+    assertThat(this.<List<?>>propertyOf("MATCH (h:Hub) RETURN h.tag AS c"))
         .as("the survivor's own tag plus one per absorbed node").hasSize(121);
+  }
+
+  /**
+   * The same survivor absorbing many nodes inside ONE call, which is the other half of the shape: the loop
+   * merges each absorbed node's properties onto the survivor, saves it, then rewires that node's edges to it -
+   * so from the second iteration on it is saving an instance whose edge list the previous iteration changed.
+   * It holds, for the same reason the clone tests above hold: rewiring goes through the edge records, and the
+   * append path resolves the endpoint by RID.
+   */
+  @Test
+  void mergeNodesAbsorbsEveryNodeOfOneCall() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Hub {id: 0, tag: 'h'}), (:Target {id: 0})");
+      database.command("opencypher",
+          "UNWIND range(1, 50) AS i MATCH (t:Target) CREATE (s:Spoke {tag: 'S' + toString(i)})-[:LINK {seq: i}]->(t)");
+    });
+
+    database.command("opencypher",
+        "MATCH (h:Hub) WITH h MATCH (s:Spoke) WITH [h] + collect(s) AS nodes "
+            + "CALL refactor.mergeNodes(nodes, {properties: 'combine'}) YIELD node RETURN node").close();
+
+    assertThat(countOf("MATCH (h:Hub)-[r:LINK]->(:Target) RETURN count(r) AS c"))
+        .as("all 50 edges rewired, including the ones rewired by earlier iterations of the same call")
+        .isEqualTo(50);
+    assertThat(countOf("MATCH (s:Spoke) RETURN count(s) AS c")).isZero();
+    assertThat(this.<List<?>>propertyOf("MATCH (h:Hub) RETURN h.tag AS c"))
+        .as("and every absorbed node's property accumulated on the survivor").hasSize(51);
   }
 
   private long countOf(final String query) {
