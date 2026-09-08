@@ -2780,7 +2780,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * than only in the handler.
    *
    * @throws NotTheLeaderRefusalException when this node is not the leader, whether that is already true on
-   *                                       entry or becomes true while the candidates are being tried
+   *                                       entry or becomes true during leadership transfer
+   * @throws ReplicationException when all leadership transfers fail and this node is still the leader
    */
   public void stepDown() {
     if (!isLeader())
@@ -2793,11 +2794,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         transferLeadership(peer.getId().toString(), 10_000);
         return;
       } catch (final NotTheLeaderRefusalException notLeader) {
-        // Leadership moved between the guard above and this attempt. Every remaining candidate refuses
-        // identically, so walking the list logs the same thing N times and then falls through to "no other peer
-        // available for leadership transfer" - and stepDown() would RETURN NORMALLY, which the HTTP handler
-        // reports as 200 for a step-down that never happened. Propagate instead: the caller is told, with the
-        // new leader's name, that there was nothing here to step down from (issue #7134).
+        // Leadership moved between the guard above and this attempt. Propagate the refusal so callers stop
+        // retrying a step-down that is already moot, and the HTTP handler reports 409 (issue #7134).
         throw notLeader;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE,
@@ -2813,8 +2811,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (transferLeadership(10_000L))
       return;
 
-    LogManager.instance().log(this, Level.SEVERE,
-        "Cannot step down: no other peer available for leadership transfer");
+    // The no-target API also returns false if leadership was lost before the transfer (issue #4809).
+    // Keep that distinct from an exhausted transfer failure so phase-2 recovery does not retry or stop a follower.
+    if (!isLeader())
+      throw new NotTheLeaderRefusalException("Refusing to step down", getLeaderId());
+
+    throw new ReplicationException("Cannot step down: no other peer available for leadership transfer");
   }
 
   /**

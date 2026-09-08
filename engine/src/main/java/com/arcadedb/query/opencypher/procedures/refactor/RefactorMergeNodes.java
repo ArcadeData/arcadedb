@@ -18,11 +18,13 @@
  */
 package com.arcadedb.query.opencypher.procedures.refactor;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -106,11 +108,21 @@ public class RefactorMergeNodes implements CypherProcedure {
     final Map<String, Object> config = RefactorProcedureArgs.extractConfig(getName(), args[1]);
     final String globalPolicy = extractPropertiesPolicy(config);
 
-    final Vertex survivor = nodes.get(0);
+    final Database database = context.getDatabase();
+
+    // Every node here arrives as the instance its row carried, loaded before the rows ahead of it applied their
+    // merges. The survivor is the one the rows share: mergeProperties READS its properties and save() writes the
+    // record back, so a row working from a stale snapshot would drop what earlier rows accumulated - and a read
+    // has no safety net, unlike an edge APPEND, which substitutes the transaction's own written copy by RID.
+    // Today's rows happen to carry a fresh survivor, so no reproducer exists for this one (see the test); the
+    // re-read is what stops the procedure depending on that. Same re-read merge.relationship does for its
+    // endpoints (issues #7174 and #7177).
+    final Vertex survivor = CypherVertexReload.latest(database, nodes.get(0));
     final MutableVertex survivorMutable = survivor.modify();
 
     for (int i = 1; i < nodes.size(); i++) {
-      final Vertex absorbed = nodes.get(i);
+      // Same for the absorbed node, whose edge list rewireEdges below enumerates.
+      final Vertex absorbed = CypherVertexReload.latest(database, nodes.get(i));
 
       mergeProperties(survivorMutable, absorbed, globalPolicy);
       survivorMutable.save();

@@ -92,11 +92,20 @@ public class SetServerSettingTool {
     // just opened the metrics endpoint. A value an administrator typed is refused instead.
     final Object coerced = cfg.coerceFromAdminCommand(value);
 
-    final Object oldValue = server.getConfiguration().getValue(cfg);
+    // Externalized: a Class-typed setting is worth the Class itself once coerced, and Class.toString() is
+    // "class java.util.Date" - neither what was written nor anything a caller can write back (issue #7163).
+    final Object oldValue = GlobalConfiguration.externalizeValue(server.getConfiguration().getValue(cfg));
     // setValue also runs the side effect of a declared SCOPE.SERVER setting, so one whose effect is not a value
     // somebody later reads - arcadedb.server.logFormat swapping the console formatter - takes effect here too
     // rather than being stored and ignored (issue #7121).
-    server.getConfiguration().setValue(cfg.getKey(), coerced);
+    server.getConfiguration().setValue(cfg, coerced);
+
+    // Re-read rather than echo `coerced`: since issue #7163 the callback's result is what the overlay stores, so
+    // a setting whose callback NORMALISES its argument (arcadedb.maxPageRAM clamps a page cache larger than 80%
+    // of the heap) is now worth something other than what was asked for. Reporting the request as the new value
+    // would tell automation driving this tool that an out-of-range number took effect. Same re-read
+    // AlterDatabaseStatement does for its own result row.
+    final Object storedValue = GlobalConfiguration.externalizeValue(server.getConfiguration().getValue(cfg));
 
     final JSONObject result = new JSONObject();
     result.put("key", key);
@@ -110,7 +119,7 @@ public class SetServerSettingTool {
     // masked for a secret on the same terms as previousValue above, so that a response the caller may log, cache
     // or hand on does not carry a credential this server otherwise refuses to hand back
     result.put("newValue",
-        cfg.isHidden() ? "*****" : coerced != null ? coerced.toString() : JSONObject.NULL);
+        cfg.isHidden() ? "*****" : storedValue != null ? storedValue.toString() : JSONObject.NULL);
     result.put("message", "Setting '" + key + "' updated successfully.");
     return result;
   }

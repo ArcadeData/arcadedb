@@ -46,4 +46,18 @@ final class ClusterLeadershipResponses {
   static ExecutionResponse notTheLeader(final NotTheLeaderRefusalException e) {
     return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
   }
+
+  /**
+   * 503 Service Unavailable: this node IS the leader and every leadership transfer it tried failed, so it is
+   * still the leader and the step-down did not happen (issue #7127). Retry-worthy as issued - a peer that was
+   * lagging, unreachable or mid-restart when the transfers ran can be eligible moments later - which is the
+   * same reading {@code AbstractServerHttpHandler} gives 503 for a {@code NeedRetryException}.
+   * <p>
+   * Without this arm the exception reaches the central mapper, which has no case for a Raft type it cannot
+   * reference, and answers a generic 500 "Internal error": indistinguishable from a bug, and read by clients
+   * and load balancers as do-not-retry.
+   */
+  static ExecutionResponse stepDownFailed(final ReplicationException e) {
+    return new ExecutionResponse(503, new JSONObject().put("error", e.getMessage()).toString());
+  }
 }
