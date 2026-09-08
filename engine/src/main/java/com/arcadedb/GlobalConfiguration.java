@@ -20,7 +20,6 @@ package com.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.PageManager;
-import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
@@ -149,8 +148,10 @@ public enum GlobalConfiguration {
   TEST("arcadedb.test", SCOPE.JVM,
       "Tells if it is running in test mode. This enables the calling of callbacks for testing purpose", Boolean.class, false),
 
-  // UNUSUAL AMONG THE SETTINGS IN THAT IT INSTALLS SOMETHING. reset() RUNS NO CALLBACK, SO IT RESTORES THE VALUE BUT
-  // LEAVES THE LAST INSTALLED LOGGER IN PLACE: A CALLER THAT WANTS THE PREVIOUS ONE BACK KEEPS LogManager.getLogger()
+  // UNUSUAL AMONG THE SETTINGS IN THAT IT INSTALLS SOMETHING. THIS COMMENT USED TO SAY reset() RAN NO CALLBACK AND
+  // LEFT THE LAST INSTALLED LOGGER IN PLACE; SINCE ISSUE #7121 IT DOES RUN ONE, SO A reset() REINSTALLS THE DEFAULT
+  // LOGGER RATHER THAN LEAVING WHATEVER WAS INSTALLED LAST - WHICH IS THE POINT OF A RESET, AND WHAT resetAll()
+  // BETWEEN TESTS NOW ACTUALLY DELIVERS
   LOG_IMPL("arcadedb.log.impl", SCOPE.JVM,
       "Logger implementation: 'default' uses java.util.logging, 'slf4j' routes the logs through the SLF4J facade so an embedding application receives them in its own backend. An unrecognized value is reported and falls back to 'default'",
       String.class, "default", value -> {
@@ -199,32 +200,14 @@ public enum GlobalConfiguration {
 
   DATE_IMPLEMENTATION("arcadedb.dateImplementation", SCOPE.DATABASE,
       "Default date implementation to use on deserialization. By default java.time.LocalDate is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDate",
-      Class.class, LocalDate.class, value -> {
-    if (value instanceof String string) {
-      try {
-        return Class.forName(string);
-      } catch (ClassNotFoundException e) {
-        throw new ConfigurationException("Date implementation '" + value + "' not found", e);
-      }
-    }
-    return value;
-  }),
+      Class.class, LocalDate.class),
 
   DATE_FORMAT("arcadedb.dateFormat", SCOPE.DATABASE, "Default date format using Java SimpleDateFormat syntax", String.class,
       "yyyy-MM-dd"),
 
   DATE_TIME_IMPLEMENTATION("arcadedb.dateTimeImplementation", SCOPE.DATABASE,
       "Default datetime implementation to use on deserialization. By default java.time.LocalDateTime is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime, java.time.Instant",
-      Class.class, LocalDateTime.class, value -> {
-    if (value instanceof String string) {
-      try {
-        return Class.forName(string);
-      } catch (ClassNotFoundException e) {
-        throw new ConfigurationException("Date implementation '" + value + "' not found", e);
-      }
-    }
-    return value;
-  }),
+      Class.class, LocalDateTime.class),
 
   DATE_TIME_FORMAT("arcadedb.dateTimeFormat", SCOPE.DATABASE, "Default date time format using Java SimpleDateFormat syntax",
       String.class, "yyyy-MM-dd HH:mm:ss"),
@@ -1358,7 +1341,9 @@ public enum GlobalConfiguration {
       reads this setting with a STRICT parse and treats anything that is neither `true` nor `false` as `true`, so a \
       typo cannot silently publish the endpoint unauthenticated. Issue #7222 made that promise hold on every \
       writer: a value that is neither `true` nor `false` is refused where it enters - by an admin command, and by \
-      a system property or environment variable - and the setting keeps its default of true.""", Boolean.class,
+      a system property or environment variable - and the setting keeps its default of true. Issue #7159 made it \
+      live: the /prometheus route reads this setting on every scrape, so a change through SET SERVER SETTING or \
+      the set_server_setting tool takes effect at once instead of at the next server restart.""", Boolean.class,
       true),
 
   SERVER_METRICS_TRACING_ENABLED("arcadedb.serverMetrics.tracing.enabled", SCOPE.SERVER,
@@ -1370,6 +1355,15 @@ public enum GlobalConfiguration {
 
   SERVER_METRICS_TRACING_SAMPLING_RATE("arcadedb.serverMetrics.tracing.samplingRate", SCOPE.SERVER,
       "Parent-based trace sampling ratio in [0.0,1.0]", Float.class, 0.0f),
+
+  SERVER_HEALTH_CHECK_ENABLED("arcadedb.server.healthCheck.enabled", SCOPE.SERVER, """
+      True (the default) to run the server health monitor: one daemon thread that samples free disk space on \
+      the databases' filesystem, available heap, and the average JVM safepoint pause, and writes a WARNING to \
+      the server event log when one of them degrades. Each warning is rate limited - 24h for low disk, 30 \
+      minutes for heap pressure and for safepoint spikes - so a server that stays degraded reports it \
+      periodically rather than every sampling interval. Issue #7160: the monitor existed but nothing \
+      constructed it, so none of its checks ran; the low-disk warning in particular is the signal that \
+      precedes a database that can no longer write. Read at server start.""", Boolean.class, true),
 
   SERVER_READINESS_REQUIRES_HA("arcadedb.server.readinessRequiresHA", SCOPE.SERVER,
       "When true and HA is active, /api/v1/ready also requires the node to have joined the Raft group and be caught up. Default false preserves current readiness behavior.",
@@ -2413,8 +2407,25 @@ public enum GlobalConfiguration {
 
   public enum SCOPE {JVM, SERVER, DATABASE}
 
+  /**
+   * Every setting by its lower-cased key, so {@link #findByKey(String)} is a hash lookup.
+   * <p>
+   * It used to be a linear scan of {@code values()} - which clones the ~400-element enum array on every call -
+   * comparing each key with {@code equalsIgnoreCase}. That is the lookup {@code ContextConfiguration.fromJSON}
+   * performs once per key it loads and every write into an overlay performs once, so it sat on the server's
+   * startup path and on every settings command. Built here, after the constants and before
+   * {@link #readConfiguration()}, which is itself a caller.
+   */
+  private static final Map<String, GlobalConfiguration> BY_KEY;
+
   static {
     TIMER = new Timer(true);
+
+    final Map<String, GlobalConfiguration> byKey = new HashMap<>(values().length * 2);
+    for (final GlobalConfiguration v : values())
+      byKey.put(v.key.toLowerCase(Locale.ENGLISH), v);
+    BY_KEY = Collections.unmodifiableMap(byKey);
+
     readConfiguration();
   }
 
@@ -2464,15 +2475,26 @@ public enum GlobalConfiguration {
    * Reset the configuration to the default value.
    */
   public void reset() {
-    if (callbackIfNoSet != null)
-      value = callbackIfNoSet.call(null);
-    else
-      value = defValue;
+    Object newValue = callbackIfNoSet != null ? callbackIfNoSet.call(null) : defValue;
+
+    // COERCE THE DEFAULT FIRST. Issue #7163: every other path hands the callback a value of the setting's declared
+    // type - setValue coerces, and so does applyContextValue - but this one handed it the RAW defValue, and a
+    // default written as a bare integer literal for a Long setting is an Integer. Both callbacks that cast
+    // (arcadedb.maxPageRAM's heap clamp and arcadedb.dumpMetricsEvery) therefore died of ClassCastException on
+    // every resetAll(), which invokeCallback logged as SEVERE and swallowed: the clamp had not run since.
+    try {
+      newValue = coerce(newValue);
+    } catch (final Exception e) {
+      if (LogManager.instance() != null)
+        LogManager.instance().log(this, Level.WARNING, "Default value %s of property %s is not a %s", e, newValue, key,
+            type.getSimpleName());
+    }
+
     explicitlySet = false;
 
     // Symmetry with setValue: a callback is a side effect that has to follow the value, or a reset would report the
     // default while whatever the callback drives stays on the value that was just discarded (issue #7121).
-    value = invokeCallback(value);
+    value = invokeCallback(newValue);
   }
 
   /**
@@ -2494,30 +2516,55 @@ public enum GlobalConfiguration {
   }
 
   /**
-   * Runs the callback for a value written into a {@link ContextConfiguration} overlay rather than into this enum.
+   * Whether this setting declares a {@code callback} - the side effect {@link #applyContextValue(Object)} runs
+   * for a value written into an overlay.
    * <p>
-   * A SCOPE.SERVER setting is authoritative in the SERVER's own overlay, and that overlay is a plain map: the
-   * server configuration file ({@code fromJSON}), the {@code SET SERVER SETTING} admin command and the MCP
-   * {@code set_server_setting} tool all write into it without ever touching this enum. A setting whose effect is a
+   * Exists for the test that pins WHICH settings that hook reaches. Widening it beyond SCOPE.SERVER (issue
+   * #7163) means a callback added to any non-JVM setting from now on fires on every channel that setting's
+   * scope advertises, which is the point - but it is also a decision worth making deliberately rather than
+   * discovering, so the list is asserted rather than remembered.
+   */
+  boolean hasCallback() {
+    return callback != null;
+  }
+
+  /**
+   * Applies this setting to a value written into a {@link ContextConfiguration} overlay rather than into this enum,
+   * and returns what the overlay must store for it.
+   * <p>
+   * A SCOPE.SERVER setting is authoritative in the SERVER's own overlay, and a SCOPE.DATABASE one in the
+   * DATABASE's; both overlays are plain maps written without ever touching this enum - the server configuration
+   * file and a database's saved configuration ({@code fromJSON}), the {@code SET SERVER SETTING} and
+   * {@code ALTER DATABASE} admin commands, the MCP {@code set_server_setting} tool. A setting whose effect is a
    * SIDE EFFECT rather than a value someone later reads was therefore stored and never applied through any of the
-   * channels its SCOPE advertises (issue #7121). The return value is deliberately dropped - the overlay owns the
-   * stored value, this call is only about running the side effect.
+   * channels its SCOPE advertises (issue #7121 for the server settings, issue #7163 for the database ones).
    * <p>
-   * <b>That makes a contract on the callback of any SCOPE.SERVER setting: it must be a pure side effect and return
-   * its argument unchanged.</b> A callback that NORMALISES the value - case-folds it, clamps it, substitutes a
-   * default - would have that normalisation applied on the enum path and silently dropped here, so the same input
-   * would be stored one way in the process-wide enum and another way in a server's overlay. Normalise in
-   * {@link #coerce(Object)} instead, which both paths go through.
+   * The result of the callback is the value to store, exactly as on {@link #setValue(Object)}'s path, so a
+   * callback that NORMALISES its argument - {@code MAX_PAGE_RAM} clamps a page cache larger than 80% of the heap -
+   * normalises it on every channel rather than only on the enum's own. That is what removes the divergence the
+   * earlier "the callback must return its argument unchanged" contract could only ask people to remember: one
+   * input now produces one stored value wherever it is written.
+   * <p>
+   * SCOPE.JVM is deliberately excluded. Such a setting is process-wide by definition and is not what any overlay
+   * holds, so an overlay is not a channel for it - and running its side effect from one would let a write scoped
+   * to a single database ({@code ALTER DATABASE} reaches any declared key) reconfigure the whole JVM, which
+   * {@code arcadedb.profile} would do wholesale.
    * <p>
    * The callback is handed a COERCED value, as {@link #setValue(Object)} hands it one, so a callback that expects
    * the setting's declared type (a {@code Boolean}, an {@code Integer}) is not silently given the raw {@code String}
    * a configuration file or an admin command carried. A value this setting cannot coerce is passed through as-is
-   * rather than failing the write: the overlay has already stored it, and refusing here would leave the side effect
-   * and the stored value disagreeing.
+   * rather than failing the write: refusing here would leave the side effect and the stored value disagreeing.
+   * <p>
+   * A setting with NO callback returns its argument untouched and is not coerced here: the overlay stores what it
+   * was given, which is what keeps a Class-typed setting persisted by its name rather than as a {@code Class} a
+   * JSON document cannot hold. Coercion for those runs at the boundaries instead - {@code coerceFromAdminCommand}
+   * on the way in, {@code getValueAs*} and {@code BinarySerializer} on the way out.
+   *
+   * @return the value the overlay must store: {@code newValue} unchanged when this setting declares no callback
    */
-  void applyContextValue(final Object newValue) {
-    if (callback == null || scope != SCOPE.SERVER)
-      return;
+  Object applyContextValue(final Object newValue) {
+    if (callback == null || scope == SCOPE.JVM)
+      return newValue;
 
     Object coerced;
     try {
@@ -2531,7 +2578,7 @@ public enum GlobalConfiguration {
                 + "runs with the raw value", e, newValue, key, type.getSimpleName());
       coerced = newValue;
     }
-    invokeCallback(coerced);
+    return invokeCallback(coerced);
   }
 
   /**
@@ -2603,15 +2650,24 @@ public enum GlobalConfiguration {
    * @param iKey Key to find. It's case insensitive.
    * @return OGlobalConfiguration instance if found, otherwise null
    */
+  /**
+   * The form a setting's value takes outside this process: in a JSON document, in the result row of an admin
+   * command, in an API response.
+   * <p>
+   * Issue #7163: only a {@code Class}-typed setting differs from its own value, and it differs everywhere -
+   * {@code Class.toString()} is {@code "class java.util.Date"}, which is neither what was written nor anything a
+   * reader can write back. Its NAME is, and is what {@code coerce} reads. One method rather than the three
+   * copies the three externalising sites would otherwise each need.
+   */
+  public static Object externalizeValue(final Object value) {
+    return value instanceof Class<?> clazz ? clazz.getName() : value;
+  }
+
   public static GlobalConfiguration findByKey(final String iKey) {
     String key = iKey;
     if (!key.startsWith(PREFIX))
       key = PREFIX + iKey;
-    for (final GlobalConfiguration v : values()) {
-      if (v.getKey().equalsIgnoreCase(key))
-        return v;
-    }
-    return null;
+    return BY_KEY.get(key.toLowerCase(Locale.ENGLISH));
   }
 
   /**
@@ -2983,6 +3039,25 @@ public enum GlobalConfiguration {
 
     if (type == Long.class)
       return coerceToIntegral(iValue);
+
+    // Issue #7163: a Class-typed setting reaches here as the class NAME from every external channel - a
+    // configuration file, ALTER DATABASE, a system property - and used to be converted by a per-setting callback,
+    // which meant the conversion happened on the enum's own setValue and nowhere else. Doing it here gives the
+    // SAME conversion to setValue, to the strict admin parse (an unknown class name is now refused where it
+    // enters instead of surfacing from whichever component read the setting next) and to the overlay hook.
+    //
+    // OUTSIDE the wrapping below, for the reason the integral parse is: "class 'x.y.Z' not found" is the whole
+    // answer, and re-wrapping it as "not valid for a setting of type Class" would bury it in a cause.
+    if (type == Class.class) {
+      if (iValue instanceof Class)
+        return iValue;
+      try {
+        return Class.forName(iValue.toString().trim());
+      } catch (final ClassNotFoundException e) {
+        throw new IllegalArgumentException(
+            "Value '" + iValue + "' of setting '" + key + "' does not name a class that can be loaded", e);
+      }
+    }
 
     try {
       if (type == Boolean.class)

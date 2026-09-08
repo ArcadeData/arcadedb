@@ -73,11 +73,8 @@ public class ContextConfiguration implements Serializable {
     final JSONObject cfg = json.getJSONObject("configuration");
     for (final String k : cfg.keySet()) {
       final GlobalConfiguration cfgEntry = GlobalConfiguration.findByKey(GlobalConfiguration.PREFIX + k);
-      if (cfgEntry != null) {
-        final Object value = cfg.get(k);
-        config.put(GlobalConfiguration.PREFIX + k, value);
-        cfgEntry.applyContextValue(value);
-      }
+      if (cfgEntry != null)
+        config.put(GlobalConfiguration.PREFIX + k, cfgEntry.applyContextValue(cfg.get(k)));
     }
   }
 
@@ -88,39 +85,48 @@ public class ContextConfiguration implements Serializable {
     json.put("configuration", cfg);
 
     for (final Map.Entry<String, Object> entry : config.entrySet()) {
-      cfg.put(entry.getKey().substring(GlobalConfiguration.PREFIX.length()), entry.getValue());
+      // A Class-typed setting (arcadedb.dateImplementation and friends) is persisted by NAME: that is what a
+      // JSON document can hold, and what fromJSON reads back through GlobalConfiguration.coerce (issue #7163).
+      cfg.put(entry.getKey().substring(GlobalConfiguration.PREFIX.length()),
+          GlobalConfiguration.externalizeValue(entry.getValue()));
     }
 
     return json.toString();
   }
 
   public Object setValue(final GlobalConfiguration iConfig, final Object iValue) {
-    final Object previous = iValue == null ? config.remove(iConfig.getKey()) : config.put(iConfig.getKey(), iValue);
-    iConfig.applyContextValue(iValue);
-    return previous;
+    if (iValue == null)
+      return removeValue(iConfig, iConfig.getKey());
+    return config.put(iConfig.getKey(), iConfig.applyContextValue(iValue));
   }
 
   public Object setValue(final String iName, final Object iValue) {
-    final Object previous = iValue == null ? config.remove(iName) : config.put(iName, iValue);
-    applyDeclaredSideEffect(iName, iValue);
-    return previous;
+    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(iName);
+    if (iValue == null)
+      return removeValue(cfg, iName);
+    return config.put(iName, cfg != null ? cfg.applyContextValue(iValue) : iValue);
   }
 
   /**
-   * Runs the side effect of a declared SCOPE.SERVER setting written into this overlay.
+   * Drops a setting from this overlay and re-applies the side effect of the value that becomes effective, which
+   * is whatever the {@link GlobalConfiguration} enum holds.
    * <p>
-   * This map is where a server's settings actually live: {@link #fromJSON} loads the server configuration file into
-   * it, and both {@code SET SERVER SETTING} and the MCP {@code set_server_setting} tool write through
-   * {@link #setValue}. None of them touches the {@link GlobalConfiguration} enum, so a setting whose effect is a
-   * side effect rather than a value someone later reads used to be stored here and never applied - which is what
-   * made {@code arcadedb.server.logFormat} work only as a raw {@code -D} (issue #7121). Firing it here rather than
-   * at each caller means the next SCOPE.SERVER setting that needs a side effect gets it on every channel by
-   * declaring a callback, instead of relying on someone remembering all three call sites.
+   * Symmetry with the write path, and the same reason {@link GlobalConfiguration#reset()} runs the callback for
+   * the default it restores: a removal that skipped it would report the enum's value while whatever the callback
+   * drives stayed on the value just discarded (issue #7121). The removal used to hand the callback a raw
+   * {@code null} instead, which is not a value any setting is ever worth.
+   * <p>
+   * No test pins this, deliberately, because with today's settings nothing can observe it: the two callbacks an
+   * overlay reaches are {@code SERVER_LOG_FORMAT}, whose callback reads {@code null} as "resolve it the usual
+   * way" and so lands on the enum's value either way, and {@code MAX_PAGE_RAM}, whose {@code (long) value} cast
+   * turns the {@code null} into a ClassCastException that {@link GlobalConfiguration} logs and swallows. A test
+   * asserting either would pass on the old behaviour too (issue #7163).
    */
-  private void applyDeclaredSideEffect(final String key, final Object value) {
-    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
+  private Object removeValue(final GlobalConfiguration cfg, final String key) {
+    final Object previous = config.remove(key);
     if (cfg != null)
-      cfg.applyContextValue(value);
+      cfg.applyContextValue(cfg.getValue());
+    return previous;
   }
 
   public <T> T getValue(final GlobalConfiguration iConfig) {

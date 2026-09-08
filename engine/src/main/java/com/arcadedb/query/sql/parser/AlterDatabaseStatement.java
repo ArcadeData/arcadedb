@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
@@ -61,7 +62,22 @@ public class AlterDatabaseStatement extends DDLStatement {
     if (cfg == null)
       throw new DatabaseOperationException("Database setting '" + settingNameAsString + "' not found");
 
-    final Object oldValue = db.getConfiguration().getValue(cfg);
+    // ALTER DATABASE alters DATABASE settings. The key lookup above accepts any declared key, and this command
+    // is gated only by the per-database UPDATE_DATABASE_SETTINGS permission - far below the server-admin check
+    // SET SERVER SETTING requires - so without this a database administrator reaches settings that belong to the
+    // whole process. Issue #7163 made that concrete: a declared setting's callback now runs on every channel its
+    // scope advertises, so `ALTER DATABASE `arcadedb.server.logFormat`` would have swapped the console log
+    // format of the entire server, and saved a SCOPE.SERVER setting into one database's configuration where
+    // nothing would ever read it back.
+    if (cfg.getScope() != GlobalConfiguration.SCOPE.DATABASE)
+      throw new DatabaseOperationException(
+          "Setting '" + settingNameAsString + "' has " + cfg.getScope() + " scope and cannot be set per database"
+              + (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER ? ": use SET SERVER SETTING instead" : ""));
+
+    // Externalized on the way into the result row for the same reason the new value is: for a Class-typed
+    // setting the stored value may be the Class itself, and reporting it as "class java.time.LocalDate" would
+    // make oldValue and newValue two different spellings of the same thing (issue #7163).
+    final Object oldValue = GlobalConfiguration.externalizeValue(db.getConfiguration().getValue(cfg));
     Object finalValue = settingValue.execute((Identifiable) null, context);
 
     boolean saveInDatabaseConfiguration = false;
@@ -75,23 +91,13 @@ public class AlterDatabaseStatement extends DDLStatement {
       db.getSchema().setDateTimeFormat(finalValue.toString());
       ((LocalSchema) db.getSchema()).saveConfiguration();
       break;
-    case DATE_IMPLEMENTATION:
-      try {
-        finalValue = FileUtils.getStringContent(settingValue);
-        context.getDatabase().getSerializer().setDateImplementation(Class.forName(finalValue.toString()));
-        saveInDatabaseConfiguration = true;
-      } catch (ClassNotFoundException e) {
-        throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
-      }
-      break;
-    case DATE_TIME_IMPLEMENTATION:
-      try {
-        finalValue = FileUtils.getStringContent(settingValue);
-        context.getDatabase().getSerializer().setDateTimeImplementation(Class.forName(finalValue.toString()));
-        saveInDatabaseConfiguration = true;
-      } catch (ClassNotFoundException e) {
-        throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
-      }
+    case DATE_IMPLEMENTATION, DATE_TIME_IMPLEMENTATION:
+      // Issue #7163: the class-name -> Class conversion and its "not found" refusal used to live here, hand
+      // written per setting. GlobalConfiguration.coerce now owns it for every Class-typed setting, so the
+      // generic path below both validates and stores this one. What stays is the part no static enum callback
+      // could do: pointing THIS database's serializer at the new implementation.
+      finalValue = FileUtils.getStringContent(settingValue);
+      saveInDatabaseConfiguration = true;
       break;
     default:
       saveInDatabaseConfiguration = true;
@@ -108,7 +114,22 @@ public class AlterDatabaseStatement extends DDLStatement {
       // result row and turn the write-ahead log OFF for this database - a durability hazard produced by a typo,
       // reported as a success, and saved to the database configuration.
       finalValue = cfg.coerceFromAdminCommand(finalValue);
+
+      // A Class-typed setting is stored by NAME: the database configuration is a JSON document, and the name is
+      // what ContextConfiguration.fromJSON reads back (issue #7163). The resolved class is kept for the
+      // per-database side effect below, so nothing has to resolve the name a second time.
+      final Class<?> resolvedClass = finalValue instanceof Class<?> clazz ? clazz : null;
+      finalValue = GlobalConfiguration.externalizeValue(finalValue);
+
       db.getConfiguration().setValue(cfg, finalValue);
+
+      // The stored value is what the setting is now worth, which is not always what was asked for: a callback
+      // reached through the overlay may normalise it (arcadedb.maxPageRAM clamps a page cache larger than 80%
+      // of the heap), and the result row has to report the value that took effect (issue #7163).
+      finalValue = GlobalConfiguration.externalizeValue(db.getConfiguration().getValue(cfg));
+
+      applyDatabaseSideEffect(db, cfg, resolvedClass);
+
       try {
         db.saveConfiguration();
       } catch (final IOException e) {
@@ -126,6 +147,33 @@ public class AlterDatabaseStatement extends DDLStatement {
     result.setProperty("oldValue", oldValue);
     result.setProperty("newValue", finalValue);
     return result;
+  }
+
+  /**
+   * Applies the part of a setting's effect that belongs to THIS database rather than to the process: pointing
+   * the database's own {@link BinarySerializer} at the date implementation just stored.
+   * <p>
+   * A {@link GlobalConfiguration} callback is a static hook with no database in scope, so this cannot move there
+   * - unlike the class-name conversion, which did (issue #7163). {@code LocalDatabase.open} performs the same
+   * two calls from the stored configuration, so a database reopened later ends up in this state anyway; this is
+   * what makes the change take effect without waiting for that.
+   *
+   * @param resolvedClass the class {@code coerceFromAdminCommand} resolved, or {@code null} for a setting whose
+   *                      type is not a class. Passed already resolved so this takes the {@code Class} overload
+   *                      of the setters and no {@code ClassNotFoundException} can arise to be caught here.
+   */
+  private void applyDatabaseSideEffect(final DatabaseInternal db, final GlobalConfiguration cfg,
+      final Class<?> resolvedClass) {
+    if (resolvedClass == null)
+      return;
+
+    switch (cfg) {
+    case DATE_IMPLEMENTATION -> db.getSerializer().setDateImplementation(resolvedClass);
+    case DATE_TIME_IMPLEMENTATION -> db.getSerializer().setDateTimeImplementation(resolvedClass);
+    default -> {
+      // no per-database side effect
+    }
+    }
   }
 
   @Override
