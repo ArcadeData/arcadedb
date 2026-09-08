@@ -98,6 +98,9 @@ public class SnapshotHttpHandler implements HttpHandler {
   private final int       maxConcurrentSnapshots;
   private final Semaphore concurrencySemaphore;
 
+  /** Bounds the misconfiguration warning in {@link #sanitizedMaxConcurrent} to once per JVM. */
+  private static final AtomicBoolean WARNED_MISCONFIGURED_LIMIT = new AtomicBoolean();
+
   /** Sub-path selecting the checksums view of a database instead of its snapshot ZIP. */
   static final String CHECKSUMS_SUFFIX = "/checksums";
 
@@ -171,9 +174,6 @@ public class SnapshotHttpHandler implements HttpHandler {
           GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getKey(), configured, fallback);
     return fallback;
   }
-
-  /** Bounds the misconfiguration warning above to once per JVM rather than once per server restart. */
-  private static final AtomicBoolean WARNED_MISCONFIGURED_LIMIT = new AtomicBoolean();
 
   /**
    * Shuts down the stall watchdog scheduler. Called by {@link RaftHAPlugin#stopService()} so that
