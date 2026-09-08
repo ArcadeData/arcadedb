@@ -518,4 +518,26 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- This module runs no tests (see the surefire/failsafe skips above), so its JaCoCo
+             report is a phantom 0% over every class in src/main/java, and codecov publishes it
+             as the module's coverage. The classes are really exercised in arcadedb-gremlin-it,
+             which reports them from the shaded jar under the same profile id. Skip the agent and
+             the report here so the two do not contradict each other. -->
+        <profile>
+            <id>coverage</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.jacoco</groupId>
+                        <artifactId>jacoco-maven-plugin</artifactId>
+                        <configuration>
+                            <skip>true</skip>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
