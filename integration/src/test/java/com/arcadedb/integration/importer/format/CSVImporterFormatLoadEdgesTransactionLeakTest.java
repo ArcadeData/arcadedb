@@ -21,6 +21,7 @@ package com.arcadedb.integration.importer.format;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImporterContext;
@@ -39,6 +40,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -162,6 +165,58 @@ class CSVImporterFormatLoadEdgesTransactionLeakTest {
         .isEqualTo(1);
     assertThat(countOf("Relationship"))
         .as("the importer's abandoned edge must not ride out on the caller's commit")
+        .isZero();
+  }
+
+  /**
+   * A {@code database.commit()} that fails is not the same failure as a row that throws, and the fix has to
+   * treat it separately: {@code LocalDatabase.commit()} pops the transaction inside its own {@code finally},
+   * so by the time the exception surfaces there is nothing left to roll back and the {@code txOpen} flag is
+   * already {@code false}. Hanging the counter correction off that flag would therefore leave the batch the
+   * commit failed to write counted as if it had survived.
+   * <p>
+   * The proxy below reproduces exactly that state - transaction resolved and its changes discarded, exception
+   * propagating out of {@code commit()} - by rolling back and then throwing in place of the real commit.
+   */
+  private DatabaseInternal databaseWhoseCommitFails() {
+    return (DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
+        new Class<?>[] { DatabaseInternal.class }, (proxy, method, args) -> {
+          if ("commit".equals(method.getName()) && (args == null || args.length == 0)) {
+            // What a real commit failure leaves behind: the transaction gone, its records not durable.
+            database.rollback();
+            throw new TransactionException("Simulated commit failure");
+          }
+          try {
+            return method.invoke(database, args);
+          } catch (final InvocationTargetException e) {
+            throw e.getCause();
+          }
+        });
+  }
+
+  @Test
+  void aFailedCommitAlsoReportsOnlyTheEdgesThatSurvived() throws Exception {
+    final CSVImporterFormat format = new CSVImporterFormat();
+    final ImporterSettings settings = edgeSettings();
+    final SourceSchema sourceSchema = schemaFor(format, settings);
+    final ImporterContext context = new ImporterContext();
+
+    // The one data row is valid, so the loop completes and the only failure is the trailing commit itself.
+    final Parser loadParser = csvParserOver("from,to\nv1,v2\n");
+
+    assertThatThrownBy(
+        () -> format.load(sourceSchema, AnalyzedEntity.EntityType.EDGE, loadParser, databaseWhoseCommitFails(), context,
+            settings))
+        .isInstanceOf(TransactionException.class);
+
+    assertThat(database.isTransactionActive())
+        .as("a failed commit still leaves its own transaction off the stack")
+        .isFalse();
+    assertThat(countOf("Relationship"))
+        .as("the failed commit made nothing durable")
+        .isZero();
+    assertThat(context.createdEdges.get())
+        .as("the report must not credit the import with the batch the failed commit never wrote")
         .isZero();
   }
 }

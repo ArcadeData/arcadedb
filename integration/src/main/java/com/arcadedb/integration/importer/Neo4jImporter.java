@@ -348,6 +348,11 @@ public class Neo4jImporter {
       // batch allocated, the ones still inside the transaction a failure rolls back included.
       final long[] committedVertices = { 0 };
 
+      // Whether the loop ran to its own trailing commit. Distinct from txOpen: a commit() that throws pops the
+      // transaction in its own finally, so txOpen is already false there, yet the batch it failed to make
+      // durable still has to come back off the counter.
+      boolean completed = false;
+
       database.begin();
       txOpen[0] = true;
 
@@ -417,6 +422,8 @@ public class Neo4jImporter {
         txOpen[0] = false;
         if (database.isTransactionActive())
           database.commit();
+        committedVertices[0] = context.createdVertices.get();
+        completed = true;
       } finally {
         // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import
         // can realistically raise - resolves the transaction too.
@@ -430,7 +437,11 @@ public class Neo4jImporter {
             error("- Could not roll back after the vertex import failed: the transaction it opened may still be "
                 + "on the stack: %s", rollbackFailure.getMessage());
           }
+        }
 
+        // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
+        // and would otherwise leave the batch it failed to write counted as if it had survived.
+        if (!completed) {
           // What the report calls "created" has to be what survived: leaving the counter at the number of
           // vertices read would credit the import with the ones the rollback just took away.
           final long readVertices = context.createdVertices.get();

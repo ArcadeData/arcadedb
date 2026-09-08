@@ -595,6 +595,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // Edges an intermediate commit already made durable. context.createdEdges counts every edge
       // createEdgeFromRow() creates, the ones still inside the transaction a failure rolls back included.
       long committedEdges = context.createdEdges.get();
+      // Whether the loop ran to its own trailing commit. Distinct from txOpen: a commit() that throws pops the
+      // transaction in its own finally, so txOpen is already false there, yet the batch it failed to make
+      // durable still has to come back off the counter.
+      boolean completed = false;
       int txCount = 0;
       try {
         for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
@@ -623,6 +627,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
         txOpen = false;
         database.commit();
+        completed = true;
       } finally {
         // A row-content failure is already caught and logged above without escaping; what reaches here is a
         // source-level failure - typically csvParser.parseNext() itself throwing on a malformed row - that the loop
@@ -637,7 +642,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
                 "Could not roll back after the edge import failed: the transaction it opened may still be on the stack",
                 rollbackFailure);
           }
+        }
 
+        // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
+        // and would otherwise leave the batch it failed to write counted as if it had survived.
+        if (!completed) {
           // What the report calls "created" has to be what survived: leaving the counter at the number of edges
           // read would credit the import with the ones the rollback just took away.
           final long readEdges = context.createdEdges.get();

@@ -60,6 +60,11 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // the ones still inside the transaction a failure rolls back included.
     long committedEdges = context.createdEdges.get();
 
+    // Whether the loop ran to its own trailing commit. Distinct from txOpen: a commit() that throws pops the
+    // transaction in its own finally, so txOpen is already false there, yet the batch it failed to make
+    // durable still has to come back off the counter.
+    boolean completed = false;
+
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
@@ -94,17 +99,22 @@ public class RDFImporterFormat extends CSVImporterFormat {
         context.createdEdges.incrementAndGet();
         context.parsed.incrementAndGet();
 
-        if (context.parsed.get() % settings.commitEvery == 0) {
+        // Gated on ownsTransaction the same way JsonlImporterFormat.load() gates its own periodic commit: a
+        // transaction that predates this import is never ours to commit piecemeal, only to accumulate into and
+        // hand back to whoever owns it (issue #6561). That guard is also what makes the txOpen below
+        // unconditional - reached only when the begin() above pushed a transaction this call exclusively owns.
+        if (ownsTransaction && context.parsed.get() % settings.commitEvery == 0) {
           txOpen = false;
           database.commit();
           committedEdges = context.createdEdges.get();
           database.begin();
-          txOpen = ownsTransaction;
+          txOpen = true;
         }
       }
 
       txOpen = false;
       database.commit();
+      completed = true;
 
     } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
@@ -123,6 +133,13 @@ public class RDFImporterFormat extends CSVImporterFormat {
               rollbackFailure);
         }
 
+      }
+
+      // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
+      // and would otherwise leave the batch it failed to write counted as if it had survived. Gated on
+      // ownsTransaction for the same reason the rollback is: the edges accumulated into a caller's own
+      // transaction are the caller's to commit or discard, so their fate is not this method's to report on.
+      if (!completed && ownsTransaction) {
         // What the report calls "created" has to be what survived: leaving the counter at the number of edges
         // read would credit the import with the ones the rollback just took away.
         final long readEdges = context.createdEdges.get();

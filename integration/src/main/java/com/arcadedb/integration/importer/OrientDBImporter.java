@@ -498,6 +498,11 @@ public class OrientDBImporter {
       // touched, the ones still inside the transaction a failure rolls back included.
       long committedDocuments = context.updatedDocuments.get();
 
+      // Whether the loop ran to its own trailing commit. Distinct from txOpen: a commit() that throws pops the
+      // transaction in its own finally, so txOpen is already false there, yet the batch it failed to make
+      // durable still has to come back off the counter.
+      boolean completed = false;
+
       try {
         for (RID rid : documentsWithLinksToUpdate) {
           final MutableDocument record = database.lookupByRID(rid, true).asDocument().modify();
@@ -521,6 +526,7 @@ public class OrientDBImporter {
         }
         txOpen = false;
         database.commit();
+        completed = true;
         logger.logLine(1, "- Updated LINKs in %,d records", context.updatedDocuments.get());
       } finally {
         // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import
@@ -534,7 +540,11 @@ public class OrientDBImporter {
             logger.errorLine("- Could not roll back after the LINK update failed: the transaction it opened may still "
                 + "be on the stack: %s", rollbackFailure.getMessage());
           }
+        }
 
+        // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
+        // and would otherwise leave the batch it failed to write counted as if it had survived.
+        if (!completed) {
           // What the report calls "updated" has to be what survived: leaving the counter at the number of documents
           // touched would credit the import with the ones the rollback just took away.
           final long readDocuments = context.updatedDocuments.get();
