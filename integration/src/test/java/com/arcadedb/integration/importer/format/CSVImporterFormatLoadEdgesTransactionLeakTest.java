@@ -219,4 +219,36 @@ class CSVImporterFormatLoadEdgesTransactionLeakTest {
         .as("the report must not credit the import with the batch the failed commit never wrote")
         .isZero();
   }
+
+  @Test
+  void aFailedPeriodicCommitStopsTheImportInsteadOfBeingLoggedAsARowError() throws Exception {
+    final CSVImporterFormat format = new CSVImporterFormat();
+    final ImporterSettings settings = edgeSettings();
+    // One commit per row, so the failure below is a mid-loop commit rather than the trailing one.
+    settings.commitEvery = 1;
+    final SourceSchema sourceSchema = schemaFor(format, settings);
+    final ImporterContext context = new ImporterContext();
+
+    // Header plus two valid rows: the commit after the first row fails.
+    final Parser loadParser = csvParserOver("from,to\nv1,v2\nv2,v1\n");
+
+    assertThatThrownBy(
+        () -> format.load(sourceSchema, AnalyzedEntity.EntityType.EDGE, loadParser, databaseWhoseCommitFails(), context,
+            settings))
+        .isInstanceOf(TransactionException.class);
+
+    // The per-row catch swallows row failures and continues; a commit failure must not be swallowed with them.
+    // Were it, the loop would read the second row too - with no transaction active, since the failed commit
+    // popped it and the begin() after it never ran - and context.parsed would reach 3 rather than 2.
+    assertThat(context.parsed.get())
+        .as("the import must stop at the failed commit, not grind through the rest of the file without a transaction")
+        .isEqualTo(2);
+    assertThat(database.isTransactionActive())
+        .as("a failed commit still leaves its own transaction off the stack")
+        .isFalse();
+    assertThat(context.createdEdges.get())
+        .as("the report must not credit the import with the batch the failed commit never wrote")
+        .isZero();
+  }
+
 }

@@ -610,19 +610,25 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           try {
             createEdgeFromRow(database, row, properties, from, to, context, settings);
             txCount++;
-            if (txCount >= settings.commitEvery) {
-              txOpen = false;
-              database.commit();
-              committedEdges = context.createdEdges.get();
-              database.begin();
-              txOpen = true;
-              txCount = 0;
-            }
           } catch (final Exception e) {
             // Unlike loadDocuments/loadVertices, edge rows are always skipped-and-logged regardless of -onRowError:
             // a "bad" edge row here is typically just an unresolved from/to vertex reference, expected during graph
             // imports rather than a data-corruption case.
             LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
+          }
+
+          // Deliberately outside the per-row catch above: a commit failure is not a row error. Caught there it
+          // would be logged under a "parsing line N" message, and the loop would carry on with no transaction
+          // active - LocalDatabase#commit() pops in its own finally and the begin() below never runs - turning
+          // one failure into one more for every remaining row. Left to escape, it reaches the finally below,
+          // which corrects the counter and lets the real cause propagate.
+          if (txCount >= settings.commitEvery) {
+            txOpen = false;
+            database.commit();
+            committedEdges = context.createdEdges.get();
+            database.begin();
+            txOpen = true;
+            txCount = 0;
           }
         }
         txOpen = false;

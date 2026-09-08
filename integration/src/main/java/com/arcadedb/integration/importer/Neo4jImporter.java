@@ -345,8 +345,10 @@ public class Neo4jImporter {
       final boolean[] txOpen = { false };
 
       // Vertices an intermediate commit already made durable. context.createdVertices counts every vertex the
-      // batch allocated, the ones still inside the transaction a failure rolls back included.
-      final long[] committedVertices = { 0 };
+      // batch allocated, the ones still inside the transaction a failure rolls back included. Seeded from the
+      // counter rather than from 0: the embedding constructor takes an ImporterContext from its caller, so a
+      // context that already carries durable vertices would otherwise be zeroed by the correction below.
+      final long[] committedVertices = { context.createdVertices.get() };
 
       // Whether the loop ran to its own trailing commit. Distinct from txOpen: a commit() that throws pops the
       // transaction in its own finally, so txOpen is already false there, yet the batch it failed to make
