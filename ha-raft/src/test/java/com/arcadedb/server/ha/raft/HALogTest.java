@@ -53,7 +53,7 @@ class HALogTest {
 
   /**
    * Issue #7233: {@code arcadedb.ha.logVerbose} is SCOPE.SERVER, so it is authoritative in the SERVER's
-   * {@link com.arcadedb.ContextConfiguration} - which is what the server configuration file, {@code SET SERVER
+   * {@link ContextConfiguration} - which is what the server configuration file, {@code SET SERVER
    * SETTING} and the MCP tool write into - and this class used to cache it off the {@link GlobalConfiguration}
    * enum, which a system property or an environment variable alone ever writes. {@code RaftHAPlugin.configure}
    * now hands the server's configuration over.

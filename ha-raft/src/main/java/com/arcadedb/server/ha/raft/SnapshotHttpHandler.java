@@ -145,9 +145,35 @@ public class SnapshotHttpHandler implements HttpHandler {
     // The tests build a handler with no server; an empty overlay reads through to the setting's default.
     final ContextConfiguration configuration =
         httpServer != null ? httpServer.getServer().getConfiguration() : new ContextConfiguration();
-    this.maxConcurrentSnapshots = configuration.getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT);
+    this.maxConcurrentSnapshots = sanitizedMaxConcurrent(configuration);
     this.concurrencySemaphore = new Semaphore(maxConcurrentSnapshots, true);
   }
+
+  /**
+   * The configured snapshot concurrency, floored at 1.
+   * <p>
+   * {@code new Semaphore(n)} accepts a negative {@code n} - it simply means every {@code tryAcquire} fails - so a
+   * limit of 0 or below does not fail loudly, it silently answers every snapshot request with 503 and leaves a
+   * follower that has fallen behind the compacted log unable to resync at all. That was only reachable through a
+   * {@code -D} before; since #7233 read this from the server configuration it is reachable from the configuration
+   * file too, which is where a typo actually happens. Treated as a misconfiguration rather than an intentional
+   * (if impractical) lockdown, and reported once, the same way the Redis and BOLT protocol limits are.
+   */
+  private static int sanitizedMaxConcurrent(final ContextConfiguration configuration) {
+    final int configured = configuration.getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT);
+    if (configured >= 1)
+      return configured;
+
+    final int fallback = ((Number) GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getDefValue()).intValue();
+    if (WARNED_MISCONFIGURED_LIMIT.compareAndSet(false, true))
+      LogManager.instance().log(SnapshotHttpHandler.class, Level.WARNING,
+          "'%s' is set to %d, below the minimum usable value (1); falling back to the default (%d)",
+          GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getKey(), configured, fallback);
+    return fallback;
+  }
+
+  /** Bounds the misconfiguration warning above to once per JVM rather than once per server restart. */
+  private static final AtomicBoolean WARNED_MISCONFIGURED_LIMIT = new AtomicBoolean();
 
   /**
    * Shuts down the stall watchdog scheduler. Called by {@link RaftHAPlugin#stopService()} so that

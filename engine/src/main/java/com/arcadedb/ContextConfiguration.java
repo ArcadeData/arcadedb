@@ -227,7 +227,9 @@ public class ContextConfiguration implements Serializable {
    * @return the configured value, or {@code iConfig}'s default when the configured one is not boolean text
    */
   public boolean getValueAsBoolean(final GlobalConfiguration iConfig) {
-    final Object v = getValue(iConfig);
+    // One map lookup, reused by the refusal branch below to tell an overlay value from the enum's own.
+    final boolean fromOverlay = config.containsKey(iConfig.getKey());
+    final Object v = fromOverlay ? config.get(iConfig.getKey()) : iConfig.getValue();
     if (v == null)
       return false;
     if (v instanceof Boolean b)
@@ -245,7 +247,7 @@ public class ContextConfiguration implements Serializable {
     // process-wide value, which is its compiled-in default unless a system property or an environment variable
     // chose one - and a bad value already on the enum falls back to the compiled-in default itself. Same rule
     // GlobalConfiguration.setValueFromConfigurationSource applies to a refusal on the -D path.
-    final Object fallback = config.containsKey(iConfig.getKey()) ? iConfig.getValue() : iConfig.getDefValue();
+    final Object fallback = fromOverlay ? iConfig.getValue() : iConfig.getDefValue();
     return fallback instanceof Boolean b && b;
   }
 
