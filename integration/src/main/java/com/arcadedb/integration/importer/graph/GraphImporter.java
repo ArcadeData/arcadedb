@@ -95,6 +95,14 @@ public class GraphImporter implements AutoCloseable {
    */
   static final long NOT_CANONICAL_LONG = Long.MIN_VALUE;
 
+  /**
+   * Rows the vertex pass buffers before committing. The commit is what bounds the transaction's
+   * memory on a large source, and it is also what makes a failed import PARTIAL rather than atomic:
+   * everything up to the last multiple of this stays on the disk when a later row throws, which is
+   * why {@link #processVertexSource} reports the committed count rather than the count read.
+   */
+  private static final int COMMIT_EVERY_ROWS = 50_000;
+
   private final Database                            database;
   private final List<VertexSourceDef>               vertexSources;
   private final List<EdgeSourceDef>                 edgeSources;
@@ -973,82 +981,143 @@ public class GraphImporter implements AutoCloseable {
       deferredSelf.add(new DeferredSelfEdges());
 
     final int[] count = {0};
+
+    // Rows an intermediate commit already made durable. Counted apart from count[0] because a
+    // failure rolls back the transaction in flight: what the report owes the operator is the number
+    // of vertices that survived, which is what decides whether to resume, truncate or start over
+    final int[] committed = {0};
+
+    // Whether the transaction opened below is still the current one. database.rollback() pops
+    // whatever transaction is on top of the stack, and this one nests inside the caller's when the
+    // caller holds one (see LocalDatabase#begin()), so rolling back after it has already been
+    // committed and popped would discard the CALLER's transaction instead of this method's
+    final boolean[] txOpen = {false};
+
     database.begin();
+    txOpen[0] = true;
 
     final String filterAttr = vc.filterAttribute;
     final String filterVal = vc.filterValue;
 
-    vsd.source.forEach(record -> {
-      if (limit > 0 && count[0] >= limit)
-        return;
-
-      // Apply row filter (e.g. PostTypeId=1 for questions only)
-      if (filterAttr != null) {
-        final String v = record.get(filterAttr);
-        if (v == null || !v.equals(filterVal))
+    try {
+      vsd.source.forEach(record -> {
+        if (limit > 0 && count[0] >= limit)
           return;
-      }
 
-      // The raw text is the key: an identity is whatever the source wrote, so reading it as an int
-      // would reject a string key and truncate one wider than an int. Read once - deduplication
-      // looks the same key up that registration then stores
-      final String id = vc.idAttribute != null ? identity(record, vc.idAttribute) : null;
-      final String nameId = vc.nameIdAttribute != null ? identity(record, vc.nameIdAttribute) : null;
+        // Apply row filter (e.g. PostTypeId=1 for questions only)
+        if (filterAttr != null) {
+          final String v = record.get(filterAttr);
+          if (v == null || !v.equals(filterVal))
+            return;
+        }
 
-      // Deduplication: skip if this id/nameId was already imported
-      if (vc.deduplicate && (ts.idToIdx.get(id) >= 0 || ts.nameToIdx.get(nameId) >= 0))
-        return;
+        // The raw text is the key: an identity is whatever the source wrote, so reading it as an int
+        // would reject a string key and truncate one wider than an int. Read once - deduplication
+        // looks the same key up that registration then stores
+        final String id = vc.idAttribute != null ? identity(record, vc.idAttribute) : null;
+        final String nameId = vc.nameIdAttribute != null ? identity(record, vc.nameIdAttribute) : null;
 
-      final int idx = count[0];
-      ts.idToIdx.put(id, idx);
-      ts.nameToIdx.put(nameId, idx);
+        // Deduplication: skip if this id/nameId was already imported
+        if (vc.deduplicate && (ts.idToIdx.get(id) >= 0 || ts.nameToIdx.get(nameId) >= 0))
+          return;
 
-      // Build vertex properties
-      propBuf.clear();
-      for (final PropDef pd : vc.properties) {
-        final Object val = readProperty(record, pd);
-        if (val != null) {
-          propBuf.add(pd.name);
-          propBuf.add(val);
+        final int idx = count[0];
+        ts.idToIdx.put(id, idx);
+        ts.nameToIdx.put(nameId, idx);
+
+        // Build vertex properties
+        propBuf.clear();
+        for (final PropDef pd : vc.properties) {
+          final Object val = readProperty(record, pd);
+          if (val != null) {
+            propBuf.add(pd.name);
+            propBuf.add(val);
+          }
+        }
+
+        final MutableVertex v = batch.createVertex(vc.typeName, propBuf.toArray());
+        bk.add(v.getIdentity().getBucketId());
+        ps.add(v.getIdentity().getPosition());
+
+        // Collect edges
+        for (final EdgeDef ed : resolvedEdges)
+          collectEdge(record, ed, vc.typeName, idx);
+
+        // Collect deferred (self-referencing) edges: this row's index is already final, only the
+        // target key has to wait for the rest of the file
+        for (int i = 0; i < deferredEdgeDefs.size(); i++) {
+          final EdgeDef ed = deferredEdgeDefs.get(i);
+          final String fieldVal = ed.isSplit ? record.get(ed.fkAttribute) : identity(record, ed.fkAttribute);
+          if (fieldVal == null)
+            continue;
+          final DeferredSelfEdges deferred = deferredSelf.get(i);
+          if (ed.isSplit)
+            collectSplitKeys(fieldVal, ed.delimiter.charAt(0), deferred, idx);
+          else {
+            deferred.srcIdx.add(idx);
+            deferred.targetKeys.add(fieldVal);
+          }
+        }
+
+        count[0]++;
+        if (count[0] % COMMIT_EVERY_ROWS == 0) {
+          // Cleared before the call, not after: LocalDatabase#commit() pops the transaction in a
+          // finally, so a commit that throws still leaves this method's transaction off the stack
+          txOpen[0] = false;
+          database.commit();
+          committed[0] = count[0];
+          database.begin();
+          txOpen[0] = true;
+        }
+      });
+
+      txOpen[0] = false;
+      database.commit();
+      committed[0] = count[0];
+    } catch (final Exception e) {
+      // Only when something was committed: below the first COMMIT_EVERY_ROWS the rollback takes the
+      // whole source with it, so there is no partial import to warn about and the exception on its
+      // own says everything there is to say
+      if (committed[0] > 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "  %-12s failed after importing %,d rows: the import is PARTIAL - %,d of them an earlier batch commit "
+                + "made durable and they stay on the disk, the other %,d were rolled back along with the row that "
+                + "failed. Resume the source after the committed rows, or empty the type before running it again",
+            vc.typeName, count[0], committed[0], count[0] - committed[0]);
+      throw e;
+    } finally {
+      // In the finally rather than in the catch so that an Error - an OutOfMemoryError is the one a
+      // large import can realistically raise - resolves the transaction too. txOpen[0] is false on
+      // every path that already committed, which is what keeps this from rolling back the caller's
+      if (txOpen[0]) {
+        txOpen[0] = false;
+        try {
+          database.rollback();
+        } catch (final Exception rollbackFailure) {
+          // A throw here would replace the exception on its way out with one about the cleanup, and
+          // would skip the counter assignment below - which is this issue's own symptom, reached
+          // through the code that fixes it. Reported and swallowed instead: the caller keeps the
+          // failure it can act on, and this line says the transaction may still be pushed
+          LogManager.instance().log(this, Level.SEVERE,
+              "  %-12s could not roll back after the import failed: the transaction it opened may still be on the "
+                  + "stack", rollbackFailure, vc.typeName);
         }
       }
 
-      final MutableVertex v = batch.createVertex(vc.typeName, propBuf.toArray());
-      bk.add(v.getIdentity().getBucketId());
-      ps.add(v.getIdentity().getPosition());
-
-      // Collect edges
-      for (final EdgeDef ed : resolvedEdges)
-        collectEdge(record, ed, vc.typeName, idx);
-
-      // Collect deferred (self-referencing) edges: this row's index is already final, only the
-      // target key has to wait for the rest of the file
-      for (int i = 0; i < deferredEdgeDefs.size(); i++) {
-        final EdgeDef ed = deferredEdgeDefs.get(i);
-        final String fieldVal = ed.isSplit ? record.get(ed.fkAttribute) : identity(record, ed.fkAttribute);
-        if (fieldVal == null)
-          continue;
-        final DeferredSelfEdges deferred = deferredSelf.get(i);
-        if (ed.isSplit)
-          collectSplitKeys(fieldVal, ed.delimiter.charAt(0), deferred, idx);
-        else {
-          deferred.srcIdx.add(idx);
-          deferred.targetKeys.add(fieldVal);
-        }
-      }
-
-      count[0]++;
-      if (count[0] % 50_000 == 0) {
-        database.commit();
-        database.begin();
-      }
-    });
-    database.commit();
-
-    ts.buckets = bk.trim();
-    ts.positions = ps.trim();
-    ts.count = count[0];
-    totalVertices += ts.count;
+      // The counters are assigned whatever happened: the number of vertices actually on the disk is
+      // most valuable precisely when the import failed, and leaving it at zero reads as "nothing was
+      // written" for a source that committed hundreds of thousands of rows.
+      //
+      // On the failure path the two arrays hold every row READ while ts.count names only the
+      // committed prefix, so the tail addresses records the rollback took away. Nothing reads them
+      // there: run() has no per-source catch, so the failure aborts the import before pass 2 and
+      // before the deferred self-edge resolution below, and close() clears typeStates. Give run() a
+      // continue-on-error mode and this has to become a trim to committed[0] on the failure path
+      ts.buckets = bk.trim();
+      ts.positions = ps.trim();
+      ts.count = committed[0];
+      totalVertices += ts.count;
+    }
 
     // Resolve deferred self-referencing edges (srcType == dstType == thisType)
     for (int i = 0; i < deferredEdgeDefs.size(); i++) {
