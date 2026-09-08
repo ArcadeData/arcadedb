@@ -52,7 +52,7 @@ public class BoltNetworkListener extends Thread {
   private final    Set<BoltNetworkExecutor>            activeConnections = ConcurrentHashMap.newKeySet();
   private final    int                                 maxConnections;
   /** Bounds how many accepted connections can sit un-authenticated at once (issue #6412). */
-  private final    PreAuthConnectionGate               preAuthGate = new PreAuthConnectionGate("BOLT");
+  private final    PreAuthConnectionGate               preAuthGate;
 
   public BoltNetworkListener(final ArcadeDBServer server,
       final ServerSocketFactory socketFactory,
@@ -64,7 +64,11 @@ public class BoltNetworkListener extends Thread {
     this.server = server;
     this.socketFactory = socketFactory;
     this.sslHelper = sslHelper;
-    this.maxConnections = GlobalConfiguration.BOLT_MAX_CONNECTIONS.getValueAsInteger();
+    // Both read from THIS server's configuration: the settings are SCOPE.SERVER, and the GlobalConfiguration
+    // enum only ever carries a -D or an environment variable, so a cap declared in the server configuration
+    // file or through SET SERVER SETTING was silently ignored (issue #7233).
+    this.maxConnections = server.getConfiguration().getValueAsInteger(GlobalConfiguration.BOLT_MAX_CONNECTIONS);
+    this.preAuthGate = new PreAuthConnectionGate("BOLT", server.getConfiguration());
 
     listen(hostName, hostPortRange);
     start();

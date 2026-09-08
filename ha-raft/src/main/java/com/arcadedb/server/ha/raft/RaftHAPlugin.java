@@ -76,6 +76,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
     this.server = arcadeDBServer;
     this.configuration = configuration;
+    // The HA verbose level is SCOPE.SERVER and HALog caches it in a static, so it has to be handed the server's
+    // configuration here - otherwise the first log call caches whatever a -D happened to say (issue #7233).
+    HALog.configure(configuration);
   }
 
   @Override

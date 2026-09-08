@@ -113,13 +113,13 @@ public class RedisNetworkExecutor extends Thread {
     // it bounds the entire pre-auth phase here, through AUTH/HELLO itself). An authenticated RESP client is
     // expected to keep a long-lived, often idle connection open between commands, so the timeout must not
     // keep applying past that point.
-    final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
+    final int handshakeTimeout = server.getConfiguration().getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT);
     if (handshakeTimeout > 0)
       channel.socket.setSoTimeout(handshakeTimeout);
 
     // Initialize default database from configuration if set. The database access is authorized lazily,
     // once the connection has authenticated (see getAuthorizedDatabase), so here we only record the name.
-    final String defaultDbName = GlobalConfiguration.REDIS_DEFAULT_DATABASE.getValueAsString();
+    final String defaultDbName = server.getConfiguration().getValueAsString(GlobalConfiguration.REDIS_DEFAULT_DATABASE);
     if (defaultDbName != null && !defaultDbName.isEmpty()) {
       if (server.existsDatabase(defaultDbName))
         this.selectedDatabaseName = defaultDbName;
@@ -141,7 +141,9 @@ public class RedisNetworkExecutor extends Thread {
    * intentionally low, if impractical, configuration rather than the 0-or-negative case this guards against.
    */
   private int sanitizedLimit(final GlobalConfiguration setting, final int floor) {
-    final int configured = setting.getValueAsInteger();
+    // Through the SERVER's configuration: every setting passed here is SCOPE.SERVER, and the GlobalConfiguration
+    // enum carries only what a system property or an environment variable put there (issue #7233).
+    final int configured = server.getConfiguration().getValueAsInteger(setting);
     if (configured < floor) {
       final int fallback = ((Number) setting.getDefValue()).intValue();
       if (WARNED_MISCONFIGURED_LIMITS.add(setting))
@@ -845,7 +847,7 @@ public class RedisNetworkExecutor extends Thread {
    */
   private void markUnauthenticated() {
     this.authenticatedUser = null;
-    final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
+    final int handshakeTimeout = server.getConfiguration().getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT);
     try {
       channel.socket.setSoTimeout(Math.max(handshakeTimeout, 0));
     } catch (final SocketException e) {

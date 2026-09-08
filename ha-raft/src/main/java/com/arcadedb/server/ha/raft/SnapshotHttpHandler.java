@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
@@ -83,8 +84,19 @@ import java.util.zip.ZipOutputStream;
  */
 public class SnapshotHttpHandler implements HttpHandler {
 
-  private static final Semaphore CONCURRENCY_SEMAPHORE =
-      new Semaphore(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger(), true);
+  /**
+   * How many snapshots this server serves at once, and the permits enforcing it.
+   * <p>
+   * Both used to be {@code static final}, sized at class-initialisation from the {@link GlobalConfiguration} enum -
+   * which is populated by a system property or an environment variable and by nothing else, and which at that
+   * moment has not seen a line of the server's configuration anyway. A cluster that set
+   * {@code arcadedb.ha.snapshotMaxConcurrent} in its server configuration file therefore ran on the compiled-in
+   * default, and the rejection message below read the enum a SECOND time, so it would have misreported even a
+   * value that had reached the semaphore (issue #7233). Per-instance also makes the cap what it says it is - a
+   * bound on THIS server - rather than one shared by every server in the JVM.
+   */
+  private final int       maxConcurrentSnapshots;
+  private final Semaphore concurrencySemaphore;
 
   /** Sub-path selecting the checksums view of a database instead of its snapshot ZIP. */
   static final String CHECKSUMS_SUFFIX = "/checksums";
@@ -111,7 +123,7 @@ public class SnapshotHttpHandler implements HttpHandler {
   // double the read I/O and, with refcounted suspension, keep flushing suspended for the UNION of both
   // windows, growing the deferred-page backlog toward the #4728 backpressure cap and throttling commits
   // for longer. Serializing keeps each suspension window as short as possible. Requests beyond the
-  // CONCURRENCY_SEMAPHORE limit (HA_SNAPSHOT_MAX_CONCURRENT, default 2) still get a fast 503.
+  // concurrencySemaphore limit (HA_SNAPSHOT_MAX_CONCURRENT, default 2) still get a fast 503.
   // Entries are never pruned by design: one small ReentrantLock per database NAME ever snapshotted, bounded
   // by the server's database count (a dropped-and-recreated database safely reuses its lock). Pruning on
   // drop would need lifecycle callbacks this handler does not have, for negligible memory.
@@ -130,6 +142,11 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   public SnapshotHttpHandler(final HttpServer httpServer) {
     this.httpServer = httpServer;
+    // The tests build a handler with no server; an empty overlay reads through to the setting's default.
+    final ContextConfiguration configuration =
+        httpServer != null ? httpServer.getServer().getConfiguration() : new ContextConfiguration();
+    this.maxConcurrentSnapshots = configuration.getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT);
+    this.concurrencySemaphore = new Semaphore(maxConcurrentSnapshots, true);
   }
 
   /**
@@ -202,9 +219,9 @@ public class SnapshotHttpHandler implements HttpHandler {
           "Serving database snapshots over plain HTTP. Consider enabling SSL for production clusters.");
     }
 
-    if (!CONCURRENCY_SEMAPHORE.tryAcquire()) {
+    if (!concurrencySemaphore.tryAcquire()) {
       LogManager.instance().log(this, Level.WARNING, "Snapshot rejected: concurrency limit of %d reached",
-          GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger());
+          maxConcurrentSnapshots);
       exchange.setStatusCode(503);
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
       exchange.getResponseSender().send("{\"error\":\"Too many concurrent snapshots\"}");
@@ -287,7 +304,7 @@ public class SnapshotHttpHandler implements HttpHandler {
         dbSuspendLock.unlock();
       }
     } finally {
-      CONCURRENCY_SEMAPHORE.release();
+      concurrencySemaphore.release();
     }
   }
 

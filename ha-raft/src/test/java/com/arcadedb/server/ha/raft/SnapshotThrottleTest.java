@@ -28,26 +28,43 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class SnapshotThrottleTest {
 
+  /**
+   * Issue #7233 moved the permits off a {@code static final} sized at class-initialisation - i.e. before any
+   * server configuration exists - onto the handler instance, sized from that server's own configuration.
+   */
+  private static Semaphore semaphoreOf(final SnapshotHttpHandler handler) throws Exception {
+    final Field f = SnapshotHttpHandler.class.getDeclaredField("concurrencySemaphore");
+    f.setAccessible(true);
+    return (Semaphore) f.get(handler);
+  }
+
   @Test
   void semaphoreHasConfiguredPermits() throws Exception {
     GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.reset();
-    final Field f = SnapshotHttpHandler.class.getDeclaredField("CONCURRENCY_SEMAPHORE");
-    f.setAccessible(true);
-    final Semaphore sem = (Semaphore) f.get(null);
-    assertThat(sem.availablePermits())
-        .isEqualTo(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger());
+    // Closed at the end: the handler owns a stall-watchdog scheduler, and a test that builds one and walks away
+    // leaks its thread for the rest of the JVM.
+    final SnapshotHttpHandler handler = new SnapshotHttpHandler(null);
+    try {
+      assertThat(semaphoreOf(handler).availablePermits())
+          .isEqualTo(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger());
+    } finally {
+      handler.close();
+    }
   }
 
   @Test
   void tryAcquireExhaustsAtMaxConcurrent() throws Exception {
-    final Field f = SnapshotHttpHandler.class.getDeclaredField("CONCURRENCY_SEMAPHORE");
-    f.setAccessible(true);
-    final Semaphore sem = (Semaphore) f.get(null);
+    final SnapshotHttpHandler handler = new SnapshotHttpHandler(null);
+    try {
+      final Semaphore sem = semaphoreOf(handler);
 
-    final int configured = GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger();
-    for (int i = 0; i < configured; i++)
-      assertThat(sem.tryAcquire()).as("acquire %d", i).isTrue();
-    assertThat(sem.tryAcquire()).as("over-limit acquire").isFalse();
-    sem.release(configured);
+      final int configured = GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger();
+      for (int i = 0; i < configured; i++)
+        assertThat(sem.tryAcquire()).as("acquire %d", i).isTrue();
+      assertThat(sem.tryAcquire()).as("over-limit acquire").isFalse();
+      sem.release(configured);
+    } finally {
+      handler.close();
+    }
   }
 }

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.MatchStatement;
@@ -215,6 +216,21 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   // ArcadeDB server reference (optional, for accessing existing databases)
   private final ArcadeDBServer arcadeServer;
+
+  /**
+   * This server's configuration, or an empty overlay when the service was built without one.
+   * <p>
+   * Every gRPC setting read through here is SCOPE.SERVER, so it is authoritative in the SERVER's own
+   * {@link ContextConfiguration} - which is what the server configuration file, {@code SET SERVER SETTING} and the
+   * MCP {@code set_server_setting} tool all write into. The {@link GlobalConfiguration} enum is populated by
+   * {@code readConfiguration()} alone, i.e. by a system property or an environment variable, so reading the enum
+   * directly ignored every other channel the scope advertises, silently (issue #7233).
+   */
+  private ContextConfiguration serverConfiguration() {
+    return arcadeServer != null ? arcadeServer.getConfiguration() : EMPTY_CONFIGURATION;
+  }
+
+  private static final ContextConfiguration EMPTY_CONFIGURATION = new ContextConfiguration();
 
   // Database directory path
   private final String databasePath;
@@ -1600,7 +1616,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // fails loudly with RESOURCE_EXHAUSTED - consistent with the MATERIALIZE_ALL stream path - instead of
         // silently truncating and dropping data without telling the caller.
         final int requestedLimit = request.getLimit();
-        final int configuredMax = GlobalConfiguration.SERVER_GRPC_QUERY_MAX_RESULT_ROWS.getValueAsInteger();
+        final int configuredMax = serverConfiguration().getValueAsInteger(
+            GlobalConfiguration.SERVER_GRPC_QUERY_MAX_RESULT_ROWS);
         final boolean capEnabled = configuredMax > 0;
         // The client's explicit limit applies as its own bound only when it does not exceed the hard ceiling.
         final boolean clientLimitWithinCap = requestedLimit > 0 && (!capEnabled || requestedLimit <= configuredMax);
@@ -2079,7 +2096,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         if (cancelled.get()) {
           if (serverTimedOut.get()) {
-            final long timeoutMs = GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS.getValueAsLong();
+            final long timeoutMs = serverConfiguration().getValueAsLong(GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS);
             try {
               scso.onError(Status.DEADLINE_EXCEEDED
                   .withDescription("gRPC stream aborted: client transport not ready within " + timeoutMs
@@ -2115,7 +2132,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // always signaled even if rollback fails) so it fails fast instead of blocking on its own deadline. A
         // genuine client cancel needs no terminal - its transport is already tearing down.
         if (serverTimedOut.get()) {
-          final long timeoutMs = GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS.getValueAsLong();
+          final long timeoutMs = serverConfiguration().getValueAsLong(GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS);
           try {
             scso.onError(Status.DEADLINE_EXCEEDED
                 .withDescription("gRPC stream aborted: client transport not ready within " + timeoutMs
@@ -2295,7 +2312,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // MATERIALIZE_ALL buffers the whole result before emitting, so bound it: a limitless query in this mode
     // would otherwise build an unbounded list and exhaust heap (DoS). Exceeding the cap fails the call with
     // RESOURCE_EXHAUSTED so the client can fall back to CURSOR/PAGED streaming.
-    final int maxMaterializedRows = GlobalConfiguration.SERVER_GRPC_STREAM_MAX_MATERIALIZED_ROWS.getValueAsInteger();
+    final int maxMaterializedRows = serverConfiguration().getValueAsInteger(
+        GlobalConfiguration.SERVER_GRPC_STREAM_MAX_MATERIALIZED_ROWS);
 
     try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
@@ -2540,7 +2558,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private void waitUntilReady(ServerCallStreamObserver<?> scso, AtomicBoolean cancelled, AtomicBoolean serverTimedOut) {
     // Honor transport readiness, but bound the wait: a slow or abandoned client must not pin this worker
     // thread (and the open ResultSet/transaction) indefinitely.
-    final long timeoutMs = GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS.getValueAsLong();
+    final long timeoutMs = serverConfiguration().getValueAsLong(GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS);
     if (!awaitTransportReady(scso::isReady, cancelled, timeoutMs)) {
       // Not ready: either the caller already cancelled, or we hit the deadline / were interrupted. In the
       // latter case mark the stream cancelled so the surrounding loop stops, rolls back, and releases the
