@@ -423,7 +423,9 @@ class GraphImporterSplitDelimiterTest {
           .hasMessageContaining("Tagged")
           .hasMessageContaining("Tags")
           .hasMessageContaining(", ")
-          .hasMessageContaining(",");
+          // the separator in its quoted form: a bare "," is already inside the ", " asserted above,
+          // so it would hold whatever the message said about the separator - including nothing
+          .hasMessageContaining("','");
 
       assertThat(importer.getVertexCount()).isZero();
     }
