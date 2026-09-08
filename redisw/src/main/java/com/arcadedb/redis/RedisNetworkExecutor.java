@@ -19,6 +19,7 @@
 package com.arcadedb.redis;
 
 import com.arcadedb.Constants;
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
@@ -100,9 +101,9 @@ public class RedisNetworkExecutor extends Thread {
     setName(Constants.PRODUCT + "-redis/" + socket.getInetAddress());
     this.server = server;
     this.channel = new ChannelBinaryServer(socket, server.getConfiguration());
-    this.maxMultiBulkDepth = sanitizedLimit(GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH, 2);
-    this.maxMultiBulkLength = sanitizedLimit(GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH, 1);
-    this.maxBulkLength = sanitizedLimit(GlobalConfiguration.REDIS_MAX_BULK_LENGTH, 1);
+    this.maxMultiBulkDepth = sanitizedLimit(server.getConfiguration(), GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH, 2);
+    this.maxMultiBulkLength = sanitizedLimit(server.getConfiguration(), GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH, 1);
+    this.maxBulkLength = sanitizedLimit(server.getConfiguration(), GlobalConfiguration.REDIS_MAX_BULK_LENGTH, 1);
 
     // Bound the pre-authentication window (issue #5912): without a read timeout, a client that opens a
     // connection and never completes AUTH/HELLO - or trickles bytes arbitrarily slowly - can hold this
@@ -144,14 +145,15 @@ public class RedisNetworkExecutor extends Thread {
   // cannot see this read: it matches the literal GlobalConfiguration.NAME.getValueAs* shape. This site, and any
   // future helper of the same shape, has to be checked by hand - reading through the ContextConfiguration here is
   // not something the build will keep true for you.
-  private int sanitizedLimit(final GlobalConfiguration setting, final int floor) {
+  static int sanitizedLimit(final ContextConfiguration configuration, final GlobalConfiguration setting,
+      final int floor) {
     // Through the SERVER's configuration: every setting passed here is SCOPE.SERVER, and the GlobalConfiguration
     // enum carries only what a system property or an environment variable put there (issue #7233).
-    final int configured = server.getConfiguration().getValueAsInteger(setting);
+    final int configured = configuration.getValueAsInteger(setting);
     if (configured < floor) {
       final int fallback = ((Number) setting.getDefValue()).intValue();
       if (WARNED_MISCONFIGURED_LIMITS.add(setting))
-        LogManager.instance().log(this, Level.WARNING,
+        LogManager.instance().log(RedisNetworkExecutor.class, Level.WARNING,
             "Redis wrapper: '%s' is set to %d, below the minimum usable value (%d); falling back to the default (%d)",
             setting.getKey(), configured, floor, fallback);
       return fallback;

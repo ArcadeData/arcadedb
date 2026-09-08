@@ -229,10 +229,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * {@code readConfiguration()} alone, i.e. by a system property or an environment variable, so reading the enum
    * directly ignored every other channel the scope advertises, silently (issue #7233).
    */
-  private ContextConfiguration serverConfiguration() {
+  ContextConfiguration serverConfiguration() {
     return arcadeServer != null ? arcadeServer.getConfiguration() : EMPTY_CONFIGURATION;
   }
-
 
   // Database directory path
   private final String databasePath;
