@@ -68,7 +68,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 class Issue7267CsvRowSourceLiteralDelimiterTest {
 
   /**
-   * The characters a CSV delimiter can be that a regular expression does not read as themselves.
+   * Every character that carries syntactic meaning inside a regular expression and can be typed as a CSV
+   * delimiter. The name says "syntax", not "metacharacter", because two of the fourteen are neither broken nor
+   * misread on their own - see below.
    * <p>
    * {@code '|'}, {@code '.'}, {@code '$'} and {@code '^'} were the silent family; {@code '*'}, {@code '+'},
    * {@code '?'}, {@code '('}, {@code ')'}, {@code '['}, {@code '{'} and {@code '\'} threw. {@code ']'} and
@@ -77,7 +79,7 @@ class Issue7267CsvRowSourceLiteralDelimiterTest {
    * on JDK 26) and a lone closing bracket or brace is literal to {@code Pattern} anyway. Nothing here is claimed
    * to have been broken; the loop's claim is that all fourteen are correct now.
    */
-  private static final char[] REGEX_METACHARACTERS = { '|', '.', '$', '^', '*', '+', '?', '(', ')', '[', ']', '{', '}', '\\' };
+  private static final char[] REGEX_SYNTAX_DELIMITERS = { '|', '.', '$', '^', '*', '+', '?', '(', ')', '[', ']', '{', '}', '\\' };
 
   private static final String DB_PATH = "target/databases/issue7267-csv-literal-delimiter";
 
@@ -112,7 +114,7 @@ class Issue7267CsvRowSourceLiteralDelimiterTest {
    */
   @Test
   void everyRegexMetacharacterSplitsOnTheLiteralCharacter() throws Exception {
-    for (final char delimiter : REGEX_METACHARACTERS) {
+    for (final char delimiter : REGEX_SYNTAX_DELIMITERS) {
       final Path csv = writeCsv("meta-" + (int) delimiter + ".csv", delimiter,
           "id", "firstName", "lastName");
 
@@ -138,7 +140,7 @@ class Issue7267CsvRowSourceLiteralDelimiterTest {
    */
   @Test
   void aMetacharacterDelimiterNeverRaisesARegexError() {
-    for (final char delimiter : REGEX_METACHARACTERS)
+    for (final char delimiter : REGEX_SYNTAX_DELIMITERS)
       assertThatCode(() -> {
         final Path csv = writeCsv("nothrow-" + (int) delimiter + ".csv", delimiter, "id", "firstName", "lastName");
         readAll(new CsvRowSource(csv.toString(), delimiter, 0), "id");

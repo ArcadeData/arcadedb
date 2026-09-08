@@ -223,3 +223,30 @@ hand against the same three inputs (issue body, diff, tree) and is recorded here
    to a value in that range. **Not real.**
 
 No finding was out of scope, so no follow-up issue was filed.
+
+## Review cycles
+
+### Cycle 1 - `b0a498c846`
+
+`claude` reviewed on the PR's issue-comment surface. No blocking finding: correctness verified by hand against
+the same boundary shapes listed in the adversarial pass, the `char` -> `indexOf(int, int)` widening confirmed
+safe, and the three-entry-point claim confirmed against `GraphImporter.java:467-473`. Three non-blocking items:
+
+1. **`REGEX_METACHARACTERS` overclaims** - two of its fourteen entries were never broken, so the name reads
+   confusingly on first pass even though the javadoc says so. **Applied**: renamed to `REGEX_SYNTAX_DELIMITERS`,
+   which is what the array actually holds, and the javadoc now says why the name avoids "metacharacter".
+2. **A single-pass split with a growable `int[]` position buffer would scan each row once instead of twice.**
+   **Skipped, with reasoning** - the reviewer already scoped it as "not worth doing now", and it trades the one
+   thing the current shape is chosen for: a second heap allocation per row, against CLAUDE.md's
+   "lightweight on garbage collector" mantra, to save one branch-predictable `indexOf` scan of a line that is
+   typically a few hundred bytes. If CSV import ever measures as allocation-bound this is worth revisiting; it
+   is not a defect and is not tracked as one.
+3. **The tracking doc is detailed for a ~40-line fix.** **Skipped** - the reviewer answers this himself, and it
+   is verified: `git ls-tree -r --name-only origin/main -- docs/` lists `docs/7264-graphimporter-tx-leak-zero-count.md`,
+   `docs/7266-three-small-defects.md`, `docs/7225-unlearn-removed-peer-hosts.md` and two more, so one write-up
+   per issue is current repo practice, not a one-off here.
+
+Nothing was deferred: every item was either applied or answered with evidence, so no `review-deferred-*.md`
+notes file was produced.
+
+Re-ran after the rename: `Tests run: 7, Failures: 0, Errors: 0, Skipped: 0`.
