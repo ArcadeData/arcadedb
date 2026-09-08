@@ -23,6 +23,8 @@ import com.arcadedb.server.monitor.ServerMonitor.SafepointSpikeDetector;
 import com.arcadedb.server.monitor.ServerMonitor.WarningThrottle;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -102,6 +104,28 @@ class Issue7160WarningThrottleTest {
 
     assertThat(halfHourly.tryReport(MINS_30)).isTrue();
     assertThat(daily.tryReport(MINS_30)).as("a day has not passed").isFalse();
+  }
+
+  /**
+   * {@code ServerMonitor.getStatus()} is public and reads two of these throttles from whatever thread asks, while
+   * only the monitor thread ever writes them. The state they publish therefore has to be visible across threads -
+   * it was two plain fields for a while, which silently dropped the {@code volatile} the timestamps it replaced
+   * had carried for exactly this reason.
+   */
+  @Test
+  void aReportIsVisibleToAReaderOnAnotherThread() throws Exception {
+    final WarningThrottle throttle = new WarningThrottle(MINS_30);
+    final long now = System.currentTimeMillis();
+
+    throttle.reported(now);
+
+    final AtomicBoolean seen = new AtomicBoolean();
+    final Thread reader = new Thread(() -> seen.set(throttle.reportedWithinWindow(now)));
+    reader.start();
+    reader.join(10_000L);
+
+    assertThat(reader.isAlive()).as("the reader must not block").isFalse();
+    assertThat(seen).isTrue();
   }
 
   /**

@@ -268,15 +268,27 @@ public class ServerMonitor {
 	 * hour for heap pressure and safepoint spikes - and always applies to the REPORT, never to the measurement:
 	 * the safepoint detector needs every sample to keep its interval baseline.
 	 * <p>
-	 * Time is a parameter rather than read inside, so the rule is testable without waiting half an hour. Not
-	 * thread-safe: a single {@link ServerMonitor} thread owns all three.
+	 * Time is a parameter rather than read inside, so the rule is testable without waiting half an hour.
+	 * <p>
+	 * The monitor thread is the only WRITER - all three instances belong to it - but {@link #getStatus()} is
+	 * public and reads two of them from whatever thread asks, so the state it reads is published through a single
+	 * volatile rather than left as plain fields.
 	 */
 	static final class WarningThrottle {
-		private final long    windowMs;
-		// "NOTHING REPORTED YET" IS ITS OWN FLAG RATHER THAN A SENTINEL TIMESTAMP: A Long.MIN_VALUE SENTINEL MAKES
-		// nowMs - lastReportedMs OVERFLOW TO A NEGATIVE NUMBER, WHICH WOULD SUPPRESS THE VERY FIRST WARNING.
-		private       boolean everReported;
-		private       long    lastReportedMs;
+		/**
+		 * When the last report was made, or {@code null} before the first one. A sentinel TIMESTAMP was the
+		 * obvious alternative and is a trap: {@code Long.MIN_VALUE} makes {@code nowMs - lastReportedMs} overflow
+		 * to a negative number, which suppresses the very first warning of every kind.
+		 */
+		private record LastReport(long atMs) {
+		}
+
+		private final    long       windowMs;
+		// WRITTEN BY THE MONITOR THREAD, READ BY getStatus() FROM ANY THREAD: volatile GUARANTEES VISIBILITY. The
+		// "whether" and the "when" travel as ONE immutable object behind that single volatile, so a reader can
+		// never pair one with the other's previous value - the pattern GetPrometheusMetricsHandler uses for its
+		// cached authentication decision.
+		private volatile LastReport last;
 
 		WarningThrottle(final long windowMs) {
 			this.windowMs = windowMs;
@@ -284,7 +296,8 @@ public class ServerMonitor {
 
 		/** Whether a report right now would be let through, without consuming the window. */
 		boolean wouldReport(final long nowMs) {
-			return !everReported || nowMs - lastReportedMs >= windowMs;
+			final LastReport current = last;
+			return current == null || nowMs - current.atMs() >= windowMs;
 		}
 
 		/** Lets a report through and opens a new window, or refuses it because the last one is still open. */
@@ -297,13 +310,13 @@ public class ServerMonitor {
 
 		/** Opens a new window for a report the caller has already decided to make. */
 		void reported(final long nowMs) {
-			everReported = true;
-			lastReportedMs = nowMs;
+			last = new LastReport(nowMs);
 		}
 
 		/** Whether a report was made inside the window ending now - what {@code getStatus()} surfaces. */
 		boolean reportedWithinWindow(final long nowMs) {
-			return everReported && nowMs - lastReportedMs < windowMs;
+			final LastReport current = last;
+			return current != null && nowMs - current.atMs() < windowMs;
 		}
 	}
 

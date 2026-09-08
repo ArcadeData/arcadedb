@@ -2514,6 +2514,19 @@ public enum GlobalConfiguration {
   }
 
   /**
+   * Whether this setting declares a {@code callback} - the side effect {@link #applyContextValue(Object)} runs
+   * for a value written into an overlay.
+   * <p>
+   * Exists for the test that pins WHICH settings that hook reaches. Widening it beyond SCOPE.SERVER (issue
+   * #7163) means a callback added to any non-JVM setting from now on fires on every channel that setting's
+   * scope advertises, which is the point - but it is also a decision worth making deliberately rather than
+   * discovering, so the list is asserted rather than remembered.
+   */
+  boolean hasCallback() {
+    return callback != null;
+  }
+
+  /**
    * Applies this setting to a value written into a {@link ContextConfiguration} overlay rather than into this enum,
    * and returns what the overlay must store for it.
    * <p>
@@ -2539,22 +2552,14 @@ public enum GlobalConfiguration {
    * the setting's declared type (a {@code Boolean}, an {@code Integer}) is not silently given the raw {@code String}
    * a configuration file or an admin command carried. A value this setting cannot coerce is passed through as-is
    * rather than failing the write: refusing here would leave the side effect and the stored value disagreeing.
+   * <p>
+   * A setting with NO callback returns its argument untouched and is not coerced here: the overlay stores what it
+   * was given, which is what keeps a Class-typed setting persisted by its name rather than as a {@code Class} a
+   * JSON document cannot hold. Coercion for those runs at the boundaries instead - {@code coerceFromAdminCommand}
+   * on the way in, {@code getValueAs*} and {@code BinarySerializer} on the way out.
    *
    * @return the value the overlay must store: {@code newValue} unchanged when this setting declares no callback
    */
-  /**
-   * Whether this setting declares a {@code callback} - the side effect {@link #applyContextValue(Object)} runs
-   * for a value written into an overlay.
-   * <p>
-   * Exists for the test that pins WHICH settings that hook reaches. Widening it beyond SCOPE.SERVER (issue
-   * #7163) means a callback added to any non-JVM setting from now on fires on every channel that setting's
-   * scope advertises, which is the point - but it is also a decision worth making deliberately rather than
-   * discovering, so the list is asserted rather than remembered.
-   */
-  boolean hasCallback() {
-    return callback != null;
-  }
-
   Object applyContextValue(final Object newValue) {
     if (callback == null || scope == SCOPE.JVM)
       return newValue;
