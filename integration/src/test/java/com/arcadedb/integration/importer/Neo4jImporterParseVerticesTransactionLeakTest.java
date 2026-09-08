@@ -20,6 +20,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 
@@ -33,6 +34,7 @@ import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -206,4 +208,57 @@ class Neo4jImporterParseVerticesTransactionLeakTest {
         .as("the caller's own record must be what its commit made durable")
         .isEqualTo(1);
   }
+
+  /**
+   * The counterpart of the two commit-failure tests on the format classes, for the one site whose flags live in
+   * single-element arrays. {@code LocalDatabase.commit()} pops the transaction inside its own {@code finally},
+   * so a commit that throws leaves {@code txOpen[0]} already {@code false} and nothing to roll back - only the
+   * {@code completed} flag can still bring the counter back. Without it the batch the commit failed to write
+   * would stay counted as if it had survived.
+   * <p>
+   * The proxy fails the first commit, which is the periodic one after {@code batchSize} vertices, and leaves
+   * behind what a real commit failure leaves: the transaction gone and its records not durable.
+   */
+  private Database databaseWhoseFirstCommitFails() {
+    return (Database) Proxy.newProxyInstance(Database.class.getClassLoader(), new Class<?>[] { Database.class },
+        (proxy, method, args) -> {
+          if ("commit".equals(method.getName()) && (args == null || args.length == 0)) {
+            database.rollback();
+            throw new TransactionException("Simulated commit failure");
+          }
+          try {
+            return method.invoke(database, args);
+          } catch (final InvocationTargetException e) {
+            throw e.getCause();
+          }
+        });
+  }
+
+  @Test
+  void aFailedCommitReportsOnlyTheVerticesThatSurvived() throws Throwable {
+    final ImporterContext context = new ImporterContext();
+    final Neo4jImporter importer = new Neo4jImporter(databaseWhoseFirstCommitFails(), context);
+
+    // The input is fully readable: the only failure is the periodic commit after the second vertex.
+    final String lines = "{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"Person\"]}\n"
+        + "{\"type\":\"node\",\"id\":\"2\",\"labels\":[\"Person\"]}\n"
+        + "{\"type\":\"node\",\"id\":\"3\",\"labels\":[\"Person\"]}\n";
+    final byte[] bytes = lines.getBytes(StandardCharsets.UTF_8);
+
+    setField(importer, "batchSize", 2);
+    setField(importer, "inputStream", new FailingAfterInputStream(bytes, bytes.length));
+
+    assertThatThrownBy(() -> invokeParseVertices(importer)).isInstanceOf(TransactionException.class);
+
+    assertThat(database.isTransactionActive())
+        .as("a failed commit still leaves its own transaction off the stack")
+        .isFalse();
+    assertThat(countOf("Person"))
+        .as("the failed commit made nothing durable")
+        .isZero();
+    assertThat(context.createdVertices.get())
+        .as("the report must not credit the import with the batch the failed commit never wrote")
+        .isZero();
+  }
+
 }
