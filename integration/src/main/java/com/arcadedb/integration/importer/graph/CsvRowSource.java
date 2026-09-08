@@ -58,6 +58,11 @@ public class CsvRowSource implements GraphImporter.RecordSource {
   }
 
   @Override
+  public Character fieldSeparator() {
+    return delimiter;
+  }
+
+  @Override
   public void forEach(final GraphImporter.RecordVisitor visitor) throws Exception {
     try (final BufferedReader br = new BufferedReader(
         new InputStreamReader(new FileInputStream(filePath), StandardCharsets.UTF_8), 1 << 16)) {

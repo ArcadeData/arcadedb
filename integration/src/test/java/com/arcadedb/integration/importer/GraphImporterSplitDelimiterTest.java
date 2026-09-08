@@ -24,6 +24,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.importer.graph.CsvRowSource;
 import com.arcadedb.integration.importer.graph.GraphImporter;
+import com.arcadedb.integration.importer.graph.JsonlRowSource;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 
@@ -382,6 +383,124 @@ class GraphImporterSplitDelimiterTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("csv-delim.csv")
         .hasMessageContaining("single character");
+  }
+
+  /**
+   * The reporter's exact scenario (issue #7268): a comma-delimited CSV with a split delimiter that
+   * contains the comma. {@link CsvRowSource} cuts the row into fields on the comma before the split
+   * walker ever runs, so the collision is refused before any file is opened - the same register as
+   * {@code checkNotSplit()}'s diagnosis of the identical mechanism on array-valued properties.
+   */
+  @Test
+  void aSplitDelimiterContainingTheSourcesFieldSeparatorIsRejected() throws Exception {
+    final String topics = write("collide-topics.csv",
+        "Code",
+        "scifi",
+        "drama",
+        "horror");
+    final String posts = write("collide-posts.csv",
+        "Id,Tags",
+        "1,scifi, drama, horror");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Topic");
+      database.getSchema().createVertexType("Post");
+      database.getSchema().createEdgeType("Tagged");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Topic", new CsvRowSource(topics), v -> {
+          v.idByName("Code");
+          v.property("code", "Code");
+        })
+        .vertex("Post", new CsvRowSource(posts), v -> {
+          v.id("Id");
+          v.splitEdge("Tags", "Tagged", "Topic", ", ");
+        })
+        .build()) {
+      assertThatThrownBy(importer::run)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Tagged")
+          .hasMessageContaining("Tags")
+          .hasMessageContaining(", ")
+          .hasMessageContaining(",");
+
+      assertThat(importer.getVertexCount()).isZero();
+    }
+  }
+
+  /**
+   * The same validation through the JSON configuration, which is where a hand-picked split delimiter
+   * that happens to collide with the source's default comma is most likely to come from.
+   */
+  @Test
+  void jsonConfigRejectsASplitDelimiterCollidingWithTheSourcesFieldSeparator() throws Exception {
+    write("json-collide-topics.csv",
+        "Code",
+        "scifi",
+        "drama");
+    write("json-collide-posts.csv",
+        "Id,Tags",
+        "1,scifi, drama");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Topic");
+      database.getSchema().createVertexType("Post");
+      database.getSchema().createEdgeType("Tagged");
+    });
+
+    final String config = """
+        {
+          "vertices": [
+            { "type": "Topic", "file": "json-collide-topics.csv", "nameId": "Code" },
+            { "type": "Post", "file": "json-collide-posts.csv", "id": "Id",
+              "edges": [ { "attribute": "Tags", "edge": "Tagged", "target": "Topic", "split": ", " } ] }
+          ]
+        }
+        """;
+
+    try (final GraphImporter importer = GraphImporter.fromJSON(database, config, dataDir.getAbsolutePath())) {
+      assertThatThrownBy(importer::run)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Tagged")
+          .hasMessageContaining(", ");
+    }
+  }
+
+  /**
+   * A source with no field-separator concept - JSONL fields are already distinct JSON values, nothing
+   * cuts a row apart on a delimiter character - must never be flagged for a "collision" that cannot
+   * happen. {@link JsonlRowSource#fieldSeparator()} answers the {@link GraphImporter.RecordSource}
+   * default of {@code null}, and {@code validateEdgeTargets()} must treat that as "nothing to check"
+   * rather than as a source whose separator happens to be absent.
+   */
+  @Test
+  void aSplitEdgeOverANonDelimitedSourceIsNeverFlaggedAsAFieldSeparatorCollision() throws Exception {
+    final String topics = write("jsonl-topics.jsonl",
+        "{\"Code\": \"scifi\"}",
+        "{\"Code\": \"drama\"}",
+        "{\"Code\": \"horror\"}");
+    final String posts = write("jsonl-posts.jsonl",
+        "{\"Id\": 1, \"Tags\": \"scifi, drama, horror\"}");
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Topic");
+      database.getSchema().createVertexType("Post");
+      database.getSchema().createEdgeType("Tagged");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Topic", new JsonlRowSource(topics), v -> v.idByName("Code"))
+        .vertex("Post", new JsonlRowSource(posts), v -> {
+          v.id("Id");
+          v.splitEdge("Tags", "Tagged", "Topic", ", ");
+        })
+        .build()) {
+      importer.run();
+
+      assertThat(importer.getEdgeCount()).isEqualTo(3);
+      assertThat(importer.getUnresolvedEdgeCount()).isZero();
+    }
   }
 
   private String write(final String fileName, final String... lines) throws Exception {
