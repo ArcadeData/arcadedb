@@ -532,7 +532,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           || recordSize[0] == FIRST_CHUNK);
 
     } catch (final IOException e) {
-      throw new DatabaseOperationException("Error on checking record existence for " + rid);
+      throw new DatabaseOperationException("Error on checking record existence for " + rid, e);
     }
   }
 
