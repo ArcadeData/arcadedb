@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
@@ -150,7 +151,7 @@ public class AlterDatabaseStatement extends DDLStatement {
 
   /**
    * Applies the part of a setting's effect that belongs to THIS database rather than to the process: pointing
-   * the database's own {@link com.arcadedb.serializer.BinarySerializer} at the date implementation just stored.
+   * the database's own {@link BinarySerializer} at the date implementation just stored.
    * <p>
    * A {@link GlobalConfiguration} callback is a static hook with no database in scope, so this cannot move there
    * - unlike the class-name conversion, which did (issue #7163). {@code LocalDatabase.open} performs the same

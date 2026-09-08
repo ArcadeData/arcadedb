@@ -148,8 +148,10 @@ public enum GlobalConfiguration {
   TEST("arcadedb.test", SCOPE.JVM,
       "Tells if it is running in test mode. This enables the calling of callbacks for testing purpose", Boolean.class, false),
 
-  // UNUSUAL AMONG THE SETTINGS IN THAT IT INSTALLS SOMETHING. reset() RUNS NO CALLBACK, SO IT RESTORES THE VALUE BUT
-  // LEAVES THE LAST INSTALLED LOGGER IN PLACE: A CALLER THAT WANTS THE PREVIOUS ONE BACK KEEPS LogManager.getLogger()
+  // UNUSUAL AMONG THE SETTINGS IN THAT IT INSTALLS SOMETHING. THIS COMMENT USED TO SAY reset() RAN NO CALLBACK AND
+  // LEFT THE LAST INSTALLED LOGGER IN PLACE; SINCE ISSUE #7121 IT DOES RUN ONE, SO A reset() REINSTALLS THE DEFAULT
+  // LOGGER RATHER THAN LEAVING WHATEVER WAS INSTALLED LAST - WHICH IS THE POINT OF A RESET, AND WHAT resetAll()
+  // BETWEEN TESTS NOW ACTUALLY DELIVERS
   LOG_IMPL("arcadedb.log.impl", SCOPE.JVM,
       "Logger implementation: 'default' uses java.util.logging, 'slf4j' routes the logs through the SLF4J facade so an embedding application receives them in its own backend. An unrecognized value is reported and falls back to 'default'",
       String.class, "default", value -> {
@@ -3051,7 +3053,7 @@ public enum GlobalConfiguration {
         return iValue;
       try {
         return Class.forName(iValue.toString().trim());
-      } catch (final ClassNotFoundException | RuntimeException e) {
+      } catch (final ClassNotFoundException e) {
         throw new IllegalArgumentException(
             "Value '" + iValue + "' of setting '" + key + "' does not name a class that can be loaded", e);
       }

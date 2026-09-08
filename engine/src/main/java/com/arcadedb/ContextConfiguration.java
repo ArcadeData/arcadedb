@@ -113,7 +113,14 @@ public class ContextConfiguration implements Serializable {
    * <p>
    * Symmetry with the write path, and the same reason {@link GlobalConfiguration#reset()} runs the callback for
    * the default it restores: a removal that skipped it would report the enum's value while whatever the callback
-   * drives stayed on the value just discarded (issue #7121).
+   * drives stayed on the value just discarded (issue #7121). The removal used to hand the callback a raw
+   * {@code null} instead, which is not a value any setting is ever worth.
+   * <p>
+   * No test pins this, deliberately, because with today's settings nothing can observe it: the two callbacks an
+   * overlay reaches are {@code SERVER_LOG_FORMAT}, whose callback reads {@code null} as "resolve it the usual
+   * way" and so lands on the enum's value either way, and {@code MAX_PAGE_RAM}, whose {@code (long) value} cast
+   * turns the {@code null} into a ClassCastException that {@link GlobalConfiguration} logs and swallows. A test
+   * asserting either would pass on the old behaviour too (issue #7163).
    */
   private Object removeValue(final GlobalConfiguration cfg, final String key) {
     final Object previous = config.remove(key);
