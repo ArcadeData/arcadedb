@@ -2410,9 +2410,11 @@ public enum GlobalConfiguration {
   // Issue #7281: set for the duration of readConfiguration(), so DUMP_CONFIG_AT_STARTUP's callback can tell a
   // startup pass that has not finished applying the other settings from a later write it can dump straight away.
   // Left without an initializer on purpose: an enum's constants are constructed before any static field
-  // initializer runs, and these two have to read as false from the very first callback.
-  private static volatile boolean               readingConfiguration;
-  private static volatile boolean               dumpPending;
+  // initializer runs, and these two have to read as false from the very first callback. Not volatile: every read
+  // and every write happens inside readConfiguration() or dumpConfigurationOrDefer(), both synchronized on this
+  // class, which already carries the happens-before edge.
+  private static boolean                        readingConfiguration;
+  private static boolean                        dumpPending;
 
   public enum SCOPE {JVM, SERVER, DATABASE}
 
