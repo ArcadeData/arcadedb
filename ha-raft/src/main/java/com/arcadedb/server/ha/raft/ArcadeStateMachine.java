@@ -2752,19 +2752,69 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // machine multiplexes every database, so a co-located database that advanced the global index must
       // not suppress this one's reinstall (issue #4824) - and a legacy plain-number applied-index file
       // yields -1, which re-installs exactly as before.
+      //
+      // Both halves of that evidence are statements about a PREVIOUS session, and neither says the database
+      // is here NOW (issue #7221). The index lives in <databaseDirectory>/.raft/applied-index, a sibling of
+      // the per-database directories rather than a file inside them, so deleting one database's directory
+      // leaves its entry in the map intact. The wipe-and-resync recovery an operator reaches for when a
+      // follower's copy is bad - stop the node, delete the copy, start it again - then hit a guard that
+      // skipped the reinstall and a log line claiming a reinstall the filesystem contradicted. So the skip
+      // also requires the database to be registered here, the same question the normal-create arm below
+      // asks; a node whose registry has no such database re-downloads, as it did before #7143.
+      //
+      // The registry, not the filesystem, is what is consulted - so the wording below says "registered"
+      // rather than "present", which is the check that actually ran. A database dropped through Raft is
+      // not the case this re-opens: applyTransaction routes a DROP_DATABASE_ENTRY through
+      // writePersistedAppliedIndexDroppingDatabase, which evicts the per-database entry, so the read
+      // below already returns -1 for a dropped database and the skip was never reachable for one.
+      //
+      // Both volatile collaborators are read once into locals and used from there for the rest of this
+      // forceSnapshot branch (the normal-create arm below is untouched and keeps reading the field).
+      // createStateMachine() (RaftHAServer:1416-1421) is the single production wiring point and sets the two on
+      // consecutive lines, so "server is null" and "raftHAServer is null" are the same not-yet-wired state
+      // rather than two independent ones - which is why they get the same treatment here instead of one being
+      // captured and the other re-read.
+      //
+      // What keeps SnapshotInstaller.resolveDatabasePath below from seeing a null server is safe publication,
+      // NOT a chain of volatile reads: this arm reads server BEFORE it reads raftHAServer, and observing the
+      // later-written field non-null says nothing about a read that already happened, so that argument would
+      // not hold. The one that does: createStateMachine() sets both fields on the machine before the reference
+      // escapes it (RaftHAServer:1416-1421, assigned at :384 and :1478), so Ratis has no state machine to call
+      // applyTransaction on until both writes are done. The precondition is now written down on
+      // resolveDatabasePath itself, since six other call sites lean on it without saying so.
+      final ArcadeDBServer localServer = this.server;
+
       final long persistedApplied = readPersistedAppliedIndex(databaseName);
       if (persistedApplied >= entryIndex) {
-        LogManager.instance().log(this, Level.INFO,
-            "Database '%s' already reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
-                + "entryIndex=%d); skipping the snapshot re-download",
+        if (localServer != null && localServer.existsDatabase(databaseName)) {
+          LogManager.instance().log(this, Level.INFO,
+              "Database '%s' already reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
+                  + "entryIndex=%d) and is registered on this node; skipping the snapshot re-download",
+              databaseName, persistedApplied, entryIndex);
+          return;
+        }
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s' was reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
+                + "entryIndex=%d) but is not registered on this node now; reinstalling it from the leader",
             databaseName, persistedApplied, entryIndex);
-        return;
       }
 
       // Restore flow: replace files from the leader's snapshot even if the DB exists.
       // The leader's own files are already authoritative, so the leader skips the reinstall;
       // replicas close their local copy and pull the fresh snapshot from the leader.
-      if (raftHAServer != null && raftHAServer.isLeader()) {
+      //
+      // The volatile field is read ONCE into a local. resolveSnapshotSource guards a null HA server and refuses
+      // cleanly, but evaluating raftHAServer.getLeaderId() as its ARGUMENT dereferenced the field before that
+      // guard could run, so the refusal it exists to produce arrived as a NullPointerException instead; the
+      // same held for getClusterToken() below. A null local yields a null leader id, which
+      // PeerDialAddress.resolve refuses as "the leader is unknown".
+      //
+      // Null is reachable, not hypothetical: no production caller nulls the field (grep for setRaftHAServer -
+      // RaftHAServer:1419 is the only one), but it starts null and a state machine that has not been rewired
+      // yet still carries null. Forgetting exactly that rewire on the recovery path is the regression
+      // Issue4839RecoveryRewiresStateMachineIT exists to catch.
+      final RaftHAServer raftHA = this.raftHAServer;
+      if (raftHA != null && raftHA.isLeader()) {
         HALog.log(this, HALog.TRACE, "Leader skips forceSnapshot reinstall for '%s'", databaseName);
         return;
       }
@@ -2772,7 +2822,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Same refusals as every other path that pulls a snapshot, through the same helper (issue #6202): a
       // derived address that names this node would "restore" the local copy from itself and report success,
       // which is worse than the failure the caller already handles below.
-      final PeerDialAddress source = resolveSnapshotSource(raftHAServer.getLeaderId());
+      final PeerDialAddress source = resolveSnapshotSource(raftHA != null ? raftHA.getLeaderId() : null);
       if (source.refused())
         throw new RuntimeException("Cannot reinstall database '" + databaseName + "' from the leader: "
             + source.refusal());
@@ -2781,12 +2831,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // The guard's own HTTPS endpoint rather than the raw resolver's: it is declared and derived independently
       // of the HTTP one, so the HTTP verdict does not cover it (issue #6221). Null falls back to plain HTTP.
       final String leaderHttpsAddr = source.httpsAddress();
-      final String clusterToken = raftHAServer.getClusterToken();
+      final String clusterToken = raftHA != null ? raftHA.getClusterToken() : null;
       try {
         // install() keeps the database open during the download and rolls back on failure, so a
         // failed restore never leaves it closed.
-        SnapshotInstaller.install(databaseName, SnapshotInstaller.resolveDatabasePath(server, databaseName),
-            leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+        SnapshotInstaller.install(databaseName, SnapshotInstaller.resolveDatabasePath(localServer, databaseName),
+            leaderHttpAddr, leaderHttpsAddr, clusterToken, localServer);
       } catch (final IOException e) {
         throw new RuntimeException("Failed to install snapshot for restored database '" + databaseName + "'", e);
       }

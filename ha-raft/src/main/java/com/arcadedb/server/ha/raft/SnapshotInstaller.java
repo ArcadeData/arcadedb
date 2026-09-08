@@ -555,6 +555,14 @@ public final class SnapshotInstaller {
    * just before closing it. The conditional open is safe for the install paths only because two installs
    * for the same database are never in flight at once (see {@link #closeLocalDatabaseIfOpen}); a
    * re-register racing a deliberate deregistration elsewhere would be a misuse.
+   * <p>
+   * <b>{@code server} must not be null.</b> Both branches dereference it - the first for
+   * {@code existsDatabase}, the second for {@code getConfiguration} - so there is no path that could
+   * usefully tolerate a null: every caller reaches this from a state machine that {@code createStateMachine}
+   * wired before its reference escaped, so nothing can apply an entry against a half-wired one. Stated here
+   * rather than enforced with a check, because
+   * a null would mean the caller is unwired, and an unwired caller has nowhere to install a snapshot to:
+   * the loud dereference is the correct outcome, and only the precondition was missing.
    */
   static String resolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
     // Best-effort: the exists/get pair is not atomic, but it only resolves a path before the download
