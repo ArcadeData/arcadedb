@@ -38,7 +38,6 @@ public class PrometheusMetricsPlugin implements ServerPlugin {
   // default server. What that endpoint exposes and who may read it is the subject of #7124 and #7222; changing its
   // default exposure is a decision of its own, not a symmetry to restore.
 
-
   private PrometheusMeterRegistry registry;
   private boolean                 enabled;
   private ContextConfiguration    configuration;

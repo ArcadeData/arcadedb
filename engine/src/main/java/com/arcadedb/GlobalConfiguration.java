@@ -2788,8 +2788,13 @@ public enum GlobalConfiguration {
   private static synchronized void dumpConfigurationOrDefer() {
     // Synchronized on the same monitor as readConfiguration(), so "is a pass in flight?" is decided against a pass
     // that cannot start or finish while the question is being asked. It is reentrant for the callback's own caller
-    // (readConfiguration already holds it), and it makes an out-of-band write - SET SERVER SETTING, the MCP tool -
-    // wait for the in-flight pass and then dump the configuration that pass produced, rather than racing it.
+    // (readConfiguration already holds it), and a write from another thread waits for the in-flight pass and then
+    // dumps the configuration that pass produced, rather than racing it.
+    //
+    // "A write" here means a direct GlobalConfiguration.setValue()/reset() on this setting, which is the only way
+    // its callback runs: the ContextConfiguration overlay channels - a server configuration file, SET SERVER
+    // SETTING, the MCP set_server_setting tool - reach applyContextValue, which returns early for anything that is
+    // not SCOPE.SERVER, and this setting is SCOPE.JVM. That predates #7281 and is unchanged by it.
     if (readingConfiguration)
       dumpPending = true;
     else

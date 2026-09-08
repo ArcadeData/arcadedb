@@ -68,8 +68,12 @@ class Issue7281StartupConfigDumpOrderTest {
   }
 
   /**
-   * Turning the setting on outside {@code readConfiguration()} - a server configuration file, {@code SET SERVER
-   * SETTING}, the MCP tool - still dumps straight away: there is no in-flight pass to wait for.
+   * Turning the setting on outside {@code readConfiguration()} still dumps straight away: there is no in-flight pass
+   * to wait for. That means a direct {@code setValue()} on the setting, which is the only channel that runs this
+   * setting's callback at all - the {@link ContextConfiguration} overlay writes (a server configuration file,
+   * {@code SET SERVER SETTING}, the MCP tool) go through {@code applyContextValue}, which returns early for
+   * anything that is not {@code SCOPE.SERVER}, and {@code DUMP_CONFIG_AT_STARTUP} is {@code SCOPE.JVM}. That is
+   * true before and after #7281; this test pins the behaviour the deferral had to preserve, not a new promise.
    */
   @Test
   void settingTheFlagAtRuntimeStillDumpsImmediately() {
