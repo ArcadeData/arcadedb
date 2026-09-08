@@ -143,6 +143,10 @@ class ConsoleBatchTest {
 
     final Database db = new DatabaseFactory("./target/databases/console").open();
     assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
+    // THE async INSERT ITSELF LANDED, NOT JUST THE SYNCHRONOUS DDL BEFORE IT: WITHOUT THIS THE TEST WOULD STILL BE
+    // GREEN IF THE STATEMENT HAD NEVER RUN, AND "NOT ERRORED" WOULD MEAN NOTHING. IT ALSO PINS THE DRAIN THE FLAG
+    // DEPENDS ON - LocalDatabase.close() WAITS ON async.waitCompletion() BEFORE execute() RETURNS
+    assertThat(db.countType("ConsoleOnlyVertex", false)).isEqualTo(1);
     db.drop();
   }
 
