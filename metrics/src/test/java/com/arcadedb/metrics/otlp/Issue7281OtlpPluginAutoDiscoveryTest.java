@@ -20,6 +20,7 @@ package com.arcadedb.metrics.otlp;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -87,6 +88,22 @@ class Issue7281OtlpPluginAutoDiscoveryTest {
     cfg.setValue(GlobalConfiguration.SERVER_METRICS_OTLP_ENABLED.getKey(), true);
 
     assertThat(new OtlpMetricsPlugin().isAutoDiscovered(cfg)).isFalse();
+  }
+
+  /**
+   * Prometheus is excluded from auto-discovery ON PURPOSE, and this pins it so nobody restores the symmetry by
+   * mistake: its gate is {@code arcadedb.serverMetrics}, which defaults to TRUE, so an override here would publish
+   * {@code /prometheus} on every default server - a change to the default exposure of an endpoint whose
+   * authentication is the subject of #7124 and #7222, not a consequence of #7281.
+   */
+  @Test
+  void prometheusIsStillOptInEvenThoughMetricsAreOnByDefault() {
+    assertThat(GlobalConfiguration.SERVER_METRICS.getDefValue()).isEqualTo(Boolean.TRUE);
+
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.SERVER_METRICS.getKey(), true);
+
+    assertThat(new PrometheusMetricsPlugin().isAutoDiscovered(cfg)).isFalse();
   }
 
   /**

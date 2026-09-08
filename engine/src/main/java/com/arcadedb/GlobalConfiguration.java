@@ -2785,7 +2785,11 @@ public enum GlobalConfiguration {
    * caller: mid-pass, every setting declared after {@code DUMP_CONFIG_AT_STARTUP} still holds its compiled-in
    * default, so a dump taken there describes a configuration that never existed (issue #7281).
    */
-  private static void dumpConfigurationOrDefer() {
+  private static synchronized void dumpConfigurationOrDefer() {
+    // Synchronized on the same monitor as readConfiguration(), so "is a pass in flight?" is decided against a pass
+    // that cannot start or finish while the question is being asked. It is reentrant for the callback's own caller
+    // (readConfiguration already holds it), and it makes an out-of-band write - SET SERVER SETTING, the MCP tool -
+    // wait for the in-flight pass and then dump the configuration that pass produced, rather than racing it.
     if (readingConfiguration)
       dumpPending = true;
     else
