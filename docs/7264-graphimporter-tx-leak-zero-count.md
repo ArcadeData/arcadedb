@@ -147,6 +147,9 @@ reading the extracted `COMMIT_EVERY_ROWS` constant.
   out of `run()` before pass 2, and `close()` clears `typeStates` - so the two are never compared;
   truncating them would cost a copy on the success path for no reader.
 - The four sibling entry points listed above are untouched and tracked by #7272.
+- A `rollback()` that fails is reported at `SEVERE` and swallowed, so a repeated failure there is
+  visible only by reading the log. Giving the importer metrics would be the place to surface it
+  (review cycle 3, observation 3); out of scope here.
 
 ## Changes
 
@@ -192,9 +195,12 @@ turned up:
 - **Considered, not real.** A `database.begin()` that itself throws (either the one before the loop
   or the one after an intermediate commit) skipping the rollback: `txOpen[0]` is false at both
   points, and nothing this method opened is on the stack, so there is nothing to roll back.
-- **Considered, not real.** The `finally` masking the original exception if `rollback()` throws:
-  `LocalDatabase.rollback()` swallows `TransactionException` (`:677-690`), and any other failure
-  there would have replaced the exception from a `catch` block just the same.
+- **Considered, argued at first, then fixed in review cycle 2.** The `finally` masking the original
+  exception if `rollback()` throws. `LocalDatabase.rollback()` already swallows
+  `TransactionException` (`:677-690`), which is what made this look survivable - but a throw there
+  would also have skipped the counter assignment after it, which is this issue's own "reports 0
+  vertices" symptom re-entering through the code that fixes it. The rollback now reports a failure
+  at `SEVERE` and swallows it.
 
 ## Test results
 
@@ -236,6 +242,29 @@ Behaviour changes only on the failure path of a vertex source:
 
 The success path is unchanged: `committed[0] == count[0]` after the final commit, so `ts.count` and
 `totalVertices` carry the same values as before.
+
+## PR and review cycles
+
+PR: https://github.com/ArcadeData/arcadedb/pull/7273
+
+- **cycle 1** - `0f4c9a30` - the fix, the three tests and this doc. Review: no blocking findings; one
+  request for a one-line confirmation that skipping the `WARNING` when nothing had been committed is
+  deliberate, and a note that `ts.buckets`/`ts.positions` outlive the committed count on the failure
+  path. Both answered with comments at the two lines in question (`dcbe91ee`).
+- **cycle 2** - `dcbe91ee` - review found a real off-by-one: the `WARNING` described
+  `count[0] - committed[0]` as "rows read since the last commit", but `count[0]` is incremented only
+  after a row becomes a vertex, so the failing row was not in it. The message now speaks in the terms
+  the counters actually hold. The same review flagged, as non-blocking residual risk, that the
+  rollback in the `finally` could replace the propagating exception; acted on rather than deferred,
+  because a throw there would also skip the counter assignment and re-create this issue's own
+  symptom. Both fixed in `31515737`.
+- **cycle 3** - `31515737` - clean. Its two observations (a comment on the `committed[0] > 0` guard,
+  a comment at `ts.buckets = bk.trim()`) were already in the tree from cycle 1; the review appears to
+  have read them only in the cycle-1 commit message. No changes applied, no deferred items.
+
+Final state: **clean-approval** after 3 of the 4 allowed cycles.
+
+Merge is the developer's; this branch was never merged or closed by the workflow.
 
 ## Recommendations
 
