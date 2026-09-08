@@ -29,7 +29,13 @@ import java.util.List;
  * @author Luca Garulli
  */
 public class ThreadBucketSelectionStrategy implements BucketSelectionStrategy {
-  protected int total;
+  // VOLATILE FOR THE SAME REASON AS LocalDocumentType.bucketSelectionStrategy (ISSUE #7119). PUBLISHING A NEW STRATEGY
+  // THROUGH THAT VOLATILE FIELD ALREADY CARRIES THIS WRITE, BUT addBucketInternal()/removeBucket() REBIND THE STRATEGY
+  // ALREADY IN PLACE - THEY CALL setType(this) ON THE SAME OBJECT AND MAKE NO VOLATILE WRITE AFTERWARDS - SO WITHOUT
+  // THIS A CONCURRENT INSERT COULD KEEP READING THE BUCKET COUNT FROM BEFORE THE GROW OR SHRINK, AND HAND OUT AN INDEX
+  // ONE PAST THE LAST BUCKET (THE SHAPE OF ISSUE #6380). ONE ACQUIRING LOAD PER RECORD PLACEMENT, AGAINST A LOOKUP AND
+  // AN INSERT.
+  protected volatile int total;
 
   @Override
   public void setType(final LocalDocumentType type) {
