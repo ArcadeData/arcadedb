@@ -216,6 +216,31 @@ class RemoteSchemaIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #7172: the second getOrCreate*Type() call on a type that already exists threw SchemaException, because the
+   * client read the (then empty) answer of {@code CREATE ... IF NOT EXISTS} as a failure. Every variant must answer
+   * the existing type instead.
+   */
+  @Test
+  void getOrCreateTypesAreIdempotent() throws Exception {
+    testEachServer(serverIndex -> {
+      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        assertThat(database.getSchema().getOrCreateDocumentType("Doc").getName()).isEqualTo("Doc");
+        assertThat(database.getSchema().getOrCreateDocumentType("Doc").getName()).isEqualTo("Doc");
+        assertThat(database.getSchema().getOrCreateDocumentType("Doc", 2).getName()).isEqualTo("Doc");
+
+        assertThat(database.getSchema().getOrCreateVertexType("Vert").getName()).isEqualTo("Vert");
+        assertThat(database.getSchema().getOrCreateVertexType("Vert").getName()).isEqualTo("Vert");
+        assertThat(database.getSchema().getOrCreateVertexType("Vert", 2).getName()).isEqualTo("Vert");
+
+        assertThat(database.getSchema().getOrCreateEdgeType("Edg").getName()).isEqualTo("Edg");
+        assertThat(database.getSchema().getOrCreateEdgeType("Edg").getName()).isEqualTo("Edg");
+        assertThat(database.getSchema().getOrCreateEdgeType("Edg", 2).getName()).isEqualTo("Edg");
+      }
+    });
+  }
+
   @BeforeEach
   public void beginTest() {
     super.beginTest();
