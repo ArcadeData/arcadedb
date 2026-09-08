@@ -1908,12 +1908,19 @@ public enum GlobalConfiguration {
       the next change against; on a multi-MB schema that is tens of MB of heap per database, released as soon as \
       the setting goes back off. \
       \
-      OFF BY DEFAULT, and it must stay off during a rolling upgrade. A node running a version that predates \
-      the delta section of SCHEMA_ENTRY cannot see it - it stops decoding after the sections it knows - and \
-      would apply an empty schema change and diverge SILENTLY. Reading a delta needs no configuration, so \
-      upgrade every node first, then turn this on: from that point every peer understands what the leader \
-      emits. Turning it back off is safe at any time.""",
-      Boolean.class, false),
+      ON BY DEFAULT since issue #7219, and safe there because the leader no longer takes the operator's word \
+      for it. A node running a version that predates the delta section of SCHEMA_ENTRY cannot see it - it stops \
+      decoding after the sections it knows - and would apply an empty schema change and diverge SILENTLY. The \
+      leader therefore asks every peer in its Raft configuration, over POST /api/v1/cluster/capabilities, \
+      whether it can decode one, and ships the whole document unless every peer has said yes: a peer that is \
+      unknown, unreachable, running a build without that endpoint, or whose answer has gone stale all count as \
+      no. A rolling upgrade needs no sequencing - deltas start by themselves once the last node is up. \
+      \
+      What this setting is FOR, now that it is not a safety interlock: turning deltas off is the way to give \
+      back the per-database schema document the leader holds to diff against, and the way to force whole \
+      documents while diagnosing a schema divergence. Turning it off is safe at any time; turning it back on \
+      costs one whole-document entry per database to re-prime the diff base.""",
+      Boolean.class, true),
 
   HA_BOOTSTRAP_FROM_LOCAL_DATABASE("arcadedb.ha.bootstrapFromLocalDatabase", SCOPE.SERVER,
       """
