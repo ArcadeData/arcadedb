@@ -41,7 +41,7 @@ possible `char` values, and never interprets that character as a regular express
 
 ### Every way to violate it
 
-```
+```shell
 $ grep -rn "split(String.valueOf(" --include="*.java" . | grep -v /target/
 integration/src/main/java/com/arcadedb/integration/importer/graph/CsvRowSource.java:96:    return line.split(String.valueOf(delimiter), -1);
 ```
@@ -49,7 +49,7 @@ integration/src/main/java/com/arcadedb/integration/importer/graph/CsvRowSource.j
 One hit in the whole tree: the reported line. Splitting is funnelled through the private `splitLine`, which both
 the header read and the per-row read call, so a single call site carries both.
 
-```
+```shell
 $ grep -rn "\.split(" integration/src/main/java/
 .../ImportSecurityValidator.java:162:    for (final String dir : allowed.split(",")) {
 .../graph/GraphImporter.java:316:        final String[] parts = spec.split("=", 2);
@@ -69,7 +69,7 @@ Every other `.split(` in the module takes a **compile-time constant** that is no
 
 Constructors and factories that can carry a metacharacter delimiter into the class:
 
-```
+```shell
 $ grep -n "CsvRowSource(\|static CsvRowSource from(" integration/src/main/java/com/arcadedb/integration/importer/graph/CsvRowSource.java
 41:  public CsvRowSource(final String filePath) {                                        // default ','
 45:  public CsvRowSource(final String filePath, final char delimiter, final int skipLines)
@@ -79,14 +79,14 @@ $ grep -n "CsvRowSource(\|static CsvRowSource from(" integration/src/main/java/c
 
 Config-driven construction:
 
-```
+```shell
 $ grep -n "new CsvRowSource" -r integration/src/main/java/
 .../graph/GraphImporter.java:473:      return new CsvRowSource(filePath, delimiter.charAt(0), skipLines);
 ```
 
 Sibling delimiter walkers in the same module (the `#7263` / `#7268` fixes) - already literal, `indexOf`-based:
 
-```
+```shell
 $ grep -n "indexOf(delim" integration/src/main/java/com/arcadedb/integration/importer/graph/GraphImporter.java
 1256:        pos = fieldVal.indexOf(delim, start);
 1321:      pos = fieldVal.indexOf(delimiter, start);
@@ -152,7 +152,7 @@ New test: `integration/src/test/java/com/arcadedb/integration/importer/Issue7267
 
 **Before the fix** - 5 of its 7 tests fail, one per bug-carrying entry point:
 
-```
+```text
 [ERROR] Tests run: 7, Failures: 5, Errors: 0, Skipped: 0
   everyRegexMetacharacterSplitsOnTheLiteralCharacter:121 [delimiter '|' ...] Expecting map: {} to contain only: ["lastName"="Miner", "firstName"="Jay", "id"="1"]
   aMetacharacterDelimiterNeverRaisesARegexError            (PatternSyntaxException)
@@ -167,14 +167,14 @@ behaviour-preservation test is supposed to do.
 
 **After the fix:**
 
-```
+```text
 [INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0 -- in Issue7267CsvRowSourceLiteralDelimiterTest
 ```
 
 **No regressions** - the whole `integration` module, benchmark/vector/slow lanes excluded
 (`mvn -o -pl integration test -DexcludedGroups=benchmark,vector,slow`):
 
-```
+```text
 [INFO] Results:
 [INFO] Tests run: 270, Failures: 0, Errors: 0, Skipped: 9
 [INFO] BUILD SUCCESS
@@ -272,3 +272,27 @@ The reviewer could not run Maven in its environment and said so. That gap is cov
 `integration` module was re-run after the trim - `Tests run: 270, Failures: 0, Errors: 0, Skipped: 9`.
 
 Again nothing deferred, so no `review-deferred-*.md` notes file was produced in this cycle either.
+
+### Cycle 3 - `c25e1547d9`
+
+Two reviewers this cycle. `claude`: "No blocking issues found", with the correctness trace repeated
+independently a third time and the `Pattern.quote` / `CodeUtils.split` rejections checked against the actual
+`CodeUtils` source rather than taken on trust. `coderabbitai` posted one inline finding. Two items applied, two
+answered:
+
+1. **`coderabbitai`, MD040 on `docs/7267-csvrowsource-regex-delimiter.md`** - eight fenced blocks carried no
+   language, which `markdownlint-cli2` flags. **Applied**: `shell` on the five grep/command blocks, `text` on
+   the three captured-output blocks.
+2. **`claude`, the `emptyAndTrailingFieldsKeepTheirSplitMinusOneShape` assertions are easy to misread** - a
+   `doesNotContainKey` there is about `CsvRecordReader.get` folding empty to null, not about the splitter
+   dropping a column. **Applied**: split into two assertions so each `.as()` describes one claim, and the
+   fold-to-null one says which behaviour it is testing.
+3. **The two-pass scan was reasoned about, not benchmarked.** **Skipped** - the reviewer's own conclusion is
+   "I doubt this is measurable", and there is no CSV-import benchmark in the tree to move. The claim the fix
+   actually rests on is not "two passes beat one" but "no `Pattern` is compiled per row", which is proved from
+   `String.java:3691-3692` rather than measured. Recorded here so the next person can see it was weighed.
+4. **The per-issue doc convention is worth confirming with the team.** **Skipped, and passed to the developer**
+   rather than argued: the evidence that it is current practice is in cycle 1, but whether the team *wants* the
+   convention is the maintainer's call, not this PR's.
+
+`Tests run: 7, Failures: 0, Errors: 0, Skipped: 0` after both changes.

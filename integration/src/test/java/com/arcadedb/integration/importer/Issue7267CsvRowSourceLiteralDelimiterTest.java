@@ -264,8 +264,11 @@ class Issue7267CsvRowSourceLiteralDelimiterTest {
 
     assertThat(rows).hasSize(2);
     assertThat(rows.get(0))
-        .as("an empty interior field must not shift the columns that follow it")
-        .containsEntry("id", "1").containsEntry("lastName", "Miner")
+        .as("an empty interior field must not shift the columns that follow it - 'Miner' stays under 'lastName'")
+        .containsEntry("id", "1").containsEntry("lastName", "Miner");
+    assertThat(rows.get(0))
+        .as("'firstName' is absent because CsvRecordReader.get folds empty to null, not because the split "
+            + "dropped the column - the column landing is what the assertion above proves")
         .doesNotContainKey("firstName");
     assertThat(rows.get(0))
         .as("a trailing empty header name is still a column, exactly as split(literal, -1) reports it")
