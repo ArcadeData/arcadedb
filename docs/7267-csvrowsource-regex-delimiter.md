@@ -1,0 +1,225 @@
+# #7267 - `CsvRowSource` splits rows with a regex, so a metacharacter delimiter shreds or annihilates every row
+
+Issue: https://github.com/ArcadeData/arcadedb/issues/7267
+
+## Root cause
+
+`integration/src/main/java/com/arcadedb/integration/importer/graph/CsvRowSource.java:96`
+
+```java
+return line.split(String.valueOf(delimiter), -1);
+```
+
+`String.split(String, int)`'s first argument is a **regular expression**. The delimiter is a `char` chosen by the
+operator, so any `char` that is a regex metacharacter is compiled as that metacharacter instead of as itself.
+
+## Reproduction (measured, not recalled)
+
+`"a<d>b<d>c".split(String.valueOf(d), -1)` on JDK 21:
+
+| delimiter | result | family |
+|---|---|---|
+| `;` `,` `]` `}` `-` | `[a, b, c]` | correct |
+| `\|` | `[a, \|, b, \|, c, ]` | **silent** - alternation of two empty branches, every char is its own field |
+| `.` | `[, , , , , ]` | **silent** - the row is annihilated |
+| `$` | `[a$b$c, ]` | **silent** - end-anchor, no split at all |
+| `^` | `[a^b^c]` | **silent** - start-anchor, no split at all |
+| `*` `+` `?` `{` | `PatternSyntaxException: Dangling meta character` / `Illegal repetition` | crash |
+| `(` `)` `[` | `PatternSyntaxException: Unclosed group` / `Unmatched closing ')'` / `Unclosed character class` | crash |
+| `\` | `PatternSyntaxException: Unescaped trailing backslash` | crash |
+
+The silent family is the one the issue is about: the header line is split into single characters, so every
+`record.get(attribute)` misses, and the import produces property-less vertices, or none at all, saying nothing.
+The crashing family is not benign either - a `PatternSyntaxException` mentions a regex the operator never wrote.
+
+## Completeness
+
+### Invariant
+
+**A `CsvRowSource` splits each line on the literal delimiter character it was given, for every one of the 65536
+possible `char` values, and never interprets that character as a regular expression.**
+
+### Every way to violate it
+
+```
+$ grep -rn "split(String.valueOf(" --include="*.java" . | grep -v /target/
+integration/src/main/java/com/arcadedb/integration/importer/graph/CsvRowSource.java:96:    return line.split(String.valueOf(delimiter), -1);
+```
+
+One hit in the whole tree: the reported line. Splitting is funnelled through the private `splitLine`, which both
+the header read and the per-row read call, so a single call site carries both.
+
+```
+$ grep -rn "\.split(" integration/src/main/java/
+.../ImportSecurityValidator.java:162:    for (final String dir : allowed.split(",")) {
+.../graph/GraphImporter.java:316:        final String[] parts = spec.split("=", 2);
+.../graph/GraphImporter.java:408:    final String[] parts = value.split(":");
+.../graph/CsvRowSource.java:96:    return line.split(String.valueOf(delimiter), -1);
+.../SourceDiscovery.java:396:          final String[] fields1 = line.toString().split(" ");
+.../SourceDiscovery.java:397:          final String[] fields2 = line2.toString().split(" ");
+.../format/CSVImporterFormat.java:150,410,570:  ....split(",")
+.../format/CSVImporterFormat.java:804:        final String[] headerColumns = header.split(",");
+.../format/JSONImporterFormat.java:418:      for (String tName : typeName.split(",")) {
+.../importer/OrientDBImporter.java:890:    for (final String pair : fieldTypes.split(",")) {
+.../exporter/ExporterSettings.java:82,84,86:   value.split(",")
+```
+
+Every other `.split(` in the module takes a **compile-time constant** that is not a regex metacharacter
+(`","`, `"="`, `":"`, `" "`). None of them can be reached by an operator-supplied character. Argued, not fixed.
+
+Constructors and factories that can carry a metacharacter delimiter into the class:
+
+```
+$ grep -n "CsvRowSource(\|static CsvRowSource from(" integration/src/main/java/com/arcadedb/integration/importer/graph/CsvRowSource.java
+41:  public CsvRowSource(final String filePath) {                                        // default ','
+45:  public CsvRowSource(final String filePath, final char delimiter, final int skipLines)
+51:  public static CsvRowSource from(final String dir, final String fileName)             // default ','
+55:  public static CsvRowSource from(final String dir, final String fileName, final char delimiter)
+```
+
+Config-driven construction:
+
+```
+$ grep -n "new CsvRowSource" -r integration/src/main/java/
+.../graph/GraphImporter.java:473:      return new CsvRowSource(filePath, delimiter.charAt(0), skipLines);
+```
+
+Sibling delimiter walkers in the same module (the `#7263` / `#7268` fixes) - already literal, `indexOf`-based:
+
+```
+$ grep -n "indexOf(delim" integration/src/main/java/com/arcadedb/integration/importer/graph/GraphImporter.java
+1256:        pos = fieldVal.indexOf(delim, start);
+1321:      pos = fieldVal.indexOf(delimiter, start);
+```
+
+`CSVImporterFormat` hands its delimiter to Univocity as a `char` / `String` on `CsvFormat.setDelimiter`
+(lines 739-740, 867), which is a literal separator, not a pattern. Argued, not fixed.
+
+### Entry-point coverage table
+
+| Entry point | Covered by fix? | Covered by a test? |
+|---|---|---|
+| JSON config `"delimiter": "\|"` -> `GraphImporter.createRecordSource` -> `new CsvRowSource(path, char, skipLines)` | yes | yes - `aJsonConfiguredPipeDelimiterImportsEveryProperty` |
+| `new CsvRowSource(path, delimiter, skipLines)` (public ctor) | yes | yes - `everyRegexMetacharacterSplitsOnTheLiteralCharacter`, `aPipeDelimitedImportThroughTheConstructorLoadsEveryProperty` |
+| `CsvRowSource.from(dir, file, delimiter)` (public factory) | yes | yes - `theThreeArgFactorySplitsOnTheLiteralCharacter` |
+| `new CsvRowSource(path)` / `from(dir, file)` - default `','` | yes (behaviour preserved) | yes - `theDefaultCommaDelimiterIsUnchanged`, plus the pre-existing `GraphImporterCSVTest` |
+| header line (same `splitLine`, one call site) | yes | yes - asserted inside every metacharacter case |
+| trailing / repeated empty fields (`split(..., -1)` semantics) | yes (preserved exactly) | yes - `emptyAndTrailingFieldsKeepTheirSplitMinusOneShape` |
+| `GraphImporter` split-edge walkers (`collectSplitKeys`, inline walker) | n/a - argued: already literal `indexOf` walks (#7263/#7268), evidence above | n/a |
+| `CSVImporterFormat` (Univocity) | n/a - argued: `CsvFormat.setDelimiter` takes a literal separator | n/a |
+| other `.split(` in `integration/src/main/java` | n/a - argued: all compile-time constants, none a metacharacter | n/a |
+
+No row is blank, and no row needed a follow-up issue.
+
+### Reachability
+
+`new CsvRowSource(...)` is constructed on a live path by `GraphImporter.createRecordSource`
+(`GraphImporter.java:473`), which every JSON-configured CSV source goes through, and directly by callers of the
+public constructor and factory - `GraphImporterCSVTest`, `GraphImporterArrayPropsTest`,
+`GraphImporterSplitDelimiterTest` and the StackOverflow/UberTrips importers all build one. `splitLine` runs once
+per header and once per data row of every such import. Nothing gates it behind a flag.
+
+### Residual risk
+
+`CsvRowSource` still has **no quoting support** - it is documented as "for quoted fields use Univocity" and a
+delimiter that appears inside a field value still splits that value. That is a separate, documented limitation
+of this class and not what #7267 reports; it is unchanged by this fix. Beyond that, the table above has no
+uncovered row.
+
+## Fix
+
+`splitLine` walks the line with `indexOf(char, from)` and fills a `String[]` directly:
+
+- **literal by construction** - a `char` compared with `==` cannot be a metacharacter;
+- **cheaper than the code it replaces** - `String.split` only takes its regex-free fast path for a single
+  *non-metacharacter* char; for `|`, `.`, `$` and friends it compiles a `Pattern` per call, i.e. per row of a
+  bulk import. The walk allocates the result array once and no `Pattern` ever;
+- **byte-identical output to `split(literal, -1)`** for every delimiter that worked before: one leading pass
+  counts the separators so the array is sized exactly, and trailing empty fields are kept.
+
+`java.util.regex.Pattern.quote` was rejected: `\Q;\E` is not a single character, so `String.split` would compile
+a `Pattern` on *every* row for *every* delimiter, including the default comma - a hot-path regression for the
+common case in exchange for correctness in the rare one.
+
+`com.arcadedb.utility.CodeUtils.split(String, char, int, int)` was rejected as the reuse candidate for two
+reasons: it drops the **trailing empty field** (`"a;b;"` answers `[a, b]`, where `split(";", -1)` answers
+`[a, b, ""]`), which would silently change behaviour for the delimiters that work today, and it returns a
+`List<String>` that would need an extra array copy per row.
+
+## Verification
+
+New test: `integration/src/test/java/com/arcadedb/integration/importer/Issue7267CsvRowSourceLiteralDelimiterTest.java`.
+
+**Before the fix** - 5 of its 7 tests fail, one per bug-carrying entry point:
+
+```
+[ERROR] Tests run: 7, Failures: 5, Errors: 0, Skipped: 0
+  everyRegexMetacharacterSplitsOnTheLiteralCharacter:121 [delimiter '|' ...] Expecting map: {} to contain only: ["lastName"="Miner", "firstName"="Jay", "id"="1"]
+  aMetacharacterDelimiterNeverRaisesARegexError            (PatternSyntaxException)
+  aPipeDelimitedImportThroughTheConstructorLoadsEveryProperty:166 expected: "Jay" but was: null
+  theThreeArgFactorySplitsOnTheLiteralCharacter:186 Expecting map: {} to contain entries: ["firstName"="Jay"]
+  aJsonConfiguredPipeDelimiterImportsEveryProperty
+```
+
+The two that pass before the fix are the two that assert behaviour must **not** change -
+`theDefaultCommaDelimiterIsUnchanged` and `emptyAndTrailingFieldsKeepTheirSplitMinusOneShape` - which is what a
+behaviour-preservation test is supposed to do.
+
+**After the fix:**
+
+```
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0 -- in Issue7267CsvRowSourceLiteralDelimiterTest
+```
+
+**No regressions** - the whole `integration` module, benchmark/vector/slow lanes excluded
+(`mvn -o -pl integration test -DexcludedGroups=benchmark,vector,slow`):
+
+```
+[INFO] Results:
+[INFO] Tests run: 270, Failures: 0, Errors: 0, Skipped: 9
+[INFO] BUILD SUCCESS
+```
+
+That run includes every existing CSV consumer of the changed method: `GraphImporterCSVTest`,
+`GraphImporterArrayPropsTest`, `GraphImporterSplitDelimiterTest`, `GraphImporterIdTypesTest`,
+`Issue6811CsvDelimiterOptionTest`, `Issue7266ImporterConfigValidationTest`.
+
+## Impact
+
+- Behaviour changes only for delimiters that were already broken. Every delimiter that produced correct fields
+  before produces byte-identical fields now, empty and trailing fields included.
+- Bulk imports get slightly cheaper across the board: no `Pattern` is compiled for any delimiter, where the old
+  code compiled one per row for every non-default separator that is a metacharacter.
+
+## Finding ledger
+
+- [x] 1. `CsvRowSource.splitLine` splits on a regex - fixed on all three entry points (JSON config, public
+      constructor, three-argument factory), 7 regression tests.
+
+## Adversarial pass
+
+The `Task` tool is disabled in this session, so the isolated subagent could not be spawned. The pass was run by
+hand against the same three inputs (issue body, diff, tree) and is recorded here in full rather than skipped.
+
+1. **"The rest threw" was false.** The test's `REGEX_METACHARACTERS` javadoc claimed every character except
+   `|`, `.`, `$`, `^` raised a `PatternSyntaxException`. `]` and `}` did not: they produced correct fields
+   before this fix. Evidence - `String.java:3691-3692` in the JDK 26 `src.zip` gates the regex-free fast path on
+   `regex.length() == 1 && ".$|()[{^?*+\\".indexOf(ch) == -1`, and `]` and `}` are absent from that set, which
+   matches the measured `']' -> [a, b, c]`. **Fixed here**: the javadoc now says which two are carried for
+   symmetry rather than as regressions, so nobody later reads the loop as fourteen reproduced bugs.
+2. **The performance sentence in `splitLine`'s javadoc was an unverified claim about the JDK.** Now verified
+   against `String.java:3684-3696` (same fast-path condition), which is exactly what it asserts. **Fixed here**
+   by proving it rather than by weakening it.
+3. **Is any construction of `CsvRowSource` outside the covered entry points?** No.
+   `grep -rn "new CsvRowSource(\|CsvRowSource.from(" --include="*.java" .` answers exactly one production site,
+   `GraphImporter.java:473`, plus the class's own two factories and test code; and
+   `grep -rln CsvRowSource` outside `integration/` answers nothing. **Not real** - the coverage table is complete.
+4. **Does the fix change `String.split(literal, -1)`'s answer for any line shape?** Walked by hand for the four
+   shapes that differ between splitters: `""` -> `[""]`, `"abc"` -> `["abc"]`, `";"` -> `["", ""]`,
+   `"a;;b;"` -> `["a", "", "b", ""]`. The counting pass and the walk scan with the identical
+   `indexOf(delimiter, pos + 1)` sequence, so the second loop can never see `-1`. **Not real.**
+5. **Does `indexOf(int)` mis-handle a surrogate delimiter?** No. `String.indexOf(int ch, int fromIndex)` routes
+   any `ch < Character.MIN_SUPPLEMENTARY_CODE_POINT` to a plain char scan, and a `char` argument always widens
+   to a value in that range. **Not real.**
+
+No finding was out of scope, so no follow-up issue was filed.

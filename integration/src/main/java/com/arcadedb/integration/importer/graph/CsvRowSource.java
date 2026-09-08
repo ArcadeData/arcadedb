@@ -29,7 +29,8 @@ import java.util.Map;
 /**
  * {@link GraphImporter.RecordSource} that reads CSV files with a header row.
  * Uses the first line as column names; subsequent lines are data records.
- * Supports configurable delimiter (default: comma).
+ * Supports configurable delimiter (default: comma). The delimiter is matched as a literal character, so any
+ * character is a usable field separator - {@code '|'} and {@code '.'} included (issue #7267).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -91,9 +92,46 @@ public class CsvRowSource implements GraphImporter.RecordSource {
     }
   }
 
+  /**
+   * Splits a line on the delimiter as a LITERAL character, keeping every empty field - the shape
+   * {@code String.split(literal, -1)} answers, which the header/value zip in {@link #forEach} is written against.
+   * <p>
+   * Issue #7267: this used to be {@code line.split(String.valueOf(delimiter), -1)}, whose first argument is a
+   * <b>regular expression</b>. The delimiter is a character the operator chooses, so every one that happens to be a
+   * regex metacharacter did something other than separate fields, and never said which character was to blame:
+   * {@code '|'} is an alternation of two empty branches, so every character became its own field, separators
+   * included; {@code '.'} matched everything and annihilated the row; {@code '$'} and {@code '^'} are anchors and
+   * split nothing at all; {@code '*'}, {@code '+'}, {@code '?'}, {@code '('}, {@code ')'}, {@code '['}, {@code '{'}
+   * and {@code '\'} threw {@code PatternSyntaxException} about a pattern nobody wrote. The first four are the worse
+   * half: a header line cut into single characters means every {@code get(attribute)} misses, so the import produces
+   * vertices with no properties, or none, in silence.
+   * <p>
+   * Walking with {@code indexOf(char, from)} is literal by construction and also cheaper than what it replaces:
+   * {@code String.split} takes its regex-free fast path only for a single <i>non-metacharacter</i> char, and
+   * compiles a {@code Pattern} per call - that is, per row of a bulk import - for the others. One counting pass
+   * sizes the result array exactly, so a row costs one array and its substrings and no {@code Pattern} ever.
+   * {@code Pattern.quote} would have been the one-line fix and was rejected for the mirror-image reason: {@code \Q;\E}
+   * is not a single character, so it would compile a {@code Pattern} on every row for every delimiter, the default
+   * comma included.
+   * <p>
+   * Quoting is still unsupported, exactly as before - a delimiter inside a field value still separates fields. For
+   * quoted CSV use the Univocity-backed {@code CSVImporterFormat}.
+   */
   private String[] splitLine(final String line) {
-    // Simple CSV split (no quoting support — for quoted fields use Univocity)
-    return line.split(String.valueOf(delimiter), -1);
+    int fields = 1;
+    for (int pos = line.indexOf(delimiter); pos >= 0; pos = line.indexOf(delimiter, pos + 1))
+      ++fields;
+
+    final String[] values = new String[fields];
+    int start = 0;
+    for (int i = 0; i < fields - 1; ++i) {
+      final int pos = line.indexOf(delimiter, start);
+      values[i] = line.substring(start, pos);
+      start = pos + 1;
+    }
+    values[fields - 1] = line.substring(start);
+
+    return values;
   }
 
   private static class CsvRecordReader implements GraphImporter.RecordReader {
