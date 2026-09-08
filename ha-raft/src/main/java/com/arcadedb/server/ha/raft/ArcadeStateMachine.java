@@ -52,7 +52,6 @@ import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.storage.FileInfo;
 import org.apache.ratis.server.storage.RaftStorage;
-import org.apache.ratis.statemachine.SnapshotRetentionPolicy;
 import org.apache.ratis.statemachine.StateMachineStorage;
 import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
@@ -90,6 +89,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
+import java.util.regex.Matcher;
 import java.util.zip.CRC32;
 
 /**
@@ -596,8 +596,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // design (see registerSnapshotMarker), which makes Ratis warn once per marker on every checkpoint
     // and every restart. Silence just that one message before the storage that emits it is opened
     // (issue #6991). Idempotent, so the RaftHAServer.start() call and this one cannot stack.
+    // Still needed after #7209 stopped ArcadeDB calling cleanupOldSnapshots() itself: the warn loop
+    // lives in that method, and Ratis's own StateMachineUpdater calls it after every snapshot
+    // (ratis-server 3.3.0, StateMachineUpdater.java:301).
     RatisSnapshotDigestWarningFilter.install();
     storage.init(raftStorage);
+    // A node upgrading to the #7209 fix still carries every marker its earlier checkpoints left
+    // behind. Drop them here so the directory scan starts bounded even on a node that never
+    // checkpoints again.
+    pruneSnapshotMarkersAtStartup();
     reinitialize();
     // Recover any snapshot installations that were interrupted by a crash
     if (server != null) {
@@ -1304,8 +1311,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@link DatabaseReconciler}), so the empty file is safe across restarts.
    * <p>
    * Used by both {@link #takeSnapshot()} (leader-side periodic compaction checkpoint) and
-   * {@link #notifyInstallSnapshotFromLeader} (follower-side install). Only the most recent marker is
-   * retained; older zero-byte markers are pruned best-effort.
+   * {@link #notifyInstallSnapshotFromLeader} (follower-side install). Markers below {@code index} are
+   * pruned best-effort before returning, see {@link #pruneObsoleteSnapshotMarkers}.
+   *
+   * <b>Not synchronised, deliberately.</b> Both callers can in principle register concurrently, and a
+   * low-index registration whose file lands after a concurrent high-index prune leaves that one marker
+   * behind: its own prune runs with its own (lower) {@code keepIndex} and so removes nothing. It is
+   * self-healing - any later prune runs with a higher {@code keepIndex} and sweeps it - and it costs a
+   * zero-byte file in the meantime. A lock here would add serialisation to the snapshot path to buy
+   * that back. What the prune must never do is delete a marker that is still the latest, and the
+   * strictly-below comparison in {@link #pruneObsoleteSnapshotMarkers} guarantees that without a lock:
+   * {@code keepIndex} is never above the index {@code storage} reports as latest.
    *
    * @return {@code true} if the marker was written and registered, {@code false} on I/O failure
    */
@@ -1322,25 +1338,129 @@ public class ArcadeStateMachine extends BaseStateMachine {
         snapshotFile.createNewFile();
       storage.updateLatestSnapshot(new SingleFileSnapshotInfo(
           new FileInfo(snapshotFile.toPath(), null), term, index));
-      // Keep only the latest marker; older zero-byte markers are obsolete once a newer one exists.
-      // SnapshotRetentionPolicy declares getNumSnapshotsRetained() as a default method (not abstract),
-      // so it is not a functional interface and cannot be supplied as a lambda.
-      try {
-        storage.cleanupOldSnapshots(new SnapshotRetentionPolicy() {
-          @Override
-          public int getNumSnapshotsRetained() {
-            return 1;
-          }
-        });
-      } catch (final IOException cleanupEx) {
-        LogManager.instance().log(this, Level.FINE,
-            "Could not clean up old snapshot markers: %s", cleanupEx.getMessage());
-      }
+      // Keep only the marker just registered; older zero-byte markers are obsolete once a newer one
+      // exists. This used to be storage.cleanupOldSnapshots(policy), which deletes nothing for
+      // ArcadeDB (issue #7209): Ratis 3.3.0's SimpleStateMachineStorage advances its delete index
+      // only after counting getNumSnapshotsRetained() markers that HAVE an .md5 companion, and this
+      // state machine writes none by design (see above), so its deleteIdx stays -1 whatever policy
+      // it is handed.
+      pruneObsoleteSnapshotMarkers(parentDir, index);
       return true;
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING,
           "Failed to write Raft snapshot marker at (term=%d, index=%d): %s", term, index, e.getMessage());
       return false;
+    }
+  }
+
+  /**
+   * Deletes every {@code snapshot.<term>_<index>} marker in {@code stateMachineDir} whose index is
+   * <b>strictly below</b> {@code keepIndex}, best-effort (issue #7209).
+   * <p>
+   * ArcadeDB's markers are zero-byte placeholders, so an older one carries nothing a newer one does
+   * not: {@link SimpleStateMachineStorage#getLatestSnapshot()} only ever reports the highest index it
+   * finds. Left alone they accumulate one inode and one directory entry per checkpoint for the life of
+   * the node, and every {@code getSingleFileSnapshotInfos()} scan - one per checkpoint, one per restart
+   * - walks all of them.
+   * <p>
+   * Strictly below, never at or above, so the marker just written keeps its own file and a marker at a
+   * higher index (one a concurrent {@link #notifyInstallSnapshotFromLeader} registered, or one this
+   * call is superseded by) is never removed. Two markers that share an index and differ only in term
+   * both survive on purpose: {@code updateLatestSnapshot} keeps the <i>previous</i> info on an equal
+   * index, so the live latest-snapshot reference may point at exactly the lower-term file.
+   * <p>
+   * Only names matching {@link SimpleStateMachineStorage#SNAPSHOT_REGEX} are candidates, so
+   * {@code .md5} companions and {@code .tmp}/{@code .corrupt} leftovers are left alone; Ratis sweeps
+   * orphaned {@code .md5} files itself on the {@code cleanupOldSnapshots()} call its
+   * {@code StateMachineUpdater} makes after every snapshot.
+   * <p>
+   * Best-effort by design, and the guarantee lives here rather than at the call sites: a failed delete
+   * costs one stale directory entry, never correctness, so every failure - a {@code false} from
+   * {@link File#delete()}, and any {@link RuntimeException} the filesystem raises on the way, such as a
+   * {@code SecurityException} from {@link File#listFiles()} - is logged at FINE and swallowed. The
+   * caller's snapshot registration still succeeds. Failing a checkpoint over a cosmetic cleanup would
+   * block log purge, which is strictly worse than a leftover file.
+   *
+   * @return the number of markers actually deleted, {@code 0} if the sweep could not run at all
+   */
+  private int pruneObsoleteSnapshotMarkers(final File stateMachineDir, final long keepIndex) {
+    try {
+      return pruneObsoleteSnapshotMarkers0(stateMachineDir, keepIndex);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Could not prune obsolete Raft snapshot markers in %s: %s", stateMachineDir, e.getMessage());
+      return 0;
+    }
+  }
+
+  /** The sweep itself; {@link #pruneObsoleteSnapshotMarkers} is the guard that makes it best-effort. */
+  private int pruneObsoleteSnapshotMarkers0(final File stateMachineDir, final long keepIndex) {
+    if (stateMachineDir == null)
+      return 0;
+    final File[] entries = stateMachineDir.listFiles();
+    if (entries == null)
+      return 0;
+
+    int deleted = 0;
+    for (final File entry : entries) {
+      final Matcher matcher = SimpleStateMachineStorage.SNAPSHOT_REGEX.matcher(entry.getName());
+      if (!matcher.matches())
+        continue;
+      final long markerIndex;
+      try {
+        markerIndex = Long.parseLong(matcher.group(2));
+      } catch (final NumberFormatException ignored) {
+        // A digit run too long to be a long: not a marker this state machine wrote. Leave it alone.
+        continue;
+      }
+      if (markerIndex >= keepIndex)
+        continue;
+      if (entry.delete())
+        deleted++;
+      else
+        LogManager.instance().log(this, Level.FINE,
+            "Could not delete obsolete Raft snapshot marker %s", entry.getAbsolutePath());
+    }
+
+    if (deleted > 0)
+      LogManager.instance().log(this, Level.FINE,
+          "Pruned %d obsolete Raft snapshot marker(s) below index %d", deleted, keepIndex);
+    return deleted;
+  }
+
+  /**
+   * One-shot prune at {@link #initialize} time, so a node that accumulated markers before the #7209
+   * fix does not carry them (and the directory scan over them) until its next checkpoint - or forever,
+   * if it never takes another one.
+   * <p>
+   * Runs after {@code storage.init()}, so {@link SimpleStateMachineStorage#getLatestSnapshot()} already
+   * reports the highest-index marker on disk; everything below it is obsolete. A node with no marker
+   * yet reports {@code null} and nothing is pruned.
+   * <p>
+   * The directory check comes first on purpose. On a node whose state-machine directory does not exist
+   * yet, {@code storage.init()} has already had {@code loadLatestSnapshot()} fail its directory scan
+   * and log {@code "Failed to updateLatestSnapshot from ..."} - a WARNING the #6991 filter deliberately
+   * lets through. Nothing is cached after that failure, so calling {@code getLatestSnapshot()} again
+   * here would re-run the scan and log the same warning a second time on every fresh boot.
+   */
+  private void pruneSnapshotMarkersAtStartup() {
+    try {
+      final File stateMachineDir = storage.getSnapshotFile(0L, 0L).getParentFile();
+      if (stateMachineDir == null || !stateMachineDir.isDirectory())
+        return;
+      final SingleFileSnapshotInfo latest = storage.getLatestSnapshot();
+      if (latest == null)
+        return;
+      final int pruned = pruneObsoleteSnapshotMarkers(stateMachineDir, latest.getIndex());
+      if (pruned > 0)
+        LogManager.instance().log(this, Level.INFO,
+            "Removed %d obsolete Raft snapshot marker(s) left by earlier checkpoints; the newest, at index %d, is retained",
+            pruned, latest.getIndex());
+    } catch (final RuntimeException e) {
+      // The sweep guards itself; this covers the lookups above it (getSnapshotFile throws when Ratis
+      // has no state-machine directory). Never let housekeeping fail a state-machine start.
+      LogManager.instance().log(this, Level.FINE,
+          "Could not prune obsolete Raft snapshot markers at startup: %s", e.getMessage());
     }
   }
 
