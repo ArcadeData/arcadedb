@@ -85,11 +85,10 @@ public class ContextConfiguration implements Serializable {
     json.put("configuration", cfg);
 
     for (final Map.Entry<String, Object> entry : config.entrySet()) {
-      final Object value = entry.getValue();
       // A Class-typed setting (arcadedb.dateImplementation and friends) is persisted by NAME: that is what a
       // JSON document can hold, and what fromJSON reads back through GlobalConfiguration.coerce (issue #7163).
       cfg.put(entry.getKey().substring(GlobalConfiguration.PREFIX.length()),
-          value instanceof Class<?> clazz ? clazz.getName() : value);
+          GlobalConfiguration.externalizeValue(entry.getValue()));
     }
 
     return json.toString();

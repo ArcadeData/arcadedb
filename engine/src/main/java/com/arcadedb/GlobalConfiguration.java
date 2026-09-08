@@ -2648,6 +2648,19 @@ public enum GlobalConfiguration {
    * @param iKey Key to find. It's case insensitive.
    * @return OGlobalConfiguration instance if found, otherwise null
    */
+  /**
+   * The form a setting's value takes outside this process: in a JSON document, in the result row of an admin
+   * command, in an API response.
+   * <p>
+   * Issue #7163: only a {@code Class}-typed setting differs from its own value, and it differs everywhere -
+   * {@code Class.toString()} is {@code "class java.util.Date"}, which is neither what was written nor anything a
+   * reader can write back. Its NAME is, and is what {@code coerce} reads. One method rather than the three
+   * copies the three externalising sites would otherwise each need.
+   */
+  public static Object externalizeValue(final Object value) {
+    return value instanceof Class<?> clazz ? clazz.getName() : value;
+  }
+
   public static GlobalConfiguration findByKey(final String iKey) {
     String key = iKey;
     if (!key.startsWith(PREFIX))

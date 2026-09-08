@@ -92,7 +92,9 @@ public class SetServerSettingTool {
     // just opened the metrics endpoint. A value an administrator typed is refused instead.
     final Object coerced = cfg.coerceFromAdminCommand(value);
 
-    final Object oldValue = server.getConfiguration().getValue(cfg);
+    // Externalized: a Class-typed setting is worth the Class itself once coerced, and Class.toString() is
+    // "class java.util.Date" - neither what was written nor anything a caller can write back (issue #7163).
+    final Object oldValue = GlobalConfiguration.externalizeValue(server.getConfiguration().getValue(cfg));
     // setValue also runs the side effect of a declared SCOPE.SERVER setting, so one whose effect is not a value
     // somebody later reads - arcadedb.server.logFormat swapping the console formatter - takes effect here too
     // rather than being stored and ignored (issue #7121).
@@ -103,7 +105,7 @@ public class SetServerSettingTool {
     // of the heap) is now worth something other than what was asked for. Reporting the request as the new value
     // would tell automation driving this tool that an out-of-range number took effect. Same re-read
     // AlterDatabaseStatement does for its own result row.
-    final Object storedValue = server.getConfiguration().getValue(cfg);
+    final Object storedValue = GlobalConfiguration.externalizeValue(server.getConfiguration().getValue(cfg));
 
     final JSONObject result = new JSONObject();
     result.put("key", key);
