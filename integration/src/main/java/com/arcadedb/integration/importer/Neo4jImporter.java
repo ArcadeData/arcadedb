@@ -338,69 +338,110 @@ public class Neo4jImporter {
         .withCommitEvery(0)
         .build()) {
 
+      // Whether the transaction opened below is still the current one. Cleared right before every commit -
+      // LocalDatabase#commit() pops the transaction in a finally, so a commit that throws still leaves this
+      // method's transaction off the stack, and rolling back after that would discard the CALLER's instead
+      // (issue #7272).
+      final boolean[] txOpen = { false };
+
+      // Vertices an intermediate commit already made durable. context.createdVertices counts every vertex the
+      // batch allocated, the ones still inside the transaction a failure rolls back included.
+      final long[] committedVertices = { 0 };
+
       database.begin();
+      txOpen[0] = true;
 
-      readFileSimple(json -> {
-        lineNumber.incrementAndGet();
+      try {
+        readFileSimple(json -> {
+          lineNumber.incrementAndGet();
 
-        switch (json.getString("type")) {
-        case "node":
-          context.parsed.incrementAndGet();
-          ++totalVerticesParsed;
-          if (context.parsed.get() > 0 && context.parsed.get() % 1_000_000 == 0) {
-            final long elapsed = System.currentTimeMillis() - beginTimeVerticesCreation;
-            log("- Status update: created %,d vertices, skipped %,d edges (%,d vertices/sec)", context.createdVertices.get(),
-                context.skippedEdges.get(), context.createdVertices.get() / elapsed * 1000);
+          switch (json.getString("type")) {
+          case "node":
+            context.parsed.incrementAndGet();
+            ++totalVerticesParsed;
+            if (context.parsed.get() > 0 && context.parsed.get() % 1_000_000 == 0) {
+              final long elapsed = System.currentTimeMillis() - beginTimeVerticesCreation;
+              log("- Status update: created %,d vertices, skipped %,d edges (%,d vertices/sec)", context.createdVertices.get(),
+                  context.skippedEdges.get(), context.createdVertices.get() / elapsed * 1000);
+            }
+
+            final Pair<String, List<String>> type = typeNameFromLabels(json);
+            if (type == null) {
+              log("- found vertex in line %d without labels. Importing it as '%s'.", lineNumber.get(), ROOT_NODE_TYPE);
+              context.warnings.incrementAndGet();
+            }
+
+            final String typeName = type != null ? type.getFirst() : ROOT_NODE_TYPE;
+            final String id = json.getString("id");
+
+            try {
+              final Map<String, Object> props;
+              if (json.has("properties"))
+                props = setProperties(json.getJSONObject("properties"), schemaProperties.get(typeName));
+              else
+                props = new HashMap<>();
+              props.put("id", id);
+
+              final MutableVertex vertex = batch.createVertex(typeName, props);
+              final long packedRID = packRID(vertex.getIdentity());
+              putId(id, packedRID);
+              context.createdVertices.incrementAndGet();
+
+              incrementVerticesByType(typeName);
+            } catch (Exception e) {
+              error("- Error on saving vertex with id %s: %s", id, e.getMessage());
+              context.errors.incrementAndGet();
+            }
+
+            if (context.createdVertices.get() > 0 && context.createdVertices.get() % batchSize == 0) {
+              txOpen[0] = false;
+              database.commit();
+              committedVertices[0] = context.createdVertices.get();
+              database.begin();
+              txOpen[0] = true;
+            }
+
+            break;
+
+          case "relationship":
+            context.skippedEdges.incrementAndGet();
+            break;
           }
 
-          final Pair<String, List<String>> type = typeNameFromLabels(json);
-          if (type == null) {
-            log("- found vertex in line %d without labels. Importing it as '%s'.", lineNumber.get(), ROOT_NODE_TYPE);
-            context.warnings.incrementAndGet();
-          }
+          if (parsingCallback != null)
+            parsingCallback.call(json);
 
-          final String typeName = type != null ? type.getFirst() : ROOT_NODE_TYPE;
-          final String id = json.getString("id");
+          return null;
+        });
 
+        txOpen[0] = false;
+        if (database.isTransactionActive())
+          database.commit();
+      } finally {
+        // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import
+        // can realistically raise - resolves the transaction too.
+        if (txOpen[0]) {
+          txOpen[0] = false;
           try {
-            final Map<String, Object> props;
-            if (json.has("properties"))
-              props = setProperties(json.getJSONObject("properties"), schemaProperties.get(typeName));
-            else
-              props = new HashMap<>();
-            props.put("id", id);
-
-            final MutableVertex vertex = batch.createVertex(typeName, props);
-            final long packedRID = packRID(vertex.getIdentity());
-            putId(id, packedRID);
-            context.createdVertices.incrementAndGet();
-
-            incrementVerticesByType(typeName);
-          } catch (Exception e) {
-            error("- Error on saving vertex with id %s: %s", id, e.getMessage());
-            context.errors.incrementAndGet();
+            database.rollback();
+          } catch (final Exception rollbackFailure) {
+            // Swallowed: a throw here would replace the failure the caller can actually act on with one about
+            // the cleanup, and would skip the counter correction below.
+            error("- Could not roll back after the vertex import failed: the transaction it opened may still be "
+                + "on the stack: %s", rollbackFailure.getMessage());
           }
 
-          if (context.createdVertices.get() > 0 && context.createdVertices.get() % batchSize == 0) {
-            database.commit();
-            database.begin();
-          }
+          // What the report calls "created" has to be what survived: leaving the counter at the number of
+          // vertices read would credit the import with the ones the rollback just took away.
+          final long readVertices = context.createdVertices.get();
+          context.createdVertices.set(committedVertices[0]);
 
-          break;
-
-        case "relationship":
-          context.skippedEdges.incrementAndGet();
-          break;
+          if (committedVertices[0] > 0)
+            log("- Vertex import failed after %,d vertices: the import is PARTIAL - %,d of them an earlier batch "
+                    + "commit made durable and they stay on the disk, the other %,d were rolled back", readVertices,
+                committedVertices[0], readVertices - committedVertices[0]);
         }
-
-        if (parsingCallback != null)
-          parsingCallback.call(json);
-
-        return null;
-      });
-
-      if (database.isTransactionActive())
-        database.commit();
+      }
     }
 
     final long elapsedInSecs = (System.currentTimeMillis() - context.startedOn) / 1000;
@@ -640,33 +681,53 @@ public class Neo4jImporter {
    */
   private void readFile(final Callable<Void, JSONObject> callback) throws IOException {
     database.begin();
+    // Whether the transaction just opened is still the current one - cleared right before the commit below so a
+    // rollback in the finally can never pop a transaction this method has already committed away, let alone the
+    // caller's own (issue #7272).
+    boolean txOpen = true;
 
-    try (InputStream inputStream = openInputStream()) {
-      try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()))) {
-        for (long lineNumber = 0; ; ++lineNumber) {
-          try {
-            final String line = reader.readLine();
-            if (line == null)
-              break;
+    try {
+      try (InputStream inputStream = openInputStream()) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()))) {
+          for (long lineNumber = 0; ; ++lineNumber) {
+            try {
+              final String line = reader.readLine();
+              if (line == null)
+                break;
 
-            final JSONObject json = new JSONObject(line);
-            final String type = json.getString("type");
-            if ("node".equals(type) || "relationship".equals(type))
-              callback.call(json);
-            else {
-              log("Invalid 'type' content on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
+              final JSONObject json = new JSONObject(line);
+              final String type = json.getString("type");
+              if ("node".equals(type) || "relationship".equals(type))
+                callback.call(json);
+              else {
+                log("Invalid 'type' content on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
+                context.errors.incrementAndGet();
+              }
+            } catch (final JSONException e) {
+              log("Error on parsing json on line %d of the input JSONL file. The line will be ignored.", lineNumber);
               context.errors.incrementAndGet();
             }
-          } catch (final JSONException e) {
-            log("Error on parsing json on line %d of the input JSONL file. The line will be ignored.", lineNumber);
-            context.errors.incrementAndGet();
           }
         }
       }
-    }
 
-    if (database.isTransactionActive())
-      database.commit();
+      txOpen = false;
+      if (database.isTransactionActive())
+        database.commit();
+    } finally {
+      // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import
+      // can realistically raise - resolves the transaction too.
+      if (txOpen && database.isTransactionActive()) {
+        try {
+          database.rollback();
+        } catch (final Exception rollbackFailure) {
+          // Swallowed: a throw here would replace the failure the caller can actually act on - the I/O error that
+          // aborted the read - with one about the cleanup.
+          error("- Could not roll back after reading the input failed: the transaction it opened may still be on "
+              + "the stack: %s", rollbackFailure.getMessage());
+        }
+      }
+    }
   }
 
   /**

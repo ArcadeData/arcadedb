@@ -26,10 +26,12 @@ import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
+import com.arcadedb.log.LogManager;
 import com.univocity.parsers.common.AbstractParser;
 
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.logging.Level;
 
 public class RDFImporterFormat extends CSVImporterFormat {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
@@ -44,11 +46,26 @@ public class RDFImporterFormat extends CSVImporterFormat {
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
 
+    // Whether this call is the one that opened the transaction it is about to use, as opposed to reusing one
+    // that predates it (see ImporterContext#callerTransactionActiveOnEntry) - a failure below must resolve only
+    // the transaction this call owns, never a caller's pre-existing one.
+    final boolean ownsTransaction = !context.callerTransactionActiveOnEntry;
+
+    // Whether a transaction this call owns is still the current one. Cleared right before every commit -
+    // LocalDatabase#commit() pops the transaction in a finally, so a commit that throws still leaves it off the
+    // stack - which keeps the rollback below from popping the caller's instead (issue #7272).
+    boolean txOpen = false;
+
+    // Edges an intermediate commit already made durable. context.createdEdges counts every edge created,
+    // the ones still inside the transaction a failure rolls back included.
+    long committedEdges = context.createdEdges.get();
+
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
       if (!database.isTransactionActive())
         database.begin();
+      txOpen = ownsTransaction;
 
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
@@ -78,15 +95,45 @@ public class RDFImporterFormat extends CSVImporterFormat {
         context.parsed.incrementAndGet();
 
         if (context.parsed.get() % settings.commitEvery == 0) {
+          txOpen = false;
           database.commit();
+          committedEdges = context.createdEdges.get();
           database.begin();
+          txOpen = ownsTransaction;
         }
       }
 
+      txOpen = false;
       database.commit();
 
     } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
+    } finally {
+      // In a finally rather than in a catch: a malformed row (csvParser.parseNext() itself throwing) or a
+      // newEdgeByKeys() failure escapes uncaught otherwise, leaving the transaction opened above on the stack,
+      // and an Error - an OutOfMemoryError is the one a large import can realistically raise - would too.
+      if (txOpen && database.isTransactionActive()) {
+        try {
+          database.rollback();
+        } catch (final Exception rollbackFailure) {
+          // Swallowed: a throw here would replace the failure the caller can actually act on with one about the
+          // cleanup, and would skip the counter correction below.
+          LogManager.instance().log(this, Level.SEVERE,
+              "Could not roll back after the RDF import failed: the transaction it opened may still be on the stack",
+              rollbackFailure);
+        }
+
+        // What the report calls "created" has to be what survived: leaving the counter at the number of edges
+        // read would credit the import with the ones the rollback just took away.
+        final long readEdges = context.createdEdges.get();
+        context.createdEdges.set(committedEdges);
+
+        if (committedEdges > 0)
+          LogManager.instance().log(this, Level.WARNING,
+              "RDF import failed after %,d edges: the import is PARTIAL - %,d of them an earlier batch commit made "
+                  + "durable and they stay on the disk, the other %,d were rolled back", null, readEdges, committedEdges,
+              readEdges - committedEdges);
+      }
     }
   }
 
