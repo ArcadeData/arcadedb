@@ -250,3 +250,25 @@ Nothing was deferred: every item was either applied or answered with evidence, s
 notes file was produced.
 
 Re-ran after the rename: `Tests run: 7, Failures: 0, Errors: 0, Skipped: 0`.
+
+### Cycle 2 - `1d9c7a7bf2`
+
+`claude` re-reviewed and traced the splitter by hand again, independently confirming the boundary shapes
+(leading/trailing/interior empties, delimiter as last character, zero-delimiter line) against
+`String.split(literal, -1)`, and confirming the scope claim - that `CsvRowSource` was the only regex-based
+splitter reachable with an operator-supplied delimiter. Verdict "looks good to merge". It also noted that the
+fix removes a class of untrusted-input-controls-a-regex risk, since a config-file delimiter could previously
+steer `Pattern` compilation. Two non-blocking points, neither a defect:
+
+1. **`splitLine`'s javadoc ran ~25 lines for a 15-line method**, with the per-delimiter blow-by-blow duplicated
+   from this document. **Applied**: trimmed to the three things a reader at the call site needs - that the
+   argument used to be a regex and must not become one again, one example from each failure family, and why
+   `Pattern.quote` is not the cheaper fix - with the full table left here and pointed to by name. This was the
+   one point both review cycles raised in some form, which is why it was acted on rather than argued.
+2. **The tracking doc is large relative to the diff.** Already answered in cycle 1 with the `git ls-tree`
+   evidence that per-issue docs are current repo practice; the reviewer explicitly registered "no objection".
+
+The reviewer could not run Maven in its environment and said so. That gap is covered here: the full
+`integration` module was re-run after the trim - `Tests run: 270, Failures: 0, Errors: 0, Skipped: 9`.
+
+Again nothing deferred, so no `review-deferred-*.md` notes file was produced in this cycle either.

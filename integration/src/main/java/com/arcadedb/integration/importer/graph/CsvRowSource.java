@@ -96,23 +96,18 @@ public class CsvRowSource implements GraphImporter.RecordSource {
    * Splits a line on the delimiter as a LITERAL character, keeping every empty field - the shape
    * {@code String.split(literal, -1)} answers, which the header/value zip in {@link #forEach} is written against.
    * <p>
-   * Issue #7267: this used to be {@code line.split(String.valueOf(delimiter), -1)}, whose first argument is a
-   * <b>regular expression</b>. The delimiter is a character the operator chooses, so every one that happens to be a
-   * regex metacharacter did something other than separate fields, and never said which character was to blame:
-   * {@code '|'} is an alternation of two empty branches, so every character became its own field, separators
-   * included; {@code '.'} matched everything and annihilated the row; {@code '$'} and {@code '^'} are anchors and
-   * split nothing at all; {@code '*'}, {@code '+'}, {@code '?'}, {@code '('}, {@code ')'}, {@code '['}, {@code '{'}
-   * and {@code '\'} threw {@code PatternSyntaxException} about a pattern nobody wrote. The first four are the worse
-   * half: a header line cut into single characters means every {@code get(attribute)} misses, so the import produces
-   * vertices with no properties, or none, in silence.
+   * Issue #7267: do not go back to {@code line.split(String.valueOf(delimiter), -1)}. Its first argument is a
+   * <b>regular expression</b>, and the delimiter is a character the operator chooses, so a metacharacter was read
+   * as itself only by accident - {@code '|'} made every character its own field, {@code '.'} annihilated the row,
+   * {@code '$'} and {@code '^'} split nothing at all, and eight more threw {@code PatternSyntaxException} about a
+   * pattern nobody wrote. The first four were the worse half, because a shredded header means every
+   * {@code get(attribute)} misses and the import yields property-less vertices in silence. The full table is in
+   * {@code docs/7267-csvrowsource-regex-delimiter.md}.
    * <p>
-   * Walking with {@code indexOf(char, from)} is literal by construction and also cheaper than what it replaces:
-   * {@code String.split} takes its regex-free fast path only for a single <i>non-metacharacter</i> char, and
-   * compiles a {@code Pattern} per call - that is, per row of a bulk import - for the others. One counting pass
-   * sizes the result array exactly, so a row costs one array and its substrings and no {@code Pattern} ever.
-   * {@code Pattern.quote} would have been the one-line fix and was rejected for the mirror-image reason: {@code \Q;\E}
-   * is not a single character, so it would compile a {@code Pattern} on every row for every delimiter, the default
-   * comma included.
+   * {@code indexOf} is also cheaper than what it replaces: {@code String.split} takes its regex-free fast path only
+   * for a single <i>non-metacharacter</i> char and compiles a {@code Pattern} per call - per row of a bulk import -
+   * for the rest. {@code Pattern.quote} was rejected for the mirror image of that reason: {@code \Q;\E} is not a
+   * single character, so it would compile a {@code Pattern} for every delimiter, the default comma included.
    * <p>
    * Quoting is still unsupported, exactly as before - a delimiter inside a field value still separates fields. For
    * quoted CSV use the Univocity-backed {@code CSVImporterFormat}.
