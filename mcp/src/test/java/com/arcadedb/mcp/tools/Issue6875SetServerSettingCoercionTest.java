@@ -92,19 +92,20 @@ class Issue6875SetServerSettingCoercionTest extends BaseGraphServerTest {
    */
   @Test
   void reportsTheValueThatTookEffectRatherThanTheOneRequested() {
+    final GlobalConfiguration setting = GlobalConfiguration.MAX_PAGE_RAM;
     final long absurd = Runtime.getRuntime().maxMemory() / 1024 / 1024 * 100;
+    final boolean hadValue = getServer(0).getConfiguration().hasValue(setting.getKey());
+    final Object previous = getServer(0).getConfiguration().getValue(setting);
     try {
       final JSONObject result = SetServerSettingTool.execute(getServer(0), user,
-          new JSONObject().put("key", GlobalConfiguration.MAX_PAGE_RAM.getKey()).put("value", Long.toString(absurd)),
-          config);
+          new JSONObject().put("key", setting.getKey()).put("value", Long.toString(absurd)), config);
 
       final long reported = Long.parseLong(result.getString("newValue"));
       assertThat(reported).as("clamped to fit the heap, not the number that was sent").isLessThan(absurd);
       assertThat(reported).as("and it is what was actually stored")
-          .isEqualTo(getServer(0).getConfiguration().getValueAsLong(GlobalConfiguration.MAX_PAGE_RAM));
+          .isEqualTo(getServer(0).getConfiguration().getValueAsLong(setting));
     } finally {
-      getServer(0).getConfiguration().setValue(GlobalConfiguration.MAX_PAGE_RAM, null);
-      GlobalConfiguration.MAX_PAGE_RAM.reset();
+      getServer(0).getConfiguration().setValue(setting.getKey(), hadValue ? previous : null);
     }
   }
 
