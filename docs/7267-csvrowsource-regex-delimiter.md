@@ -296,3 +296,44 @@ answered:
    convention is the maintainer's call, not this PR's.
 
 `Tests run: 7, Failures: 0, Errors: 0, Skipped: 0` after both changes.
+
+### Cycle 4 - `41af0b66dd`
+
+`claude`: "No blocking issues found. This looks solid and ready to merge." No inline comments on this SHA from
+any reviewer. The only two remarks are explicitly re-raised "for visibility" and were both answered in earlier
+cycles - the doc's length against repo convention, and the second scan versus a per-row allocation. Nothing new
+was actionable, nothing was applied, and the working tree ended the cycle empty.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7286
+
+Commits:
+
+| SHA | What |
+|---|---|
+| `b0a498c846` | the fix, the 7 regression tests, this document |
+| `1d9c7a7bf2` | cycle 1: `REGEX_METACHARACTERS` -> `REGEX_SYNTAX_DELIMITERS` |
+| `c25e1547d9` | cycle 2: trimmed `splitLine`'s javadoc |
+| `41af0b66dd` | cycle 3: markdownlint MD040 fences; one assertion per claim in the empty-field test |
+
+## Deferred items
+
+None. No `review-deferred-*.md` notes file was produced in any of the four cycles: every review comment was
+either applied or answered with evidence in the cycle sections above. (`docs/review-deferred-47afd7da.md` in
+this directory belongs to PR #7210 / issue #6990 and was already on `main` before this branch existed.)
+
+Two things are the maintainer's call rather than deferred work, and are named here so they are not discovered
+in a diff stat:
+
+- Whether the per-issue `docs/<issue>-<name>.md` convention should continue at this length for small fixes.
+  Three reviews raised it; all three confirmed it matches current practice on `main` and none objected.
+- Whether CSV import is worth a benchmark. The performance claim this fix rests on - no `Pattern` compiled per
+  row - is proved from the JDK's fast-path condition, not measured; the count-then-fill pass was reasoned
+  about, not benchmarked, and there is no CSV-import benchmark in the tree to extend.
+
+## Final state
+
+`clean-approval` at cycle 4 of a maximum of 4.
+
+Every row of the coverage table is fixed and tested. No follow-up issue was needed, and none was filed.
