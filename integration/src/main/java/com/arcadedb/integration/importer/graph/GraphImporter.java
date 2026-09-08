@@ -311,7 +311,21 @@ public class GraphImporter implements AutoCloseable {
       if (vj.has("nameId"))
         v.idByName(vj.getString("nameId"));
       if (vj.has("filter")) {
-        final String[] parts = vj.getString("filter").split("=", 2);
+        final String spec = vj.getString("filter");
+        final String[] parts = spec.split("=", 2);
+        // Issue #7266: the same unguarded [1] the edge endpoints carried. A filter written without its '=' is a
+        // configuration mistake, and it has to read as one rather than as an array index out of bounds.
+        //
+        // The EMPTY HALF is checked on the attribute only, deliberately, and not on both sides as
+        // splitEdgeSourceEndpoint checks them: "attr=" filters for rows whose attribute IS empty, which two of the
+        // three record sources can actually answer - XmlRowSource returns the raw attribute value, so attr="" is a
+        // match, and JsonlRowSource returns "" for an explicit empty string. Only CsvRowSource folds empty to null
+        // (CsvRowSource:98-101), where such a filter selects nothing. Rejecting it here would refuse a config that
+        // is meaningful for the other two.
+        if (parts.length != 2 || parts[0].isEmpty())
+          throw new IllegalArgumentException("Vertex source '" + typeName + "' declares its filter as '" + spec
+              + "': the form is \"filter\": \"attribute=value\", naming the attribute to test and the value that "
+              + "selects the rows to import");
         v.filter(parts[0], parts[1]);
       }
       if (vj.getBoolean("deduplicate", false))
@@ -357,9 +371,9 @@ public class GraphImporter implements AutoCloseable {
 
     b.edgeSource(edgeType, source, e -> {
       // "from": "PostId:Post" → attribute:vertexType
-      final String[] fromParts = ej.getString("from").split(":");
+      final String[] fromParts = splitEdgeSourceEndpoint(edgeType, "from", ej.getString("from", null));
       e.from(fromParts[0], fromParts[1]);
-      final String[] toParts = ej.getString("to").split(":");
+      final String[] toParts = splitEdgeSourceEndpoint(edgeType, "to", ej.getString("to", null));
       e.to(toParts[0], toParts[1]);
 
       if (ej.has("properties")) {
@@ -368,6 +382,35 @@ public class GraphImporter implements AutoCloseable {
           parsePropertySpec(e, propName, props.getString(propName));
       }
     });
+  }
+
+  /**
+   * Splits an edge source's {@code "from"} / {@code "to"} value, whose form is {@code attribute:VertexType}.
+   * <p>
+   * Issue #7266: this used to be a bare {@code split(":")} followed by {@code [1]}. A value that forgot the
+   * {@code :VertexType} half - precisely the mistake {@link #checkEdgeSourceEndpoint} was added to describe in a
+   * sentence - answered one element and threw {@code ArrayIndexOutOfBoundsException} here, inside the consumer
+   * {@link Builder#edgeSource} runs eagerly, so the validation never got the chance to report it. The two other
+   * mis-shapes were worse than a crash because they were silent: a third colon was dropped on the floor, and an
+   * empty half became an attribute or a vertex type that matches nothing, row after row.
+   * <p>
+   * An ABSENT key is the same mistake one step earlier, and reaches the reader the same way {@code
+   * checkEdgeSourceEndpoint} phrases it: {@code getString(key)} throws a {@code JSONException} naming the key and
+   * nothing else, so the value is read with a {@code null} default and answered here instead.
+   */
+  private static String[] splitEdgeSourceEndpoint(final String edgeType, final String endpoint, final String value) {
+    if (value == null)
+      throw new IllegalArgumentException("Edge source '" + edgeType + "' declares no '" + endpoint
+          + "' endpoint: add \"" + endpoint + "\": \"attribute:VertexType\" to it, naming the attribute that holds "
+          + "the key and the vertex type it resolves against");
+
+    final String[] parts = value.split(":");
+    if (parts.length != 2 || parts[0].isEmpty() || parts[1].isEmpty())
+      throw new IllegalArgumentException("Edge source '" + edgeType + "' declares its '" + endpoint
+          + "' endpoint as '" + value + "': the form is \"" + endpoint + "\": \"attribute:VertexType\", naming the "
+          + "attribute that holds the key and the vertex type it resolves against");
+
+    return parts;
   }
 
   private static void parsePropertySpec(final PropertyConfig v, final String propName, final String spec) {
@@ -596,6 +639,12 @@ public class GraphImporter implements AutoCloseable {
      * Filter rows: only rows where the attribute equals the given value are imported.
      * Enables splitting one file into multiple vertex types (e.g. Posts.xml → Question + Answer).
      * Format: {@code filter("PostTypeId", "1")} or in JSON: {@code "filter": "PostTypeId=1"}.
+     * <p>
+     * An EMPTY value is accepted and selects the rows whose attribute is empty - {@code "filter": "PostTypeId="}
+     * in JSON. Which rows those are depends on the source: {@link XmlRowSource} hands back the raw attribute value
+     * and {@link JsonlRowSource} an explicit empty string, so both can match, while {@link CsvRowSource} reads an
+     * empty cell as absent, where such a filter selects nothing. An empty ATTRIBUTE is refused, because there is
+     * no row it could ever test.
      */
     public void filter(final String attribute, final String value) {
       this.filterAttribute = attribute;

@@ -109,7 +109,7 @@ public class LocalSchema implements Schema {
       "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9");
 
   /**
-   * Components whose load has a side effect on ANOTHER component, so they cannot be added to an already-loaded
+   * Components whose load has a side effect on ANOTHER component, so they cannot be ADDED to an already-loaded
    * schema in isolation (issue #6988):
    * <ul>
    *   <li>the dictionary is what every component resolves property names through;</li>
@@ -119,9 +119,34 @@ public class LocalSchema implements Schema {
    * </ul>
    * An entry carrying one of these falls back to the full rebuild, where every component is re-instantiated and
    * every claim is re-established in one pass.
+   * <p>
+   * This set governs the FIRST pass of {@link #loadIncremental} only - files with no component yet. A file that
+   * already has one and was merely written into is a different question, and
+   * {@link #NON_INCREMENTAL_TOUCHED_COMPONENT_EXTENSIONS} answers it.
    */
   private static final Set<String> NON_INCREMENTAL_COMPONENT_EXTENSIONS = Set.of(//
       Dictionary.DICT_EXT, //
+      LSMTreeIndexCompacted.UNIQUE_INDEX_EXT, //
+      LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, //
+      LSMTreeIndexBloomFilter.FILE_EXT);
+
+  /**
+   * Components whose already-registered instance cannot be refreshed in isolation when an entry writes pages INTO
+   * it, so the second pass of {@link #loadIncremental} hands the caller back to the full rebuild (issue #7266).
+   * <ul>
+   *   <li>a compacted index is claimed by the mutable index holding it as its sub-index, so handing the file id a
+   *       new instance would leave that claim pointing at the old one;</li>
+   *   <li>a bloom filter reads its directory into RAM once, in {@code loadDirectory()} by way of
+   *       {@link #attachBloomFilters}, and no load hook re-reads it - so pages appended to the file leave the
+   *       in-RAM directory describing the file as it was before the entry.</li>
+   * </ul>
+   * <b>Deliberately NOT the same set as {@link #NON_INCREMENTAL_COMPONENT_EXTENSIONS}: the dictionary is absent.</b>
+   * A dictionary that ARRIVES has to be adopted by the full load, but a dictionary merely written into needs
+   * nothing here - {@code TransactionManager.applyChanges} reloads it itself - and every DDL entry that adds a type
+   * or a property name writes dictionary pages. Refusing on those would send the common case straight back to the
+   * O(total files) rebuild issue #6988 removed, which is the cost this whole method exists to avoid.
+   */
+  private static final Set<String> NON_INCREMENTAL_TOUCHED_COMPONENT_EXTENSIONS = Set.of(//
       LSMTreeIndexCompacted.UNIQUE_INDEX_EXT, //
       LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, //
       LSMTreeIndexBloomFilter.FILE_EXT);
@@ -376,8 +401,9 @@ public class LocalSchema implements Schema {
    * @param mode           open mode for the newly instantiated components
    * @param removedFileIds file ids retired by this entry; any removal forces the full rebuild (see below)
    * @param touchedFileIds file ids this entry wrote pages into; an already-registered index component among them is
-   *                       rebuilt from its file rather than refreshed in place (see the second pass). May be
-   *                       {@code null}
+   *                       rebuilt from its file rather than refreshed in place (see the second pass), and one
+   *                       carrying a {@link #NON_INCREMENTAL_TOUCHED_COMPONENT_EXTENSIONS} extension forces the
+   *                       full rebuild instead. May be {@code null}
    *
    * @return {@code true} when the schema was refreshed incrementally, {@code false} when the caller must fall back
    * to {@link #load(ComponentFile.MODE, boolean)}. When {@code false} is returned nothing has been modified.
@@ -420,17 +446,25 @@ public class LocalSchema implements Schema {
     if (touchedFileIds != null)
       for (final Integer fileId : touchedFileIds) {
         final Component current = getFileByIdIfExists(fileId);
-        if (current == null || !(current.getMainComponent() instanceof IndexInternal))
+        if (current == null)
           continue;
 
         if (!database.getFileManager().existsFile(fileId))
           return false;
 
         final ComponentFile file = database.getFileManager().getFile(fileId);
-        // A compacted index is claimed by the mutable index holding it as its sub-index, so handing the file id a
-        // new instance would leave that claim pointing at the old one. Only the full rebuild re-establishes it.
-        if (NON_INCREMENTAL_COMPONENT_EXTENSIONS.contains(file.getFileExtension()))
+
+        // Issue #7266: the extension check comes BEFORE the instanceof narrowing below, and not after it as it
+        // used to. Neither component this set names answers an IndexInternal from getMainComponent() by its own
+        // construction - a bloom filter answers ITSELF, and a compacted index answers the mutable index only once
+        // that mutable's onAfterLoad() wired the field, which a factory-built instance starts with null - so the
+        // narrowing dropped a touched bloom filter out of the loop before the guard could refuse the entry, and
+        // left the compacted index refusing by accident rather than by rule.
+        if (NON_INCREMENTAL_TOUCHED_COMPONENT_EXTENSIONS.contains(file.getFileExtension()))
           return false;
+
+        if (!(current.getMainComponent() instanceof IndexInternal))
+          continue;
 
         toReplace.add(file);
       }
@@ -478,8 +512,8 @@ public class LocalSchema implements Schema {
       component.onAfterSchemaLoad();
 
     // attachBloomFilters() is not called: it acts only on LSMTreeIndexCompacted, and a compacted index can never be
-    // in `loaded` - NON_INCREMENTAL_COMPONENT_EXTENSIONS refuses the entry instead, in both passes above. Relaxing
-    // that set means restoring the call.
+    // in `loaded` - the entry is refused instead, by NON_INCREMENTAL_COMPONENT_EXTENSIONS in the first pass and by
+    // NON_INCREMENTAL_TOUCHED_COMPONENT_EXTENSIONS in the second. Relaxing either set means restoring the call.
     //
     // sweepOrphanCompactedIndexFiles() is deliberately NOT run here either. It proves a compacted file is an orphan
     // by observing that no mutable index claimed it during the load - a proof that only holds when EVERY mutable

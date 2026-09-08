@@ -152,7 +152,13 @@ function displayServerSummary() {
   // Disk
   var diskFree = (p.diskFreeSpace && p.diskFreeSpace.space) || 0;
   var diskTotal = (p.diskTotalSpace && p.diskTotalSpace.space) || 1;
-  var diskUsed = diskTotal - diskFree;
+  // #7266: the server reports what is ALLOCATED on the volume, because the card cannot derive it: #7223 made
+  // diskFreeSpace the USABLE space, which excludes the blocks the filesystem reserves for root, while diskTotalSpace
+  // counts them - so "total - free" charged that reservation, 5% of an ext4 by default, to the databases. On a
+  // 100 GB volume holding 1 GB it read as roughly 6 GB used, a constant offset that looks like data to anyone
+  // watching the card for growth. A server older than the field leaves that difference as the only answer available.
+  // Tested for null rather than truthiness so a genuine zero renders as zero (#5636).
+  var diskUsed = (p.diskUsedSpace && p.diskUsedSpace.space != null) ? p.diskUsedSpace.space : (diskTotal - diskFree);
   $("#summDiskUsed").text(globalFormatSpace(diskUsed));
   $("#summDiskTotal").text(globalFormatSpace(diskTotal));
   $("#summDiskBar").css("width", Math.round(diskUsed / diskTotal * 100) + "%");
@@ -270,7 +276,7 @@ function displayMetrics() {
 
   // Profiler details table (remaining metrics without rate tracking)
   var skipProfiler = { cpuLoad: 1, ramHeapUsed: 1, ramHeapMax: 1, ramOsUsed: 1, ramOsTotal: 1,
-    diskFreeSpace: 1, diskTotalSpace: 1, diskDirectory: 1, readCacheUsed: 1, cacheMax: 1, configuration: 1,
+    diskFreeSpace: 1, diskUsedSpace: 1, diskTotalSpace: 1, diskDirectory: 1, readCacheUsed: 1, cacheMax: 1, configuration: 1,
     writeTx: 1, readTx: 1, txRollbacks: 1, queries: 1, concurrentModificationExceptions: 1,
     edgeAppendMerges: 1, txPageSlotMerges: 1, mergesDeclinedByCoverage: 1 };
   var profilerHtml = "";
