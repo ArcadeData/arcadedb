@@ -51,13 +51,25 @@ public class Issue7262ConfigurationFileBooleanStrictTest {
 
   @Test
   public void aSynonymInTheConfigurationFileNoLongerDisablesMutualTLS() {
-    for (final String synonym : new String[] { "yes", "on", "Y", "1", "ture", "TRUE " }) {
+    for (final String synonym : new String[] { "yes", "on", "Y", "1", "ture", "true!" }) {
       final ContextConfiguration cfg = new ContextConfiguration();
       cfg.fromJSON(configurationFile(MUTUAL_AUTH, "\"" + synonym + "\""));
 
+      // Against the setting's own value, not a hard-coded true: what a refusal keeps is "whatever it would have
+      // been without this line", which a -D in the surrounding run is entitled to have chosen.
       assertThat(cfg.getValueAsBoolean(MUTUAL_AUTH)).as("mutual TLS auth with '%s' in the configuration file", synonym)
-          .isTrue();
+          .isEqualTo(MUTUAL_AUTH.getValueAsBoolean());
     }
+  }
+
+  @Test
+  public void surroundingWhitespaceIsAcceptedRatherThanRefused() {
+    // Trimmed before the comparison, so this is a VALID true - it is not one of the refused spellings above.
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.fromJSON(configurationFile(MUTUAL_AUTH, "\" TRUE \""));
+
+    assertThat(cfg.<Object>getValue(MUTUAL_AUTH)).isEqualTo(Boolean.TRUE);
+    assertThat(cfg.getValueAsBoolean(MUTUAL_AUTH)).isTrue();
   }
 
   @Test
@@ -65,7 +77,7 @@ public class Issue7262ConfigurationFileBooleanStrictTest {
     final ContextConfiguration cfg = new ContextConfiguration();
     cfg.fromJSON(configurationFile(PEER_ALLOWLIST, "\"on\""));
 
-    assertThat(cfg.getValueAsBoolean(PEER_ALLOWLIST)).isTrue();
+    assertThat(cfg.getValueAsBoolean(PEER_ALLOWLIST)).isEqualTo(PEER_ALLOWLIST.getValueAsBoolean());
   }
 
   @Test
@@ -160,6 +172,67 @@ public class Issue7262ConfigurationFileBooleanStrictTest {
     cfg.fromJSON("{\"configuration\":{\"not.a.real.setting\":\"yes\"}}");
 
     assertThat(cfg.getContextKeys()).isEmpty();
+  }
+
+  /**
+   * The allow-list is enforced at this entry point too, and it has to be: {@code coerce} converts to the declared
+   * TYPE and stops, so a {@code String} setting with an allow-list used to accept anything that was a string. A
+   * server configuration file naming a mode that does not exist was stored verbatim, every reader compared it
+   * against {@code "production"}, found it different, and gave a production deployment the development behaviour -
+   * Studio included.
+   */
+  @Test
+  public void aValueOutsideTheAllowListIsRefusedByTheConfigurationFile() {
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.fromJSON(configurationFile(GlobalConfiguration.SERVER_MODE, "\"staging\""));
+
+    assertThat(cfg.hasValue(GlobalConfiguration.SERVER_MODE.getKey())).isFalse();
+    assertThat(cfg.getValueAsString(GlobalConfiguration.SERVER_MODE)).isEqualTo(
+        GlobalConfiguration.SERVER_MODE.getValueAsString());
+  }
+
+  /**
+   * The allow-list is matched case-insensitively, so {@code Production} was accepted and then stored with the
+   * capital - which no {@code "production".equals(mode)} reader recognises. Normalised to the declared spelling in
+   * the one conversion both writers go through, so every reader sees it.
+   */
+  @Test
+  public void anAllowListedValueIsNormalisedToItsDeclaredSpelling() {
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.fromJSON(configurationFile(GlobalConfiguration.SERVER_MODE, "\"Production\""));
+
+    assertThat(cfg.getValueAsString(GlobalConfiguration.SERVER_MODE)).isEqualTo("production");
+    assertThat(GlobalConfiguration.SERVER_MODE.coerceFromAdminCommand("PRODUCTION")).isEqualTo("production");
+  }
+
+  /**
+   * The property path may not throw: it runs from {@code readConfiguration()} inside {@code GlobalConfiguration}'s
+   * static initializer, where an escaping exception becomes an {@code ExceptionInInitializerError} that takes the
+   * engine down over one mistyped variable. {@code setValue} refuses an allow-list violation by THROWING, so it
+   * has to stay inside the non-throwing envelope.
+   */
+  @Test
+  public void aValueOutsideTheAllowListIsReportedRatherThanThrownOnThePropertyPath() {
+    final String before = GlobalConfiguration.SERVER_MODE.getValueAsString();
+    try {
+      assertThat(GlobalConfiguration.SERVER_MODE.setValueFromConfigurationSource("staging", "system property"))
+          .isFalse();
+
+      assertThat(GlobalConfiguration.SERVER_MODE.getValueAsString()).isEqualTo(before);
+      assertThat(GlobalConfiguration.SERVER_MODE.isChanged()).isFalse();
+    } finally {
+      GlobalConfiguration.SERVER_MODE.reset();
+    }
+  }
+
+  @Test
+  public void anAllowListedValueStillGoesThroughOnThePropertyPath() {
+    try {
+      assertThat(GlobalConfiguration.SERVER_MODE.setValueFromConfigurationSource("Test", "system property")).isTrue();
+      assertThat(GlobalConfiguration.SERVER_MODE.getValueAsString()).isEqualTo("test");
+    } finally {
+      GlobalConfiguration.SERVER_MODE.reset();
+    }
   }
 
   private static String configurationFile(final GlobalConfiguration setting, final String jsonValue) {

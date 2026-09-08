@@ -2816,8 +2816,18 @@ public enum GlobalConfiguration {
     if (coerced == null && iValue != null)
       return false;
 
-    setValue(coerced);
-    return true;
+    try {
+      setValue(coerced);
+      return true;
+    } catch (final Exception e) {
+      // setValue can still refuse what coerce accepted - the allow-list check lives there, and it THROWS. This
+      // method cannot: it runs from readConfiguration() inside this class's static initializer, where an escaping
+      // exception becomes an ExceptionInInitializerError that takes the whole engine down over one mistyped
+      // variable. setValue has already rolled the setting back to what it was, so reporting and returning false
+      // is the same "keep the default" outcome a refused coercion gets.
+      report(iValue, source, e);
+      return false;
+    }
   }
 
   /**
@@ -2843,15 +2853,43 @@ public enum GlobalConfiguration {
    */
   Object coerceFromConfigurationSource(final Object iValue, final String source) {
     try {
-      return coerceFromAdminCommand(iValue);
+      final Object coerced = coerceFromAdminCommand(iValue);
+      checkAllowed(coerced);
+      return coerced;
     } catch (final Exception e) {
-      if (LogManager.instance() != null)
-        LogManager.instance().log(this, Level.WARNING, "Invalid value %s for setting '%s' of type %s set as %s: %s. Keeping %s",
-            redactIfHidden(iValue), key, type.getSimpleName(), source,
-            // The cause is redacted along with the value: its message quotes the value back.
-            isHidden() ? "not a valid " + type.getSimpleName() : e.getMessage(), redactIfHidden(getValue()));
+      report(iValue, source, e);
       return null;
     }
+  }
+
+  /**
+   * Refuses a value outside this setting's declared {@code allowed} set, exactly as {@link #setValue(Object)} does.
+   * <p>
+   * {@link #coerce(Object)} converts a value to the setting's TYPE and stops there, so a {@code String} setting with
+   * an allow-list accepted anything that was a string. That was invisible while the only writer of raw external
+   * text was {@link #setValue(Object)}, which checks the set itself - but the overlay writers
+   * ({@link ContextConfiguration#fromJSON(String)} and {@code SET SERVER SETTING}) never touch the enum, so
+   * {@code "arcadedb.server.mode": "staging"} in a server configuration file was stored verbatim. Every reader then
+   * compared it against {@code "production"}, found it different, and served the deployment the DEVELOPMENT
+   * behaviour - Studio included. Same shape as #7262, same permissive direction.
+   */
+  private void checkAllowed(final Object coerced) {
+    if (allowed != null && coerced != null && !allowed.contains(coerced.toString().toLowerCase(Locale.ENGLISH)))
+      throw new IllegalArgumentException(
+          "Setting '" + key + "=" + coerced + "' is not valid. Allowed values are " + allowed);
+  }
+
+  /**
+   * Reports a value this setting could not take, naming where it came from and what is being kept instead. Shared
+   * by every non-throwing writer so a refusal reads the same whether it came from a system property, an
+   * environment variable or the server configuration file.
+   */
+  private void report(final Object iValue, final String source, final Exception e) {
+    if (LogManager.instance() != null)
+      LogManager.instance().log(this, Level.WARNING, "Invalid value %s for setting '%s' of type %s set as %s: %s. Keeping %s",
+          redactIfHidden(iValue), key, type.getSimpleName(), source,
+          // The cause is redacted along with the value: its message quotes the value back.
+          isHidden() ? "not a valid " + type.getSimpleName() : e.getMessage(), redactIfHidden(getValue()));
   }
 
   /**
@@ -3029,8 +3067,20 @@ public enum GlobalConfiguration {
       if (type == Float.class)
         return iValue instanceof Number n ? n.floatValue() : Float.parseFloat(iValue.toString().trim());
 
-      if (type == String.class)
-        return iValue.toString();
+      if (type == String.class) {
+        final String text = iValue.toString();
+        // Normalised to the DECLARED spelling when the setting has an allow-list. setValue matches that list
+        // case-insensitively, so `-Darcadedb.server.mode=Production` passed validation and was then stored as
+        // "Production" - which every reader compares with "production".equals(...) and finds different, quietly
+        // giving a production deployment the development behaviour, Studio included. Normalising here, in the one
+        // conversion both writers go through, fixes every reader at once instead of asking each to case-fold
+        // (issue #7233's family).
+        if (allowed != null)
+          for (final Object candidate : allowed)
+            if (candidate instanceof String s && s.equalsIgnoreCase(text))
+              return s;
+        return text;
+      }
 
       if (type.isEnum()) {
         if (type.isInstance(iValue))

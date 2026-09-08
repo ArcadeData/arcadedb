@@ -18,13 +18,18 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.http.HttpServer;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.util.concurrent.Semaphore;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class SnapshotThrottleTest {
 
@@ -50,6 +55,55 @@ class SnapshotThrottleTest {
     } finally {
       handler.close();
     }
+  }
+
+  /**
+   * Issue #7233: the permits used to be sized from the process-wide {@link GlobalConfiguration} enum, which only a
+   * system property or an environment variable ever writes. A cluster that set the limit in its server
+   * configuration file - or through {@code SET SERVER SETTING} - ran on the compiled-in default instead.
+   */
+  @Test
+  void permitsComeFromTheServerConfiguration() throws Exception {
+    final SnapshotHttpHandler handler = handlerFor(configurationWith(5));
+    try {
+      assertThat(semaphoreOf(handler).availablePermits()).isEqualTo(5);
+    } finally {
+      handler.close();
+    }
+  }
+
+  /**
+   * {@code new Semaphore(n)} takes a negative {@code n} without complaint - every acquire simply fails - so an
+   * unusable limit would answer every snapshot with 503 and leave a lagging follower unable to resync, silently.
+   * Floored to the default instead, the way the Redis and BOLT protocol limits already are.
+   */
+  @Test
+  void anUnusableLimitFallsBackToTheDefaultInsteadOfBlockingEverySnapshot() throws Exception {
+    for (final int unusable : new int[] { 0, -1 }) {
+      final SnapshotHttpHandler handler = handlerFor(configurationWith(unusable));
+      try {
+        assertThat(semaphoreOf(handler).availablePermits()).as("limit %d", unusable)
+            .isEqualTo(((Number) GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getDefValue()).intValue());
+        assertThat(semaphoreOf(handler).tryAcquire()).as("a snapshot is still servable at limit %d", unusable)
+            .isTrue();
+      } finally {
+        handler.close();
+      }
+    }
+  }
+
+  private static ContextConfiguration configurationWith(final int maxConcurrent) {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT, maxConcurrent);
+    return configuration;
+  }
+
+  private static SnapshotHttpHandler handlerFor(final ContextConfiguration configuration) {
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getConfiguration()).thenReturn(configuration);
+    final HttpServer httpServer = mock(HttpServer.class);
+    when(httpServer.getServer()).thenReturn(server);
+    return new SnapshotHttpHandler(httpServer);
   }
 
   @Test

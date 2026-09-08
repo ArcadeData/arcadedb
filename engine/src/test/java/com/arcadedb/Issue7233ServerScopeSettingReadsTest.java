@@ -55,6 +55,21 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * as the fallback for a caller with no server in reach. This test is what keeps that from being something
  * everybody has to remember: it walks every production source outside {@code engine/} and fails on a
  * {@code SCOPE.SERVER} read that goes through the enum without such a fallback beside it.
+ * <p>
+ * <b>What it does NOT catch, so nobody over-trusts it.</b> The check is syntactic - it matches source text, it does
+ * not resolve types or data flow - and that leaves two holes:
+ * <ol>
+ *   <li>It reads {@code GlobalConfiguration.SETTING.getValueAsY()} literally, so a read INDIRECTED through a
+ *       variable ({@code setting.getValueAsInteger()} inside a helper that takes the setting as a parameter) is
+ *       invisible to it. Two such helpers existed when this was written - {@code RedisNetworkExecutor.sanitizedLimit}
+ *       and {@code PackStreamReader.sanitizedLimit} - and both were converted by hand, not by this test.</li>
+ *   <li>It cannot tell WHICH {@link ContextConfiguration} the nearby read is against. A decoy
+ *       {@code new ContextConfiguration()} beside the enum read would satisfy the shape while reading exactly the
+ *       same process-wide value, which is why that specific spelling is rejected below - but a decoy held in a
+ *       field or a local variable still would not be.</li>
+ * </ol>
+ * So this is a ratchet against the ACCIDENTAL reintroduction of the idiom, which is how #7226 and #7233 happened;
+ * it is not a proof that every server-scoped read resolves to a server.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -153,9 +168,16 @@ public class Issue7233ServerScopeSettingReadsTest {
     final Pattern contextRead = Pattern.compile("getValueAs\\w*\\s*\\(\\s*GlobalConfiguration\\." + setting + "\\b");
     final int from = Math.max(0, index - TERNARY_WINDOW_LINES);
     final int to = Math.min(lines.size(), index + TERNARY_WINDOW_LINES + 1);
-    for (int i = from; i < to; i++)
-      if (contextRead.matcher(lines.get(i)).find())
+    for (int i = from; i < to; i++) {
+      final String line = lines.get(i);
+      // A freshly-built overlay reads exactly the process-wide value the enum read beside it does, so it is not a
+      // fallback - it is the same answer written twice. Rejecting the spelling keeps it from being used to satisfy
+      // the shape; see the class javadoc for the decoys this cannot see.
+      if (line.contains("new ContextConfiguration()"))
+        continue;
+      if (contextRead.matcher(line).find())
         return true;
+    }
     return false;
   }
 
