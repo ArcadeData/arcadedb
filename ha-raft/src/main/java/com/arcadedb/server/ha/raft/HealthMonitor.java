@@ -84,9 +84,11 @@ public final class HealthMonitor {
     }
 
     /**
-     * Proactively reconciles the inbound Raft gRPC peer allowlist with current DNS so a peer that
-     * restarted with a new pod IP is admitted without first being rejected (issue #4696). No-op when
-     * the allowlist is disabled; the filter itself throttles the DNS re-resolution.
+     * Reconciles the inbound Raft gRPC peer allowlist with cluster membership and with current DNS. A peer
+     * that restarted with a new pod IP is admitted without first being rejected (issue #4696), a peer that
+     * joined at runtime is admitted at all (issue #7132), and a peer removed from the Raft configuration is
+     * unlearned instead of keeping its access for the life of the process (issue #7225). No-op when the
+     * allowlist is disabled; the filter itself throttles the DNS re-resolution.
      */
     default void refreshPeerAllowlist() {
     }
