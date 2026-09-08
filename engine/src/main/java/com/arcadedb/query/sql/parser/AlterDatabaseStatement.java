@@ -73,7 +73,10 @@ public class AlterDatabaseStatement extends DDLStatement {
           "Setting '" + settingNameAsString + "' has " + cfg.getScope() + " scope and cannot be set per database"
               + (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER ? ": use SET SERVER SETTING instead" : ""));
 
-    final Object oldValue = db.getConfiguration().getValue(cfg);
+    // Externalized on the way into the result row for the same reason the new value is: for a Class-typed
+    // setting the stored value may be the Class itself, and reporting it as "class java.time.LocalDate" would
+    // make oldValue and newValue two different spellings of the same thing (issue #7163).
+    final Object oldValue = GlobalConfiguration.externalizeValue(db.getConfiguration().getValue(cfg));
     Object finalValue = settingValue.execute((Identifiable) null, context);
 
     boolean saveInDatabaseConfiguration = false;
@@ -111,21 +114,18 @@ public class AlterDatabaseStatement extends DDLStatement {
       // reported as a success, and saved to the database configuration.
       finalValue = cfg.coerceFromAdminCommand(finalValue);
 
-      Class<?> resolvedClass = null;
-      if (finalValue instanceof Class<?> clazz) {
-        // A Class-typed setting is stored by NAME: the database configuration is a JSON document, and the name
-        // is what ContextConfiguration.fromJSON reads back (issue #7163). The resolved class is kept for the
-        // per-database side effect below, so nothing has to resolve the name a second time.
-        resolvedClass = clazz;
-        finalValue = clazz.getName();
-      }
+      // A Class-typed setting is stored by NAME: the database configuration is a JSON document, and the name is
+      // what ContextConfiguration.fromJSON reads back (issue #7163). The resolved class is kept for the
+      // per-database side effect below, so nothing has to resolve the name a second time.
+      final Class<?> resolvedClass = finalValue instanceof Class<?> clazz ? clazz : null;
+      finalValue = GlobalConfiguration.externalizeValue(finalValue);
 
       db.getConfiguration().setValue(cfg, finalValue);
 
       // The stored value is what the setting is now worth, which is not always what was asked for: a callback
       // reached through the overlay may normalise it (arcadedb.maxPageRAM clamps a page cache larger than 80%
       // of the heap), and the result row has to report the value that took effect (issue #7163).
-      finalValue = db.getConfiguration().getValue(cfg);
+      finalValue = GlobalConfiguration.externalizeValue(db.getConfiguration().getValue(cfg));
 
       applyDatabaseSideEffect(db, cfg, resolvedClass);
 

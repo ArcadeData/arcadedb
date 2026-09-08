@@ -235,6 +235,29 @@ class Issue7163DatabaseScopeCallbackTest {
     assertThat(database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL)).isFalse();
   }
 
+  /**
+   * Both halves of the result row spell a Class-typed setting the same way - as the class NAME. {@code oldValue}
+   * reads the stored value, which for this setting can be the {@code Class} itself (the enum's own default is),
+   * and {@code Class.toString()} is "class java.time.LocalDate": neither what anyone wrote nor anything they
+   * could write back.
+   */
+  @Test
+  void alterDatabaseReportsAClassTypedSettingByNameOnBothSides() {
+    try (final ResultSet resultSet = database.command("sql",
+        "ALTER DATABASE `arcadedb.dateImplementation` 'java.util.Date'")) {
+      final Result row = resultSet.next();
+      assertThat(row.<Object>getProperty("oldValue")).as("the enum default, by name").isEqualTo("java.time.LocalDate");
+      assertThat(row.<Object>getProperty("newValue")).isEqualTo("java.util.Date");
+    }
+
+    try (final ResultSet resultSet = database.command("sql",
+        "ALTER DATABASE `arcadedb.dateImplementation` 'java.util.Calendar'")) {
+      final Result row = resultSet.next();
+      assertThat(row.<Object>getProperty("oldValue")).as("and what the previous command stored").isEqualTo("java.util.Date");
+      assertThat(row.<Object>getProperty("newValue")).isEqualTo("java.util.Calendar");
+    }
+  }
+
   /** A SCOPE.JVM setting is deliberately NOT reached through an overlay: it is not what an overlay holds. */
   @Test
   void aJvmScopedSettingIsNotAppliedThroughAnOverlay() {
