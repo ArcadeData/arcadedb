@@ -1436,7 +1436,13 @@ public class GraphImporter implements AutoCloseable {
       }
     case DATETIME: {
       final String v = record.get(pd.attribute);
-      if (v == null)
+      // Empty means "not set", as it does in the RecordReader defaults above: getInt/getLong/
+      // getDouble answer 0 and getFloatArray/getList answer null for an empty value, so a blank
+      // cell in an optional datetime column must not abort the import either. null is already this
+      // branch's "not set" answer and both call sites drop it, so returning it needs nothing else.
+      // A value that is present but not whitespace-free is still a data error: isEmpty(), not
+      // isBlank(), is what every accessor above tests (#7265)
+      if (v == null || v.isEmpty())
         return null;
       // DateUtils.getFormatter(), not DateTimeFormatter.ofPattern(): the latter binds the JVM default locale, so the
       // same file imported on two machines would parse a textual month/day name differently, or not at all (#7144)
