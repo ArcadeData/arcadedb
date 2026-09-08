@@ -217,6 +217,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   // ArcadeDB server reference (optional, for accessing existing databases)
   private final ArcadeDBServer arcadeServer;
 
+  /** Stands in for a server that was not supplied; reads through to each setting's process-wide value. */
+  private static final ContextConfiguration EMPTY_CONFIGURATION = new ContextConfiguration();
+
   /**
    * This server's configuration, or an empty overlay when the service was built without one.
    * <p>
@@ -230,7 +233,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return arcadeServer != null ? arcadeServer.getConfiguration() : EMPTY_CONFIGURATION;
   }
 
-  private static final ContextConfiguration EMPTY_CONFIGURATION = new ContextConfiguration();
 
   // Database directory path
   private final String databasePath;

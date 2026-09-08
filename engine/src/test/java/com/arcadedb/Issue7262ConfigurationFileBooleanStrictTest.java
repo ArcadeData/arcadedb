@@ -214,25 +214,42 @@ public class Issue7262ConfigurationFileBooleanStrictTest {
   @Test
   public void aValueOutsideTheAllowListIsReportedRatherThanThrownOnThePropertyPath() {
     final String before = GlobalConfiguration.SERVER_MODE.getValueAsString();
+    final boolean wasChanged = GlobalConfiguration.SERVER_MODE.isChanged();
     try {
       assertThat(GlobalConfiguration.SERVER_MODE.setValueFromConfigurationSource("staging", "system property"))
           .isFalse();
 
+      // A refusal is not a choice anyone made, so it must leave BOTH halves of the setting's state alone.
       assertThat(GlobalConfiguration.SERVER_MODE.getValueAsString()).isEqualTo(before);
-      assertThat(GlobalConfiguration.SERVER_MODE.isChanged()).isFalse();
+      assertThat(GlobalConfiguration.SERVER_MODE.isChanged()).isEqualTo(wasChanged);
     } finally {
-      GlobalConfiguration.SERVER_MODE.reset();
+      restore(GlobalConfiguration.SERVER_MODE, before, wasChanged);
     }
   }
 
   @Test
   public void anAllowListedValueStillGoesThroughOnThePropertyPath() {
+    final String before = GlobalConfiguration.SERVER_MODE.getValueAsString();
+    final boolean wasChanged = GlobalConfiguration.SERVER_MODE.isChanged();
     try {
       assertThat(GlobalConfiguration.SERVER_MODE.setValueFromConfigurationSource("Test", "system property")).isTrue();
       assertThat(GlobalConfiguration.SERVER_MODE.getValueAsString()).isEqualTo("test");
     } finally {
-      GlobalConfiguration.SERVER_MODE.reset();
+      restore(GlobalConfiguration.SERVER_MODE, before, wasChanged);
     }
+  }
+
+  /**
+   * Puts a process-wide setting back exactly as it was, {@link GlobalConfiguration#isChanged()} included.
+   * {@code reset()} alone is not that: it restores the COMPILED-IN default, so a test that borrows a setting
+   * would silently discard a {@code -D} the surrounding run was given and leave every later test reading the
+   * wrong value.
+   */
+  private static void restore(final GlobalConfiguration setting, final Object value, final boolean wasChanged) {
+    if (wasChanged)
+      setting.setValue(value);
+    else
+      setting.reset();
   }
 
   private static String configurationFile(final GlobalConfiguration setting, final String jsonValue) {

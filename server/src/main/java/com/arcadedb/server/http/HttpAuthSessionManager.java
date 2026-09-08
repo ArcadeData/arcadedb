@@ -52,6 +52,11 @@ public class HttpAuthSessionManager extends RWLockContext {
   private final       int                          maxSessionsPerUser;
   private final       LongSupplier                 clock;
   private final       Timer                        timer;
+  /**
+   * Stands in for a server that was not supplied - the test-only constructors below; reads through to each
+   * setting's process-wide value. Shared rather than built per read: it holds nothing per instance.
+   */
+  private static final ContextConfiguration        NO_SERVER_CONFIGURATION = new ContextConfiguration();
 
   public HttpAuthSessionManager(final long sessionTimeoutInMs) {
     this(sessionTimeoutInMs, 0);
@@ -78,8 +83,8 @@ public class HttpAuthSessionManager extends RWLockContext {
    */
   HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final LongSupplier clock) {
     this(sessionTimeoutInMs, absoluteTimeoutInMs,
-        new ContextConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX),
-        new ContextConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER), clock);
+        NO_SERVER_CONFIGURATION.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX),
+        NO_SERVER_CONFIGURATION.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER), clock);
   }
 
   HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final int maxSessions,
