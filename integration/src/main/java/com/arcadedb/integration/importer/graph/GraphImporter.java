@@ -259,7 +259,8 @@ public class GraphImporter implements AutoCloseable {
    * and {@code "list:SourceAttr"} (generic list). The same prefixes apply to a vertex's {@code "properties"} and to an
    * {@code "edgeSources"} entry's {@code "properties"}.
    * File format auto-detected from extension (.xml, .csv, .jsonl). XML defaults to attribute-based {@code <row/>};
-   * add {@code "element": "book"} to read child elements as fields.
+   * add {@code "element": "book"} to read child elements as fields. A CSV source takes {@code "delimiter"}, which is
+   * a single character; an edge's {@code "split"} is a whole string and may be longer, e.g. {@code "split": ", "}.
    *
    * @param database the target database (schema must be pre-created)
    * @param json     the JSON configuration string
@@ -412,9 +413,13 @@ public class GraphImporter implements AutoCloseable {
 
     switch (format) {
     case "csv":
-      final char delimiter = config.getString("delimiter", ",").charAt(0);
+      final String delimiter = config.getString("delimiter", ",");
+      if (delimiter.length() != 1)
+        throw new IllegalArgumentException("Source '" + fileName + "' declares a delimiter of "
+            + delimiter.length() + " characters (\"" + delimiter + "\"): a CSV field separator is a single "
+            + "character, such as \",\" or \";\". Only a split-field edge takes a longer delimiter");
       final int skipLines = config.getInt("skipLines", 0);
-      return new CsvRowSource(filePath, delimiter, skipLines);
+      return new CsvRowSource(filePath, delimiter.charAt(0), skipLines);
     case "jsonl":
       return new JsonlRowSource(filePath);
     default: // xml
@@ -649,6 +654,11 @@ public class GraphImporter implements AutoCloseable {
      * Split-field edge: a delimited field (e.g. {@code "|java|python|"}) creates one edge per
      * value, resolved by name against the target type's nameId. The wrapping delimiters are
      * optional on either end, so {@code "java|python"} yields the same two values.
+     * <p>
+     * The delimiter is the whole string, not its first character: {@code ", "} over
+     * {@code "scifi, drama"} yields {@code "scifi"} and {@code "drama"}, with no leading space
+     * left on the second. It may not be null or empty - either is refused when the import starts,
+     * before a file is opened.
      */
     public void splitEdge(final String attribute, final String edgeType, final String targetType,
                           final String delimiter) {
@@ -870,6 +880,16 @@ public class GraphImporter implements AutoCloseable {
                   + "', because a vertex source resolves references against the types already imported" :
               "no vertex source imports. Declared vertex types: " + allTypes));
 
+        // A split walker advances by the delimiter's length, so an empty delimiter would never
+        // advance and a null one throws. Both used to surface from inside the pass-1 row loop -
+        // after vertices had been committed - as a StringIndexOutOfBoundsException or an NPE
+        // naming nothing. They are configuration mistakes, reported here before a file is opened
+        if (ed.isSplit && (ed.delimiter == null || ed.delimiter.isEmpty()))
+          throw new IllegalArgumentException("Split edge '" + ed.edgeType + "' declared on vertex source '"
+              + vsd.typeName + "' for attribute '" + ed.fkAttribute + "' declares "
+              + (ed.delimiter == null ? "no delimiter" : "an empty delimiter")
+              + ": give it the text that separates the field's values, such as \"|\" or \", \"");
+
         final boolean resolvesByName = ed.byName || ed.isSplit;
         if (!(resolvesByName ? typesWithNameId : typesWithId).contains(ed.targetType))
           throw new IllegalArgumentException("Edge '" + ed.edgeType + "' declared on vertex source '"
@@ -1030,7 +1050,7 @@ public class GraphImporter implements AutoCloseable {
           continue;
         final DeferredSelfEdges deferred = deferredSelf.get(i);
         if (ed.isSplit)
-          collectSplitKeys(fieldVal, ed.delimiter.charAt(0), deferred, idx);
+          collectSplitKeys(fieldVal, ed.delimiter, deferred, idx);
         else {
           deferred.srcIdx.add(idx);
           deferred.targetKeys.add(fieldVal);
@@ -1077,8 +1097,13 @@ public class GraphImporter implements AutoCloseable {
       if (fieldVal == null || fieldVal.isEmpty())
         return;
       final TypeState targetTs = typeStates.get(ed.targetType);
-      final char delim = ed.delimiter.charAt(0);
-      int start = fieldVal.charAt(0) == delim ? 1 : 0;
+      // the whole delimiter separates the values, not its first character: a ", " reduced to ','
+      // leaves every value but the first carrying the space, resolving against nothing.
+      // validateEdgeTargets() has already refused a null or empty one, which the stride below
+      // could not advance past
+      final String delim = ed.delimiter;
+      final int delimLen = delim.length();
+      int start = fieldVal.startsWith(delim) ? delimLen : 0;
       int pos;
       while (start < fieldVal.length()) {
         pos = fieldVal.indexOf(delim, start);
@@ -1093,7 +1118,7 @@ public class GraphImporter implements AutoCloseable {
           } else
             unresolvedEdges++;
         }
-        start = end + 1;
+        start = end + delimLen;
       }
     } else {
       // An absent or empty attribute means "this row has no such reference" and is not an
@@ -1134,13 +1159,16 @@ public class GraphImporter implements AutoCloseable {
 
   /**
    * Appends one deferred key per value of a delimited field (e.g. {@code "|java|python|"}), all
-   * sharing the same source vertex.
+   * sharing the same source vertex. Splits on the whole delimiter, exactly as the inline walker in
+   * {@link #collectEdge} does; a null or empty one never gets here, {@link #validateEdgeTargets}
+   * having refused it.
    */
-  private static void collectSplitKeys(final String fieldVal, final char delimiter,
+  private static void collectSplitKeys(final String fieldVal, final String delimiter,
                                        final DeferredSelfEdges deferred, final int thisIdx) {
     if (fieldVal.isEmpty())
       return;
-    int start = fieldVal.charAt(0) == delimiter ? 1 : 0;
+    final int delimLen = delimiter.length();
+    int start = fieldVal.startsWith(delimiter) ? delimLen : 0;
     int pos;
     while (start < fieldVal.length()) {
       pos = fieldVal.indexOf(delimiter, start);
@@ -1149,7 +1177,7 @@ public class GraphImporter implements AutoCloseable {
         deferred.srcIdx.add(thisIdx);
         deferred.targetKeys.add(fieldVal.substring(start, end));
       }
-      start = end + 1;
+      start = end + delimLen;
     }
   }
 
