@@ -25,6 +25,8 @@ import com.arcadedb.server.StaticBaseServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -64,10 +66,16 @@ class Issue7160ServerMonitorEnabledTest extends StaticBaseServerTest {
     assertThat(monitor).as("the monitor is constructed and held by the server").isNotNull();
     assertThat(monitor.getStatus().isRunning).isTrue();
 
+    assertThat(monitorThreads()).as("exactly one monitor thread while the server runs").hasSize(1);
+
     server.stop();
 
     assertThat(server.getServerMonitor()).as("a stopped server holds no monitor").isNull();
     assertThat(monitor.getStatus().isRunning).as("and the thread it started is asked to exit").isFalse();
+    // stop() joins the thread, so by the time it returns the thread must be GONE - not merely flagged to exit.
+    // A daemon thread cannot hold the JVM up, but one left behind per in-process restart is the leak this is
+    // stopped explicitly to avoid (issue #7160).
+    assertThat(monitorThreads()).as("no monitor thread survives the stop").isEmpty();
   }
 
   @Test
@@ -80,15 +88,37 @@ class Issue7160ServerMonitorEnabledTest extends StaticBaseServerTest {
     assertThat(server.getServerMonitor()).isNull();
   }
 
-  /** Turning it off must be possible from the server configuration file, which is text through fromJSON. */
+  /**
+   * Turning it off must work from the server configuration FILE, which reaches a ContextConfiguration as JSON
+   * text through fromJSON - a different write path from setValue, and the one an operator actually uses.
+   */
   @Test
-  void theSettingIsReadFromTheServerConfigurationText() {
+  void theSettingIsReadFromTheServerConfigurationFileText() {
     final ContextConfiguration configuration = new ContextConfiguration();
-    configuration.setValue(GlobalConfiguration.SERVER_HEALTH_CHECK_ENABLED.getKey(), "false");
+    configuration.fromJSON("{\"configuration\":{\"server.healthCheck.enabled\":false}}");
+
+    assertThat(configuration.getValueAsBoolean(GlobalConfiguration.SERVER_HEALTH_CHECK_ENABLED)).isFalse();
 
     server = startServer(configuration);
 
     assertThat(server.getServerMonitor()).isNull();
+  }
+
+  /** The same file with the value spelled as text, which is how a hand-edited configuration usually reads. */
+  @Test
+  void theSettingIsReadFromTheServerConfigurationFileAsAString() {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.fromJSON("{\"configuration\":{\"server.healthCheck.enabled\":\"false\"}}");
+
+    server = startServer(configuration);
+
+    assertThat(server.getServerMonitor()).isNull();
+  }
+
+  /** Names every live thread the monitor would have started. */
+  private static List<Thread> monitorThreads() {
+    return Thread.getAllStackTraces().keySet().stream().filter(Thread::isAlive)
+        .filter(t -> "ArcadeDB-ServerMonitor".equals(t.getName())).toList();
   }
 
   private ArcadeDBServer startServer(final ContextConfiguration configuration) {

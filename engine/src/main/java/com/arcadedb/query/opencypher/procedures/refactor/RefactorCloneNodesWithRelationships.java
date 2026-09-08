@@ -149,7 +149,7 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
         if (!processedEdges.add(edge.getIdentity()))
           continue;
         try {
-          cloneEdge(database, edge, cloneOf);
+          cloneEdge(edge, cloneOf);
         } catch (final Exception e) {
           // best-effort: one bad edge (e.g. a mandatory-property violation on the new edge) must not
           // cost the rows already produced for the nodes that cloned successfully
@@ -161,16 +161,23 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
     return results.stream();
   }
 
-  private void cloneEdge(final Database database, final Edge edge, final Map<RID, Vertex> cloneOf) {
+  /**
+   * A clone this call created is reused as an endpoint of every edge cloned onto it, and each append moves its
+   * edge-list head while the map still holds the instance as it was when the clone was saved. Neither end is
+   * re-read here all the same, and deliberately: the APPEND path already substitutes the transaction's own
+   * written copy of a vertex by RID ({@code GraphEngine.getOrCreateEdgeList}), so a stale handle self-heals
+   * there. Verified both ways by the two single-call tests in {@code CypherRefactorProceduresStaleVertexIssue7177Test}
+   * - many edges out of one clone, and many edges into one clone - which stay green with no reload on either end.
+   * <p>
+   * What has no such safety net is READING a vertex's edge list, which is why the caller re-reads the node whose
+   * edges it enumerates (issue #7177). Adding a reload here as well would only look like the two were the same
+   * problem.
+   */
+  private void cloneEdge(final Edge edge, final Map<RID, Vertex> cloneOf) {
     final RID originalOut = edge.getOut();
     final RID originalIn = edge.getIn();
 
-    // A clone this call already created is reused as the source of every edge cloned onto it, and each append
-    // moves its edge-list head: the map still holds the instance as it was when the clone was saved, so the
-    // second append against it would work from a stale head (issue #7177).
-    final Vertex newOutVertex = cloneOf.containsKey(originalOut) ?
-        CypherVertexReload.latest(database, cloneOf.get(originalOut)) :
-        originalOut.asVertex(true);
+    final Vertex newOutVertex = cloneOf.containsKey(originalOut) ? cloneOf.get(originalOut) : originalOut.asVertex(true);
     final Identifiable newInTarget = cloneOf.containsKey(originalIn) ? cloneOf.get(originalIn) : originalIn;
 
     final MutableEdge newEdge = newOutVertex.newEdge(edge.getTypeName(), newInTarget);

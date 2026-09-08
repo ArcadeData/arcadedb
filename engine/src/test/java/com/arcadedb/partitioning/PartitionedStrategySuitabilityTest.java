@@ -80,11 +80,7 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
    * already-partitioned type is driven into - and out of - a state its partition key cannot survive.
    */
   private void useDateTimeImplementation(final Class<?> implementation) {
-    try {
-      ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(implementation);
-    } catch (final ClassNotFoundException e) {
-      throw new IllegalStateException(e);
-    }
+    ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(implementation);
   }
 
   private void createIndexedType(final String typeName, final String propertyType) {

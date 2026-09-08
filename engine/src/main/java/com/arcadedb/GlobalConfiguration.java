@@ -2542,6 +2542,19 @@ public enum GlobalConfiguration {
    *
    * @return the value the overlay must store: {@code newValue} unchanged when this setting declares no callback
    */
+  /**
+   * Whether this setting declares a {@code callback} - the side effect {@link #applyContextValue(Object)} runs
+   * for a value written into an overlay.
+   * <p>
+   * Exists for the test that pins WHICH settings that hook reaches. Widening it beyond SCOPE.SERVER (issue
+   * #7163) means a callback added to any non-JVM setting from now on fires on every channel that setting's
+   * scope advertises, which is the point - but it is also a decision worth making deliberately rather than
+   * discovering, so the list is asserted rather than remembered.
+   */
+  boolean hasCallback() {
+    return callback != null;
+  }
+
   Object applyContextValue(final Object newValue) {
     if (callback == null || scope == SCOPE.JVM)
       return newValue;
