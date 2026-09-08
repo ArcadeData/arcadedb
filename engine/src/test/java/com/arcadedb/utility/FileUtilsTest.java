@@ -20,23 +20,47 @@ package com.arcadedb.utility;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.MockedStatic;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mockStatic;
 
 class FileUtilsTest {
 
   @TempDir
   Path tempDir;
+
+  @Test
+  void defaultAtomicWriteRetainsTheExistingFallbackForUnsupportedFileSystems() throws Exception {
+    final Path target = tempDir.resolve("config.json").toAbsolutePath();
+    Files.writeString(target, "old");
+    final AtomicInteger attempts = new AtomicInteger();
+    try (final MockedStatic<Files> ignored = mockStatic(Files.class, invocation -> {
+      if (invocation.getMethod().getName().equals("move") && target.equals(invocation.getArgument(1))
+          && attempts.incrementAndGet() == 1)
+        throw new AtomicMoveNotSupportedException("temporary", target.toString(), "test filesystem");
+      return invocation.callRealMethod();
+    })) {
+      FileUtils.atomicWriteFile(target.toFile(), "new");
+    }
+    assertThat(attempts.get()).isEqualTo(2);
+    assertThat(Files.readString(target)).isEqualTo("new");
+    try (final var files = Files.list(tempDir)) {
+      assertThat(files).containsExactly(target);
+    }
+  }
 
   @Test
   void sizeConstants() {

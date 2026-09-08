@@ -355,6 +355,15 @@ public class FileUtils {
    * {@code REPLACE_EXISTING} move (still a single rename, just without the cross-crash guarantee).
    */
   public static void atomicWriteFile(final File file, final String content) throws IOException {
+    atomicWriteFile(file, content, false);
+  }
+
+  /**
+   * Writes a synced sibling temporary file before replacing the target. When {@code requireAtomicMove}
+   * is true, an unsupported atomic move fails without falling back to a potentially non-atomic replacement.
+   * Existing callers of the two-argument overload retain their best-effort fallback.
+   */
+  public static void atomicWriteFile(final File file, final String content, final boolean requireAtomicMove) throws IOException {
     // Resolve to an absolute path so getParent() is never null for relative inputs (e.g. new
     // File("ai.json")); this keeps the temp file on the same file store as the target, which is
     // required for the ATOMIC_MOVE below to actually be atomic instead of falling back to a copy.
@@ -374,6 +383,8 @@ public class FileUtils {
         // platforms (notably Windows), where the move otherwise throws FileAlreadyExistsException.
         Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
       } catch (final AtomicMoveNotSupportedException e) {
+        if (requireAtomicMove)
+          throw e;
         Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
       }
     } finally {
