@@ -133,8 +133,12 @@ public class PostgresNetworkExecutor extends Thread {
   // same portal name re-bound without a new Parse) never share mutable per-execution state. `portals` above
   // holds only the independent, already-bound portals that describeCommand('P')/executeCommand() operate on.
   private final Map<String, PostgresPortal> preparedStatements    = new HashMap<>();
-  private final boolean                     DEBUG                 = GlobalConfiguration.POSTGRES_DEBUG.getValueAsBoolean();
-  private final boolean                     QUOTED_IDENTIFIERS    = GlobalConfiguration.POSTGRES_QUOTED_IDENTIFIERS.getValueAsBoolean();
+  // Assigned in the constructor from the SERVER's configuration, not at field initialisation off the
+  // GlobalConfiguration enum: both settings are SCOPE.SERVER, and the enum holds only what a system property or
+  // an environment variable put there, so a server configuration file or a SET SERVER SETTING never reached them
+  // (issue #7233). Still sampled once per connection, which is what they always were.
+  private final boolean                     DEBUG;
+  private final boolean                     QUOTED_IDENTIFIERS;
   private final Map<String, Object>         connectionProperties  = new HashMap<>();
   // The exact query spellings to answer with nothing, and the application_name values that gated them, used
   // to be listed here: see PostgresCatalog, which answers those questions by shape for every client (#6412).
@@ -178,6 +182,8 @@ public class PostgresNetworkExecutor extends Thread {
     this.channel = new ChannelBinaryServer(socket, server.getConfiguration());
     this.database = database;
     this.preAuthTicket = preAuthTicket;
+    this.DEBUG = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.POSTGRES_DEBUG);
+    this.QUOTED_IDENTIFIERS = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.POSTGRES_QUOTED_IDENTIFIERS);
 
     // Bound the pre-authentication window (issue #6377). One thread and one file descriptor are committed
     // per accepted connection, before anyone has proved who they are, and the listener caps neither; without
@@ -186,7 +192,7 @@ public class PostgresNetworkExecutor extends Thread {
     // markAuthenticated), because an authenticated client is expected to keep a long-lived, often idle
     // connection between statements. This is the same setSoTimeout(NETWORK_SOCKET_TIMEOUT)-then-
     // setSoTimeout(0) idiom RedisNetworkExecutor (#5912) and BoltNetworkExecutor (#5978) already use.
-    final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
+    final int handshakeTimeout = server.getConfiguration().getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT);
     if (handshakeTimeout > 0)
       channel.socket.setSoTimeout(handshakeTimeout);
   }
@@ -918,7 +924,7 @@ public class PostgresNetworkExecutor extends Thread {
    * @param resultSet The result set to browse (this method closes it)
    */
   private List<Result> browseAndCacheBoundedResultSet(final ResultSet resultSet) {
-    final int maxRows = GlobalConfiguration.POSTGRES_QUERY_MAX_ROWS.getValueAsInteger();
+    final int maxRows = server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_QUERY_MAX_ROWS);
     try (resultSet) {
       final List<Result> cachedResultSet = new ArrayList<>();
       while (resultSet.hasNext()) {
@@ -1929,7 +1935,7 @@ public class PostgresNetworkExecutor extends Thread {
             continue;
           }
 
-          if (paramSize > GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger()) {
+          if (paramSize > server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE)) {
             // The value bytes for this parameter were never read, so the channel cannot be safely
             // resynchronized without draining a client(attacker)-controlled amount of data - that would
             // either reintroduce an unbounded read or block the connection thread indefinitely if the
@@ -1937,7 +1943,7 @@ public class PostgresNetworkExecutor extends Thread {
             // rather than gamble on realigning the stream.
             setErrorInTx();
             writeError(ERROR_SEVERITY.FATAL, "Postgres bind parameter too large: " + paramSize + " bytes (max "
-                + GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger() + ")", "08P01");
+                + server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE) + ")", "08P01");
             shutdown = true;
             return;
           }
@@ -2030,7 +2036,7 @@ public class PostgresNetworkExecutor extends Thread {
           final long sz = channel.readUnsignedInt();
           if (sz == NULL_PARAM_LENGTH)
             continue;
-          if (sz > GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger()) {
+          if (sz > server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE)) {
             // Same reasoning as the main loop's guard: draining a declared-but-undelivered amount of
             // data risks an unbounded/blocking read, so give up on resyncing rather than attempt it.
             drainedCleanly = false;

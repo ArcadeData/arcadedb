@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import org.apache.ratis.thirdparty.io.grpc.Attributes;
@@ -147,10 +148,21 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   // read of a plain HashMap.
   private volatile int                       resolvedPeerHosts;
 
+  /**
+   * Convenience form for a caller with no server configuration in reach - the tests; {@code RaftHAServer} passes
+   * both windows explicitly, read from the server's own configuration. The empty {@link ContextConfiguration} says
+   * exactly that: both settings are SCOPE.SERVER, so reading them off the {@link GlobalConfiguration} enum would
+   * have been reading a value only a system property or an environment variable can have written (issue #7233).
+   */
   PeerAddressAllowlistFilter(final List<String> peerHosts, final long refreshIntervalMs) {
+    this(peerHosts, refreshIntervalMs, new ContextConfiguration());
+  }
+
+  PeerAddressAllowlistFilter(final List<String> peerHosts, final long refreshIntervalMs,
+      final ContextConfiguration configuration) {
     this(peerHosts, refreshIntervalMs,
-        GlobalConfiguration.HA_PEER_ALLOWLIST_STARTUP_GRACE_MS.getValueAsLong(),
-        GlobalConfiguration.HA_PEER_ALLOWLIST_STICKY_TTL_MS.getValueAsLong());
+        configuration.getValueAsLong(GlobalConfiguration.HA_PEER_ALLOWLIST_STARTUP_GRACE_MS),
+        configuration.getValueAsLong(GlobalConfiguration.HA_PEER_ALLOWLIST_STICKY_TTL_MS));
   }
 
   PeerAddressAllowlistFilter(final List<String> peerHosts, final long refreshIntervalMs, final long startupGraceMs,

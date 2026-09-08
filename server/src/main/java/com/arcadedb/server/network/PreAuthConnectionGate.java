@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.network;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
@@ -83,8 +84,14 @@ public class PreAuthConnectionGate {
     }
   }
 
-  public PreAuthConnectionGate(final String protocol) {
-    this(protocol, GlobalConfiguration.NETWORK_MAX_PREAUTH_CONNECTIONS.getValueAsInteger());
+  /**
+   * The cap is SCOPE.SERVER, so it is read from the SERVER's own configuration and not off the
+   * {@link GlobalConfiguration} enum, which only a system property or an environment variable ever writes: taking
+   * it from the enum meant a server configuration file or a {@code SET SERVER SETTING} that raised or lowered the
+   * cap was silently ignored, and every listener ran on the compiled-in default (issue #7233).
+   */
+  public PreAuthConnectionGate(final String protocol, final ContextConfiguration configuration) {
+    this(protocol, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_MAX_PREAUTH_CONNECTIONS));
   }
 
   public PreAuthConnectionGate(final String protocol, final int maxConnections) {

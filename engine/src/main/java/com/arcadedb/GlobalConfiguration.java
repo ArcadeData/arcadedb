@@ -2812,16 +2812,45 @@ public enum GlobalConfiguration {
    * @return {@code true} when the value was stored, {@code false} when it was refused and the default kept
    */
   public boolean setValueFromConfigurationSource(final Object iValue, final String source) {
+    final Object coerced = coerceFromConfigurationSource(iValue, source);
+    if (coerced == null && iValue != null)
+      return false;
+
+    setValue(coerced);
+    return true;
+  }
+
+  /**
+   * Applies the strict parse of {@link #coerceFromAdminCommand(Object)} to a value that arrived from a
+   * CONFIGURATION SOURCE - a system property, an environment variable, or the server configuration file - but
+   * REPORTS what it cannot read instead of throwing, returning {@code null} to say the value was refused.
+   * <p>
+   * Split out of {@link #setValueFromConfigurationSource(Object, String)} for issue #7262, so the server
+   * configuration file can share the parse and the message without also sharing the store: that path is the
+   * {@code SCOPE.SERVER} overlay ({@link ContextConfiguration#fromJSON(String)}), not this enum, and writing the
+   * value here would make the two disagree for every setting the file mentions.
+   * <p>
+   * Neither caller may throw. This one runs inside this class's static initializer, where an exception becomes an
+   * {@code ExceptionInInitializerError} that takes the engine down over one mistyped variable; the other runs while
+   * a server reads its configuration file, where it would do the same to the server. A refused value therefore
+   * leaves the setting exactly where it was - the compiled-in default from {@link #readConfiguration()}, and
+   * whatever the overlay already held from {@code fromJSON}.
+   *
+   * @param iValue the value to coerce, typically the raw text a property, variable or configuration file carried
+   * @param source what to name as its origin when reporting a value that cannot be read
+   *
+   * @return the coerced value, or {@code null} when it was refused (and when {@code iValue} itself is {@code null})
+   */
+  Object coerceFromConfigurationSource(final Object iValue, final String source) {
     try {
-      setValue(coerceFromAdminCommand(iValue));
-      return true;
+      return coerceFromAdminCommand(iValue);
     } catch (final Exception e) {
       if (LogManager.instance() != null)
         LogManager.instance().log(this, Level.WARNING, "Invalid value %s for setting '%s' of type %s set as %s: %s. Keeping %s",
             redactIfHidden(iValue), key, type.getSimpleName(), source,
             // The cause is redacted along with the value: its message quotes the value back.
             isHidden() ? "not a valid " + type.getSimpleName() : e.getMessage(), redactIfHidden(getValue()));
-      return false;
+      return null;
     }
   }
 
@@ -2916,17 +2945,26 @@ public enum GlobalConfiguration {
    * {@link #coerce(Object)} therefore remains the conversion of a value that is already typed, or one whose caller
    * has its own reason to be lenient; nothing routes raw external text through it any more.
    * <p>
-   * <b>One writer is still outside all of this, and counting it is the point:</b> #7222 happened because an
-   * enumeration of writers went stale, so this one says what it does not cover.
-   * {@link ContextConfiguration#fromJSON(String)} - the server configuration FILE - stores what it read straight
-   * into the overlay map with a plain {@code put}, touching neither this method nor {@link #setValue(Object)}, so a
-   * {@code "yes"} written there survives as the string {@code "yes"}. That is not the #7222 failure, which was a
-   * value silently BECOMING {@code false}: the text is still intact, so a reader can still refuse it, and
-   * {@code PrometheusMetricsPlugin.isAuthenticationRequired} does exactly that by re-applying this method at its own
-   * read site. A reader that instead trusts "the strict parse already happened on entry" and calls
-   * {@link ContextConfiguration#getValueAsBoolean(GlobalConfiguration)} would get {@code Boolean.parseBoolean} and
-   * reopen the bug through the configuration file. Until the file path coerces too, the read-site re-parse is what
-   * a security-relevant Boolean has to keep doing.
+   * <b>Every writer of raw external text now goes through this parse, and enumerating them is the point:</b> #7222
+   * happened because such an enumeration went stale, and #7262 because it was still one short. In full:
+   * <ol>
+   *   <li>{@code SET SERVER SETTING} and {@code SET DATABASE SETTING} over HTTP, and the {@code set_server_setting}
+   *       MCP tool, and {@code ALTER DATABASE ... SETTING} in SQL - directly, refusing loudly;</li>
+   *   <li>system properties and environment variables, through
+   *       {@link #setValueFromConfigurationSource(Object, String)} (#7222);</li>
+   *   <li>the server configuration FILE, {@link ContextConfiguration#fromJSON(String)}, through
+   *       {@link #coerceFromConfigurationSource(Object, String)} (#7262).</li>
+   * </ol>
+   * The last one used to store what it read straight into the overlay map with a plain {@code put}, touching
+   * neither this method nor {@link #setValue(Object)}, so a {@code "yes"} written there survived as the string
+   * {@code "yes"} and {@link ContextConfiguration#getValueAsBoolean(GlobalConfiguration)} read it as {@code false}
+   * through {@code Boolean.parseBoolean} - which for {@code arcadedb.ha.tls.mutualAuth} meant an operator writing
+   * down that they wanted mutual TLS on the Raft channel turned it off instead.
+   * <p>
+   * The reader is strict too now, so the two halves cannot come apart again: a value that is not boolean text is
+   * refused there as well, and falls back to the setting's DEFAULT rather than to {@code false}. That makes the
+   * read-site re-parse in {@code PrometheusMetricsPlugin.isAuthenticationRequired} a second lock on the same door
+   * rather than the only one, which for an authentication switch is where it should stay.
    *
    * @param iValue the value to convert, or {@code null}
    *

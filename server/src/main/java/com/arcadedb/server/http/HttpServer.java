@@ -282,9 +282,15 @@ public class HttpServer implements ServerPlugin {
         .delete("/chats/{id}", aiChatsHandler)//
     );
 
-    // Studio (static content) is served in development/test mode, and in production only when explicitly force-enabled
-    if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())
-        || GlobalConfiguration.STUDIO_ENABLED.getValueAsBoolean()) {
+    // Studio (static content) is served in development/test mode, and in production only when explicitly
+    // force-enabled. Read through the SERVER's configuration, never off the GlobalConfiguration enum: both settings
+    // are SCOPE.SERVER, and the enum is populated by system properties and environment variables ALONE - so a
+    // deployment that declares them in the server configuration file, or through SET SERVER SETTING, used to get
+    // this gate decided by the compiled-in default instead of by what it asked for, silently and in the permissive
+    // direction (issue #7233).
+    final ContextConfiguration configuration = server.getConfiguration();
+    if (!"production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE))
+        || configuration.getValueAsBoolean(GlobalConfiguration.STUDIO_ENABLED)) {
       routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new GetDynamicContentHandler(this)));
     }
 

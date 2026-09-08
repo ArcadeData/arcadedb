@@ -27,7 +27,7 @@ import java.net.Socket;
 public class ChannelBinaryServer extends ChannelBinary {
 
   public ChannelBinaryServer(final Socket iSocket, final ContextConfiguration config) throws IOException {
-    super(iSocket, config.getValueAsInteger(GlobalConfiguration.HA_REPLICATION_CHUNK_MAXSIZE));
+    super(iSocket, config.getValueAsInteger(GlobalConfiguration.HA_REPLICATION_CHUNK_MAXSIZE), config);
 
     inStream = new BufferedInputStream(socket.getInputStream());
     outStream = new BufferedOutputStream(socket.getOutputStream());

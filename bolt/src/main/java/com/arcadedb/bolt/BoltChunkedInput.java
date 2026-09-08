@@ -18,6 +18,7 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
@@ -45,9 +46,13 @@ public class BoltChunkedInput {
    * Reads {@link GlobalConfiguration#BOLT_MAX_MESSAGE_SIZE}, falling back to its built-in default (with a
    * warning) if configured below 1: a limit that low would reject essentially every message outright, so it is
    * treated as a misconfiguration rather than an intentional (if impractical) lockdown.
+   * <p>
+   * Through {@code configuration} and not off the enum: the setting is SCOPE.SERVER, so it is authoritative in the
+   * SERVER's overlay, which is where the configuration file, {@code SET SERVER SETTING} and the MCP tool all write.
+   * The enum carries a system property or an environment variable and nothing else (issue #7233).
    */
-  private static int sanitizedMaxMessageSize() {
-    final int configured = GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.getValueAsInteger();
+  private static int sanitizedMaxMessageSize(final ContextConfiguration configuration) {
+    final int configured = configuration.getValueAsInteger(GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE);
     if (configured < 1) {
       final int fallback = ((Number) GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.getDefValue()).intValue();
       if (WARNED_MISCONFIGURED_LIMITS.add(GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE))
@@ -59,8 +64,16 @@ public class BoltChunkedInput {
     return configured;
   }
 
+  /**
+   * For a caller with no server in reach - the protocol unit tests. An empty {@link ContextConfiguration} reads
+   * through to the enum's value, which is what this constructor always did.
+   */
   public BoltChunkedInput(final InputStream in) {
-    this(in, sanitizedMaxMessageSize());
+    this(in, new ContextConfiguration());
+  }
+
+  public BoltChunkedInput(final InputStream in, final ContextConfiguration configuration) {
+    this(in, sanitizedMaxMessageSize(configuration));
   }
 
   /**

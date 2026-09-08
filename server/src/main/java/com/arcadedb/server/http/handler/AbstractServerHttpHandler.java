@@ -421,9 +421,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
             } else if (auth.startsWith(AUTHORIZATION_BASIC)) {
               // Basic authentication
-              final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
-
-              final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
+              final String authPairClear;
+              try {
+                final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
+                authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
+              } catch (final IllegalArgumentException | IndexOutOfBoundsException e) {
+                // A header the client mistyped is a CLIENT error, answered exactly as a header that decodes to
+                // something other than user:password already is. Keeping it out of the catch below is what lets
+                // that one log its cause: everything still reaching it is then an internal fault rather than a
+                // string an anonymous caller chose, so its stack trace cannot be used to flood the log (#7247).
+                sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
+                return;
+              }
 
               final String[] authPair = authPairClear.split(":");
 
@@ -443,7 +452,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             // PASS THROUGH
             throw e;
           } catch (Exception e) {
-            throw new ServerSecurityException("Authentication error");
+            // The arm above re-throws every ServerSecurityException unchanged, and the malformed-header cases are
+            // answered where they happen, so this one is reached only by an INTERNAL failure: a crypto provider
+            // problem, an I/O error reading the user store. The client-facing message stays deliberately opaque,
+            // but the cause has to survive into the server log, or the only frame that knew why is the one that
+            // discarded it (issue #7247). Logged HERE rather than left to sendMappedErrorResponse, whose security
+            // arm deliberately prints a message and no stack trace at FINE - the right treatment for a wrong
+            // password, and the wrong one for the failures that reach this line.
+            LogManager.instance().log(this, getInternalErrorLogLevel(), "Error on authenticating the request", e);
+            throw new ServerSecurityException("Authentication error", e);
           }
         }
       }

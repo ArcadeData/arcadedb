@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
@@ -47,16 +48,29 @@ public final class HALog {
   }
 
   /**
-   * Refreshes the cached verbose level from GlobalConfiguration. Call after config changes.
+   * Caches the verbose level from the SERVER's configuration. Called by {@link RaftHAPlugin#configure} so the
+   * level a cluster asked for actually applies: {@code arcadedb.ha.log.verbose} is SCOPE.SERVER, and this class
+   * used to read it off the {@link GlobalConfiguration} enum, which carries only a system property or an
+   * environment variable - so a level set in the server configuration file, or through {@code SET SERVER
+   * SETTING}, was cached as the default and never looked at again (issue #7233).
+   */
+  public static void configure(final ContextConfiguration configuration) {
+    cachedLevel = configuration.getValueAsInteger(GlobalConfiguration.HA_LOG_VERBOSE);
+  }
+
+  /**
+   * Refreshes the cached verbose level with no server configuration in reach, i.e. from the setting's
+   * process-wide value. Used by the tests; a running server goes through {@link #configure}.
    */
   public static void refreshLevel() {
-    cachedLevel = GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
+    configure(new ContextConfiguration());
   }
 
   private static int getLevel() {
     int level = cachedLevel;
     if (level < 0) {
-      level = GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
+      // Reached only before the plugin has configured this class: fall back to the process-wide value.
+      level = new ContextConfiguration().getValueAsInteger(GlobalConfiguration.HA_LOG_VERBOSE);
       cachedLevel = level;
     }
     return level;

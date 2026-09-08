@@ -553,10 +553,12 @@ public class BinarySerializer {
             content.putByte(entryType);
             serializeValue(database, content, entryType, valueToWrite, applyEncryption);
           } catch (Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on serializing array value for element %d = '%s'",
+            // The element's own toString() is not a substitute for knowing which nested serializeValue() threw and
+            // why, so the cause travels on both paths - the log and the exception (issue #7247).
+            LogManager.instance().log(this, Level.SEVERE, "Error on serializing array value for element %d = '%s'", e,
                 i, entryValue);
             throw new SerializationException(
-                "Error on serializing array value for element " + i + " = '" + entryValue + "'");
+                "Error on serializing array value for element " + i + " = '" + entryValue + "'", e);
           }
         }
       }

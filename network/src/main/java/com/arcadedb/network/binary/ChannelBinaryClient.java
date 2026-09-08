@@ -29,7 +29,8 @@ public class ChannelBinaryClient extends ChannelBinary {
   protected       String url;
 
   public ChannelBinaryClient(final String remoteHost, final int remotePort, final ContextConfiguration config) throws IOException {
-    super(SocketFactory.instance(config).createSocket(), config.getValueAsInteger(GlobalConfiguration.HA_REPLICATION_CHUNK_MAXSIZE));
+    super(SocketFactory.instance(config).createSocket(),
+        config.getValueAsInteger(GlobalConfiguration.HA_REPLICATION_CHUNK_MAXSIZE), config);
     try {
 
       url = remoteHost + ":" + remotePort;
