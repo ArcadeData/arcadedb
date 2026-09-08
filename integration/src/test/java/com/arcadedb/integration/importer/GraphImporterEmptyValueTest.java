@@ -80,9 +80,11 @@ class GraphImporterEmptyValueTest {
   @AfterEach
   void cleanup() {
     if (database != null) {
-      // An import that aborts mid-row leaves the batch's transaction open, and the instance is not
-      // released until it is rolled back - which would turn one real failure here into a cascade of
-      // "already in use" errors in every later test of the class.
+      // A backstop, not a workaround: GraphImporter.processVertexSource resolves its own transaction
+      // in a finally block (GraphImporter.java:1186-1203) and processEdgeSource opens none, so an
+      // aborted import is expected to leave nothing active - which aMalformedOrBlankJsonlNumberIsStillReported
+      // asserts outright. This only keeps one real failure from cascading into "already in use"
+      // errors in every later test of the class if that ever stops holding.
       if (database.isTransactionActive())
         database.rollback();
       if (database.isOpen())
@@ -414,8 +416,10 @@ class GraphImporterEmptyValueTest {
           .hasMessageContaining("declared as an integer");
     }
 
-    if (database.isTransactionActive())
-      database.rollback();
+    // The abort must not leave a transaction on the stack, or the second import below would fail
+    // for a reason that has nothing to do with the value it is testing. GraphImporter resolves it
+    // in processVertexSource's finally block, so this is an assertion rather than a cleanup step.
+    assertThat(database.isTransactionActive()).isFalse();
 
     final String blank = write("blank-int-vertices.jsonl",
         "{\"id\": \"1\", \"name\": \"alice\", \"score\": \" \"}");
