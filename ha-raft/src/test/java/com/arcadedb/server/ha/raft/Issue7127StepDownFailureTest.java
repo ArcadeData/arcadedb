@@ -134,7 +134,12 @@ class Issue7127StepDownFailureTest {
     assertThat(raft.fallbackAttempts).as("all three real step-down attempts must be exhausted").isEqualTo(3);
     assertThat(raft.targetedAttempts).isEqualTo(6);
     if (stopOnFailure) {
-      assertThat(stopped.await(10, TimeUnit.SECONDS)).as("emergency server stop must be reached").isTrue();
+      // recoverLeadershipAfterPhase2Failure() runs server.stop() on its own daemon thread, so the latch is the
+      // only completion signal available here. The bound is a HANG DETECTOR, not a latency claim - it separates
+      // "the emergency-stop branch was reached" from "it was never reached at all", and the work behind it is a
+      // single call on a mock. Generous on purpose: a wider bound cannot turn a passing run red, while a tight
+      // one turns a full-suite stop-the-world pause into a false failure (see CLAUDE.md on wall-clock bounds).
+      assertThat(stopped.await(60, TimeUnit.SECONDS)).as("emergency server stop must be reached").isTrue();
       verify(server).stop();
     } else
       verify(server, never()).stop();
