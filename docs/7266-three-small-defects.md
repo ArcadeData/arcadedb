@@ -325,3 +325,29 @@ Not actioned, with the reason: the reviewer noted the tracking doc "reads more l
 working log than user-facing documentation" and then answered itself - `docs/6989-*.md`,
 `docs/7122-*.md` and `docs/7225-*.md` are the same shape, so this follows the repo's convention.
 No deferred items.
+
+### Cycle 2 - `9d0c308`
+
+Nothing blocking again, and the bot re-verified the cycle-1 answers rather than taking them on
+faith - it traced `String.split(":")`'s trailing-empty semantics for every malformed shape the test
+enumerates, and checked the filter comparison against `CsvRowSource` itself to confirm `attr=` is
+genuinely unmatchable on CSV and meaningful on the other two. Three minor points:
+
+1. **Test weight** - `Issue7266IncrementalSchemaSecondPassTest` inserted 10,000 records and forced a
+   compaction per test, and the reviewer asked whether that earned `@Tag("slow")`. Measured rather
+   than assumed: the class ran in **1.56 s**. Rather than tag a class that is not slow, the fixture
+   was sized down to the smallest that still produces a multi-page compacted series with a bloom
+   filter over it - 2,000 records, **1.10 s** for the whole class - and the constant now carries a
+   javadoc saying what the number is for. It stays in the default lane, which is the honest answer:
+   `@Tag("slow")` is for classes that genuinely cost seconds, and tagging a fast one dilutes the
+   lane.
+2. **The filter asymmetry was documented where only an internals reader would find it** - an inline
+   comment in `parseVertexSource` and a test. `Builder.filter(String, String)` is the method a config
+   author actually reads, and it said nothing. Its javadoc now states which sources can match an
+   empty value and which cannot, and that an empty attribute is refused.
+3. **Whether `docs/<issue>-*.md` is the right long-term home** for a per-issue working log. The
+   reviewer noted it matches the existing precedent and framed it as a repo-wide convention question
+   rather than something for this PR. Left alone deliberately: changing where these live is not this
+   branch's business, and doing it here would bury the fix.
+
+No deferred items in either cycle.

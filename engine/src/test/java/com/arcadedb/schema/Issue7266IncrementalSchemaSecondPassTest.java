@@ -55,7 +55,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue7266IncrementalSchemaSecondPassTest extends TestHelper {
 
   private static final String TYPE_NAME = "Issue7266Indexed";
-  private static final int    RECORDS   = 10_000;
+  /**
+   * Enough keys, at the 1024-byte index page size below, for the compaction to write a multi-page series with a
+   * bloom filter over it - which is what these tests need - and no more. Sized down from 10,000 after a review
+   * asked whether the class had earned {@code @Tag("slow")}: at this size the whole class runs in about a second,
+   * so it belongs in the default lane.
+   */
+  private static final int    RECORDS   = 2_000;
 
   @Override
   protected void beginTest() {

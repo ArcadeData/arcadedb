@@ -631,6 +631,12 @@ public class GraphImporter implements AutoCloseable {
      * Filter rows: only rows where the attribute equals the given value are imported.
      * Enables splitting one file into multiple vertex types (e.g. Posts.xml → Question + Answer).
      * Format: {@code filter("PostTypeId", "1")} or in JSON: {@code "filter": "PostTypeId=1"}.
+     * <p>
+     * An EMPTY value is accepted and selects the rows whose attribute is empty - {@code "filter": "PostTypeId="}
+     * in JSON. Which rows those are depends on the source: {@link XmlRowSource} hands back the raw attribute value
+     * and {@link JsonlRowSource} an explicit empty string, so both can match, while {@link CsvRowSource} reads an
+     * empty cell as absent, where such a filter selects nothing. An empty ATTRIBUTE is refused, because there is
+     * no row it could ever test.
      */
     public void filter(final String attribute, final String value) {
       this.filterAttribute = attribute;
