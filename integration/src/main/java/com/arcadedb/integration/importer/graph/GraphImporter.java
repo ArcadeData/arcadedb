@@ -1080,9 +1080,9 @@ public class GraphImporter implements AutoCloseable {
       // own says everything there is to say
       if (committed[0] > 0)
         LogManager.instance().log(this, Level.WARNING,
-            "  %-12s failed after reading %,d rows: the import is PARTIAL - %,d vertices an earlier batch commit "
-                + "made durable stay on the disk, the %,d rows read since it were rolled back. Resume the source "
-                + "after the committed rows, or empty the type before running it again",
+            "  %-12s failed after importing %,d rows: the import is PARTIAL - %,d of them an earlier batch commit "
+                + "made durable and they stay on the disk, the other %,d were rolled back along with the row that "
+                + "failed. Resume the source after the committed rows, or empty the type before running it again",
             vc.typeName, count[0], committed[0], count[0] - committed[0]);
       throw e;
     } finally {
@@ -1091,7 +1091,17 @@ public class GraphImporter implements AutoCloseable {
       // every path that already committed, which is what keeps this from rolling back the caller's
       if (txOpen[0]) {
         txOpen[0] = false;
-        database.rollback();
+        try {
+          database.rollback();
+        } catch (final Exception rollbackFailure) {
+          // A throw here would replace the exception on its way out with one about the cleanup, and
+          // would skip the counter assignment below - which is this issue's own symptom, reached
+          // through the code that fixes it. Reported and swallowed instead: the caller keeps the
+          // failure it can act on, and this line says the transaction may still be pushed
+          LogManager.instance().log(this, Level.SEVERE,
+              "  %-12s could not roll back after the import failed: the transaction it opened may still be on the "
+                  + "stack", rollbackFailure, vc.typeName);
+        }
       }
 
       // The counters are assigned whatever happened: the number of vertices actually on the disk is
