@@ -41,14 +41,34 @@ import java.util.logging.Level;
  * They are answered here once, next to the resolution, so a new caller inherits the rule instead of restating
  * it: {@code ArcadeStateMachine} before a snapshot resync, and {@code PostVerifyDatabaseHandler} before it fans
  * a consistency check out to a peer.
+ * <p>
+ * A refusal also says WHICH of the two it is, through {@link #sharedEndpoint()}: an address shared with another
+ * peer is a different fact from no address at all, and one caller can act on the difference (issue #7256).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public record PeerDialAddress(String httpAddress, String httpsAddress, String refusal) {
+public record PeerDialAddress(String httpAddress, String httpsAddress, String refusal, SharedEndpoint sharedEndpoint) {
+
+  /**
+   * The endpoint a refused peer resolves to, when the refusal was "this address is shared with another peer"
+   * rather than "there is no address at all" (issue #7256).
+   * <p>
+   * Present only on that one refusal, and it is <b>not</b> an address to dial: it names at most one of the peers
+   * that resolve to it and nothing here can say which. It is offered for the single kind of request that does not
+   * need to know - one that is read-only and whose ANSWER identifies its author, so the caller can bind the reply
+   * to whoever gave it instead of to whoever it was meant for. The peer-capability probe is the one such request
+   * today ({@code RaftHAServer.refreshPeerCapabilities}); anything that acts on the peer it addressed must keep
+   * treating this refusal as a refusal.
+   * <p>
+   * Never this node's own endpoint: dialling that comes straight back here whatever else is true of it, so it is
+   * withheld at the source rather than left for each caller to re-check.
+   */
+  public record SharedEndpoint(String httpAddress, String httpsAddress) {
+  }
 
   /** A refusal carrying {@code reason}, phrased to be appended to a caller's "refusing to ..." log line. */
   public static PeerDialAddress refuse(final String reason) {
-    return new PeerDialAddress(null, null, reason);
+    return new PeerDialAddress(null, null, reason, null);
   }
 
   /** True when there is no address this node may dial, and {@link #refusal()} says why. */
@@ -96,10 +116,12 @@ public record PeerDialAddress(String httpAddress, String httpsAddress, String re
 
     final String httpAddress = raft.getUnambiguousPeerHttpAddress(peerId);
     if (httpAddress == null)
-      return refuse("no HTTP address identifies " + role + " " + peerId + " on its own - it is either unresolvable "
-          + "or shared with another peer, and a request sent to the wrong node answers for a node that was never "
-          + "asked. Declare each node's 'http' port explicitly in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
-          + " (issue #6202)");
+      return new PeerDialAddress(null, null,
+          "no HTTP address identifies " + role + " " + peerId + " on its own - it is either unresolvable "
+              + "or shared with another peer, and a request sent to the wrong node answers for a node that was never "
+              + "asked. Declare each node's 'http' port explicitly in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
+              + " (issue #6202)",
+          sharedEndpointOf(raft, peerId));
 
     // Resolved once and compared once: reading it twice would let the two comparisons disagree.
     final String localHttpAddress = raft.getLocalHttpAddress();
@@ -114,7 +136,31 @@ public record PeerDialAddress(String httpAddress, String httpsAddress, String re
           + "come straight back here. Declare each node's 'http' port explicitly in "
           + GlobalConfiguration.HA_SERVER_LIST.getKey() + " (issue #6191)");
 
-    return new PeerDialAddress(httpAddress, encryptedEndpointOf(raft, peerId), null);
+    return new PeerDialAddress(httpAddress, encryptedEndpointOf(raft, peerId), null, null);
+  }
+
+  /**
+   * The endpoint the two-or-more peers that resolve to it share, or {@code null} when there was no address to
+   * begin with (an unknown peer, an unresolvable one) or when it is this node's own.
+   * <p>
+   * Reads the raw resolver rather than the unambiguous accessor, which by construction has just answered
+   * {@code null}: the whole point is to recover the address the ambiguity check withheld. The self-address check
+   * is repeated here because it guards a different question - the one above asks whether an <em>unambiguous</em>
+   * address is ours, and a shared one never reaches it.
+   */
+  private static SharedEndpoint sharedEndpointOf(final RaftHAServer raft, final RaftPeerId peerId) {
+    final String httpAddress = raft.getPeerHttpAddress(peerId);
+    if (httpAddress == null)
+      return null;
+    final String localHttpAddress = raft.getLocalHttpAddress();
+    if (localHttpAddress != null && RaftHAServer.isSameHttpEndpoint(localHttpAddress, httpAddress))
+      return null;
+
+    final String httpsAddress = raft.getPeerHttpsAddress(peerId);
+    final String localHttpsAddress = raft.getLocalHttpsAddress();
+    final boolean httpsIsOurs = httpsAddress != null && localHttpsAddress != null
+        && RaftHAServer.isSameHttpEndpoint(localHttpsAddress, httpsAddress);
+    return new SharedEndpoint(httpAddress, httpsIsOurs ? null : httpsAddress);
   }
 
   /**

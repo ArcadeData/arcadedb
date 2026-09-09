@@ -148,10 +148,24 @@ every cycle produced something worth changing.
 Final head: `af1894d`. Final state: **max-cycles-reached** - the fourth review was non-blocking and everything
 actionable in it was applied, but the loop stops here by its own budget rather than on a clean pass.
 
+## Downgrade boundary (#7255)
+
+Negotiation (#7219) governs what the leader writes **from now on**, and says nothing about entries already
+committed. A delta entry stays in the durable Raft log, so a node restarted onto a build that predates #7211
+replays it with the old decoder, sees an empty `schemaJson`, applies nothing and diverges silently.
+
+No code can catch that: every receiver-side check lives in a build that HAS the delta decoder, and the node in
+trouble is one that does not. The boundary is therefore operational and belongs in the upgrade notes:
+
+> **A cluster whose Raft log has ever carried a schema-delta entry cannot be rolled back past #7211.** A node
+> that must go back that far is rebuilt from a snapshot - databases reinstalled from a current leader, Raft
+> storage discarded - rather than restarted on its retained log.
+
 ## Deferred, for the developer
 
-- **Automatic peer-capability negotiation.** Until it exists, `arcadedb.ha.schemaDelta` must stay off through a
-  rolling upgrade; turning it on early diverges older followers SILENTLY.
+- **Automatic peer-capability negotiation.** Delivered in #7219, and #7256 made it reachable on clusters whose
+  peers derive onto one HTTP address. Before #7219, `arcadedb.ha.schemaDelta` had to stay off through a rolling
+  upgrade; turning it on early diverged older followers SILENTLY.
 - **Micrometer wiring** for `getSchemaDeltasShipped()` / `getSchemaDocumentsShipped()`. Worth a tracking issue
   before the setting is turned on anywhere, since the ratio is the only way to see the path is engaged.
 - **A benchmark on the real 1209-type schema** from #6982, to replace the complexity claim about leader CPU
