@@ -49,13 +49,10 @@ public class XMLImporterFormat implements FormatImporter {
     try {
       final int objectNestLevel = settings.getIntValue("objectNestLevel", 1);
 
-      // One ImporterContext is shared by all four of Importer.load()'s loadFromSource() phases, so this counter
-      // arrives carrying whatever an earlier phase parsed. -parsingLimitEntries is checked against it below, and
-      // an inherited offset k truncated this phase after parsingLimitEntries - k objects - importing nothing at
-      // all, while still reporting success, once k reached the limit (issue #7313). Zeroing it on entry - as
-      // CSVImporterFormat, RDFImporterFormat, Neo4jImporterFormat, OrientDBImporterFormat, GloVeImporterFormat,
-      // Word2VecImporterFormat and Word2VecImporterFormatLSM all already do - makes the limit count this phase's
-      // own objects.
+      // One ImporterContext serves every phase of an import, so this counter arrives carrying whatever an earlier
+      // phase left in it, and -parsingLimitEntries is checked against it below: a phase entered already past the
+      // limit imported nothing at all while still reporting success. Zeroed here the way RDFImporterFormat and the
+      // six other formats zero it, so the limit counts this phase's own objects (issue #7313).
       context.parsed.set(0);
 
       final XMLInputFactory xmlFactory = XMLInputFactory.newInstance();
