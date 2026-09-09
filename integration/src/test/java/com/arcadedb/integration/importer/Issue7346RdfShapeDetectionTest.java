@@ -25,12 +25,16 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -157,6 +161,75 @@ class Issue7346RdfShapeDetectionTest {
       file.delete();
     }
     TestHelper.checkActiveDatabases();
+  }
+
+  /**
+   * The detector is a hand-rolled index-chasing scan, and it runs on the first line of whatever file a user
+   * points the importer at. What must hold for EVERY input, not only the shapes above, is that it terminates and
+   * returns rather than walking off the end of the buffer: an {@code ArrayIndexOutOfBoundsException} out of format
+   * sniffing would be reported as a broken file rather than as the bug it is.
+   * <p>
+   * Two generators. The first mutates a valid triple one character at a time - delete, duplicate, truncate,
+   * substitute - which is where an off-by-one in a four-method recursive descent actually lives. The second is
+   * random text over the alphabet that matters ({@code < > " _ : . \ } separators, letters), which reaches the
+   * shapes a mutation cannot.
+   * <p>
+   * The invariant asserted on top of "it returned" is the one worth having and cheap to check independently: a
+   * line the detector ACCEPTS carries at least two {@code <...>} terms, because subject and predicate are the two
+   * places the grammar admits nothing else. A regression that started accepting delimited text would break it.
+   */
+  @Test
+  @Timeout(30)
+  void theDetectorTerminatesAndStaysStrictOnEveryNearMiss() {
+    final String valid = "<http://a/s1> <http://a/rel> \"hello world\"@en .";
+    final char[] alphabet = { '<', '>', '"', '_', ':', '.', ' ', '\t', ',', ';', '|', '\r', '\\', '@', '^', 'a', '1' };
+    final Random random = new Random(7346);
+
+    final List<String> candidates = new ArrayList<>();
+    for (int i = 0; i < valid.length(); i++) {
+      candidates.add(valid.substring(0, i) + valid.substring(i + 1));                    // delete
+      candidates.add(valid.substring(0, i) + valid.charAt(i) + valid.substring(i));      // duplicate
+      candidates.add(valid.substring(0, i));                                             // truncate
+      for (final char c : alphabet)
+        candidates.add(valid.substring(0, i) + c + valid.substring(i + 1));              // substitute
+    }
+    for (int i = 0; i < 5_000; i++) {
+      final StringBuilder line = new StringBuilder();
+      for (int j = random.nextInt(24); j > 0; --j)
+        line.append(alphabet[random.nextInt(alphabet.length)]);
+      candidates.add(line.toString());
+    }
+
+    int accepted = 0;
+    for (final String candidate : candidates) {
+      final char separator = SourceDiscovery.nTriplesSeparator(candidate);
+      if (separator == 0)
+        continue;
+      ++accepted;
+      assertThat(iriTermCount(candidate))
+          .as("accepted as a triple, so subject and predicate are both IRIs: <%s>", candidate)
+          .isGreaterThanOrEqualTo(2);
+      assertThat(SourceDiscovery.nTriplesSeparator(candidate))
+          .as("the same line answers the same way twice: <%s>", candidate)
+          .isEqualTo(separator);
+    }
+    // Without this the whole loop is vacuous: a detector that rejected everything would satisfy every assertion
+    // above. 458 of the 5,940 candidates are accepted as this is written, and the single-character mutations of a
+    // valid triple are most of them, which is the population the invariant is worth checking on.
+    assertThat(accepted).as("the near misses have to include some the detector accepts").isGreaterThan(50);
+  }
+
+  /** The number of non-empty {@code <...>} runs in the line, counted without the detector's own helpers. */
+  private static int iriTermCount(final String line) {
+    int count = 0;
+    for (int open = line.indexOf('<'); open >= 0; open = line.indexOf('<', open + 1)) {
+      final int close = line.indexOf('>', open + 1);
+      if (close > open + 1) {
+        ++count;
+        open = close;
+      }
+    }
+    return count;
   }
 
   // -----------------------------------------------------------------------------------------------------------
