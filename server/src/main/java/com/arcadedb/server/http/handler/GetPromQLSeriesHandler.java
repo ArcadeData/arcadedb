@@ -35,12 +35,12 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * HTTP handler for PromQL series lookup.
@@ -76,8 +76,13 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
     final long endMs = endStr != null ? (long) (Double.parseDouble(endStr) * 1000) : Long.MAX_VALUE;
 
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
-    final Set<String> seenKeys = new LinkedHashSet<>();
-    final List<Map<String, String>> seriesList = new ArrayList<>();
+    // Keyed by the label combination, in first-seen order, with the earliest timestamp each was observed at.
+    // The order matters: query() used to hand this loop the rows already sorted by timestamp, so the response
+    // came out ordered by when each series first appears. forEachRow visits shard by shard, which would have
+    // silently reordered the response - so the ordering the old sort produced is now stated rather than
+    // inherited, and it costs one long per distinct series instead of a sort of the whole range (issue #7354).
+    final Map<String, Map<String, String>> seriesByKey = new LinkedHashMap<>();
+    final Map<String, Long> earliestByKey = new HashMap<>();
 
     for (final String matchStr : matchParams) {
       try {
@@ -115,14 +120,20 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
           }
 
           final String key = labels.toString();
-          if (seenKeys.add(key))
-            seriesList.add(labels);
+          seriesByKey.putIfAbsent(key, labels);
+          earliestByKey.merge(key, (Long) row[0], Math::min);
           return true;
         });
       } catch (final IllegalArgumentException ignored) {
         // Skip malformed match patterns
       }
     }
+
+    // Ordered by the timestamp each series was first observed at. Sorted with List#sort, which is stable, so two
+    // series whose earliest sample shares a timestamp keep the order they were first seen in - the same tiebreak
+    // the timestamp sort in query() used to give this loop.
+    final List<Map<String, String>> seriesList = new ArrayList<>(seriesByKey.values());
+    seriesList.sort(Comparator.comparingLong(labels -> earliestByKey.get(labels.toString())));
 
     return new ExecutionResponse(200, PromQLResponseFormatter.formatSeriesResponse(seriesList));
   }

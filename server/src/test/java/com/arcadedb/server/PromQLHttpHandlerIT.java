@@ -243,6 +243,39 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #7354: {@code query()} handed this endpoint its rows already sorted by timestamp, so the response came
+   * out ordered by when each series first appears. {@code forEachRow} visits shard by shard, which would have
+   * reordered it silently - the handler now carries each combination's earliest timestamp and orders by it.
+   * <p>
+   * The later series is INGESTED FIRST, in its own write, so a handler that answered in traversal order would put
+   * it first and this assertion would catch it.
+   */
+  @Test
+  void seriesAreOrderedByTheTimestampEachWasFirstObservedAt() throws Exception {
+    testEachServer(serverIndex -> {
+      postPromWrite(serverIndex, new WriteRequest(List.of(
+          new TimeSeries(
+              List.of(new Label("__name__", "prom_ordered"), new Label("host", "later")),
+              List.of(new Sample(1.0, 5000), new Sample(2.0, 6000))))));
+      postPromWrite(serverIndex, new WriteRequest(List.of(
+          new TimeSeries(
+              List.of(new Label("__name__", "prom_ordered"), new Label("host", "earlier")),
+              List.of(new Sample(3.0, 1000), new Sample(4.0, 2000))))));
+
+      final JSONArray data = getPromQL(serverIndex, "series", "match%5B%5D=" + encode("prom_ordered"))
+          .getJSONArray("data");
+
+      final List<String> hosts = new ArrayList<>();
+      for (int i = 0; i < data.length(); i++)
+        hosts.add(data.getJSONObject(i).getString("host"));
+
+      assertThat(hosts)
+          .as("earliest sample first, whatever order the rows were written or are traversed in")
+          .containsExactly("earlier", "later");
+    });
+  }
+
   @Test
   void errorMissingQuery() throws Exception {
     testEachServer(serverIndex -> {
