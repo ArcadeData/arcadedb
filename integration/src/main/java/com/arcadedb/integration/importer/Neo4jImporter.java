@@ -736,6 +736,13 @@ public class Neo4jImporter {
    * bottom transaction resolved and re-begun, and a bottom transaction means there is no caller transaction
    * underneath to protect.
    *
+   * The contract this puts on {@code parsingCallback}, which is the one thing running in here that the caller
+   * writes: it must not return with an extra transaction of its own left open. A callback that resolves this
+   * import's transaction is handled - that is the case this guard exists for - but one that pushes a transaction
+   * on top of it and never resolves that leaves the import's own buried, and the guard will then correctly refuse
+   * to touch what is on top rather than resolving the wrong one. Nothing here unwinds a stack somebody else grew:
+   * popping transactions this importer did not push is precisely the defect being fixed.
+   *
    * @param txOpen        this loop's own flag: false once the loop has resolved its transaction itself
    * @param ownTransaction the transaction the loop's last {@code begin()} left current, or {@code null} when the
    *                       implementation does not expose it - in which case the flag is all there is, as before
