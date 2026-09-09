@@ -4956,6 +4956,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return {@code vector} to keep it resident, or {@code null} to queue an id-only entry
    */
   private VectorFloat<?> retainDeltaPayload(final VectorFloat<?> vector) {
+    assert lock.isWriteLockedByCurrentThread() : "retainDeltaPayload() without the write lock";
     return deltaResidentPayloads.get() >= deltaPayloadCapacity() ? null : vector;
   }
 
@@ -4966,8 +4967,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * The single door in, so that {@link #deltaResidentPayloads} cannot drift from what the buffer actually holds:
    * the accounting is what decides whether the next write keeps its payload, and a path that appended around it
    * would leave that decision reading a number nobody maintains.
+   *
+   * @param entry the entry to append
    */
   private void queueDeltaEntry(final DeltaVectorEntry entry) {
+    // Asserted rather than merely documented: the invariant is invisible from the call site, and a future caller
+    // that appends without the lock would not fail here - it would corrupt the accounting quietly, which is the
+    // kind of bug this counter exists to prevent (PR #7360 review).
+    assert lock.isWriteLockedByCurrentThread() : "queueDeltaEntry() without the write lock";
     deltaVectors.add(entry);
     if (entry.vector != null)
       deltaResidentPayloads.incrementAndGet();
@@ -4978,6 +4985,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <b>The caller must hold {@link #lock}'s write lock.</b>
    */
   private void recountDeltaResidentPayloads() {
+    assert lock.isWriteLockedByCurrentThread() : "recountDeltaResidentPayloads() without the write lock";
     int resident = 0;
     for (final DeltaVectorEntry e : deltaVectors)
       if (e.vector != null)
@@ -5015,8 +5023,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * something else pays a page read per scored entry for a bound it does not need. Otherwise the budget is the
    * configured share of the heap ceiling, capped at what is currently available, divided by what one cached
    * vector of this arity costs: the same arithmetic and the same denominator
-   * {@link #computeGraphBuildCacheCapacity} uses, so the two caches cannot each plan on the whole of the same
-   * free heap.
+   * {@link #computeGraphBuildCacheCapacity} uses.
+   * <p>
+   * Sharing the denominator is NOT a reservation, and nothing here should be read as one (PR #7360 review): this
+   * cache and the build cache each take their percent of the same {@code availableHeapBytes()} reading, so within
+   * one TTL window both can size themselves against heap the other is about to take. What makes it converge is
+   * that a payload kept here becomes live heap, which lowers the next reading for both. The percents are a margin
+   * against that lag, not a partition of the heap - which is why the default is a modest 10 and why the ceiling
+   * that matters is the one an operator sets when they know what else is running.
    *
    * @return the capacity, never negative
    */
@@ -5041,6 +5055,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * The vector of a buffered entry: the payload it carries, or a read of the pages it was persisted to when the
    * heap budget declined to keep one (issue #7357).
+   *
+   * @param entry the buffered entry to resolve
    *
    * @return the vector, or {@code null} when it can no longer be read back - the entry must then be skipped
    */
@@ -9697,6 +9713,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Clears {@code task} as the armed one, so the index is free to arm another. A no-op when a later task has
    * already replaced it, which is what makes a task cancelled by {@link #cancelInactivityRebuildTimer()} and
    * running anyway unable to disarm its successor.
+   *
+   * @param task the task that is standing down
    */
   private synchronized void disarmInactivityRebuild(final TimerTask task) {
     if (inactivityRebuildTask == task)
