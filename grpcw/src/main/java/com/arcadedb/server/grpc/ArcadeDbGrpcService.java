@@ -48,6 +48,9 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.query.search.FullTextSearchOperation;
+import com.arcadedb.query.search.HybridSearchOperation;
+import com.arcadedb.query.search.VectorSearchOperation;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -59,6 +62,8 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.JsonSerializer;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
@@ -78,6 +83,7 @@ import com.google.protobuf.Timestamp;
 import io.grpc.Context;
 import io.grpc.Metadata;
 import io.grpc.Status;
+import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
@@ -4633,6 +4639,242 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   // Helper methods
+
+  // ------------------------------------------------------------------------------------
+  // Search API (issue #7306)
+  // ------------------------------------------------------------------------------------
+  //
+  // The three handlers below translate their request into the JSON argument object the shared
+  // com.arcadedb.query.search operations take, run the search, and translate the JSON response back.
+  // Nothing about what a legal request is, nor about how a result is ranked, is decided here: that
+  // lives in the operation, which the HTTP /api/v1/vector/{database}/* routes and the MCP tools call
+  // too. An argument fault therefore produces the same message on all three protocols, which is what
+  // #7306 asked for when it said the surfaces must not be able to disagree.
+
+  @Override
+  public void vectorSearch(final VectorSearchRequest req, final StreamObserver<VectorSearchResponse> resp) {
+    GrpcUnaryCall.respond(resp, () -> {
+      final Database db = getDatabase(req.getDatabase(), req.getCredentials());
+      final JSONObject args = new JSONObject().put("indexName", req.getIndexName());
+      putVectorLegArguments(args, req.getQueryVectorList(), req.getQueryIndicesList(), req.getK(),
+          req.hasEfSearch() ? req.getEfSearch() : null, req.getFilter(), req.getSparse());
+
+      final JSONObject result = VectorSearchOperation.execute(db, args);
+      Metrics.counter("grpc.vector.search").increment();
+
+      return VectorSearchResponse.newBuilder()
+          .setIndexName(result.getString("indexName", ""))
+          .setSparse(result.getBoolean("sparse", false))
+          .setScoring(result.getString("scoring", ""))
+          .setCandidateLimit(result.getInt("candidateLimit", 0))
+          .setTruncated(result.getBoolean("truncated", false))
+          .setCount(result.getInt("count", 0))
+          .addAllResults(toSearchHits(db, result.getJSONArray("results", new JSONArray())))
+          .build();
+    }, e -> toSearchStatus("VectorSearch", e));
+  }
+
+  @Override
+  public void hybridSearch(final HybridSearchRequest req, final StreamObserver<HybridSearchResponse> resp) {
+    GrpcUnaryCall.respond(resp, () -> {
+      final Database db = getDatabase(req.getDatabase(), req.getCredentials());
+      final JSONObject args = new JSONObject().put("vectorIndexName", req.getVectorIndexName());
+      putVectorLegArguments(args, req.getQueryVectorList(), req.getQueryIndicesList(), req.getK(),
+          req.hasEfSearch() ? req.getEfSearch() : null, req.getFilter(), req.getSparse());
+
+      // Blank means absent everywhere below: proto3 cannot tell an unset string from an empty one, and the
+      // operation rejects half a full-text leg, so passing "" through would turn "I did not ask for it" into
+      // "I asked for it with an empty index name".
+      putIfNotBlank(args, "fulltextIndexName", req.getFulltextIndexName());
+      putIfNotBlank(args, "fulltextQuery", req.getFulltextQuery());
+      putIfNotBlank(args, "fusionStrategy", req.getFusionStrategy());
+
+      if (req.hasExpand()) {
+        final GraphExpansion expansion = req.getExpand();
+        final JSONObject expand = new JSONObject();
+        if (!expansion.getEdgeTypesList().isEmpty())
+          expand.put("edgeTypes", new JSONArray(expansion.getEdgeTypesList()));
+        putIfNotBlank(expand, "direction", expansion.getDirection());
+        if (expansion.getMaxDepth() > 0)
+          expand.put("maxDepth", expansion.getMaxDepth());
+        args.put("expand", expand);
+      }
+
+      if (!req.getWeightsMap().isEmpty()) {
+        final JSONObject weights = new JSONObject();
+        req.getWeightsMap().forEach(weights::put);
+        args.put("weights", weights);
+      }
+
+      final JSONObject result = HybridSearchOperation.execute(db, args);
+      Metrics.counter("grpc.vector.hybrid").increment();
+
+      final HybridSearchResponse.Builder response = HybridSearchResponse.newBuilder()
+          .setVectorIndexName(result.getString("vectorIndexName", ""))
+          .setFulltextIndexName(result.getString("fulltextIndexName", ""))
+          .setSparse(result.getBoolean("sparse", false))
+          .setScoring(result.getString("scoring", ""))
+          .setFused(result.getBoolean("fused", false))
+          .setFusionStrategy(result.getString("fusionStrategy", ""))
+          .setTruncated(result.getBoolean("truncated", false))
+          .setCount(result.getInt("count", 0))
+          .addAllResults(toSearchHits(db, result.getJSONArray("results", new JSONArray())));
+
+      final JSONObject legs = result.getJSONObject("legs", null);
+      if (legs != null)
+        response.setLegs(toLegReport(legs));
+      return response.build();
+    }, e -> toSearchStatus("HybridSearch", e));
+  }
+
+  @Override
+  public void fullTextSearch(final FullTextSearchRequest req, final StreamObserver<FullTextSearchResponse> resp) {
+    GrpcUnaryCall.respond(resp, () -> {
+      final Database db = getDatabase(req.getDatabase(), req.getCredentials());
+      final JSONObject args = new JSONObject().put("queryText", req.getQueryText());
+      putIfNotBlank(args, "indexName", req.getIndexName());
+      putIfNotBlank(args, "typeName", req.getTypeName());
+      if (!req.getPropertiesList().isEmpty())
+        args.put("properties", new JSONArray(req.getPropertiesList()));
+      if (req.getLimit() > 0)
+        args.put("limit", req.getLimit());
+
+      final JSONObject result = FullTextSearchOperation.execute(db, args);
+      Metrics.counter("grpc.vector.fulltext").increment();
+
+      return FullTextSearchResponse.newBuilder()
+          .setIndexName(result.getString("indexName", ""))
+          .setSimilarity(result.getString("similarity", ""))
+          .setCount(result.getInt("count", 0))
+          .addAllResults(toSearchHits(db, result.getJSONArray("results", new JSONArray())))
+          .build();
+    }, e -> toSearchStatus("FullTextSearch", e));
+  }
+
+  /**
+   * Copies the vector-leg arguments the two vector-bearing requests share. {@code k} and {@code efSearch} are
+   * forwarded only when set, so the operation applies its own defaults rather than seeing the proto3 zero - which
+   * is out of range for both and would turn "unspecified" into a rejection.
+   */
+  private static void putVectorLegArguments(final JSONObject args, final List<Float> queryVector,
+      final List<Integer> queryIndices, final int k, final Integer efSearch, final String filter,
+      final boolean sparse) {
+    args.put("queryVector", new JSONArray(queryVector));
+    if (!queryIndices.isEmpty())
+      args.put("queryIndices", new JSONArray(queryIndices));
+    if (k > 0)
+      args.put("k", k);
+    if (efSearch != null)
+      args.put("efSearch", efSearch.intValue());
+    putIfNotBlank(args, "filter", filter);
+    if (sparse)
+      args.put("sparse", true);
+  }
+
+  private static void putIfNotBlank(final JSONObject args, final String field, final String value) {
+    if (value != null && !value.isBlank())
+      args.put(field, value);
+  }
+
+  /**
+   * Converts the operation's JSON hits into {@link SearchHit}s.
+   * <p>
+   * The record is re-read by RID rather than carried over from the hit's JSON {@code properties}: every other RPC
+   * of this service answers with typed {@link GrpcValue}s, and the JSON form has already flattened a date or a
+   * decimal to a string. The re-read is served from the page cache the search itself just warmed. A record deleted
+   * between the search and the read is dropped from the response instead of failing it, exactly as the search
+   * itself drops a stale hit.
+   */
+  private List<SearchHit> toSearchHits(final Database db, final JSONArray hits) {
+    final List<SearchHit> results = new ArrayList<>(hits.length());
+    for (int i = 0; i < hits.length(); i++) {
+      final JSONObject hit = hits.getJSONObject(i);
+      final String rid = hit.getString("rid", null);
+      if (rid == null)
+        continue;
+
+      final SearchHit.Builder builder = SearchHit.newBuilder().setRid(rid);
+      // 'fusedScore' on a fused hybrid result, 'distance' on a dense vector hit, 'score' on a sparse vector hit
+      // and on every full-text hit. Exactly one of them is present, and which it is is what the response's
+      // 'scoring'/'similarity' tells the client.
+      if (hit.has("fusedScore"))
+        builder.setScore(hit.getDouble("fusedScore"));
+      else if (hit.has("distance"))
+        builder.setScore(hit.getDouble("distance"));
+      else if (hit.has("score"))
+        builder.setScore(hit.getDouble("score"));
+
+      final JSONArray sources = hit.getJSONArray("sources", null);
+      if (sources != null)
+        for (int j = 0; j < sources.length(); j++)
+          builder.addSources(sources.getString(j));
+
+      if (hit.has("depth"))
+        builder.setDepth(hit.getInt("depth"));
+      final JSONArray path = hit.getJSONArray("path", null);
+      if (path != null)
+        for (int j = 0; j < path.length(); j++)
+          builder.addPath(path.getString(j));
+
+      try {
+        if (db.lookupByRID(new RID(rid), true) instanceof final Document document)
+          builder.setRecord(convertToGrpcRecord(document, db));
+      } catch (final RecordNotFoundException e) {
+        continue;
+      }
+
+      results.add(builder.build());
+    }
+    return results;
+  }
+
+  private static HybridLegReport toLegReport(final JSONObject legs) {
+    final HybridLegReport.Builder report = HybridLegReport.newBuilder();
+
+    final JSONObject vector = legs.getJSONObject("vector", null);
+    if (vector != null)
+      report.setVectorCount(vector.getInt("count", 0));
+
+    final JSONObject fulltext = legs.getJSONObject("fulltext", null);
+    if (fulltext != null)
+      report.setHasFulltext(true)
+          .setFulltextCount(fulltext.getInt("count", 0))
+          .setFulltextSimilarity(fulltext.getString("similarity", ""));
+
+    final JSONObject expand = legs.getJSONObject("expand", null);
+    if (expand != null) {
+      report.setHasExpand(true)
+          .setExpandCount(expand.getInt("count", 0))
+          .setExpandDirection(expand.getString("direction", ""))
+          .setExpandMaxDepth(expand.getInt("maxDepth", 0))
+          .setExpandSeedCount(expand.getInt("seedCount", 0))
+          .setExpandTruncated(expand.getBoolean("truncated", false))
+          .setExpandSeedsTruncated(expand.getBoolean("seedsTruncated", false));
+      final JSONArray edgeTypes = expand.getJSONArray("edgeTypes", null);
+      if (edgeTypes != null)
+        for (int i = 0; i < edgeTypes.length(); i++)
+          report.addExpandEdgeTypes(edgeTypes.getString(i));
+    }
+    return report.build();
+  }
+
+  /**
+   * Maps a search failure to the status the client receives. Every argument fault the shared operations raise is
+   * an {@link IllegalArgumentException} carrying a message that names the offending field, so it becomes
+   * INVALID_ARGUMENT with that message rather than an opaque INTERNAL - the same 400-with-the-real-message the
+   * HTTP routes give.
+   */
+  private static StatusException toSearchStatus(final String operation, final Exception e) {
+    if (e instanceof StatusException se)
+      return se;
+    if (e instanceof final StatusRuntimeException sre)
+      return new StatusException(sre.getStatus(), sre.getTrailers());
+    if (e instanceof IllegalArgumentException)
+      return Status.INVALID_ARGUMENT.withDescription(operation + ": " + e.getMessage()).asException();
+    if (e instanceof SecurityException || e instanceof ServerSecurityException)
+      return Status.PERMISSION_DENIED.withDescription(operation + ": " + e.getMessage()).asException();
+    return Status.INTERNAL.withDescription(operation + ": " + e.getMessage()).asException();
+  }
 
   private Database getDatabase(String databaseName, DatabaseCredentials credentials) {
 

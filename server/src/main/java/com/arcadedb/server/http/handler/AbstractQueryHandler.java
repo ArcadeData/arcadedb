@@ -38,7 +38,16 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.utility.StringUtils;
+import io.micrometer.core.instrument.Metrics;
+import io.undertow.server.HttpServerExchange;
+import io.undertow.util.HeaderValues;
+import io.undertow.util.Headers;
+import io.undertow.util.HttpString;
 
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.logging.Level;
 
@@ -73,6 +82,16 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * the log: the leading characters are what identifies the query for an operator.
    */
   private static final int MAX_LOGGED_COMMAND_CHARS = 120;
+
+  private static final HttpString X_ACCEL_BUFFERING = new HttpString("X-Accel-Buffering");
+
+  /**
+   * Rows written to a streamed response so far, counted as each one leaves the server rather than when the
+   * response finishes. The distinction is the meter's point: it is the only view an operator has of a response
+   * that is still in flight, and it is what tells a stalled consumer (the count stops climbing while the request
+   * is still open) from a slow query (nothing has been produced yet).
+   */
+  public static final String STREAMED_ROWS_METRIC = "http.query.stream.rows";
 
   /**
    * Outcome of serializing a {@link ResultSet} into an HTTP response: how many rows reached the response and
@@ -245,6 +264,157 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * referring to arbitrarily many elements through one collection property - what {@code SELECT collect(...)}
    * produces - is cut at the cap like any other, and the cut is reported (see {@link #analyzeResultContent}).
    */
+  /**
+   * The media type that selects the streamed response, and the {@code Content-Type} it is answered with.
+   */
+  public static final String NDJSON_CONTENT_TYPE = "application/x-ndjson";
+
+  /**
+   * An accepted alias for {@link #NDJSON_CONTENT_TYPE}. Both spellings are in wide use and
+   * {@code POST /api/v1/batch} already accepts both on its request body, so a caller does not have to remember
+   * which of the two this API chose.
+   */
+  public static final String JSONL_CONTENT_TYPE = "application/jsonl";
+
+  /**
+   * Tells whether the caller asked for the streamed response by content negotiation (issue #7306).
+   * <p>
+   * Negotiation is what keeps this additive: the default {@code application/json} response is untouched, so every
+   * existing client - the Studio webapp included - is unaffected by the presence of the streaming path.
+   */
+  public static boolean wantsNdjson(final HttpServerExchange exchange) {
+    final HeaderValues accept = exchange.getRequestHeaders().get(Headers.ACCEPT);
+    if (accept == null)
+      return false;
+    for (final String value : accept)
+      if (value != null && (StringUtils.containsIgnoreCase(value, NDJSON_CONTENT_TYPE)
+          || StringUtils.containsIgnoreCase(value, JSONL_CONTENT_TYPE)))
+        return true;
+    return false;
+  }
+
+  /**
+   * Whether {@code serializer} produces one self-contained object per row, which is what a row-at-a-time stream
+   * needs.
+   * <p>
+   * The {@code graph} and {@code studio} serializers do not: they build two response-level {@code vertices} and
+   * {@code edges} arrays, de-duplicated across the whole result, so a row's contribution is not known until the
+   * result set has been walked to the end. There is nothing to flush early, and pretending otherwise would ship a
+   * "stream" that buffers - the exact property the caller asked to be rid of. A request that combines them with
+   * the streaming media type is refused rather than silently answered with a buffered body.
+   */
+  public static boolean supportsStreaming(final String serializer) {
+    return !"graph".equals(serializer) && !"studio".equals(serializer);
+  }
+
+  /**
+   * Writes a result set to the response as newline-delimited JSON, flushing after every row (issue #7306).
+   * <p>
+   * <b>Framing.</b> Every line is a JSON object with exactly one key:
+   * <ul>
+   *   <li>{@code {"result": <row>}} - one per row, in order, each identical to the corresponding element of the
+   *       buffered response's {@code result} array;</li>
+   *   <li>{@code {"summary": {...}}} - always the last line of a successful stream, carrying the same
+   *       {@code user}, {@code limit}, {@code returned} and {@code truncated} fields the buffered response
+   *       carries at its top level;</li>
+   *   <li>{@code {"error": "..."}} - the last line instead of the summary when the stream failed after it had
+   *       already begun.</li>
+   * </ul>
+   * The wrapper is the reason a failure is reportable at all. The status line is sent with the first row, so once
+   * a stream has begun no status code can describe what went wrong afterwards; a bare sequence of rows would end
+   * a failed stream and a complete one identically, and a client could not tell them apart. The same wrapper is
+   * what makes the end-of-stream summary unambiguous, since a projection can be aliased to any name a bare row
+   * could be confused with.
+   * <p>
+   * <b>The hard ceiling behaves differently here, on purpose.</b> The buffered path refuses with HTTP 413 when
+   * {@code SERVER_HTTP_QUERY_MAX_RESULT_ROWS} would bite (issue #5719), because a buffered response is fully
+   * resident in the server heap before its size is known - the refusal is a memory guard. A streamed response is
+   * never resident: each row is written and dropped. So the ceiling here caps the stream and is reported through
+   * the summary's {@code truncated} flag, the same way the caller's own {@code limit} is, rather than failing a
+   * response whose first rows the client may already have consumed.
+   *
+   * @param summary a pre-populated summary object - the caller puts the fields only it knows, such as
+   *                {@code user} - to which this method adds {@code limit}, {@code returned} and {@code truncated}
+   *
+   * @return the rows written and whether the stream was cut short
+   */
+  protected SerializationOutcome streamResultSetAsNdjson(final Database database, final String serializer,
+      final int statedLimit, final int maxResultRows, final HttpServerExchange exchange, final ResultSet qResult,
+      final boolean includeTypeHints, final JSONObject summary) throws IOException {
+    final int limit = applyMaxResultRows(statedLimit, maxResultRows);
+    final JsonSerializer serializerImpl = JsonSerializer.createJsonSerializer()
+        .setIncludeVertexEdges(!"record".equals(serializer))
+        .setUseCollectionSize(false)
+        .setUseCollectionSizeForEdges(false)
+        .setIncludeTypeHints(includeTypeHints);
+
+    // Nothing is written until the first line is ready. Until then the response is uncommitted and a failure can
+    // still be answered with a proper status code by the standard error mapping; after it, it cannot.
+    OutputStream output = null;
+    int written = 0;
+    try {
+      if (qResult != null)
+        while (qResult.hasNext()) {
+          final JSONObject line = new JSONObject().put("result", serializerImpl.serializeResult(database, qResult.next()));
+          if (output == null)
+            output = beginNdjsonResponse(exchange);
+          writeNdjsonLine(output, line);
+          ++written;
+          Metrics.counter(STREAMED_ROWS_METRIC).increment();
+          if (limit > 0 && written >= limit)
+            break;
+        }
+
+      summary.put(LIMIT_FIELD, statedLimit);
+      summary.put(RETURNED_FIELD, written);
+      final boolean truncated = qResult != null && limit > 0 && written >= limit && qResult.hasNext();
+      summary.put(TRUNCATED_FIELD, truncated);
+
+      if (output == null)
+        output = beginNdjsonResponse(exchange);
+      writeNdjsonLine(output, new JSONObject().put("summary", summary));
+
+      return new SerializationOutcome(written, truncated);
+    } catch (final RuntimeException | IOException e) {
+      if (output == null)
+        // Nothing reached the client: let the caller's normal error mapping answer with a status code.
+        throw e;
+      LogManager.instance().log(this, Level.WARNING, "Streaming query response failed after %d rows: %s", null,
+          written, e.getMessage());
+      writeNdjsonLine(output, new JSONObject().put("error",
+          e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+      return new SerializationOutcome(written, true);
+    }
+  }
+
+  private static OutputStream beginNdjsonResponse(final HttpServerExchange exchange) {
+    // Defence in depth against a second pass over an exchange whose body has already gone out. The read-only gate
+    // in PostCommandHandler is what stops the auto-commit wrapper from retrying a streamed request in the first
+    // place; this turns any future path that reaches here twice into a loud failure rather than a body carrying
+    // two concatenated result sets, which no client could detect.
+    if (exchange.isResponseStarted())
+      throw new IllegalStateException(
+          "The response has already been sent: a streamed result set cannot be written to it a second time");
+
+    exchange.setStatusCode(200);
+    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, NDJSON_CONTENT_TYPE);
+    // No Content-Length and no explicit Transfer-Encoding: Undertow chunks the response itself once the body is
+    // written without a declared length, and setting the header by hand is how a response ends up double-chunked.
+    // AiChatHandler's SSE stream, the other streaming response in this server, does the same.
+    //
+    // Reverse proxies that buffer a response by default would re-introduce the latency this endpoint removes.
+    exchange.getResponseHeaders().put(X_ACCEL_BUFFERING, "no");
+    if (!exchange.isBlocking())
+      exchange.startBlocking();
+    return exchange.getOutputStream();
+  }
+
+  private static void writeNdjsonLine(final OutputStream output, final JSONObject line) throws IOException {
+    output.write(line.toString().getBytes(StandardCharsets.UTF_8));
+    output.write('\n');
+    output.flush();
+  }
+
   protected SerializationOutcome serializeResultSetBounded(final Database database, final String serializer,
       final int statedLimit, final int maxResultRows, final JSONObject response, final ResultSet qResult,
       final boolean includeTypeHints) {

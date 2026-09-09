@@ -167,6 +167,16 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // Issue #5812: off unless the caller explicitly asks for the @props type hint on non-element rows.
     final boolean includeTypeHints = requestMap.get("typeHints") instanceof Boolean b && b;
 
+    // Issue #7306: the caller may ask for the result to be streamed instead of buffered. Refused rather than
+    // silently downgraded when the requested serializer cannot produce one object per row, because answering a
+    // negotiated streaming request with a buffered body is exactly the surprise negotiation exists to avoid.
+    final boolean stream = wantsNdjson(exchange);
+    if (stream && !supportsStreaming(serializer))
+      return new ExecutionResponse(400, error2json("Serializer '" + serializer + "' cannot be streamed",
+          "The 'graph' and 'studio' serializers build response-level vertex and edge arrays de-duplicated across "
+              + "the whole result, so no row can be emitted before the last one is read. Use the 'record' "
+              + "serializer, or drop the " + NDJSON_CONTENT_TYPE + " Accept header.", null, null, null));
+
     if (command == null || command.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
 
@@ -226,6 +236,22 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if ("detailed".equalsIgnoreCase(profileExecution))
       paramMap.put("$profileExecution", true);
 
+    // A streamed response cannot be un-sent, and this endpoint runs inside the auto-commit wrapper of
+    // DatabaseAbstractHandler: the transaction commits AFTER execute() returns, and a conflict on that commit
+    // re-runs execute() up to 'retries' times. For a write command that combination is unsound in two ways at
+    // once - the client would receive 200 and the rows before the commit that could still fail, and a retry
+    // would write a second copy of the whole stream into a body that has already been sent. So streaming is
+    // offered only for a read-only command, which has no commit that can fail and nothing to retry.
+    //
+    // Idempotency is decided by the engine's own parser, the same source SQL uses to decide whether a statement
+    // may run through query() at all - not by a keyword guess here, which would be a second, divergent answer to
+    // the question of what counts as a write.
+    if (stream) {
+      final ExecutionResponse refusal = refuseStreamingIfNotReadOnly(database, language, command);
+      if (refusal != null)
+        return refusal;
+    }
+
     boolean awaitResponse = true;
     if (requestMap.containsKey("awaitResponse") && requestMap.get("awaitResponse") instanceof Boolean) {
       awaitResponse = (Boolean) requestMap.get("awaitResponse");
@@ -252,6 +278,33 @@ public class PostCommandHandler extends AbstractQueryHandler {
         // never asked to drop, and that is exactly what 'truncated' reports below (issue #5711).
         final int planLimit = autoLimited ? 0 : getPlanLimit(qResult);
         final int limit = resolveLimit(requestLimit, planLimit);
+
+        if (stream) {
+          // A negotiated streaming request is answered as a stream whatever the command was, so the caller never
+          // has to parse a body in a media type it did not ask for. EXPLAIN carries no rows - its whole payload is
+          // the plan - so it streams as an empty row sequence whose summary carries the plan; the same place the
+          // other response-level fields go, since only rows and the summary have a line of their own.
+          final JSONObject summary = new JSONObject().put("user", user != null ? user.getName() : null);
+          if (qResult instanceof ExplainResultSet) {
+            final var explainPlan = qResult.getExecutionPlan().get();
+            summary.put("explain", explainPlan.prettyPrint(0, 2));
+            summary.put("explainPlan", explainPlan.toResult().toJSON());
+            while (qResult.hasNext())
+              qResult.next();
+          }
+          final SerializationOutcome streamed = streamResultSetAsNdjson(database, serializer, limit, maxResultRows,
+              exchange, qResult, includeTypeHints, summary);
+          logIfTruncatedByDefault(database.getName(), originalCommand, limit, requestLimit, planLimit, streamed);
+
+          Metrics.counter("http.command").increment();
+          recordProfilerMetrics("http.command", profile);
+          recordServerProfile(database.getName(), language, command, profile, qResult);
+
+          // null means "the response has already been written", which is how a streamed response reports itself
+          // to AbstractServerHttpHandler.
+          return null;
+        }
+
         final SerializationOutcome outcome;
 
         if (qResult instanceof ExplainResultSet) {
@@ -326,6 +379,35 @@ public class PostCommandHandler extends AbstractQueryHandler {
     } finally {
       QueryProfile.popCurrent();
     }
+  }
+
+  /**
+   * Returns a 400 when {@code command} is not read-only, or {@code null} when it is safe to stream.
+   * <p>
+   * A language whose engine cannot analyze the statement is refused too. That is the conservative direction: the
+   * cost is that the caller falls back to the buffered response, which returns the same rows, whereas admitting
+   * an unanalyzable statement risks streaming a write - and the failure mode there is a client holding a 200 for
+   * a transaction that never committed.
+   */
+  private ExecutionResponse refuseStreamingIfNotReadOnly(final Database database, final String language,
+      final String command) {
+    boolean idempotent;
+    try {
+      idempotent = database.getQueryEngine(language).analyze(command).isIdempotent();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Could not analyze a command for streaming (language '%s'), refusing the streamed form: %s", null,
+          language, e.getMessage());
+      idempotent = false;
+    }
+    if (idempotent)
+      return null;
+
+    return new ExecutionResponse(400, error2json("Only a read-only command can be streamed",
+        "The streamed response is written before this endpoint's transaction commits, so a command that writes "
+            + "could be acknowledged with rows the commit then fails to make durable. Send the command without "
+            + "the " + NDJSON_CONTENT_TYPE + " Accept header to get the buffered response, which is sent after "
+            + "the commit.", null, null, null));
   }
 
   protected void recordServerProfile(final String databaseName, final String language, final String command,

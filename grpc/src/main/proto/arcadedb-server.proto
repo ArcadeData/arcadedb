@@ -178,6 +178,15 @@ service ArcadeDbService {
 
   // Graph batch load (client-streaming)
   rpc GraphBatchLoad (stream GraphBatchChunk) returns (GraphBatchResult);
+
+  // ---- Search (issue #7306) --------------------------------------------------
+  // Vector, hybrid and full-text search, so the feature reaches gRPC and HTTP together instead of
+  // repeating the asymmetry #7306 was filed about. Every one of them is served by the same
+  // com.arcadedb.query.search operation the HTTP /api/v1/vector/{database}/* routes and the MCP
+  // tools call, so the three protocols cannot disagree about what a legal request is.
+  rpc VectorSearch   (VectorSearchRequest)   returns (VectorSearchResponse);
+  rpc HybridSearch   (HybridSearchRequest)   returns (HybridSearchResponse);
+  rpc FullTextSearch (FullTextSearchRequest) returns (FullTextSearchResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -699,4 +708,182 @@ message DeleteUserRequest {
 message DeleteUserResponse {
   bool success = 1;
   string message = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Search API (issue #7306)
+// -----------------------------------------------------------------------------
+
+// One matching record, shared by the three searches.
+message SearchHit {
+  string rid = 1;
+
+  // Dense vector search and hybrid fusion rank by DISTANCE, where lower is better; sparse vector
+  // search and full-text search rank by SCORE, where higher is better. Which one this field carries
+  // is stated by the response's `scoring` (vector, hybrid) or `similarity` (full-text) rather than
+  // inferred, because the two orderings are opposite and guessing wrong silently reverses the ranking.
+  double score = 2;
+
+  GrpcRecord record = 3;
+
+  // Hybrid only: the legs this record came from ("vector", "fulltext", "expand").
+  repeated string sources = 4;
+
+  // Hybrid only, and only for a record the graph expansion contributed: hops from its seed, and the
+  // RID path back to that seed including the seed itself.
+  int32 depth = 5;
+  repeated string path = 6;
+}
+
+message VectorSearchRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+
+  // An LSM_VECTOR index, or an LSM_SPARSE_VECTOR one when `sparse` is set.
+  string index_name = 3;
+
+  // Dense query vector, or the sparse weights matching `query_indices`. ArcadeDB does not generate
+  // embeddings: the caller supplies the vector.
+  repeated float query_vector = 4;
+
+  // Sparse dimension ids matching the `query_vector` weights; omit to use the vector's own positions.
+  // Requires `sparse`.
+  repeated int32 query_indices = 5;
+
+  int32 k = 6;
+
+  // Dense-index search beam width. Optional so that "not specified" stays distinguishable from a
+  // deliberate value, which a proto3 scalar default of 0 could not express - and 0 is out of range.
+  optional int32 ef_search = 7;
+
+  // Read-only SQL WHERE predicate applied to a bounded candidate set.
+  string filter = 8;
+
+  bool sparse = 9;
+}
+
+message VectorSearchResponse {
+  string index_name = 1;
+  bool sparse = 2;
+
+  // Ranking direction and similarity function, e.g. "distance_lower_is_better:COSINE".
+  string scoring = 3;
+
+  // Size of the candidate window inspected, which a filtered search over-fetches into.
+  int32 candidate_limit = 4;
+
+  // The result window was filled, so further matches may exist: raise k to see them. A short result
+  // set means the search already returned everything it could find inside the window.
+  bool truncated = 5;
+
+  int32 count = 6;
+  repeated SearchHit results = 7;
+}
+
+// Graph expansion leg of a hybrid search, seeded from the records the retrieval legs found.
+message GraphExpansion {
+  // Edge types to traverse; empty traverses every edge type. An unknown name is rejected rather than
+  // silently matching nothing.
+  repeated string edge_types = 1;
+
+  // "out", "in" or "both"; empty means "out".
+  string direction = 2;
+
+  // Hops to walk. 0 means the server default of 1; the server caps it.
+  int32 max_depth = 3;
+}
+
+message HybridSearchRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+
+  string vector_index_name = 3;
+  repeated float query_vector = 4;
+  repeated int32 query_indices = 5;
+  int32 k = 6;
+  optional int32 ef_search = 7;
+  string filter = 8;
+  bool sparse = 9;
+
+  // The full-text leg. Both fields are required together; supplying one alone is rejected, because
+  // silently dropping half a leg returns a plausible result set that ignored what the caller asked for.
+  string fulltext_index_name = 10;
+  string fulltext_query = 11;
+
+  GraphExpansion expand = 12;
+
+  // "RRF", "DBSF" or "LINEAR"; empty means "RRF". DBSF and LINEAR need a score on every row, so
+  // neither can be combined with the rank-only expansion leg.
+  string fusion_strategy = 13;
+
+  // Per-leg fusion weights, keyed "vector", "fulltext", "expand". A weight naming a leg the request
+  // does not ask for is rejected rather than ignored.
+  map<string, float> weights = 14;
+}
+
+// Per-leg report, so a caller can tell an empty leg from an absent one and a thin neighborhood from a
+// budget that was filled.
+message HybridLegReport {
+  int32 vector_count = 1;
+
+  bool has_fulltext = 2;
+  int32 fulltext_count = 3;
+  string fulltext_similarity = 4;
+
+  bool has_expand = 5;
+  int32 expand_count = 6;
+  string expand_direction = 7;
+  repeated string expand_edge_types = 8;
+  int32 expand_max_depth = 9;
+  int32 expand_seed_count = 10;
+  bool expand_truncated = 11;
+  bool expand_seeds_truncated = 12;
+}
+
+message HybridSearchResponse {
+  string vector_index_name = 1;
+
+  // Present whenever the full-text leg ran, including when it matched nothing and so could not
+  // become a fusion source.
+  string fulltext_index_name = 2;
+
+  bool sparse = 3;
+  string scoring = 4;
+
+  // False when only one leg produced rows: fusion needs at least two sources, and each result then
+  // carries that leg's native distance or score rather than a fabricated fused one.
+  bool fused = 5;
+  string fusion_strategy = 6;
+
+  HybridLegReport legs = 7;
+
+  bool truncated = 8;
+  int32 count = 9;
+  repeated SearchHit results = 10;
+}
+
+message FullTextSearchRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+
+  // The index is addressed either by `index_name`, or by `type_name` plus optional `properties`.
+  // `index_name` wins when both are given.
+  string index_name = 3;
+  string type_name = 4;
+  repeated string properties = 5;
+
+  string query_text = 6;
+
+  // 0 means the server default; the server caps it.
+  int32 limit = 7;
+}
+
+message FullTextSearchResponse {
+  string index_name = 1;
+
+  // Whether the scores are BM25 or legacy CLASSIC coordination counts.
+  string similarity = 2;
+
+  int32 count = 3;
+  repeated SearchHit results = 4;
 }

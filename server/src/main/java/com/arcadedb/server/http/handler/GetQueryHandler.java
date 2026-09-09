@@ -29,7 +29,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.UnsupportedEncodingException;
+import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
@@ -41,7 +41,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
       final JSONObject payload)
-      throws UnsupportedEncodingException {
+      throws IOException {
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
     try {
@@ -65,6 +65,16 @@ public class GetQueryHandler extends AbstractQueryHandler {
       final String limitPar = getQueryParameter(exchange, "limit");
       profile.addDeserializationNanos(System.nanoTime() - deserializationStart);
 
+      // Issue #7306: the caller may ask for the result to be streamed instead of buffered. Refused rather than
+      // silently downgraded when the requested serializer cannot produce one object per row, because answering a
+      // negotiated streaming request with a buffered body is exactly the surprise negotiation exists to avoid.
+      final boolean stream = wantsNdjson(exchange);
+      if (stream && !supportsStreaming(serializer))
+        return new ExecutionResponse(400, error2json("Serializer '" + serializer + "' cannot be streamed",
+            "The 'graph' and 'studio' serializers build response-level vertex and edge arrays de-duplicated "
+                + "across the whole result, so no row can be emitted before the last one is read. Use the "
+                + "'record' serializer, or drop the " + NDJSON_CONTENT_TYPE + " Accept header.", null, null, null));
+
       final JSONObject response = new JSONObject();
 
       ResultSet qResult = null;
@@ -81,11 +91,17 @@ public class GetQueryHandler extends AbstractQueryHandler {
         profile.addEngineNanos(System.nanoTime() - engineStart);
 
         final long serializationStart = System.nanoTime();
-        // ... and above all of them the hard ceiling, which no caller can widen: a response that would exceed
-        // it is refused with 413 rather than truncated (issue #5719).
-        final SerializationOutcome outcome = serializeResultSetBounded(database, serializer, limit, getMaxResultRows(),
-            response, qResult, includeTypeHints);
-        reportLimits(response, limit, outcome);
+        final SerializationOutcome outcome;
+        if (stream) {
+          outcome = streamResultSetAsNdjson(database, serializer, limit, getMaxResultRows(), exchange, qResult,
+              includeTypeHints, new JSONObject());
+        } else {
+          // ... and above all of them the hard ceiling, which no caller can widen: a response that would exceed
+          // it is refused with 413 rather than truncated (issue #5719).
+          outcome = serializeResultSetBounded(database, serializer, limit, getMaxResultRows(),
+              response, qResult, includeTypeHints);
+          reportLimits(response, limit, outcome);
+        }
         logIfTruncatedByDefault(database.getName(), text, limit, requestLimit, planLimit, outcome);
         profile.addSerializationNanos(System.nanoTime() - serializationStart);
 
@@ -104,7 +120,9 @@ public class GetQueryHandler extends AbstractQueryHandler {
         }
       }
 
-      return new ExecutionResponse(200, response.toString());
+      // null means "the response has already been written", which is how a streamed response reports itself
+      // to AbstractServerHttpHandler.
+      return stream ? null : new ExecutionResponse(200, response.toString());
     } finally {
       QueryProfile.popCurrent();
     }
@@ -132,5 +150,19 @@ public class GetQueryHandler extends AbstractQueryHandler {
   @Override
   protected boolean requiresTransaction() {
     return false;
+  }
+
+  /**
+   * A streamed response writes to {@code exchange.getOutputStream()}, which needs blocking mode, which an Undertow
+   * I/O thread cannot enter. Only the streaming request is dispatched: a buffered GET query keeps running on the
+   * I/O thread exactly as before, so the negotiation costs nothing to the callers that do not use it.
+   */
+  @Override
+  public void handleRequest(final HttpServerExchange exchange) {
+    if (exchange.isInIoThread() && wantsNdjson(exchange)) {
+      exchange.dispatch(this);
+      return;
+    }
+    super.handleRequest(exchange);
   }
 }

@@ -121,7 +121,10 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setOperationId("executeServerCommand");
     postOp.addTagsItem("Server");
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
-    postOp.setResponses(createCommandResponses());
+    // Deliberately NOT the streamed alternative: this endpoint's own streaming form is Server-Sent Events for
+    // restore/import progress, negotiated with Accept: text/event-stream, and it is a different body in a
+    // different media type from the NDJSON row stream the query and command endpoints answer with.
+    postOp.setResponses(createCommandResponses(false));
     pathItem.setPost(postOp);
 
     return pathItem;
@@ -211,6 +214,7 @@ public class CoreApiSpec implements OpenApiContributor {
         List.of("sql", "cypher", "gremlin", "graphql", "mongo")));
     getOp.addParametersItem(SpecBuilders.pathParam("command", "Query or command to execute"));
     getOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    getOp.addParametersItem(streamingAcceptParam());
     getOp.setResponses(createGetQueryResponses());
     pathItem.setGet(getOp);
 
@@ -227,6 +231,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Query");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    postOp.addParametersItem(streamingAcceptParam());
     postOp.setRequestBody(SpecBuilders.jsonBody("Query request with command and optional parameters", "QueryRequest", true));
     postOp.setResponses(createQueryResponses());
     pathItem.setPost(postOp);
@@ -244,8 +249,9 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Command");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    postOp.addParametersItem(streamingAcceptParam());
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
-    postOp.setResponses(createCommandResponses());
+    postOp.setResponses(createCommandResponses(true));
     pathItem.setPost(postOp);
 
     return pathItem;
@@ -494,6 +500,48 @@ public class CoreApiSpec implements OpenApiContributor {
   // GetQueryHandler.requiresTransaction() returns false, so a stale session id on GET query degrades
   // session-less (DatabaseAbstractHandler.setTransactionInThreadLocal) and answers 200, never 404. The
   // POST endpoint has no such override, so its 404 does cover the stale-session case.
+
+  /**
+   * The {@code Accept} header that selects the streamed response on the query and command endpoints
+   * (issue #7306). Declared as an explicit parameter rather than left to the generic HTTP semantics, because the
+   * value changes the response body's structure and not merely its encoding: a generated client has to know that
+   * asking for it means parsing lines rather than one object.
+   */
+  private static Parameter streamingAcceptParam() {
+    final Parameter accept = SpecBuilders.headerParam("Accept",
+        """
+            Send application/x-ndjson (or application/jsonl) to have the result streamed instead of buffered. \
+            The server then writes one line per result as each row is produced, so the first row reaches the \
+            client before the last is read and no part of the result set is held in the server heap. Anything \
+            else, including omitting the header, keeps today's single buffered application/json object, \
+            unchanged byte for byte.""",
+        false);
+    accept.getSchema().setEnum(List.of("application/json", "application/x-ndjson", "application/jsonl"));
+    return accept;
+  }
+
+  /**
+   * Adds the streamed alternative to a 200 response that already declares the buffered JSON object.
+   * <p>
+   * The two media types describe the same result in two shapes, which is why they hang off one response rather
+   * than off two operations: the endpoint, its parameters and its failure modes are identical, and only the
+   * framing of the success body differs.
+   */
+  private static void addNdjsonAlternative(final ApiResponses responses) {
+    final MediaType ndjson = new MediaType();
+    ndjson.setSchema(new Schema<>().type("string").description(
+        """
+            Newline-delimited JSON. Every line is an object with exactly one key: 'result' for each row, in \
+            order, each identical to an element of the buffered response's 'result' array; then a final \
+            'summary' object carrying the same user, limit, returned and truncated fields the buffered response \
+            carries at its top level. A stream that fails after it has begun ends with an 'error' object \
+            instead of the summary, which is the only way a failure can be reported once the 200 status line \
+            has been sent."""));
+    final Content content = responses.get("200").getContent();
+    content.addMediaType("application/x-ndjson", ndjson);
+    content.addMediaType("application/jsonl", ndjson);
+  }
+
   private ApiResponses createQueryResponses() {
     return createQueryResponses(true);
   }
@@ -513,10 +561,11 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the query"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
+    addNdjsonAlternative(responses);
     return responses;
   }
 
-  private ApiResponses createCommandResponses() {
+  private ApiResponses createCommandResponses(final boolean streamable) {
     final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("200", SpecBuilders.jsonResponse("Command executed successfully", "QueryResponse"));
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
@@ -525,6 +574,8 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the command"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
+    if (streamable)
+      addNdjsonAlternative(responses);
     return responses;
   }
 

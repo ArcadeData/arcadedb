@@ -47,6 +47,9 @@ import com.arcadedb.server.http.handler.PostBatchHandler;
 import com.arcadedb.server.http.handler.PostBeginHandler;
 import com.arcadedb.server.http.handler.PostGroupHandler;
 import com.arcadedb.server.http.handler.PostUserHandler;
+import com.arcadedb.server.http.handler.PostVectorFullTextHandler;
+import com.arcadedb.server.http.handler.PostVectorHybridHandler;
+import com.arcadedb.server.http.handler.PostVectorSearchHandler;
 import com.arcadedb.server.http.handler.PutUserHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
@@ -263,6 +266,9 @@ public class HttpServer implements ServerPlugin {
         .get("/ts/{database}/prom/api/v1/labels", new GetPromQLLabelsHandler(this))
         .get("/ts/{database}/prom/api/v1/label/{name}/values", new GetPromQLLabelValuesHandler(this))
         .get("/ts/{database}/prom/api/v1/series", new GetPromQLSeriesHandler(this))
+        .post("/vector/{database}/search", new PostVectorSearchHandler(this))
+        .post("/vector/{database}/hybrid", new PostVectorHybridHandler(this))
+        .post("/vector/{database}/fulltext", new PostVectorFullTextHandler(this))
     );
 
     // AI routes are always registered; the chat handler checks isConfigured() at request time

@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -47,6 +48,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 
+import java.io.InputStream;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
@@ -55,6 +57,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -70,6 +73,14 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  */
 public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase {
   public static final String ARCADEDB_SESSION_ID = "arcadedb-session-id";
+
+  /**
+   * The {@code Accept} value that asks the server to stream the result instead of buffering it (issue #7306).
+   * Restated here rather than shared with the server's own constant, because {@code arcadedb-network} must not
+   * depend on {@code arcadedb-server}: this is a wire literal, and it is pinned from both sides by
+   * {@code RemoteStreamingQueryIT}, which fails if the two ever disagree.
+   */
+  public static final String NDJSON_CONTENT_TYPE = "application/x-ndjson";
 
   private final    String                               databaseName;
   private          BinarySerializer                     serializer;
@@ -458,7 +469,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * has an applied index, so all three call sites can carry the just-committed bookmark forward for the next
    * {@link ReadConsistency#READ_YOUR_WRITES} read.
    */
-  void captureCommitIndexHeader(final HttpResponse<String> response) {
+  void captureCommitIndexHeader(final HttpResponse<?> response) {
     response.headers().firstValue("X-ArcadeDB-Commit-Index").ifPresent(val -> {
       try {
         updateLastCommitIndex(Long.parseLong(val));
@@ -666,6 +677,172 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("command", language, command, params, false,
         (connection, response) -> createResultSet(response));
+  }
+
+  /**
+   * Runs a query and returns a {@link ResultSet} that is fed by a streamed response (issue #7306).
+   * <p>
+   * The difference from {@link #query(String, String, Map)} is where the result set lives while it is being read:
+   * the buffered call has the server materialize every row into one JSON object before the first byte is sent,
+   * and this one has the server write each row as it is produced. Neither side holds the whole result, so a query
+   * whose result does not fit in the server heap can still be consumed row by row.
+   * <p>
+   * The returned {@link ResultSet} owns the HTTP response body and must be closed - a
+   * try-with-resources - or the connection is held until the body is garbage collected. Reading it to the end
+   * closes it too.
+   *
+   * @throws RemoteException if the server truncated the result, reported an error mid-stream, or the response
+   *                         could not be read
+   */
+  public ResultSet queryStreaming(final String language, final String query, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    stats.queries.incrementAndGet();
+
+    final JSONObject request = new JSONObject().put("language", language).put("command", query);
+    if (params != null && !params.isEmpty())
+      request.put("params", new JSONObject(params));
+    // The same opt-in the buffered driver path uses: without it a projection column comes back as whatever JSON
+    // type it happened to serialize as, and the driver cannot rebuild the Java type the embedded API returns.
+    request.put("typeHints", true);
+    final Integer callerLimit = getMaxResultRows();
+    if (callerLimit != null)
+      request.put("limit", callerLimit);
+
+    try {
+      final HttpRequest.Builder builder = createRequestBuilder("POST", getUrl("query", databaseName))
+          .POST(HttpRequest.BodyPublishers.ofString(request.toString()))
+          .header("Content-Type", "application/json")
+          .header("Accept", NDJSON_CONTENT_TYPE);
+      // The same HA read-consistency headers httpCommand injects on the buffered path. Without them a streamed
+      // read under READ_YOUR_WRITES would be served by any follower, however far behind, and would silently
+      // disagree with the buffered call for the same query - the failure mode that is hardest to notice, because
+      // the answer looks complete.
+      addReadConsistencyHeaders(builder);
+
+      final HttpResponse<InputStream> response = httpClient.send(builder.build(),
+          HttpResponse.BodyHandlers.ofInputStream());
+      // Captured before the status is examined, exactly as sendBatch does: the bookmark describes the server that
+      // answered, and it is just as valid on a refusal as on a success.
+      captureCommitIndexHeader(response);
+      if (response.statusCode() != 200) {
+        // The failure arrived before the stream began, so the body is the standard error object rather than
+        // NDJSON. Read it whole - it is bounded, unlike the success body - and name what the server said.
+        final String body;
+        try (final InputStream errorBody = response.body()) {
+          body = new String(errorBody.readAllBytes(), DatabaseFactory.getDefaultCharset());
+        }
+        String reason = body;
+        try {
+          reason = new JSONObject(body).getString("error", body);
+        } catch (final RuntimeException ignored) {
+          // Not the standard error object: report the raw body rather than hiding it behind a parse failure.
+        }
+        throw new RemoteException(
+            "Error on executing streaming query (HTTP " + response.statusCode() + "): " + reason);
+      }
+
+      return new NdjsonResultSet(response.body(), getMaxResultRows() == null, this::json2Result);
+    } catch (final RemoteException | SecurityException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new RemoteException("Error on executing streaming query", e);
+    }
+  }
+
+  /**
+   * Runs a query with no parameters against the streaming endpoint.
+   *
+   * @see #queryStreaming(String, String, Map)
+   */
+  public ResultSet queryStreaming(final String language, final String query) {
+    return queryStreaming(language, query, Map.of());
+  }
+
+  /**
+   * kNN search over a dense {@code LSM_VECTOR} or sparse {@code LSM_SPARSE_VECTOR} index
+   * ({@code POST /api/v1/vector/{database}/search}, issue #7306).
+   * <p>
+   * ArcadeDB does not generate embeddings: {@code request} carries the query vector the caller computed. See the
+   * {@code VectorSearchRequest} schema of the served OpenAPI document for the fields and their bounds; a bound
+   * violation comes back as a {@link RemoteException} carrying the server's message, which names the field.
+   *
+   * @param request {@code indexName}, {@code queryVector} and {@code k} are required
+   *
+   * @return the server's response object: {@code indexName}, {@code sparse}, {@code scoring},
+   * {@code candidateLimit}, {@code truncated}, {@code count} and {@code results}
+   */
+  public JSONObject vectorSearch(final JSONObject request) {
+    return searchCommand("search", request, "vector search");
+  }
+
+  /**
+   * Fused vector + full-text + graph-expansion search
+   * ({@code POST /api/v1/vector/{database}/hybrid}, issue #7306).
+   *
+   * @param request {@code vectorIndexName}, {@code queryVector} and {@code k} are required
+   *
+   * @see #vectorSearch(JSONObject)
+   */
+  public JSONObject hybridSearch(final JSONObject request) {
+    return searchCommand("hybrid", request, "hybrid search");
+  }
+
+  /**
+   * Full-text search over a {@code FULL_TEXT} index
+   * ({@code POST /api/v1/vector/{database}/fulltext}, issue #7306).
+   *
+   * @param request {@code queryText} is required; the index is addressed by {@code indexName} or by
+   *                {@code typeName} plus optional {@code properties}
+   *
+   * @see #vectorSearch(JSONObject)
+   */
+  public JSONObject fullTextSearch(final JSONObject request) {
+    return searchCommand("fulltext", request, "full-text search");
+  }
+
+  private JSONObject searchCommand(final String route, final JSONObject request, final String operation) {
+    checkDatabaseIsOpen();
+    if (request == null)
+      throw new IllegalArgumentException("The " + operation + " request is null");
+    stats.queries.incrementAndGet();
+
+    try {
+      final HttpRequest.Builder builder = createRequestBuilder("POST",
+          getUrl("vector", databaseName) + "/" + route)
+          .POST(HttpRequest.BodyPublishers.ofString(request.toString()))
+          .header("Content-Type", "application/json");
+      addReadConsistencyHeaders(builder);
+
+      final HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+      captureCommitIndexHeader(response);
+      if (response.statusCode() != 200)
+        throw new RemoteException("Error on executing " + operation, manageException(response, operation));
+
+      return new JSONObject(response.body());
+    } catch (final RemoteException | SecurityException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new RemoteException("Error on executing " + operation, e);
+    }
+  }
+
+  /**
+   * Adds the HA read-consistency headers to a request this class builds directly.
+   * <p>
+   * {@code RemoteHttpComponent.httpCommand} injects these on every request that goes through it, but the streamed
+   * query and the vector routes build their own requests - the first because it needs the body as a stream rather
+   * than a string, the second because its response is not a ResultSet. Restating the injection here is what keeps
+   * them from being the two endpoints on which a client's declared read consistency quietly stops applying.
+   */
+  private void addReadConsistencyHeaders(final HttpRequest.Builder builder) {
+    final ReadConsistency rc = getReadConsistency();
+    if (rc != ReadConsistency.EVENTUAL)
+      builder.header("X-ArcadeDB-Read-Consistency", rc.name().toLowerCase(Locale.ROOT));
+    if (rc == ReadConsistency.READ_YOUR_WRITES) {
+      final long last = getLastCommitIndex();
+      if (last >= 0)
+        builder.header("X-ArcadeDB-Read-After", String.valueOf(last));
+    }
   }
 
   public Database.TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {

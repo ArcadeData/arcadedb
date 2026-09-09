@@ -54,6 +54,12 @@ import com.arcadedb.server.grpc.CommitTransactionResponse;
 import com.arcadedb.server.grpc.CreateRecordRequest;
 import com.arcadedb.server.grpc.CreateRecordResponse;
 import com.arcadedb.server.grpc.DatabaseCredentials;
+import com.arcadedb.server.grpc.FullTextSearchRequest;
+import com.arcadedb.server.grpc.FullTextSearchResponse;
+import com.arcadedb.server.grpc.HybridSearchRequest;
+import com.arcadedb.server.grpc.HybridSearchResponse;
+import com.arcadedb.server.grpc.VectorSearchRequest;
+import com.arcadedb.server.grpc.VectorSearchResponse;
 import com.arcadedb.server.grpc.DeleteRecordRequest;
 import com.arcadedb.server.grpc.DeleteRecordResponse;
 import com.arcadedb.server.grpc.ExecuteCommandRequest;
@@ -2139,6 +2145,90 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   @FunctionalInterface
   private interface Rpc<T> {
     T run() throws StatusException; // V2 throws this; v1 lambdas compile fine too
+  }
+
+  // ------------------------------------------------------------------------------------
+  // Search API (issue #7306)
+  // ------------------------------------------------------------------------------------
+  //
+  // These three mirror RemoteDatabase.vectorSearch / hybridSearch / fullTextSearch on the HTTP driver, and are
+  // served by the same com.arcadedb.query.search operations on the server, so a request that is legal on one
+  // protocol is legal on the other and the two answer the same ranking.
+  //
+  // The request messages are built by the caller rather than wrapped in a fluent builder here: they are already
+  // proto builders, and a second builder over them would be one more place for the argument names to drift from
+  // the ones the server validates.
+
+  /**
+   * kNN search over a dense {@code LSM_VECTOR} or sparse {@code LSM_SPARSE_VECTOR} index.
+   * <p>
+   * ArcadeDB does not generate embeddings: the request carries the query vector the caller computed. The database
+   * name and credentials are filled in from this connection, so a request that sets them is overridden rather
+   * than able to address another database through this handle.
+   *
+   * @throws IllegalArgumentException when the server rejects an argument - an unknown or wrong-type index, a
+   *                                  query vector of the wrong dimensionality, or an out-of-range window - with
+   *                                  the server's own message, which names the field
+   */
+  public VectorSearchResponse vectorSearch(final VectorSearchRequest request) {
+    final VectorSearchRequest req = request.toBuilder()
+        .setDatabase(getName()).setCredentials(buildCredentials()).build();
+    try {
+      return callUnary("VectorSearch",
+          () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).vectorSearch(req));
+    } catch (final StatusException | StatusRuntimeException e) {
+      throw searchFailure("vector search", e);
+    }
+  }
+
+  /**
+   * Fused vector + full-text + graph-expansion search.
+   *
+   * @see #vectorSearch(VectorSearchRequest)
+   */
+  public HybridSearchResponse hybridSearch(final HybridSearchRequest request) {
+    final HybridSearchRequest req = request.toBuilder()
+        .setDatabase(getName()).setCredentials(buildCredentials()).build();
+    try {
+      return callUnary("HybridSearch",
+          () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).hybridSearch(req));
+    } catch (final StatusException | StatusRuntimeException e) {
+      throw searchFailure("hybrid search", e);
+    }
+  }
+
+  /**
+   * Full-text search over a {@code FULL_TEXT} index.
+   *
+   * @see #vectorSearch(VectorSearchRequest)
+   */
+  public FullTextSearchResponse fullTextSearch(final FullTextSearchRequest request) {
+    final FullTextSearchRequest req = request.toBuilder()
+        .setDatabase(getName()).setCredentials(buildCredentials()).build();
+    try {
+      return callUnary("FullTextSearch",
+          () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).fullTextSearch(req));
+    } catch (final StatusException | StatusRuntimeException e) {
+      throw searchFailure("full-text search", e);
+    }
+  }
+
+  /**
+   * Maps a failed search call to the exception a caller of the embedded or HTTP API would already recognize.
+   * INVALID_ARGUMENT is the server saying the request was malformed and naming the field, so it becomes an
+   * {@link IllegalArgumentException} rather than being flattened into the generic remote-failure type that would
+   * hide the distinction between "you asked wrong" and "the server broke".
+   */
+  private static RuntimeException searchFailure(final String operation, final Exception e) {
+    final Status.Code code = e instanceof final StatusRuntimeException sre
+        ? sre.getStatus().getCode()
+        : ((StatusException) e).getStatus().getCode();
+    final String description = e.getMessage();
+    if (code == Status.Code.INVALID_ARGUMENT)
+      return new IllegalArgumentException("Error on executing " + operation + ": " + description, e);
+    if (code == Status.Code.PERMISSION_DENIED || code == Status.Code.UNAUTHENTICATED)
+      return new SecurityException("Error on executing " + operation + ": " + description, e);
+    return new RemoteException("Error on executing " + operation + ": " + description, e);
   }
 
   private <Resp> Resp callUnary(String opName, Rpc<Resp> rpc) throws StatusException {
