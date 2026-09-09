@@ -128,8 +128,17 @@ public class XmlRowSource implements GraphImporter.RecordSource {
               // indentation. It must not turn a value that is ONLY whitespace into "", because "" is what
               // RecordReader#get answers "not set" for and an empty <tag/> already means that: a whitespace-only
               // value is data, exactly as it is on every other source (issue #7332).
+              //
+              // A LINE BREAK is what separates the two. A pretty-printer writes an empty element across lines as
+              // "<tag>\n      </tag>", so its text is whitespace too - and storing that raw would put a newline
+              // and an indent into the property, which is neither the value nor "not set". Nobody writes a line
+              // break as the value of an element they also left blank, so whitespace carrying one is layout and
+              // the element is unset; whitespace without one is a value the row actually states.
               final String trimmed = text.trim();
-              rec.fields.put(childName, trimmed.isEmpty() ? text : trimmed);
+              if (!trimmed.isEmpty())
+                rec.fields.put(childName, trimmed);
+              else if (text.indexOf('\n') < 0 && text.indexOf('\r') < 0)
+                rec.fields.put(childName, text);
             }
           } else if (childEvent == XMLStreamConstants.END_ELEMENT && elementName.equals(reader.getLocalName())) {
             break;

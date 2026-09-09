@@ -423,6 +423,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * This is the loop; {@code iterateRange} is this method with an {@code ArrayList} for a visitor, which is why
    * the two cannot drift apart. Same read lock over all file I/O, same binary search into the block directory,
    * same early termination, same per-row tag filtering.
+   * <p>
+   * <b>The visitor runs under the directory read lock</b>, which is what buys the bounded residency: the rows are
+   * produced as the file is read rather than after. That is a shared lock, so it blocks no other reader, but a
+   * writer that needs it - a truncate or a downsample replacing the file - waits for the whole fold rather than
+   * for a copy. A visitor is therefore expected to fold, not to compute: the cost per row belongs to the caller's
+   * answer, and anything expensive should collect and be done afterwards, at which point {@code iterateRange} is
+   * the method that was wanted.
    *
    * @param metrics counts the blocks this scan actually decompressed and the rows it materialised, or {@code null}
    */

@@ -44,6 +44,10 @@ public interface TimeSeriesRowVisitor {
    *
    * @return {@code false} to stop the scan, which stops it for good - no further block is read and no further
    * shard is opened. {@code true} to continue.
+   *
+   * @implSpec Called while the scan holds the shard's compaction read lock and the sealed store's directory read
+   * lock - that is what lets the rows be produced as the file is read. Fold, do not compute: the locks are shared,
+   * so no other reader is blocked, but a writer waiting for one waits for the whole scan.
    */
   boolean visit(Object[] row);
 }
