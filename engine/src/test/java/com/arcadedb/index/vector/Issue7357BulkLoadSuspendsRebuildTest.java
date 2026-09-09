@@ -212,6 +212,65 @@ class Issue7357BulkLoadSuspendsRebuildTest {
   }
 
   /**
+   * The race the whole fix turns on, driven directly: the inactivity timer fires WHILE the last suspension is
+   * being lifted.
+   * <p>
+   * {@code runInactivityRebuild()} reads the suspension count and {@code resumeBackgroundMaintenance()} decrements
+   * it to zero, on two different threads, with no ordering between them. Both outcomes must be correct: the timer
+   * reading a non-zero count re-arms and the resume arms too (only one task is actually scheduled, because
+   * {@code armInactivityRebuild()} declines while one is armed), and the timer reading zero proceeds to rebuild
+   * while the resume finds nothing left to arm. What must never happen is the pair settling into "neither armed
+   * anything", which would leave the load's writes in the delta buffer with no rebuild ever coming.
+   * <p>
+   * Driven by hammering the boundary rather than by pinning one interleaving: with a {@value #TIMEOUT_MS} ms
+   * window and a resume landing at an arbitrary point inside it, repeating the open/write/close cycle lands on
+   * both sides of the read over the run. Each iteration asserts the invariant that matters - the index does not
+   * end up quiet with work pending - which is the property, not one particular schedule.
+   */
+  @Test
+  void closingABatchWhileTheTimerFiresStillLeavesARebuildComing() {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        createSchema(db);
+        final LSMVectorIndex index = vectorIndex(db);
+
+        for (int round = 0; round < 8; round++) {
+          final int from = round * 20;
+          try (final GraphBatch batch = GraphBatch.builder(db).build()) {
+            insert(db, from, from + 20);
+            // Land the close somewhere inside the inactivity window, so across the rounds the resume falls both
+            // before and after the timer thread reads the suspension count.
+            idleFor(TIMEOUT_MS - 50L + round * 15L);
+            batch.close();
+          }
+
+          final int written = from + 20;
+          Awaitility.await("round " + round + ": the write that outlived the batch still reaches the graph")
+              .atMost(REBUILD_SETTLE_TIMEOUT)
+              .pollInterval(Duration.ofMillis(25))
+              .untilAsserted(() -> assertThat(index.getStats().get("mutationsSinceRebuild")).isZero());
+
+          Awaitility.await("round " + round + ": the rebuild settles before the next round")
+              .atMost(REBUILD_SETTLE_TIMEOUT)
+              .pollInterval(Duration.ofMillis(25))
+              .untilAsserted(() -> assertThat(index.getStats().get("asyncRebuildInProgress")).isZero());
+
+          assertThat(index.getStats().get("graphNodeCount"))
+              .as("round %d: and it covers every vector written so far", round)
+              .isEqualTo((long) written);
+        }
+
+        assertThat(index.getStats().get("deltaVectorsCount"))
+            .as("nothing is left stranded in the buffer after eight rounds of racing the boundary")
+            .isZero();
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  /**
    * Idles for {@code effectiveMs} of RUNNING time.
    * <p>
    * Measured with {@link StallAwareStopwatch} rather than slept through, because the assertions that follow are

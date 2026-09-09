@@ -18,7 +18,6 @@
  */
 package com.arcadedb.index.vector;
 
-import com.arcadedb.database.DatabaseInternal;
 
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
@@ -51,33 +50,29 @@ class GrowableVectorValues implements RandomAccessVectorValues {
   // of the whole vector set during bulk ingest). Evicted/never-cached ordinals are re-read lazily.
   private final int maxCacheSize;
 
-  // Lazy-load support: when a vector is not in the map, read from disk
-  private final VectorLocationIndex vectorIndex;
+  /**
+   * The index that persisted these vectors, or {@code null} in simple mode (no disk fallback).
+   * <p>
+   * The only collaborator left: this used to carry a {@code VectorLocationIndex}, a {@code DatabaseInternal} and
+   * the vector property name as well, so that it could resolve an evicted ordinal itself. That resolution now
+   * lives on the index, as {@link LSMVectorIndex#readPersistedVectorArray(int)}, which is where the delta scan
+   * reaches it too (issue #7357) - and the three fields went with it (PR #7360 review). They were always passed
+   * all-or-nothing with this one, so nothing that used to have a fallback has lost it.
+   */
   private final LSMVectorIndex lsmIndex;
-  private final DatabaseInternal database;
-  private final String vectorPropertyName;
 
   /**
    * Simple mode: no disk fallback (used in tests and when all vectors are in memory).
    */
   GrowableVectorValues(final int dimensions) {
-    this(dimensions, 1024, null, null, null, null, Integer.MAX_VALUE);
+    this(dimensions, 1024, null, Integer.MAX_VALUE);
   }
 
   /**
    * Simple mode with initial capacity.
    */
   GrowableVectorValues(final int dimensions, final int initialCapacity) {
-    this(dimensions, initialCapacity, null, null, null, null, Integer.MAX_VALUE);
-  }
-
-  /**
-   * Full mode with lazy disk fallback for existing vectors and an unbounded cache.
-   */
-  GrowableVectorValues(final int dimensions, final int initialCapacity,
-      final VectorLocationIndex vectorIndex, final LSMVectorIndex lsmIndex,
-      final DatabaseInternal database, final String vectorPropertyName) {
-    this(dimensions, initialCapacity, vectorIndex, lsmIndex, database, vectorPropertyName, Integer.MAX_VALUE);
+    this(dimensions, initialCapacity, null, Integer.MAX_VALUE);
   }
 
   /**
@@ -87,16 +82,17 @@ class GrowableVectorValues implements RandomAccessVectorValues {
    * number of vectors held on-heap; once the cap is reached new vectors are not cached and are
    * re-read from disk on next access via {@link #getVector}. This only makes sense when a disk
    * fallback is configured - callers using simple mode must leave the cache unbounded.
+   *
+   * @param dimensions     arity of every vector held here
+   * @param initialCapacity initial size of the backing map
+   * @param lsmIndex       the index to re-read an evicted ordinal from, or {@code null} for simple mode
+   * @param maxCacheSize   upper bound on the vectors kept on-heap; {@code <= 0} means unbounded
    */
-  GrowableVectorValues(final int dimensions, final int initialCapacity,
-      final VectorLocationIndex vectorIndex, final LSMVectorIndex lsmIndex,
-      final DatabaseInternal database, final String vectorPropertyName, final int maxCacheSize) {
+  GrowableVectorValues(final int dimensions, final int initialCapacity, final LSMVectorIndex lsmIndex,
+      final int maxCacheSize) {
     this.dimensions = dimensions;
     this.vectors = new ConcurrentHashMap<>(Math.max(16, Math.min(initialCapacity, maxCacheSize <= 0 ? initialCapacity : maxCacheSize)));
-    this.vectorIndex = vectorIndex;
     this.lsmIndex = lsmIndex;
-    this.database = database;
-    this.vectorPropertyName = vectorPropertyName;
     this.maxCacheSize = maxCacheSize <= 0 ? Integer.MAX_VALUE : maxCacheSize;
   }
 
@@ -131,8 +127,8 @@ class GrowableVectorValues implements RandomAccessVectorValues {
     if (cached != null)
       return cached;
 
-    // Slow path: lazy-load from disk and cache
-    if (vectorIndex == null || database == null || lsmIndex == null)
+    // Slow path: lazy-load from disk and cache. Simple mode has nothing to read from.
+    if (lsmIndex == null)
       return null;
 
     // The read-back itself, and the validation of what comes back, belong to the index that persisted it: see
