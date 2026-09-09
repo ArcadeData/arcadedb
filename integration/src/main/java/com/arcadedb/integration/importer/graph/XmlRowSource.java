@@ -123,8 +123,14 @@ public class XmlRowSource implements GraphImporter.RecordSource {
           if (childEvent == XMLStreamConstants.START_ELEMENT) {
             final String childName = reader.getLocalName();
             final String text = reader.getElementText(); // advances to END_ELEMENT
-            if (text != null && !text.isEmpty())
-              rec.fields.put(childName, text.trim());
+            if (text != null && !text.isEmpty()) {
+              // The trim exists for pretty-printed XML, whose element text carries the surrounding newline and
+              // indentation. It must not turn a value that is ONLY whitespace into "", because "" is what
+              // RecordReader#get answers "not set" for and an empty <tag/> already means that: a whitespace-only
+              // value is data, exactly as it is on every other source (issue #7332).
+              final String trimmed = text.trim();
+              rec.fields.put(childName, trimmed.isEmpty() ? text : trimmed);
+            }
           } else if (childEvent == XMLStreamConstants.END_ELEMENT && elementName.equals(reader.getLocalName())) {
             break;
           }

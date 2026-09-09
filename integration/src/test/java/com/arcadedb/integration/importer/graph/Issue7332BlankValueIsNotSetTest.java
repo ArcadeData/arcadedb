@@ -112,6 +112,38 @@ class Issue7332BlankValueIsNotSetTest {
     Files.writeString(new File(BASE_DIR, "spaces.jsonl").toPath(), "{\"id\":\"1\",\"nickname\":\" \"}\n",
         StandardCharsets.UTF_8);
     assertThat(nicknamesOf(JsonlRowSource.from(BASE_DIR, "spaces.jsonl"))).containsExactly(" ");
+
+    Files.writeString(new File(BASE_DIR, "spaces.csv").toPath(), "id,nickname\n1, \n", StandardCharsets.UTF_8);
+    assertThat(nicknamesOf(CsvRowSource.from(BASE_DIR, "spaces.csv"))).containsExactly(" ");
+  }
+
+  /**
+   * The child-element form of the same rule. {@code XmlRowSource} trims child text, for pretty-printed XML whose
+   * element text carries the surrounding newline and indentation - but trimming a value that is ONLY whitespace
+   * down to {@code ""} would hand it to {@code emptyAsNull} and lose it, while an empty {@code <tag/>} really is
+   * "not set". Both halves are asserted here, because a fix for either one alone breaks the other.
+   */
+  @Test
+  void anXmlChildElementKeepsItsIndentationTrimmedAndItsWhitespaceValue() throws Exception {
+    Files.writeString(new File(BASE_DIR, "children.xml").toPath(), """
+        <people>
+          <row id="1">
+            <nickname>
+              Ali
+            </nickname>
+          </row>
+          <row id="2">
+            <nickname> </nickname>
+          </row>
+          <row id="3">
+            <nickname></nickname>
+          </row>
+        </people>
+        """, StandardCharsets.UTF_8);
+
+    assertThat(nicknamesOf(new XmlRowSource(new File(BASE_DIR, "children.xml").getPath(), "row", true)))
+        .as("indentation is trimmed off a real value, a whitespace-only value survives, an empty element is unset")
+        .containsExactly("Ali", " ", null);
   }
 
   /** The consequence the issue is about: the imported records agree, whichever file they came from. */
