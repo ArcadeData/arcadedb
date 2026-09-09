@@ -138,12 +138,17 @@ class Issue7332BlankValueIsNotSetTest {
           <row id="3">
             <nickname></nickname>
           </row>
+          <row id="4">
+            <nickname>
+            </nickname>
+          </row>
         </people>
         """, StandardCharsets.UTF_8);
 
     assertThat(nicknamesOf(new XmlRowSource(new File(BASE_DIR, "children.xml").getPath(), "row", true)))
-        .as("indentation is trimmed off a real value, a whitespace-only value survives, an empty element is unset")
-        .containsExactly("Ali", " ", null);
+        .as("indentation trimmed off a real value; a deliberate space kept; an empty element and an element "
+            + "a pretty-printer wrote across two lines both unset - never the raw newline and indent")
+        .containsExactly("Ali", " ", null, null);
   }
 
   /** The consequence the issue is about: the imported records agree, whichever file they came from. */
