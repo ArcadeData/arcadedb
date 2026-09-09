@@ -93,7 +93,13 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
     } else {
       final JSONArray latestArray = new JSONArray();
       for (final Object val : lastRow)
-        latestArray.put(val);
+        // putSampleValue, not put(val): a non-finite sample means "no measurement", and every other read path
+        // renders it as JSON null - the raw and aggregated branches of /ts/query, the Grafana frames, and the
+        // gRPC TimeSeriesLatest RPC added in #7305. Left alone, this loop resolved to JSONArray.put(Object),
+        // which does NOT take the NaN-rewriting put(Number) overload, and the endpoint answered the token NaN
+        // where its gRPC twin answered null - the two protocols disagreeing on exactly the value this change
+        // is about (claude-review on PR #7323).
+        putSampleValue(latestArray, val);
       result.put("latest", latestArray);
     }
 

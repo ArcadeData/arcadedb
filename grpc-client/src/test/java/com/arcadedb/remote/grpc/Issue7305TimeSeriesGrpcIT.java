@@ -333,6 +333,32 @@ class Issue7305TimeSeriesGrpcIT extends BaseGraphServerTest {
   }
 
   @Test
+  void aNonFiniteLatestSampleIsNullOnBothProtocols() {
+    createType();
+
+    // A NaN reaches storage through the typed gRPC write: GrpcValue carries it natively, and unlike the HTTP
+    // path there is no LineProtocolWriter in the way to refuse it. So this is a sample a real client can store
+    // and then have to read back.
+    grpcClient().timeSeriesWrite(List.of(
+        new TimeSeriesPoint(TYPE, 1_000L, Map.of("location", "us-east"), Map.of("temperature", 22.5)),
+        new TimeSeriesPoint(TYPE, 2_000L, Map.of("location", "us-east"), Map.of("temperature", Double.NaN))));
+
+    // "No measurement" is null on both protocols, and never 0 - a measurement of zero is data, and a client
+    // cannot tell the two apart once the distinction is gone.
+    final TimeSeriesLatestResult overGrpc = grpcClient().timeSeriesLatest(TYPE);
+    assertThat(overGrpc.isPresent()).isTrue();
+    assertThat(overGrpc.value("temperature")).as("gRPC renders a non-finite sample as null").isNull();
+
+    final TimeSeriesLatestResult overHttp = httpClient().timeSeriesLatest(TYPE);
+    assertThat(overHttp.isPresent()).as("the HTTP endpoint must answer at all, not fail serializing NaN").isTrue();
+    assertThat(overHttp.value("temperature")).as("HTTP renders a non-finite sample as null too").isNull();
+
+    // The timestamp is still there on both, so the row was not simply dropped.
+    assertThat(((Number) overHttp.value("ts")).longValue()).isEqualTo(2_000L);
+    assertValuesAgree(overHttp.latest(), overGrpc.latest());
+  }
+
+  @Test
   void aSealedShardIsReadableOverGrpc() throws Exception {
     createType();
     grpcClient().timeSeriesWrite(threeSamples());

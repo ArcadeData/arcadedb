@@ -179,14 +179,10 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       final AggregationType aggType = AggregationType.valueOf(req.getString("type"));
       final String alias = req.getString("alias", fieldName + "_" + aggType.name().toLowerCase());
 
-      // Find column index by name
-      int colIndex = -1;
-      for (int c = 0; c < columns.size(); c++) {
-        if (columns.get(c).getName().equals(fieldName)) {
-          colIndex = c;
-          break;
-        }
-      }
+      // The shared helper, as the Grafana handler and the gRPC aggregation path already use: this was the last
+      // site outside the gateway still hand-rolling the lookup, and therefore the last place the full-schema vs
+      // non-timestamp index conventions could be confused (claude-review on PR #7323).
+      final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
 
       if (colIndex < 0)
         return new ExecutionResponse(400, "{ \"error\" : \"Field '" + fieldName + "' not found in type\"}");

@@ -222,3 +222,40 @@ null]`, which is how the projection bug was found) and `Issue7305TimeSeriesGrpcA
 answering `gRPC error: UNKNOWN`). `Issue7305GrafanaFieldProjectionIT` was falsified deliberately by
 restoring the old `columns.get(idx)` mapping - it failed with "expected 2 fields but was 1" - and the fix
 was then restored and re-run green.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/7323
+
+## Review cycles
+
+### Cycle 1 — `2b02d75d` — claude review, three findings
+
+| Finding | Verified? | Disposition |
+|---|---|---|
+| `GET /ts/{db}/latest` does not render a non-finite sample as null, so it disagrees with its new gRPC twin | **Yes, reproduced** | **Fixed.** `putSampleValue` in the loop |
+| `PostTimeSeriesQueryHandler.executeAggregation` hand-rolls the column-index scan the new shared helper does | Yes, read the code | **Fixed.** One-line swap to `TimeSeriesHandlerUtils.findColumnIndex` |
+| `AggregationType.valueOf` is unguarded on both HTTP aggregation paths, unlike the gRPC one | Yes, read the code | **Filed as #7325**, on the reviewer's own framing ("pre-existing... a good candidate for a quick follow-up") |
+
+**One correction to the review, recorded because the difference matters.** The review predicted the
+endpoint "likely 500s ... `NaN is not a valid double value as per JSON specification`". It does not.
+`JSONArray.put(Object)` routes through `JSONObject.objectToElement`, which reaches
+`new JsonPrimitive(number)`, and what actually came back over the wire was the **token** `NaN`, which the
+client read as the string `"NaN"`:
+
+```
+[HTTP renders a non-finite sample as null too]
+expected: null
+ but was: "NaN"
+```
+
+The conclusion the review drew from it is exactly right - the two protocols disagreed on the one input
+this change is about, and a string where every sibling path answers `null` is arguably worse than a 500,
+because it is silent. Only the predicted failure mode was wrong. The fix is the one the review suggested.
+
+The regression test is `Issue7305TimeSeriesGrpcIT.aNonFiniteLatestSampleIsNullOnBothProtocols`, which
+stores the NaN through the typed gRPC write (the path that can actually produce one - `LineProtocolWriter`
+refuses it on the HTTP side) and then asserts both protocols answer `null`. It was observed red before the
+fix, with the output above.
+
+Nothing was deferred: every finding is fixed here or filed.
