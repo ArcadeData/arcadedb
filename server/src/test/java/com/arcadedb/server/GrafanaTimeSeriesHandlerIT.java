@@ -292,6 +292,91 @@ class GrafanaTimeSeriesHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #7325: this endpoint answers a per-target problem with an error frame keyed by refId and keeps serving
+   * the other targets. The unguarded {@code AggregationType.valueOf} was the one refusal in that loop that escaped
+   * it: a mistyped aggregation on one panel failed the whole request, blanking the panels that were fine.
+   */
+  @Test
+  void grafanaAggregationRejectsUnknownTypeAsAnErrorFrame() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      final JSONArray targets = new JSONArray();
+      targets.put(aggregationTarget("A", "MEDIAN"));
+      targets.put(aggregationTarget("B", "AVG"));
+
+      final JSONObject request = new JSONObject();
+      request.put("from", 1000L);
+      request.put("to", 3000L);
+      request.put("targets", targets);
+
+      final JSONObject results = postGrafanaQuery(serverIndex, request).getJSONObject("results");
+
+      final JSONObject refA = results.getJSONObject("A");
+      assertThat(refA.getString("error"))
+          .as("must name the field that was wrong and every value it accepts")
+          .contains("aggregation.requests[0].type")
+          .contains("SUM", "AVG", "MIN", "MAX", "COUNT")
+          .contains("MEDIAN");
+      assertThat(refA.getJSONArray("frames").length()).isEqualTo(0);
+
+      assertThat(results.getJSONObject("B").getJSONArray("frames").length())
+          .as("a bad aggregation on one target must not blank the targets that were fine")
+          .isEqualTo(1);
+    });
+  }
+
+  /**
+   * Issue #7325: the lower-cased spelling a hand-written Grafana panel is most likely to send now resolves.
+   */
+  @Test
+  void grafanaAggregationTypeIsCaseInsensitive() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      final JSONArray targets = new JSONArray();
+      targets.put(aggregationTarget("A", "avg"));
+
+      final JSONObject request = new JSONObject();
+      request.put("from", 1000L);
+      request.put("to", 3000L);
+      request.put("targets", targets);
+
+      final JSONObject refA = postGrafanaQuery(serverIndex, request).getJSONObject("results").getJSONObject("A");
+      assertThat(refA.has("error")).isFalse();
+
+      final JSONArray fields = refA.getJSONArray("frames").getJSONObject(0).getJSONObject("schema")
+          .getJSONArray("fields");
+      assertThat(fields.length()).isEqualTo(2);
+      assertThat(fields.getJSONObject(1).getString("name"))
+          .as("alias defaults to the field name plus the canonical lower-cased function name")
+          .isEqualTo("temperature_avg");
+    });
+  }
+
+  /**
+   * Builds a target that aggregates the ingested "weather" type with the given function name.
+   */
+  private static JSONObject aggregationTarget(final String refId, final String aggregationType) {
+    final JSONObject aggRequest = new JSONObject();
+    aggRequest.put("field", "temperature");
+    aggRequest.put("type", aggregationType);
+
+    final JSONArray requests = new JSONArray();
+    requests.put(aggRequest);
+
+    final JSONObject aggregation = new JSONObject();
+    aggregation.put("bucketInterval", 5000L);
+    aggregation.put("requests", requests);
+
+    final JSONObject target = new JSONObject();
+    target.put("refId", refId);
+    target.put("type", "weather");
+    target.put("aggregation", aggregation);
+    return target;
+  }
+
   // --- helper methods ---
 
   private void createTypeAndIngestData(final int serverIndex) throws Exception {

@@ -196,7 +196,15 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
     for (int i = 0; i < requestsJson.length(); i++) {
       final JSONObject req = requestsJson.getJSONObject(i);
       final String fieldName = req.getString("field");
-      final AggregationType aggType = AggregationType.valueOf(req.getString("type"));
+      final AggregationType aggType;
+      try {
+        aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, i);
+      } catch (final IllegalArgumentException e) {
+        // An error frame, like every other per-target refusal here: this used to be the one that escaped the
+        // target loop, so a mistyped aggregation on one panel failed the whole request and blanked the panels
+        // that were fine (issue #7325).
+        return buildErrorFrame(e.getMessage());
+      }
       final String alias = req.getString("alias", fieldName + "_" + aggType.name().toLowerCase());
 
       final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
