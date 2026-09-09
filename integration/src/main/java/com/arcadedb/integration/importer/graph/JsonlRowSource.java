@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.importer.graph;
 
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -109,7 +110,14 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
      * screen is by the same singleton GSON parses a null into. {@link #get} relies on it already.
      */
     private boolean notSet(final String attribute) {
-      final Object value = json.opt(attribute);
+      return notSet(json.opt(attribute));
+    }
+
+    /**
+     * The same predicate over a value the caller has already looked up, so the two array accessors
+     * below can branch on that value without paying a second map lookup for it.
+     */
+    private static boolean notSet(final Object value) {
       return value == null || (value instanceof String text && text.isEmpty());
     }
 
@@ -131,11 +139,29 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
     /**
      * Reads the JSON array natively into a {@code float[]}: no intermediate string, no boxed
      * element, one allocation of exactly the vector's size.
+     * <p>
+     * A {@code String} takes the textual form instead - {@code "[0.1,0.2,0.3]"} - which is what
+     * {@link GraphImporter.RecordReader#getFloatArray} parses for the flat formats and what a JSONL
+     * file converted from a CSV export carries, since such a converter quotes every column. A
+     * quoted <i>number</i> in that same file already imported, so before #7285 a stringified export
+     * loaded its int, long and double columns and then ended the whole import on its vector column.
+     * <p>
+     * The interface default's {@code checkNotSplit} is deliberately not applied here: its
+     * diagnostic offers a different field delimiter, and JSONL has no field separator to change
+     * ({@link GraphImporter.RecordSource#fieldSeparator()} returns {@code null} for this source).
+     * A textual array that opens but never closes is a malformed value on JSONL, and
+     * {@code VectorUtils.toFloatArray} reporting the parse failure itself is the accurate answer.
      */
     @Override
     public float[] getFloatArray(final String attribute) {
-      if (notSet(attribute))
+      final Object value = json.opt(attribute);
+      if (notSet(value))
         return null;
+      if (value instanceof String text)
+        return VectorUtils.toFloatArray(text);
+      // anything that is neither text nor an array - a number, a boolean, a nested object - is a
+      // data error, and getJSONArray raises the "is not a JSON array" JSONException that
+      // GraphImporter.readProperty has always reported as badValue
       final JSONArray array = json.getJSONArray(attribute);
       final int length = array.length();
       final float[] result = new float[length];
@@ -144,9 +170,18 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
       return result;
     }
 
+    /**
+     * The list counterpart of {@link #getFloatArray}, textual fallback included: the interface
+     * default parses {@code "[\"x\"]"} with {@code new JSONArray(text)} and so does this.
+     */
     @Override
     public List<Object> getList(final String attribute) {
-      return notSet(attribute) ? null : json.getJSONArray(attribute).toList();
+      final Object value = json.opt(attribute);
+      if (notSet(value))
+        return null;
+      if (value instanceof String text)
+        return new JSONArray(text).toList();
+      return json.getJSONArray(attribute).toList();
     }
   }
 }
