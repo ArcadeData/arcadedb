@@ -108,6 +108,13 @@ import java.util.logging.Level;
  * membership dropped, until either the peer is admitted again for some other reason or the address stops being
  * published - at which point the pod is gone and a later reuse of the address belongs to a different one.
  * <p>
+ * <b>The subtraction can only hold back an address it can name.</b> A departing peer's addresses come from its
+ * last successful resolution, or from one lookup made as it leaves; a peer whose name has never resolved and
+ * does not resolve now leaves nothing to subtract, and the pinned domain goes on admitting its pod until that pod
+ * terminates. That needs DNS to have been down for the whole time the peer was a member AND at the moment it is
+ * removed, which is why it is stated rather than worked around: any workaround would have to guess which of the
+ * pinned domain's addresses belonged to the departing peer, and guessing wrong locks out a healthy pod.
+ * <p>
  * This is NOT a substitute for mTLS: it does not authenticate peer identity and does not
  * encrypt the traffic. See GitHub issue #3890. The bounded startup fail-open is an acceptable
  * trade-off for that reason; set {@code startupGraceMs=0} to disable it.
@@ -386,6 +393,15 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
         final Set<String> ips = lastKnownIps.get(host);
         if (ips != null)
           droppedIps.addAll(ips);
+        else
+          // The host left the membership without ever having resolved - DNS was down for the whole time it was a
+          // member - so there is no last-known address to revoke, and the pinned domain would readmit it. One
+          // lookup here, on a membership change and never on the periodic tick (which is the cost #7225 removed),
+          // covers the case where the name resolves again by the time the peer is removed. If it does not resolve
+          // now either, this peer's address cannot be identified from anything this class has, and the pinned
+          // domain keeps admitting it until its pod terminates - the limitation is stated on the class javadoc
+          // rather than left for a reader to discover (PR #7314 review).
+          droppedIps.addAll(resolveOnce(host));
       }
       revokedPinnedIps.addAll(droppedIps);
       republishLearnedHosts();
@@ -421,6 +437,28 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     final Set<String> union = new HashSet<>(pinnedHosts);
     union.addAll(memberHosts);
     learnedHosts = Collections.unmodifiableSet(union);
+  }
+
+  /**
+   * One best-effort resolution of {@code host}, touching none of the sticky retention state: for a host that is
+   * leaving and therefore has no business being tracked, but whose addresses still have to be identified so the
+   * pinned domain does not readmit them. Empty when the name does not resolve.
+   */
+  private Set<String> resolveOnce(final String host) {
+    try {
+      final InetAddress[] addrs = resolver.resolve(host);
+      if (addrs == null)
+        return Collections.emptySet();
+      final Set<String> ips = new HashSet<>();
+      for (final InetAddress a : addrs)
+        ips.add(a.getHostAddress());
+      return ips;
+    } catch (final UnknownHostException e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Cannot resolve departing cluster peer host '%s'; its addresses cannot be held back from the pinned "
+              + "host expansion: %s", host, e.getMessage());
+      return Collections.emptySet();
+    }
   }
 
   /** Trimmed host, or null when there is nothing usable to resolve. */

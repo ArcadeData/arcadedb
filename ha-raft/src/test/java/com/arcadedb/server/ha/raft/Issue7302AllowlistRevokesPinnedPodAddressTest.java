@@ -192,6 +192,53 @@ class Issue7302AllowlistRevokesPinnedPodAddressTest {
     assertThat(f.getRevokedPinnedIps()).as("nothing pins the address, so nothing has to hold it back").isEmpty();
   }
 
+  /**
+   * Raised in review of PR #7314: the addresses to hold back come from the departing peer's last successful
+   * resolution, and a peer whose name never resolved while it was a member has none - so the pinned domain would
+   * readmit its still-running pod. One lookup as it leaves covers the case where the name resolves by then, which
+   * is the realistic half of it (DNS was down while the peer was a member and is up when it is removed). It costs
+   * nothing on the periodic tick, which is the per-tick lookup #7225 removed.
+   */
+  @Test
+  void aPeerThatNeverResolvedWhileAMemberIsStillRevokedIfItsNameResolvesAsItLeaves() {
+    final PeerAddressAllowlistFilterTest.FakeResolver dns = new PeerAddressAllowlistFilterTest.FakeResolver();
+    dns.table.put(POD_0, List.of(IP_0));
+    dns.table.put(SERVICE, List.of(IP_0, IP_1));
+    // POD_1 does not resolve: DNS is down for it the whole time it is a member, so nothing is ever tracked for it.
+
+    final PeerAddressAllowlistFilter f = kubernetesFilter(dns);
+    f.setMemberHosts(List.of(POD_0, POD_1));
+    assertThat(f.isAllowed(IP_1)).as("the pinned service admits the pod meanwhile, which is what it is for").isTrue();
+
+    // DNS is back by the time the operator removes the peer.
+    dns.table.put(POD_1, List.of(IP_1));
+    f.setMemberHosts(List.of(POD_0));
+
+    assertThat(f.getRevokedPinnedIps()).containsExactly(IP_1);
+    assertThat(f.isAllowed(IP_1)).isFalse();
+  }
+
+  /**
+   * The other half of the same case, pinned so the limitation is a decision rather than a surprise: with the name
+   * not resolving at removal time either, there is no address to hold back and the pinned domain goes on admitting
+   * the pod until it terminates. Guessing which of the pinned domain's addresses belonged to the departing peer is
+   * the alternative, and guessing wrong locks out a healthy pod.
+   */
+  @Test
+  void aPeerWhoseNameNeverResolvesAtAllCannotBeRevoked() {
+    final PeerAddressAllowlistFilterTest.FakeResolver dns = new PeerAddressAllowlistFilterTest.FakeResolver();
+    dns.table.put(POD_0, List.of(IP_0));
+    dns.table.put(SERVICE, List.of(IP_0, IP_1));
+
+    final PeerAddressAllowlistFilter f = kubernetesFilter(dns);
+    f.setMemberHosts(List.of(POD_0, POD_1));
+    f.setMemberHosts(List.of(POD_0));
+
+    assertThat(f.getRevokedPinnedIps()).as("nothing names the departing peer's address, so nothing is held back")
+        .isEmpty();
+    assertThat(f.isAllowed(IP_1)).isTrue();
+  }
+
   private static PeerAddressAllowlistFilter kubernetesFilter(final PeerAddressAllowlistFilterTest.FakeResolver dns) {
     return kubernetesFilter(dns, new AtomicLong(0));
   }
