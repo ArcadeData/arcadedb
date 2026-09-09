@@ -116,8 +116,10 @@
       <div id="profilerStepChart" style="min-height: 200px;"></div>
       <!-- Step table -->
       <p class="text-muted mb-1" style="font-size: 0.8rem;">
-        Step timings are the time each step spent in its own work, summed over every occurrence of that step across
-        all the executions above. They are contained in the Engine total, never larger than it.
+        Step timings are the time each step spent in its own work - never the time its sub-steps spent in theirs -
+        summed over every occurrence of that step across all the executions above. Because no step counts another
+        step's time, these rows add up to at most the Engine total and never more. A step whose whole job is to
+        dispatch to its sub-steps has no work of its own to time, so it appears with a Count but with no timings.
       </p>
       <table id="profilerStepTable" class="table table-sm" style="width: 100%; font-size: 0.85rem;">
         <thead>

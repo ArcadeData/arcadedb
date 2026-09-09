@@ -552,7 +552,10 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
     if (parallelScan)
       builder.append(" (parallel)");
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      // The subtree roll-up, because this step is pure dispatch: the bucket sub-steps below own every nanosecond
+      // it would otherwise claim, and claiming them here as if they were its own is what made a plain type scan
+      // appear twice in the server profiler's aggregated table (issue #7329).
+      builder.append(" (").append(getTotalCostFormatted()).append(")");
     }
     builder.append("\n");
     for (int i = 0; i < getSubSteps().size(); i++) {
@@ -563,12 +566,6 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       }
     }
     return builder.toString();
-  }
-
-  @Override
-  public long getCost() {
-    return subSteps.stream().map(ExecutionStep::getCost).reduce((a, b) -> a > 0 && b > 0 ? a + b : a > 0 ? a : b > 0 ? b : -1L)
-        .orElse(-1L);
   }
 
   @Override

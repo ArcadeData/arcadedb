@@ -101,8 +101,85 @@ class RDFImporterFormatTransactionLeakTest {
     return settings;
   }
 
+  private ImporterSettings settings() {
+    final ImporterSettings settings = new ImporterSettings();
+    settings.vertexTypeName = "Node";
+    settings.edgeTypeName = "Related";
+    settings.typeIdProperty = "id";
+    return settings;
+  }
+
   private long countOf(final String typeName) {
     return database.query("sql", "select count(*) as c from " + typeName).next().<Long>getProperty("c");
+  }
+
+  /**
+   * Issue #7328: the trailing {@code database.commit()} is the fourth of the four transaction operations
+   * {@code load()} gates on ownership, and it is the one that used to be ungated - so a successful import against a
+   * caller-managed transaction committed the caller's, silently, at a point of the importer's choosing. The import
+   * reported success and the caller had no signal that its own unit of work had been resolved out from under it.
+   * <p>
+   * Asserted by rolling the caller's transaction back afterwards: if the importer committed it, the caller's own
+   * pending record and the imported edges both survive that rollback.
+   */
+  @Test
+  void aSuccessfulImportNeverCommitsTheCallersTransaction() throws Exception {
+    final RDFImporterFormat format = new RDFImporterFormat();
+    final ImporterContext context = new ImporterContext();
+    context.callerTransactionActiveOnEntry = true;
+
+    database.begin();
+    database.newDocument("Marker").set("name", "caller").save();
+
+    format.load(null, null, rdfParser("""
+        s,p,o
+        v1,rel,v2
+        v3,rel,v4
+        """), (DatabaseInternal) database, context, settings());
+
+    assertThat(database.isTransactionActive())
+        .as("a transaction that predates the import is never the importer's to commit, success or not")
+        .isTrue();
+
+    // The caller's decision, exercised: everything staged inside its transaction - its own record and the edges the
+    // import accumulated into it - must still be discardable.
+    database.rollback();
+
+    assertThat(countOf("Marker"))
+        .as("the caller's own pending work must still be the caller's to discard")
+        .isZero();
+    assertThat(countOf("Node"))
+        .as("the import staged its edges in the caller's transaction, so the caller's rollback takes them too")
+        .isZero();
+  }
+
+  /**
+   * The other half of the same asymmetry: {@code callerTransactionActiveOnEntry} is a snapshot taken before the
+   * import began, and a caller transaction it recorded may already be resolved by the time a format's row loop
+   * runs. The transaction the loop then pushes is its own - and gating on the stale snapshot left it on the stack
+   * with nothing allowed to resolve it: not the loop's own commit or rollback, and not {@code Importer.load()}'s
+   * cleanup, which is gated on the same flag (issue #7328).
+   */
+  @Test
+  void theImportOwnsTheTransactionItPushesOnceTheCallersIsGone() throws Exception {
+    final RDFImporterFormat format = new RDFImporterFormat();
+    final ImporterContext context = new ImporterContext();
+    // Recorded on entry, but the caller has since resolved it: no transaction is active now.
+    context.callerTransactionActiveOnEntry = true;
+    assertThat(database.isTransactionActive()).isFalse();
+
+    format.load(null, null, rdfParser("""
+        s,p,o
+        v1,rel,v2
+        v3,rel,v4
+        """), (DatabaseInternal) database, context, settings());
+
+    assertThat(database.isTransactionActive())
+        .as("the transaction the import pushed is its own, and a successful import resolves it")
+        .isFalse();
+    assertThat(countOf("Node"))
+        .as("the import committed its own transaction, so its edges are durable")
+        .isEqualTo(4);
   }
 
   @Test

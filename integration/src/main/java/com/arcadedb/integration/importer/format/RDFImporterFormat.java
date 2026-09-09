@@ -83,8 +83,10 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // reuses it. Rolling that one back on failure is still right - the import aborts with it either way, and
     // the alternative is AbstractImporter.closeDatabase() committing a half-finished import. What must never
     // be rolled back is a transaction that predates the import, which is exactly what
-    // ImporterContext#callerTransactionActiveOnEntry records.
-    final boolean ownsTransaction = !context.callerTransactionActiveOnEntry;
+    // ImporterContext#callerTransactionActiveOnEntry records, and which ImporterContext#importOwnsTransaction()
+    // answers for every row loop in one place rather than five times by hand (issue #7328). Read here, before the
+    // begin() below, because after that begin() a transaction is always active.
+    final boolean ownsTransaction = context.importOwnsTransaction(database);
 
     // Whether a transaction this call owns is still the current one. Cleared right before every commit -
     // LocalDatabase#commit() pops the transaction in a finally, so a commit that throws still leaves it off the

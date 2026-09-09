@@ -2688,10 +2688,14 @@ public enum GlobalConfiguration {
   }
 
   public static GlobalConfiguration findByKey(final String iKey) {
-    String key = iKey;
+    // Lowercased BEFORE the prefix test, not after: the lookup is case-insensitive, so the test for the prefix
+    // that makes a key already-qualified has to be too. Otherwise "ARCADEDB.HA.TLS.MUTUALAUTH" was read as an
+    // unqualified name and looked up as "arcadedb.arcadedb.ha.tls.mutualauth", which resolves to nothing while
+    // every other spelling of the same key resolves (issue #7297).
+    String key = iKey.toLowerCase(Locale.ENGLISH);
     if (!key.startsWith(PREFIX))
-      key = PREFIX + iKey;
-    return BY_KEY.get(key.toLowerCase(Locale.ENGLISH));
+      key = PREFIX + key;
+    return BY_KEY.get(key);
   }
 
   /**
