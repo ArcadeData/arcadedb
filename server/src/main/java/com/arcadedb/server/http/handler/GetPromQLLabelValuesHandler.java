@@ -85,7 +85,6 @@ public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
         if (!SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD))
           continue;
         final List<ColumnDefinition> columns = tsType.getTsColumns();
-        // final: read from the visitor lambda below
         final int colIdx = findColumnIndex(labelName, columns);
         if (colIdx < 0)
           continue;
