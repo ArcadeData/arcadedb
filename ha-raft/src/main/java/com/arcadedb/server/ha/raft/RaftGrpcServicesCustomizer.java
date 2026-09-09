@@ -24,6 +24,7 @@ import org.apache.ratis.thirdparty.io.grpc.ServerTransportFilter;
 import org.apache.ratis.thirdparty.io.grpc.netty.NettyServerBuilder;
 
 import java.util.EnumSet;
+import java.util.concurrent.TimeUnit;
 
 /**
  * {@link GrpcServices.Customizer} that installs the configured server-side transport filters and call interceptors
@@ -35,6 +36,13 @@ import java.util.EnumSet;
  * established before its address stopped being admitted. Interceptors registered on the builder are server-wide -
  * {@code ServerImpl} applies them to every call whatever order the services were added in - so the two are installed
  * together here rather than per service.
+ * <p>
+ * It also carries the connection-lifetime bound the Raft listener otherwise has none of (issue #7316). Neither of the
+ * two surfaces above can close a connection: {@code ServerTransportFilter} is handed no reference to the transport it
+ * admits, and a {@code ServerCall} reaches only its own HTTP/2 stream. So a peer whose reach a revocation took away
+ * kept its socket until something else dropped it. The only knobs gRPC exposes for that are builder-wide, and
+ * {@code GrpcServicesImpl.newNettyServerBuilder} sets none of them, which is why this customizer is where the window
+ * is applied.
  */
 final class RaftGrpcServicesCustomizer implements GrpcServices.Customizer {
 
@@ -43,10 +51,17 @@ final class RaftGrpcServicesCustomizer implements GrpcServices.Customizer {
 
   private final ServerTransportFilter[] filters;
   private final ServerInterceptor[]     interceptors;
+  private final long                    maxConnectionIdleMs;
 
-  RaftGrpcServicesCustomizer(final ServerTransportFilter[] filters, final ServerInterceptor[] interceptors) {
+  /**
+   * @param maxConnectionIdleMs how long a connection may carry no RPC before the server closes it, or {@code 0} or
+   *                            less to leave connections unbounded, which is what Ratis does on its own
+   */
+  RaftGrpcServicesCustomizer(final ServerTransportFilter[] filters, final ServerInterceptor[] interceptors,
+      final long maxConnectionIdleMs) {
     this.filters = filters == null ? NO_FILTERS : filters;
     this.interceptors = interceptors == null ? NO_INTERCEPTORS : interceptors;
+    this.maxConnectionIdleMs = maxConnectionIdleMs;
   }
 
   @Override
@@ -56,6 +71,11 @@ final class RaftGrpcServicesCustomizer implements GrpcServices.Customizer {
       result = result.addTransportFilter(f);
     for (final ServerInterceptor i : interceptors)
       result = result.intercept(i);
+    // Not gated on the allowlist: this is a connection-lifetime bound, and Ratis leaves the Raft listener without
+    // one whether or not the allowlist is installed. gRPC clamps anything under a second up to a second and treats
+    // anything from 1000 days up as "disabled", so the only value handled here is the one that means off.
+    if (maxConnectionIdleMs > 0)
+      result = result.maxConnectionIdle(maxConnectionIdleMs, TimeUnit.MILLISECONDS);
     return result;
   }
 }

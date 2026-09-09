@@ -105,9 +105,11 @@ import java.util.logging.Level;
  * admission gate and gRPC hands it no handle on the transport it admitted, so every transport this filter admits
  * gets a {@link PeerTransportSession} stashed in its {@code Attributes}; a resolution that stops admitting the
  * session's address revokes it, {@link PeerAllowlistCallInterceptor} then refuses every further RPC on it, and the
- * RPCs already running on it are closed. The socket itself is not closed - gRPC's public API exposes no way to close
- * one established transport - so the accurate operator-facing claim is that removing a peer revokes its reach, not
- * that it drops its connection.
+ * RPCs already running on it are closed. The socket is not closed on the spot - gRPC's public API exposes no way to
+ * close one established transport on demand - but it is no longer left to the peer either: since issue #7316 the
+ * Raft listener carries {@code arcadedb.ha.grpcMaxConnectionIdleMs}, so a connection that stops carrying RPCs, which
+ * a revoked one does as soon as it stops retrying, is closed with a graceful GOAWAY. The accurate operator-facing
+ * claim is that removing a peer revokes its reach immediately and its connection once that connection falls idle.
  * <p>
  * This is NOT a substitute for mTLS: it does not authenticate peer identity and does not
  * encrypt the traffic. See GitHub issue #3890. The bounded startup fail-open is an acceptable
@@ -603,8 +605,9 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
         continue; // swept while transportReady was still deciding: it is being rejected, and that is logged there
       LogManager.instance().log(this, Level.INFO,
           "Revoked the established Raft gRPC transport of %s: the address is no longer in the peer allowlist. "
-              + "%d in-flight RPC(s) closed; every further RPC on that transport is refused. The connection itself "
-              + "stays open until the peer drops it - gRPC exposes no way to close one established transport.",
+              + "%d in-flight RPC(s) closed; every further RPC on that transport is refused. gRPC exposes no way to "
+              + "close one established transport on demand, so the connection is closed once it has been idle for "
+              + "arcadedb.ha.grpcMaxConnectionIdleMs - a peer that keeps retrying keeps it open until it stops.",
           session.getRemoteIp(), closed);
     }
   }
