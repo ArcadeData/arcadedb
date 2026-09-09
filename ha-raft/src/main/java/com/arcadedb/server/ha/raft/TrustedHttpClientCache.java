@@ -89,6 +89,23 @@ final class TrustedHttpClientCache {
     return client;
   }
 
+  /**
+   * Releases the cached client, if one was ever built. Called from {@code RaftHAServer.stop()}: the client holds
+   * a connection pool and a selector thread, and a JVM that starts and stops many servers - which is what the HA
+   * suites do - would otherwise keep one per server that ever probed an HTTPS peer (PR #7314 review).
+   * <p>
+   * Safe to call more than once, and safe to call on a cache that never built anything. The capability monitor is
+   * already stopped by the time this runs, so {@link HttpClient#close()}'s wait for in-flight operations is
+   * bounded by the probe timeout of a round that has already been asked to stand down.
+   */
+  synchronized void close() {
+    if (client == null)
+      return;
+    client.close();
+    client = null;
+    material = null;
+  }
+
   private static TrustMaterial trustMaterialOf(final ArcadeDBServer server) {
     final String storePath = server != null
         ? server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE) : null;

@@ -308,6 +308,29 @@ class Issue7301PeerCapabilityReportingTest {
     assertThat(second.clientFor(secondServer)).isSameAs(secondClient);
   }
 
+  /**
+   * The client holds a connection pool and a selector thread, so a JVM that starts and stops many servers - what
+   * the HA suites do - must not keep one per server that ever probed an HTTPS peer. {@code RaftHAServer.stop()}
+   * closes it; this pins that closing works, is idempotent, and leaves the cache able to build again (PR #7314
+   * review).
+   */
+  @Test
+  void theClientIsReleasedOnCloseAndTheCacheStillWorksAfterwards() throws Exception {
+    final File truststore = writeEmptyTruststore();
+    final ArcadeDBServer server = serverWithTruststore(truststore, "changeit");
+    final TrustedHttpClientCache cache = new TrustedHttpClientCache();
+
+    final HttpClient first = cache.clientFor(server);
+    cache.close();
+    cache.close();
+
+    assertThat(cache.clientFor(server)).as("a closed cache builds a new client rather than serving the closed one")
+        .isNotSameAs(first);
+
+    // A cache that never built anything has nothing to release, and must not fail saying so.
+    new TrustedHttpClientCache().close();
+  }
+
   private static File writeEmptyTruststore() throws Exception {
     final File dir = new File(TRUSTSTORE_DIR);
     dir.mkdirs();

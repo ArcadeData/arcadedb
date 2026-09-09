@@ -1585,6 +1585,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       logCompactionScheduler = null;
     }
     stopLagMonitor();
+    // After stopLagMonitor(), which ends the capability refresh: nothing asks for the client past this point, and
+    // an HttpClient left behind holds a connection pool and a selector thread for the life of the JVM - which in
+    // the HA suites outlives many server start/stop cycles (PR #7314 review).
+    capabilityHttpsClients.close();
     stalledResyncExecutor.shutdownNow();
     channelRecoveryExecutor.shutdownNow();
     if (transactionBroker != null) {
