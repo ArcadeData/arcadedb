@@ -441,14 +441,19 @@ function profilerShowDetail(index) {
   jQuery("#profilerStepTable tbody").empty();
   for (var j = 0; j < steps.length; j++) {
     var s = steps[j];
+    // A step the engine never timed reports no measured sample. Showing its columns as 0 reads as
+    // "instant" instead of "unknown", so say so once rather than printing five zeros (issue #7291).
+    var untimed = s.measuredCount === 0 && s.executionCount > 0;
+    var cells = untimed
+      ? '<td colspan="5" class="text-muted" title="This step reports no timing: per-step timers only run when the engine is asked to profile the execution.">not timed</td>'
+      : '<td>' + s.totalCostMs + '</td>' +
+        '<td>' + s.minCostMs + '</td>' +
+        '<td>' + s.avgCostMs + '</td>' +
+        '<td>' + s.maxCostMs + '</td>' +
+        '<td>' + s.p99CostMs + '</td>';
     jQuery("#profilerStepTable tbody").append(
       '<tr><td>' + escapeHtml(s.name) + '</td>' +
-      '<td>' + s.executionCount + '</td>' +
-      '<td>' + s.totalCostMs + '</td>' +
-      '<td>' + s.minCostMs + '</td>' +
-      '<td>' + s.avgCostMs + '</td>' +
-      '<td>' + s.maxCostMs + '</td>' +
-      '<td>' + s.p99CostMs + '</td></tr>'
+      '<td>' + s.executionCount + '</td>' + cells + '</tr>'
     );
   }
 

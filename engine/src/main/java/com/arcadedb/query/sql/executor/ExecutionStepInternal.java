@@ -81,11 +81,26 @@ public interface ExecutionStepInternal extends ExecutionStep {
   }
 
   default String getName() {
-    return getClass().getSimpleName();
+    return simpleNameOf(getClass());
   }
 
   default String getType() {
-    return getClass().getSimpleName();
+    return simpleNameOf(getClass());
+  }
+
+  /**
+   * The step class' simple name, falling back to the first named ancestor for an anonymous step. {@code
+   * Class.getSimpleName()} answers the empty string for an anonymous class, and a step chain built out of anonymous
+   * steps (the OpenCypher plan builds several) therefore published nameless rows in the EXPLAIN/PROFILE plan and in
+   * Studio's Query Profiler step table (issue #7291).
+   */
+  static String simpleNameOf(final Class<?> stepClass) {
+    for (Class<?> c = stepClass; c != null; c = c.getSuperclass()) {
+      final String name = c.getSimpleName();
+      if (!name.isEmpty())
+        return name;
+    }
+    return "ExecutionStep";
   }
 
   default String getDescription() {

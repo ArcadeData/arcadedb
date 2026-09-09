@@ -494,6 +494,11 @@ public class CypherExecutionPlan {
       }
 
       @Override
+      public String getName() {
+        return "SubquerySeedRowStep";
+      }
+
+      @Override
       public String prettyPrint(final int depth, final int indent) {
         return "  ".repeat(Math.max(0, depth * indent)) + "+ SUBQUERY SEED ROW";
       }
@@ -1116,6 +1121,11 @@ public class CypherExecutionPlan {
       }
 
       @Override
+      public String getName() {
+        return "OptimizedMatchStep";
+      }
+
+      @Override
       public String prettyPrint(final int depth, final int indent) {
         return "  ".repeat(Math.max(0, depth * indent)) + "+ OPTIMIZED MATCH (physical operators)\n" +
             physicalPlan.explain();
@@ -1463,6 +1473,11 @@ public class CypherExecutionPlan {
           }
           consumed = true;
           return new IteratorResultSet(singleRow.iterator());
+        }
+
+        @Override
+        public String getName() {
+          return "DummyRowStep";
         }
 
         @Override
@@ -3191,6 +3206,11 @@ public class CypherExecutionPlan {
           }
           consumed = true;
           return new IteratorResultSet(singleRow.iterator());
+        }
+
+        @Override
+        public String getName() {
+          return "DummyRowStep";
         }
 
         @Override
