@@ -2427,15 +2427,17 @@ public class CypherExecutionPlan {
                 currentStep = scanStep;
               }
               // Swap source/target and reverse direction: go OUT from scanned target to bound source
+              // reversePathOrder: this hop is walked from the pattern's right-hand node back to its left-hand
+              // one, so a named path has to be assembled the other way round (#7290).
               nextStep = new MatchRelationshipStep(effectiveTargetVar, relVar, effectiveSourceVar, relPattern,
                   pathVariable, sourceNode, boundWithSource, matchVariables, clauseRelVariables, Direction.OUT,
-                  context);
+                  true, context);
             } else {
               // Normal case: pass target node pattern for label filtering and bound variables for identity
               // checking. The relationship-uniqueness scope is published once the clause is complete.
               nextStep = new MatchRelationshipStep(effectiveSourceVar, relVar, effectiveTargetVar, relPattern,
                   pathVariable, effectiveTargetNode, targetIdentityVars, matchVariables, clauseRelVariables,
-                  directionOverride, context);
+                  directionOverride, reversed, context);
             }
           }
 

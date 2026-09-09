@@ -56,11 +56,21 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public class LocalDocumentType implements DocumentType {
-  protected       String                            name;
+  // Reassigned by rename() under the schema write lock (with a rollback assignment on failure) and read lock-free by
+  // getName() and by instanceOf(String), which openCypher's Labels calls during query planning while holding no
+  // database lock. Volatile for the same reason as the copy-on-write members below: without it a planning thread has
+  // no happens-before edge against a concurrent ALTER TYPE ... NAME and can match on either spelling indefinitely
+  // (issues #6678, #7033, #7119, #7299).
+  protected volatile String                         name;
   protected final LocalSchema                       schema;
   protected final List<LocalDocumentType>           superTypes                   = new ArrayList<>();
   protected final List<LocalDocumentType>           subTypes                     = new ArrayList<>();
-  private         Set<String>                       aliases                      = Collections.emptySet();
+  // Sixth member of the copy-on-write family: reassigned by setAliases under the schema mutation lock and read
+  // lock-free by instanceOf(String) from openCypher label resolution during query planning. Volatile for the
+  // publication edge, and always assigned an unmodifiable COPY: setAliases used to store the caller's set by
+  // reference, so a caller that kept its set and mutated it afterwards was editing live schema state that a
+  // lock-free reader is walking (issue #7299).
+  private volatile Set<String>                      aliases                      = Set.of();
   // Mutated by CREATE/DROP PROPERTY under the schema write lock. Record creation reads it under the read lock and is
   // therefore excluded, but two readers are not: query planning, and toJSON() - which LocalSchema.recordFileChanges
   // calls to save schema.json AFTER the write lock is released, so a save running alongside another thread's DDL threw
@@ -435,7 +445,9 @@ public class LocalDocumentType implements DocumentType {
     for (String alias : aliases)
       schema.types.put(alias, this);
 
-    this.aliases = aliases;
+    // A copy, and an unmodifiable one: the parameter belongs to the caller. Published last so a lock-free
+    // instanceOf() either sees the whole previous set or the whole new one.
+    this.aliases = Set.copyOf(aliases);
     schema.saveConfiguration();
     return this;
   }

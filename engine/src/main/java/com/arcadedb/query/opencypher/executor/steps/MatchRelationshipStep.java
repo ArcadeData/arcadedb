@@ -95,6 +95,18 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    */
   private final Set<String> clauseRelationshipVariables;
   private final Direction directionOverride; // When non-null, overrides pattern.getDirection()
+  /**
+   * True when this hop is traversed against the direction it was WRITTEN in, which the plan builder does
+   * whenever starting from the other end is cheaper: the bound-target reversal, and the restructuring of an IN
+   * hop on a unidirectional edge type, which has no incoming links to follow.
+   * <p>
+   * Both of those swap {@code sourceVariable} and {@code targetVariable} relative to the pattern, and that swap
+   * is invisible to everything except the named path: {@code nodes(p)} is defined to answer in the order the
+   * nodes appear ALONG THE PATTERN, from its start to its end, so it must not follow the order the executor
+   * happened to walk them in. Without this the same query returned {@code [129, 128]} or {@code [128, 129]}
+   * depending only on whether a preceding {@code WITH} had bound the pattern's right-hand node (issue #7290).
+   */
+  private final boolean reversePathOrder;
 
   // GAV provider for CSR-accelerated fast path (null = not checked yet, resolved lazily)
   private volatile GraphTraversalProvider gavProvider;
@@ -127,7 +139,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       final Set<String> boundVariableNames, final Set<String> clauseVariables,
       final Set<String> clauseRelationshipVariables, final CommandContext context) {
     this(sourceVariable, relationshipVariable, targetVariable, pattern, pathVariable, targetNodePattern,
-        boundVariableNames, clauseVariables, clauseRelationshipVariables, null, context);
+        boundVariableNames, clauseVariables, clauseRelationshipVariables, null, false, context);
   }
 
   /**
@@ -140,6 +152,21 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       final Set<String> boundVariableNames, final Set<String> clauseVariables,
       final Set<String> clauseRelationshipVariables, final Direction directionOverride,
       final CommandContext context) {
+    this(sourceVariable, relationshipVariable, targetVariable, pattern, pathVariable, targetNodePattern,
+        boundVariableNames, clauseVariables, clauseRelationshipVariables, directionOverride, false, context);
+  }
+
+  /**
+   * Creates a match relationship step that is traversed against the direction the pattern was written in.
+   *
+   * @param reversePathOrder true when {@code sourceVariable}/{@code targetVariable} are the pattern's RIGHT and
+   *                         LEFT ends respectively, so a named path has to be assembled the other way round
+   */
+  public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
+      final RelationshipPattern pattern, final String pathVariable, final NodePattern targetNodePattern,
+      final Set<String> boundVariableNames, final Set<String> clauseVariables,
+      final Set<String> clauseRelationshipVariables, final Direction directionOverride,
+      final boolean reversePathOrder, final CommandContext context) {
     super(context);
     this.sourceVariable = sourceVariable;
     this.relationshipVariable = relationshipVariable;
@@ -151,6 +178,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     this.clauseVariables = clauseVariables;
     this.clauseRelationshipVariables = clauseRelationshipVariables;
     this.directionOverride = directionOverride;
+    this.reversePathOrder = reversePathOrder;
   }
 
   /**
@@ -557,16 +585,23 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
             // Add path binding if path variable is specified (e.g., p = (a)-[r]->(b))
             if (pathVariable != null && !pathVariable.isEmpty()) {
+              // A named path is assembled in PATTERN order, which is the traversal order only when this hop is
+              // walked the way it was written. On a reversed hop the two ends swap: the vertex this hop reached
+              // is the pattern's LEFT end and the one it started from is the pattern's RIGHT end, so the path
+              // still grows left to right and nodes(p) still answers from the start of the pattern (#7290).
+              final Vertex patternLeftEnd = reversePathOrder ? targetVertex : (Vertex) lastResult.getProperty(sourceVariable);
+              final Vertex patternRightEnd = reversePathOrder ? (Vertex) lastResult.getProperty(sourceVariable) : targetVertex;
+
               // Check if there's an existing path from a previous hop to extend
               final Object existingPath = lastResult.getProperty(pathVariable);
               final TraversalPath path;
               if (existingPath instanceof TraversalPath)
                 // Extend existing path (multi-hop pattern)
-                path = new TraversalPath((TraversalPath) existingPath, edge, targetVertex);
+                path = new TraversalPath((TraversalPath) existingPath, edge, patternRightEnd);
               else {
-                // Create new path starting from source vertex
-                path = new TraversalPath((Vertex) lastResult.getProperty(sourceVariable));
-                path.addStep(edge, targetVertex);
+                // Create new path starting from the pattern's left-hand node
+                path = new TraversalPath(patternLeftEnd);
+                path.addStep(edge, patternRightEnd);
               }
               result.setProperty(pathVariable, path);
             }
