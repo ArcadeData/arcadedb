@@ -18,6 +18,7 @@
  */
 package com.arcadedb;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
@@ -27,6 +28,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 /**
  * Represents a context configuration where custom setting could be defined for the context only. If not defined, globals will be
@@ -34,6 +36,11 @@ import java.util.concurrent.ConcurrentHashMap;
  **/
 public class ContextConfiguration implements Serializable {
   private final           Map<String, Object>    config         = new ConcurrentHashMap<String, Object>();
+  /**
+   * Keys already reported by {@link #getValueAsBoolean(GlobalConfiguration)} as holding something that is not
+   * boolean text. Per-instance rather than static so one test's bad value cannot mute another's report.
+   */
+  private final           Set<String>            nonBooleanReported = ConcurrentHashMap.newKeySet();
   private transient final SystemVariableResolver customResolver = new SystemVariableResolver() {
     @Override
     public String resolve(final String variable) {
@@ -64,6 +71,25 @@ public class ContextConfiguration implements Serializable {
       config.putAll(iParent.config);
   }
 
+  /**
+   * Loads the server configuration file into this overlay, applying each value's declared type on the way in.
+   * <p>
+   * Issue #7262. This used to store the raw JSON value with a plain {@code put}, which for a {@code Boolean}
+   * setting meant the string survived to the read site and was then read by {@code Boolean.parseBoolean} - so
+   * {@code "arcadedb.ha.tls.mutualAuth": "yes"} silently DISABLED mutual TLS authentication on the Raft channel,
+   * and {@code "arcadedb.ha.peerAllowlist.enabled": "on"} silently skipped installing the peer allowlist. Both
+   * default to {@code true}, so the operator who never mentioned them was safe and the one who wrote down that
+   * they wanted the protection was the one who lost it - the exact opposite of the fail-safe property #7222
+   * established for the system-property and environment-variable path.
+   * <p>
+   * A value the setting's type cannot read is REFUSED and the setting keeps its default, reported once through
+   * {@link GlobalConfiguration#coerceFromConfigurationSource(Object, String)} - the same parse and the same
+   * message that path uses. Refusing rather than guessing is what makes this fail closed for a switch whose
+   * default is the protection: nothing about a typo says which way its author meant it.
+   * <p>
+   * Note that a REFUSED value is not stored, so {@link #toJSON()} no longer round-trips it. That is deliberate:
+   * this map is what a server hands to its plugins, and a value nothing can read has no business being in it.
+   */
   public void fromJSON(final String input) {
     if (input == null)
       return;
@@ -73,8 +99,24 @@ public class ContextConfiguration implements Serializable {
     final JSONObject cfg = json.getJSONObject("configuration");
     for (final String k : cfg.keySet()) {
       final GlobalConfiguration cfgEntry = GlobalConfiguration.findByKey(GlobalConfiguration.PREFIX + k);
-      if (cfgEntry != null)
-        config.put(GlobalConfiguration.PREFIX + k, cfgEntry.applyContextValue(cfg.get(k)));
+      if (cfgEntry != null) {
+        final Object coerced = cfgEntry.coerceFromConfigurationSource(cfg.get(k), "server configuration file");
+        if (coerced == null)
+          // EITHER REFUSED (ALREADY REPORTED) OR A JSON null. LEAVE THE SETTING ON ITS DEFAULT RATHER THAN GUESS
+          // WHAT WAS MEANT - AND NOTE THE MAP IS A ConcurrentHashMap, SO STORING null WOULD THROW ANYWAY.
+          continue;
+
+        // Stored EXTERNALIZED, which for every type but one is the coerced value itself. A Class-typed setting
+        // is the exception: this overlay is what toJSON() writes back out, and a JSON document holds the class
+        // NAME, not a Class (issue #7163). Coercing it above was still worth doing - a name that cannot be
+        // loaded is now refused where it enters, rather than surfacing from whichever component read the
+        // setting next.
+        //
+        // What the callback makes of it is what gets stored, so a callback that NORMALISES its argument
+        // normalises it here too rather than only on the enum's own path.
+        config.put(GlobalConfiguration.PREFIX + k,
+            GlobalConfiguration.externalizeValue(cfgEntry.applyContextValue(coerced)));
+      }
     }
   }
 
@@ -182,11 +224,66 @@ public class ContextConfiguration implements Serializable {
     return defaultValue;
   }
 
+  /**
+   * Issue #7262: the second half of the mechanism that let {@code "arcadedb.ha.tls.mutualAuth": "yes"} disable
+   * mutual TLS on the Raft channel. {@code Boolean.parseBoolean} maps every string that is not {@code "true"} to
+   * {@code false}, so a synonym, a typo or a stray space read as a deliberate opt-OUT - and for the several
+   * settings whose default is {@code true} because the default is the protection, that is the one direction a
+   * misread must never take.
+   * <p>
+   * {@link #fromJSON(String)} now refuses such a value on the way in, which is where the operator can be told
+   * about it. This is the backstop for the entry points that still hand over untyped values - the
+   * {@link #ContextConfiguration(Map) map constructor}, {@link #merge(ContextConfiguration)}, and
+   * {@link #setValue(String, Object)} called with raw text - and it answers the same way that path does: a value
+   * that is not boolean text is REFUSED, reported once, and the value the setting would have had without it is
+   * returned. Falling back to the default rather than to {@code false} is what makes this fail closed for a default-{@code true} switch
+   * without flipping the settings whose safe side is the other one; refusing to guess is the property that holds
+   * for all of them.
+   *
+   * @return the configured value, or {@code iConfig}'s default when the configured one is not boolean text
+   */
   public boolean getValueAsBoolean(final GlobalConfiguration iConfig) {
-    final Object v = getValue(iConfig);
+    // ONE lookup, and it doubles as the "did this come from the overlay" question the refusal branch below asks:
+    // a ConcurrentHashMap cannot hold a null value, so a non-null answer IS an overlay hit. Asking containsKey and
+    // then get would be two lookups AND a race - a concurrent setValue/merge between them can return null for a key
+    // that had just answered true, which would take the null branch below and read false for a setting whose
+    // default is the protection.
+    final Object overlaid = config.get(iConfig.getKey());
+    final boolean fromOverlay = overlaid != null;
+    final Object v = fromOverlay ? overlaid : iConfig.getValue();
     if (v == null)
       return false;
-    return v instanceof Boolean b ? b : Boolean.parseBoolean(v.toString());
+    if (v instanceof Boolean b)
+      return b;
+
+    final String text = v.toString().trim();
+    if ("true".equalsIgnoreCase(text))
+      return true;
+    if ("false".equalsIgnoreCase(text))
+      return false;
+
+    reportNonBoolean(iConfig, v);
+
+    // "As if this key had never been written": a bad value in THIS overlay falls back to the setting's
+    // process-wide value, which is its compiled-in default unless a system property or an environment variable
+    // chose one - and a bad value already on the enum falls back to the compiled-in default itself. Same rule
+    // GlobalConfiguration.setValueFromConfigurationSource applies to a refusal on the -D path.
+    final Object fallback = fromOverlay ? iConfig.getValue() : iConfig.getDefValue();
+    return fallback instanceof Boolean b && b;
+  }
+
+  /**
+   * Reports a value that is not boolean text ONCE per setting. The read sites are on connection and request paths,
+   * so logging on every read would turn one mistyped setting into a flood; the message is about a configuration
+   * mistake that does not change while the process runs, so the first one says everything the operator needs.
+   */
+  private void reportNonBoolean(final GlobalConfiguration iConfig, final Object value) {
+    if (!nonBooleanReported.add(iConfig.getKey()))
+      return;
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Invalid value %s for setting '%s': only 'true' and 'false' are accepted. Keeping the default '%s'",
+        iConfig.redactIfHidden(value), iConfig.getKey(), iConfig.getDefValue());
   }
 
   /**

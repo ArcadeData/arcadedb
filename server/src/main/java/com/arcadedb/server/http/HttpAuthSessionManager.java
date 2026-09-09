@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -51,15 +52,24 @@ public class HttpAuthSessionManager extends RWLockContext {
   private final       int                          maxSessionsPerUser;
   private final       LongSupplier                 clock;
   private final       Timer                        timer;
+  /**
+   * Stands in for a server that was not supplied - the test-only constructors below; reads through to each
+   * setting's process-wide value. Shared rather than built per read: it holds nothing per instance.
+   */
+  private static final ContextConfiguration        NO_SERVER_CONFIGURATION = new ContextConfiguration();
 
   public HttpAuthSessionManager(final long sessionTimeoutInMs) {
     this(sessionTimeoutInMs, 0);
   }
 
+  /**
+   * Convenience form for a caller with no server configuration in reach - the tests; {@code HttpServer} passes both
+   * caps explicitly, read from the server's own configuration. The empty {@link ContextConfiguration} says exactly
+   * that: both settings are SCOPE.SERVER, so reading them off the {@link GlobalConfiguration} enum would have been
+   * reading a value only a system property or an environment variable can have written (issue #7233).
+   */
   public HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs) {
-    this(sessionTimeoutInMs, absoluteTimeoutInMs,
-        GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX.getValueAsInteger(),
-        GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER.getValueAsInteger(), System::currentTimeMillis);
+    this(sessionTimeoutInMs, absoluteTimeoutInMs, System::currentTimeMillis);
   }
 
   public HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final int maxSessions,
@@ -72,8 +82,9 @@ public class HttpAuthSessionManager extends RWLockContext {
    * wall clock, so idle/absolute timeout behavior can be asserted without sleeping (see #6398).
    */
   HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final LongSupplier clock) {
-    this(sessionTimeoutInMs, absoluteTimeoutInMs, GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX.getValueAsInteger(),
-        GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER.getValueAsInteger(), clock);
+    this(sessionTimeoutInMs, absoluteTimeoutInMs,
+        NO_SERVER_CONFIGURATION.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX),
+        NO_SERVER_CONFIGURATION.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER), clock);
   }
 
   HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final int maxSessions,

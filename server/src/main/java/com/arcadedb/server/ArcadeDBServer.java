@@ -312,19 +312,24 @@ public class ArcadeDBServer {
     try {
       lifecycleEvent(ReplicationCallback.TYPE.SERVER_STARTING, null);
     } catch (final Exception e) {
-      throw new ServerException("Error on starting the server '" + serverName + "'");
+      throw new ServerException("Error on starting the server '" + serverName + "'", e);
     }
 
     // Discover plugins from lib/plugins directory
     pluginManager.discoverPlugins();
 
     LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server in %s mode with plugins %s ...",
-        GlobalConfiguration.SERVER_MODE.getValueAsString(),
+        configuration.getValueAsString(GlobalConfiguration.SERVER_MODE),
         pluginManager != null && !pluginManager.getPluginNames().isEmpty() ?
             pluginManager.getPluginNames() : getAllPluginNames());
 
-    // IN PRODUCTION MODE, APPLY SAFE DEFAULTS
-    if ("production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
+    // IN PRODUCTION MODE, APPLY SAFE DEFAULTS.
+    // arcadedb.server.mode is SCOPE.SERVER, so it is authoritative in THIS server's configuration and only
+    // incidentally in the process-wide enum, which nothing but a -D or an environment variable ever writes: a
+    // server configuration file naming production mode used to leave every default below unapplied (issue #7233).
+    // The two defaults themselves are SCOPE.DATABASE and stay on the enum on purpose - that is what a database
+    // opened by this server inherits, since DatabaseFactory is handed a path and no ContextConfiguration.
+    if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE))) {
       // WAL FLUSH: DEFAULT TO 1 FOR DURABILITY
       if (!GlobalConfiguration.TX_WAL_FLUSH.isChanged()) {
         GlobalConfiguration.TX_WAL_FLUSH.setValue(1);
@@ -412,7 +417,7 @@ public class ArcadeDBServer {
     LogManager.instance().log(this, Level.INFO, "Available query languages: %s",
         QueryEngineManager.getInstance().getAvailableLanguages());
 
-    final String mode = GlobalConfiguration.SERVER_MODE.getValueAsString();
+    final String mode = configuration.getValueAsString(GlobalConfiguration.SERVER_MODE);
 
     final String msg = "ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)".formatted(mode,
         Runtime.getRuntime().availableProcessors(), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
@@ -425,7 +430,7 @@ public class ArcadeDBServer {
     if ("production".equals(mode))
       logProductionChecklist();
 
-    if (!"production".equals(mode) || GlobalConfiguration.STUDIO_ENABLED.getValueAsBoolean()) {
+    if (!"production".equals(mode) || configuration.getValueAsBoolean(GlobalConfiguration.STUDIO_ENABLED)) {
       final InputStream file = getClass().getClassLoader().getResourceAsStream("static/index.html");
       if (file != null) {
         final String studioHost = getStudioDisplayHost();
@@ -440,7 +445,7 @@ public class ArcadeDBServer {
       lifecycleEvent(ReplicationCallback.TYPE.SERVER_UP, null);
     } catch (final Exception e) {
       stop();
-      throw new ServerException("Error on starting the server '" + serverName + "'");
+      throw new ServerException("Error on starting the server '" + serverName + "'", e);
     }
   }
 
@@ -509,7 +514,7 @@ public class ArcadeDBServer {
           "  - Root password: set via configuration [WARNING]. Consider using server-users.json instead");
 
     // STUDIO
-    if (GlobalConfiguration.STUDIO_ENABLED.getValueAsBoolean())
+    if (configuration.getValueAsBoolean(GlobalConfiguration.STUDIO_ENABLED))
       LogManager.instance().log(this, Level.WARNING,
           "  - Studio web tool: force-enabled (arcadedb.studio.enabled=true) [WARNING]. Restrict network access to it");
     else
@@ -900,7 +905,7 @@ public class ArcadeDBServer {
     try {
       lifecycleEvent(ReplicationCallback.TYPE.SERVER_SHUTTING_DOWN, null);
     } catch (final Exception e) {
-      throw new ServerException("Error on stopping the server '" + serverName + "'");
+      throw new ServerException("Error on stopping the server '" + serverName + "'", e);
     }
 
     status = STATUS.SHUTTING_DOWN;
@@ -940,7 +945,7 @@ public class ArcadeDBServer {
     try {
       lifecycleEvent(ReplicationCallback.TYPE.SERVER_DOWN, null);
     } catch (final Exception e) {
-      throw new ServerException("Error on stopping the server '" + serverName + "'");
+      throw new ServerException("Error on stopping the server '" + serverName + "'", e);
     }
 
     LogManager.instance().setContext(null);

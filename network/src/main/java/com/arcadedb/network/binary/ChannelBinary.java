@@ -18,6 +18,7 @@
  */
 package com.arcadedb.network.binary;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
@@ -48,8 +49,17 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
   protected            DataInputStream  in;
   protected            DataOutputStream out;
 
+  /**
+   * For a caller with no server configuration in reach (unit tests): the socket keepalive settings then read
+   * through to the {@link GlobalConfiguration} defaults.
+   */
   public ChannelBinary(final Socket iSocket, final int chunkMaxSize) throws IOException {
-    super(iSocket);
+    this(iSocket, chunkMaxSize, new ContextConfiguration());
+  }
+
+  public ChannelBinary(final Socket iSocket, final int chunkMaxSize, final ContextConfiguration configuration)
+      throws IOException {
+    super(iSocket, configuration);
 
     maxChunkSize = chunkMaxSize;
   }

@@ -160,7 +160,10 @@ public class GrpcServerPlugin implements ServerPlugin {
 
   private void startStandardServer(ContextConfiguration config) throws IOException {
 
-    int port = getConfigInt(config, CONFIG_PORT, GlobalConfiguration.GRPC_PORT.getValueAsInteger());
+    // The default comes from the SERVER's configuration, not from the GlobalConfiguration enum, which carries
+    // only what a system property or an environment variable put there: arcadedb.grpc.port is SCOPE.SERVER, so a
+    // port named in the server configuration file used to be ignored in favour of the compiled-in one (#7233).
+    int port = getConfigInt(config, CONFIG_PORT, config.getValueAsInteger(GlobalConfiguration.GRPC_PORT));
     String host = getConfigString(config, CONFIG_HOST, "0.0.0.0");
 
     NettyServerBuilder serverBuilder;
