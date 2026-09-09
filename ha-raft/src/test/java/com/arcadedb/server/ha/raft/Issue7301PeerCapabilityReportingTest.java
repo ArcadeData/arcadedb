@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -311,21 +312,25 @@ class Issue7301PeerCapabilityReportingTest {
   /**
    * The client holds a connection pool and a selector thread, so a JVM that starts and stops many servers - what
    * the HA suites do - must not keep one per server that ever probed an HTTPS peer. {@code RaftHAServer.stop()}
-   * closes it; this pins that closing works, is idempotent, and leaves the cache able to build again (PR #7314
-   * review).
+   * closes it; this pins that closing works, is idempotent, and that the cache refuses to build another
+   * afterwards - a client built after that single close() would be one nothing releases (PR #7314 review).
    */
   @Test
-  void theClientIsReleasedOnCloseAndTheCacheStillWorksAfterwards() throws Exception {
+  void theClientIsReleasedOnCloseAndTheCacheRefusesToBuildAnother() throws Exception {
     final File truststore = writeEmptyTruststore();
     final ArcadeDBServer server = serverWithTruststore(truststore, "changeit");
     final TrustedHttpClientCache cache = new TrustedHttpClientCache();
 
-    final HttpClient first = cache.clientFor(server);
+    cache.clientFor(server);
     cache.close();
     cache.close();
 
-    assertThat(cache.clientFor(server)).as("a closed cache builds a new client rather than serving the closed one")
-        .isNotSameAs(first);
+    // A probe that outlived stopCapabilityMonitor()'s shutdownNow() can still reach the cache after stop() made
+    // its one close() call. Building it a client then would leak the one thing this class exists to release, so
+    // the closed cache refuses - which the refresh round handles exactly as it handles an unreachable peer.
+    assertThatThrownBy(() -> cache.clientFor(server))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("shutting down");
 
     // A cache that never built anything has nothing to release, and must not fail saying so.
     new TrustedHttpClientCache().close();

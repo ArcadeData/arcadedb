@@ -61,6 +61,9 @@ final class TrustedHttpClientCache {
 
   private TrustMaterial material;
   private HttpClient   client;
+  // Latched by close(), so a probe that outlived stopCapabilityMonitor()'s shutdownNow() cannot have a client
+  // built for it that nothing will ever close - the leak this cache exists to prevent (PR #7314 review).
+  private boolean      closed;
 
   /**
    * The client for {@code server}, building one when the truststore behind it has changed since the last call.
@@ -72,6 +75,13 @@ final class TrustedHttpClientCache {
    * see its own note.
    */
   synchronized HttpClient clientFor(final ArcadeDBServer server) throws IOException {
+    if (closed)
+      // Refused rather than built: the only caller is a refresh round the server has already told to stand down,
+      // and it handles this exactly as it handles an unreachable peer - the peer is recorded unanswered, which on
+      // a node that is shutting down is both true and harmless. Building one here would hand back a client whose
+      // owner has already made its single close() call.
+      throw new IOException("the capability probe's HTTPS client cache is closed: this server is shutting down");
+
     final TrustMaterial current = trustMaterialOf(server);
     if (client != null && current.equals(material))
       return client;
@@ -96,7 +106,8 @@ final class TrustedHttpClientCache {
    * a connection pool and a selector thread, and a JVM that starts and stops many servers - which is what the HA
    * suites do - would otherwise keep one per server that ever probed an HTTPS peer (PR #7314 review).
    * <p>
-   * Safe to call more than once, and safe to call on a cache that never built anything.
+   * Safe to call more than once, and safe to call on a cache that never built anything. One-way: a closed cache
+   * refuses to build again, since whoever asked after this has no one left to close what it would get.
    * <p>
    * Unlike the rebuild path above, this one can run while a probe is in flight: {@code stopCapabilityMonitor()}
    * ends the refresh with {@code shutdownNow()} and does not wait for the round to unwind, and the request is
@@ -106,6 +117,7 @@ final class TrustedHttpClientCache {
    * recorded as unanswered, and the registry's generation stamp drops that write anyway.
    */
   synchronized void close() {
+    closed = true;
     if (client == null)
       return;
     client.close();
