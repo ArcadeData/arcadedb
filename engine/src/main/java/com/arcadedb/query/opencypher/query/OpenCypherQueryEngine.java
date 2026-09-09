@@ -181,9 +181,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
         actualQuery = actualQuery.substring(8).trim();
       }
 
-      // Also check for $profileExecution parameter (set by HTTP handler when Studio sends profileExecution: "detailed")
-      if (!profile && parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution")))
-        profile = true;
+      // The $profileExecution parameter - injected by the HTTP handler for Studio's profileExecution: "detailed",
+      // and by ServerDatabase for every statement while the server profiler is recording - asks for the statement
+      // to be TIMED, not for it to be run differently. It therefore turns on per-step timing over the ordinary
+      // streaming execution and is deliberately NOT folded into `profile` here: doing that rerouted every Cypher
+      // statement on a recording server onto CypherExecutionPlan.profile(), which drains the plan into heap, so
+      // the reported cost described a materialising execution the statement never otherwise performs and the
+      // diagnostic itself changed what it was diagnosing (issue #7330).
+      final boolean timeExecution =
+          parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution"));
 
       // Use statement cache to avoid re-parsing. Carries the parameter names the query references, so the
       // check below costs no extra lookup.
@@ -210,7 +216,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (!explain && !profile && !statement.isReadOnly())
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
-      return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile);
+      return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile, timeExecution);
     } catch (final QueryNotIdempotentException | CommandExecutionException | CommandParsingException | SecurityException e) {
       throw e;
     } catch (final Exception e) {
@@ -240,9 +246,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
         actualQuery = actualQuery.substring(8).trim();
       }
 
-      // Also check for $profileExecution parameter (set by HTTP handler when Studio sends profileExecution: "detailed")
-      if (!profile && parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution")))
-        profile = true;
+      // The $profileExecution parameter - injected by the HTTP handler for Studio's profileExecution: "detailed",
+      // and by ServerDatabase for every statement while the server profiler is recording - asks for the statement
+      // to be TIMED, not for it to be run differently. It therefore turns on per-step timing over the ordinary
+      // streaming execution and is deliberately NOT folded into `profile` here: doing that rerouted every Cypher
+      // statement on a recording server onto CypherExecutionPlan.profile(), which drains the plan into heap, so
+      // the reported cost described a materialising execution the statement never otherwise performs and the
+      // diagnostic itself changed what it was diagnosing (issue #7330).
+      final boolean timeExecution =
+          parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution"));
 
       // Use statement cache to avoid re-parsing. Carries the parameter names the query references, so the
       // check below costs no extra lookup.
@@ -280,7 +292,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (statement instanceof CypherSessionStatement)
         return executeSession((CypherSessionStatement) statement, session, effectiveParameters);
 
-      return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile);
+      return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile, timeExecution);
     } catch (final CommandExecutionException | CommandParsingException | SecurityException e) {
       throw e;
     } catch (final Exception e) {
@@ -334,11 +346,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * @param configuration context configuration
    * @param parameters    query parameters
    * @param explain       if true, return EXPLAIN output instead of executing
-   * @param profile       if true, execute with profiling and return metrics
+   * @param profile       if true, take the eager PROFILE path: drain the whole plan and return the metrics with it
+   * @param timeExecution if true, time each step of the ordinary streaming execution and attach the resulting plan.
+   *                      Unlike {@code profile} this changes nothing about what runs - see
+   *                      {@link CypherExecutionPlan#execute(com.arcadedb.query.sql.executor.CommandContext, boolean)}
+   *                      (issue #7330)
    * @return result set
    */
   private ResultSet execute(final String queryString, final CypherStatement statement, final ContextConfiguration configuration,
-      final Map<String, Object> parameters, final boolean explain, final boolean profile) {
+      final Map<String, Object> parameters, final boolean explain, final boolean profile, final boolean timeExecution) {
     // Try to get cached physical plan first (saves optimization time: 200-500ms)
     final CypherExecutionPlan plan;
     final DatabaseInternal execDb = executionDatabase(statement);
@@ -374,7 +390,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       return plan.explain();
     if (profile)
       return plan.profile();
-    return plan.execute();
+    return plan.execute(null, timeExecution);
   }
 
   /**

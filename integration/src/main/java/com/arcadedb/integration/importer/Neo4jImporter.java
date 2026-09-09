@@ -421,9 +421,15 @@ public class Neo4jImporter {
           return null;
         });
 
-        txOpen[0] = false;
-        if (database.isTransactionActive())
+        // Gated on this method's own txOpen, the same flag the rollback below uses, and NOT on the ambient
+        // database.isTransactionActive(): begin() nests, so a live transaction here is not evidence that the live
+        // one is the one this method pushed. Once that one is gone - a parsing callback of the caller's that
+        // resolved it, say - the ambient test sees the CALLER's outer transaction instead and commits that
+        // (issue #7328, the same asymmetry #7272 fixed on the four other row loops).
+        if (txOpen[0]) {
+          txOpen[0] = false;
           database.commit();
+        }
         committedVertices[0] = context.createdVertices.get();
         completed = true;
       } finally {
@@ -724,9 +730,13 @@ public class Neo4jImporter {
         }
       }
 
-      txOpen = false;
-      if (database.isTransactionActive())
+      // Gated on this method's own txOpen rather than on the ambient database.isTransactionActive(), for the
+      // reason spelled out at the same point in parseVertices(): begin() nests, so ambient liveness is not
+      // evidence that the live transaction is the one this method pushed (issue #7328).
+      if (txOpen) {
+        txOpen = false;
         database.commit();
+      }
     } finally {
       // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import
       // can realistically raise - resolves the transaction too.
