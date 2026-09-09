@@ -211,3 +211,31 @@ presented as an independent review.
 | 5 | The rewritten accessors might cost an extra map lookup per row. | **Not real.** The old code called `json.opt` (inside `notSet(attribute)`) and then `json.getJSONArray`; the new code calls `json.opt` and then `json.getJSONArray` on the native path, and `json.opt` alone on the new textual path. Same on the native path, one fewer on the textual one. |
 
 No finding was out of scope, so no follow-up issue was filed.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7317
+
+## Review cycles
+
+| Cycle | Head SHA | Change | Bot review outcome |
+|---|---|---|---|
+| 1 | `c67cbf9215` | Initial push: the fix, 10 tests, this tracking doc. | **No review received.** The `claude-review` workflow run (34365893278) started at 14:47:06Z and was still `in_progress` more than 80 minutes later, having posted nothing on any of the three surfaces the loop polls - no formal review, no inline `pulls/7317/comments` (count 0), no `claude`-authored PR issue comment. CodeRabbit was likewise still showing "Review in progress". |
+
+The loop's per-iteration timeout is 15 minutes. It was extended well past that because the run
+was verifiably healthy rather than crashed (`gh run view 34365893278` reported
+`status: in_progress` with the job started and no conclusion, not a `queued`-forever or a
+fast `failure`), so the wait was continued rather than called early. The bot never posted, so
+cycle 1 ended in the `timeout` state and cycles 2-4 never ran.
+
+No review feedback was received, so **no review-driven commit was made and no deferred-items
+notes file was produced**. The branch carries exactly one commit.
+
+Other CI on that SHA was green or progressing normally where it had finished: `lint`, `Codacy
+Static Code Analysis` and every completed CodeQL `Analyze` job passed.
+
+## Final state
+
+`timeout` - the PR is open and complete, awaiting the developer's review and merge. Nothing in
+the change is blocked on the bot; the timeout is a reviewer-availability outcome, not a defect
+found in the patch.
