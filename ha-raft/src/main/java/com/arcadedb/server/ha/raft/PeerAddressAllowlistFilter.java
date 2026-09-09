@@ -443,6 +443,14 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
    * One best-effort resolution of {@code host}, touching none of the sticky retention state: for a host that is
    * leaving and therefore has no business being tracked, but whose addresses still have to be identified so the
    * pinned domain does not readmit them. Empty when the name does not resolve.
+   * <p>
+   * Called with this object's monitor held, and that is accepted rather than overlooked: {@code doResolve} and
+   * {@code resolveIfStale} already resolve under the same lock, so a hung resolver stalls the health-monitor tick
+   * that reaches here through {@code refreshPeerAllowlist} whichever of them it enters. What this adds is one more
+   * lookup, only on a membership change and only for a host that never resolved while it was a member - never on
+   * the periodic tick, which is the per-tick lookup #7225 removed. Resolving outside the lock would mean deciding
+   * the revocation against a membership that could have moved on by the time the answer arrived, which is a worse
+   * trade for a wait the class already takes on its other paths.
    */
   private Set<String> resolveOnce(final String host) {
     try {
