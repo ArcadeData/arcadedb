@@ -52,8 +52,9 @@ final class PeerTransportSession {
 
   private final String                             remoteIp;
   // The calls in flight on this transport. Concurrent because the interceptor registers and deregisters from gRPC
-  // handler threads while a reconciliation thread may be closing them.
-  private final Set<RevocableServerCall<?, ?>>     liveCalls = ConcurrentHashMap.newKeySet();
+  // handler threads while a reconciliation thread may be closing them. Sized for the handful a Raft connection
+  // actually has in flight rather than the default 16, since there is one of these per open connection.
+  private final Set<RevocableServerCall<?, ?>>     liveCalls = ConcurrentHashMap.newKeySet(4);
   private volatile boolean                         revoked;
   // Set once transportReady has decided to admit this transport. A session is registered BEFORE that decision, so
   // that a concurrent revocation cannot miss it, which means a rejected connection can be swept too; this flag is

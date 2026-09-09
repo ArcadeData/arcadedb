@@ -224,3 +224,18 @@ than presented as one. It still found five things, four of them fixed in this br
 | 3 | **A rejected connection logged a revocation.** Consequence of fix 1: a session registered for the race and then swept produced "Revoked the established Raft gRPC transport of X" for a transport that was never admitted, next to the rejection line for the same address. | **Fixed** - the session carries an `admitted` flag set only when `transportReady` publishes it, and `dispatchRevocations` closes but does not log an unadmitted one. |
 | 4 | **`getSessions()` handed out the live mutable set.** A test hook that lets a caller corrupt the state it observes. | **Fixed** - returns an unmodifiable view. Test: `theSessionSetIsNotExposedForMutation`. |
 | 5 | **Revocation is terminal, and a DNS flap therefore forces a reconnect.** A peer whose name resolves elsewhere for one tick has its live transport cut and must reconnect rather than resuming. | **Not a defect - documented.** The sticky retention covers resolution *failure*, which is the transient case; an answer pointing somewhere else is a different pod. The outcome is a Ratis reconnect that the allowlist admits normally once DNS is right, and the alternative - un-revoking on a later resolution - would make a revocation only as durable as the least trustworthy answer in the window. Stated in `PeerTransportSession.revoke()`'s javadoc. |
+
+## Review cycles
+
+### Cycle 1 - `8bd6dc5`
+
+`claude` reviewed and found **no blocking issues**; it read the concurrency-sensitive paths (register-before-decide,
+the interceptor's re-check, the lock discipline between `doResolve` and `dispatchRevocations`, and the single-shot
+close arbitration) and reported no correctness bug. It also noted it could not run Maven in its sandbox, so its
+read is static and CI is what confirms the suite. Three nits, all addressed:
+
+| Note | Disposition |
+|---|---|
+| The `arcadedb.ha.peerAllowlist.enabled` text reads awkwardly ("what an already established connection of its could still do"). | **Applied** - rewritten to "loses the reach an already-established connection still gave it". |
+| `getSessions()` returns an unmodifiable *view*, not a snapshot, so it still reflects concurrent change. | **Applied** - returns `Set.copyOf(sessions)`. The existing `theSessionSetIsNotExposedForMutation` still holds, since a copy is immutable too. |
+| The per-RPC wrapper and set add/remove apply to all inter-node Raft traffic; worth checking it does not add up under connection churn. | **Argued, with one change.** The interceptor adds three short-lived allocations per RPC on a gated transport: the `RevocableServerCall`, the forwarding listener, and the set node. gRPC allocates strictly more than that per RPC on its own - a `ServerCallImpl`, the `Metadata`, the stream and the listener chain - so the marginal cost is a fraction of a baseline the RPC already pays, and it is proportional to RPCs rather than to bytes or log entries, so a busy follower does not pay more per entry. That is a reasoning argument, not a measurement: no benchmark was run, and the doc says so rather than claiming one. The one thing worth changing was unrelated to the wrapper - the per-session live-call set defaulted to 16 slots for a connection that has a handful of RPCs in flight, and is now sized 4. |

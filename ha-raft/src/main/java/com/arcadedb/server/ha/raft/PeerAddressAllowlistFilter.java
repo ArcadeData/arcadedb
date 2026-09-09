@@ -311,9 +311,13 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     return false;
   }
 
-  /** The transports currently admitted by this filter. Exposed for testing. */
+  /**
+   * A snapshot of the transports currently admitted by this filter. Exposed for testing, and a copy rather than an
+   * unmodifiable view of the live set so that a test reading it twice compares two stable values instead of racing
+   * a transport that connected in between.
+   */
   Set<PeerTransportSession> getSessions() {
-    return Collections.unmodifiableSet(sessions);
+    return Set.copyOf(sessions);
   }
 
   /** Returns an immutable snapshot of the currently allowed IPs. Exposed for testing. */
