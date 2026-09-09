@@ -25,7 +25,6 @@ import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -126,14 +125,24 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     });
   }
 
+  /**
+   * Whether the named database exists <i>and the caller may access it</i>. Both conjuncts, because
+   * that is the predicate {@code GET /api/v1/exists/{database}} applies: {@code GetExistsDatabaseHandler}
+   * skips the batch {@code filterAuthorizedDatabases} helper only to avoid building a whole authorized
+   * set to answer one yes/no, and evaluates {@code canAccessToDatabase} for the single name instead.
+   * Without the second conjunct this RPC lets any account enumerate the names of databases it has no
+   * grant on, which is the disclosure {@link #listDatabases} and {@link #getDatabaseInfo} were narrowed
+   * to close.
+   */
   @Override
   public void existsDatabase(final ExistsDatabaseRequest req, final StreamObserver<ExistsDatabaseResponse> resp) {
     respond(resp, "existsDatabase", () -> {
-      authenticate(req.getCredentials());
+      final ServerSecurityUser user = authenticate(req.getCredentials());
 
       final String name = req.getName(); // proto should define 'name' for the DB
+      final boolean exists = containsDatabaseIgnoreCase(name) && (user == null || user.canAccessToDatabase(name));
 
-      return ExistsDatabaseResponse.newBuilder().setExists(containsDatabaseIgnoreCase(name)).build();
+      return ExistsDatabaseResponse.newBuilder().setExists(exists).build();
     });
   }
 
@@ -640,9 +649,11 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // setting value or a backup file name outside the backup directory are all the caller's to fix.
     if (e instanceof IllegalArgumentException)
       return Status.INVALID_ARGUMENT.withDescription(e.getMessage()).asException();
-    // The operation cannot run in the server's current state - HA not enabled, connect cluster
-    // unsupported - rather than having failed while running.
-    if (e instanceof CommandExecutionException)
+    // The operation cannot run in this server's configuration at all - HA not enabled, connect
+    // cluster unsupported - rather than having been attempted and failed. Only that subtype: a plain
+    // CommandExecutionException from here means the operation ran and failed (a backup archive that
+    // could not be deleted), which is INTERNAL, not a precondition the caller can satisfy.
+    if (e instanceof ServerControlPlane.OperationNotAvailableException)
       return Status.FAILED_PRECONDITION.withDescription(e.getMessage()).asException();
     return Status.INTERNAL.withDescription(operation + ": " + e.getMessage()).asException();
   }

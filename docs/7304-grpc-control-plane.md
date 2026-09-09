@@ -77,7 +77,7 @@ ArcadeDbGrpcAdminService.java:297-298  (definition, mirrors checkRootUser)
 | HTTP control-plane entry point | gRPC RPC | Disposition | Test |
 |---|---|---|---|
 | `list databases`, `GET /databases` | `ListDatabases` | pre-existing RPC, **narrowed here** to the caller's authorized databases | yes |
-| `GET /exists/{db}` | `ExistsDatabase` | pre-existing | pre-existing |
+| `GET /exists/{db}` | `ExistsDatabase` | pre-existing RPC, **gated here** on the caller's grant | yes |
 | `create database` | `CreateDatabase` | pre-existing | pre-existing |
 | `drop database` | `DropDatabase` | pre-existing | pre-existing |
 | `GET /server` | `GetServerInfo` | pre-existing RPC, `databases_count` **narrowed here** | covered by the `ListDatabases` filter test |
@@ -190,9 +190,9 @@ author instead - weaker, and recorded as such. Four findings, all fixed here:
    database name on the server, `GetDatabaseInfo` reported the schema shape and record counts of
    any database to any account, and `GetServerInfo.databases_count` counted them all. All three now
    narrow to the caller through the same filter, which moved to `ServerControlPlane` with
-   `AbstractServerHttpHandler.filterAuthorizedDatabases` delegating to it. `ExistsDatabase` is
-   deliberately left unfiltered, matching the note `GetExistsDatabaseHandler` carries about its own
-   HTTP counterpart. Pre-existing RPCs, but this is the parity the issue asks for.
+   `AbstractServerHttpHandler.filterAuthorizedDatabases` delegating to it. `ExistsDatabase` was left
+   unfiltered at first, on a misreading of `GetExistsDatabaseHandler` that review cycle 1 below
+   corrected. Pre-existing RPCs, but this is the parity the issue asks for.
 4. **`CreateUser` could only make an ungranted account.** `CreateUserRequest` carried `user`,
    `password` and a `role` the security model has no concept of, while the HTTP `create user`
    document carries a `databases` map of per-database groups - which is where a user's authority
@@ -250,6 +250,63 @@ isolation, and the pre-existing `Issue6183FollowerCommandRoutingIT` on the same 
 3 alongside it. The class was then reduced from four test methods to two, halving the number of
 three-node cluster restarts (51 s to 28 s) without dropping an assertion, which halves the exposure
 to it.
+
+## Review cycles
+
+### Cycle 1 - `f65ff26`
+
+The scheduled `claude-review` run for this commit completed successfully (18 turns, 9 permission
+denials) and posted nothing, so a review was requested explicitly with an `@claude` comment. Two
+findings, both correct, both fixed:
+
+1. **The `http.*` counters moved from "after this command's validation" to "before it".** The first
+   attempt wrote `count("http.create-user").createUser(...)`, and Java evaluates the receiver before
+   the argument - so the counter fired before the JSON was parsed, let alone before the shared
+   password policy ran. Every one of these counters used to sit inside the moved method, past that
+   method's own validation, so a command rejected for an empty database name or a password the
+   policy refuses was never counted. The chained form silently turned nine of them from successes
+   into attempts, in a PR that claimed the split changed no behaviour. Each command now has a small
+   wrapper in the handler that runs the shared implementation and increments afterwards.
+   `connect cluster` is the one exception and says so: it always throws, so there is no success to
+   count after, which is what the moved implementation did too.
+2. **`ExistsDatabase` disclosed the existence of databases the caller has no grant on.** The first
+   attempt left it unfiltered and this document claimed that as parity with
+   `GetExistsDatabaseHandler`. That was a misreading of the handler's comment, which explains why it
+   does not build the whole authorized set to answer a one-name question - not that it skips
+   authorization:
+
+   ```java
+   final boolean existsDatabase = server.getDatabaseNames().contains(requested)
+       && (user == null || user.canAccessToDatabase(requested));
+   ```
+
+   The gRPC RPC carried only the first conjunct, so any account could enumerate over gRPC the
+   database names HTTP hides from it - the same disclosure this PR narrows for `ListDatabases`,
+   `GetDatabaseInfo` and `GetServerInfo`, missed on the fourth RPC. It now carries both, with
+   `existsDatabaseAnswersFalseForADatabaseTheCallerMayNotAccess` covering it: the granted database
+   still reads `true`, the ungranted one reads `false`, and it cannot be told apart from a name that
+   does not exist at all.
+
+Two more changes went into the same commit that the review did not raise, one from the Codacy report
+and one from reading it:
+
+3. `RemoteGrpcServer` wrapped every admin failure in a bare `RuntimeException` carrying a rendered
+   message. It now goes through `GrpcClientErrorMapper`, the mapper the data plane already uses, so a
+   follower's leader refusal arrives as a `ServerIsNotTheLeaderException` holding the leader's
+   address from the trailers rather than a string with that address thrown away - which was the whole
+   point of adding those trailers.
+4. The gRPC service mapped every `CommandExecutionException` to `FAILED_PRECONDITION`. That is right
+   for "HA is not enabled" and "connect cluster is unsupported", and wrong for a backup archive that
+   could not be deleted, which is a server-side fault. A new
+   `ServerControlPlane.OperationNotAvailableException` (a `CommandExecutionException` subtype, so the
+   HTTP status stays 500) now carries the first meaning, and everything else stays `INTERNAL`.
+
+Codacy reported 5 new "avoid throwing raw exception types" against 5 solved. Four are the
+`RuntimeException` throws inside `executeImmediateBackup` and `listBackups`, moved verbatim out of
+`PostServerCommandHandler` - the same ones Codacy counts as solved there. They are left alone on
+purpose: converting them to `CommandExecutionException` would change the HTTP error body's
+`exception` field and, through the mapping above, would have made a failed backup report as a
+precondition failure over gRPC. The fifth was `RemoteGrpcServer`, fixed by (3).
 
 ## Residual risk
 

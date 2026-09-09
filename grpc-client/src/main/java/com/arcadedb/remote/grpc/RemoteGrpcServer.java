@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.remote.RemoteException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.grpc.AlignDatabaseRequest;
 import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
@@ -518,14 +519,25 @@ public class RemoteGrpcServer implements AutoCloseable {
   }
 
   /**
-   * Runs one admin RPC under the default deadline, reporting a failure the way the pre-existing
-   * admin methods of this class do.
+   * Runs one admin RPC under the default deadline and turns a failure into the typed ArcadeDB
+   * exception the server raised, through the same {@link GrpcClientErrorMapper} the data plane uses.
+   * <p>
+   * The mapper, not a wrapped {@code RuntimeException}, is what makes the control plane's leader
+   * refusal actionable: a follower answers {@code FAILED_PRECONDITION} with the leader's address on
+   * the {@link com.arcadedb.server.grpc.LeaderRedirectProtocol} trailers, and the mapper rebuilds a
+   * {@code ServerIsNotTheLeaderException} carrying that address. Flattening the status to a message
+   * string would throw the address away, which is the one thing the caller needs (issue #7304).
+   *
+   * @param operation the operation name, used only when the failure carries no description of its own
    */
   private <T> T call(final String operation, final AdminCall<T> body) {
     try {
       return body.run(withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs));
     } catch (final StatusException e) {
-      throw new RuntimeException("Failed to " + operation + ": " + e.getMessage(), e);
+      final RuntimeException mapped = GrpcClientErrorMapper.toException(e);
+      if (mapped.getMessage() == null || mapped.getMessage().isBlank())
+        throw new RemoteException("Failed to " + operation, e);
+      throw mapped;
     }
   }
 

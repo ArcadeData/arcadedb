@@ -126,7 +126,7 @@ public class ServerControlPlane {
    */
   public void connectCluster(final String serverAddress) {
 
-    throw new CommandExecutionException(
+    throw new OperationNotAvailableException(
         "Connect cluster operation is not supported by the current HA implementation. Use the cluster configuration to join nodes.");
   }
 
@@ -658,6 +658,24 @@ public class ServerControlPlane {
   }
 
   /**
+   * Raised when the operation cannot run in this server's current configuration at all - HA is not
+   * enabled, or the HA implementation does not support joining a node this way - as opposed to having
+   * been attempted and failed.
+   * <p>
+   * It extends {@link CommandExecutionException} so the HTTP protocol answers it exactly as it did
+   * before this type existed: a 500, through the {@code CommandExecutionException} arm of
+   * {@code AbstractServerHttpHandler}. gRPC needs a distinction the HTTP protocol does not draw -
+   * this is its {@code FAILED_PRECONDITION}, while every other {@code CommandExecutionException}
+   * raised here, such as a backup archive that could not be deleted, is a server-side fault and stays
+   * {@code INTERNAL}.
+   */
+  public static class OperationNotAvailableException extends CommandExecutionException {
+    public OperationNotAvailableException(final String message) {
+      super(message);
+    }
+  }
+
+  /**
    * Raised by {@link #triggerBackup(String)} when the database is already being backed up. HTTP
    * answers it with a 409 and gRPC with {@code ABORTED}; both carry this message verbatim.
    */
@@ -720,7 +738,7 @@ public class ServerControlPlane {
   private HAServerPlugin requireHA() {
     final HAServerPlugin ha = server.getHA();
     if (ha == null)
-      throw new CommandExecutionException(
+      throw new OperationNotAvailableException(
           "ArcadeDB is not running with High Availability module enabled. Please add this setting at startup: -Darcadedb.ha.enabled=true");
     return ha;
   }

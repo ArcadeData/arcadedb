@@ -19,6 +19,7 @@
 package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.remote.RemoteException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.UserInfo;
@@ -157,11 +158,19 @@ class Issue7304RemoteGrpcServerControlPlaneIT extends BaseGraphServerTest {
 
   /**
    * Outside HA the operation cannot run, and the client surfaces that rather than swallowing it.
+   * <p>
+   * The type matters as much as the message: admin failures go through
+   * {@code GrpcClientErrorMapper}, the same mapper the data plane uses, rather than being wrapped in
+   * a bare {@code RuntimeException} carrying only a rendered string. That is what lets a follower's
+   * leader refusal arrive as a {@code ServerIsNotTheLeaderException} holding the leader's address
+   * from the trailers instead of losing it.
    */
   @Test
-  void disconnectClusterWithoutHaIsReported() {
+  void disconnectClusterWithoutHaIsReportedThroughTheSharedErrorMapper() {
     assertThatThrownBy(() -> server.disconnectCluster())
-        .isInstanceOf(RuntimeException.class)
-        .hasMessageContaining("High Availability");
+        .isInstanceOf(RemoteException.class)
+        .hasMessageContaining("High Availability")
+        // The server's own description, not a "Failed to disconnect cluster" wrapper around it.
+        .hasMessageContaining("-Darcadedb.ha.enabled=true");
   }
 }

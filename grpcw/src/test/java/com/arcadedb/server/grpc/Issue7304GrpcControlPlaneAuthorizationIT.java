@@ -225,6 +225,36 @@ public class Issue7304GrpcControlPlaneAuthorizationIT extends BaseGraphServerTes
   }
 
   /**
+   * {@code ExistsDatabase} answers the same predicate {@code GET /api/v1/exists/{database}} answers:
+   * installed AND accessible to the caller. {@code GetExistsDatabaseHandler} evaluates
+   * {@code canAccessToDatabase} for the single name rather than building the whole authorized set,
+   * which is a cost decision, not a decision to skip authorization - so a database the caller has no
+   * grant on reads as absent on both transports, not as present.
+   */
+  @Test
+  void existsDatabaseAnswersFalseForADatabaseTheCallerMayNotAccess() {
+    // The database is really there ...
+    assertThat(getServer(0).existsDatabase(getDatabaseName())).isTrue();
+
+    // ... and root sees it.
+    assertThat(adminStub.existsDatabase(ExistsDatabaseRequest.newBuilder()
+        .setCredentials(DatabaseCredentials.newBuilder().setUsername("root")
+            .setPassword(DEFAULT_PASSWORD_FOR_TESTS).build())
+        .setName(getDatabaseName()).build()).getExists()).isTrue();
+
+    // The limited caller, which holds no grant on it, must not be able to tell it apart from a name
+    // that does not exist at all.
+    assertThat(adminStub.existsDatabase(ExistsDatabaseRequest.newBuilder().setCredentials(limited())
+        .setName(getDatabaseName()).build()).getExists()).isFalse();
+    assertThat(adminStub.existsDatabase(ExistsDatabaseRequest.newBuilder().setCredentials(limited())
+        .setName("no_such_database_7304").build()).getExists()).isFalse();
+
+    // And it still sees the one it was granted.
+    assertThat(adminStub.existsDatabase(ExistsDatabaseRequest.newBuilder().setCredentials(limited())
+        .setName(ALLOWED_DB).build()).getExists()).isTrue();
+  }
+
+  /**
    * Schema shape and record counts are database content, so a caller with no grant on the database
    * gets the answer it gets for a name that does not exist.
    */

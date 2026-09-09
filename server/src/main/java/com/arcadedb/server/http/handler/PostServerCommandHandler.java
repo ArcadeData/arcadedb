@@ -146,37 +146,37 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     }
 
     if (command_lc.startsWith(SHUTDOWN))
-      count("http.server-shutdown").shutdownServer(extractTarget(command, SHUTDOWN));
+      shutdownServer(extractTarget(command, SHUTDOWN));
     else if (command_lc.startsWith(CREATE_DATABASE))
       createDatabase(extractTarget(command, CREATE_DATABASE));
     else if (command_lc.startsWith(DROP_DATABASE))
       dropDatabase(extractTarget(command, DROP_DATABASE));
     else if (command_lc.startsWith(CLOSE_DATABASE))
-      count("http.close-database").closeDatabase(extractTarget(command, CLOSE_DATABASE));
+      closeDatabase(extractTarget(command, CLOSE_DATABASE));
     else if (command_lc.startsWith(OPEN_DATABASE))
-      count("http.open-database").openDatabase(extractTarget(command, OPEN_DATABASE));
+      openDatabase(extractTarget(command, OPEN_DATABASE));
     else if (command_lc.startsWith(CREATE_USER))
-      count("http.create-user").createUser(new JSONObject(extractTarget(command, CREATE_USER)));
+      createUser(extractTarget(command, CREATE_USER));
     else if (command_lc.startsWith(DROP_USER))
-      count("http.drop-user").dropUser(extractTarget(command, DROP_USER));
+      dropUser(extractTarget(command, DROP_USER));
     else if (command_lc.startsWith(CONNECT_CLUSTER))
-      count("http.connect-cluster").connectCluster(extractTarget(command, CONNECT_CLUSTER));
+      connectCluster(extractTarget(command, CONNECT_CLUSTER));
     else if (DISCONNECT_CLUSTER.equals(command_lc))
-      count("http.server-disconnect").disconnectCluster();
+      disconnectCluster();
     else if (command_lc.startsWith(SET_DATABASE_SETTING))
       setDatabaseSetting(extractTarget(command, SET_DATABASE_SETTING));
     else if (command_lc.startsWith(SET_SERVER_SETTING))
       setServerSetting(extractTarget(command, SET_SERVER_SETTING));
     else if (command_lc.startsWith(GET_SERVER_EVENTS))
-      response.put("result", count("http.get-server-events").getServerEvents(extractTarget(command, GET_SERVER_EVENTS)));
+      response.put("result", getServerEvents(extractTarget(command, GET_SERVER_EVENTS)));
     else if (command_lc.startsWith(ALIGN_DATABASE))
-      count("http.align-database").alignDatabase(extractTarget(command, ALIGN_DATABASE));
+      alignDatabase(extractTarget(command, ALIGN_DATABASE));
     else if (GET_BACKUP_CONFIG.equals(command_lc))
-      return new ExecutionResponse(200, count("http.get-backup-config").getBackupConfig().toString());
+      return getBackupConfig();
     else if (SET_BACKUP_CONFIG.equals(command_lc))
       return setBackupConfig(payload);
     else if (command_lc.startsWith(LIST_BACKUPS))
-      return new ExecutionResponse(200, count("http.list-backups").listBackups(extractTarget(command, LIST_BACKUPS)).toString());
+      return listBackups(extractTarget(command, LIST_BACKUPS));
     else if (command_lc.startsWith(TRIGGER_BACKUP))
       return triggerBackup(extractTarget(command, TRIGGER_BACKUP));
     else if (command_lc.startsWith(RESTORE_BACKUP))
@@ -198,17 +198,80 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     return new ExecutionResponse(200, response.toString());
   }
 
-  /**
-   * Counts one HTTP server command and hands back the shared implementation to run it.
-   * <p>
-   * The {@code http.*} counters stay on this side of the split (issue #7304): they count HTTP
-   * requests, and {@link ServerControlPlane} now serves gRPC as well, so incrementing them there
-   * would silently fold gRPC admin traffic into the HTTP dashboards. gRPC's own admin calls are
-   * counted per method by {@code GrpcMetricsInterceptor}.
-   */
-  private ServerControlPlane count(final String metric) {
-    Metrics.counter(metric).increment();
-    return controlPlane;
+  // ---------------------------------------------------------------------------------------------
+  // The commands whose implementation moved to ServerControlPlane (issue #7304). Each wrapper runs
+  // the shared implementation and then increments this command's http.* counter.
+  //
+  // The counters stay on this side of the split because they count HTTP requests, and
+  // ServerControlPlane now serves gRPC as well: incrementing them there would fold gRPC admin
+  // traffic into the HTTP dashboards. gRPC counts its own admin calls per method in
+  // GrpcMetricsInterceptor.
+  //
+  // The increment comes AFTER the call, never before it. Every one of these counters used to be
+  // incremented inside the moved method, past that method's own validation, so a command rejected
+  // for an empty database name or a password the policy refuses was never counted. Chaining the
+  // increment onto the receiver would have counted attempts instead, because Java evaluates the
+  // receiver first.
+  // ---------------------------------------------------------------------------------------------
+
+  private void shutdownServer(final String serverName) throws IOException {
+    controlPlane.shutdownServer(serverName);
+    Metrics.counter("http.server-shutdown").increment();
+  }
+
+  private void closeDatabase(final String databaseName) {
+    controlPlane.closeDatabase(databaseName);
+    Metrics.counter("http.close-database").increment();
+  }
+
+  private void openDatabase(final String databaseName) {
+    controlPlane.openDatabase(databaseName);
+    Metrics.counter("http.open-database").increment();
+  }
+
+  private void createUser(final String payload) {
+    controlPlane.createUser(new JSONObject(payload));
+    Metrics.counter("http.create-user").increment();
+  }
+
+  private void dropUser(final String userName) {
+    controlPlane.dropUser(userName);
+    Metrics.counter("http.drop-user").increment();
+  }
+
+  private void connectCluster(final String serverAddress) {
+    // Always throws: the current HA implementation does not support it. Counted first, because there
+    // is no success to count after - which is what the moved implementation did too.
+    Metrics.counter("http.connect-cluster").increment();
+    controlPlane.connectCluster(serverAddress);
+  }
+
+  private void disconnectCluster() {
+    controlPlane.disconnectCluster();
+    Metrics.counter("http.server-disconnect").increment();
+  }
+
+  private void alignDatabase(final String databaseName) {
+    controlPlane.alignDatabase(databaseName);
+    Metrics.counter("http.align-database").increment();
+  }
+
+  private JSONObject getServerEvents(final String fileName) {
+    final JSONObject events = controlPlane.getServerEvents(fileName);
+    Metrics.counter("http.get-server-events").increment();
+    return events;
+  }
+
+  private ExecutionResponse getBackupConfig() {
+    final JSONObject config = controlPlane.getBackupConfig();
+    Metrics.counter("http.get-backup-config").increment();
+    return new ExecutionResponse(200, config.toString());
+  }
+
+  private ExecutionResponse listBackups(final String databaseName) {
+    final JSONObject backups = controlPlane.listBackups(databaseName);
+    Metrics.counter("http.list-backups").increment();
+    return new ExecutionResponse(200, backups.toString());
   }
 
   private String extractTarget(String command, String keyword) {
@@ -256,7 +319,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (!payload.has("config"))
       throw new IllegalArgumentException("Missing 'config' in payload");
 
-    return new ExecutionResponse(200, count("http.set-backup-config").setBackupConfig(payload.getJSONObject("config")).toString());
+    final JSONObject result = controlPlane.setBackupConfig(payload.getJSONObject("config"));
+    Metrics.counter("http.set-backup-config").increment();
+    return new ExecutionResponse(200, result.toString());
   }
 
   /**
@@ -265,7 +330,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    */
   private ExecutionResponse triggerBackup(final String databaseName) {
     try {
-      return new ExecutionResponse(200, count("http.trigger-backup").triggerBackup(databaseName).toString());
+      final JSONObject result = controlPlane.triggerBackup(databaseName);
+      Metrics.counter("http.trigger-backup").increment();
+      return new ExecutionResponse(200, result.toString());
     } catch (final ServerControlPlane.BackupInProgressException e) {
       return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
     }
@@ -282,7 +349,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final String databaseName = args.substring(0, space).trim();
     final String fileName = args.substring(space + 1).trim();
 
-    return new ExecutionResponse(200, count("http.delete-backup").deleteBackup(databaseName, fileName).toString());
+    final JSONObject result = controlPlane.deleteBackup(databaseName, fileName);
+    Metrics.counter("http.delete-backup").increment();
+    return new ExecutionResponse(200, result.toString());
   }
 
   /**
