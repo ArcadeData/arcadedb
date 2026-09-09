@@ -21,7 +21,9 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -344,6 +346,13 @@ public class Neo4jImporter {
       // (issue #7272).
       final boolean[] txOpen = { false };
 
+      // The transaction this method pushed, so the commit and the rollback below can prove that the live one is
+      // still it. The flag alone cannot prove that: parsingCallback belongs to the caller and runs inside the
+      // loop, so it can resolve this method's transaction and leave the flag set - and because begin() nests,
+      // what commit() would then find and resolve is the CALLER's outer transaction (issue #7328). Re-read after
+      // every begin(), never assumed to survive one.
+      final TransactionContext[] ownTx = { null };
+
       // Vertices an intermediate commit already made durable. context.createdVertices counts every vertex the
       // batch allocated, the ones still inside the transaction a failure rolls back included. Seeded from the
       // counter rather than from 0: the embedding constructor takes an ImporterContext from its caller, so a
@@ -357,6 +366,7 @@ public class Neo4jImporter {
 
       database.begin();
       txOpen[0] = true;
+      ownTx[0] = currentTransaction();
 
       try {
         readFileSimple(json -> {
@@ -406,6 +416,7 @@ public class Neo4jImporter {
               committedVertices[0] = context.createdVertices.get();
               database.begin();
               txOpen[0] = true;
+              ownTx[0] = currentTransaction();
             }
 
             break;
@@ -421,21 +432,22 @@ public class Neo4jImporter {
           return null;
         });
 
-        // Gated on this method's own txOpen, the same flag the rollback below uses, and NOT on the ambient
-        // database.isTransactionActive(): begin() nests, so a live transaction here is not evidence that the live
-        // one is the one this method pushed. Once that one is gone - a parsing callback of the caller's that
+        // Gated on this method's own transaction being the live one, and NOT on the ambient
+        // database.isTransactionActive(): begin() nests, so a live transaction here is no evidence that the live
+        // one is the one this method pushed. Once that one is gone - a parsingCallback of the caller's that
         // resolved it, say - the ambient test sees the CALLER's outer transaction instead and commits that
         // (issue #7328, the same asymmetry #7272 fixed on the four other row loops).
-        if (txOpen[0]) {
+        if (ownTransactionIsResolvable(txOpen[0], ownTx[0])) {
           txOpen[0] = false;
           database.commit();
         }
+        txOpen[0] = false;
         committedVertices[0] = context.createdVertices.get();
         completed = true;
       } finally {
         // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import
         // can realistically raise - resolves the transaction too.
-        if (txOpen[0]) {
+        if (ownTransactionIsResolvable(txOpen[0], ownTx[0])) {
           txOpen[0] = false;
           try {
             database.rollback();
@@ -446,6 +458,7 @@ public class Neo4jImporter {
                 + "on the stack: %s", rollbackFailure.getMessage());
           }
         }
+        txOpen[0] = false;
 
         // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
         // and would otherwise leave the batch it failed to write counted as if it had survived.
@@ -698,12 +711,53 @@ public class Neo4jImporter {
    * Reads the JSONL file line by line, calling the callback for each valid JSON record.
    * Used by syncSchema (which only reads, no record creation) with its own transaction management.
    */
+  /**
+   * The transaction currently on top of this thread's stack, or {@code null} when there is none - and also when the
+   * {@link Database} implementation does not expose its stack at all (a remote database), which the guard below
+   * treats as "cannot tell" rather than as "not mine".
+   */
+  private TransactionContext currentTransaction() {
+    return database instanceof final DatabaseInternal internal ? internal.getTransactionIfExists() : null;
+  }
+
+  /**
+   * Whether a commit or a rollback issued right now would resolve THIS import's transaction, and not somebody
+   * else's.
+   * <p>
+   * The flag is not enough on its own. {@code begin()} nests, so the stack can hold a caller's transaction under
+   * this import's, and everything that runs inside the row loop - {@code parsingCallback} above all, which belongs
+   * to the caller - can resolve this import's transaction without the flag ever hearing about it. A commit issued
+   * on that stale flag pops and commits the caller's work instead, silently, which is the defect #7272 fixed on
+   * the other row loops and this one kept (issue #7328).
+   * <p>
+   * Identity plus liveness is what settles it: a resolved nested transaction is off the stack, so the top is a
+   * different object; a resolved bottom transaction is still there but inactive; and a fresh {@code begin()} by
+   * the callback pushes a new object rather than reviving this one. The only case identity cannot separate is a
+   * bottom transaction resolved and re-begun, and a bottom transaction means there is no caller transaction
+   * underneath to protect.
+   *
+   * @param txOpen        this loop's own flag: false once the loop has resolved its transaction itself
+   * @param ownTransaction the transaction the loop's last {@code begin()} left current, or {@code null} when the
+   *                       implementation does not expose it - in which case the flag is all there is, as before
+   */
+  private boolean ownTransactionIsResolvable(final boolean txOpen, final TransactionContext ownTransaction) {
+    if (!txOpen)
+      return false;
+    if (ownTransaction == null)
+      return database.isTransactionActive();
+    return ownTransaction.isActive() && currentTransaction() == ownTransaction;
+  }
+
   private void readFile(final Callable<Void, JSONObject> callback) throws IOException {
     database.begin();
     // Whether the transaction just opened is still the current one - cleared right before the commit below so a
     // rollback in the finally can never pop a transaction this method has already committed away, let alone the
     // caller's own (issue #7272).
     boolean txOpen = true;
+    // The transaction this method pushed, so the commit and the rollback below can prove the live one is still it.
+    // See the same pair in parseVertices(): begin() nests, and the callback can resolve this transaction from
+    // under us (issue #7328).
+    final TransactionContext ownTx = currentTransaction();
 
     try {
       try (InputStream inputStream = openInputStream()) {
@@ -730,17 +784,17 @@ public class Neo4jImporter {
         }
       }
 
-      // Gated on this method's own txOpen rather than on the ambient database.isTransactionActive(), for the
-      // reason spelled out at the same point in parseVertices(): begin() nests, so ambient liveness is not
-      // evidence that the live transaction is the one this method pushed (issue #7328).
-      if (txOpen) {
-        txOpen = false;
+      // Gated on this method's own transaction being the live one rather than on the ambient
+      // database.isTransactionActive(), for the reason spelled out at the same point in parseVertices(): begin()
+      // nests, so ambient liveness is no evidence that the live transaction is the one this method pushed
+      // (issue #7328).
+      if (ownTransactionIsResolvable(txOpen, ownTx))
         database.commit();
-      }
+      txOpen = false;
     } finally {
       // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import
       // can realistically raise - resolves the transaction too.
-      if (txOpen && database.isTransactionActive()) {
+      if (ownTransactionIsResolvable(txOpen, ownTx)) {
         try {
           database.rollback();
         } catch (final Exception rollbackFailure) {
