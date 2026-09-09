@@ -67,7 +67,9 @@ final class TrustedHttpClientCache {
    * <p>
    * The previous client is closed on a rebuild. {@link HttpClient#close()} is an orderly shutdown that waits for
    * in-flight operations, and the one production caller - {@code RaftHAServer.refreshPeerCapabilities} - is
-   * sequential on a single scheduled thread, so nothing of this server's own is ever in flight here.
+   * sequential on a single scheduled thread, so on THIS path nothing of the server's own is ever in flight: the
+   * thread that would be sending is the thread asking for the client. {@link #close()} carries no such guarantee;
+   * see its own note.
    */
   synchronized HttpClient clientFor(final ArcadeDBServer server) throws IOException {
     final TrustMaterial current = trustMaterialOf(server);
@@ -94,9 +96,14 @@ final class TrustedHttpClientCache {
    * a connection pool and a selector thread, and a JVM that starts and stops many servers - which is what the HA
    * suites do - would otherwise keep one per server that ever probed an HTTPS peer (PR #7314 review).
    * <p>
-   * Safe to call more than once, and safe to call on a cache that never built anything. The capability monitor is
-   * already stopped by the time this runs, so {@link HttpClient#close()}'s wait for in-flight operations is
-   * bounded by the probe timeout of a round that has already been asked to stand down.
+   * Safe to call more than once, and safe to call on a cache that never built anything.
+   * <p>
+   * Unlike the rebuild path above, this one can run while a probe is in flight: {@code stopCapabilityMonitor()}
+   * ends the refresh with {@code shutdownNow()} and does not wait for the round to unwind, and the request is
+   * sent outside this object's monitor. So a straggling probe either delays this close until it finishes - bounded
+   * by {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} - or fails on the closed client. Both are benign and both
+   * are on a server that is shutting down: the failure lands in {@code refreshPeerCapabilities}' own catch and is
+   * recorded as unanswered, and the registry's generation stamp drops that write anyway.
    */
   synchronized void close() {
     if (client == null)
