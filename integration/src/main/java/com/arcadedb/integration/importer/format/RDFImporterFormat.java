@@ -36,6 +36,20 @@ import java.util.logging.Level;
 public class RDFImporterFormat extends CSVImporterFormat {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
 
+  public RDFImporterFormat() {
+    super();
+  }
+
+  /**
+   * Carries the delimiter {@code SourceDiscovery} took from between the subject and the predicate of the first
+   * statement. Without it the inherited {@link CSVImporterFormat} parser construction falls back to the generic
+   * {@code delimiter} option and then to a comma, so the canonical space-separated N-Triples form was read as one
+   * column and the import died on {@code row[1]} (issue #7315).
+   */
+  public RDFImporterFormat(final String delimiter) {
+    super(delimiter);
+  }
+
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {

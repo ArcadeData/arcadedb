@@ -62,6 +62,13 @@ public record PeerDialAddress(String httpAddress, String httpsAddress, String re
    * <p>
    * Never this node's own endpoint: dialling that comes straight back here whatever else is true of it, so it is
    * withheld at the source rather than left for each caller to re-check.
+   * <p>
+   * On the one deployment shape where withholding it leaves nothing at all - a cluster whose peers differ by port,
+   * where the derived address is this node's own <em>by construction</em> for every peer - what is offered instead
+   * is the port-offset candidate {@link RaftHAServer#getPortOffsetPeerHttpAddress} derives, so the recovery is not
+   * dead on its own target (issue #7332). That is a guess, but a guess is exactly what this field's contract
+   * already permits: the address never identified a particular peer to begin with, and the one caller allowed to
+   * act on it binds the reply to whoever gave it.
    */
   public record SharedEndpoint(String httpAddress, String httpsAddress) {
   }
@@ -140,21 +147,37 @@ public record PeerDialAddress(String httpAddress, String httpsAddress, String re
   }
 
   /**
-   * The endpoint the two-or-more peers that resolve to it share, or {@code null} when there was no address to
-   * begin with (an unknown peer, an unresolvable one) or when it is this node's own.
+   * The endpoint the two-or-more peers that resolve to it share, or {@code null} when there is nothing worth
+   * probing: no address at all (an unknown peer, an unresolvable one), or this node's own with no candidate
+   * behind it.
    * <p>
    * Reads the raw resolver rather than the unambiguous accessor, which by construction has just answered
    * {@code null}: the whole point is to recover the address the ambiguity check withheld. The self-address check
    * is repeated here because it guards a different question - the one above asks whether an <em>unambiguous</em>
    * address is ours, and a shared one never reaches it.
+   * <p>
+   * <b>The self-address arm falls back rather than giving up (issue #7332).</b> Withholding our own address is
+   * right - dialling it comes straight back here and the second pass would discard the self-answer anyway - but on
+   * a cluster whose peers differ by port and declare no {@code http} port, the derived address IS this node's own
+   * for every peer, so this method used to answer {@code null} every time and the second pass had nothing to ask.
+   * The recovery was dead on precisely the shape it was written for. {@link RaftHAServer#getPortOffsetPeerHttpAddress}
+   * carries the peer's Raft-port offset over to the HTTP port and names its listener whenever the cluster follows
+   * the convention that puts both ports in step, which is the shape in question; it answers {@code null} when it
+   * cannot, and the refusal stands exactly as before.
+   * <p>
+   * The candidate carries no HTTPS half. The offset that holds between two Raft ports says nothing about a third
+   * port, and the plain-HTTP listener is the one that is always there - the same reasoning that makes
+   * {@link #encryptedEndpointOf} withhold rather than refuse.
    */
   private static SharedEndpoint sharedEndpointOf(final RaftHAServer raft, final RaftPeerId peerId) {
     final String httpAddress = raft.getPeerHttpAddress(peerId);
     if (httpAddress == null)
       return null;
     final String localHttpAddress = raft.getLocalHttpAddress();
-    if (localHttpAddress != null && RaftHAServer.isSameHttpEndpoint(localHttpAddress, httpAddress))
-      return null;
+    if (localHttpAddress != null && RaftHAServer.isSameHttpEndpoint(localHttpAddress, httpAddress)) {
+      final String candidate = raft.getPortOffsetPeerHttpAddress(peerId);
+      return candidate != null ? new SharedEndpoint(candidate, null) : null;
+    }
 
     final String httpsAddress = raft.getPeerHttpsAddress(peerId);
     final String localHttpsAddress = raft.getLocalHttpsAddress();

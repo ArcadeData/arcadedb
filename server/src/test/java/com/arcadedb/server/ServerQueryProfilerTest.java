@@ -35,6 +35,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -637,100 +639,72 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   /**
-   * Issue #7329: a container step's cost used to be the sum of its children's, emitted as the container's own
-   * {@code cost} in the very node that also carries each child with its own {@code cost}. The recorder records the
-   * container and then recurses, so the same nanoseconds landed in the table twice and a plain type scan was
-   * counted twice over - which is what made the Studio caption ("contained in the Engine total") false.
-   * <p>
-   * A container has no self time, so it is now recorded as an occurrence with nothing measured, and the roll-up it
-   * used to claim travels separately as {@code totalCost}, which this table deliberately does not read.
+   * Issue #7332: a run saved by a build older than #7291 carries no {@code measuredCount}, so every step in it read
+   * as fully timed and the negative costs that build produced rendered as written. A saved run is exactly what
+   * somebody compares a later one against, so it says what it is on load instead.
    */
   @Test
-  void aContainerStepDoesNotDoubleCountItsChildrensTime() {
-    server.createDatabase("profiler-container-db", ComponentFile.MODE.READ_WRITE);
-    final ServerDatabase db = server.getDatabase("profiler-container-db");
-    try {
-      db.command("sql", "CREATE DOCUMENT TYPE Item");
-      db.transaction(() -> {
-        for (int i = 0; i < 200; i++)
-          db.command("sql", "INSERT INTO Item SET idx = " + i);
-      });
+  void aRunSavedBeforeMeasuredCountIsMarkedAndItsNegativeCostsAreNeutralised() throws Exception {
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
 
-      final ServerQueryProfiler profiler = server.getQueryProfiler();
-      profiler.start();
-      try (final ResultSet rs = db.query("sql", "SELECT FROM Item", Map.of())) {
-        while (rs.hasNext())
-          rs.next();
-      }
+    final File dir = new File("./target/profiler");
+    dir.mkdirs();
+    final String fileName = "profiler-run-19700101-000000.json";
+    Files.writeString(new File(dir, fileName).toPath(), new JSONObject()
+        .put("totalQueries", 1)
+        .put("queries", new JSONArray().put(new JSONObject()
+            .put("queryText", "SELECT FROM Person")
+            .put("steps", new JSONArray()
+                .put(legacyStep("PlausibleStep", 2, 4.0))
+                .put(legacyStep("SentinelSummedStep", 2, -0.000001)))))
+        .toString(), StandardCharsets.UTF_8);
 
-      final JSONObject query = findQuery(profiler.stop(), "SELECT FROM Item");
-      assertThat(query).as("the profiled scan must have been recorded").isNotNull();
-      final JSONArray steps = query.getJSONArray("steps");
+    final JSONObject loaded = profiler.loadSavedRun(fileName);
 
-      final JSONObject container = findStep(steps, "FetchFromTypeExecutionStep");
-      assertThat(container).as("the type scan container step must be in the aggregated table").isNotNull();
-      assertThat(container.getInt("executionCount")).as("the container is still an occurrence").isEqualTo(1);
-      assertThat(container.getInt("measuredCount")).as("but it times nothing of its own").isZero();
-      assertThat(container.getDouble("totalCostMs")).isZero();
+    assertThat(loaded.getBoolean("stepTimingComplete"))
+        .as("nothing in the file says which occurrences were timed, and inventing a coverage would be worse")
+        .isFalse();
 
-      final JSONObject buckets = findStep(steps, "FetchFromClusterExecutionStep");
-      assertThat(buckets).as("the bucket steps are the ones that carry the scan's time").isNotNull();
-      assertThat(buckets.getInt("measuredCount")).isPositive();
+    final JSONArray steps = loaded.getJSONArray("queries").getJSONObject(0).getJSONArray("steps");
 
-      // The invariant the Studio caption states: the rows add up to at most the Engine total, never more. Before the
-      // fix the container claimed its children's time as well as the children, so the table came out roughly twice
-      // the scan's real cost and could exceed the total it is supposed to be contained in.
-      double stepsTotalMs = 0;
-      for (int i = 0; i < steps.length(); i++)
-        stepsTotalMs += steps.getJSONObject(i).getDouble("totalCostMs");
+    final JSONObject sentinel = findStep(steps, "SentinelSummedStep");
+    assertThat(sentinel.getInt("measuredCount"))
+        .as("a negative cost can only be the -1 'not calculated' sentinel summed as a duration, so it is untimed")
+        .isZero();
+    assertThat(sentinel.getDouble("totalCostMs")).isZero();
+    assertThat(sentinel.getDouble("minCostMs")).isZero();
+    assertThat(sentinel.getDouble("p99CostMs")).isZero();
 
-      assertThat(stepsTotalMs).isGreaterThan(0d);
-      assertThat(query.getDouble("engineTotalTimeMs"))
-          .as("the summed step costs must be contained in the Engine total")
-          .isGreaterThanOrEqualTo(stepsTotalMs);
-    } finally {
-      db.getEmbedded().drop();
-      server.removeDatabase("profiler-container-db");
-    }
+    final JSONObject plausible = findStep(steps, "PlausibleStep");
+    assertThat(plausible.has("measuredCount"))
+        .as("a positive total may still be partly measured, and nothing in the file can tell - so it is left alone "
+            + "and the recording-level flag is what says so")
+        .isFalse();
+    assertThat(plausible.getDouble("totalCostMs")).isEqualTo(4.0);
   }
 
-  /**
-   * Issue #7330: while the profiler is recording, an OpenCypher statement used to be rerouted onto
-   * {@code CypherExecutionPlan.profile()}, which drains the whole plan into heap before returning. The reported
-   * cost then described a materialising execution the statement never performs otherwise, and every Cypher read on
-   * the server was materialised for the length of the recording window.
-   * <p>
-   * Probed by consuming exactly one row of many: a streaming run has produced one row at that point, a drained one
-   * had already produced them all before {@code query()} returned.
-   */
+  /** A run this build saves says its step coverage is complete, and re-loading it changes nothing. */
   @Test
-  void recordingDoesNotTurnACypherReadIntoAnEagerDrain() {
-    server.createDatabase("profiler-cypher-streaming-db", ComponentFile.MODE.READ_WRITE);
-    final ServerDatabase db = server.getDatabase("profiler-cypher-streaming-db");
-    try {
-      db.command("sql", "CREATE VERTEX TYPE Item");
-      db.transaction(() -> {
-        for (int i = 0; i < 100; i++)
-          db.command("sql", "INSERT INTO Item SET idx = " + i);
-      });
+  void aRunSavedByThisBuildIsCompleteAndSurvivesARoundTrip() {
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+    profiler.start();
+    profiler.recordQuery("testdb", "sql", "SELECT 1", 1_000_000,
+        new JSONObject().put("steps", new JSONArray().put(new JSONObject().put("name", "S").put("cost", -1L))));
 
-      final ServerQueryProfiler profiler = server.getQueryProfiler();
-      profiler.start();
-      try (final ResultSet rs = db.query("opencypher", "MATCH (i:Item) RETURN i.idx AS idx", Map.of())) {
-        assertThat(rs.hasNext()).isTrue();
-        rs.next();
+    assertThat(profiler.stop().getBoolean("stepTimingComplete")).isTrue();
 
-        assertThat(rs.getExecutionPlan()).isPresent();
-        assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2))
-            .as("the profiled statement must describe the streaming run the caller drove, not a full drain")
-            .contains("Rows Returned: 1");
-      } finally {
-        profiler.stop();
-      }
-    } finally {
-      db.getEmbedded().drop();
-      server.removeDatabase("profiler-cypher-streaming-db");
-    }
+    final String fileName = profiler.listSavedRuns().getJSONObject(0).getString("fileName");
+    final JSONObject loaded = profiler.loadSavedRun(fileName);
+
+    assertThat(loaded.getBoolean("stepTimingComplete")).isTrue();
+    assertThat(findStep(findQuery(loaded, "SELECT 1").getJSONArray("steps"), "S").getInt("measuredCount")).isZero();
+  }
+
+  /** One step of a recording written before {@code measuredCount} existed. */
+  private static JSONObject legacyStep(final String name, final int executionCount, final double costMs) {
+    return new JSONObject().put("name", name).put("executionCount", executionCount)
+        .put("totalCostMs", costMs).put("minCostMs", costMs).put("avgCostMs", costMs)
+        .put("maxCostMs", costMs).put("p99CostMs", costMs);
   }
 
   private static JSONObject findQuery(final JSONObject results, final String queryText) {

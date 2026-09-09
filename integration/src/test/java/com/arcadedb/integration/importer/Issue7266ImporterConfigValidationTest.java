@@ -166,9 +166,8 @@ class Issue7266ImporterConfigValidationTest {
   /**
    * The asymmetry between the two guards added in the same commit, pinned so it stays deliberate: the edge-endpoint
    * guard rejects an empty half on either side, the filter guard rejects it on the attribute only. {@code "attr="}
-   * selects the rows whose attribute IS empty, and two of the three record sources can answer that -
-   * {@code XmlRowSource} hands back the raw attribute value and {@code JsonlRowSource} returns {@code ""} for an
-   * explicit empty string, while only {@code CsvRowSource} folds empty to null.
+   * selects the rows that do not set the attribute, which every record source can answer since #7332 folded an
+   * empty value to "not set" on all three of them.
    */
   @Test
   void aFilterWithAnEmptyValueIsAccepted() {

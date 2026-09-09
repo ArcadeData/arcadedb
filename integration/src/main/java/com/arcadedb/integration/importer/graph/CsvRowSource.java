@@ -132,10 +132,10 @@ public class CsvRowSource implements GraphImporter.RecordSource {
   private static class CsvRecordReader implements GraphImporter.RecordReader {
     final Map<String, String> fields = new HashMap<>();
 
+    /** Empty means not set, as it does on every other source: see {@link GraphImporter.RecordReader#get} (#7332). */
     @Override
     public String get(final String attribute) {
-      final String v = fields.get(attribute);
-      return v != null && !v.isEmpty() ? v : null;
+      return GraphImporter.RecordReader.emptyAsNull(fields.get(attribute));
     }
 
     @Override

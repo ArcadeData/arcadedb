@@ -45,6 +45,13 @@
     </div>
   </div>
 
+  <!-- Saved run written before per-step timing reported its own coverage (issue #7332) -->
+  <div id="profilerLegacyRecording" class="alert alert-warning mx-3 mt-2 py-2" style="display: none; font-size: 0.82rem;">
+    This recording was saved by an earlier build: its steps do not say how many of their occurrences were actually
+    timed, so the step statistics below are of unknown coverage. Steps whose cost came out negative - the sign of a
+    never-timed occurrence counted as a duration - are shown as <em>not timed</em>.
+  </div>
+
   <!-- Summary Section -->
   <div id="profilerSummary" class="px-3 py-2" style="display: none;">
     <div class="d-flex align-items-center gap-2 mb-2">
@@ -119,7 +126,8 @@
           <tr>
             <th>Step</th>
             <th title="Occurrences of this step across all the executions of this statement">Count</th>
-            <th title="Time spent inside this step's own work, summed over all its occurrences">Total (ms)</th>
+            <th title="Occurrences the engine actually timed. Total, Avg, Max and P99 below are drawn from these, while Count is over all of them: per-step timers only run when the engine is asked to profile the execution.">Measured</th>
+            <th title="Time spent inside this step's own work, summed over the timed occurrences">Total (ms)</th>
             <th>Min (ms)</th>
             <th>Avg (ms)</th>
             <th>Max (ms)</th>

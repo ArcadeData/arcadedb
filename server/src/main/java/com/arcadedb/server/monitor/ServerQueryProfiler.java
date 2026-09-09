@@ -218,10 +218,63 @@ public class ServerQueryProfiler {
 
     try {
       final String content = Files.readString(file.toPath());
-      return new JSONObject(content);
+      return migrateLoadedRun(new JSONObject(content));
     } catch (final IOException e) {
       throw new RuntimeException("Error reading profiler run file: " + fileName, e);
     }
+  }
+
+  /**
+   * Brings a recording saved by a build older than #7291 up to the shape this one produces (issue #7332).
+   * <p>
+   * A saved run is exactly what somebody compares a later one against, so a file written before per-step timing
+   * distinguished "measured 0 ns" from "never measured" must not read as if it had. Two things are done to it, and
+   * only two, because only two are recoverable:
+   * <ul>
+   * <li>The recording is stamped {@code stepTimingComplete=false}. Every step in it lacks {@code measuredCount},
+   * and nothing in the file says which occurrences were timed, so a partially measured step whose total happens to
+   * be positive cannot be told from a fully measured one. The flag is the honest answer: the reader is told the
+   * whole recording's step statistics are of unknown coverage rather than being shown a made-up coverage.</li>
+   * <li>A step whose aggregate cost came out NEGATIVE is marked untimed ({@code measuredCount=0}, costs zeroed).
+   * That one IS decidable: a timed cost is never negative, so a negative total can only be the {@code -1}
+   * "not calculated" sentinel summed as if it were a duration - the defect #7291 fixed. Rendering it as written
+   * shows a negative millisecond count, which is not a slower measurement but no measurement at all.</li>
+   * </ul>
+   * A recording already carrying {@code measuredCount} is returned untouched, flag included, so re-saving and
+   * re-loading a current run is a no-op.
+   */
+  private static JSONObject migrateLoadedRun(final JSONObject run) {
+    final JSONArray queries = run.has("queries") && run.get("queries") instanceof JSONArray array ? array : null;
+    if (queries == null)
+      return run;
+
+    boolean complete = true;
+    for (int q = 0; q < queries.length(); q++) {
+      final JSONObject query = queries.getJSONObject(q);
+      if (!(query.opt("steps") instanceof JSONArray steps))
+        continue;
+
+      for (int s = 0; s < steps.length(); s++) {
+        final JSONObject step = steps.getJSONObject(s);
+        if (step.has("measuredCount"))
+          continue;
+
+        complete = false;
+        // getDouble with a default, so a step that carries no total at all is left alone rather than
+        // being classified from a value that was never there
+        if (step.getDouble("totalCostMs", 0d) < 0d) {
+          step.put("measuredCount", 0);
+          step.put("totalCostMs", 0d);
+          step.put("minCostMs", 0d);
+          step.put("maxCostMs", 0d);
+          step.put("avgCostMs", 0d);
+          step.put("p99CostMs", 0d);
+        }
+      }
+    }
+
+    run.put("stepTimingComplete", complete);
+    return run;
   }
 
   private JSONObject buildResults() {
@@ -262,6 +315,11 @@ public class ServerQueryProfiler {
 
     // Aggregate queries
     result.put("queries", aggregateQueries());
+
+    // Every step of a run this build produces carries measuredCount, so its step statistics say their own
+    // coverage. The flag is written here as well as by migrateLoadedRun() so a reader never has to tell an
+    // absent flag from a false one (issue #7332).
+    result.put("stepTimingComplete", true);
 
     return result;
   }
