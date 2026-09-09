@@ -60,6 +60,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -858,7 +859,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       // of it with a parse error, which says nothing about the actual cause. Checking the type the server
       // committed to says it once, up front.
       final String contentType = response.headers().firstValue("content-type").orElse("");
-      if (!contentType.toLowerCase(java.util.Locale.ROOT).contains(NDJSON_CONTENT_TYPE)) {
+      if (!contentType.toLowerCase(Locale.ROOT).contains(NDJSON_CONTENT_TYPE)) {
         body.close();
         body = null;
         throw new RemoteException("The server answered '" + (contentType.isEmpty() ? "no content type" : contentType)

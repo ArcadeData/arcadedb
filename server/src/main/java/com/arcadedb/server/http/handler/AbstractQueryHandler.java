@@ -308,7 +308,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       if (!parameter.regionMatches(true, 0, "q=", 0, 2))
         continue;
       try {
-        return Double.parseDouble(parameter.substring(2).trim()) == 0d;
+        // Compared with a tolerance rather than against 0 exactly: q is a decimal with at most three digits,
+        // so anything this small is the "not acceptable" the sender meant, and an exact float comparison on a
+        // parsed decimal is the kind of thing that works until it does not.
+        return Double.parseDouble(parameter.substring(2).trim()) < 0.0001d;
       } catch (final NumberFormatException ignored) {
         return false;
       }
