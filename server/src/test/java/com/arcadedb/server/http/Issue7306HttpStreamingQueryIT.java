@@ -349,29 +349,103 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
   }
 
   /**
-   * The hard ceiling has to be decided before the first byte, because a 413 cannot be sent once a 200 is on the
-   * wire. A caller stating a cap above the ceiling therefore gets the same refusal the buffered encoding gives
-   * it, and gets it with an intact JSON error body rather than half a stream.
+   * The ceiling refuses a request only when it actually cut the result short - the same rule
+   * {@code serializeResultSetBounded} applies to the buffered encoding. It matters that this is not stricter:
+   * the stated cap is raised to the query's own plan LIMIT, so a query carrying a large LIMIT that returns few
+   * rows states a cap above the ceiling on every request. Refusing those would make the two encodings disagree
+   * about the same query.
    */
   @Test
-  void theResultCeilingIsRefusedBeforeAnyByteIsStreamed() throws Exception {
-    final int ceiling = 5;
-    getServer(0).getConfiguration()
-        .setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, ceiling);
+  void aCapAboveTheCeilingIsStreamedInFullWhenTheCeilingDoesNotActuallyTruncate() throws Exception {
+    final int ceiling = ROW_COUNT + 8;
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, ceiling);
     try {
-      final HttpResponse<String> response = send(postRequest(
-          "SELECT idx FROM " + TYPE_NAME, "query", NDJSON, ceiling + 100, null));
+      // States a cap far above the ceiling, but the query only has ROW_COUNT rows to give, so nothing is cut.
+      final List<JSONObject> events = readAllEvents(postStream(
+          "SELECT idx FROM " + TYPE_NAME + " ORDER BY idx", "query", ceiling + 100));
 
-      assertThat(response.statusCode()).isEqualTo(413);
-      assertThat(response.headers().firstValue("Content-Type").orElse("")).contains("application/json");
-      final JSONObject error = new JSONObject(response.body());
-      assertThat(error.getString("error")).contains("Result set too large");
-      assertThat(error.getString("detail")).contains("maximum of " + ceiling + " rows");
+      assertThat(events).hasSize(ROW_COUNT + 1);
+      final JSONObject stats = events.getLast().getJSONObject("stats");
+      assertThat(stats.getInt("returned")).isEqualTo(ROW_COUNT);
+      assertThat(stats.getBoolean("truncated")).isFalse();
     } finally {
-      getServer(0).getConfiguration()
-          .setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS,
-              GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS.getDefValue());
+      resetCeiling();
     }
+  }
+
+  /**
+   * When the ceiling does cut the stream short, the refusal still has to reach the caller - but a 413 cannot be
+   * sent once a 200 is on the wire. It goes in band as an {@code error} event, and the {@code stats} trailer is
+   * withheld, which is what distinguishes it from a stream that ended on its own.
+   */
+  @Test
+  void aCeilingThatTruncatesIsReportedInBandWithNoTrailer() throws Exception {
+    final int ceiling = 5;
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, ceiling);
+    try {
+      final List<JSONObject> events = readAllEvents(postStream(
+          "SELECT idx FROM " + TYPE_NAME + " ORDER BY idx", "query", ceiling + 100));
+
+      // The rows that fit, then the refusal - and no trailer.
+      assertThat(events).hasSize(ceiling + 1);
+      assertThat(events.stream().anyMatch(e -> e.has("stats"))).isFalse();
+
+      final JSONObject error = events.getLast().getJSONObject("error");
+      assertThat(error.getString("message")).contains("maximum of " + ceiling + " rows");
+    } finally {
+      resetCeiling();
+    }
+  }
+
+  private void resetCeiling() {
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS,
+        GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS.getDefValue());
+  }
+
+  /**
+   * A streamed response starts before the transaction commits, so a statement that writes cannot be streamed
+   * soundly: a failure part-way through cannot un-send the 200, and the auto-commit wrapper would commit
+   * whatever the half-executed statement had already written. Refused up front, while a refusal can still be a
+   * status code.
+   */
+  @Test
+  void aStatementThatWritesIsRefusedOnTheStreamingEncoding() throws Exception {
+    final HttpResponse<String> response = send(postRequest(
+        "UPDATE " + TYPE_NAME + " SET touched = true RETURN AFTER", "command", NDJSON));
+
+    assertThat(response.statusCode()).isEqualTo(400);
+    assertThat(response.body()).contains("read-only statement");
+
+    // And the refusal is real: nothing was written.
+    final JSONArray rows = postBuffered("SELECT count(*) AS n FROM " + TYPE_NAME + " WHERE touched = true")
+        .getJSONArray("result");
+    assertThat(rows.getJSONObject(0).getInt("n")).isZero();
+  }
+
+  /**
+   * {@code q=0} is how RFC 9110 spells "not acceptable", not a weak preference. A client that lists the stream
+   * only to exclude it must get the buffered body, which a bare substring match over the header would not give.
+   */
+  @Test
+  void anExplicitlyRejectedNdJsonTypeIsNotStreamed() throws Exception {
+    final HttpResponse<String> response = send(postRequest("SELECT idx FROM " + TYPE_NAME, "query",
+        "application/json, " + NDJSON + ";q=0"));
+
+    assertThat(response.statusCode()).isEqualTo(200);
+    assertThat(response.headers().firstValue("Content-Type").orElse("")).contains("application/json");
+    assertThat(new JSONObject(response.body()).has("result")).isTrue();
+  }
+
+  /**
+   * The counterpart: naming the type alongside another one, without excluding it, still selects the stream.
+   */
+  @Test
+  void ndJsonListedAmongOtherAcceptedTypesIsStreamed() throws Exception {
+    final HttpResponse<String> response = send(postRequest("SELECT idx FROM " + TYPE_NAME, "query",
+        "application/json, " + NDJSON + ";q=0.9"));
+
+    assertThat(response.statusCode()).isEqualTo(200);
+    assertThat(response.headers().firstValue("Content-Type").orElse("")).contains(NDJSON);
   }
 
   // ───────────────────────────── plumbing ─────────────────────────────
@@ -441,6 +515,11 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
 
   private HttpResponse<InputStream> postStream(final String command, final String operation) throws Exception {
     return postStream(command, operation, null, null);
+  }
+
+  private HttpResponse<InputStream> postStream(final String command, final String operation, final Integer limit)
+      throws Exception {
+    return postStream(command, operation, limit, null);
   }
 
   private HttpResponse<InputStream> postStream(final String command, final String operation, final Integer limit,

@@ -135,8 +135,10 @@ public final class HybridSearch {
    * Runs the fused search described by {@code args} against an already-resolved, already-authorized database.
    *
    * @param args {@code vectorIndexName}, {@code queryVector} and {@code k} are required; the full-text leg
-   *             ({@code queryText} plus its index addressing), the graph {@code expand} leg, the per-leg
-   *             {@code weights} and {@code fusionStrategy} are optional
+   *             ({@code fulltextQuery} plus {@code fulltextIndexName}), the graph {@code expand} leg, the
+   *             per-leg {@code weights} and {@code fusionStrategy} are optional. Note {@code fulltextQuery},
+   *             not {@code queryText}: the latter is what the standalone {@link FullTextQuery} surface calls
+   *             the same value, and passing it here leaves the full-text leg off with no error
    *
    * @throws IllegalArgumentException when any argument is missing, malformed or outside its bound
    */

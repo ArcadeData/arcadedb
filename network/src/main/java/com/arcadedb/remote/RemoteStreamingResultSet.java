@@ -100,11 +100,28 @@ public class RemoteStreamingResultSet implements ResultSet {
         break;
     }
 
-    final JSONObject event = new JSONObject(line);
-    if (event.has("record")) {
-      next = rowMapper.apply(event.getJSONObject("record"));
-      return true;
+    // Every exit below closes the connection, including the failures. A parse error or an unrecognized event is
+    // exactly what a server that predates #7306 produces - it ignores Accept and answers the buffered envelope -
+    // and leaving the response body open on that path would leak a connection per attempt.
+    final JSONObject event;
+    try {
+      event = new JSONObject(line);
+    } catch (final RuntimeException e) {
+      close();
+      throw new RemoteException("Unparseable line in the streamed result: the server did not send the "
+          + "newline-delimited JSON encoding this driver asked for", e);
     }
+
+    try {
+      if (event.has("record")) {
+        next = rowMapper.apply(event.getJSONObject("record"));
+        return true;
+      }
+    } catch (final RuntimeException e) {
+      close();
+      throw new RemoteException("Error while converting a row of the streamed result", e);
+    }
+
     if (event.has("stats")) {
       trailerSeen = true;
       warnIfTruncated(event.getJSONObject("stats"));
@@ -118,6 +135,7 @@ public class RemoteStreamingResultSet implements ResultSet {
       throw new RemoteException("The server failed while streaming the result: " + message);
     }
 
+    close();
     throw new RemoteException("Unrecognized event in the streamed result: " + line);
   }
 

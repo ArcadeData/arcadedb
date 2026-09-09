@@ -47,6 +47,7 @@ import java.util.Base64;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -191,6 +192,21 @@ public class Issue7306GrpcVectorSearchIT extends BaseGraphServerTest {
     assertThat(viaHttp.getBoolean("fused")).isEqualTo(response.getFused());
     assertThat(viaHttp.getString("fusionStrategy")).isEqualTo(response.getFusionStrategy());
     assertThat(httpNames(viaHttp)).isEqualTo(names(response.getResultsList()));
+
+    // A fused hit carries its rank under the JSON key 'fusedScore', while SearchHit carries it in 'score'
+    // ("sparse, full-text or fused score"). Asserting only the rid order would pass with every score unset,
+    // which is a result the client cannot rank at all - the whole point of the fused RPC.
+    final JSONArray httpHits = viaHttp.getJSONArray("results");
+    assertThat(response.getResultsCount()).isEqualTo(httpHits.length());
+    for (int i = 0; i < response.getResultsCount(); i++) {
+      final SearchHit hit = response.getResults(i);
+      assertThat(hit.hasScore()).as("fused hit %d must carry a score", i).isTrue();
+      // Compared with a tolerance, not exactly: the fused score is a float, and the two surfaces widen it to
+      // double by different routes - gRPC from the in-memory Float, HTTP by reparsing the shortest decimal that
+      // JSON printed for it. The tolerance is far below float precision, so a genuinely different score fails.
+      assertThat(hit.getScore()).isCloseTo(httpHits.getJSONObject(i).getDouble("fusedScore"),
+          within(1e-6));
+    }
   }
 
   /**

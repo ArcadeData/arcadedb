@@ -853,6 +853,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         throw asRuntime(manageException(response.statusCode(), errorBody, command), "streamed " + operation);
       }
 
+      // A server that predates #7306 ignores the Accept header and answers the buffered envelope with a 200.
+      // Without this check the driver would hand that body to the NDJSON reader and fail somewhere in the middle
+      // of it with a parse error, which says nothing about the actual cause. Checking the type the server
+      // committed to says it once, up front.
+      final String contentType = response.headers().firstValue("content-type").orElse("");
+      if (!contentType.toLowerCase(java.util.Locale.ROOT).contains(NDJSON_CONTENT_TYPE)) {
+        body.close();
+        body = null;
+        throw new RemoteException("The server answered '" + (contentType.isEmpty() ? "no content type" : contentType)
+            + "' instead of '" + NDJSON_CONTENT_TYPE + "': it does not support streamed queries. Use query() "
+            + "instead, or upgrade the server");
+      }
+
       final BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8));
       body = null; // ownership passes to the ResultSet, which closes it
       return new RemoteStreamingResultSet(reader, this::json2Result, maxRows == null);

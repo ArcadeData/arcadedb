@@ -187,6 +187,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
     command = command.trim();
 
+    if (streaming)
+      requireStreamableStatement(database, language, command);
+
     final Object rawParams = requestMap.get("params");
     Map<String, Object> paramMap;
     if (rawParams instanceof Map<?, ?> m) {
@@ -453,4 +456,46 @@ public class PostCommandHandler extends AbstractQueryHandler {
     else
       database.async().command(language, command, callback, (Map<String, Object>) params);
   }
+
+  /**
+   * Refuses to stream a statement that is not provably read-only (issue #7306).
+   * <p>
+   * This is a correctness gate, not a policy one. {@code POST /command} runs inside the auto-commit wrapper
+   * ({@code requiresTransaction()} is true, and {@code PostQueryHandler} inherits it), which means two things
+   * that only bite once rows leave before the commit does:
+   * <ul>
+   * <li>A failure raised part-way through iterating the result set cannot change a status code that is already
+   * on the wire, so {@code streamResultSetAsNdJson} reports it in band and returns normally. The wrapper sees a
+   * clean return and commits whatever the half-executed statement already wrote. The buffered encoding
+   * propagates the exception and rolls back.</li>
+   * <li>{@code database.transaction(..., retries)} re-runs the whole lambda when its own commit throws
+   * {@link com.arcadedb.exception.NeedRetryException} or a duplicated-key conflict. The second attempt would
+   * re-execute the statement and stream into an exchange whose 200, rows and trailer have already been written
+   * and whose output stream is closed.</li>
+   * </ul>
+   * Both hazards exist only for a statement that writes. A read-only statement leaves the transaction empty, so
+   * there is nothing to commit wrongly and nothing for the commit to conflict over. Refusing the rest up front -
+   * rather than after the first byte, when nothing can be said any more - is what keeps the streaming encoding
+   * from being a weaker transactional contract than the buffered one.
+   * <p>
+   * A statement whose language cannot analyze it is refused too: "not provably read-only" is the safe reading,
+   * and the buffered encoding remains available for every case this turns away.
+   */
+  private static void requireStreamableStatement(final Database database, final String language,
+      final String command) {
+    boolean idempotent;
+    try {
+      idempotent = database.getQueryEngine(language).analyze(command).isIdempotent();
+    } catch (final Exception e) {
+      LogManager.instance().log(PostCommandHandler.class, Level.FINE,
+          "Could not analyze a streamed statement in language '%s'; refusing to stream it", e, language);
+      idempotent = false;
+    }
+
+    if (!idempotent)
+      throw new IllegalArgumentException("The streaming encoding is available only for a read-only statement, "
+          + "because its rows reach the client before the transaction commits: run this one with "
+          + "'Accept: application/json'");
+  }
+
 }

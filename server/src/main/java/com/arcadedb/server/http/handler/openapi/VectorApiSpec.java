@@ -255,9 +255,12 @@ public class VectorApiSpec implements OpenApiContributor {
   private Schema<?> fusedHitSchema() {
     final Schema<Object> hit = SpecBuilders.object("One fused hit");
     hit.addProperty("rid", SpecBuilders.string("Record id of the hit"));
-    hit.addProperty("score", SpecBuilders.number("Fused score, higher is better. Present when 'fused' is true"));
+    hit.addProperty("fusedScore", SpecBuilders.number(
+        "Fused score, higher is better. Present when 'fused' is true"));
+    hit.addProperty("score", SpecBuilders.number(
+        "Sparse or full-text score, present instead of 'fusedScore' on an unfused sparse or full-text response"));
     hit.addProperty("distance", SpecBuilders.number(
-        "Vector distance, present instead of 'score' on an unfused dense response"));
+        "Vector distance, present instead of 'fusedScore' on an unfused dense response"));
     hit.addProperty("sources", SpecBuilders.arrayOf(SpecBuilders.string(null),
         "Which legs contributed this hit: vector, fulltext, expand"));
     hit.addProperty("depth", SpecBuilders.integer("Hops from the seed, for a hit the expansion leg contributed"));

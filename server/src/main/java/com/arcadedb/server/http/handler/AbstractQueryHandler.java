@@ -279,9 +279,40 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     final HeaderValues accept = exchange.getRequestHeaders().get(Headers.ACCEPT);
     if (accept == null)
       return false;
-    for (final String value : accept)
-      if (value != null && value.contains(NdJsonResultStream.CONTENT_TYPE))
+    for (final String header : accept) {
+      if (header == null)
+        continue;
+      // One Accept header can list several types, each with its own parameters. Splitting them matters for
+      // 'q': 'application/json, application/x-ndjson;q=0' is the standard spelling of "anything but that one",
+      // and a bare contains() over the whole header would read it as a request for the stream.
+      for (final String entry : header.split(",")) {
+        final String[] parts = entry.trim().split(";");
+        if (!parts[0].trim().equalsIgnoreCase(NdJsonResultStream.CONTENT_TYPE))
+          continue;
+        if (isRejectedByQValue(parts))
+          return false;
         return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * True when an {@code Accept} entry carries {@code q=0}, which RFC 9110 defines as "not acceptable" rather
+   * than as a weak preference. An unparseable q is treated as absent, the same as any other malformed
+   * parameter: the type was still named.
+   */
+  private static boolean isRejectedByQValue(final String[] parts) {
+    for (int i = 1; i < parts.length; i++) {
+      final String parameter = parts[i].trim();
+      if (!parameter.regionMatches(true, 0, "q=", 0, 2))
+        continue;
+      try {
+        return Double.parseDouble(parameter.substring(2).trim()) == 0d;
+      } catch (final NumberFormatException ignored) {
+        return false;
+      }
+    }
     return false;
   }
 
@@ -321,11 +352,13 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * {@link JSONArray} before the first byte leaves, so a large result is fully resident in the server heap
    * regardless of whether the client intends to read it all.
    * <p>
-   * The hard ceiling {@code arcadedb.server.httpQueryMaxResultRows} is decided <b>before</b> the first byte
-   * rather than on the way out. It is the same rule {@link #serializeResultSetBounded} applies - the ceiling
-   * refuses only a caller that stated a cap above it - but a 413 cannot be sent once a 200 is on the wire, so
-   * the decision has to be taken while it still can be. A caller that stated nothing can never reach it, because
-   * {@link #getDefaultRowLimit()} is already bounded by the ceiling.
+   * The hard ceiling {@code arcadedb.server.httpQueryMaxResultRows} applies here under exactly the rule
+   * {@link #serializeResultSetBounded} uses: it refuses only when it actually cut the result short, never
+   * merely because the caller stated a cap above it. That distinction matters because {@code statedLimit} is
+   * raised to the query's own plan LIMIT, so {@code SELECT ... LIMIT 1000000} returning five rows states a cap
+   * above the ceiling and is answered in full - and must be answered in full on both encodings. Since a 413
+   * cannot be sent once a 200 is on the wire, the refusal is written in band as an {@code error} line with the
+   * {@code stats} trailer withheld.
    * <p>
    * A failure raised after the stream has started cannot change the status code either, so it is reported in
    * band as an {@code error} line and the {@code stats} trailer is not written - which is how a consumer tells
@@ -342,8 +375,13 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       final boolean includeTypeHints) throws IOException {
     final JsonSerializer serializerImpl = ndJsonRowSerializer(serializer, includeTypeHints);
 
-    if (applyMaxResultRows(statedLimit, maxResultRows) != statedLimit)
-      throw resultSetTooLarge(maxResultRows);
+    // Same rule serializeResultSetBounded applies, and deliberately not a stricter one: the ceiling refuses a
+    // request only when it actually cut the result short, never merely because the caller stated a cap above
+    // it. statedLimit is raised to the query's own plan LIMIT, so a 'SELECT ... LIMIT 1000000' that returns
+    // five rows states a cap above the ceiling and is answered in full on the buffered encoding - refusing it
+    // here would have made the two encodings disagree about the same query.
+    final int effectiveLimit = applyMaxResultRows(statedLimit, maxResultRows);
+    final boolean ceilingLowered = effectiveLimit != statedLimit;
 
     exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, NdJsonResultStream.CONTENT_TYPE);
     // Proxies that buffer a response would defeat the encoding without saying so; the same header the SSE paths
@@ -361,12 +399,12 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         while (qResult != null && qResult.hasNext()) {
           stream.writeRecord(serializerImpl.serializeResult(database, qResult.next()));
           ++returned;
-          if (statedLimit > 0 && returned >= statedLimit)
+          if (effectiveLimit > 0 && returned >= effectiveLimit)
             break;
         }
         // Exactly the probe the buffered path uses: the row that did not fit is deliberately left in the result
         // set, and its presence is what tells a truncated stream from one that ended on its own.
-        truncated = qResult != null && statedLimit > 0 && returned >= statedLimit && qResult.hasNext();
+        truncated = qResult != null && effectiveLimit > 0 && returned >= effectiveLimit && qResult.hasNext();
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING, "Error while streaming the result of a query on database '%s'",
             e, database != null ? database.getName() : null);
@@ -374,7 +412,14 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         return new SerializationOutcome(returned, false);
       }
 
-      stream.writeStats(statedLimit, returned, truncated);
+      if (ceilingLowered && truncated) {
+        // What the buffered path answers 413 for. A 200 is already on the wire, so the refusal goes in band and
+        // the stats trailer is withheld - which is exactly how a consumer tells this from a complete stream.
+        stream.writeError(resultSetTooLarge(maxResultRows).getMessage());
+        return new SerializationOutcome(returned, true);
+      }
+
+      stream.writeStats(effectiveLimit, returned, truncated);
       return new SerializationOutcome(returned, truncated);
     }
   }
