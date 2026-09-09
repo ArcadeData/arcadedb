@@ -22,9 +22,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalTimeSeriesType;
-import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway.TypeResolution;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -33,6 +32,7 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 
 /**
  * HTTP handler for retrieving the latest TimeSeries value.
@@ -62,49 +62,35 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
 
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
 
-    if (!database.getSchema().existsType(typeName))
-      return new ExecutionResponse(400, "{ \"error\" : \"Type '" + typeName + "' does not exist\"}");
+    // Type resolution and the per-type read ACL both live in TimeSeriesGateway, shared with the gRPC
+    // TimeSeriesLatest RPC (issue #7305). The ACL matters here more than anywhere else: a TimeSeries type owns
+    // no record bucket, so this type-name check is the only thing that can enforce a "readRecord" denial on it.
+    // It throws SecurityException -> HTTP 403, and it runs BEFORE the engine-availability branch so a denied
+    // caller gets the 403 and not the unavailable-engine diagnostic, which names a file path on disk.
+    final TypeResolution resolved = TimeSeriesGateway.resolveForRead(database, typeName);
+    if (!resolved.isSuccess())
+      return TimeSeriesHandlerUtils.resolutionError(typeName, resolved);
 
-    final DocumentType docType = database.getSchema().getType(typeName);
-    if (!(docType instanceof LocalTimeSeriesType tsType))
-      return new ExecutionResponse(400, "{ \"error\" : \"Type '" + typeName + "' is not a TimeSeries type\"}");
-    // Gated accessor (per-type ACL): a TimeSeries type owns no record bucket, so this type-name check is
-    // the only thing that can enforce a "readRecord" denial on it. Throws SecurityException -> HTTP 403.
-    // It runs BEFORE the engine-availability branch below (it returns null exactly where isEngineAvailable()
-    // was false) so a denied caller gets the 403 and not the unavailable-engine diagnostic, which names a file
-    // path on disk. The "does not exist" / "is not a TimeSeries type" answers above stay where they are: the ACL
-    // is keyed by type NAME and has no entry for a name that is not in the schema, so it cannot be consulted
-    // before the type resolves - and a 403 that only a real type can produce is the behaviour every other
-    // per-type check in the engine already has.
-    final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
-    if (engine == null)
-      // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS one,
-      // its storage just failed to load - the old shared message sent an operator chasing the wrong cause.
-      // Built with JSONObject rather than string concatenation because the reason embeds a file path that could
-      // contain a double quote or backslash, which raw concatenation would turn into invalid JSON.
-      return new ExecutionResponse(400, new JSONObject().put("error", "TimeSeries type '" + typeName
-          + "' has no storage engine available: " + tsType.getEngineUnavailableReason()).toString());
-    final List<ColumnDefinition> columns = tsType.getTsColumns();
+    final TimeSeriesEngine engine = resolved.engine();
+    final List<ColumnDefinition> columns = resolved.columns();
 
     // Build tag filter from query param
     final TagFilter tagFilter = buildTagFilter(exchange, columns);
 
-    // Query full range and take last element
-    final List<Object[]> rows = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, tagFilter);
+    // Query full range and take last element, through the same helper the gRPC TimeSeriesLatest RPC calls
+    // (issue #7305) so the two protocols cannot answer different rows.
+    final Object[] lastRow = TimeSeriesGateway.latest(engine, tagFilter);
 
     // Build column names
-    final JSONArray colNames = new JSONArray();
-    for (final ColumnDefinition col : columns)
-      colNames.put(col.getName());
+    final JSONArray colNames = new JSONArray(TimeSeriesGateway.columnNames(columns, null));
 
     final JSONObject result = new JSONObject();
     result.put("type", typeName);
     result.put("columns", colNames);
 
-    if (rows.isEmpty()) {
+    if (lastRow == null) {
       result.put("latest", JSONObject.NULL);
     } else {
-      final Object[] lastRow = rows.get(rows.size() - 1);
       final JSONArray latestArray = new JSONArray();
       for (final Object val : lastRow)
         latestArray.put(val);
@@ -114,6 +100,14 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
     return new ExecutionResponse(200, result.toString());
   }
 
+  /**
+   * Builds the tag selection from the {@code tag=name:value} query parameter. The parameter carries ONE
+   * predicate: {@code getQueryParameter} reads the first occurrence and the rest are ignored, which is the
+   * behaviour {@code TimeSeriesApiSpecTest} pins and this change deliberately leaves alone. The gRPC
+   * {@code TimeSeriesLatest} RPC takes a whole filter map, so it is strictly more expressive here; closing that
+   * asymmetry means changing this endpoint's contract, which is tracked separately (see the follow-up named in
+   * the PR for issue #7305).
+   */
   private TagFilter buildTagFilter(final HttpServerExchange exchange, final List<ColumnDefinition> columns) {
     final String tagParam = getQueryParameter(exchange, "tag");
     if (tagParam == null || tagParam.isBlank())
@@ -123,21 +117,9 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
     if (colonIdx <= 0)
       return null;
 
-    final String tagName = tagParam.substring(0, colonIdx);
-    final String tagValue = tagParam.substring(colonIdx + 1);
-
-    // columnIndex for TagFilter is among non-timestamp columns (0-based)
-    int nonTsIdx = 0;
-    for (final ColumnDefinition col : columns) {
-      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-        continue;
-      if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(tagName))
-        // The tag value arrives as request text; coerce it to the column's declared type so it matches
-        // what both storage layers hand back (issue #5475).
-        return TagFilter.eq(nonTsIdx, col.coerceValue(tagValue));
-      nonTsIdx++;
-    }
-
-    return null;
+    // One equality predicate, built by the same code the JSON and gRPC paths use, so the coercion of the
+    // request text to the column's declared type (issue #5475) cannot drift between the three.
+    return TimeSeriesGateway.buildTagFilter(
+        Map.of(tagParam.substring(0, colonIdx), tagParam.substring(colonIdx + 1)), columns);
   }
 }

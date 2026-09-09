@@ -21,6 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -43,10 +44,18 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.engine.timeseries.LineProtocolWriter;
+import com.arcadedb.remote.timeseries.TimeSeriesBucket;
+import com.arcadedb.remote.timeseries.TimeSeriesLatestResult;
+import com.arcadedb.remote.timeseries.TimeSeriesPoint;
+import com.arcadedb.remote.timeseries.TimeSeriesQuery;
+import com.arcadedb.remote.timeseries.TimeSeriesQueryResult;
+import com.arcadedb.remote.timeseries.TimeSeriesWriteSummary;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 
+import java.net.URLEncoder;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
@@ -749,6 +758,252 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (final Exception e) {
       throw new RemoteException("Error on requesting operation progress", e);
     }
+  }
+
+  // ---------------------------------------------------------------------------------------------------------
+  // Time series API (issue #7305)
+  //
+  // The server has had /ts/write, /ts/query and /ts/latest for a long time; this client could not reach any of
+  // them, so a Java application had to hand-roll HTTP to use its own database's time-series store. These four
+  // methods close that, in a shape RemoteGrpcDatabase overrides with the equivalent gRPC RPCs - so the same
+  // application code runs over either protocol, and the two are testable against each other.
+  // ---------------------------------------------------------------------------------------------------------
+
+  /**
+   * Ingests time-series samples.
+   * <p>
+   * Not atomic: each measurement's batch commits its own shard transaction as it is appended, so a summary
+   * reporting drops is a partial write and not a rollback - see {@link TimeSeriesWriteSummary}. A caller that
+   * needs to know nothing was dropped checks {@link TimeSeriesWriteSummary#isComplete()}.
+   *
+   * @param points the samples; timestamps are epoch milliseconds
+   *
+   * @return what was written and what was dropped
+   */
+  public TimeSeriesWriteSummary timeSeriesWrite(final List<TimeSeriesPoint> points) {
+    checkDatabaseIsOpen();
+    if (points == null || points.isEmpty())
+      return TimeSeriesWriteSummary.empty();
+
+    final StringBuilder body = new StringBuilder(points.size() * 64);
+    for (final TimeSeriesPoint point : points)
+      LineProtocolWriter.appendLine(body, point.type(), point.tags(), point.fields(), point.timestampMs());
+
+    try {
+      // precision=ms is not optional: the endpoint defaults to nanoseconds, which would divide every timestamp
+      // LineProtocolWriter emits by a million.
+      final HttpRequest request = createRequestBuilder("POST",
+          getUrl("ts", databaseName) + "/write?precision=ms")
+          .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+          .header("Content-Type", "text/plain")
+          .build();
+
+      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      // Captured unconditionally, not only on success: a partial write's already-appended samples are durable,
+      // so a READ_YOUR_WRITES client that skipped the bookmark on the 400 would silently miss them - the same
+      // reasoning sendBatch applies to a partially committed batch.
+      captureCommitIndexHeader(response);
+
+      if (response.statusCode() == 204)
+        return new TimeSeriesWriteSummary(points.size(), points.size(), 0, List.of(), List.of(), List.of());
+
+      if (response.statusCode() == 400) {
+        final JSONObject error = new JSONObject(response.body());
+        // A partial write and a rejected request share the 400. The counts are what tells them apart: a
+        // rejected request (empty body, missing database) carries none.
+        if (error.has("written") && error.has("dropped"))
+          return new TimeSeriesWriteSummary(points.size(), error.getLong("written"), error.getLong("dropped"),
+              stringList(error.getJSONArray("unknownTypes", null)), stringList(error.getJSONArray("nonTimeSeriesTypes", null)),
+              stringList(error.getJSONArray("unavailableTypes", null)));
+      }
+
+      throw new RemoteException("Error on time series write", manageException(response, "ts write"));
+    } catch (final RemoteException | SecurityException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new RemoteException("Error on time series write", e);
+    }
+  }
+
+  /**
+   * Ingests time-series samples in chunks, for a producer whose whole batch should not be materialized as one
+   * request. Over HTTP this is one request per chunk, whose summaries are added together; over gRPC
+   * ({@code RemoteGrpcDatabase}) it is a single client-streaming call.
+   * <p>
+   * Because each chunk is its own write, a failure part-way leaves the earlier chunks durable - the same
+   * partial-write contract a single call has, one level up.
+   *
+   * @param points    the samples to ingest
+   * @param chunkSize samples per chunk; must be positive
+   */
+  public TimeSeriesWriteSummary timeSeriesWriteStream(final Iterable<TimeSeriesPoint> points, final int chunkSize) {
+    checkDatabaseIsOpen();
+    if (chunkSize <= 0)
+      throw new IllegalArgumentException("chunkSize must be positive");
+
+    TimeSeriesWriteSummary summary = TimeSeriesWriteSummary.empty();
+    final List<TimeSeriesPoint> chunk = new ArrayList<>(chunkSize);
+    for (final TimeSeriesPoint point : points) {
+      chunk.add(point);
+      if (chunk.size() == chunkSize) {
+        summary = summary.plus(timeSeriesWrite(chunk));
+        chunk.clear();
+      }
+    }
+    if (!chunk.isEmpty())
+      summary = summary.plus(timeSeriesWrite(chunk));
+    return summary;
+  }
+
+  /**
+   * Reads samples from a time-series type, raw or aggregated into fixed-interval buckets according to whether
+   * {@code query} states an aggregation.
+   */
+  public TimeSeriesQueryResult timeSeriesQuery(final TimeSeriesQuery query) {
+    checkDatabaseIsOpen();
+
+    final JSONObject payload = new JSONObject();
+    payload.put("type", query.getType());
+    if (query.getFromTimestamp() != null)
+      payload.put("from", query.getFromTimestamp().longValue());
+    if (query.getToTimestamp() != null)
+      payload.put("to", query.getToTimestamp().longValue());
+    if (!query.getFields().isEmpty())
+      payload.put("fields", new JSONArray(query.getFields()));
+    if (!query.getTags().isEmpty()) {
+      final JSONObject tags = new JSONObject();
+      for (final Map.Entry<String, Object> tag : query.getTags().entrySet())
+        tags.put(tag.getKey(), tag.getValue());
+      payload.put("tags", tags);
+    }
+    if (query.getLimit() > 0)
+      payload.put("limit", query.getLimit());
+    if (query.isAggregated()) {
+      final JSONArray requests = new JSONArray();
+      for (final TimeSeriesQuery.Aggregation aggregation : query.getAggregations()) {
+        final JSONObject request = new JSONObject();
+        request.put("field", aggregation.field());
+        request.put("type", aggregation.type().name());
+        request.put("alias", aggregation.resolvedAlias());
+        requests.put(request);
+      }
+      final JSONObject aggregation = new JSONObject();
+      aggregation.put("bucketInterval", query.getBucketIntervalMs());
+      aggregation.put("requests", requests);
+      payload.put("aggregation", aggregation);
+    }
+
+    final JSONObject response = postToTimeSeriesEndpoint("query", payload, "ts query");
+
+    if (query.isAggregated()) {
+      final JSONArray aggregations = response.getJSONArray("aggregations", null);
+      final JSONArray buckets = response.getJSONArray("buckets", null);
+      final List<TimeSeriesBucket> parsed = new ArrayList<>(buckets == null ? 0 : buckets.length());
+      if (buckets != null)
+        for (int i = 0; i < buckets.length(); i++) {
+          final JSONObject bucket = buckets.getJSONObject(i);
+          parsed.add(new TimeSeriesBucket(bucket.getLong("timestamp"), jsonValues(bucket.getJSONArray("values"))));
+        }
+      return new TimeSeriesQueryResult(response.getString("type"), List.of(), List.of(), stringList(aggregations),
+          parsed, false);
+    }
+
+    final JSONArray rows = response.getJSONArray("rows", null);
+    final List<Object[]> parsed = new ArrayList<>(rows == null ? 0 : rows.length());
+    if (rows != null)
+      for (int i = 0; i < rows.length(); i++)
+        parsed.add(jsonValues(rows.getJSONArray(i)));
+
+    return new TimeSeriesQueryResult(response.getString("type"), stringList(response.getJSONArray("columns", null)),
+        parsed, List.of(), List.of(), response.getBoolean("truncated", false));
+  }
+
+  /** The newest sample of {@code typeName}, across every series. */
+  public TimeSeriesLatestResult timeSeriesLatest(final String typeName) {
+    return timeSeriesLatest(typeName, null, null);
+  }
+
+  /**
+   * The newest sample of {@code typeName} among the series whose {@code tagName} equals {@code tagValue}.
+   * <p>
+   * One predicate, not a map, because that is what both protocols express identically: the HTTP endpoint's
+   * {@code tag} query parameter carries a single {@code name:value} pair and ignores any repeat, a contract
+   * {@code TimeSeriesApiSpecTest} pins. The gRPC {@code TimeSeriesLatest} RPC does accept a whole filter map -
+   * a gRPC client using the proto directly can use it - and closing that asymmetry on the HTTP side is tracked
+   * separately (see the follow-up named in the PR for issue #7305).
+   *
+   * @param tagName  the tag column, or {@code null} to select every series
+   * @param tagValue the value that tag must equal
+   */
+  public TimeSeriesLatestResult timeSeriesLatest(final String typeName, final String tagName,
+      final Object tagValue) {
+    checkDatabaseIsOpen();
+
+    final StringBuilder url = new StringBuilder(getUrl("ts", databaseName)).append("/latest?type=")
+        .append(URLEncoder.encode(typeName, DatabaseFactory.getDefaultCharset()));
+    if (tagName != null && !tagName.isBlank())
+      url.append("&tag=").append(URLEncoder.encode(tagName + ":" + tagValue, DatabaseFactory.getDefaultCharset()));
+
+    try {
+      final HttpRequest request = createRequestBuilder("GET", url.toString()).GET().build();
+      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 200)
+        throw new RemoteException("Error on time series latest", manageException(response, "ts latest"));
+
+      final JSONObject body = new JSONObject(response.body());
+      final Object[] latest = body.isNull("latest") ? null : jsonValues(body.getJSONArray("latest"));
+      return new TimeSeriesLatestResult(body.getString("type"), stringList(body.getJSONArray("columns", null)), latest);
+    } catch (final RemoteException | SecurityException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new RemoteException("Error on time series latest", e);
+    }
+  }
+
+  private JSONObject postToTimeSeriesEndpoint(final String endpoint, final JSONObject payload,
+      final String operation) {
+    try {
+      final HttpRequest request = createRequestBuilder("POST", getUrl("ts", databaseName) + "/" + endpoint)
+          .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
+          .header("Content-Type", "application/json")
+          .build();
+
+      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() != 200)
+        throw new RemoteException("Error on time series " + endpoint, manageException(response, operation));
+
+      return new JSONObject(response.body());
+    } catch (final RemoteException | SecurityException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new RemoteException("Error on time series " + endpoint, e);
+    }
+  }
+
+  /**
+   * Reads a JSON array of sample values, turning JSON null into Java null. A value that stands for "no
+   * measurement" - an absent MIN/MAX, a non-finite sample - arrives as JSON null and must not become the
+   * string "null" or a zero.
+   * <p>
+   * Numbers keep whatever concrete {@link Number} the JSON parser chose for their text, so a caller comparing
+   * against an embedded or gRPC result should compare numerically rather than by {@code equals}.
+   */
+  private static Object[] jsonValues(final JSONArray array) {
+    final Object[] values = new Object[array.length()];
+    for (int i = 0; i < values.length; i++)
+      values[i] = array.isNull(i) ? null : array.get(i);
+    return values;
+  }
+
+  private static List<String> stringList(final JSONArray array) {
+    if (array == null || array.length() == 0)
+      return List.of();
+    final List<String> values = new ArrayList<>(array.length());
+    for (int i = 0; i < array.length(); i++)
+      values.add(array.getString(i));
+    return values;
   }
 
   String getSessionId() {
