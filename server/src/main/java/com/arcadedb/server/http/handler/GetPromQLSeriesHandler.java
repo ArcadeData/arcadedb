@@ -35,9 +35,9 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -76,13 +76,12 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
     final long endMs = endStr != null ? (long) (Double.parseDouble(endStr) * 1000) : Long.MAX_VALUE;
 
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
-    // Keyed by the label combination, in first-seen order, with the earliest timestamp each was observed at.
+    // Keyed by the label combination, in first-seen order.
     // The order matters: query() used to hand this loop the rows already sorted by timestamp, so the response
     // came out ordered by when each series first appears. forEachRow visits shard by shard, which would have
     // silently reordered the response - so the ordering the old sort produced is now stated rather than
     // inherited, and it costs one long per distinct series instead of a sort of the whole range (issue #7354).
-    final Map<String, Map<String, String>> seriesByKey = new LinkedHashMap<>();
-    final Map<String, Long> earliestByKey = new HashMap<>();
+    final Map<String, ObservedSeries> seriesByKey = new LinkedHashMap<>();
 
     for (final String matchStr : matchParams) {
       try {
@@ -110,18 +109,31 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
         final TimeSeriesEngine engine = tsType.getEngine();
         final List<ColumnDefinition> columns = tsType.getTsColumns();
 
-        engine.forEachRow(startMs, endMs, null, null, null, row -> {
-          final Map<String, String> labels = new LinkedHashMap<>();
-          labels.put("__name__", vs.metricName());
-          for (int i = 0; i < columns.size(); i++) {
-            final ColumnDefinition col = columns.get(i);
-            if (col.getRole() == ColumnDefinition.ColumnRole.TAG && i < row.length && row[i] != null)
-              labels.put(col.getName(), row[i].toString());
-          }
+        // The indices of the TAG columns, resolved once per type instead of re-testing every column's role on
+        // every row - the loop below runs once per SAMPLE, and the answer is the same for all of them.
+        final int[] tagColumns = tagColumnsOf(columns);
+        // Reused across rows: the dedup key is built per row because that is what identifies the combination,
+        // but the buffer it is built in need not be. The labels map is built only for a combination not seen
+        // before, i.e. once per SERIES rather than once per sample (issue #7354).
+        final StringBuilder key = new StringBuilder(64);
 
-          final String key = labels.toString();
-          seriesByKey.putIfAbsent(key, labels);
-          earliestByKey.merge(key, (Long) row[0], Math::min);
+        engine.forEachRow(startMs, endMs, null, null, null, row -> {
+          key.setLength(0);
+          key.append(vs.metricName());
+          for (final int i : tagColumns)
+            if (i < row.length && row[i] != null)
+              // Separators no tag name or value realistically carries, so two different combinations cannot
+              // spell one key by concatenation
+              key.append('\u0000').append(columns.get(i).getName()).append('\u0001').append(row[i]);
+
+          final long timestamp = (long) row[0];
+          final String combination = key.toString();
+          final ObservedSeries seen = seriesByKey.get(combination);
+          if (seen != null)
+            seen.earliest = Math.min(seen.earliest, timestamp);
+          else
+            seriesByKey.put(combination,
+                new ObservedSeries(labelsOf(vs.metricName(), columns, tagColumns, row), timestamp));
           return true;
         });
       } catch (final IllegalArgumentException ignored) {
@@ -132,9 +144,45 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
     // Ordered by the timestamp each series was first observed at. Sorted with List#sort, which is stable, so two
     // series whose earliest sample shares a timestamp keep the order they were first seen in - the same tiebreak
     // the timestamp sort in query() used to give this loop.
-    final List<Map<String, String>> seriesList = new ArrayList<>(seriesByKey.values());
-    seriesList.sort(Comparator.comparingLong(labels -> earliestByKey.get(labels.toString())));
+    final List<ObservedSeries> observed = new ArrayList<>(seriesByKey.values());
+    observed.sort(Comparator.comparingLong(series -> series.earliest));
+
+    final List<Map<String, String>> seriesList = new ArrayList<>(observed.size());
+    for (final ObservedSeries series : observed)
+      seriesList.add(series.labels);
 
     return new ExecutionResponse(200, PromQLResponseFormatter.formatSeriesResponse(seriesList));
+  }
+
+  /** One distinct label combination and the earliest timestamp any sample carrying it was observed at. */
+  private static final class ObservedSeries {
+    private final Map<String, String> labels;
+    private       long                earliest;
+
+    private ObservedSeries(final Map<String, String> labels, final long earliest) {
+      this.labels = labels;
+      this.earliest = earliest;
+    }
+  }
+
+  /** The indices of the TAG columns, in schema order. */
+  private static int[] tagColumnsOf(final List<ColumnDefinition> columns) {
+    final int[] indices = new int[columns.size()];
+    int count = 0;
+    for (int i = 0; i < columns.size(); i++)
+      if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.TAG)
+        indices[count++] = i;
+    return Arrays.copyOf(indices, count);
+  }
+
+  /** The label set of one row, built once per distinct combination rather than once per sample. */
+  private static Map<String, String> labelsOf(final String metricName, final List<ColumnDefinition> columns,
+      final int[] tagColumns, final Object[] row) {
+    final Map<String, String> labels = new LinkedHashMap<>();
+    labels.put("__name__", metricName);
+    for (final int i : tagColumns)
+      if (i < row.length && row[i] != null)
+        labels.put(columns.get(i).getName(), row[i].toString());
+    return labels;
   }
 }

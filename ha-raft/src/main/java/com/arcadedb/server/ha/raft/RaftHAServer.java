@@ -2591,7 +2591,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (localHttpPort <= 0)
       return null;
 
-    // long, so a peer Raft port far from this node's cannot wrap an int into a plausible-looking port
+    // long because extractPort returns whatever integer the address carries, port range or not: a peer whose
+    // address ends in 2147483647 would wrap int arithmetic round to a small, plausible-looking port. Nothing
+    // between here and there validates it, so the range check below is done in a type that cannot wrap first.
     final long candidatePort = (long) localHttpPort + peerRaftPort - localRaftPort;
     if (candidatePort <= 0 || candidatePort > 65535)
       return null;
