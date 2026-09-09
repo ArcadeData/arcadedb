@@ -258,7 +258,7 @@ class Issue7256SharedAddressCapabilityProbeTest {
         .as("a peer that was never asked about has nothing to explain")
         .isNull();
 
-    registry.record(PEER_A, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1");
+    registry.record(registry.generation(), PEER_A, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1");
     assertThat(registry.unknownReasonOf(PEER_A)).as("nor does one with a fresh answer").isNull();
 
     now.addAndGet(PeerCapabilityRegistry.ADVERTISEMENT_TTL_MS + 1);
@@ -266,12 +266,12 @@ class Issue7256SharedAddressCapabilityProbeTest {
         .as("an answer that aged out with no probe behind it is still a 'no', and now it says which 'no'")
         .contains("older than");
 
-    registry.forget(PEER_A, "the probe failed");
+    registry.forget(registry.generation(), PEER_A, "the probe failed");
     assertThat(registry.unknownReasonOf(PEER_A))
         .as("a recorded reason outranks the staleness note, being the more specific of the two")
         .isEqualTo("the probe failed");
 
-    registry.record(PEER_A, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1");
+    registry.record(registry.generation(), PEER_A, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1");
     assertThat(registry.unknownReasonOf(PEER_A)).as("and a fresh answer clears it").isNull();
   }
 

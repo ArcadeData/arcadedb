@@ -69,7 +69,7 @@ class Issue7219PeerCapabilityRegistryTest {
 
   @Test
   void aPeerThatAdvertisedTheCapabilityIsCapable() {
-    registry.record(PEER1, Set.of(CAP), "26.10.1");
+    registry.record(registry.generation(), PEER1, Set.of(CAP), "26.10.1");
 
     assertThat(registry.allPeersSupport(List.of(PEER1), CAP)).isTrue();
     assertThat(registry.freshAdvertisementOf(PEER1).version()).isEqualTo("26.10.1");
@@ -79,7 +79,7 @@ class Issue7219PeerCapabilityRegistryTest {
   void aPeerThatAnsweredWithoutTheCapabilityBlocksIt() {
     // A build that HAS the capability endpoint but does not decode this particular section - the shape every
     // future capability will arrive in, and the one a version comparison would get wrong.
-    registry.record(PEER1, Set.of("some-other-capability"), "26.10.1");
+    registry.record(registry.generation(), PEER1, Set.of("some-other-capability"), "26.10.1");
 
     assertThat(registry.allPeersSupport(List.of(PEER1), CAP)).isFalse();
     assertThat(registry.peersMissing(List.of(PEER1), CAP)).containsExactly(PEER1);
@@ -87,7 +87,7 @@ class Issue7219PeerCapabilityRegistryTest {
 
   @Test
   void oneIncapablePeerBlocksTheWholeCluster() {
-    registry.record(PEER1, Set.of(CAP), "26.10.1");
+    registry.record(registry.generation(), PEER1, Set.of(CAP), "26.10.1");
 
     assertThat(registry.allPeersSupport(List.of(PEER1, PEER2), CAP))
         .as("PEER2 has never answered, so the cluster is not covered even though PEER1 is")
@@ -97,7 +97,7 @@ class Issue7219PeerCapabilityRegistryTest {
 
   @Test
   void anExpiredAdvertisementBlocksTheCapability() {
-    registry.record(PEER1, Set.of(CAP), "26.10.1");
+    registry.record(registry.generation(), PEER1, Set.of(CAP), "26.10.1");
     assertThat(registry.allPeersSupport(List.of(PEER1), CAP)).isTrue();
 
     // Still inside the window: several missed refresh rounds are absorbed on purpose, so a GC pause on one peer
@@ -116,20 +116,20 @@ class Issue7219PeerCapabilityRegistryTest {
 
   @Test
   void aPeerThatLostTheCapabilityBlocksItAgain() {
-    registry.record(PEER1, Set.of(CAP), "26.10.1");
+    registry.record(registry.generation(), PEER1, Set.of(CAP), "26.10.1");
     assertThat(registry.allPeersSupport(List.of(PEER1), CAP)).isTrue();
 
     // What a failed probe does - a 404 from a build without the route, or an unreachable peer. Forgetting rather
     // than keeping matters: the peer may have been replaced by an older build, and believing its last answer
     // until the TTL ran out would be believing it for a reason that no longer holds.
-    registry.forget(PEER1, "the probe failed");
+    registry.forget(registry.generation(), PEER1, "the probe failed");
 
     assertThat(registry.allPeersSupport(List.of(PEER1), CAP)).isFalse();
   }
 
   @Test
   void aPeerOutsideTheConfigurationDoesNotBlock() {
-    registry.record(PEER1, Set.of(CAP), "26.10.1");
+    registry.record(registry.generation(), PEER1, Set.of(CAP), "26.10.1");
 
     // PEER2 was never asked about, because the question is only ever about the peers the leader replicates to.
     assertThat(registry.allPeersSupport(List.of(PEER1), CAP)).isTrue();
@@ -137,10 +137,10 @@ class Issue7219PeerCapabilityRegistryTest {
 
   @Test
   void retainOnlyDropsPeersNoLongerInTheConfiguration() {
-    registry.record(PEER1, Set.of(CAP), "26.10.1");
-    registry.record(PEER2, Set.of(CAP), "26.10.1");
+    registry.record(registry.generation(), PEER1, Set.of(CAP), "26.10.1");
+    registry.record(registry.generation(), PEER2, Set.of(CAP), "26.10.1");
 
-    registry.retainOnly(List.of(PEER1));
+    registry.retainOnly(registry.generation(), List.of(PEER1));
 
     assertThat(registry.freshAdvertisementOf(PEER1)).isNotNull();
     assertThat(registry.freshAdvertisementOf(PEER2))
@@ -153,7 +153,7 @@ class Issue7219PeerCapabilityRegistryTest {
     // The refresh loop parses into its own set; a recorded answer that shared that set could change under the
     // gate between two DDLs.
     final Set<String> parsed = new java.util.LinkedHashSet<>(Set.of(CAP));
-    registry.record(PEER1, parsed, "26.10.1");
+    registry.record(registry.generation(), PEER1, parsed, "26.10.1");
     parsed.clear();
 
     assertThat(registry.allPeersSupport(List.of(PEER1), CAP)).isTrue();
@@ -163,7 +163,7 @@ class Issue7219PeerCapabilityRegistryTest {
   void everyMissingPeerIsNamed() {
     // peersMissing is not just a boolean in disguise: it is what the operator log names, and "which node is
     // holding the cluster back" is the only actionable half of the answer.
-    registry.record(PEER1, Set.of(CAP), "26.10.1");
+    registry.record(registry.generation(), PEER1, Set.of(CAP), "26.10.1");
 
     assertThat(registry.peersMissing(List.of(PEER1, PEER2, "arcadedb3"), CAP))
         .containsExactly(PEER2, "arcadedb3");

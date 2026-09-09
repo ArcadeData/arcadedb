@@ -109,6 +109,21 @@ public final class PeerCapabilityRegistry {
   private final ConcurrentHashMap<String, String>        unknownReasons = new ConcurrentHashMap<>();
   private final long                                     ttlMs;
 
+  /**
+   * Which leadership term's answers this registry currently holds, bumped by {@link #clear()}.
+   * <p>
+   * {@code stopCapabilityMonitor} ends a refresh with {@code shutdownNow()} and does not wait for the round in
+   * flight, so a probe that was already dialling when leadership was lost can come back AFTER the next term's
+   * {@link #clear()} and record the previous term's answer over it - re-opening precisely the window the clear
+   * exists to close. Every write is stamped with the generation its round started in and is dropped when that no
+   * longer matches, which closes it without blocking a leadership transition on a network timeout. Read and
+   * compared under {@link #writeLock}, so the check and the write cannot be separated by a clear.
+   */
+  private long generation;
+
+  /** Serialises the generation check against the writes it guards; never held across anything that blocks. */
+  private final Object writeLock = new Object();
+
   // Injectable clock for deterministic tests; defaults to the wall clock. Volatile because a test thread writes
   // it while the capability-refresh thread reads it (consistent with ClusterMonitor's clock).
   private volatile LongSupplier clock = System::currentTimeMillis;
@@ -131,15 +146,24 @@ public final class PeerCapabilityRegistry {
    * Records what {@code peerId} just answered. The capability set is copied and frozen, so a caller reusing its
    * parsing buffer cannot mutate a recorded answer.
    *
+   * @param generation the value {@link #generation()} gave when this round of probing started; an answer from an
+   *                   ended leadership term is dropped rather than recorded.
+   *
    * @return true when this answer differs from the last one reported for {@code peerId} - including the first
    * answer of all, and the first after a removal - so the caller can log a transition rather than a line every
-   * refresh period for a state that has not moved.
+   * refresh period for a state that has not moved. False also when the answer was dropped as out of term, which
+   * is not a transition worth logging either.
    */
-  public boolean record(final String peerId, final Set<String> capabilities, final String version) {
+  public boolean record(final long generation, final String peerId, final Set<String> capabilities,
+      final String version) {
     final Set<String> frozen = Set.copyOf(capabilities);
-    advertisements.put(peerId, new Advertisement(frozen, version, clock.getAsLong()));
-    unknownReasons.remove(peerId);
-    return !frozen.equals(lastReported.put(peerId, frozen));
+    synchronized (writeLock) {
+      if (generation != this.generation)
+        return false;
+      advertisements.put(peerId, new Advertisement(frozen, version, clock.getAsLong()));
+      unknownReasons.remove(peerId);
+      return !frozen.equals(lastReported.put(peerId, frozen));
+    }
   }
 
   /**
@@ -147,17 +171,24 @@ public final class PeerCapabilityRegistry {
    * probe fails: a peer that stopped answering may have been replaced by an older build, and continuing to
    * believe its last answer until the TTL runs out would be believing it for the wrong reason.
    *
-   * @return true on the TRANSITION into the failed state, false while it persists. Reported the first time as
-   * well as on a regression from a known-good answer, because "no peer ever answered" and "a peer stopped
-   * answering" are both things an operator needs told.
+   * @param generation the value {@link #generation()} gave when this round of probing started; a failure from an
+   *                   ended leadership term is dropped rather than recorded.
+   *
+   * @return true on the TRANSITION into the failed state, false while it persists or when the round is out of
+   * term. Reported the first time as well as on a regression from a known-good answer, because "no peer ever
+   * answered" and "a peer stopped answering" are both things an operator needs told.
    */
-  public boolean forget(final String peerId, final String reason) {
-    advertisements.remove(peerId);
-    if (reason == null)
-      unknownReasons.remove(peerId);
-    else
-      unknownReasons.put(peerId, reason);
-    return lastReported.put(peerId, PROBE_FAILED) != PROBE_FAILED;
+  public boolean forget(final long generation, final String peerId, final String reason) {
+    synchronized (writeLock) {
+      if (generation != this.generation)
+        return false;
+      advertisements.remove(peerId);
+      if (reason == null)
+        unknownReasons.remove(peerId);
+      else
+        unknownReasons.put(peerId, reason);
+      return lastReported.put(peerId, PROBE_FAILED) != PROBE_FAILED;
+    }
   }
 
   /**
@@ -170,9 +201,23 @@ public final class PeerCapabilityRegistry {
    * is dropped is the entitlement to act on it before that round has run.
    */
   public void clear() {
-    advertisements.clear();
-    unknownReasons.clear();
-    lastReported.clear();
+    synchronized (writeLock) {
+      generation++;
+      advertisements.clear();
+      unknownReasons.clear();
+      lastReported.clear();
+    }
+  }
+
+  /**
+   * The generation a round of writes belongs to, read once when the round starts and handed back to every
+   * {@link #record}, {@link #forget} and {@link #retainOnly} it makes. A round whose generation has moved on was
+   * started by a leadership term that has ended, and its answers are not this term's to believe.
+   */
+  public long generation() {
+    synchronized (writeLock) {
+      return generation;
+    }
   }
 
   /**
@@ -205,13 +250,19 @@ public final class PeerCapabilityRegistry {
    * Forgets every peer outside {@code peerIds}, so a cluster that has removed and re-added peers over a long
    * uptime does not accumulate their advertisements for the life of the leader.
    */
-  public void retainOnly(final Collection<String> peerIds) {
+  public void retainOnly(final long generation, final Collection<String> peerIds) {
     final Set<String> retained = new LinkedHashSet<>(peerIds);
-    advertisements.keySet().retainAll(retained);
-    unknownReasons.keySet().retainAll(retained);
-    // The report shadow goes with them, or a re-added peer's first advertisement is suppressed as "unchanged"
-    // against what it said before it left (issue #7301).
-    lastReported.keySet().retainAll(retained);
+    synchronized (writeLock) {
+      if (generation != this.generation)
+        // A previous term's configuration is not this term's, and pruning by it could drop a peer this term has
+        // already asked about.
+        return;
+      advertisements.keySet().retainAll(retained);
+      unknownReasons.keySet().retainAll(retained);
+      // The report shadow goes with them, or a re-added peer's first advertisement is suppressed as "unchanged"
+      // against what it said before it left (issue #7301).
+      lastReported.keySet().retainAll(retained);
+    }
   }
 
   /** {@code peerId}'s last answer if it is still within the TTL, {@code null} when unknown or expired. */

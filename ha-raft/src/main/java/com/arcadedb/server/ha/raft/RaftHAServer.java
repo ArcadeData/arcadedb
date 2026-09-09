@@ -217,6 +217,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // integration test can stand a node up that behaves like a build predating a section - which is the only way to
   // exercise a mixed-version cluster inside one JVM.
   private volatile Set<String>               advertisedCapabilities = PeerCapabilities.LOCAL;
+  // This node's HTTPS client for the capability probe, rebuilt only when its truststore changes (issue #7301).
+  // Per server and not static: several ArcadeDBServer instances share a JVM in every HA test, and a shared cache
+  // would rebuild on each probe and could close a client another server was still sending on.
+  private final    TrustedHttpClientCache    capabilityHttpsClients = new TrustedHttpClientCache();
   // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728). One worker is
   // enough since at most one resync fires per replica per stall streak; a small bounded queue with a
   // caller-runs policy degrades to running on the lag-monitor thread under the (unlikely) burst.
@@ -3945,6 +3949,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // @VisibleForTesting
   void refreshPeerCapabilities() {
     try {
+      // The term this round belongs to, read once and handed to every write it makes. stopCapabilityMonitor()
+      // does not wait for a round in flight, so this round can still be dialling when leadership is lost and come
+      // back after the next term cleared the registry; the stamp is what stops it recording the previous term's
+      // answer over the new one, without blocking the transition on a network timeout (issue #7314 review).
+      final long generation = peerCapabilities.generation();
       final List<RaftPeer> peers = configuredPeers();
       final List<String> peerIds = new ArrayList<>(peers.size());
       for (final RaftPeer peer : peers)
@@ -3952,7 +3961,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // Bound the registry by the live configuration: a long-lived leader of a cluster that has added and removed
       // peers must not accumulate their advertisements - nor what it last reported about them - for its whole
       // uptime (issue #7301).
-      peerCapabilities.retainOnly(peerIds);
+      peerCapabilities.retainOnly(generation, peerIds);
 
       final String clusterToken = getClusterToken();
       // Why each peer has no answer yet, and the withheld addresses worth one more question. Both are resolved in
@@ -3982,12 +3991,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         }
 
         try {
-          recordPeerCapabilities(peerId.toString(), capabilityProber.probe(peerId.toString(), dial.httpAddress(),
-              dial.httpsAddress(), clusterToken));
+          recordPeerCapabilities(generation, peerId.toString(), capabilityProber.probe(peerId.toString(),
+              dial.httpAddress(), dial.httpsAddress(), clusterToken));
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           unanswered.put(peerId.toString(), "the capability query was interrupted");
-          forgetUnanswered(unanswered);
+          forgetUnanswered(generation, unanswered);
           return;
         } catch (final Exception e) {
           // A peer running a build without the capability route answers 404 and lands here, which is exactly the
@@ -3997,9 +4006,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         }
       }
 
-      if (!probeSharedEndpoints(sharedEndpoints, peerIds, unanswered, clusterToken))
+      if (!probeSharedEndpoints(generation, sharedEndpoints, peerIds, unanswered, clusterToken))
         return;
-      forgetUnanswered(unanswered);
+      forgetUnanswered(generation, unanswered);
     } catch (final Exception e) {
       // Never let the scheduled task die: scheduleWithFixedDelay cancels the schedule on an escaped throwable,
       // and a cancelled refresh is a leader that silently stops re-checking its peers.
@@ -4018,8 +4027,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    *
    * @return {@code false} when the round was interrupted and the caller must stand down without settling.
    */
-  private boolean probeSharedEndpoints(final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints,
-      final List<String> peerIds, final Map<String, String> unanswered, final String clusterToken) {
+  private boolean probeSharedEndpoints(final long generation,
+      final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints, final List<String> peerIds,
+      final Map<String, String> unanswered, final String clusterToken) {
     for (final PeerDialAddress.SharedEndpoint endpoint : sharedEndpoints) {
       try {
         final PeerCapabilityQuery.Advertisement advertisement = capabilityProber.probe(null, endpoint.httpAddress(),
@@ -4032,10 +4042,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             "Peer '%s' identified itself at the shared address %s, so its capabilities can be negotiated after all",
             answeringPeer, endpoint.httpAddress());
         unanswered.remove(answeringPeer);
-        recordPeerCapabilities(answeringPeer, advertisement);
+        recordPeerCapabilities(generation, answeringPeer, advertisement);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
-        forgetUnanswered(unanswered);
+        forgetUnanswered(generation, unanswered);
         return false;
       } catch (final Exception e) {
         // Nothing answers at a collapsed address that no peer is actually listening on, and a peer on an older
@@ -4060,19 +4070,20 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /** Records every peer this round could not get an answer for as incapable, each with the reason it failed. */
-  private void forgetUnanswered(final Map<String, String> unanswered) {
+  private void forgetUnanswered(final long generation, final Map<String, String> unanswered) {
     for (final Map.Entry<String, String> entry : unanswered.entrySet())
-      forgetPeerCapabilities(entry.getKey(), entry.getValue());
+      forgetPeerCapabilities(generation, entry.getKey(), entry.getValue());
   }
 
-  private void recordPeerCapabilities(final String peerId, final PeerCapabilityQuery.Advertisement advertisement) {
-    if (peerCapabilities.record(peerId, advertisement.capabilities(), advertisement.version()))
+  private void recordPeerCapabilities(final long generation, final String peerId,
+      final PeerCapabilityQuery.Advertisement advertisement) {
+    if (peerCapabilities.record(generation, peerId, advertisement.capabilities(), advertisement.version()))
       LogManager.instance().log(this, Level.INFO,
           "Peer '%s' (version %s) advertises the cluster capabilities %s", peerId, advertisement.version(),
           new TreeSet<>(advertisement.capabilities()));
   }
 
-  private void forgetPeerCapabilities(final String peerId, final String reason) {
+  private void forgetPeerCapabilities(final long generation, final String peerId, final String reason) {
     // Reported on the TRANSITION into the failed state and not once per refresh period: a peer that is
     // permanently on an older build is the steady state of a half-finished rolling upgrade, and a line every five
     // seconds about it would be noise. It is reported the FIRST time as well as on a regression from a known-good
@@ -4082,7 +4093,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // The registry answers that question, because the shadow map deciding it has to be pruned by whatever prunes
     // the entry it shadows - held here, nothing pruned it, and a re-added peer's first advertisement was
     // suppressed against what it said before it left (issue #7301).
-    if (peerCapabilities.forget(peerId, reason))
+    if (peerCapabilities.forget(generation, peerId, reason))
       LogManager.instance().log(this, Level.WARNING,
           "Peer '%s' does not advertise any cluster capability (%s); optional wire-format sections will not be "
               + "written to this cluster until it answers again", peerId, reason);
@@ -4161,9 +4172,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       throws IOException, InterruptedException {
     return expectedPeerId != null
         ? PeerCapabilityQuery.fetch(expectedPeerId, httpAddress, httpsAddress, clusterToken,
-            PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer)
+            PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer, capabilityHttpsClients)
         : PeerCapabilityQuery.fetchFromSharedEndpoint(httpAddress, httpsAddress, clusterToken,
-            PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer);
+            PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer, capabilityHttpsClients);
   }
 
   /**
