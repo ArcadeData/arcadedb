@@ -116,6 +116,14 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     logger.logLine(2, "Start importing... ");
 
+    // One ImporterContext is shared by all four of Importer.load()'s loadFromSource() phases, so this counter
+    // arrives carrying whatever an earlier phase parsed. The periodic commit below is taken off it, and an
+    // inherited offset k moved the first commit to COMMIT_EVERY - (k % COMMIT_EVERY) records instead of
+    // COMMIT_EVERY (issue #7313). Zeroing it on entry - as CSVImporterFormat, RDFImporterFormat,
+    // Neo4jImporterFormat, OrientDBImporterFormat, GloVeImporterFormat, Word2VecImporterFormat and
+    // Word2VecImporterFormatLSM all already do - makes the boundary count this phase's own records.
+    context.parsed.set(0);
+
     // Governs the commit granularity below (see the loop): skip mode needs one record per transaction so a
     // failed record's rollback can never discard an earlier, already-successful one riding in the same batch.
     final boolean skipOnRowError = settings.isSkipOnRowError();
