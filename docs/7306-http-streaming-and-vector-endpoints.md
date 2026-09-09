@@ -103,4 +103,33 @@ Both of the issue's claims reproduce exactly.
 
 ## Residual risk
 
-See the end of this document, filled in at PR time.
+1. **`serializer=graph` / `serializer=studio` are not streamable.** Both build a single object with
+   deduplicated `vertices`/`edges` arrays, which cannot be emitted until the last row has been seen. Asking for
+   NDJSON with either serializer therefore falls back to the buffered body rather than failing. Argued, not
+   fixed: streaming them would mean changing what they return.
+
+2. **A stream that fails mid-body is not retried.** `RemoteDatabase.queryStream` makes one attempt against the
+   selected server instead of running the failover loop the buffered path runs, because replaying a command
+   whose first rows were already delivered would hand the caller two partial results. Failures before the first
+   byte still surface as `RemoteException`.
+
+3. **Vector search does not generate embeddings.** Every surface takes `queryVector` from the caller. This is
+   the pre-existing MCP contract, carried over unchanged.
+
+4. **The search core moved modules.** `MCPVectorLeg` is now `com.arcadedb.server.vector.VectorLeg`; the MCP
+   tool classes keep their public API and delegate. Anything outside this repository importing the old
+   `com.arcadedb.mcp.tools.MCPVectorLeg` breaks - it was an internal helper, not published API.
+
+## Verification
+
+| Suite | Result |
+|---|---|
+| `server` unit (surefire) | 971 pass |
+| `server` ITs, `com.arcadedb.server.http.**` | 733 pass, 2 skipped |
+| `mcp` unit + ITs | 316 + 11 pass |
+| `network` unit | all pass |
+| `grpcw` + `grpc-client` unit + ITs | all pass |
+
+Every new and modified IT extends `BaseGraphServerTest` and reads its port back from
+`getServer(0).getHttpServer().getPort()`. None pins 2480 - including `OpenApiSpecGenerationIT`, which did
+before this change and failed against a developer machine already running ArcadeDB on that port.
