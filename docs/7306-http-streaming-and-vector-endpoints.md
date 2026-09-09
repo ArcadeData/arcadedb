@@ -104,9 +104,10 @@ Both of the issue's claims reproduce exactly.
 ## Residual risk
 
 1. **`serializer=graph` / `serializer=studio` are not streamable.** Both build a single object with
-   deduplicated `vertices`/`edges` arrays, which cannot be emitted until the last row has been seen. Asking for
-   NDJSON with either serializer therefore falls back to the buffered body rather than failing. Argued, not
-   fixed: streaming them would mean changing what they return.
+   deduplicated `vertices`/`edges` arrays, and `studio` runs an edge-completion pass over the finished vertex
+   set afterwards. Neither is expressible one line at a time. Asking for NDJSON with either is refused with a
+   400 naming the alternative, rather than silently emitting the aggregate as one line and calling that a
+   stream. Both shapes stay available, unchanged, on the buffered encoding.
 
 2. **A stream that fails mid-body is not retried.** `RemoteDatabase.queryStream` makes one attempt against the
    selected server instead of running the failover loop the buffered path runs, because replaying a command
