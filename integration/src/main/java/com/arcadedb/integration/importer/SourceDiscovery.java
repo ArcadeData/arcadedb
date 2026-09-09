@@ -425,10 +425,19 @@ public class SourceDiscovery {
    * The character separating the terms of an RDF triple line, or {@code 0} when {@code line} is not one
    * (issue #7346).
    * <p>
-   * The line is recognised by its SHAPE - {@code subject separator predicate separator object [separator .]} -
-   * where the subject is an {@code <IRI>} or a {@code _:blank} node, the predicate is an {@code <IRI>}, and the
-   * object is any of the three plus a quoted literal with its optional {@code @lang} or {@code ^^<datatype>}
-   * suffix. The whole line has to be consumed, so an XML element or a delimited-text row cannot satisfy it.
+   * The line is recognised by its SHAPE. The grammar the four private helpers below implement between them,
+   * in one place:
+   * <pre>
+   *   statement := subject SEP predicate SEP object (SEP '.')?
+   *   subject   := IRI | blank
+   *   predicate := IRI
+   *   object    := IRI | blank | literal
+   *   IRI       := '&lt;' (any char N-Triples permits in an IRI)+ '&gt;'
+   *   blank     := "_:" [A-Za-z0-9_-]+
+   *   literal   := '"' (escaped char | any char but '"')* '"' ( '@' langTag | "^^" IRI )?
+   *   SEP       := one or more of ONE character from {@link #isTermSeparator}
+   * </pre>
+   * The whole line has to be consumed by it, so an XML element or a delimited-text row cannot satisfy it.
    * <p>
    * What it replaces was "collect every character outside {@code <...>} and require them all to be equal", whose
    * loop bound of {@code size() - 1} tolerated exactly one trailing character - the {@code .} of a canonical
