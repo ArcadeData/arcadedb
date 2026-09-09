@@ -26,7 +26,9 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 
@@ -228,8 +230,8 @@ class Issue7332SharedEndpointPortOffsetTest {
    * exception everywhere else, which is what the diagnostic assertion above needs.
    */
   private static final class ScriptedProber implements RaftHAServer.CapabilityProber {
-    private final List<String>                                    calls        = new ArrayList<>();
-    private final java.util.Map<String, PeerCapabilityQuery.Advertisement> sharedAnswers = new java.util.HashMap<>();
+    private final List<String>                                     calls         = new ArrayList<>();
+    private final Map<String, PeerCapabilityQuery.Advertisement>    sharedAnswers = new HashMap<>();
 
     @Override
     public PeerCapabilityQuery.Advertisement probe(final String expectedPeerId, final String httpAddress,

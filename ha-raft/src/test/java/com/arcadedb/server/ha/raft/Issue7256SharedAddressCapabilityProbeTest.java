@@ -21,10 +21,12 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.http.HttpServer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.net.SocketTimeoutException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -184,7 +186,7 @@ class Issue7256SharedAddressCapabilityProbeTest {
   void aProbeFailureWithNoMessageStillReportsWhy() {
     final RaftHAServer raft = newDetachedServer("localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
     raft.setCapabilityProber((expectedPeerId, httpAddress, httpsAddress, clusterToken) -> {
-      throw new java.net.SocketTimeoutException();
+      throw new SocketTimeoutException();
     });
 
     raft.refreshPeerCapabilities();
@@ -342,7 +344,7 @@ class Issue7256SharedAddressCapabilityProbeTest {
     final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
     when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
     if (localHttpPort > 0) {
-      final com.arcadedb.server.http.HttpServer httpServer = mock(com.arcadedb.server.http.HttpServer.class);
+      final HttpServer httpServer = mock(HttpServer.class);
       when(httpServer.getPort()).thenReturn(localHttpPort);
       when(mockServer.getHttpServer()).thenReturn(httpServer);
     }
