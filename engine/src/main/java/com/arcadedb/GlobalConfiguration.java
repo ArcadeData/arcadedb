@@ -2135,8 +2135,10 @@ public enum GlobalConfiguration {
       arcadedb.ha.k8s is set), plus the members of the live Raft configuration, which are picked up on \
       every health monitor tick so a peer that joined at runtime is admitted; on Kubernetes the headless \
       service behind arcadedb.ha.k8sSuffix is resolved too, so a StatefulSet scale-up pod can complete its \
-      auto-join. Loopback is always allowed. Does not provide peer identity or encryption: use mTLS on \
-      untrusted networks.""",
+      auto-join. Loopback is always allowed. A host that stops being admitted also loses the reach an \
+      already-established connection still gave it: the Raft RPCs running on that connection are closed with \
+      a permission error and later ones are refused, though the connection itself stays open until the peer \
+      drops it. Does not provide peer identity or encryption: use mTLS on untrusted networks.""",
       Boolean.class, true),
 
   HA_GRPC_ALLOWLIST_REFRESH_MS("arcadedb.ha.grpcAllowlistRefreshMs", SCOPE.SERVER,

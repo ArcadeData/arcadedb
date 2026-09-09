@@ -19,22 +19,34 @@
 package com.arcadedb.server.ha.raft;
 
 import org.apache.ratis.grpc.server.GrpcServices;
+import org.apache.ratis.thirdparty.io.grpc.ServerInterceptor;
 import org.apache.ratis.thirdparty.io.grpc.ServerTransportFilter;
 import org.apache.ratis.thirdparty.io.grpc.netty.NettyServerBuilder;
 
 import java.util.EnumSet;
 
 /**
- * {@link GrpcServices.Customizer} that installs the configured server-side transport filters
+ * {@link GrpcServices.Customizer} that installs the configured server-side transport filters and call interceptors
  * on the Ratis Netty gRPC server builder. Ratis 3.2.2 routes all service types (ADMIN, CLIENT,
  * SERVER) through the same listener, so one customizer covers every inbound RPC.
+ * <p>
+ * A transport filter gates a connection once, when it is established; an interceptor is consulted on every RPC. The
+ * peer allowlist needs both (issue #7250): the filter to refuse a connection, the interceptor to revoke one that was
+ * established before its address stopped being admitted. Interceptors registered on the builder are server-wide -
+ * {@code ServerImpl} applies them to every call whatever order the services were added in - so the two are installed
+ * together here rather than per service.
  */
 final class RaftGrpcServicesCustomizer implements GrpcServices.Customizer {
 
-  private final ServerTransportFilter[] filters;
+  private static final ServerTransportFilter[] NO_FILTERS      = new ServerTransportFilter[0];
+  private static final ServerInterceptor[]     NO_INTERCEPTORS = new ServerInterceptor[0];
 
-  RaftGrpcServicesCustomizer(final ServerTransportFilter... filters) {
-    this.filters = filters == null ? new ServerTransportFilter[0] : filters;
+  private final ServerTransportFilter[] filters;
+  private final ServerInterceptor[]     interceptors;
+
+  RaftGrpcServicesCustomizer(final ServerTransportFilter[] filters, final ServerInterceptor[] interceptors) {
+    this.filters = filters == null ? NO_FILTERS : filters;
+    this.interceptors = interceptors == null ? NO_INTERCEPTORS : interceptors;
   }
 
   @Override
@@ -42,6 +54,8 @@ final class RaftGrpcServicesCustomizer implements GrpcServices.Customizer {
     NettyServerBuilder result = builder;
     for (final ServerTransportFilter f : filters)
       result = result.addTransportFilter(f);
+    for (final ServerInterceptor i : interceptors)
+      result = result.intercept(i);
     return result;
   }
 }
