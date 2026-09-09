@@ -38,9 +38,10 @@ package com.arcadedb.engine.timeseries;
 @FunctionalInterface
 public interface TimeSeriesRowVisitor {
   /**
-   * @param row {@code { timestamp, col1, col2, ... }}, valid only for the duration of the call: the scan is free to
-   *            reuse nothing and allocate nothing further once it returns, so a visitor that keeps the array must
-   *            copy what it needs out of it.
+   * @param row {@code { timestamp, col1, col2, ... }}, freshly allocated for this row and NOT reused by the scan
+   *            afterwards, so a visitor may keep the array rather than copy out of it - which is what lets
+   *            {@code iterateRange} be this interface with an {@code ArrayList} for a visitor. A scan that ever
+   *            wanted to hand out a reused buffer would have to change this contract and that caller together.
    *
    * @return {@code false} to stop the scan, which stops it for good - no further block is read and no further
    * shard is opened. {@code true} to continue.
