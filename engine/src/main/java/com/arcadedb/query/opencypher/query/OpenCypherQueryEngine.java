@@ -181,15 +181,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
         actualQuery = actualQuery.substring(8).trim();
       }
 
-      // The $profileExecution parameter - injected by the HTTP handler for Studio's profileExecution: "detailed",
-      // and by ServerDatabase for every statement while the server profiler is recording - asks for the statement
-      // to be TIMED, not for it to be run differently. It therefore turns on per-step timing over the ordinary
-      // streaming execution and is deliberately NOT folded into `profile` here: doing that rerouted every Cypher
-      // statement on a recording server onto CypherExecutionPlan.profile(), which drains the plan into heap, so
-      // the reported cost described a materialising execution the statement never otherwise performs and the
-      // diagnostic itself changed what it was diagnosing (issue #7330).
-      final boolean timeExecution =
-          parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution"));
+      final boolean timeExecution = asksForTimedExecution(parameters);
 
       // Use statement cache to avoid re-parsing. Carries the parameter names the query references, so the
       // check below costs no extra lookup.
@@ -246,15 +238,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
         actualQuery = actualQuery.substring(8).trim();
       }
 
-      // The $profileExecution parameter - injected by the HTTP handler for Studio's profileExecution: "detailed",
-      // and by ServerDatabase for every statement while the server profiler is recording - asks for the statement
-      // to be TIMED, not for it to be run differently. It therefore turns on per-step timing over the ordinary
-      // streaming execution and is deliberately NOT folded into `profile` here: doing that rerouted every Cypher
-      // statement on a recording server onto CypherExecutionPlan.profile(), which drains the plan into heap, so
-      // the reported cost described a materialising execution the statement never otherwise performs and the
-      // diagnostic itself changed what it was diagnosing (issue #7330).
-      final boolean timeExecution =
-          parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution"));
+      final boolean timeExecution = asksForTimedExecution(parameters);
 
       // Use statement cache to avoid re-parsing. Carries the parameter names the query references, so the
       // check below costs no extra lookup.
@@ -303,6 +287,24 @@ public class OpenCypherQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Object... parameters) {
     return command(query, configuration, convertPositionalParameters(parameters));
+  }
+
+  /**
+   * Whether the caller asked for the statement to be TIMED - not for it to be run differently.
+   * <p>
+   * {@code $profileExecution} is injected by the HTTP handler for Studio's {@code profileExecution: "detailed"},
+   * and by {@code ServerDatabase} for every statement while the server profiler is recording. It turns on per-step
+   * timing over the ordinary streaming execution, and is deliberately NOT folded into the {@code PROFILE} keyword's
+   * own flag: doing that rerouted every Cypher statement on a recording server onto
+   * {@link CypherExecutionPlan#profile()}, which drains the plan into heap, so the reported cost described a
+   * materialising execution the statement never otherwise performs - the diagnostic changed what it was diagnosing
+   * (issue #7330).
+   * <p>
+   * One method rather than a copy in {@link #query} and another in {@link #command}, so the two cannot drift apart
+   * the way the folding they replace did.
+   */
+  private static boolean asksForTimedExecution(final Map<String, Object> parameters) {
+    return parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution"));
   }
 
   /**
