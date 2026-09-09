@@ -405,6 +405,13 @@ function profilerRenderQueryTable() {
   });
 }
 
+
+// A step the engine never timed reports occurrences but no measured sample. Showing its timings as 0 reads as
+// "instant" instead of "unknown", so the table says so in words and the chart leaves it out (issue #7291).
+function profilerIsStepUntimed(step) {
+  return step.measuredCount === 0 && step.executionCount > 0;
+}
+
 function profilerShowDetail(index) {
   var q = profilerData.queries[index];
   if (!q) return;
@@ -441,9 +448,7 @@ function profilerShowDetail(index) {
   jQuery("#profilerStepTable tbody").empty();
   for (var j = 0; j < steps.length; j++) {
     var s = steps[j];
-    // A step the engine never timed reports no measured sample. Showing its columns as 0 reads as
-    // "instant" instead of "unknown", so say so once rather than printing five zeros (issue #7291).
-    var untimed = s.measuredCount === 0 && s.executionCount > 0;
+    var untimed = profilerIsStepUntimed(s);
     var cells = untimed
       ? '<td colspan="5" class="text-muted" title="This step reports no timing: per-step timers only run when the engine is asked to profile the execution.">not timed</td>'
       : '<td>' + s.totalCostMs + '</td>' +
@@ -462,7 +467,7 @@ function profilerShowDetail(index) {
   jQuery("#profilerStepChart").empty();
   var timedSteps = [];
   for (var t = 0; t < steps.length; t++)
-    if (!(steps[t].measuredCount === 0 && steps[t].executionCount > 0))
+    if (!profilerIsStepUntimed(steps[t]))
       timedSteps.push(steps[t]);
   if (timedSteps.length > 0 && typeof ApexCharts !== "undefined") {
     var categories = [];
