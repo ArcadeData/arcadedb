@@ -82,6 +82,12 @@ public final class PeerCapabilityRegistry {
   }
 
   private final ConcurrentHashMap<String, Advertisement> advertisements = new ConcurrentHashMap<>();
+
+  /**
+   * Why each currently-unknown peer is unknown, so the cluster-status endpoint can say it (issue #7256). Purely
+   * operator-facing: {@link #peersMissing} never reads it, because every unknown is a "no" whatever produced it.
+   */
+  private final ConcurrentHashMap<String, String>        unknownReasons = new ConcurrentHashMap<>();
   private final long                                     ttlMs;
 
   // Injectable clock for deterministic tests; defaults to the wall clock. Volatile because a test thread writes
@@ -108,6 +114,7 @@ public final class PeerCapabilityRegistry {
    */
   public void record(final String peerId, final Set<String> capabilities, final String version) {
     advertisements.put(peerId, new Advertisement(Set.copyOf(capabilities), version, clock.getAsLong()));
+    unknownReasons.remove(peerId);
   }
 
   /**
@@ -115,8 +122,38 @@ public final class PeerCapabilityRegistry {
    * probe fails: a peer that stopped answering may have been replaced by an older build, and continuing to
    * believe its last answer until the TTL runs out would be believing it for the wrong reason.
    */
-  public void forget(final String peerId) {
+  public void forget(final String peerId, final String reason) {
     advertisements.remove(peerId);
+    if (reason == null)
+      unknownReasons.remove(peerId);
+    else
+      unknownReasons.put(peerId, reason);
+  }
+
+  /**
+   * Why {@code peerId} counts as incapable, or {@code null} when it has a fresh answer or was never asked at all.
+   * <p>
+   * The one thing an operator can act on when a capability never arrives. A peer whose address is ambiguous is the
+   * case this exists for: it fails the safe way and silently, so an absent {@code capabilities} field on
+   * {@code GET /api/v1/cluster} reads identically to "this peer runs an older build", and the remedy for the two
+   * is nothing alike (issue #7256).
+   * <p>
+   * Covers the THIRD unknown as well as the two {@link #forget} records. An answer that simply aged out with no
+   * failed probe behind it means the leader stopped asking rather than the peer stopped answering - a node that
+   * lost leadership and regained it has a window of exactly that shape, because {@code stopCapabilityMonitor}
+   * ends the refresh while the advertisements it took stay in this map. Reporting nothing there would leave the
+   * one arm of "every unknown is a no" that no reason describes.
+   */
+  public String unknownReasonOf(final String peerId) {
+    if (freshAdvertisementOf(peerId) != null)
+      return null;
+    final String reason = unknownReasons.get(peerId);
+    if (reason != null)
+      return reason;
+    return advertisements.containsKey(peerId)
+        ? "this peer's last advertisement is older than the " + ttlMs + "ms one is believed for, and no probe has "
+            + "refreshed it since"
+        : null;
   }
 
   /**
@@ -124,7 +161,9 @@ public final class PeerCapabilityRegistry {
    * uptime does not accumulate their advertisements for the life of the leader.
    */
   public void retainOnly(final Collection<String> peerIds) {
-    advertisements.keySet().retainAll(new LinkedHashSet<>(peerIds));
+    final Set<String> retained = new LinkedHashSet<>(peerIds);
+    advertisements.keySet().retainAll(retained);
+    unknownReasons.keySet().retainAll(retained);
   }
 
   /** {@code peerId}'s last answer if it is still within the TTL, {@code null} when unknown or expired. */

@@ -76,6 +76,7 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -209,6 +210,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // channelRecoveryExecutor off the resync executor below.
   private          ScheduledExecutorService  capabilityMonitorExecutor;
   private final    PeerCapabilityRegistry    peerCapabilities = new PeerCapabilityRegistry();
+  // How one capability probe is made (see CapabilityProber). A method reference rather than a lambda reading
+  // arcadeServer, which is a blank final the constructor has not assigned yet at this point.
+  private volatile CapabilityProber          capabilityProber = this::queryPeerCapabilities;
   // What THIS node tells its peers it can decode. A field rather than PeerCapabilities.LOCAL read directly, so an
   // integration test can stand a node up that behaves like a build predating a section - which is the only way to
   // exercise a mixed-version cluster inside one JVM.
@@ -3921,7 +3925,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * <p>
    * <b>Every failure forgets rather than keeps.</b> A peer that stopped answering may have been replaced by an
    * older build, so continuing to believe its last answer until the TTL expires would be believing it for a
-   * reason that no longer holds.
+   * reason that no longer holds. The reason is kept alongside, for {@code GET /api/v1/cluster} to report: an
+   * absent {@code capabilities} field otherwise reads the same whether the peer runs an older build or was never
+   * asked at all, and those have nothing in common as remedies (issue #7256).
+   * <p>
+   * <b>Two passes, because a shared address is still worth asking.</b> On a cluster that declares no {@code http}
+   * ports and whose nodes differ by port, every peer's endpoint is derived onto one address (#6202, #6267) and
+   * {@link PeerDialAddress} withholds it - correctly, for a request that acts on the peer it addressed. This one
+   * does not: it is read-only, and its reply names its own author. So a second pass asks each distinct withheld
+   * address ONCE and credits the answer to whichever configured peer actually answered, which is the only peer it
+   * can be true of. Everything the second pass does not account for stays a "no", so the mechanism still fails the
+   * cheap way; what changes is that such a cluster can reach the negotiated feature at all (issue #7256).
    */
   // @VisibleForTesting
   void refreshPeerCapabilities() {
@@ -3935,6 +3949,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       peerCapabilities.retainOnly(peerIds);
 
       final String clusterToken = getClusterToken();
+      // Why each peer has no answer yet, and the withheld addresses worth one more question. Both are resolved in
+      // the first pass and settled after the second, so a peer that identifies itself there is never also
+      // forgotten for the refusal that sent us looking for it.
+      final Map<String, String> unanswered = new LinkedHashMap<>();
+      final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints = new LinkedHashSet<>();
+
       for (final RaftPeer peer : peers) {
         final RaftPeerId peerId = peer.getId();
         if (peerId.equals(localPeerId))
@@ -3945,31 +3965,98 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // the reply, so the two halves of the guard are independent.
         final PeerDialAddress dial = PeerDialAddress.resolve(this, peerId, "peer");
         if (dial.refused()) {
-          forgetPeerCapabilities(peerId.toString(), dial.refusal());
+          unanswered.put(peerId.toString(), dial.refusal());
+          // A SET of the whole endpoint, so N peers collapsed onto one cost one probe and not N identical ones -
+          // and two peers whose HTTP halves collide while their declared HTTPS halves do not still get a probe
+          // each. Deduplicating on the HTTP address alone would have dropped the second peer's HTTPS endpoint,
+          // which on an SSL cluster is the endpoint actually dialled (issue #7256).
+          if (dial.sharedEndpoint() != null)
+            sharedEndpoints.add(dial.sharedEndpoint());
           continue;
         }
 
         try {
-          final PeerCapabilityQuery.Advertisement advertisement = PeerCapabilityQuery.fetch(peerId.toString(),
-              dial.httpAddress(), dial.httpsAddress(), clusterToken, PeerCapabilityRegistry.PROBE_TIMEOUT_MS,
-              arcadeServer);
-          recordPeerCapabilities(peerId.toString(), advertisement);
+          recordPeerCapabilities(peerId.toString(), capabilityProber.probe(peerId.toString(), dial.httpAddress(),
+              dial.httpsAddress(), clusterToken));
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
-          forgetPeerCapabilities(peerId.toString(), "the capability query was interrupted");
+          unanswered.put(peerId.toString(), "the capability query was interrupted");
+          forgetUnanswered(unanswered);
           return;
         } catch (final Exception e) {
           // A peer running a build without the capability route answers 404 and lands here, which is exactly the
           // discriminator this mechanism turns on - so this arm is the NORMAL one during a rolling upgrade, not
           // an error. forgetPeerCapabilities logs it once per change rather than once per round.
-          forgetPeerCapabilities(peerId.toString(), e.getMessage());
+          unanswered.put(peerId.toString(), describeProbeFailure(e));
         }
       }
+
+      if (!probeSharedEndpoints(sharedEndpoints, peerIds, unanswered, clusterToken))
+        return;
+      forgetUnanswered(unanswered);
     } catch (final Exception e) {
       // Never let the scheduled task die: scheduleWithFixedDelay cancels the schedule on an escaped throwable,
       // and a cancelled refresh is a leader that silently stops re-checking its peers.
       LogManager.instance().log(this, Level.WARNING, "Peer-capability refresh round failed: %s", e.getMessage());
     }
+  }
+
+  /**
+   * Asks each address that {@link PeerDialAddress} withheld as shared, and records the answer against the peer
+   * that gave it (issue #7256). Removes every peer it accounted for from {@code unanswered}.
+   * <p>
+   * Three conditions on the answerer, all of them about not believing an answer for a node that never gave one:
+   * it has to name a peer of the current configuration, it must not be this node, and it must not already have
+   * answered for itself in the first pass - a peer whose own address is unambiguous is not the peer living behind
+   * a collapsed one.
+   *
+   * @return {@code false} when the round was interrupted and the caller must stand down without settling.
+   */
+  private boolean probeSharedEndpoints(final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints,
+      final List<String> peerIds, final Map<String, String> unanswered, final String clusterToken) {
+    for (final PeerDialAddress.SharedEndpoint endpoint : sharedEndpoints) {
+      try {
+        final PeerCapabilityQuery.Advertisement advertisement = capabilityProber.probe(null, endpoint.httpAddress(),
+            endpoint.httpsAddress(), clusterToken);
+        final String answeringPeer = advertisement.peerId();
+        if (answeringPeer.equals(localPeerId.toString()) || !peerIds.contains(answeringPeer)
+            || !unanswered.containsKey(answeringPeer))
+          continue;
+        LogManager.instance().log(this, Level.FINE,
+            "Peer '%s' identified itself at the shared address %s, so its capabilities can be negotiated after all",
+            answeringPeer, endpoint.httpAddress());
+        unanswered.remove(answeringPeer);
+        recordPeerCapabilities(answeringPeer, advertisement);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        forgetUnanswered(unanswered);
+        return false;
+      } catch (final Exception e) {
+        // Nothing answers at a collapsed address that no peer is actually listening on, and a peer on an older
+        // build answers 404 here exactly as it does on the guarded route. Either way the peers behind this address
+        // keep the refusal already recorded against them, which is the more useful of the two reasons.
+        LogManager.instance().log(this, Level.FINE,
+            "No peer identified itself at the shared address %s: %s", endpoint.httpAddress(), e.getMessage());
+      }
+    }
+    return true;
+  }
+
+  /**
+   * A probe failure as an operator-facing reason, never {@code null}. Some exceptions carry no message - a bare
+   * {@code SocketTimeoutException} among them - and a null there would CLEAR the recorded reason rather than set
+   * one, leaving the peer unknown with nothing to say why: the one thing {@code capabilitiesUnknownReason} exists
+   * to provide (issue #7256).
+   */
+  private static String describeProbeFailure(final Exception e) {
+    final String message = e.getMessage();
+    return message != null && !message.isBlank() ? message : e.getClass().getSimpleName();
+  }
+
+  /** Records every peer this round could not get an answer for as incapable, each with the reason it failed. */
+  private void forgetUnanswered(final Map<String, String> unanswered) {
+    for (final Map.Entry<String, String> entry : unanswered.entrySet())
+      forgetPeerCapabilities(entry.getKey(), entry.getValue());
   }
 
   private void recordPeerCapabilities(final String peerId, final PeerCapabilityQuery.Advertisement advertisement) {
@@ -3982,7 +4069,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   private void forgetPeerCapabilities(final String peerId, final String reason) {
-    peerCapabilities.forget(peerId);
+    peerCapabilities.forget(peerId, reason);
     // Reported on the TRANSITION into the failed state and not once per refresh period: a peer that is
     // permanently on an older build is the steady state of a half-finished rolling upgrade, and a line every five
     // seconds about it would be noise. It is reported the FIRST time as well as on a regression from a known-good
@@ -4038,6 +4125,39 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // @VisibleForTesting
   void setAdvertisedCapabilities(final Set<String> capabilities) {
     this.advertisedCapabilities = Set.copyOf(capabilities);
+  }
+
+  /**
+   * How one capability probe is made. A seam, not a strategy: the only production implementation is
+   * {@link PeerCapabilityQuery}, and it exists so the two-pass fan-out of {@link #refreshPeerCapabilities} - whose
+   * whole point is which peer an answer is credited to - can be pinned without standing up a mixed-address
+   * cluster and a network (issue #7256).
+   */
+  @FunctionalInterface
+  interface CapabilityProber {
+    /**
+     * @param expectedPeerId the peer this address is believed to name, or {@code null} to accept whichever peer
+     *                       answers - the shared-endpoint route.
+     */
+    PeerCapabilityQuery.Advertisement probe(String expectedPeerId, String httpAddress, String httpsAddress,
+        String clusterToken) throws IOException, InterruptedException;
+  }
+
+  /** Substitutes how a capability probe is made, so the fan-out can be driven without a network. */
+  // @VisibleForTesting
+  void setCapabilityProber(final CapabilityProber prober) {
+    this.capabilityProber = prober;
+  }
+
+  /** The production {@link CapabilityProber}: one HTTP call, on the guarded route or the shared-endpoint one. */
+  private PeerCapabilityQuery.Advertisement queryPeerCapabilities(final String expectedPeerId,
+      final String httpAddress, final String httpsAddress, final String clusterToken)
+      throws IOException, InterruptedException {
+    return expectedPeerId != null
+        ? PeerCapabilityQuery.fetch(expectedPeerId, httpAddress, httpsAddress, clusterToken,
+            PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer)
+        : PeerCapabilityQuery.fetchFromSharedEndpoint(httpAddress, httpsAddress, clusterToken,
+            PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer);
   }
 
   /**

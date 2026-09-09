@@ -1478,16 +1478,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
     electionCount.incrementAndGet();
     lastElectionTime = now;
 
-    if (raftHAServer == null || newLeaderId == null)
+    // One read of the volatile for the whole callback: the null check below is worth nothing if each of the
+    // dereferences after it re-reads a field a concurrent teardown can null (issue #7253).
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || newLeaderId == null)
       return;
 
     final RaftPeerId prevId = previousLeaderId;
     previousLeaderId = newLeaderId;
 
-    final String leaderName = raftHAServer.getPeerDisplayName(newLeaderId);
+    final String leaderName = raftHA.getPeerDisplayName(newLeaderId);
     // Use the actual Raft term (not the lagging last-applied term) so we can tell a genuine
     // re-election (term advanced) from a same-term re-notification that Ratis sometimes fires.
-    final long currentTerm = raftHAServer.getCurrentTerm();
+    final long currentTerm = raftHA.getCurrentTerm();
     final long prevTerm = lastNotifiedLeaderTerm;
     lastNotifiedLeaderTerm = currentTerm;
 
@@ -1525,7 +1528,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
     } else {
       // Different node became leader. Normal failover (network, server restart, etc.).
-      final String prevName = raftHAServer.getPeerDisplayName(prevId);
+      final String prevName = raftHA.getPeerDisplayName(prevId);
       LogManager.instance().log(this, Level.INFO, "Leader changed: %s -> %s (term=%d)",
           prevName, leaderName, currentTerm);
     }
@@ -1536,12 +1539,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // ensures the client can reach all peers as soon as the partition heals.
     // Pass the newly elected leader's peer ID so the fresh client routes its very first
     // write directly to the leader rather than probing peers.
-    raftHAServer.refreshRaftClient(newLeaderId);
+    raftHA.refreshRaftClient(newLeaderId);
 
-    if (newLeaderId.equals(raftHAServer.getLocalPeerId())) {
+    if (newLeaderId.equals(raftHA.getLocalPeerId())) {
       LogManager.instance().log(this, Level.INFO, "This node is now LEADER");
-      raftHAServer.startLagMonitor();
-      raftHAServer.printClusterConfiguration();
+      raftHA.startLagMonitor();
+      raftHA.printClusterConfiguration();
 
       // Clear the follower-side reconcile states (LEADER_MISSING / FAILED) and failure counters now that this node
       // is the leader, so their cluster alerts do not linger (issue #4727). ACQUIRED is harmless history and kept.
@@ -1556,7 +1559,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // (e.g. the snapshot download below) queue behind it in that rare worst case.
       lifecycleExecutor.submit(() -> {
         try {
-          raftHAServer.runBootstrapIfEligible();
+          raftHA.runBootstrapIfEligible();
         } catch (final Throwable t) {
           LogManager.instance().log(this, Level.WARNING,
               "Bootstrap election threw on leader-change handler: %s", null, t.getMessage());
@@ -1564,7 +1567,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       });
     } else {
       LogManager.instance().log(this, Level.INFO, "This node is now REPLICA (leader: %s)", leaderName);
-      raftHAServer.stopLagMonitor();
+      raftHA.stopLagMonitor();
     }
 
     // If a snapshot gap was detected during reinitialize(), trigger the download now
@@ -1576,7 +1579,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     // Wake up any threads waiting for leadership change (e.g. leaveCluster)
-    final Object notifier = raftHAServer.getLeaderChangeNotifier();
+    final Object notifier = raftHA.getLeaderChangeNotifier();
     synchronized (notifier) {
       notifier.notifyAll();
     }
@@ -1638,6 +1641,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throw new RuntimeException("Interrupted while waiting for an in-flight resync to finish", e);
     }
     try {
+      // Read the volatile ONCE for this whole install: resolveSnapshotSource() reads it into its own local so it
+      // can refuse instead of throwing, and reading the field again below for the cluster token would reopen the
+      // window that read is written to close - a teardown nulling it between the two turns a refusal into a
+      // NullPointerException on the automatic resync path (issue #7253).
+      final RaftHAServer raftHA = this.raftHAServer;
       final RaftPeerId leaderId = RaftPeerId.valueOf(
           roleInfoProto.getFollowerInfo().getLeaderInfo().getId().getId());
 
@@ -1654,7 +1662,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // threads it into every branch, so a raw HTTPS address here would walk this path - the automatic one, the
       // one that had no checks at all before #6202 - straight back into the bug (issue #6221).
       final String leaderHttpsAddr = source.httpsAddress();
-      final String clusterToken = raftHAServer.getClusterToken();
+      final String clusterToken = raftHA != null ? raftHA.getClusterToken() : null;
 
       // Databases the reconciler gave up on: it stopped failing the install for them, so they are NOT at the
       // snapshot index and must not be recorded as if they were (issue #6760).
@@ -1721,7 +1729,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // index, which already equals snapshotIndex, and a LINEARIZABLE or read-your-writes read of a database
       // this install did NOT refresh passes its wait and is served from the stale copy. That is precisely the
       // outcome issue #6760 exists to prevent, so the notify has to come after the re-arm, not before it.
-      final RaftHAServer raftHA = this.raftHAServer;
       if (raftHA != null)
         raftHA.notifyApplied();
 
@@ -3237,7 +3244,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * snapshot install machinery as {@code applyInstallDatabaseEntry(forceSnapshot=true)}.
    */
   private void installFromLeaderForBootstrap(final String dbName) {
-    if (raftHAServer != null && raftHAServer.isLeader()) {
+    // One read for both the leader check and the cluster token below (issue #7253).
+    final RaftHAServer raft = this.raftHAServer;
+    if (raft != null && raft.isLeader()) {
       // The leader has the chosen baseline by definition (it's the source). No need to install.
       HALog.log(this, HALog.TRACE, "Leader skips bootstrap snapshot install for '%s'", dbName);
       return;
@@ -3248,7 +3257,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // during Raft log replay on startup, which can race ahead of leader election on this peer.
       // install() keeps the local copy open during the download and rolls back on failure, so a
       // failed bootstrap install never leaves the database closed.
-      final RaftHAServer raft = raftHAServer;
       final String clusterToken = raft != null ? raft.getClusterToken() : null;
       // Resolved through the same guard as every other snapshot pull: the supplier answers null - which
       // install() treats as "no leader to pull from" and retries - rather than handing back an address that
@@ -3648,9 +3656,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <b>reissue the user change on the leader</b> once the volume is fixed. Reapplying a list the node already
    * holds is a no-op, and waiting for a replay that may never come leaves the file stale indefinitely - which
    * is what the SEVERE below and the contract note on {@code ServerSecurity.applyReplicatedUsers} say too.
-   * Pinned by {@code Issue7227SecurityEntryAppliedPositionMovesPastFailureTest}, which covers the
-   * in-process half; the restart half needs a snapshot-and-replay integration test and does not have one
-   * (issue #7252).
+   * Pinned by {@code Issue7227SecurityEntryAppliedPositionMovesPastFailureTest} for the in-process half and by
+   * {@code Issue7252SecurityEntryReplayAfterRestartTest} for BOTH branches of the restart, so a later change that
+   * made the replay deterministic - or removed it - would fail one of them rather than leave this paragraph
+   * quietly wrong in one direction (issue #7252).
    * <p>
    * The classification lives here, at the apply site, rather than in the generic handler: whether a failure
    * can diverge replicated state is a property of the apply, not of the entry's database scoping, so a future
@@ -4156,7 +4165,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   // @VisibleForTesting
   void triggerSnapshotDownload() {
-    if (raftHAServer == null || server == null)
+    // Read once and use that local everywhere below, including inside downloadAllDatabasesFrom, which needs the
+    // cluster token: the guard here is only a guard if nothing after it re-reads the field (issue #7253).
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || server == null)
       return;
     // Single-flight guard: multiple recovery paths (reinitialize watchdog, notifyLeaderChanged,
     // stale-follower recovery from the HealthMonitor) can request a download. Only one may run at
@@ -4180,12 +4192,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return;
       }
       try {
-        final PeerDialAddress source = resolveSnapshotSource(raftHAServer.getLeaderId());
+        final PeerDialAddress source = resolveSnapshotSource(raftHA.getLeaderId());
         if (source.refused()) {
           LogManager.instance().log(this, Level.WARNING, "Refusing a snapshot resync: %s", source.refusal());
           return;
         }
-        downloadAllDatabasesFrom(source);
+        downloadAllDatabasesFrom(source, raftHA.getClusterToken());
       } finally {
         snapshotDownloadLock.unlock();
       }
@@ -4210,10 +4222,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * too (issue #6221). The caller has already established that it may be pulled from
    * ({@link #resolveSnapshotSource}) and holds {@link #snapshotDownloadLock}.
    */
-  private void downloadAllDatabasesFrom(final PeerDialAddress source) throws IOException {
+  private void downloadAllDatabasesFrom(final PeerDialAddress source, final String clusterToken) throws IOException {
     final String leaderHttpAddr = source.httpAddress();
     final String leaderHttpsAddr = source.httpsAddress();
-    final String clusterToken = raftHAServer.getClusterToken();
     int resynced = 0;
     for (final String dbName : server.getDatabaseNames()) {
       // install() keeps the database open during the download and rolls back on failure, so a
@@ -4401,10 +4412,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * No-op when there is no leader/server context or the lifecycle executor is shutting down.
    */
   private void triggerDatabaseResync(final String dbName) {
+    // A cheap early-out, not the guard: nothing below relies on this read, which is why it may be a separate one.
     if (raftHAServer == null || server == null)
       return;
     try {
       lifecycleExecutor.submit(() -> {
+        // The one read for this operation, taken HERE and not at submit time. This is the only place the
+        // read-once rule crosses an async boundary, and capturing the reference when the task was QUEUED would
+        // buy the thing the rule exists to prevent: a resync running against an instance a teardown replaced
+        // while it sat in the queue. Reading it when the work actually starts gives both halves - one instance
+        // for the whole operation, and that instance current as of the operation (issue #7253).
+        final RaftHAServer raftHA = this.raftHAServer;
+        if (raftHA == null) {
+          HALog.log(this, HALog.BASIC,
+              "Skipping targeted resync of '%s': the HA server was torn down before the task ran", dbName);
+          return;
+        }
         if (!snapshotDownloadInProgress.compareAndSet(false, true)) {
           HALog.log(this, HALog.BASIC, "Snapshot download already in progress, skipping targeted resync of '%s'", dbName);
           return;
@@ -4420,7 +4443,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
             // Same refusals as the two full-resync paths, through the same helper: a targeted resync reinstalls a
             // whole database from the resolved address, so an address naming this node or the wrong peer does the
             // same durable damage here (issue #6202).
-            final PeerDialAddress source = resolveSnapshotSource(raftHAServer.getLeaderId());
+            final PeerDialAddress source = resolveSnapshotSource(raftHA.getLeaderId());
             if (source.refused()) {
               LogManager.instance().log(this, Level.WARNING,
                   "Refusing a targeted snapshot resync of quarantined database '%s': %s", dbName, source.refusal());
@@ -4428,7 +4451,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
             }
             final String leaderHttpAddr = source.httpAddress();
             final String leaderHttpsAddr = source.httpsAddress();
-            final String clusterToken = raftHAServer.getClusterToken();
+            final String clusterToken = raftHA.getClusterToken();
             // install() keeps the database open during the download and rolls back on failure, so a
             // targeted resync never leaves it closed.
             if (server.existsDatabase(dbName)) {
