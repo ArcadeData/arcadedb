@@ -515,8 +515,9 @@ public class ServerDatabase implements DatabaseInternal {
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
       return wrapped.command(language, query, configuration, args);
+    final long beginNanos = System.nanoTime();
     final ResultSet rs = wrapped.command(language, query, configuration, args);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
   }
 
   @Override
@@ -524,8 +525,9 @@ public class ServerDatabase implements DatabaseInternal {
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
       return wrapped.command(language, query);
+    final long beginNanos = System.nanoTime();
     final ResultSet rs = wrapped.command(language, query);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
   }
 
   @Override
@@ -533,8 +535,9 @@ public class ServerDatabase implements DatabaseInternal {
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
       return wrapped.command(language, query, parameters);
+    final long beginNanos = System.nanoTime();
     final ResultSet rs = wrapped.command(language, query, parameters);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
   }
 
   @Override
@@ -544,8 +547,9 @@ public class ServerDatabase implements DatabaseInternal {
       return wrapped.command(language, query, parameters);
     final Map<String, Object> profilingParams = new HashMap<>(parameters);
     profilingParams.put("$profileExecution", true);
+    final long beginNanos = System.nanoTime();
     final ResultSet rs = wrapped.command(language, query, profilingParams);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
   }
 
   @Override
@@ -556,8 +560,9 @@ public class ServerDatabase implements DatabaseInternal {
       return wrapped.command(language, query, configuration, args);
     final Map<String, Object> profilingArgs = new HashMap<>(args);
     profilingArgs.put("$profileExecution", true);
+    final long beginNanos = System.nanoTime();
     final ResultSet rs = wrapped.command(language, query, configuration, profilingArgs);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
   }
 
   @Deprecated
@@ -568,8 +573,9 @@ public class ServerDatabase implements DatabaseInternal {
       return wrapped.execute(language, script, params);
     final Map<String, Object> profilingParams = new HashMap<>(params);
     profilingParams.put("$profileExecution", true);
+    final long beginNanos = System.nanoTime();
     final ResultSet rs = wrapped.execute(language, script, profilingParams);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, script);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, script, beginNanos);
   }
 
   @Deprecated
@@ -578,8 +584,9 @@ public class ServerDatabase implements DatabaseInternal {
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
       return wrapped.execute(language, script, args);
+    final long beginNanos = System.nanoTime();
     final ResultSet rs = wrapped.execute(language, script, args);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, script);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, script, beginNanos);
   }
 
   @Override
@@ -587,8 +594,9 @@ public class ServerDatabase implements DatabaseInternal {
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
       return wrapped.query(language, query);
+    final long beginNanos = System.nanoTime();
     final ResultSet rs = wrapped.query(language, query);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
   }
 
   @Override
@@ -596,8 +604,9 @@ public class ServerDatabase implements DatabaseInternal {
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
       return wrapped.query(language, query, parameters);
+    final long beginNanos = System.nanoTime();
     final ResultSet rs = wrapped.query(language, query, parameters);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
   }
 
   @Override
@@ -607,8 +616,9 @@ public class ServerDatabase implements DatabaseInternal {
       return wrapped.query(language, query, parameters);
     final Map<String, Object> profilingParams = new HashMap<>(parameters);
     profilingParams.put("$profileExecution", true);
+    final long beginNanos = System.nanoTime();
     final ResultSet rs = wrapped.query(language, query, profilingParams);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
   }
 
   @Override

@@ -36,14 +36,24 @@ public class ProfilingResultSet implements ResultSet {
   private final long                 startNanos;
   private volatile boolean           recorded;
 
+  /**
+   * @param startNanos the {@link System#nanoTime()} reading taken <b>before</b> the query was handed to the engine.
+   *                   It cannot be taken here: by the time this wrapper is built the engine call has already
+   *                   returned, and everything a non-streaming plan does (every write statement, and every
+   *                   OpenCypher statement while the profiler is recording, because the profiler routes those
+   *                   through {@code CypherExecutionPlan.profile()} which drains the plan eagerly) has already
+   *                   happened. Starting the clock in this constructor therefore measured only the drain of an
+   *                   already-materialized iterator - a few microseconds - and Studio showed a query total far
+   *                   below its own step timings (issue #7291).
+   */
   public ProfilingResultSet(final ResultSet delegate, final ServerQueryProfiler profiler, final String database,
-      final String language, final String queryText) {
+      final String language, final String queryText, final long startNanos) {
     this.delegate = delegate;
     this.profiler = profiler;
     this.database = database;
     this.language = language;
     this.queryText = queryText;
-    this.startNanos = System.nanoTime();
+    this.startNanos = startNanos;
   }
 
   @Override
