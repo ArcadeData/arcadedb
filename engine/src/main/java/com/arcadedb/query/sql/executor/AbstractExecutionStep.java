@@ -76,8 +76,19 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   }
 
   protected String getCostFormatted() {
-    final long computedCost = getCost();
-    return computedCost > -1 ? new DecimalFormat().format(computedCost / 1000) + "μs" : "";
+    return formatCost(getCost());
+  }
+
+  /**
+   * The subtree roll-up, formatted. What a container step - one whose whole job is to dispatch to its sub-steps,
+   * so it has no self cost to show - prints in an EXPLAIN tree (issue #7329).
+   */
+  protected String getTotalCostFormatted() {
+    return formatCost(getTotalCost());
+  }
+
+  private static String formatCost(final long cost) {
+    return cost > -1 ? new DecimalFormat().format(cost / 1000) + "μs" : "";
   }
 
   public long getRowCount() {
