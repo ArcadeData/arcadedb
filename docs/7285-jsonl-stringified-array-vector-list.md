@@ -224,7 +224,7 @@ https://github.com/ArcadeData/arcadedb/pull/7317
 |---|---|---|---|
 | 1 | `c67cbf9215` | Initial push (14:46:19Z): the fix, 10 tests, this tracking doc. | Reviewed by `claude` at 14:50:12Z. No blocking objection - the fix, the deliberate `checkNotSplit` skip and the `notSet(Object)` overload were each traced and confirmed - plus two minor nits, both actionable and both applied in cycle 2. |
 | 2 | `2e059ac349` | Both cycle-1 nits addressed. No production code changed. | Two further `claude` reviews landed (14:54:21Z, 14:55:50Z). The first repeated the cycle-1 duplicate-assertion nit against a pre-fix snapshot (it describes a 10-case suite, so it had not seen `2e059ac349`) - already fixed, nothing to do. The second raised one real coverage gap and one non-blocking performance note, both addressed in cycle 3. |
-| 3 | `<this commit>` | Truncated-text case for `getList`; native-array path reads the `JSONArray` `opt()` already built. | Pushed for review. |
+| 3 | `e89ea7f345` | Truncated-text case for `getList`; native-array path reads the `JSONArray` `opt()` already built. | Pushed for review. |
 
 ### A correction about cycle 1
 
