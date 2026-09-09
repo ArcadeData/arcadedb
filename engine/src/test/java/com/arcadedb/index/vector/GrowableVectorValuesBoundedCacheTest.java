@@ -59,7 +59,7 @@ class GrowableVectorValuesBoundedCacheTest {
     final int cap = 100;
     final int n = 1_000;
     // Bounded cache, no disk fallback wired: this exercises the cap mechanics in isolation.
-    final GrowableVectorValues values = new GrowableVectorValues(DIMENSIONS, 16, null, null, null, null, cap);
+    final GrowableVectorValues values = new GrowableVectorValues(DIMENSIONS, 16, null, cap);
 
     final Random rng = new Random(2);
     for (int i = 0; i < n; i++)
@@ -77,7 +77,7 @@ class GrowableVectorValuesBoundedCacheTest {
   @Test
   void nonPositiveCapMeansUnbounded() {
     // maxCacheSize <= 0 is the backward-compatible "unlimited" escape hatch.
-    final GrowableVectorValues values = new GrowableVectorValues(DIMENSIONS, 16, null, null, null, null, -1);
+    final GrowableVectorValues values = new GrowableVectorValues(DIMENSIONS, 16, null, -1);
     final int n = 2_000;
     final Random rng = new Random(3);
     for (int i = 0; i < n; i++)
@@ -91,7 +91,7 @@ class GrowableVectorValuesBoundedCacheTest {
   void addVectorToleratesNullWithoutCaching() {
     // ensureLiveBuilder touches the max ordinal with a possibly-null vector to fix size(); it must
     // advance the count without inserting a null into the map (ConcurrentHashMap forbids nulls).
-    final GrowableVectorValues values = new GrowableVectorValues(DIMENSIONS, 16, null, null, null, null, 100);
+    final GrowableVectorValues values = new GrowableVectorValues(DIMENSIONS, 16, null, 100);
     values.addVector(42, null);
     assertThat(values.size()).isEqualTo(43);
     assertThat(values.vectorCount()).isEqualTo(0);

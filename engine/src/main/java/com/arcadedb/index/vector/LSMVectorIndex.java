@@ -3941,10 +3941,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       liveVectorValues = new GrowableVectorValues(
           metadata.dimensions,
           Math.max(1024, Math.min(vectorIndex().size(), liveCacheSize <= 0 ? vectorIndex().size() : liveCacheSize)),
-          vectorIndex(),
           this,
-          getDatabase(),
-          vectorProp,
           liveCacheSize
       );
 
@@ -4974,6 +4971,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Asserted rather than merely documented: the invariant is invisible from the call site, and a future caller
     // that appends without the lock would not fail here - it would corrupt the accounting quietly, which is the
     // kind of bug this counter exists to prevent (PR #7360 review).
+    //
+    // An assertion and not a hard check because this runs once per written record, and because the audience for it
+    // is the test suite rather than production: Surefire sets enableAssertions by default, so every `mvn test` run
+    // of this repository executes with -ea and a caller added without the lock trips here before it can ship. A
+    // production JVM without -ea would not, which is the accepted trade - the alternative is a lock-state read on
+    // the hot path of every insert, to guard against a mistake that only a code change can introduce.
     assert lock.isWriteLockedByCurrentThread() : "queueDeltaEntry() without the write lock";
     deltaVectors.add(entry);
     if (entry.vector != null)
