@@ -35,6 +35,11 @@ import java.nio.file.Path;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #7221: the {@code forceSnapshot} replay guard added for #7143 returned early on
@@ -111,6 +116,36 @@ class Issue7221ForceSnapshotGuardMissingDatabaseTest {
     assertThatCode(() -> sm.applyInstallDatabaseEntry(forceSnapshotEntry(), ENTRY_INDEX))
         .as("a replayed entry for a database that IS present must still return without re-downloading it")
         .doesNotThrowAnyException();
+  }
+
+  /**
+   * Issue #7302, item 2: a leader takes no action here whatever the guard decides, so it has to decide that
+   * before the guard has said anything.
+   * <p>
+   * The guard's WARNING announces a reinstall "from the leader", and it was logged above the unconditional
+   * leader skip - so on the one node whose log an operator reads to find out what the cluster did with the
+   * entry, the log recorded an action that never happened. The skip is now first, which is also why the arm
+   * below never asks whether the database is registered: on a leader that question decides nothing.
+   */
+  @Test
+  void aLeaderDecidesBeforeTheReplayGuardRunsOrSaysAnything() {
+    final ArcadeDBServer observedServer = spy(server);
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.setServer(observedServer);
+    sm.writePersistedAppliedIndex(ENTRY_INDEX + 8, DB);
+
+    // The exact state that produced the false line: a replayed entry, an applied index past it, and no local
+    // copy of the database to justify the skip.
+    wipeTheLocalCopy();
+
+    final RaftHAServer leader = mock(RaftHAServer.class);
+    when(leader.isLeader()).thenReturn(true);
+    sm.setRaftHAServer(leader);
+
+    assertThatCode(() -> sm.applyInstallDatabaseEntry(forceSnapshotEntry(), ENTRY_INDEX))
+        .as("the leader's own files are authoritative: it neither reinstalls nor fails")
+        .doesNotThrowAnyException();
+    verify(observedServer, never()).existsDatabase(DB);
   }
 
   /**

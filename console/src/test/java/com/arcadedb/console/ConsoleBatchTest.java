@@ -151,6 +151,41 @@ class ConsoleBatchTest {
   }
 
   /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/7300, follow-up to #7115: the OTHER async error channel.
+   * <p>
+   * Turning {@code asyncMode} on forces {@code ASYNC_TX_BATCH_SIZE = 1}, so the worker commits from its own run loop
+   * OUTSIDE {@code DatabaseAsyncCommand.execute} - a failure raised by that commit therefore never reaches the
+   * per-statement callback #7115 fixed, it goes to the executor-wide {@code async().onError()} handler the console
+   * registers here. That handler printed and returned, so a unique-index violation surfaced at commit, a full volume
+   * or a WAL write failure all printed their error and still exited 0: in a CI pipeline, indistinguishable from
+   * success, which is the harm #7115 was filed about.
+   * <p>
+   * The duplicate is inserted AFTER the index and the first row exist and are committed, so the only thing that can
+   * fail is the async worker's own commit of the second row.
+   */
+  @Test
+  void batchModeWithCommitFailureInAsyncMode() throws Exception {
+    Console.execute(new String[] { "-b", """
+        create database console;
+        create vertex type ConsoleOnlyVertex;
+        create property ConsoleOnlyVertex.id integer;
+        create index on ConsoleOnlyVertex (id) unique;
+        insert into ConsoleOnlyVertex set id = 1;
+        set asyncMode = true;
+        insert into ConsoleOnlyVertex set id = 1;
+        """ });
+    assertThat(Console.isErrored())
+        .as("a commit-time failure in asyncMode must decide the exit code like every other failed write")
+        .isTrue();
+
+    final Database db = new DatabaseFactory("./target/databases/console").open();
+    // THE VIOLATION REALLY WAS REFUSED: WITHOUT THIS THE FLAG COULD BE TRUE FOR ANY OTHER REASON AND THE TEST WOULD
+    // STILL BE GREEN
+    assertThat(db.countType("ConsoleOnlyVertex", false)).isEqualTo(1);
+    db.drop();
+  }
+
+  /**
    * The flag is static, so a failed run must not decide the exit code of the next one in the same JVM - which is what
    * an embedder calling {@link Console#execute(String[])} twice, and this very test class, both do.
    */

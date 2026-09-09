@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -84,8 +85,10 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     response.put("localPeerId", localPeerId.toString());
 
     // What THIS node can decode (issue #7219). Published next to the peer list below, which carries the same
-    // field per peer on the leader, so "which node is holding the cluster back" is one diff rather than a poll
-    // of every node in turn.
+    // field for every peer the LEADER has an answer for, so "which node is holding the cluster back" is one diff
+    // rather than a poll of every node in turn. Answered by a follower the peer rows carry only this node's own,
+    // because a follower has no answer about anyone else - and reporting one anyway is what defeated that diff
+    // (issue #7301).
     response.put("capabilities", capabilitiesArray(raftHAServer.getAdvertisedCapabilities()));
 
     // Local Raft lifecycle state (division-aware, issue #5271): a node whose group member is CLOSED
@@ -183,17 +186,14 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
       // vote. Naming that state in the role keeps a consumer that only reads roles from mistaking it for one.
       peerJson.put("role", peerIsLeader ? "LEADER" : inConfiguration ? "FOLLOWER" : ROLE_NOT_IN_CONFIGURATION);
 
-      // Only the leader polls for capabilities, so only the leader has an answer to report; a follower simply
-      // omits the field rather than reporting an empty set that would read as "this peer can decode nothing".
+      // Only the leader polls for capabilities, so only the leader has an answer to report about ANOTHER peer; a
+      // follower simply omits the field rather than reporting an empty set that would read as "this peer can decode
+      // nothing".
       final PeerCapabilityRegistry.Advertisement advertisement =
           raftHAServer.getPeerCapabilityRegistry().freshAdvertisementOf(peerId);
-      if (advertisement != null) {
-        peerJson.put("capabilities", capabilitiesArray(advertisement.capabilities()));
-        if (!advertisement.version().isEmpty())
-          peerJson.put("version", advertisement.version());
-      } else if (peerIsLeader)
-        peerJson.put("capabilities", capabilitiesArray(raftHAServer.getAdvertisedCapabilities()));
-      else if (isLeader) {
+      final boolean published = putPeerCapabilities(peerJson, peerId, localPeerId.toString(), advertisement,
+          raftHAServer.getAdvertisedCapabilities());
+      if (!published && isLeader) {
         // An absent capabilities field reads the same whether this peer runs a build that predates the route or
         // was never asked because its address identifies no single peer - and the remedies are nothing alike, the
         // second being "declare each node's 'http' port" (#6202) rather than "finish the upgrade". Written only on
@@ -308,6 +308,46 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         .put("divergedDatabases", ClusterAlerts.namesArray(ClusterAlerts.visible(state.divergedDatabases(), visibleDatabases)))
         .put("snapshotAppliedFloor", state.snapshotAppliedFloor())
         .put("databaseAppliedFloors", ClusterAlerts.visibleFloors(state.databaseAppliedFloors(), visibleDatabases));
+  }
+
+  /**
+   * Writes {@code peer}'s capabilities into its row, and says whether anything was written (issue #7301).
+   * <p>
+   * There are exactly two sources of a TRUE answer, and no third. The registry, which only a leader fills because
+   * it is the only node that probes; and this node's own advertised set, which is true for this node's own row
+   * whatever role it holds. The first version of this guard tested "the peer being rendered is the leader" and
+   * published the LOCAL set under the leader's id, which on a follower - where the registry is empty by design -
+   * is the local node's answer wearing another node's id. That defeats the field's whole documented purpose: an
+   * operator diffing the rows during a rolling upgrade is told the wrong node is holding the cluster back, and
+   * there is no {@code version} field on such a row to contradict it.
+   * <p>
+   * The local row is published whether or not this node leads, since it is a true statement either way and the
+   * one row every node can answer for. It carries {@code version} for the same reason the registry-backed rows
+   * do - {@link PostCapabilitiesHandler} reports the same {@link Constants#getVersion()} to a probing leader, so
+   * a row read off the node itself and the same row read off its leader say the same thing.
+   * <p>
+   * The peer ids come in as strings and are compared here rather than by the caller, so "is this the local node"
+   * cannot drift back into "is this the leader" without this failing.
+   *
+   * @return true when a {@code capabilities} field was written, i.e. when there was something true to say.
+   */
+  // @VisibleForTesting
+  static boolean putPeerCapabilities(final JSONObject peerJson, final String peerId, final String localPeerId,
+      final PeerCapabilityRegistry.Advertisement advertisement, final Set<String> localCapabilities) {
+    if (advertisement != null) {
+      peerJson.put("capabilities", capabilitiesArray(advertisement.capabilities()));
+      if (!advertisement.version().isEmpty())
+        peerJson.put("version", advertisement.version());
+      return true;
+    }
+
+    if (peerId.equals(localPeerId)) {
+      peerJson.put("capabilities", capabilitiesArray(localCapabilities));
+      peerJson.put("version", Constants.getVersion());
+      return true;
+    }
+
+    return false;
   }
 
   /** A capability set as a stable, sorted JSON array, so two peers' documents can be diffed by eye. */

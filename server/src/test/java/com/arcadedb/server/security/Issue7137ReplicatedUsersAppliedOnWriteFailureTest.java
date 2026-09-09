@@ -44,8 +44,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * volume stayed broken.
  * <p>
  * So the new list is published in memory FIRST and the persistence failure is reported afterwards. The
- * revocation takes effect here immediately; what is outstanding is only its durability, and the Raft entry is
- * replayed on the next start.
+ * revocation takes effect here immediately; what is outstanding is only its durability.
+ * <p>
+ * That durability cannot be counted on to come back on its own, which is what this javadoc used to say it could
+ * (issue #7302, follow-up to #7227). The failing entry does not record itself as applied, but it does not halt
+ * the node either, so the next entry moves the applied counter past it and any snapshot taken afterwards puts it
+ * out of replay range for good. The operator's instruction does not depend on which of those happened: reissue
+ * the user change on the leader once the volume is fixed. See {@code ArcadeStateMachine.applySecurityUsersEntry},
+ * {@code Issue7227SecurityEntryAppliedPositionMovesPastFailureTest} and
+ * {@code Issue7252SecurityEntryReplayAfterRestartTest}, which pin the two halves of it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
