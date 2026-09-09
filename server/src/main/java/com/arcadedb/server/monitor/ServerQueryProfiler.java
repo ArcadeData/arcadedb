@@ -400,7 +400,9 @@ public class ServerQueryProfiler {
       final JSONObject step = stepsArray.getJSONObject(i);
       final String rawName = step.getString("name", "unknown");
       final String name = rawName.isBlank() ? "unknown" : rawName;
-      final long cost = step.getLong("cost", 0);
+      // Default to the same -1 the engine uses for "not calculated", so a plan that omits the field is classified
+      // as untimed rather than as a step that measurably took no time at all.
+      final long cost = step.getLong("cost", -1);
       stepCosts.computeIfAbsent(name, k -> new ArrayList<>()).add(cost);
 
       // Recurse into sub-steps
