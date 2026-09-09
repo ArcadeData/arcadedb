@@ -28,8 +28,10 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * {@link GrpcServices.Customizer} that installs the configured server-side transport filters and call interceptors
- * on the Ratis Netty gRPC server builder. Ratis 3.2.2 routes all service types (ADMIN, CLIENT,
- * SERVER) through the same listener, so one customizer covers every inbound RPC.
+ * on the Ratis Netty gRPC server builder. Ratis (3.3.0, the version {@code ha-raft/pom.xml} pins) routes ADMIN,
+ * CLIENT and SERVER through one listener unless {@code raft.grpc.admin.port} or {@code raft.grpc.client.port} names
+ * a different port; either way this customizer covers every inbound RPC, because {@code GrpcServicesImpl.buildServer}
+ * runs it on each builder it constructs rather than only on the SERVER one.
  * <p>
  * A transport filter gates a connection once, when it is established; an interceptor is consulted on every RPC. The
  * peer allowlist needs both (issue #7250): the filter to refuse a connection, the interceptor to revoke one that was

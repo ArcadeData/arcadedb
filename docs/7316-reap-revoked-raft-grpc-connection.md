@@ -94,9 +94,14 @@ grpcw/src/test/java/com/arcadedb/server/grpc/Issue5050GrpcPluginLifecycleTest.ja
 ```
 
 `GrpcServerPlugin` is the only other gRPC listener, and it is not the same shape: it has no allowlist and no
-revocation, so it has no "refused every RPC but still connected" state, and it already sets
-`keepAliveTime`/`keepAliveTimeout`/`permitKeepAlive*` (lines 181-184), so its connections are not unbounded either.
-Argued, not fixed here.
+revocation, so it never reaches the "refused every RPC but still connected" state this issue is about. Argued, not
+fixed here.
+
+It is worth being precise about what it does have, because the first draft of this paragraph overstated it: the
+`keepAliveTime`/`keepAliveTimeout`/`permitKeepAlive*` it sets at lines 181-184 make it detect a peer that has
+stopped answering pings. That is not the same bound as `maxConnectionIdle`, which closes a connection that is alive
+and simply carrying nothing. So a connection there that is idle but healthy is still unbounded; if that listener
+ever wants the same treatment it needs an idle window of its own rather than its existing keepalive settings.
 
 ### Coverage table
 
@@ -222,3 +227,25 @@ agent - which is the weaker form of the check, and is recorded here as such. Wha
 | "A negative or absurdly large window could throw or overflow" | Not real. Values `<= 0` never reach gRPC (the `> 0` guard), and `TimeUnit.MILLISECONDS.toNanos` saturates rather than wrapping, so a huge value lands above gRPC's `AS_LARGE_AS_INFINITE` and is read as "disabled" - the same as 0, by a different road |
 | "The idle window could cut a long-running Raft RPC" | Not real. `NettyServerHandler` drives the idle manager from `connection.numActiveStreams()` reaching 0, so the timer is only ever running while nothing is in flight |
 | "`GrpcServerPlugin` has the same defect" | Not real. It is a different listener with no allowlist and no revocation, and it already sets `keepAliveTime`/`keepAliveTimeout` (lines 181-184) |
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7349
+
+## Review cycles
+
+### Cycle 1 - `8717356`
+
+`claude` reviewed on the PR as an issue comment: no blocking findings, two doc nits, both real and both fixed in
+cycle 2:
+
+1. `RaftGrpcServicesCustomizer`'s pre-existing class javadoc said "Ratis 3.2.2" while `ha-raft/pom.xml` pins
+   `3.3.0`. Rewritten, and made accurate about *why* one customizer covers every inbound RPC: it is not that all
+   three service types share a listener (they do not when `raft.grpc.admin.port`/`raft.grpc.client.port` name their
+   own), it is that `GrpcServicesImpl.buildServer` runs the customizer on each builder it constructs -
+   `GrpcServicesImpl.java:250, 335, 345`.
+2. This doc claimed `GrpcServerPlugin`'s connections are "not unbounded either" because it sets keepalive. That is
+   overstated: keepalive detects a peer that stopped answering pings, it does not close an idle-but-healthy
+   connection. Paragraph corrected, and the correction left visible rather than quietly reworded.
+
+Nothing was deferred and nothing was skipped.
