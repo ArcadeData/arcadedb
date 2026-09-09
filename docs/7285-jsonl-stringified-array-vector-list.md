@@ -101,6 +101,7 @@ so there is no drift to close there. Argued, not fixed.
 | JSONL, quoted `"[]"` / native `[]` parity | yes | yes - `aQuotedEmptyArrayMeansAnEmptyArrayJustLikeTheNativeOne` |
 | `GraphImporter.fromJSON` config -> `parsePropertySpec` `"vector:"` / `"list:"` -> same accessors | yes | yes - `aStringifiedArrayImportsThroughTheJsonConfigEntryPoint` |
 | JSONL, whitespace-only value now reads as CSV and XML read it | yes (behaviour change) | yes - `aWhitespaceOnlyValueReadsTheSameOnAllThreeSources` |
+| JSONL, whitespace-only value for a LIST property still aborts, as on CSV and XML | unchanged | yes - `aWhitespaceOnlyListStillAbortsOnEveryThreeSourcesAlike` (added in review cycle 2) |
 | JSONL, empty `""` still "not set" (#7269 must not regress) | unchanged | yes - `anEmptyStringIsStillNotSetForBothArrayAccessors`, plus the whole of `GraphImporterEmptyValueTest` |
 | JSONL, malformed text (`"abc"`, `"[0.1"`) still reported, naming property + attribute | unchanged | yes - `aMalformedStringifiedArrayIsStillReported` |
 | JSONL, a non-array non-string value (a JSON number under a vector property) still reported | unchanged | yes - `aScalarUnderAnArrayPropertyIsStillReported` |
@@ -151,7 +152,7 @@ accurate diagnosis for a source nothing split.
 ## Tests
 
 New: `integration/src/test/java/com/arcadedb/integration/importer/GraphImporterStringifiedArrayTest.java`
-(10 cases - 8 written before the fix, 2 added by the adversarial pass below). No existing test was
+(11 cases - 8 written before the fix, 2 added by the adversarial pass below, 1 by the review). No existing test was
 modified or deleted.
 
 Before the fix, 6 of the 8 failed with exactly the reported error, and the 2 "must not change"
@@ -173,6 +174,7 @@ After the fix:
 
 ```
 [INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0 -- GraphImporterStringifiedArrayTest
+                                                             (11 after the review fixes below)
 ```
 
 Whole `integration` module, which is where every `GraphImporter` caller lives
@@ -220,22 +222,45 @@ https://github.com/ArcadeData/arcadedb/pull/7317
 
 | Cycle | Head SHA | Change | Bot review outcome |
 |---|---|---|---|
-| 1 | `c67cbf9215` | Initial push: the fix, 10 tests, this tracking doc. | **No review received.** The `claude-review` workflow run (34365893278) started at 14:47:06Z and was still `in_progress` more than 80 minutes later, having posted nothing on any of the three surfaces the loop polls - no formal review, no inline `pulls/7317/comments` (count 0), no `claude`-authored PR issue comment. CodeRabbit was likewise still showing "Review in progress". |
+| 1 | `c67cbf9215` | Initial push: the fix, 10 tests, this tracking doc. | Reviewed by `claude` at 14:50:12Z. No blocking objection - the fix, the deliberate `checkNotSplit` skip and the `notSet(Object)` overload were each traced and confirmed - plus two minor nits, both actionable and both applied in cycle 2. |
+| 2 | `4f5eb00` | Both nits addressed. No production code changed. | Pushed for review. |
 
-The loop's per-iteration timeout is 15 minutes. It was extended well past that because the run
-was verifiably healthy rather than crashed (`gh run view 34365893278` reported
-`status: in_progress` with the job started and no conclusion, not a `queued`-forever or a
-fast `failure`), so the wait was continued rather than called early. The bot never posted, so
-cycle 1 ended in the `timeout` state and cycles 2-4 never ran.
+### A correction about cycle 1
 
-No review feedback was received, so **no review-driven commit was made and no deferred-items
-notes file was produced**. The branch carries exactly one commit.
+An earlier revision of this document recorded cycle 1 as a **timeout**, stating that the reviewer
+"posted nothing on any of the three surfaces". That was wrong, and the error is worth recording
+rather than quietly overwriting.
 
-Other CI on that SHA was green or progressing normally where it had finished: `lint`, `Codacy
-Static Code Analysis` and every completed CodeQL `Analyze` job passed.
+The review was posted at 14:50:12Z, under four minutes after the push. Repeated polls of
+`gh pr view 7317 --json comments` over the following eighty minutes listed the `coderabbitai`,
+`mergify` and `codacy-production` comments but **not** the `claude` one, and the
+`claude-review` workflow run stayed `in_progress` throughout, so both gating signals agreed on an
+answer that was false. The comment appeared in the identical query later. The lesson for the loop
+is that a `gh pr view --json comments` result which omits a comment is not evidence the comment
+does not exist, and that a workflow still showing `in_progress` is not evidence its output has not
+been posted - the job outlives the post.
+
+### Cycle 1 feedback and its disposition
+
+| Nit | Assessment | Action |
+|---|---|---|
+| Duplicate `assertThat(database.isTransactionActive()).isFalse();` in `aMalformedStringifiedArrayIsStillReported`. | **Real.** Verified: `grep -n isTransactionActive` showed the assertion at both line 424 and line 426, a copy/paste leftover introduced when the truncated-array case was added during the adversarial pass. | Removed the duplicate. |
+| `aWhitespaceOnlyValueReadsTheSameOnAllThreeSources` pins the whitespace-only case for the vector accessor only. The reviewer traced that `new JSONArray("  ")` throws where `VectorUtils.toFloatArray("  ")` returns an empty vector, so the list side behaves differently and nothing pinned it. | **Real, and the derivation was correct** - confirmed by running it rather than by agreeing with it. The asymmetry is inherited from the interface defaults and predates this change, so it is pinned, not fixed. | Added `aWhitespaceOnlyListStillAbortsOnEveryThreeSourcesAlike`, asserting all three sources reject a whitespace-only list value. It passed on the first run. |
+
+Nothing was deferred and nothing was skipped, so no `review-deferred-*.md` notes file was produced.
+
+## Tests, final
+
+`GraphImporterStringifiedArrayTest` is now 11 cases, all green, and the whole `integration` module
+is green after the review fixes:
+
+```
+[INFO] Tests run: 11, Failures: 0, Errors: 0, Skipped: 0 -- GraphImporterStringifiedArrayTest
+[INFO] Tests run: 310, Failures: 0, Errors: 0, Skipped: 9   (whole module)
+[INFO] BUILD SUCCESS
+```
 
 ## Final state
 
-`timeout` - the PR is open and complete, awaiting the developer's review and merge. Nothing in
-the change is blocked on the bot; the timeout is a reviewer-availability outcome, not a defect
-found in the patch.
+`clean-approval` on the substance: the one review received raised no correctness objection, and
+both of its nits are applied. The developer owns the merge - this workflow does not merge PRs.

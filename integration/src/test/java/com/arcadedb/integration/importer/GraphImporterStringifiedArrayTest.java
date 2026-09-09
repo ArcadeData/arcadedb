@@ -381,6 +381,67 @@ class GraphImporterStringifiedArrayTest {
   }
 
   /**
+   * The list half of the case above, pinned rather than left to be re-derived: a whitespace-only
+   * value is where the two accessors genuinely disagree, because of what each parses the text
+   * <i>with</i> rather than because of the source. {@code VectorUtils.toFloatArray("  ")} trims to
+   * nothing and answers an empty vector, while {@code new JSONArray("  ")} rejects it, so a blank
+   * list column still aborts the import where a blank vector column no longer does.
+   * <p>
+   * The asymmetry is inherited from the interface defaults and predates this change - CSV and XML
+   * have always had it - so it is pinned on all three sources rather than fixed here. Whether the
+   * empty-vector answer or the error is the better one is a question for the accessors' contract,
+   * not for a JSONL override that exists to stop diverging from them.
+   */
+  @Test
+  void aWhitespaceOnlyListStillAbortsOnEveryThreeSourcesAlike() throws Exception {
+    final String jsonl = write("blank-list-vertices.jsonl",
+        "{\"id\": \"1\", \"name\": \"row\", \"tags\": \"  \"}");
+    final String csv = write("blank-list-vertices.csv",
+        "id;name;tags",
+        "1;row;  ");
+    final String xml = write("blank-list-vertices.xml",
+        "<users>",
+        "  <row Id=\"1\" Name=\"row\" Tags=\"  \" />",
+        "</users>");
+
+    database.transaction(() -> database.getSchema().createVertexType("User"));
+
+    assertThatThrownBy(() -> runSingleListSource(new JsonlRowSource(jsonl), "id", "name", "tags"))
+        .as("JSONL rejects a whitespace-only list value")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("tags")
+        .hasMessageContaining("declared as a list");
+
+    assertThat(database.isTransactionActive()).isFalse();
+
+    assertThatThrownBy(() -> runSingleListSource(new CsvRowSource(csv, ';', 0), "id", "name", "tags"))
+        .as("CSV rejects it the same way, and always did")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("tags");
+
+    assertThat(database.isTransactionActive()).isFalse();
+
+    assertThatThrownBy(() -> runSingleListSource(new XmlRowSource(xml), "Id", "Name", "Tags"))
+        .as("XML rejects it the same way, and always did")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("tags");
+  }
+
+  private void runSingleListSource(final GraphImporter.RecordSource source, final String idAttr,
+                                   final String nameAttr, final String tagsAttr) throws Exception {
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("User", source, v -> {
+          v.id(idAttr);
+          v.property("name", nameAttr);
+          v.listProperty("tags", tagsAttr);
+        })
+        .build()) {
+
+      importer.run();
+    }
+  }
+
+  /**
    * #7269's answer for an empty value survives: {@code ""} is still "not set" for both accessors,
    * so the property is simply absent rather than an empty array.
    */
@@ -421,8 +482,6 @@ class GraphImporterStringifiedArrayTest {
 
     // the abort must not leave a transaction on the stack, or the next import would fail for a
     // reason unrelated to the value it is testing
-    assertThat(database.isTransactionActive()).isFalse();
-
     assertThat(database.isTransactionActive()).isFalse();
 
     final Throwable truncated = catchThrowable(() -> importVector("truncated-vector-vertices.jsonl", "\"[0.1\""));
