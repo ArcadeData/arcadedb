@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.importer.graph;
 
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -109,7 +110,14 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
      * screen is by the same singleton GSON parses a null into. {@link #get} relies on it already.
      */
     private boolean notSet(final String attribute) {
-      final Object value = json.opt(attribute);
+      return notSet(json.opt(attribute));
+    }
+
+    /**
+     * The same predicate over a value the caller has already looked up, so the two array accessors
+     * below can branch on that value without paying a second map lookup for it.
+     */
+    private static boolean notSet(final Object value) {
       return value == null || (value instanceof String text && text.isEmpty());
     }
 
@@ -129,14 +137,43 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
     }
 
     /**
-     * Reads the JSON array natively into a {@code float[]}: no intermediate string, no boxed
-     * element, one allocation of exactly the vector's size.
+     * Reads the JSON array natively into a {@code float[]} via {@link #toFloatArray(JSONArray)}: no
+     * intermediate string and no boxed element.
+     * <p>
+     * A {@code String} takes the textual form instead - {@code "[0.1,0.2,0.3]"} - which is what
+     * {@link GraphImporter.RecordReader#getFloatArray} parses for the flat formats and what a JSONL
+     * file converted from a CSV export carries, since such a converter quotes every column. A
+     * quoted <i>number</i> in that same file already imported, so before #7285 a stringified export
+     * loaded its int, long and double columns and then ended the whole import on its vector column.
+     * <p>
+     * The interface default's {@code checkNotSplit} is deliberately not applied here: its
+     * diagnostic offers a different field delimiter, and JSONL has no field separator to change
+     * ({@link GraphImporter.RecordSource#fieldSeparator()} returns {@code null} for this source).
+     * A textual array that opens but never closes is a malformed value on JSONL, and
+     * {@code VectorUtils.toFloatArray} reporting the parse failure itself is the accurate answer.
      */
     @Override
     public float[] getFloatArray(final String attribute) {
-      if (notSet(attribute))
+      final Object value = json.opt(attribute);
+      if (notSet(value))
         return null;
-      final JSONArray array = json.getJSONArray(attribute);
+      if (value instanceof String text)
+        return VectorUtils.toFloatArray(text);
+      if (value instanceof JSONArray array)
+        // opt() already built this JSONArray, so the native path reads it rather than looking the
+        // attribute up a second time and converting the same element again
+        return toFloatArray(array);
+      // anything that is neither text nor an array - a number, a boolean, a nested object - is a
+      // data error, and getJSONArray raises the "is not a JSON array" JSONException that
+      // GraphImporter.readProperty has always reported as badValue. It throws for every value that
+      // reaches this line, so the conversion is never actually run on its result
+      return toFloatArray(json.getJSONArray(attribute));
+    }
+
+    /**
+     * No intermediate string, no boxed element, one allocation of exactly the vector's size.
+     */
+    private static float[] toFloatArray(final JSONArray array) {
       final int length = array.length();
       final float[] result = new float[length];
       for (int i = 0; i < length; i++)
@@ -144,9 +181,20 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
       return result;
     }
 
+    /**
+     * The list counterpart of {@link #getFloatArray}, textual fallback included: the interface
+     * default parses {@code "[\"x\"]"} with {@code new JSONArray(text)} and so does this.
+     */
     @Override
     public List<Object> getList(final String attribute) {
-      return notSet(attribute) ? null : json.getJSONArray(attribute).toList();
+      final Object value = json.opt(attribute);
+      if (notSet(value))
+        return null;
+      if (value instanceof String text)
+        return new JSONArray(text).toList();
+      if (value instanceof JSONArray array)
+        return array.toList();
+      return json.getJSONArray(attribute).toList();
     }
   }
 }
