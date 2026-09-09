@@ -29,7 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
-import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.logging.Level;
 
 /**
@@ -131,7 +131,7 @@ final class TrustedHttpClientCache {
     if (password == null)
       return "";
     try {
-      return Arrays.toString(
+      return HexFormat.of().formatHex(
           MessageDigest.getInstance("SHA-256").digest(password.getBytes(StandardCharsets.UTF_8)));
     } catch (final NoSuchAlgorithmException e) {
       // SHA-256 is mandated by every Java SE implementation; a JVM without it cannot have loaded the TLS stack
