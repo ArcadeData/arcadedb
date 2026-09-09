@@ -163,12 +163,12 @@ final class GrpcVectorSearch {
 
       if (hit.has("distance") && !hit.isNull("distance"))
         builder.setDistance(hit.getDouble("distance"));
-      if (hit.has("score") && !hit.isNull("score"))
-        builder.setScore(hit.getDouble("score"));
       // A fused hybrid hit carries its rank under "fusedScore", not "score" - that is the JSON key the MCP
       // hybrid_search tool has always used and this move kept. SearchHit.score is documented as "sparse,
-      // full-text or fused score", so it is the field that carries it on the wire. Without this the whole
-      // point of the RPC - a fused, multi-leg result - arrives with nothing to rank it by.
+      // full-text or fused score", so it is the field that carries it on the wire. Without the second key the
+      // whole point of the RPC - a fused, multi-leg result - arrives with nothing to rank it by.
+      if (hit.has("score") && !hit.isNull("score"))
+        builder.setScore(hit.getDouble("score"));
       else if (hit.has("fusedScore") && !hit.isNull("fusedScore"))
         builder.setScore(hit.getDouble("fusedScore"));
       if (hit.has("depth") && !hit.isNull("depth"))

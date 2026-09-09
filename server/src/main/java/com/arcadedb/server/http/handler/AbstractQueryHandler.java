@@ -46,6 +46,7 @@ import io.undertow.util.HttpString;
 import java.io.IOException;
 import java.util.*;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 
@@ -275,6 +276,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * changing what a request that does not ask for it receives. A caller that sends no {@code Accept}, or one
    * that names any other type, gets exactly the response it got before.
    */
+  /** Precompiled rather than {@code String.split}, which recompiles the pattern on every request. */
+  private static final Pattern ACCEPT_ENTRY     = Pattern.compile(",");
+  private static final Pattern ACCEPT_PARAMETER = Pattern.compile(";");
+
   protected static boolean isNdJsonRequested(final HttpServerExchange exchange) {
     final HeaderValues accept = exchange.getRequestHeaders().get(Headers.ACCEPT);
     if (accept == null)
@@ -285,8 +290,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       // One Accept header can list several types, each with its own parameters. Splitting them matters for
       // 'q': 'application/json, application/x-ndjson;q=0' is the standard spelling of "anything but that one",
       // and a bare contains() over the whole header would read it as a request for the stream.
-      for (final String entry : header.split(",")) {
-        final String[] parts = entry.trim().split(";");
+      for (final String entry : ACCEPT_ENTRY.split(header)) {
+        final String[] parts = ACCEPT_PARAMETER.split(entry.trim());
         if (!parts[0].trim().equalsIgnoreCase(NdJsonResultStream.CONTENT_TYPE))
           continue;
         if (isRejectedByQValue(parts))
