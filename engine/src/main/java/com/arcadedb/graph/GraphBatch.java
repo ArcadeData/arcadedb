@@ -1439,17 +1439,22 @@ public class GraphBatch implements AutoCloseable {
     try {
       RuntimeException flushFailure = null;
 
-      // Flush any remaining outgoing edges. Capture rather than rethrow so we can still drain the
-      // deferred IN buffer for previously-flushed edges; otherwise a unique-constraint violation
-      // on the trailing buffer (issue #4113) would leave already-persisted edges with no
-      // back-pointer and trip the database integrity checker.
       try {
-        flush();
-      } catch (final RuntimeException e) {
-        flushFailure = e;
-      }
+        // Flush any remaining outgoing edges. Capture rather than rethrow so we can still drain the
+        // deferred IN buffer for previously-flushed edges; otherwise a unique-constraint violation
+        // on the trailing buffer (issue #4113) would leave already-persisted edges with no
+        // back-pointer and trip the database integrity checker.
+        //
+        // INSIDE the try whose finally restores the settings, not before it (PR #7360 review). Only a
+        // RuntimeException is caught here, so an Error out of flush() used to skip the restore entirely and leave
+        // this database with a relaxed WAL policy, read-your-writes off, and - since issue #7357 - the vector
+        // indexes' background rebuilds suspended, silently, until the process reopened it.
+        try {
+          flush();
+        } catch (final RuntimeException e) {
+          flushFailure = e;
+        }
 
-      try {
         // Connect all deferred incoming edges in one sorted pass. On a large load this is minutes of work and it
         // runs on the way out of a FAILED batch too - it has to, or the edges already persisted keep no back-pointer
         // and the integrity checker trips (see #4113 above). That is why a rejected batch can take a while to answer

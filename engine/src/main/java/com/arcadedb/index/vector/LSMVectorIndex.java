@@ -9643,8 +9643,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   @Override
   public void resumeBackgroundMaintenance() {
-    final int remaining = backgroundMaintenanceSuspensions.updateAndGet(current -> current > 0 ? current - 1 : 0);
-    if (remaining > 0)
+    final int before = backgroundMaintenanceSuspensions.getAndUpdate(current -> current > 0 ? current - 1 : 0);
+
+    // Only the call that lifts the LAST suspension arms anything. The two other cases return without touching the
+    // timer, and the first of them is why this reads the count BEFORE the decrement rather than after (PR #7360
+    // review): an unpaired resume must be a true no-op, and arming here would reset lastMutationNanos and so push
+    // the inactivity deadline out by a whole window - a side effect the javadoc promises this does not have.
+    if (before != 1)
       return;
 
     // The window starts now: what the load left behind is exactly what a rebuild should cover, and the timer is
