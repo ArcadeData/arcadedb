@@ -31,6 +31,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.LinkedHashSet;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -55,6 +56,14 @@ import java.util.logging.Level;
  * endpoint is DERIVED, and on such a cluster several peers collapse onto one address (issues #6202, #6267); the
  * dial is already guarded by {@link PeerDialAddress}, and this is the second half of the same guard - the guard
  * withholds an address that identifies no single peer, this refuses an answer that came back from the wrong one.
+ * <p>
+ * <b>Which is why the shared address can be dialled anyway.</b> {@link #fetchFromSharedEndpoint} asks the same
+ * question of an address that identifies no single peer, and it is safe for the same reason the check above works:
+ * the answer NAMES its author, so the caller binds it to whoever answered rather than to whoever it was meant for.
+ * That turns "several peers collapse onto one address" from a permanent unknown into an answer for the one peer
+ * that really is there, on a cluster where the negotiation would otherwise never run at all (issue #7256). It
+ * works only because this request is read-only and its reply is self-identifying; nothing that acts on the peer it
+ * addressed may take this route.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -91,6 +100,28 @@ public final class PeerCapabilityQuery {
   public static Advertisement fetch(final String expectedPeerId, final String httpAddr, final String httpsAddr,
       final String clusterToken, final long timeoutMs, final ArcadeDBServer server)
       throws IOException, InterruptedException {
+    return ask(Objects.requireNonNull(expectedPeerId, "expectedPeerId"), httpAddr, httpsAddr, clusterToken, timeoutMs,
+        server);
+  }
+
+  /**
+   * Asks whoever answers at {@code httpAddr} what it can decode, accepting the advertisement whatever peer it
+   * names (issue #7256).
+   * <p>
+   * For an address that {@link PeerDialAddress} withheld because two or more peers resolve to it. The caller gets
+   * back an {@link Advertisement#peerId()} it MUST check against its own peer list and record the answer against -
+   * never against the peer it happened to be resolving when it found the address. Every other guarantee is
+   * {@link #fetch}'s: same route, same authentication, same timeout, and a non-200 still means "no".
+   */
+  public static Advertisement fetchFromSharedEndpoint(final String httpAddr, final String httpsAddr,
+      final String clusterToken, final long timeoutMs, final ArcadeDBServer server)
+      throws IOException, InterruptedException {
+    return ask(null, httpAddr, httpsAddr, clusterToken, timeoutMs, server);
+  }
+
+  private static Advertisement ask(final String expectedPeerId, final String httpAddr, final String httpsAddr,
+      final String clusterToken, final long timeoutMs, final ArcadeDBServer server)
+      throws IOException, InterruptedException {
 
     final boolean useSSL = server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final String url = chooseUrl(httpAddr, httpsAddr, useSSL);
@@ -106,7 +137,7 @@ public final class PeerCapabilityQuery {
       LogManager.instance().log(PeerCapabilityQuery.class, Level.WARNING,
           "SSL is enabled but no HTTPS address is known for peer '%s'; its capability query - and the cluster "
               + "token it carries - go over plain HTTP. Declare each node's 'https' port in %s.",
-          expectedPeerId, GlobalConfiguration.HA_SERVER_LIST.getKey());
+          expectedPeerId != null ? expectedPeerId : httpAddr, GlobalConfiguration.HA_SERVER_LIST.getKey());
 
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(url))
@@ -151,14 +182,18 @@ public final class PeerCapabilityQuery {
   }
 
   /**
-   * Reads one advertisement document, refusing one that names a peer other than {@code expectedPeerId}.
+   * Reads one advertisement document, refusing one that names a peer other than {@code expectedPeerId}. A
+   * {@code null} {@code expectedPeerId} accepts whatever peer answered - the shared-endpoint route, whose caller
+   * binds the answer to the peer the document names (issue #7256).
    * Package-private and pure for unit testing.
    */
   // @VisibleForTesting
   static Advertisement parse(final String expectedPeerId, final String body, final String url) throws IOException {
     final JSONObject json = new JSONObject(body);
     final String peerId = json.getString("peerId", "");
-    if (!peerId.equals(expectedPeerId))
+    if (peerId.isEmpty())
+      throw new IOException("capability query to " + url + " was answered by a document that names no peer");
+    if (expectedPeerId != null && !peerId.equals(expectedPeerId))
       throw new IOException("capability query to " + url + " for peer '" + expectedPeerId
           + "' was answered by peer '" + peerId + "'; the address does not identify the peer it was meant for "
           + "(declare each node's 'http' port explicitly in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + ")");

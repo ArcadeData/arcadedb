@@ -1916,6 +1916,13 @@ public enum GlobalConfiguration {
       unknown, unreachable, running a build without that endpoint, or whose answer has gone stale all count as \
       no. A rolling upgrade needs no sequencing - deltas start by themselves once the last node is up. \
       \
+      A rolling DOWNGRADE does, and no setting can help with it (issue #7255): the negotiation governs what the \
+      leader writes from now on, never the delta entries already committed to the durable Raft log. A node \
+      restarted onto a build that predates the section replays one of those with a decoder that cannot see it, \
+      applies an empty schema change and diverges silently - the very failure this gate exists to prevent, from \
+      the one direction it cannot reach. A node being rolled back that far is rebuilt from a snapshot (databases \
+      reinstalled from a current leader, Raft storage discarded) rather than restarted on its retained log. \
+      \
       What this setting is FOR, now that it is not a safety interlock: turning deltas off is the way to give \
       back the per-database schema document the leader holds to diff against, and the way to force whole \
       documents while diagnosing a schema divergence. Turning it off is safe at any time; turning it back on \

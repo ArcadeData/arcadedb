@@ -122,7 +122,7 @@ class Issue7219PeerCapabilityRegistryTest {
     // What a failed probe does - a 404 from a build without the route, or an unreachable peer. Forgetting rather
     // than keeping matters: the peer may have been replaced by an older build, and believing its last answer
     // until the TTL ran out would be believing it for a reason that no longer holds.
-    registry.forget(PEER1);
+    registry.forget(PEER1, "the probe failed");
 
     assertThat(registry.allPeersSupport(List.of(PEER1), CAP)).isFalse();
   }

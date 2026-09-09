@@ -193,6 +193,15 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
           peerJson.put("version", advertisement.version());
       } else if (peerIsLeader)
         peerJson.put("capabilities", capabilitiesArray(raftHAServer.getAdvertisedCapabilities()));
+      else if (isLeader) {
+        // An absent capabilities field reads the same whether this peer runs a build that predates the route or
+        // was never asked because its address identifies no single peer - and the remedies are nothing alike, the
+        // second being "declare each node's 'http' port" (#6202) rather than "finish the upgrade". Written only on
+        // the leader, the only node that asks, and only when it has a reason to give (issue #7256).
+        final String unknownReason = raftHAServer.getPeerCapabilityRegistry().unknownReasonOf(peerId);
+        if (unknownReason != null)
+          peerJson.put("capabilitiesUnknownReason", unknownReason);
+      }
 
       final HAReplicationStatsProvider.FollowerSample health = followerHealth.get(peerId);
       if (!peerIsLeader && health != null) {
