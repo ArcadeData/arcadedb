@@ -125,6 +125,40 @@ class CypherProfiledExecutionIsStreamingIssue7330Test {
   }
 
   /**
+   * The plan is a reading, not a snapshot: a caller free to inspect progress mid-stream must still get the whole
+   * run when it asks again at the end. Asking cannot be what ends the run's clock.
+   * <p>
+   * Asserted as a monotonic relation between the two readings rather than against a wall-clock bound, which a
+   * shared-JVM suite could never hold to.
+   */
+  @Test
+  void inspectingThePlanMidStreamDoesNotFreezeWhatALaterAskReports() {
+    try (final ResultSet rs = database.query("opencypher", "MATCH (i:Item) RETURN i.idx AS idx",
+        Map.of("$profileExecution", true))) {
+
+      assertThat(rs.hasNext()).isTrue();
+      rs.next();
+      final long midStreamElapsed = rs.getExecutionPlan().orElseThrow().toResult().getProperty("cost");
+
+      long consumed = 1;
+      while (rs.hasNext()) {
+        rs.next();
+        ++consumed;
+      }
+      assertThat(consumed).isEqualTo(ROWS);
+
+      final ExecutionPlan finalPlan = rs.getExecutionPlan().orElseThrow();
+      assertThat(finalPlan.prettyPrint(0, 2))
+          .as("the second ask must describe the whole run, not the one row the first ask saw")
+          .contains("Rows Returned: " + ROWS);
+      final long finalElapsed = finalPlan.toResult().getProperty("cost");
+      assertThat(finalElapsed)
+          .as("the run kept going after the first ask, so its elapsed cannot have gone backwards")
+          .isGreaterThanOrEqualTo(midStreamElapsed);
+    }
+  }
+
+  /**
    * The explicit {@code PROFILE <statement>} keyword is a different request - the user asking, in the statement
    * itself, for the whole execution to be run and summarised - and keeps the eager path. Neo4j's PROFILE executes
    * fully too, so this is also the parity behaviour.

@@ -1160,9 +1160,10 @@ public class CypherExecutionPlan {
    * the statement costs when nobody is watching, and every Cypher read on the server was materialised in heap for
    * as long as the recording window lasted (issue #7330).
    * <p>
-   * The clock stops at the first of: the delegate reporting exhaustion, {@code close()}, or the plan being asked
-   * for. Consumers ask for the plan after streaming - {@code ProfilingResultSet} at close,
-   * {@code PostCommandHandler} after draining - so the elapsed they see covers the whole run.
+   * The clock stops at the first of the delegate reporting exhaustion and {@code close()} - never at the plan
+   * being asked for, so inspecting the plan mid-stream does not freeze the number a later ask reports. Consumers
+   * ask for it after streaming ({@code ProfilingResultSet} at close, {@code PostCommandHandler} after draining),
+   * so the elapsed they see covers the whole run.
    */
   private final class StreamingProfile implements ResultSet {
     private final long                  startNanos = System.nanoTime();
@@ -1211,12 +1212,20 @@ public class CypherExecutionPlan {
 
     @Override
     public Optional<ExecutionPlan> getExecutionPlan() {
-      stopClock();
       // Built here rather than at construction: the step timers accumulate while the caller streams, so a plan
       // snapshotted before the first row would report a chain that had not run yet.
-      return Optional.of(buildProfilePlan(context, rootStep, countPushedDown, elapsedNanos, rowCount, null));
+      //
+      // Reading the clock rather than stopping it: a caller that inspects progress mid-stream and asks again at
+      // the end must get the elapsed of the whole run the second time, not the reading frozen by the first ask.
+      return Optional.of(buildProfilePlan(context, rootStep, countPushedDown, elapsedSoFar(), rowCount, null));
     }
 
+    /** The run's elapsed: final once the run has ended, and how long it has been going otherwise. */
+    private long elapsedSoFar() {
+      return elapsedNanos < 0 ? System.nanoTime() - startNanos : elapsedNanos;
+    }
+
+    /** Ends the run's clock, at the first of the delegate reporting exhaustion and {@code close()}. */
     private void stopClock() {
       if (elapsedNanos < 0)
         elapsedNanos = System.nanoTime() - startNanos;
