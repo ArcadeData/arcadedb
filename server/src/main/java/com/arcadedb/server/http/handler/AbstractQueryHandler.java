@@ -86,6 +86,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    */
   private static final HttpString X_ACCEL_BUFFERING = new HttpString("X-Accel-Buffering");
 
+  /** Precompiled rather than {@code String.split}, which recompiles the pattern on every request. */
+  private static final Pattern ACCEPT_ENTRY     = Pattern.compile(",");
+  private static final Pattern ACCEPT_PARAMETER = Pattern.compile(";");
+
   /**
    * Outcome of serializing a {@link ResultSet} into an HTTP response: how many rows reached the response and
    * whether the effective limit cut the result short.
@@ -276,10 +280,6 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * changing what a request that does not ask for it receives. A caller that sends no {@code Accept}, or one
    * that names any other type, gets exactly the response it got before.
    */
-  /** Precompiled rather than {@code String.split}, which recompiles the pattern on every request. */
-  private static final Pattern ACCEPT_ENTRY     = Pattern.compile(",");
-  private static final Pattern ACCEPT_PARAMETER = Pattern.compile(";");
-
   protected static boolean isNdJsonRequested(final HttpServerExchange exchange) {
     final HeaderValues accept = exchange.getRequestHeaders().get(Headers.ACCEPT);
     if (accept == null)
