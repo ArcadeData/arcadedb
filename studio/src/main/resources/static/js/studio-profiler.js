@@ -457,19 +457,24 @@ function profilerShowDetail(index) {
     );
   }
 
-  // Step chart (horizontal bar)
+  // Step chart (horizontal bar). Only the timed steps are plotted: a step with no measured sample would
+  // otherwise draw a zero-length bar, which reads as "instant" and contradicts the "not timed" row above.
   jQuery("#profilerStepChart").empty();
-  if (steps.length > 0 && typeof ApexCharts !== "undefined") {
+  var timedSteps = [];
+  for (var t = 0; t < steps.length; t++)
+    if (!(steps[t].measuredCount === 0 && steps[t].executionCount > 0))
+      timedSteps.push(steps[t]);
+  if (timedSteps.length > 0 && typeof ApexCharts !== "undefined") {
     var categories = [];
     var avgData = [];
     var maxData = [];
-    for (var k = 0; k < steps.length; k++) {
-      categories.push(steps[k].name);
-      avgData.push(steps[k].avgCostMs);
-      maxData.push(steps[k].maxCostMs);
+    for (var k = 0; k < timedSteps.length; k++) {
+      categories.push(timedSteps[k].name);
+      avgData.push(timedSteps[k].avgCostMs);
+      maxData.push(timedSteps[k].maxCostMs);
     }
     var chart = new ApexCharts(document.querySelector("#profilerStepChart"), {
-      chart: { type: "bar", height: Math.max(150, steps.length * 40) },
+      chart: { type: "bar", height: Math.max(150, timedSteps.length * 40) },
       plotOptions: { bar: { horizontal: true, barHeight: "60%" } },
       series: [
         { name: "Avg (ms)", data: avgData },
