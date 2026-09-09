@@ -408,7 +408,10 @@ public class TimeSeriesShard implements AutoCloseable {
    * The rows arrive sealed-then-mutable, NOT merged by timestamp. Merging is what forces every shard's rows to be
    * resident at once; a folding answer does not need the order, and one that does wants {@code iterateQuery}.
    *
-   * @param metrics optional block-level counters, may be {@code null}
+   * @param metrics optional counters, may be {@code null}. Every visited row is counted in
+   *                {@code materializedRows}, but only the SEALED layer contributes block counts - the mutable
+   *                bucket is not organised into blocks - so {@code fastPathBlocks + slowPathBlocks} does not
+   *                account for every materialized row here, exactly as it does not in {@code scanRangeDescending}
    */
   public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
