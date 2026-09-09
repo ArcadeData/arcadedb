@@ -188,3 +188,25 @@ Two behaviours the reporter may hit next; neither is this defect and both predat
 - Three shapes of canonical N-Triples still do not reach this branch at all, so the fix does not rescue them:
   CRLF line endings and literal objects (**#7346**), and files with a leading comment block (**#7347**). The
   patch is correct for every source the RDF branch is taken on; it does not widen which sources those are.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7348
+
+## Review cycles
+
+| Cycle | Head SHA | Changes in this cycle | Bot outcome |
+|---|---|---|---|
+| 1 | `20bb21b` | the fix, the five regression tests and this document - the initial push | `claude` reviewed and found no correctness, security or performance issue. It independently re-ran the two greps this document relies on (the three `analyzeChar` call sites, and the no-arg `RDFImporterFormat` constructor's remaining callers) and checked the tests' edge-count arithmetic against `load()`'s default header skip. Two non-blocking observations, neither asking for a change: that the production comments are dense (it notes this matches the file's existing style) and that the test's cleanup swallows a delete failure ("fine for test hygiene, no concern"). No formal review and no inline review comments were posted on this SHA; CodeRabbit had not finished when the loop exited |
+
+Nothing was applied in cycle 1, no deferred-items notes file was produced, and the bot review carried no
+actionable item - the three conditions for a clean approval - so the loop exited after one cycle.
+
+## Deferred items
+
+None.
+
+## Final state
+
+`clean-approval`. Three follow-up issues were opened before the PR: **#7345**, **#7346**, **#7347**, all named
+in the PR body under **Known gaps**. The merge belongs to the developer.
