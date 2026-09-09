@@ -64,7 +64,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
 
-  private static final int    BASE_GRPC_PORT = 51091;
+  // 20 apart from every other gRPC IT's base, because each of these starts three servers on BASE..BASE+2.
+  // This class used to share 51091 with TimeSeriesGrpcForwardedInsertTypeIT, so whenever the two ran close
+  // enough together the second one's GrpcServerPlugin failed to bind and took the whole class down with
+  // "Failed to bind to address 0.0.0.0:51092" - reported as a plugin startup error rather than as a port clash.
+  private static final int    BASE_GRPC_PORT = 51161;
   private static final String VERTEX_TYPE    = "Issue6070LeaderGuardNode";
 
   private static final Metadata.Key<String> USER_HEADER     = Metadata.Key.of("x-arcade-user",
