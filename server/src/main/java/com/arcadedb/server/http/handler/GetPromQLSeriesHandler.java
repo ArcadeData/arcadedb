@@ -109,6 +109,12 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
         final TimeSeriesEngine engine = tsType.getEngine();
         final List<ColumnDefinition> columns = tsType.getTsColumns();
 
+        // ROW LAYOUT. row[0] is the timestamp by the scan's own contract - every layer builds the row as
+        // { ts, non-ts columns... } - but row[i] for i >= 1 lining up with columns.get(i) holds only because the
+        // TIMESTAMP column is declared first, which is what every type-creation path happens to do and what
+        // nothing in TimeSeriesTypeBuilder actually enforces. Carried over from the query()-based code this
+        // replaces rather than introduced here; stated so that a change to that convention is a change someone
+        // can find, instead of a tag value silently read out of the wrong slot.
         // The indices of the TAG columns, resolved once per type instead of re-testing every column's role on
         // every row - the loop below runs once per SAMPLE, and the answer is the same for all of them.
         final int[] tagColumns = tagColumnsOf(columns);

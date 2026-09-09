@@ -85,6 +85,10 @@ public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
         if (!SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD))
           continue;
         final List<ColumnDefinition> columns = tsType.getTsColumns();
+        // The index into the schema doubles as the index into the row below, which holds only because the
+        // TIMESTAMP column is declared first - what every type-creation path happens to do and what nothing in
+        // TimeSeriesTypeBuilder enforces. Carried over from the query()-based code this replaces; see the same
+        // note in GetPromQLSeriesHandler.
         final int colIdx = findColumnIndex(labelName, columns);
         if (colIdx < 0)
           continue;
