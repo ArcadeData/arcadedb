@@ -24,7 +24,6 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 
-import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -81,9 +80,6 @@ public final class PeerCapabilityQuery {
   /** One-time warning that SSL is enabled but the probe fell back to plain HTTP for lack of an HTTPS address. */
   private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
 
-  /** The HTTPS client and the truststore it was built from; guarded by this class's monitor. */
-  private static TrustedClient trustedClient;
-
   private PeerCapabilityQuery() {
   }
 
@@ -96,16 +92,17 @@ public final class PeerCapabilityQuery {
    * @param clusterToken   the inter-node cluster token, may be {@code null}/blank if not configured.
    * @param timeoutMs      per-request timeout in milliseconds.
    * @param server         the local server, used to read {@code arcadedb.ssl.enabled} and build the trust context.
+   * @param httpsClients   the caller's HTTPS client cache, used only when the HTTPS endpoint is the one dialled.
    *
    * @throws IOException          on transport error, a non-200 response (which is what a peer without this route
    *                              answers), or an advertisement that names another peer.
    * @throws InterruptedException if the calling thread is interrupted while waiting.
    */
   public static Advertisement fetch(final String expectedPeerId, final String httpAddr, final String httpsAddr,
-      final String clusterToken, final long timeoutMs, final ArcadeDBServer server)
-      throws IOException, InterruptedException {
+      final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
+      final TrustedHttpClientCache httpsClients) throws IOException, InterruptedException {
     return ask(Objects.requireNonNull(expectedPeerId, "expectedPeerId"), httpAddr, httpsAddr, clusterToken, timeoutMs,
-        server);
+        server, httpsClients);
   }
 
   /**
@@ -118,14 +115,14 @@ public final class PeerCapabilityQuery {
    * {@link #fetch}'s: same route, same authentication, same timeout, and a non-200 still means "no".
    */
   public static Advertisement fetchFromSharedEndpoint(final String httpAddr, final String httpsAddr,
-      final String clusterToken, final long timeoutMs, final ArcadeDBServer server)
-      throws IOException, InterruptedException {
-    return ask(null, httpAddr, httpsAddr, clusterToken, timeoutMs, server);
+      final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
+      final TrustedHttpClientCache httpsClients) throws IOException, InterruptedException {
+    return ask(null, httpAddr, httpsAddr, clusterToken, timeoutMs, server, httpsClients);
   }
 
   private static Advertisement ask(final String expectedPeerId, final String httpAddr, final String httpsAddr,
-      final String clusterToken, final long timeoutMs, final ArcadeDBServer server)
-      throws IOException, InterruptedException {
+      final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
+      final TrustedHttpClientCache httpsClients) throws IOException, InterruptedException {
 
     final boolean useSSL = server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final String url = chooseUrl(httpAddr, httpsAddr, useSSL);
@@ -154,75 +151,12 @@ public final class PeerCapabilityQuery {
     final HttpRequest request = builder.build();
 
     if (url.startsWith("https://"))
-      return parse(expectedPeerId, trustedHttpClient(server).send(request, HttpResponse.BodyHandlers.ofString()), url);
+      // The client carrying the cluster trust context, built once per server and reused until its truststore
+      // changes (issue #7301). Owned by the caller rather than by this class, so several servers in one JVM - the
+      // shape every HA test takes - cannot invalidate and close each other's (issue #7314 review).
+      return parse(expectedPeerId, httpsClients.clientFor(server).send(request, HttpResponse.BodyHandlers.ofString()),
+          url);
     return parse(expectedPeerId, HTTP.send(request, HttpResponse.BodyHandlers.ofString()), url);
-  }
-
-  /**
-   * The client carrying the cluster trust context, built once and reused until the truststore changes
-   * (issue #7301).
-   * <p>
-   * This used to build a fresh {@code SSLContext} - a file read, a certificate-chain parse and an
-   * {@code SSLContext.init} - and a fresh {@link HttpClient} for every probe: once per peer, every
-   * {@link PeerCapabilityRegistry#REFRESH_PERIOD_MS}, for the whole life of the leadership. That is a steady,
-   * avoidable cost on every TLS-enabled cluster, and it also threw away the connection pool between rounds, so
-   * each probe paid a fresh TLS handshake as well.
-   * <p>
-   * Rebuilt when the truststore this node reads has changed: its path, its password, or the file's modification
-   * time or size. That is the condition an operator rotating a certificate actually produces, and it is checked
-   * per probe - the cost of the check is one {@code stat}, against a probe that is about to open a socket.
-   * <p>
-   * The old client is closed on a rebuild. {@link HttpClient#close()} is an orderly shutdown that waits for
-   * in-flight operations, and the one production caller - the capability fan-out - is sequential on a single
-   * scheduled thread, so nothing of its own is ever in flight here.
-   */
-  // @VisibleForTesting
-  static synchronized HttpClient trustedHttpClient(final ArcadeDBServer server) throws IOException {
-    final String storePath = server != null
-        ? server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE) : null;
-    final String storePassword = server != null
-        ? server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD) : null;
-
-    long lastModified = -1L;
-    long length = -1L;
-    if (storePath != null && !storePath.isBlank()) {
-      final File store = new File(storePath);
-      lastModified = store.lastModified();
-      length = store.length();
-    }
-
-    // The password is fingerprinted rather than kept: this cache only ever has to answer "did it change".
-    final TrustedClient current = new TrustedClient(storePath, storePassword == null ? 0 : storePassword.hashCode(),
-        lastModified, length, null);
-
-    final TrustedClient cached = trustedClient;
-    if (cached != null && cached.sameTrustMaterialAs(current))
-      return cached.client();
-
-    final HttpClient client = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(5))
-        .sslContext(SnapshotInstaller.buildSSLContext(server))
-        .build();
-    trustedClient = current.withClient(client);
-    if (cached != null) {
-      LogManager.instance().log(PeerCapabilityQuery.class, Level.FINE,
-          "The truststore backing the cluster capability probe changed; its HTTPS client was rebuilt");
-      cached.client().close();
-    }
-    return client;
-  }
-
-  /** The cached client and the trust material it was built from, so a rotation is noticed and nothing else is. */
-  private record TrustedClient(String storePath, int passwordFingerprint, long lastModified, long length,
-                               HttpClient client) {
-    private boolean sameTrustMaterialAs(final TrustedClient other) {
-      return Objects.equals(storePath, other.storePath) && passwordFingerprint == other.passwordFingerprint
-          && lastModified == other.lastModified && length == other.length;
-    }
-
-    private TrustedClient withClient(final HttpClient built) {
-      return new TrustedClient(storePath, passwordFingerprint, lastModified, length, built);
-    }
   }
 
   /**

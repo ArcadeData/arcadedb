@@ -151,7 +151,7 @@ class Issue7301PeerCapabilityReportingTest {
     });
 
     final PeerCapabilityRegistry registry = raft.getPeerCapabilityRegistry();
-    registry.record(raft.getLocalPeerId().toString(), Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1");
+    registry.record(registry.generation(), raft.getLocalPeerId().toString(), Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1");
     assertThat(registry.freshAdvertisementOf(raft.getLocalPeerId().toString())).isNotNull();
 
     raft.startCapabilityMonitor();
@@ -179,15 +179,56 @@ class Issue7301PeerCapabilityReportingTest {
     final PeerCapabilityRegistry registry = new PeerCapabilityRegistry();
     final Set<String> capabilities = Set.of(PeerCapabilities.SCHEMA_DELTA);
 
-    assertThat(registry.record(FOLLOWER, capabilities, "26.10.1")).as("the first answer is a change").isTrue();
-    assertThat(registry.record(FOLLOWER, capabilities, "26.10.1")).as("the same answer again is not").isFalse();
+    assertThat(registry.record(registry.generation(), FOLLOWER, capabilities, "26.10.1")).as("the first answer is a change").isTrue();
+    assertThat(registry.record(registry.generation(), FOLLOWER, capabilities, "26.10.1")).as("the same answer again is not").isFalse();
 
-    assertThat(registry.forget(FOLLOWER, "the probe failed")).as("the transition into failure is").isTrue();
-    assertThat(registry.forget(FOLLOWER, "the probe failed")).as("staying failed is not").isFalse();
+    assertThat(registry.forget(registry.generation(), FOLLOWER, "the probe failed")).as("the transition into failure is").isTrue();
+    assertThat(registry.forget(registry.generation(), FOLLOWER, "the probe failed")).as("staying failed is not").isFalse();
 
-    registry.retainOnly(List.of(LEADER));
-    assertThat(registry.record(FOLLOWER, capabilities, "26.10.1"))
+    registry.retainOnly(registry.generation(), List.of(LEADER));
+    assertThat(registry.record(registry.generation(), FOLLOWER, capabilities, "26.10.1"))
         .as("a peer that left and came back is new again, whatever it advertised before it left")
+        .isTrue();
+  }
+
+  /**
+   * The other half of the same window, raised in review of PR #7314. {@code stopCapabilityMonitor} ends the
+   * refresh with {@code shutdownNow()} and does NOT wait for the round in flight, so a probe that was already
+   * dialling when leadership was lost can answer after the next term has cleared the registry - recording the
+   * previous term's answer over it, which is exactly what the clear exists to prevent.
+   * <p>
+   * Every write carries the generation its round started in, so the straggler is dropped. Closing it this way
+   * rather than by waiting on the executor keeps a leadership transition from blocking on a network timeout.
+   */
+  @Test
+  void anAnswerFromAnEndedLeadershipTermIsDropped() {
+    final PeerCapabilityRegistry registry = new PeerCapabilityRegistry();
+    final long previousTerm = registry.generation();
+
+    // The new term starts while the previous term's round is still dialling.
+    registry.clear();
+    assertThat(registry.generation()).isNotEqualTo(previousTerm);
+
+    assertThat(registry.record(previousTerm, FOLLOWER, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1"))
+        .as("the straggler is dropped, so it is not a transition to report either")
+        .isFalse();
+    assertThat(registry.freshAdvertisementOf(FOLLOWER))
+        .as("and above all it is not believed: this is the window the clear exists to close")
+        .isNull();
+
+    assertThat(registry.forget(previousTerm, FOLLOWER, "the previous term's probe failed")).isFalse();
+    assertThat(registry.unknownReasonOf(FOLLOWER))
+        .as("nor does an ended term get to explain a peer this term has not asked about")
+        .isNull();
+
+    registry.record(registry.generation(), LEADER, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1");
+    registry.retainOnly(previousTerm, List.of(FOLLOWER));
+    assertThat(registry.freshAdvertisementOf(LEADER))
+        .as("a previous term's configuration cannot prune this term's answers either")
+        .isNotNull();
+
+    assertThat(registry.record(registry.generation(), FOLLOWER, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1"))
+        .as("this term's own round writes normally")
         .isTrue();
   }
 
@@ -196,12 +237,12 @@ class Issue7301PeerCapabilityReportingTest {
   void clearingTheRegistryAlsoClearsWhatWasLastReported() {
     final PeerCapabilityRegistry registry = new PeerCapabilityRegistry();
 
-    assertThat(registry.record(FOLLOWER, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1")).isTrue();
+    assertThat(registry.record(registry.generation(), FOLLOWER, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1")).isTrue();
     registry.clear();
 
     assertThat(registry.freshAdvertisementOf(FOLLOWER)).isNull();
     assertThat(registry.unknownReasonOf(FOLLOWER)).as("a peer nobody has asked yet has nothing to explain").isNull();
-    assertThat(registry.record(FOLLOWER, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1"))
+    assertThat(registry.record(registry.generation(), FOLLOWER, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1"))
         .as("the first answer of the new term is reported, not swallowed as unchanged")
         .isTrue();
   }
@@ -219,23 +260,52 @@ class Issue7301PeerCapabilityReportingTest {
   void theHttpsClientIsReusedUntilTheTruststoreChanges() throws Exception {
     final File truststore = writeEmptyTruststore();
     final ArcadeDBServer server = serverWithTruststore(truststore, "changeit");
+    final TrustedHttpClientCache cache = new TrustedHttpClientCache();
 
-    final HttpClient first = PeerCapabilityQuery.trustedHttpClient(server);
-    assertThat(PeerCapabilityQuery.trustedHttpClient(server))
+    final HttpClient first = cache.clientFor(server);
+    assertThat(cache.clientFor(server))
         .as("an unchanged truststore costs a stat, not a certificate-chain parse")
         .isSameAs(first);
 
     // A rotation: same path, new bytes. The check has to notice, or a rotated certificate is never picked up.
-    Thread.sleep(10);
     truststore.setLastModified(System.currentTimeMillis() + 5_000L);
-    final HttpClient afterRotation = PeerCapabilityQuery.trustedHttpClient(server);
+    final HttpClient afterRotation = cache.clientFor(server);
     assertThat(afterRotation).as("a rotated truststore is picked up").isNotSameAs(first);
 
-    // A different truststore is a different trust anchor set, whatever its timestamps say.
+    // A different truststore is a different set of trust anchors, whatever its timestamps say. The password is
+    // part of the material too, but it cannot be varied on its own here: a keystore's integrity check is computed
+    // FROM the password, so a file opened with a different one does not load at all.
+    final File other = new File(TRUSTSTORE_DIR, "rotated.jks");
+    Files.copy(truststore.toPath(), other.toPath());
+    assertThat(cache.clientFor(serverWithTruststore(other, "changeit"))).isNotSameAs(afterRotation);
+  }
+
+  /**
+   * Raised in review of PR #7314: the cache was a bare {@code static}, and {@code BaseGraphServerTest} and every
+   * HA suite start several servers in ONE JVM. Each server's probe would then see the other's trust material as a
+   * change - rebuilding on every probe - and, since the request is sent outside the cache's monitor, could close a
+   * client another server was still using. One cache per server is what makes "has the truststore changed" the
+   * question it reads as.
+   */
+  @Test
+  void twoServersInOneJvmDoNotInvalidateEachOthersClient() throws Exception {
+    final File truststore = writeEmptyTruststore();
     final File other = new File(TRUSTSTORE_DIR, "other.jks");
     Files.copy(truststore.toPath(), other.toPath());
-    assertThat(PeerCapabilityQuery.trustedHttpClient(serverWithTruststore(other, "changeit")))
-        .isNotSameAs(afterRotation);
+
+    final TrustedHttpClientCache first = new TrustedHttpClientCache();
+    final TrustedHttpClientCache second = new TrustedHttpClientCache();
+    final ArcadeDBServer firstServer = serverWithTruststore(truststore, "changeit");
+    final ArcadeDBServer secondServer = serverWithTruststore(other, "changeit");
+
+    final HttpClient firstClient = first.clientFor(firstServer);
+    final HttpClient secondClient = second.clientFor(secondServer);
+
+    assertThat(secondClient).as("each server builds its own from its own truststore").isNotSameAs(firstClient);
+    assertThat(first.clientFor(firstServer))
+        .as("and the other server's probe is not a reason to rebuild - or to close - this one's")
+        .isSameAs(firstClient);
+    assertThat(second.clientFor(secondServer)).isSameAs(secondClient);
   }
 
   private static File writeEmptyTruststore() throws Exception {
