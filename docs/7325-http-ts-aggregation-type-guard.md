@@ -249,6 +249,29 @@ The reviewer also asked that CI be confirmed green before merge, since the two e
 That is the developer's check at merge time, and it is the reason the "not run locally" note is in the PR
 body rather than buried here.
 
+### Cycle 2 - `a542bd0`
+
+The `claude` review again traced the claims against the source and confirmed them, this time including the
+one the first review had not checked - that every *other* refusal in `PostGrafanaQueryHandler`'s target loop
+already routes through `buildErrorFrame(...)` and `continue`s, so the unguarded `valueOf` really was the only
+call in that loop that could fail the whole request. Two non-blocking notes, neither actionable:
+
+1. Confirm #7340 was actually filed before merge. Verified:
+   `gh issue view 7340` reports it OPEN - "The other required members of an HTTP time-series aggregation
+   request are refused through a JSONException production mode conceals".
+2. The `type` property description now says "Required" in prose, but neither request-body schema lists it in
+   a `required` array. The reviewer checked and reported this as a pre-existing, codebase-wide gap in how
+   request-body schemas express required fields, and called it a non-blocker. **No change**: making the
+   aggregation-request schema the one place that declares it would be inconsistent with every sibling schema,
+   and `field` - which would have to be declared required alongside `type` - is the subject of #7340.
+
+Codacy passes on this head, which confirms the diagnosis of the previous cycle: the locale-less
+`toLowerCase()` in the new test was the one issue it had added.
+
 ## Final state
 
-`clean-approval` - one review cycle, no actionable review items, no deferred items.
+`clean-approval` - two review cycles, no actionable review items in either, no deferred items. The one
+commit made in response to the loop came from a CI static-analysis finding, not from the reviewer.
+
+The two endpoint ITs still have not run anywhere but CI (see "The two endpoint ITs were not executed
+locally" above); confirming that CI is green is the check to make at merge time.
