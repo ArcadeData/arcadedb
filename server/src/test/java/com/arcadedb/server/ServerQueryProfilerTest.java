@@ -609,6 +609,7 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
     plan.put("steps", new JSONArray()
         .put(new JSONObject().put("name", "TimedStep").put("cost", 4_000_000L))
         .put(new JSONObject().put("name", "UntimedStep").put("cost", -1L))
+        .put(new JSONObject().put("name", "NoCostStep"))
         .put(new JSONObject().put("name", "").put("cost", -1L)));
 
     profiler.recordQuery("testdb", "sql", "SELECT FROM Person", 10_000_000L, plan);
@@ -626,6 +627,11 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
     assertThat(untimed.getDouble("totalCostMs")).isEqualTo(0.0);
     assertThat(untimed.getDouble("minCostMs")).isEqualTo(0.0);
     assertThat(untimed.getDouble("p99CostMs")).isEqualTo(0.0);
+
+    // A plan that omits the field entirely is untimed too, not a step that measurably took no time at all.
+    final JSONObject noCost = findStep(steps, "NoCostStep");
+    assertThat(noCost.getInt("measuredCount")).isEqualTo(0);
+    assertThat(noCost.getDouble("totalCostMs")).isEqualTo(0.0);
 
     assertThat(findStep(steps, "unknown")).as("a blank step name must be labelled, not left empty").isNotNull();
   }
