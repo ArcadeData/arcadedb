@@ -179,6 +179,52 @@ class Issue7302ImporterConfigResidualsTest {
   }
 
   /**
+   * The command-line path reaches {@code createSchemaFromConfig} BEFORE {@code fromJSON}, so a config missing one
+   * of these keys was answered there by the bare {@code JSONException} and never reached the sentence written for
+   * it (PR #7314 review). Both entry points now read the same way.
+   */
+  @Test
+  void theSchemaCreationPathReportsTheSameMissingKeys() {
+    final JSONObject vertexWithNoType = new JSONObject().put("file", "issue7302-posts.csv");
+    assertThatThrownBy(() -> GraphImporter.createSchemaFromConfig(database, verticesConfig(vertexWithNoType)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("vertex source")
+        .hasMessageContaining("type");
+
+    final JSONObject edgeWithNoType = new JSONObject().put("attribute", "FriendId").put("target", "Post");
+    final JSONObject vertex = new JSONObject()
+        .put("type", "Post")
+        .put("file", "issue7302-posts.csv")
+        .put("edges", new JSONArray().put(edgeWithNoType));
+    assertThatThrownBy(() -> GraphImporter.createSchemaFromConfig(database, verticesConfig(vertex)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Post")
+        .hasMessageContaining("edge");
+
+    final JSONObject edgeSourceWithNoType = new JSONObject().put("file", "issue7302-links.csv");
+    assertThatThrownBy(() -> GraphImporter.createSchemaFromConfig(database,
+        new JSONObject().put("edgeSources", new JSONArray().put(edgeSourceWithNoType))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("edge source")
+        .hasMessageContaining("edge");
+  }
+
+  /** And it still creates the types a well-formed config declares. */
+  @Test
+  void theSchemaCreationPathStillCreatesWhatItIsGiven() {
+    final JSONObject vertex = new JSONObject()
+        .put("type", "Comment")
+        .put("file", "issue7302-posts.csv")
+        .put("edges", new JSONArray().put(new JSONObject()
+            .put("attribute", "PostId").put("edge", "CommentOn").put("target", "Post")));
+
+    GraphImporter.createSchemaFromConfig(database, verticesConfig(vertex));
+
+    assertThat(database.getSchema().existsType("Comment")).isTrue();
+    assertThat(database.getSchema().existsType("CommentOn")).isTrue();
+  }
+
+  /**
    * The guard has to refuse only what is malformed. Without this every test above would pass against a parser
    * that refused every config it was handed.
    */

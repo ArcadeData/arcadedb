@@ -165,20 +165,28 @@ public class GraphImporter implements AutoCloseable {
     }
   }
 
-  /** Creates vertex and edge types declared in the JSON config (if they don't already exist). */
+  /**
+   * Creates vertex and edge types declared in the JSON config (if they don't already exist).
+   * <p>
+   * Reads its keys through {@link #required} for the same reason {@link #fromJSON} does, and because it runs
+   * FIRST on the command-line path ({@code main} calls it before {@code fromJSON}): a config with no
+   * {@code "type"} would otherwise be answered by the bare {@code JSONException} here and never reach the
+   * sentence written for it (issue #7302, PR #7314 review).
+   */
   public static void createSchemaFromConfig(final Database database, final JSONObject config) {
     database.transaction(() -> {
       if (config.has("vertices")) {
         final JSONArray vertices = config.getJSONArray("vertices");
         for (int i = 0; i < vertices.length(); i++) {
           final JSONObject vj = vertices.getJSONObject(i);
-          final String typeName = vj.getString("type");
+          final String typeName = required(vj, "type", "a vertex source", "the vertex type the rows are imported into");
           if (!database.getSchema().existsType(typeName))
             database.getSchema().createVertexType(typeName);
           if (vj.has("edges")) {
             final JSONArray edges = vj.getJSONArray("edges");
             for (int j = 0; j < edges.length(); j++) {
-              final String edgeType = edges.getJSONObject(j).getString("edge");
+              final String edgeType = required(edges.getJSONObject(j), "edge",
+                  "an \"edges\" entry of vertex source '" + typeName + "'", "the edge type to create");
               if (!database.getSchema().existsType(edgeType))
                 database.getSchema().createEdgeType(edgeType);
             }
@@ -188,7 +196,8 @@ public class GraphImporter implements AutoCloseable {
       if (config.has("edgeSources")) {
         final JSONArray edgeSources = config.getJSONArray("edgeSources");
         for (int i = 0; i < edgeSources.length(); i++) {
-          final String edgeType = edgeSources.getJSONObject(i).getString("edge");
+          final String edgeType = required(edgeSources.getJSONObject(i), "edge", "an edge source",
+              "the edge type the rows are imported into");
           if (!database.getSchema().existsType(edgeType))
             database.getSchema().createEdgeType(edgeType);
         }
