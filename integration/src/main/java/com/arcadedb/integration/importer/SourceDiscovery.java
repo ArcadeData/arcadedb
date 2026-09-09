@@ -320,7 +320,7 @@ public class SourceDiscovery {
 
     parser.nextChar();
 
-    FormatImporter format = analyzeChar(parser, settings);
+    FormatImporter format = analyzeChar(parser, settings, userDelimiter);
     if (format != null)
       return format;
 
@@ -341,7 +341,7 @@ public class SourceDiscovery {
     // SKIP COMMENTS '#' IF ANY
     while (parser.isAvailable() && parser.getCurrentChar() == '#') {
       skipLine(parser);
-      format = analyzeChar(parser, settings);
+      format = analyzeChar(parser, settings, userDelimiter);
       if (format != null)
         return format;
     }
@@ -352,7 +352,7 @@ public class SourceDiscovery {
     try {
       while (parser.getCurrentChar() == '/' && parser.nextChar() == '/') {
         skipLine(parser);
-        format = analyzeChar(parser, settings);
+        format = analyzeChar(parser, settings, userDelimiter);
         if (format != null)
           return format;
       }
@@ -443,7 +443,14 @@ public class SourceDiscovery {
       ;
   }
 
-  private FormatImporter analyzeChar(final Parser parser, final ImporterSettings settings) throws IOException {
+  /**
+   * The first-character dispatch: {@code <} opens either an RDF triple line or XML, <code>{</code> opens JSON.
+   *
+   * @param userDelimiter the delimiter the user supplied for this entity, or null - a detected one yields to it, the
+   *                      same way {@link #analyzeText} treats its own guess
+   */
+  private FormatImporter analyzeChar(final Parser parser, final ImporterSettings settings, final String userDelimiter)
+      throws IOException {
     char currentChar = parser.getCurrentChar();
     if (currentChar == '<') {
       // READ THE FIRST LINE
@@ -479,10 +486,13 @@ public class SourceDiscovery {
         }
 
         if (allDelimitersAreTheSame) {
-          // RDF. THE DELIMITER FOUND HERE USED TO BE WRITTEN INTO settings.options ALTHOUGH THE RDF IMPORTER NEVER READS IT,
-          // WHERE IT LEAKED INTO THE NEXT CSV ENTITY OF THE SAME IMPORT (ISSUE #6946)
+          // RDF. THE CHARACTER WHOSE REPETITION IDENTIFIED THE SOURCE IS ALSO ITS DELIMITER, SO IT IS HANDED TO THE FORMAT
+          // THE SAME WAY THE CSV BRANCHES ABOVE HAND THEIRS OVER: RDFImporterFormat INHERITS CSVImporterFormat'S PARSER
+          // CONSTRUCTION, WHOSE FALLBACK IS A COMMA, SO DROPPING IT READ A SPACE-DELIMITED N-TRIPLES FILE AS ONE COLUMN
+          // (ISSUE #7315). PER-FORMAT AND NOT THROUGH settings.options, WHICH ONE IMPORT SHARES ACROSS ITS DOCUMENTS,
+          // VERTICES AND EDGES FILES - WRITING IT THERE IS WHAT LEAKED IT INTO THE NEXT CSV ENTITY (ISSUE #6946)
           settings.typeIdProperty = "id";
-          return new RDFImporterFormat();
+          return new RDFImporterFormat(resolveDelimiter(userDelimiter, delimiter));
         }
       }
 
