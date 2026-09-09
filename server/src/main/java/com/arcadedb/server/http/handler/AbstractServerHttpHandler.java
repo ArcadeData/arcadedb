@@ -39,6 +39,7 @@ import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.ResultSetTooLargeException;
 import com.arcadedb.server.security.ApiTokenConfiguration;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
@@ -1234,11 +1235,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * @return a new set holding the accessible subset, in the iteration order of {@code databaseNames}
    */
   protected Set<String> filterAuthorizedDatabases(final ServerSecurityUser user, final Collection<String> databaseNames) {
-    final Set<String> authorized = new LinkedHashSet<>(databaseNames.size());
-    for (final String databaseName : databaseNames)
-      if (user == null || user.canAccessToDatabase(databaseName))
-        authorized.add(databaseName);
-    return authorized;
+    // The rule lives in ServerControlPlane so gRPC's ListDatabases narrows its answer the same way
+    // (issue #7304); this stays as the handlers' entry point into it.
+    return ServerControlPlane.filterAuthorizedDatabases(user, databaseNames);
   }
 
   /**

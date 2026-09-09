@@ -25,7 +25,12 @@ import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpServer;
@@ -34,11 +39,11 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import io.grpc.Status;
 import io.grpc.StatusException;
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.List;
 import java.util.Objects;
 
 /**
@@ -49,11 +54,18 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
   private final ArcadeDBServer       server;
   private final CredentialsValidator credentialsValidator;
+  /**
+   * The transport-independent control plane, shared with the HTTP {@code POST /api/v1/server}
+   * handler so the two protocols run one implementation of each administrative operation rather than
+   * two that can drift (issue #7304).
+   */
+  private final ServerControlPlane   controlPlane;
 
   public ArcadeDbGrpcAdminService(final ArcadeDBServer server, CredentialsValidator credentialsValidator) {
 
     this.server = Objects.requireNonNull(server, "server");
     this.credentialsValidator = Objects.requireNonNull(credentialsValidator, "credentialsValidator");
+    this.controlPlane = new ServerControlPlane(this.server);
   }
 
   // ------------------------------------------------------------------------------------
@@ -73,7 +85,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   @Override
   public void getServerInfo(final GetServerInfoRequest req, final StreamObserver<GetServerInfoResponse> resp) {
     respond(resp, "getServerInfo", () -> {
-      authenticate(req.getCredentials());
+      final ServerSecurityUser user = authenticate(req.getCredentials());
 
       final String version = getServerVersion();
       final long startMs = getServerStartMs();
@@ -83,8 +95,10 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       final int grpcPort = getGrpcPort();
       final int binaryPort = getBinaryPort();
 
-      final List<String> dbNames = new ArrayList<>(getDatabaseNames());
-      final int dbCount = dbNames.size();
+      // Counted over the databases this caller may access, as GET /api/v1/server reports them
+      // (issue #7304): the total would otherwise tell an unprivileged caller how many databases it
+      // cannot see.
+      final int dbCount = controlPlane.listAuthorizedDatabases(user).size();
 
       return GetServerInfoResponse.newBuilder().setVersion(version)
           .setEdition("CE") // adjust if you expose edition
@@ -93,26 +107,42 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     });
   }
 
+  /**
+   * Lists the databases the caller is allowed to see. Listing is the one control-plane read that is
+   * not root-only, so the answer is narrowed to the caller instead - the same filter
+   * {@code list databases} and {@code GET /api/v1/databases} apply over HTTP. Before issue #7304
+   * this RPC answered every authenticated caller with every database name on the server.
+   */
   @Override
   public void listDatabases(final ListDatabasesRequest req, final StreamObserver<ListDatabasesResponse> resp) {
     respond(resp, "listDatabases", () -> {
-      authenticate(req.getCredentials());
+      final ServerSecurityUser user = authenticate(req.getCredentials());
 
-      final ArrayList<String> names = new ArrayList<>(getDatabaseNames());
+      final ArrayList<String> names = new ArrayList<>(controlPlane.listAuthorizedDatabases(user));
       names.sort(String.CASE_INSENSITIVE_ORDER);
 
       return ListDatabasesResponse.newBuilder().addAllDatabases(names).build();
     });
   }
 
+  /**
+   * Whether the named database exists <i>and the caller may access it</i>. Both conjuncts, because
+   * that is the predicate {@code GET /api/v1/exists/{database}} applies: {@code GetExistsDatabaseHandler}
+   * skips the batch {@code filterAuthorizedDatabases} helper only to avoid building a whole authorized
+   * set to answer one yes/no, and evaluates {@code canAccessToDatabase} for the single name instead.
+   * Without the second conjunct this RPC lets any account enumerate the names of databases it has no
+   * grant on, which is the disclosure {@link #listDatabases} and {@link #getDatabaseInfo} were narrowed
+   * to close.
+   */
   @Override
   public void existsDatabase(final ExistsDatabaseRequest req, final StreamObserver<ExistsDatabaseResponse> resp) {
     respond(resp, "existsDatabase", () -> {
-      authenticate(req.getCredentials());
+      final ServerSecurityUser user = authenticate(req.getCredentials());
 
       final String name = req.getName(); // proto should define 'name' for the DB
+      final boolean exists = containsDatabaseIgnoreCase(name) && (user == null || user.canAccessToDatabase(name));
 
-      return ExistsDatabaseResponse.newBuilder().setExists(containsDatabaseIgnoreCase(name)).build();
+      return ExistsDatabaseResponse.newBuilder().setExists(exists).build();
     });
   }
 
@@ -120,6 +150,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   public void createDatabase(final CreateDatabaseRequest req, final StreamObserver<CreateDatabaseResponse> resp) {
     respond(resp, "createDatabase", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
+      requireLeader("CreateDatabase");
 
       final String name = req.getName(); // DB name in proto
       final String type = req.getType(); // "graph" or "document" (logical)
@@ -150,6 +181,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   public void dropDatabase(final DropDatabaseRequest req, final StreamObserver<DropDatabaseResponse> resp) {
     respond(resp, "dropDatabase", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
+      requireLeader("DropDatabase");
 
       final String name = req.getName();
 
@@ -163,9 +195,16 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   @Override
   public void getDatabaseInfo(final GetDatabaseInfoRequest req, final StreamObserver<GetDatabaseInfoResponse> resp) {
     respond(resp, "getDatabaseInfo", () -> {
-      authenticate(req.getCredentials());
+      final ServerSecurityUser user = authenticate(req.getCredentials());
 
       final String name = req.getName();
+
+      // Schema shape and record counts are database content, so the caller has to be granted the
+      // database - the same rule that decides whether GET /api/v1/server reports it (issue #7304).
+      // The answer is NOT_FOUND rather than PERMISSION_DENIED so it is the one an unauthorized
+      // caller already gets for a name that does not exist.
+      if (user != null && !user.canAccessToDatabase(name))
+        throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
       if (!containsDatabaseIgnoreCase(name))
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
@@ -213,22 +252,352 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     });
   }
 
+  /**
+   * Creates a server user with the per-database groups the request carries, which is the same document
+   * the HTTP {@code create user} command takes. The deprecated {@code role} field is ignored: the
+   * security model has no server-wide role, only groups held per database.
+   */
   @Override
-  public void createUser(CreateUserRequest req, StreamObserver<CreateUserResponse> resp) {
-    // User management via gRPC is not yet implemented
-    // Users should be managed via configuration files or HTTP API
-    resp.onError(Status.UNIMPLEMENTED
-        .withDescription("User management via gRPC is not yet implemented. Use HTTP API or configuration files.")
-        .asException());
+  public void createUser(final CreateUserRequest req, final StreamObserver<CreateUserResponse> resp) {
+    respond(resp, "createUser", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+      requireLeader("CreateUser");
+
+      final JSONObject user = new JSONObject().put("name", req.getUser()).put("password", req.getPassword());
+      if (!req.getDatabasesMap().isEmpty()) {
+        final JSONObject databases = new JSONObject();
+        req.getDatabasesMap().forEach((database, groups) -> databases.put(database, new JSONArray(groups.getGroupsList())));
+        user.put("databases", databases);
+      }
+      controlPlane.createUser(user);
+
+      return CreateUserResponse.newBuilder().setSuccess(true).setMessage("User '" + req.getUser() + "' created").build();
+    });
   }
 
   @Override
-  public void deleteUser(DeleteUserRequest req, StreamObserver<DeleteUserResponse> resp) {
-    // User management via gRPC is not yet implemented
-    // Users should be managed via configuration files or HTTP API
-    resp.onError(Status.UNIMPLEMENTED
-        .withDescription("User management via gRPC is not yet implemented. Use HTTP API or configuration files.")
-        .asException());
+  public void deleteUser(final DeleteUserRequest req, final StreamObserver<DeleteUserResponse> resp) {
+    respond(resp, "deleteUser", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+      requireLeader("DeleteUser");
+
+      controlPlane.dropUser(req.getUser());
+
+      return DeleteUserResponse.newBuilder().setSuccess(true).setMessage("User '" + req.getUser() + "' dropped").build();
+    });
+  }
+
+  @Override
+  public void listUsers(final ListUsersRequest req, final StreamObserver<ListUsersResponse> resp) {
+    respond(resp, "listUsers", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      final ListUsersResponse.Builder builder = ListUsersResponse.newBuilder();
+      final JSONArray users = controlPlane.listUsers();
+      for (int i = 0; i < users.length(); i++) {
+        final JSONObject user = users.getJSONObject(i);
+        final UserInfo.Builder info = UserInfo.newBuilder().setName(user.getString("name"));
+
+        // The grants are a database-name -> group-name-array map. An entry of any other shape is
+        // skipped rather than raised: GetUsersHandler copies this document verbatim without looking
+        // inside it, so a deployment carrying something unexpected here still reads its user list
+        // over HTTP, and must over gRPC too.
+        final JSONObject databases = user.getJSONObject("databases");
+        for (final String database : databases.keySet()) {
+          if (!(databases.get(database) instanceof final JSONArray groupNames))
+            continue;
+          final UserGroups.Builder groups = UserGroups.newBuilder();
+          for (int g = 0; g < groupNames.length(); g++)
+            groups.addGroups(String.valueOf(groupNames.get(g)));
+          info.putDatabases(database, groups.build());
+        }
+        builder.addUsers(info.build());
+      }
+      return builder.build();
+    });
+  }
+
+  // ------------------------------------------------------------------------------------
+  // Database lifecycle beyond create/drop
+  // ------------------------------------------------------------------------------------
+
+  @Override
+  public void openDatabase(final OpenDatabaseRequest req, final StreamObserver<OpenDatabaseResponse> resp) {
+    respond(resp, "openDatabase", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.openDatabase(req.getName());
+      return OpenDatabaseResponse.newBuilder().build();
+    });
+  }
+
+  @Override
+  public void closeDatabase(final CloseDatabaseRequest req, final StreamObserver<CloseDatabaseResponse> resp) {
+    respond(resp, "closeDatabase", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.closeDatabase(req.getName());
+      return CloseDatabaseResponse.newBuilder().build();
+    });
+  }
+
+  @Override
+  public void alignDatabase(final AlignDatabaseRequest req, final StreamObserver<AlignDatabaseResponse> resp) {
+    respond(resp, "alignDatabase", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.alignDatabase(req.getName());
+      return AlignDatabaseResponse.newBuilder().build();
+    });
+  }
+
+  // ------------------------------------------------------------------------------------
+  // Settings
+  // ------------------------------------------------------------------------------------
+
+  @Override
+  public void setServerSetting(final SetServerSettingRequest req, final StreamObserver<SetServerSettingResponse> resp) {
+    respond(resp, "setServerSetting", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.setServerSetting(req.getKey(), req.getValue());
+      return SetServerSettingResponse.newBuilder().build();
+    });
+  }
+
+  @Override
+  public void setDatabaseSetting(final SetDatabaseSettingRequest req, final StreamObserver<SetDatabaseSettingResponse> resp) {
+    respond(resp, "setDatabaseSetting", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.setDatabaseSetting(req.getDatabase(), req.getKey(), req.getValue());
+      return SetDatabaseSettingResponse.newBuilder().build();
+    });
+  }
+
+  // ------------------------------------------------------------------------------------
+  // Backup
+  // ------------------------------------------------------------------------------------
+
+  @Override
+  public void getBackupConfig(final GetBackupConfigRequest req, final StreamObserver<GetBackupConfigResponse> resp) {
+    respond(resp, "getBackupConfig", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      final JSONObject config = controlPlane.getBackupConfig();
+      final Object configDocument = config.get("config");
+
+      return GetBackupConfigResponse.newBuilder()
+          .setEnabled(config.getBoolean("enabled", false))
+          .setConfigJson(configDocument instanceof JSONObject document ? document.toString() : "")
+          .setMessage(config.getString("message", ""))
+          .build();
+    });
+  }
+
+  @Override
+  public void setBackupConfig(final SetBackupConfigRequest req, final StreamObserver<SetBackupConfigResponse> resp) {
+    respond(resp, "setBackupConfig", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      if (req.getConfigJson().isBlank())
+        throw new IllegalArgumentException("Missing 'config_json' in request");
+
+      controlPlane.setBackupConfig(new JSONObject(req.getConfigJson()));
+      return SetBackupConfigResponse.newBuilder().build();
+    });
+  }
+
+  @Override
+  public void listBackups(final ListBackupsRequest req, final StreamObserver<ListBackupsResponse> resp) {
+    respond(resp, "listBackups", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      final JSONObject result = controlPlane.listBackups(req.getDatabase());
+      final ListBackupsResponse.Builder builder = ListBackupsResponse.newBuilder()
+          .setDatabase(result.getString("database", req.getDatabase()))
+          .setTotalSize(result.getLong("totalSize", 0L))
+          .setTotalCount(result.getLong("totalCount", 0L));
+
+      final JSONArray backups = result.getJSONArray("backups");
+      for (int i = 0; i < backups.length(); i++) {
+        final JSONObject backup = backups.getJSONObject(i);
+        final Object timestamp = backup.get("timestamp");
+        builder.addBackups(BackupInfo.newBuilder()
+            .setFileName(backup.getString("fileName", ""))
+            .setSizeBytes(backup.getLong("size", 0L))
+            .setLastModifiedMs(backup.getLong("lastModified", 0L))
+            .setTimestamp(timestamp instanceof String isoTimestamp ? isoTimestamp : "")
+            .build());
+      }
+      return builder.build();
+    });
+  }
+
+  @Override
+  public void triggerBackup(final TriggerBackupRequest req, final StreamObserver<TriggerBackupResponse> resp) {
+    respond(resp, "triggerBackup", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      final JSONObject result = controlPlane.triggerBackup(req.getDatabase());
+      return TriggerBackupResponse.newBuilder().setBackupFile(result.getString("backupFile", "")).build();
+    });
+  }
+
+  @Override
+  public void deleteBackup(final DeleteBackupRequest req, final StreamObserver<DeleteBackupResponse> resp) {
+    respond(resp, "deleteBackup", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.deleteBackup(req.getDatabase(), req.getFileName());
+      return DeleteBackupResponse.newBuilder().build();
+    });
+  }
+
+  // ------------------------------------------------------------------------------------
+  // Query profiler
+  // ------------------------------------------------------------------------------------
+
+  @Override
+  public void profilerStart(final ProfilerStartRequest req, final StreamObserver<ProfilerStateResponse> resp) {
+    respond(resp, "profilerStart", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.profilerStart(req.getTimeoutSeconds());
+      return ProfilerStateResponse.newBuilder().setRecording(true).build();
+    });
+  }
+
+  @Override
+  public void profilerStop(final ProfilerStopRequest req, final StreamObserver<ProfilerDocumentResponse> resp) {
+    respond(resp, "profilerStop", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      return ProfilerDocumentResponse.newBuilder().setResultsJson(controlPlane.profilerStop().toString()).build();
+    });
+  }
+
+  @Override
+  public void profilerReset(final ProfilerResetRequest req, final StreamObserver<ProfilerStateResponse> resp) {
+    respond(resp, "profilerReset", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.profilerReset();
+      return ProfilerStateResponse.newBuilder().setRecording(false).build();
+    });
+  }
+
+  @Override
+  public void profilerResults(final ProfilerResultsRequest req, final StreamObserver<ProfilerDocumentResponse> resp) {
+    respond(resp, "profilerResults", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      return ProfilerDocumentResponse.newBuilder().setResultsJson(controlPlane.profilerResults().toString()).build();
+    });
+  }
+
+  @Override
+  public void profilerList(final ProfilerListRequest req, final StreamObserver<ProfilerListResponse> resp) {
+    respond(resp, "profilerList", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      final ProfilerListResponse.Builder builder = ProfilerListResponse.newBuilder();
+      final JSONArray runs = controlPlane.profilerList();
+      for (int i = 0; i < runs.length(); i++) {
+        final JSONObject run = runs.getJSONObject(i);
+        builder.addRuns(ProfilerRunInfo.newBuilder()
+            .setFileName(run.getString("fileName", ""))
+            .setSizeBytes(run.getLong("size", 0L))
+            .setLastModifiedMs(run.getLong("lastModified", 0L))
+            .build());
+      }
+      return builder.build();
+    });
+  }
+
+  @Override
+  public void profilerLoad(final ProfilerLoadRequest req, final StreamObserver<ProfilerDocumentResponse> resp) {
+    respond(resp, "profilerLoad", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      return ProfilerDocumentResponse.newBuilder()
+          .setResultsJson(controlPlane.profilerLoad(req.getFileName()).toString()).build();
+    });
+  }
+
+  // ------------------------------------------------------------------------------------
+  // Server lifecycle and cluster
+  // ------------------------------------------------------------------------------------
+
+  @Override
+  public void getServerEvents(final GetServerEventsRequest req, final StreamObserver<GetServerEventsResponse> resp) {
+    respond(resp, "getServerEvents", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      final JSONObject result = controlPlane.getServerEvents(req.getFileName());
+      final GetServerEventsResponse.Builder builder = GetServerEventsResponse.newBuilder()
+          .setEventsJson(result.getJSONArray("events").toString());
+
+      final JSONArray files = result.getJSONArray("files");
+      for (int i = 0; i < files.length(); i++)
+        builder.addFiles(files.getString(i));
+
+      return builder.build();
+    });
+  }
+
+  /**
+   * Stops this server, or the named HA peer. The local branch is asynchronous - the shared
+   * implementation schedules the stop a second out - so the response is written before the JVM exits
+   * rather than the call failing with the connection.
+   */
+  @Override
+  public void shutdown(final ShutdownRequest req, final StreamObserver<ShutdownResponse> resp) {
+    respond(resp, "shutdown", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.shutdownServer(req.getServerName());
+      return ShutdownResponse.newBuilder().build();
+    });
+  }
+
+  @Override
+  public void disconnectCluster(final DisconnectClusterRequest req, final StreamObserver<DisconnectClusterResponse> resp) {
+    respond(resp, "disconnectCluster", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.disconnectCluster();
+      return DisconnectClusterResponse.newBuilder().build();
+    });
+  }
+
+  // ------------------------------------------------------------------------------------
+  // Probes
+  // ------------------------------------------------------------------------------------
+
+  /**
+   * Liveness. Unauthenticated, like {@code GET /api/v1/health}: {@link GrpcAuthInterceptor} exempts
+   * this method from the admin authentication choke point so an orchestrator can probe the node
+   * without credentials. It answers the same way whatever the server's status is - reaching here
+   * proves the process is live, and a node still warming up must not be killed.
+   */
+  @Override
+  public void health(final HealthRequest req, final StreamObserver<HealthResponse> resp) {
+    respond(resp, "health", () -> HealthResponse.newBuilder().setOk(controlPlane.isLive()).build());
+  }
+
+  /**
+   * Readiness. Unauthenticated for the same reason as {@link #health}. Unlike the HTTP probe, which
+   * answers 503, this returns {@code ready=false} with the reason rather than an error status: a
+   * not-ready node is a successful answer to "are you ready", and a gRPC health checker reads the
+   * payload.
+   */
+  @Override
+  public void ready(final ReadyRequest req, final StreamObserver<ReadyResponse> resp) {
+    respond(resp, "ready", () -> {
+      final String reason = controlPlane.notReadyReason();
+      return ReadyResponse.newBuilder().setReady(reason == null).setReason(reason == null ? "" : reason).build();
+    });
   }
 
   // ------------------------------------------------------------------------------------
@@ -240,7 +609,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * the same {@code responded} guard {@link ArcadeDbGrpcService} carries inline, applied by {@link GrpcUnaryCall}.
    * {@code operation} prefixes the description of an unexpected failure, as the inline catch blocks used to.
    */
-  private static <T> void respond(final StreamObserver<T> resp, final String operation, final GrpcUnaryCall.Body<T> body) {
+  private <T> void respond(final StreamObserver<T> resp, final String operation, final GrpcUnaryCall.Body<T> body) {
     GrpcUnaryCall.respond(resp, body, e -> toStatus(operation, e));
   }
 
@@ -249,13 +618,43 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * NOT_FOUND of {@code getDatabaseInfo}) is sent as it is; the authorization exception is checked before the
    * authentication one because it is the more specific outcome, not because of any inheritance between the two.
    */
-  private static StatusException toStatus(final String operation, final Exception e) {
+  private StatusException toStatus(final String operation, final Exception e) {
     if (e instanceof StatusException se)
       return se;
+    // A leader-only operation refused on a follower. Routed through the shared mapper so the answer carries the
+    // LeaderRedirectProtocol trailers (issue #6183) and a client can redirect itself, rather than reading prose:
+    // gRPC has no equivalent of the HTTP handler's forwardToLeaderIfReplica, which proxies the request body to
+    // the leader, so naming the leader is how this transport reproduces that gate.
+    if (e instanceof ServerIsNotTheLeaderException) {
+      final StatusRuntimeException mapped = GrpcErrorMapper.toStatusRuntimeException(e, operation, ha());
+      return new StatusException(mapped.getStatus(), mapped.getTrailers());
+    }
     if (e instanceof AdminAuthorizationException)
       return Status.PERMISSION_DENIED.withDescription(e.getMessage()).asException();
     if (e instanceof SecurityException)
       return Status.UNAUTHENTICATED.withDescription(e.getMessage()).asException();
+    // ServerSecurityException does NOT extend java.lang.SecurityException, so it reaches here rather
+    // than the arm above. Authentication failures never do - authenticate() converts those to a plain
+    // SecurityException - so what is left is a security policy refusing the operation's arguments,
+    // such as the shared credentials validator rejecting a short password on createUser. The HTTP
+    // control plane answers that 403 (AbstractServerHttpHandler.isSecurityFailure treats the two
+    // exception types alike), and PERMISSION_DENIED is the status that says the same thing.
+    if (e instanceof ServerSecurityException)
+      return Status.PERMISSION_DENIED.withDescription(e.getMessage()).asException();
+    // A backup already running for the same database is HTTP's 409 on the other transport: the request
+    // is well formed and authorized, and retrying once the other run finishes is the fix.
+    if (e instanceof ServerControlPlane.BackupInProgressException)
+      return Status.ABORTED.withDescription(e.getMessage()).asException();
+    // A rejected argument must not read as a server fault: an empty database name, an unparseable
+    // setting value or a backup file name outside the backup directory are all the caller's to fix.
+    if (e instanceof IllegalArgumentException)
+      return Status.INVALID_ARGUMENT.withDescription(e.getMessage()).asException();
+    // The operation cannot run in this server's configuration at all - HA not enabled, connect
+    // cluster unsupported - rather than having been attempted and failed. Only that subtype: a plain
+    // CommandExecutionException from here means the operation ran and failed (a backup archive that
+    // could not be deleted), which is INTERNAL, not a precondition the caller can satisfy.
+    if (e instanceof ServerControlPlane.OperationNotAvailableException)
+      return Status.FAILED_PRECONDITION.withDescription(e.getMessage()).asException();
     return Status.INTERNAL.withDescription(operation + ": " + e.getMessage()).asException();
   }
 
@@ -294,6 +693,30 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * proves identity only; without this gate any valid account could create or drop any database.
    * Mirrors the HTTP {@code PostServerCommandHandler} which restricts server administration to root.
    */
+  /**
+   * Refuses an operation that may only run on the cluster leader when this node is a follower.
+   * <p>
+   * The HTTP control plane forwards these same commands - create/drop database and create/drop user, the set
+   * {@code PostServerCommandHandler.execute} hands to {@code forwardToLeaderIfReplica} - by proxying the request
+   * to the leader. gRPC has no such proxy, so the equivalent gate is a refusal that names the leader, which is
+   * the pattern {@code graphBatchLoad} already established on this transport (issues #6091 and #6183). Without
+   * it, {@code createUserClusterWide} would reach {@code HAServerPlugin.replicateSecurityUsers} on a follower,
+   * which is exactly the state the HTTP path never gets into.
+   * <p>
+   * A server with HA inactive is always allowed: there is no leader to be, and {@code getHA()} is null.
+   */
+  private void requireLeader(final String rpc) {
+    final HAServerPlugin ha = ha();
+    if (ha != null && !ha.isLeader())
+      throw new ServerIsNotTheLeaderException(rpc + " must run on the cluster leader and this server is not it",
+          ha.getLeaderAddress());
+  }
+
+  /** This server's HA plugin, or null when HA is inactive: the source of the leader address on a refusal. */
+  private HAServerPlugin ha() {
+    return server.getHA();
+  }
+
   private void requireServerAdmin(final ServerSecurityUser user) {
     if (user == null || !"root".equals(user.getName()))
       throw new AdminAuthorizationException("User is not authorized to execute server administration commands");

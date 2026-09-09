@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
@@ -31,8 +32,15 @@ import io.undertow.server.HttpServerExchange;
  * not be killed by the orchestrator.
  */
 public class GetHealthHandler extends AbstractServerHttpHandler {
+  /**
+   * Liveness as the control plane defines it, shared with gRPC's
+   * {@code ArcadeDbAdminService.Health} so the two probes cannot answer differently (issue #7304).
+   */
+  private final ServerControlPlane controlPlane;
+
   public GetHealthHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.controlPlane = new ServerControlPlane(httpServer.getServer());
   }
 
   @Override
@@ -41,7 +49,7 @@ public class GetHealthHandler extends AbstractServerHttpHandler {
 
     // Liveness only: reaching this handler proves the HTTP layer is up, so the process is live.
     // It deliberately does not consult server status, so a node still warming up is not killed.
-    return new ExecutionResponse(204, "");
+    return controlPlane.isLive() ? new ExecutionResponse(204, "") : new ExecutionResponse(503, "");
   }
 
   @Override

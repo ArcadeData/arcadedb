@@ -33,6 +33,7 @@ import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -49,6 +50,14 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> DATABASE_HEADER      =
       Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
+  /**
+   * Admin methods that are reachable without credentials. Matched on the full method name so a
+   * future RPC whose name merely starts with "Health" is not exempted by accident.
+   */
+  private static final Set<String> UNAUTHENTICATED_ADMIN_METHODS = Set.of(
+      ArcadeDbAdminServiceGrpc.getHealthMethod().getFullMethodName(),
+      ArcadeDbAdminServiceGrpc.getReadyMethod().getFullMethodName());
+
   private final        ServerSecurity          security;
   private final        boolean                 securityEnabled;
   private final        HttpAuthSessionManager  authSessionManager;
@@ -77,6 +86,17 @@ class GrpcAuthInterceptor implements ServerInterceptor {
         methodName.startsWith("grpc.reflection.")) {
       return next.startCall(call, headers);
     }
+
+    // The two container probes, exempt for the same reason the HTTP ones are: GetHealthHandler and
+    // GetReadyHandler both return false from isRequireAuthentication(), so an orchestrator can probe
+    // the node without holding server credentials. Requiring credentials here would leave a gRPC-only
+    // deployment unable to express a liveness or readiness probe at all (issue #7304).
+    //
+    // Neither answer discloses anything an unauthenticated caller could not already establish by
+    // opening the port: Health is constant, and Ready reports only whether this node is serving and,
+    // when it is not, which of the three published readiness gates it is behind.
+    if (UNAUTHENTICATED_ADMIN_METHODS.contains(methodName))
+      return next.startCall(call, headers);
 
     // Admin service: enforce authentication centrally from the request-body credentials instead of
     // trusting every RPC to authenticate itself. This is the central authentication choke point: a

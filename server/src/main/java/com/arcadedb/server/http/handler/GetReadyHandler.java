@@ -18,45 +18,32 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
 public class GetReadyHandler extends AbstractServerHttpHandler {
+  /**
+   * The readiness gates themselves, shared with gRPC's {@code ArcadeDbAdminService.Ready} so a node
+   * cannot be ready on one transport and not on the other (issue #7304).
+   */
+  private final ServerControlPlane controlPlane;
+
   public GetReadyHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.controlPlane = new ServerControlPlane(httpServer.getServer());
   }
 
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     Metrics.counter("http.ready").increment();
 
-    final ArcadeDBServer server = httpServer.getServer();
-    if (server.getStatus() != ArcadeDBServer.STATUS.ONLINE)
-      return new ExecutionResponse(503, "Server not started yet");
-
-    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA)
-        && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
-      final HAServerPlugin ha = server.getHA();
-      // First gate: a leader must be known (election settled). Necessary but not sufficient - the deeper
-      // consensus gate below also requires committed-config membership and follower catch-up.
-      if (ha == null || ha.getElectionStatus() != HAServerPlugin.ELECTION_STATUS.DONE)
-        return new ExecutionResponse(503, "Node has not yet joined the Raft group");
-
-      // Deeper consensus gate: the node must be in the current Raft configuration and (for a follower) have
-      // replayed the committed log to within a small bound. Without it, a restarted follower with a
-      // wiped/lagging log would report Ready before catch-up and a rolling restart could drop the write
-      // quorum. A null signal means the HA implementation provides none: no extra gating. The lag bound is
-      // clamped to >= 0 so a misconfigured negative value cannot wedge a caught-up node out of readiness.
-      final long maxLag = Math.max(0L, server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_READINESS_HA_MAX_LAG));
-      if (ha.getReadinessSignal(maxLag) == HAServerPlugin.READINESS_SIGNAL.NOT_READY)
-        return new ExecutionResponse(503, "Node is not yet in the Raft configuration or has not caught up");
-    }
+    final String notReadyReason = controlPlane.notReadyReason();
+    if (notReadyReason != null)
+      return new ExecutionResponse(503, notReadyReason);
 
     return new ExecutionResponse(204, "");
   }
