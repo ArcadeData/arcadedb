@@ -291,7 +291,7 @@ class RDFImporterFormatCommitCadenceTest {
   }
 
   /**
-   * The live CLI path, end to end: {@code Importer.load()} -> {@code loadFromSource()} ->
+   * The live CLI path, end to end, on the {@code -edges} route: {@code Importer.load()} -> {@code loadFromSource()} ->
    * {@code SourceDiscovery} sniffing the {@code <a>,<b>,<c>} triples back to {@code RDFImporterFormat} ->
    * {@code load()}. What the run reports as {@code parsedRecords} is the counter the commit boundary was
    * taken from, so a run that counts each row once is the observable proof the double increment is gone on
@@ -303,8 +303,25 @@ class RDFImporterFormatCommitCadenceTest {
    * #7315). That is a separate defect from the commit cadence under test here.
    */
   @Test
-  void theCliPipelineCountsEachSourceRowExactlyOnce() throws Exception {
-    final Path rdfFile = Path.of("target", "rdf-commit-cadence-cli.nt").toAbsolutePath();
+  void theEdgesCliRouteCountsEachSourceRowExactlyOnce() throws Exception {
+    assertCliRouteCountsEachSourceRowExactlyOnce("edges", "-vertexType Node -edgeType Related");
+  }
+
+  /**
+   * The other of the two {@code loadFromSource()} calls that can dispatch to this format. {@code -url} is the
+   * first of the four, and {@code Importer.load()} routes it by entity type: with {@code edgeType} among the
+   * options and {@code settings.edges} unset it resolves to EDGE, which is the form an RDF source arrives in.
+   * It reaches the same {@code load()}, so it is the same defect - but it is a different call site, and the
+   * {@code -edges} test above does not drive it.
+   */
+  @Test
+  void theUrlCliRouteCountsEachSourceRowExactlyOnce() throws Exception {
+    assertCliRouteCountsEachSourceRowExactlyOnce("url", "-edgeType Related");
+  }
+
+  private void assertCliRouteCountsEachSourceRowExactlyOnce(final String sourceOption, final String typeOptions)
+      throws Exception {
+    final Path rdfFile = Path.of("target", "rdf-commit-cadence-cli-" + sourceOption + ".nt").toAbsolutePath();
     Files.createDirectories(rdfFile.getParent());
     Files.writeString(rdfFile, """
         <http://a/s1>,<http://a/rel>,<http://a/o1>
@@ -314,7 +331,7 @@ class RDFImporterFormatCommitCadenceTest {
         <http://a/s5>,<http://a/rel>,<http://a/o5>
         """, StandardCharsets.UTF_8);
 
-    final String cliDbPath = "target/databases/rdf-commit-cadence-cli";
+    final String cliDbPath = "target/databases/rdf-commit-cadence-cli-" + sourceOption;
     FileUtils.deleteRecursively(new File(cliDbPath));
     try (final Database cliDatabase = new DatabaseFactory(cliDbPath).create()) {
       cliDatabase.transaction(() -> {
@@ -325,9 +342,8 @@ class RDFImporterFormatCommitCadenceTest {
     }
 
     try {
-      final Map<String, Object> report = new Importer(
-          ("-edges file://" + rdfFile + " -database " + cliDbPath + " -vertexType Node -edgeType Related -commitEvery 2").split(" "))
-          .load();
+      final Map<String, Object> report = new Importer(("-" + sourceOption + " file://" + rdfFile
+          + " -database " + cliDbPath + " " + typeOptions + " -commitEvery 2").split(" ")).load();
 
       assertThat(report.get("createdEdges"))
           .as("the import must actually have run: four of the five triples become edges, the first being skipped as "
