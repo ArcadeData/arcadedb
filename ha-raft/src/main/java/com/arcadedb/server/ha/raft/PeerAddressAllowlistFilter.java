@@ -36,7 +36,10 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
@@ -115,6 +118,15 @@ import java.util.logging.Level;
  * removed, which is why it is stated rather than worked around: any workaround would have to guess which of the
  * pinned domain's addresses belonged to the departing peer, and guessing wrong locks out a healthy pod.
  * <p>
+ * Unlearning a host stops it being <i>admitted</i>, and since issue #7250 it also revokes what an
+ * already-<i>established</i> transport of that host can still do. {@code ServerTransportFilter} is a one-shot
+ * admission gate and gRPC hands it no handle on the transport it admitted, so every transport this filter admits
+ * gets a {@link PeerTransportSession} stashed in its {@code Attributes}; a resolution that stops admitting the
+ * session's address revokes it, {@link PeerAllowlistCallInterceptor} then refuses every further RPC on it, and the
+ * RPCs already running on it are closed. The socket itself is not closed - gRPC's public API exposes no way to close
+ * one established transport - so the accurate operator-facing claim is that removing a peer revokes its reach, not
+ * that it drops its connection.
+ * <p>
  * This is NOT a substitute for mTLS: it does not authenticate peer identity and does not
  * encrypt the traffic. See GitHub issue #3890. The bounded startup fail-open is an acceptable
  * trade-off for that reason; set {@code startupGraceMs=0} to disable it.
@@ -124,6 +136,12 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   // Minimum spacing between miss-triggered re-resolutions. Bounds DNS load under a connection flood
   // (at startup or from a non-peer) while letting the allowlist converge within ~1s.
   private static final long        MISS_RESOLVE_FLOOR_MS = 1_000L;
+
+  // The session this filter attaches to every transport it admits, so PeerAllowlistCallInterceptor can find it again
+  // on each RPC through ServerCall.getAttributes() - the transport attributes returned below are merged into it
+  // (issue #7250).
+  static final Attributes.Key<PeerTransportSession> TRANSPORT_SESSION =
+      Attributes.Key.create("com.arcadedb.server.ha.raft.PeerAddressAllowlistFilter.transportSession");
 
   // Hosts declared in arcadedb.ha.serverList. Immutable, and the ONLY ones the quorum/completeness
   // latches below count: they describe the configured cluster, which is what #4828 reasoned about.
@@ -171,6 +189,14 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   // resolved hosts than there are configured ones (issue #7225). Also removes that message's unsynchronised
   // read of a plain HashMap.
   private volatile int                       resolvedPeerHosts;
+  // The transports this filter has admitted, so a host that stops being admitted can have its established
+  // transports revoked too (issue #7250). Entries are added by transportReady and removed by transportTerminated,
+  // so nothing here outlives the transport it describes.
+  private final Set<PeerTransportSession>    sessions           = ConcurrentHashMap.newKeySet();
+  // Sessions marked revoked by the last resolution and not yet cut. doResolve() runs under this object's monitor and
+  // must not call into gRPC while holding it, so it only flips the flag - which is what stops the NEXT RPC - and
+  // leaves the closing of the in-flight ones to dispatchRevocations() outside the lock.
+  private final Queue<PeerTransportSession>  pendingRevocations = new ConcurrentLinkedQueue<>();
 
   /**
    * Convenience form for a caller with no server configuration in reach - the tests; {@code RaftHAServer} passes
@@ -223,10 +249,43 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     if (address.isLoopbackAddress())
       return attrs;
 
-    if (isAllowed(address.getHostAddress()))
-      return attrs;
+    final String ip = address.getHostAddress();
 
-    throw new SecurityException("Remote address '" + address.getHostAddress() + "' is not in the cluster peer allowlist");
+    // Register BEFORE deciding, not after (issue #7250). isAllowed() can re-resolve, and a reconciliation on another
+    // thread can revoke in the middle of it; a session added afterwards would be invisible to that sweep and the
+    // transport would be admitted with nothing left to revoke it. Registering first inverts the race into one this
+    // method can see and refuse: whatever happens while the decision runs, the session is either still admitted or
+    // has been marked revoked, and both are checked below.
+    final PeerTransportSession session = new PeerTransportSession(ip);
+    sessions.add(session);
+    final boolean allowed;
+    try {
+      allowed = isAllowed(ip);
+    } catch (final RuntimeException e) {
+      sessions.remove(session);
+      throw e;
+    }
+    if (!allowed || session.isRevoked()) {
+      sessions.remove(session);
+      throw new SecurityException("Remote address '" + ip + "' is not in the cluster peer allowlist");
+    }
+
+    session.markAdmitted();
+    return Attributes.newBuilder(attrs).set(TRANSPORT_SESSION, session).build();
+  }
+
+  /**
+   * Drops the session of a transport gRPC has torn down (issue #7250). This is the other half of the lifetime
+   * contract the session's javadoc states: without it {@link #sessions} would grow by one entry per connection for
+   * the life of the process, and the in-flight calls of a dead transport would be walked by every revocation.
+   */
+  @Override
+  public void transportTerminated(final Attributes attrs) {
+    final PeerTransportSession session = attrs == null ? null : attrs.get(TRANSPORT_SESSION);
+    if (session == null)
+      return;
+    sessions.remove(session);
+    session.forgetCalls();
   }
 
   /**
@@ -274,6 +333,15 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
             + "A peer removed from the Raft configuration is expected to appear here.",
         ip, allowedIps.get(), peerHosts, memberHosts, pinnedHosts);
     return false;
+  }
+
+  /**
+   * A snapshot of the transports currently admitted by this filter. Exposed for testing, and a copy rather than an
+   * unmodifiable view of the live set so that a test reading it twice compares two stable values instead of racing
+   * a transport that connected in between.
+   */
+  Set<PeerTransportSession> getSessions() {
+    return Set.copyOf(sessions);
   }
 
   /** Returns an immutable snapshot of the currently allowed IPs. Exposed for testing. */
@@ -338,6 +406,10 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
       // written to throttle away, and the connection it is meant to admit is usually already being retried.
       doResolve();
     }
+    // A pin only ever widens the allowlist, so this is expected to find nothing. It runs anyway because the
+    // re-resolution above went through the same doResolve() as every other path, and leaving one caller that can
+    // enqueue a revocation without draining it would strand an already-flipped session's in-flight RPCs.
+    dispatchRevocations();
     LogManager.instance().log(this, Level.FINE,
         "Raft gRPC peer allowlist pinned %d new host(s): %s", added.size(), added);
     return true;
@@ -416,6 +488,7 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
       droppedIps.retainAll(revokedPinnedIps);
       revoked = Set.copyOf(droppedIps);
     }
+    dispatchRevocations();
     if (!dropped.isEmpty())
       // The revoked addresses are named only when there are any, which on Kubernetes is where the revocation is
       // actually decided: a pinned headless service goes on publishing a removed pod's address until the pod
@@ -510,7 +583,10 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
 
   /** Triggers an immediate DNS re-resolution. Exposed for testing. */
   void refresh() {
-    doResolve();
+    synchronized (this) {
+      doResolve();
+    }
+    dispatchRevocations();
   }
 
   /**
@@ -539,11 +615,23 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     return Math.min(refreshIntervalMs, MISS_RESOLVE_FLOOR_MS);
   }
 
-  /** Re-resolves only if at least {@code floor} ms have elapsed since the last resolution. */
-  private synchronized void resolveIfStale(final long floor) {
-    if (clock.getAsLong() - lastResolveMs < floor)
-      return; // another thread re-resolved recently; avoid a thundering herd under a connection flood
-    doResolve();
+  /**
+   * Re-resolves only if at least {@code floor} ms have elapsed since the last resolution.
+   * <p>
+   * The early return below skips {@link #dispatchRevocations()} as well as the resolution, which is deliberate and
+   * is the one asymmetry with this class's other three dispatch sites: a thread that finds the resolution still
+   * fresh performed none, so it has enqueued nothing, and the thread that actually ran {@code doResolve()} falls
+   * through the block and dispatches whatever that resolution revoked. Returning without dispatching is therefore
+   * not a dropped revocation - but moving the dispatch inside the synchronized block, or adding a second early
+   * return above it, would make it one.
+   */
+  private void resolveIfStale(final long floor) {
+    synchronized (this) {
+      if (clock.getAsLong() - lastResolveMs < floor)
+        return; // another thread re-resolved recently; avoid a thundering herd under a connection flood
+      doResolve();
+    }
+    dispatchRevocations();
   }
 
   private synchronized void doResolve() {
@@ -596,6 +684,50 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
       everQuorumResolved = true;
     if (covered == peerHosts.size())
       everCompletelyResolved = true;
+
+    // Revoke the transports this resolution stopped admitting (issue #7250). Every way the allowed set can shrink -
+    // a peer leaving the Raft configuration, a peer's DNS record losing an address, a sticky last-known-good entry
+    // ageing out, the startup fail-open ending - lands here, because this is the only writer of allowedIps.
+    // Only the flag is flipped under the monitor; dispatchRevocations() does the gRPC work with it released.
+    for (final PeerTransportSession session : sessions)
+      if (!admits(session.getRemoteIp(), now) && session.revoke())
+        pendingRevocations.add(session);
+  }
+
+  /**
+   * Whether {@code ip} is admitted as of right now, reaching neither DNS nor the sticky retention. It is
+   * {@link #isAllowed}'s decision without the re-resolution that method triggers on a miss, and without its
+   * null-address case: it is only ever called for a session's address, which {@link #transportReady} obtained from a
+   * resolved {@link InetAddress} and is therefore never null. Called from inside {@link #doResolve()}, which has just
+   * rebuilt both inputs, so re-resolving here would be redundant as well as re-entrant.
+   */
+  private boolean admits(final String ip, final long now) {
+    if (allowedIps.get().contains(ip))
+      return true;
+    // The startup fail-open (#4471/#4828) admits an unmatched address while a quorum of configured peers has not
+    // resolved. A transport admitted under it must not be cut while it is still in force, or the fix would
+    // re-create the self-inflicted partition that window exists to prevent - it is revoked by the first resolution
+    // after the window closes, when this returns false.
+    return !everQuorumResolved && startupGraceMs > 0 && now - createdMs < startupGraceMs;
+  }
+
+  /**
+   * Cuts the RPCs in flight on the transports the last resolution revoked. Called with this object's monitor
+   * released: closing a {@code ServerCall} runs gRPC code, and holding the filter's lock across it would order this
+   * monitor above gRPC's internals on one path and below them on the {@code transportReady} path.
+   */
+  private void dispatchRevocations() {
+    PeerTransportSession session;
+    while ((session = pendingRevocations.poll()) != null) {
+      final int closed = session.closeLiveCalls();
+      if (!session.isAdmitted())
+        continue; // swept while transportReady was still deciding: it is being rejected, and that is logged there
+      LogManager.instance().log(this, Level.INFO,
+          "Revoked the established Raft gRPC transport of %s: the address is no longer in the peer allowlist. "
+              + "%d in-flight RPC(s) closed; every further RPC on that transport is refused. The connection itself "
+              + "stays open until the peer drops it - gRPC exposes no way to close one established transport.",
+          session.getRemoteIp(), closed);
+    }
   }
 
   /**

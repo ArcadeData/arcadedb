@@ -57,6 +57,8 @@ import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.thirdparty.com.codahale.metrics.MetricRegistry;
 import org.apache.ratis.thirdparty.com.codahale.metrics.Timer;
+import org.apache.ratis.thirdparty.io.grpc.ServerInterceptor;
+import org.apache.ratis.thirdparty.io.grpc.ServerTransportFilter;
 import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.TimeDuration;
 
@@ -248,6 +250,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Inbound Raft gRPC peer allowlist, recreated on each Ratis (re)start. Periodically refreshed by the
   // health monitor tick so a returned peer's new pod IP is admitted proactively (issue #4696).
   private volatile PeerAddressAllowlistFilter allowlistFilter;
+  // Installed alongside allowlistFilter and null for exactly the same reasons (issue #7250): the two are the
+  // connection-time and the per-RPC half of one decision.
+  private volatile PeerAllowlistCallInterceptor allowlistInterceptor;
   // Ratis transport parameters (gRPC TLS conf and the inbound-allowlist services customizer) built by
   // buildParameters() on each Ratis (re)start. Kept so refreshRaftClient() can rebuild the leader's
   // self-client with the SAME transport configuration: a client built with an empty Parameters would
@@ -4196,6 +4201,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // raftParameters becomes visible - the property this method exists to get right.
   Parameters buildParameters(final ContextConfiguration configuration) {
     this.allowlistFilter = null;
+    this.allowlistInterceptor = null;
     final Parameters parameters = new Parameters();
 
     // mTLS first: it is the cryptographic peer identity the allowlist below cannot provide. Throws a
@@ -4253,8 +4259,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (serviceDomain != null)
       filter.learnPeerHosts(List.of(serviceDomain));
 
+    // The filter gates a connection once, when it is established. The interceptor enforces the same decision on
+    // every RPC, which is what revokes a transport already open when its address stopped being admitted (#7250):
+    // it reads the session the filter attached to the transport and refuses the call when that session is revoked.
+    final PeerAllowlistCallInterceptor interceptor = new PeerAllowlistCallInterceptor();
     this.allowlistFilter = filter;
-    GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(filter));
+    this.allowlistInterceptor = interceptor;
+    GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(
+        new ServerTransportFilter[] { filter }, new ServerInterceptor[] { interceptor }));
   }
 
   /**
@@ -4278,6 +4290,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /** Package-private test hook: the inbound Raft gRPC peer allowlist, or null when disabled. */
   PeerAddressAllowlistFilter allowlistFilterForTest() {
     return allowlistFilter;
+  }
+
+  /** Package-private test hook: the per-RPC half of the peer allowlist (issue #7250), or null when disabled. */
+  PeerAllowlistCallInterceptor allowlistInterceptorForTest() {
+    return allowlistInterceptor;
   }
 
   /**
