@@ -76,6 +76,7 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -3950,7 +3951,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // the first pass and settled after the second, so a peer that identifies itself there is never also
       // forgotten for the refusal that sent us looking for it.
       final Map<String, String> unanswered = new LinkedHashMap<>();
-      final Map<String, PeerDialAddress.SharedEndpoint> sharedEndpoints = new LinkedHashMap<>();
+      final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints = new LinkedHashSet<>();
 
       for (final RaftPeer peer : peers) {
         final RaftPeerId peerId = peer.getId();
@@ -3963,9 +3964,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         final PeerDialAddress dial = PeerDialAddress.resolve(this, peerId, "peer");
         if (dial.refused()) {
           unanswered.put(peerId.toString(), dial.refusal());
-          // Keyed by address, so N peers collapsed onto one endpoint cost one probe and not N identical ones.
+          // A SET of the whole endpoint, so N peers collapsed onto one cost one probe and not N identical ones -
+          // and two peers whose HTTP halves collide while their declared HTTPS halves do not still get a probe
+          // each. Deduplicating on the HTTP address alone would have dropped the second peer's HTTPS endpoint,
+          // which on an SSL cluster is the endpoint actually dialled (issue #7256).
           if (dial.sharedEndpoint() != null)
-            sharedEndpoints.putIfAbsent(dial.sharedEndpoint().httpAddress(), dial.sharedEndpoint());
+            sharedEndpoints.add(dial.sharedEndpoint());
           continue;
         }
 
@@ -3981,7 +3985,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           // A peer running a build without the capability route answers 404 and lands here, which is exactly the
           // discriminator this mechanism turns on - so this arm is the NORMAL one during a rolling upgrade, not
           // an error. forgetPeerCapabilities logs it once per change rather than once per round.
-          unanswered.put(peerId.toString(), e.getMessage());
+          unanswered.put(peerId.toString(), describeProbeFailure(e));
         }
       }
 
@@ -4006,9 +4010,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    *
    * @return {@code false} when the round was interrupted and the caller must stand down without settling.
    */
-  private boolean probeSharedEndpoints(final Map<String, PeerDialAddress.SharedEndpoint> sharedEndpoints,
+  private boolean probeSharedEndpoints(final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints,
       final List<String> peerIds, final Map<String, String> unanswered, final String clusterToken) {
-    for (final PeerDialAddress.SharedEndpoint endpoint : sharedEndpoints.values()) {
+    for (final PeerDialAddress.SharedEndpoint endpoint : sharedEndpoints) {
       try {
         final PeerCapabilityQuery.Advertisement advertisement = capabilityProber.probe(null, endpoint.httpAddress(),
             endpoint.httpsAddress(), clusterToken);
@@ -4034,6 +4038,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
     }
     return true;
+  }
+
+  /**
+   * A probe failure as an operator-facing reason, never {@code null}. Some exceptions carry no message - a bare
+   * {@code SocketTimeoutException} among them - and a null there would CLEAR the recorded reason rather than set
+   * one, leaving the peer unknown with nothing to say why: the one thing {@code capabilitiesUnknownReason} exists
+   * to provide (issue #7256).
+   */
+  private static String describeProbeFailure(final Exception e) {
+    final String message = e.getMessage();
+    return message != null && !message.isBlank() ? message : e.getClass().getSimpleName();
   }
 
   /** Records every peer this round could not get an answer for as incapable, each with the reason it failed. */

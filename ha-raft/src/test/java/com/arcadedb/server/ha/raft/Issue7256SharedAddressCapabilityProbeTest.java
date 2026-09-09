@@ -159,6 +159,42 @@ class Issue7256SharedAddressCapabilityProbeTest {
         .containsExactlyInAnyOrder(PEER_A + "@localhost:2481", PEER_B + "@localhost:2482");
   }
 
+  /**
+   * Two peers whose HTTP halves collide while their declared HTTPS halves do not still get a probe each. On an
+   * SSL cluster the HTTPS endpoint is the one actually dialled, so deduplicating on the HTTP address alone would
+   * have thrown away the second peer's usable endpoint and left it permanently unknown for no reason.
+   */
+  @Test
+  void twoPeersSharingOnlyTheirHttpHalfAreBothProbed() {
+    // host:raftPort:httpPort:priority:httpsPort - 2435 and 2436 share http 2495, with distinct declared https.
+    final RaftHAServer raft = newDetachedServer(
+        "localhost:2434:2480:0:2490,localhost:2435:2495:0:2491,localhost:2436:2495:0:2492");
+    final RecordingProber prober = new RecordingProber(advertisement(PEER_A));
+    raft.setCapabilityProber(prober);
+
+    raft.refreshPeerCapabilities();
+
+    assertThat(prober.httpsAsked)
+        .as("one probe per distinct endpoint, not per distinct HTTP address")
+        .containsExactlyInAnyOrder("localhost:2491", "localhost:2492");
+  }
+
+  /** A probe failure with no message still leaves a reason: a null one would CLEAR the reason, not record it. */
+  @Test
+  void aProbeFailureWithNoMessageStillReportsWhy() {
+    final RaftHAServer raft = newDetachedServer("localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
+    raft.setCapabilityProber((expectedPeerId, httpAddress, httpsAddress, clusterToken) -> {
+      throw new java.net.SocketTimeoutException();
+    });
+
+    raft.refreshPeerCapabilities();
+
+    assertThat(raft.getPeerCapabilityRegistry().unknownReasonOf(PEER_A))
+        .as("a bare SocketTimeoutException carries no message, and 'unknown for no stated reason' is exactly "
+            + "what capabilitiesUnknownReason exists to prevent")
+        .isEqualTo("SocketTimeoutException");
+  }
+
   // ---------------------------------------------------------------------------------------------------------
   // The two halves of the guard this relaxation leans on, pinned where they live.
   // ---------------------------------------------------------------------------------------------------------
@@ -248,7 +284,9 @@ class Issue7256SharedAddressCapabilityProbeTest {
    * and answers from a fixed script, so the assertions are about which peer an answer is credited to.
    */
   private static final class RecordingProber implements RaftHAServer.CapabilityProber {
-    private final List<String>                       calls = new ArrayList<>();
+    private final List<String>                       calls      = new ArrayList<>();
+    /** The HTTPS endpoint offered with each question, so "which endpoint was dialled" can be asserted too. */
+    private final List<String>                       httpsAsked = new ArrayList<>();
     private final PeerCapabilityQuery.Advertisement  sharedAnswer;
     private       PeerCapabilityQuery.Advertisement  guardedAnswer;
 
@@ -260,6 +298,8 @@ class Issue7256SharedAddressCapabilityProbeTest {
     public PeerCapabilityQuery.Advertisement probe(final String expectedPeerId, final String httpAddress,
         final String httpsAddress, final String clusterToken) throws IOException {
       calls.add(expectedPeerId + "@" + httpAddress);
+      if (httpsAddress != null)
+        httpsAsked.add(httpsAddress);
       final PeerCapabilityQuery.Advertisement answer = expectedPeerId == null ? sharedAnswer : guardedAnswer;
       if (answer == null)
         throw new IOException("capability query to " + httpAddress + " returned HTTP 404");
