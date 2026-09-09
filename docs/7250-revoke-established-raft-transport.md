@@ -211,6 +211,10 @@ Two other JVMs held the fixed HA ports for the duration of that run. `Issue7037S
 touches nothing in this diff either - it measures page-file sizes under `./target/databases` - and both classes
 pass in the 131-test run above, which was taken after the ports cleared.
 
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7319
+
 ## Adversarial pass
 
 The orchestrator's independent subagent could not be spawned (the `Task` tool is disabled in this session), so
@@ -251,3 +255,16 @@ comments rather than behaviour, and both applied:
 | `resolveIfStale`'s early return skips `dispatchRevocations()` as well as the resolution. Correct once traced - the thread that short-circuits enqueued nothing, and the one that ran `doResolve()` dispatches - but it is a genuine asymmetry with the other three dispatch sites and a later edit could break it silently. | **Applied** - the method now carries a javadoc paragraph stating why the early return is not a dropped revocation, and naming the two edits that would make it one. |
 | `PeerTransportSession.revoke()` is `synchronized` although its only caller already holds the filter's monitor, so the keyword is currently redundant and could suggest that is where the sweep's safety lives. | **Applied as a comment, not a removal.** Verified the claim - `grep -rn "\.revoke()" ha-raft/src` finds exactly one caller, `doResolve()`. Kept, because the return value is a promise this method makes and it should be this method that keeps it; the javadoc now says the keyword buys nothing today and why it is there anyway. |
 | Per-RPC cost is reasoned rather than measured; the concurrent register/revoke race is correct-by-construction rather than tested. | **No change** - both were already stated as such here rather than implied, which is what the review was acknowledging. |
+
+### Cycle 3 - `5a64d12` (clean)
+
+`claude` reviewed again: **no blocking issues**, nothing left from cycles 1 and 2, and no coverage gap. Static
+read once more. One optional note, deliberately not acted on:
+
+| Note | Disposition |
+|---|---|
+| `dispatchRevocations()` can log "Revoked the established Raft gRPC transport of X ... 0 in-flight RPC(s) closed" for a transport that terminated between the sweep enqueuing the session and the drain processing it - `transportTerminated` clears `liveCalls` but does not touch `pendingRevocations`. Log noise, not incorrect. The reviewer rated it "very low severity, probably not worth guarding against explicitly". | **Skipped, with the reasoning.** The guard is two lines (`!sessions.contains(session)` alongside the existing `!isAdmitted()` check) and would make the line accurate. It is not taken because it cannot be driven by a test: the window it closes is between an enqueue and a drain that happen microseconds apart on the same thread, and interleaving them would need a synchronisation hook in production code. That would add an unexercised branch to security-relevant code to improve the wording of a log line, against this repo's rule that new server-side code comes with a test - a worse trade than the noise. The window is real but narrow, the message is only ever emitted for a revocation that genuinely happened, and an operator reading it about a connection that has since dropped is told something true. |
+
+## Final state
+
+`clean-approval` after 3 review cycles. Merge remains the developer's.
