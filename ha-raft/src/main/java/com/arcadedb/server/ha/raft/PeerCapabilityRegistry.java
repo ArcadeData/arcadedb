@@ -131,16 +131,29 @@ public final class PeerCapabilityRegistry {
   }
 
   /**
-   * Why {@code peerId} counts as incapable, as last recorded by {@link #forget}, or {@code null} when it has an
-   * answer or was never asked.
+   * Why {@code peerId} counts as incapable, or {@code null} when it has a fresh answer or was never asked at all.
    * <p>
    * The one thing an operator can act on when a capability never arrives. A peer whose address is ambiguous is the
    * case this exists for: it fails the safe way and silently, so an absent {@code capabilities} field on
    * {@code GET /api/v1/cluster} reads identically to "this peer runs an older build", and the remedy for the two
    * is nothing alike (issue #7256).
+   * <p>
+   * Covers the THIRD unknown as well as the two {@link #forget} records. An answer that simply aged out with no
+   * failed probe behind it means the leader stopped asking rather than the peer stopped answering - a node that
+   * lost leadership and regained it has a window of exactly that shape, because {@code stopCapabilityMonitor}
+   * ends the refresh while the advertisements it took stay in this map. Reporting nothing there would leave the
+   * one arm of "every unknown is a no" that no reason describes.
    */
   public String unknownReasonOf(final String peerId) {
-    return freshAdvertisementOf(peerId) != null ? null : unknownReasons.get(peerId);
+    if (freshAdvertisementOf(peerId) != null)
+      return null;
+    final String reason = unknownReasons.get(peerId);
+    if (reason != null)
+      return reason;
+    return advertisements.containsKey(peerId)
+        ? "this peer's last advertisement is older than the " + ttlMs + "ms one is believed for, and no probe has "
+            + "refreshed it since"
+        : null;
   }
 
   /**

@@ -4412,13 +4412,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * No-op when there is no leader/server context or the lifecycle executor is shutting down.
    */
   private void triggerDatabaseResync(final String dbName) {
-    // Read once, here rather than inside the submitted task: the guard and the two dereferences it protects must
-    // see the same instance, and the task runs later still (issue #7253).
-    final RaftHAServer raftHA = this.raftHAServer;
-    if (raftHA == null || server == null)
+    // A cheap early-out, not the guard: nothing below relies on this read, which is why it may be a separate one.
+    if (raftHAServer == null || server == null)
       return;
     try {
       lifecycleExecutor.submit(() -> {
+        // The one read for this operation, taken HERE and not at submit time. This is the only place the
+        // read-once rule crosses an async boundary, and capturing the reference when the task was QUEUED would
+        // buy the thing the rule exists to prevent: a resync running against an instance a teardown replaced
+        // while it sat in the queue. Reading it when the work actually starts gives both halves - one instance
+        // for the whole operation, and that instance current as of the operation (issue #7253).
+        final RaftHAServer raftHA = this.raftHAServer;
+        if (raftHA == null) {
+          HALog.log(this, HALog.BASIC,
+              "Skipping targeted resync of '%s': the HA server was torn down before the task ran", dbName);
+          return;
+        }
         if (!snapshotDownloadInProgress.compareAndSet(false, true)) {
           HALog.log(this, HALog.BASIC, "Snapshot download already in progress, skipping targeted resync of '%s'", dbName);
           return;
