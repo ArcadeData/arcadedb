@@ -71,13 +71,18 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
      * worse than handing back its raw JSON text: the text is what a caller mapping an embedding
      * with {@code property(...)} rather than {@code floatArrayProperty(...)} expects, and
      * {@code VectorUtils.toFloatArray()} parses it (#7185).
+     * <p>
+     * An empty string is "not set" here for the same reason it is in the five typed accessors below, and it was
+     * the one accessor #7269 left behind: a STRING property routes through this method, so a column a JSONL row
+     * leaves blank used to store {@code ""} while the same column of the same export in CSV stored nothing at
+     * all, and an {@code IS NULL} filter answered by which file the row came from (#7332).
      */
     @Override
     public String get(final String attribute) {
       // opt() is null for both an absent attribute and an explicit JSON null, so one lookup covers
       // the "not set" case that getString() would otherwise throw on
       final Object value = json.opt(attribute);
-      if (value == null)
+      if (notSet(value))
         return null;
       if (value instanceof String text)
         return text;
@@ -114,8 +119,8 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
     }
 
     /**
-     * The same predicate over a value the caller has already looked up, so the two array accessors
-     * below can branch on that value without paying a second map lookup for it.
+     * The same predicate over a value the caller has already looked up, so {@link #get} and the two array
+     * accessors below can branch on that value without paying a second map lookup for it.
      */
     private static boolean notSet(final Object value) {
       return value == null || (value instanceof String text && text.isEmpty());

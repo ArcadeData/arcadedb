@@ -715,11 +715,12 @@ public class GraphImporter implements AutoCloseable {
      * Enables splitting one file into multiple vertex types (e.g. Posts.xml → Question + Answer).
      * Format: {@code filter("PostTypeId", "1")} or in JSON: {@code "filter": "PostTypeId=1"}.
      * <p>
-     * An EMPTY value is accepted and selects the rows whose attribute is empty - {@code "filter": "PostTypeId="}
-     * in JSON. Which rows those are depends on the source: {@link XmlRowSource} hands back the raw attribute value
-     * and {@link JsonlRowSource} an explicit empty string, so both can match, while {@link CsvRowSource} reads an
-     * empty cell as absent, where such a filter selects nothing. An empty ATTRIBUTE is refused, because there is
-     * no row it could ever test.
+     * An EMPTY value is accepted and selects the rows that do not set the attribute at all -
+     * {@code "filter": "PostTypeId="} in JSON - on every source alike, because every source reads an empty value
+     * as "not set" ({@link RecordReader#get}). It used to depend on the file format instead: XML and JSONL handed
+     * back the empty string and matched, CSV folded it to null and matched nothing, so one config split one file
+     * two ways depending on what it had been exported to (issue #7332). An empty ATTRIBUTE is still refused,
+     * because there is no row it could ever test.
      */
     public void filter(final String attribute, final String value) {
       this.filterAttribute = attribute;
@@ -852,7 +853,28 @@ public class GraphImporter implements AutoCloseable {
    * Read-only access to a record's attributes.
    */
   public interface RecordReader {
+    /**
+     * The attribute's textual value, or {@code null} when the row does not set it.
+     * <p>
+     * <b>Empty means not set, on every source.</b> An implementation must answer {@code null} for a value that is
+     * present but empty, exactly as the typed accessors below do with their {@code !v.isEmpty()} test, as
+     * {@code readProperty} does for a DATETIME (issue #7265) and as the JSONL typed accessors do (issue #7269).
+     * Otherwise the same blank column behaves differently by file format - nothing stored when the row came from
+     * CSV, an empty string stored when it came from JSONL or XML - and a downstream {@code IS NULL} filter or a
+     * mandatory-property check then answers differently for two files carrying the same data (issue #7332).
+     * <p>
+     * {@link #emptyAsNull} is the one-line way to satisfy it. {@code isEmpty()}, never {@code isBlank()}: a
+     * whitespace-only value is a data error rather than a blank cell, which is what every accessor below tests.
+     */
     String get(String attribute);
+
+    /**
+     * {@code value} unless it is empty, in which case {@code null} - the "empty means not set" rule {@link #get}
+     * states, in the one place every source can share it.
+     */
+    static String emptyAsNull(final String value) {
+      return value != null && !value.isEmpty() ? value : null;
+    }
 
     default int getInt(final String attribute) {
       final String v = get(attribute);
@@ -1175,7 +1197,11 @@ public class GraphImporter implements AutoCloseable {
         // Apply row filter (e.g. PostTypeId=1 for questions only)
         if (filterAttr != null) {
           final String v = record.get(filterAttr);
-          if (v == null || !v.equals(filterVal))
+          // An EMPTY filter value selects the rows that leave the attribute unset, which is the only reading left
+          // now that every source folds an empty value to null (issue #7332). Before that it worked on two sources
+          // of three - XML and JSONL handed back "" and matched, CSV folded to null and matched nothing - so the
+          // same config split one file two ways depending on the format it was exported to.
+          if ((filterVal == null || filterVal.isEmpty()) ? v != null : !filterVal.equals(v))
             return;
         }
 

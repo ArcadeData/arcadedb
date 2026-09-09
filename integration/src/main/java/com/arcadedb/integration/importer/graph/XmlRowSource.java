@@ -138,9 +138,10 @@ public class XmlRowSource implements GraphImporter.RecordSource {
   private static class AttrRecordReader implements GraphImporter.RecordReader {
     XMLStreamReader reader;
 
+    /** Empty means not set, as it does on every other source: see {@link GraphImporter.RecordReader#get} (#7332). */
     @Override
     public String get(final String attribute) {
-      return reader.getAttributeValue(null, attribute);
+      return GraphImporter.RecordReader.emptyAsNull(reader.getAttributeValue(null, attribute));
     }
 
     @Override
@@ -154,9 +155,10 @@ public class XmlRowSource implements GraphImporter.RecordSource {
   private static class MapRecordReader implements GraphImporter.RecordReader {
     final Map<String, String> fields = new HashMap<>();
 
+    /** Empty means not set, as it does on every other source: see {@link GraphImporter.RecordReader#get} (#7332). */
     @Override
     public String get(final String attribute) {
-      return fields.get(attribute);
+      return GraphImporter.RecordReader.emptyAsNull(fields.get(attribute));
     }
 
     @Override

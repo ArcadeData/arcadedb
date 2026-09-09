@@ -217,16 +217,30 @@ class Issue7256SharedAddressCapabilityProbeTest {
     assertThat(PeerDialAddress.resolve(raft, RaftPeerId.valueOf(LOCAL), "peer").sharedEndpoint()).isNull();
   }
 
-  /** A collapsed address that is this node's own is never offered: dialling it comes straight back here. */
+  /**
+   * A collapsed address that is this node's own is never offered AS ITSELF: dialling it comes straight back here.
+   * <p>
+   * What is offered in its place is the port-offset candidate #7332 added, because on this deployment shape - no
+   * declared {@code http} port, every node on one host - the collapsed address is this node's own for every peer,
+   * so withholding it and stopping there left the second pass with nothing to ask and this whole mechanism dead
+   * on its own target. The dial address itself is still refused, which is the part that must not move.
+   * <p>
+   * The candidate itself, and every case in which there is none, is pinned in
+   * {@link Issue7332SharedEndpointPortOffsetTest}.
+   */
   @Test
-  void aSharedAddressThatIsThisNodesOwnIsNotOffered() {
+  void aSharedAddressThatIsThisNodesOwnIsReplacedByAPortOffsetCandidate() {
     // Nothing declares an http port, so every peer derives onto this node's own 2480 listener.
-    final RaftHAServer raft = newDetachedServer("localhost:2434,localhost:2435,localhost:2436");
+    final RaftHAServer raft = newDetachedServer("localhost:2434,localhost:2435,localhost:2436", 2480);
 
     final PeerDialAddress dial = PeerDialAddress.resolve(raft, RaftPeerId.valueOf(PEER_A), "peer");
 
-    assertThat(dial.refused()).isTrue();
-    assertThat(dial.sharedEndpoint()).isNull();
+    assertThat(dial.refused()).as("the address that identifies no peer is still not an address to dial").isTrue();
+    assertThat(dial.httpAddress()).isNull();
+    assertThat(dial.sharedEndpoint()).isNotNull();
+    assertThat(dial.sharedEndpoint().httpAddress())
+        .as("2435 - 2434 carried over to the HTTP port names the peer's own listener")
+        .isEqualTo("localhost:2481");
   }
 
   /** The parser takes any author when no peer was expected, and still refuses a document that names none. */
@@ -313,11 +327,25 @@ class Issue7256SharedAddressCapabilityProbeTest {
    * one, which is all the capability refresh reads.
    */
   private static RaftHAServer newDetachedServer(final String serverList) {
+    return newDetachedServer(serverList, -1);
+  }
+
+  /**
+   * @param localHttpPort the port this node's HTTP listener reports, or {@code -1} for no listener at all - which
+   *                      is what a mocked server answers by default, and what makes every DERIVED address resolve
+   *                      to null. A test about a derived address has to declare one.
+   */
+  static RaftHAServer newDetachedServer(final String serverList, final int localHttpPort) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList);
 
     final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
     when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
+    if (localHttpPort > 0) {
+      final com.arcadedb.server.http.HttpServer httpServer = mock(com.arcadedb.server.http.HttpServer.class);
+      when(httpServer.getPort()).thenReturn(localHttpPort);
+      when(mockServer.getHttpServer()).thenReturn(httpServer);
+    }
 
     return new RaftHAServer(mockServer, config);
   }

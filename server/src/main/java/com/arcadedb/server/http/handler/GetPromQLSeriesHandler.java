@@ -98,23 +98,27 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
         if (!SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD))
           continue;
 
+        // forEachRow, not query(): the answer is the number of distinct label COMBINATIONS the metric carries,
+        // while query() merges every shard's full range into one ArrayList and sorts it by timestamp - a sort this
+        // loop does not use. start/end default to the full range here, so `?match[]=cpu` with no time range used
+        // to read a whole series into memory to enumerate a handful of label sets (issue #7354).
         final TimeSeriesEngine engine = tsType.getEngine();
         final List<ColumnDefinition> columns = tsType.getTsColumns();
-        final List<Object[]> rows = engine.query(startMs, endMs, null, null);
 
-        for (final Object[] row : rows) {
+        engine.forEachRow(startMs, endMs, null, null, null, row -> {
           final Map<String, String> labels = new LinkedHashMap<>();
           labels.put("__name__", vs.metricName());
           for (int i = 0; i < columns.size(); i++) {
             final ColumnDefinition col = columns.get(i);
-            if (col.getRole() == ColumnDefinition.ColumnRole.TAG && row[i] != null)
+            if (col.getRole() == ColumnDefinition.ColumnRole.TAG && i < row.length && row[i] != null)
               labels.put(col.getName(), row[i].toString());
           }
 
           final String key = labels.toString();
           if (seenKeys.add(key))
             seriesList.add(labels);
-        }
+          return true;
+        });
       } catch (final IllegalArgumentException ignored) {
         // Skip malformed match patterns
       }

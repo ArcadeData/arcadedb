@@ -320,7 +320,7 @@ public class SourceDiscovery {
 
     parser.nextChar();
 
-    FormatImporter format = analyzeChar(parser, settings);
+    FormatImporter format = analyzeChar(parser, settings, userDelimiter);
     if (format != null)
       return format;
 
@@ -341,7 +341,7 @@ public class SourceDiscovery {
     // SKIP COMMENTS '#' IF ANY
     while (parser.isAvailable() && parser.getCurrentChar() == '#') {
       skipLine(parser);
-      format = analyzeChar(parser, settings);
+      format = analyzeChar(parser, settings, userDelimiter);
       if (format != null)
         return format;
     }
@@ -352,7 +352,7 @@ public class SourceDiscovery {
     try {
       while (parser.getCurrentChar() == '/' && parser.nextChar() == '/') {
         skipLine(parser);
-        format = analyzeChar(parser, settings);
+        format = analyzeChar(parser, settings, userDelimiter);
         if (format != null)
           return format;
       }
@@ -421,6 +421,181 @@ public class SourceDiscovery {
     throw new ImportException("Cannot determine the file type. If it is a CSV file, please specify the header via settings");
   }
 
+  /**
+   * The character separating the terms of an RDF triple line, or {@code 0} when {@code line} is not one
+   * (issue #7346).
+   * <p>
+   * The line is recognised by its SHAPE - {@code subject separator predicate separator object [separator .]} -
+   * where the subject is an {@code <IRI>} or a {@code _:blank} node, the predicate is an {@code <IRI>}, and the
+   * object is any of the three plus a quoted literal with its optional {@code @lang} or {@code ^^<datatype>}
+   * suffix. The whole line has to be consumed, so an XML element or a delimited-text row cannot satisfy it.
+   * <p>
+   * What it replaces was "collect every character outside {@code <...>} and require them all to be equal", whose
+   * loop bound of {@code size() - 1} tolerated exactly one trailing character - the {@code .} of a canonical
+   * triple. Both reported failures follow from that single tolerated character: a CRLF line ending adds a second
+   * one, and a literal object puts every character of its own text outside the brackets. Both fell through to the
+   * CSV fallback, which reported a {@code NumberFormatException} about an IRI.
+   * <p>
+   * The separator is RETURNED rather than assumed, because it is also the source's field delimiter:
+   * {@link RDFImporterFormat} inherits {@link com.arcadedb.integration.importer.format.CSVImporterFormat}'s parser
+   * construction, whose fallback is a comma (issue #7315). It must be the SAME character in both gaps, which is
+   * what the old uniqueness test was really testing, and it is taken from {@link #isTermSeparator}'s set rather
+   * than fixed to whitespace: a comma- or semicolon-separated triple file was accepted before this change and
+   * still is.
+   */
+  static char nTriplesSeparator(final CharSequence line) {
+    final int end = endOfContent(line);
+    if (end == 0)
+      return 0;
+
+    final int subjectEnd = endOfSubjectOrObject(line, 0, end, false);
+    if (subjectEnd <= 0 || subjectEnd >= end)
+      return 0;
+
+    final char separator = line.charAt(subjectEnd);
+    if (!isTermSeparator(separator))
+      return 0;
+
+    final int predicateEnd = endOfIri(line, skipRunOf(line, subjectEnd, end, separator), end);
+    if (predicateEnd < 0 || predicateEnd >= end || line.charAt(predicateEnd) != separator)
+      return 0;
+
+    int pos = endOfSubjectOrObject(line, skipRunOf(line, predicateEnd, end, separator), end, true);
+    if (pos < 0)
+      return 0;
+
+    // The terminating '.' is optional: the detection this replaces accepted a file without one, and three terms
+    // are already unambiguous. What is not optional is that nothing else follows it.
+    if (pos < end) {
+      if (line.charAt(pos) != separator)
+        return 0;
+      pos = skipRunOf(line, pos, end, separator);
+      if (pos >= end || line.charAt(pos) != '.')
+        return 0;
+      ++pos;
+    }
+
+    return pos == end ? separator : 0;
+  }
+
+  /**
+   * Whether the line opens with a subject term and an IRI predicate, i.e. it is an RDF statement whatever went
+   * wrong after them. Used only to phrase the diagnostic that the CSV fallback cannot phrase for itself.
+   */
+  static boolean looksLikeRdfStatementStart(final CharSequence line) {
+    final int end = endOfContent(line);
+    final int subjectEnd = endOfSubjectOrObject(line, 0, end, false);
+    if (subjectEnd <= 0 || subjectEnd >= end || !isTermSeparator(line.charAt(subjectEnd)))
+      return false;
+    return endOfIri(line, skipRunOf(line, subjectEnd, end, line.charAt(subjectEnd)), end) > 0;
+  }
+
+  /**
+   * The characters that may stand between two terms, which are also the ones an RDF file is plausibly delimited
+   * by. Deliberately not the full {@link #isSeparator} set: {@code _} opens a blank node and {@code -} belongs
+   * inside a language tag, so either would be ambiguous with the term that follows, and {@code .} is the
+   * statement terminator.
+   */
+  private static boolean isTermSeparator(final char c) {
+    return c == ' ' || c == '\t' || c == ',' || c == ';' || c == '|';
+  }
+
+  /**
+   * The length of {@code line} with its trailing whitespace removed - the {@code \r} of a CRLF line ending above
+   * all, which the parser leaves on the line because it splits on {@code \n} alone.
+   */
+  private static int endOfContent(final CharSequence line) {
+    int end = line.length();
+    while (end > 0 && (line.charAt(end - 1) == ' ' || line.charAt(end - 1) == '\t' || line.charAt(end - 1) == '\r'))
+      --end;
+    return end;
+  }
+
+  /** The first index after the run of {@code separator} starting at {@code pos}. */
+  private static int skipRunOf(final CharSequence line, int pos, final int end, final char separator) {
+    while (pos < end && line.charAt(pos) == separator)
+      ++pos;
+    return pos;
+  }
+
+  /**
+   * The index just past an {@code <IRI>} starting at {@code pos}, or {@code -1}. The characters refused inside the
+   * brackets are the ones N-Triples itself forbids there, which is what keeps an XML tag - {@code <a>} followed by
+   * text and {@code </a>} - from passing as a predicate.
+   */
+  private static int endOfIri(final CharSequence line, final int pos, final int end) {
+    if (pos >= end || line.charAt(pos) != '<')
+      return -1;
+    for (int i = pos + 1; i < end; ++i) {
+      final char c = line.charAt(i);
+      if (c == '>')
+        return i > pos + 1 ? i + 1 : -1;
+      if (c <= ' ' || c == '<' || c == '"' || c == '{' || c == '}' || c == '|' || c == '^' || c == '`' || c == '\\')
+        return -1;
+    }
+    return -1;
+  }
+
+  /** The index just past a {@code _:blank} node label starting at {@code pos}, or {@code -1}. */
+  private static int endOfBlankNode(final CharSequence line, final int pos, final int end) {
+    if (pos + 2 >= end || line.charAt(pos) != '_' || line.charAt(pos + 1) != ':')
+      return -1;
+    int i = pos + 2;
+    while (i < end && (Character.isLetterOrDigit(line.charAt(i)) || line.charAt(i) == '_' || line.charAt(i) == '-'))
+      ++i;
+    return i > pos + 2 ? i : -1;
+  }
+
+  /**
+   * The index just past a term starting at {@code pos}, or {@code -1}. An {@code <IRI>} and a {@code _:blank} node
+   * are terms in both positions; a quoted literal is one only as an object, which is the single difference between
+   * the two roles and the reason they share this method.
+   */
+  private static int endOfSubjectOrObject(final CharSequence line, final int pos, final int end,
+      final boolean literalAllowed) {
+    final int iri = endOfIri(line, pos, end);
+    if (iri > 0)
+      return iri;
+    final int blank = endOfBlankNode(line, pos, end);
+    if (blank > 0)
+      return blank;
+    return literalAllowed ? endOfLiteral(line, pos, end) : -1;
+  }
+
+  /**
+   * The index just past a {@code "quoted literal"} and its optional {@code @lang} or {@code ^^<datatype>} suffix,
+   * or {@code -1}. A backslash escapes the next character, so an embedded {@code \"} does not close the literal.
+   */
+  private static int endOfLiteral(final CharSequence line, final int pos, final int end) {
+    if (pos >= end || line.charAt(pos) != '"')
+      return -1;
+
+    int i = pos + 1;
+    while (i < end) {
+      final char c = line.charAt(i);
+      if (c == '\\') {
+        i += 2;
+        continue;
+      }
+      if (c == '"')
+        break;
+      ++i;
+    }
+    if (i >= end)
+      return -1;
+
+    int after = i + 1;
+    if (after < end && line.charAt(after) == '@') {
+      int tag = after + 1;
+      while (tag < end && (Character.isLetterOrDigit(line.charAt(tag)) || line.charAt(tag) == '-'))
+        ++tag;
+      return tag > after + 1 ? tag : -1;
+    }
+    if (after + 1 < end && line.charAt(after) == '^' && line.charAt(after + 1) == '^')
+      return endOfIri(line, after + 2, end);
+    return after;
+  }
+
   private boolean isSeparator(final char c) {
     // ';' IS THE OTHER MAINSTREAM CSV DELIMITER (LOCALES WHERE ',' IS THE DECIMAL SEPARATOR). WITHOUT IT, A
     // SEMICOLON-SEPARATED FILE WHOSE EXTENSION ISN'T ".csv" PRODUCED NO CANDIDATE AT ALL AND THE IMPORT DIED WITH
@@ -443,16 +618,27 @@ public class SourceDiscovery {
       ;
   }
 
-  private FormatImporter analyzeChar(final Parser parser, final ImporterSettings settings) throws IOException {
+  /**
+   * The first-character dispatch: {@code <} opens either an RDF triple line or XML, {@code _} can only open an
+   * N-Triples blank-node subject, <code>{</code> opens JSON.
+   *
+   * @param userDelimiter the delimiter the user supplied for this entity, or null - a detected one yields to it, the
+   *                      same way {@link #analyzeText} treats its own guess
+   */
+  private FormatImporter analyzeChar(final Parser parser, final ImporterSettings settings, final String userDelimiter)
+      throws IOException {
     char currentChar = parser.getCurrentChar();
-    if (currentChar == '<') {
-      // READ THE FIRST LINE
-      int beginTag = 1;
+    if (currentChar == '<' || currentChar == '_') {
+      // READ THE FIRST LINE, KEEPING THE TAG BOOKKEEPING THE XML ARM BELOW NEEDS. THE LINE ITSELF IS KEPT TOO,
+      // BECAUSE THE RDF ARM DECIDES ON THE SHAPE OF THE WHOLE STATEMENT AND NOT ON THE CHARACTERS BETWEEN ITS TERMS
+      int beginTag = currentChar == '<' ? 1 : 0;
       int endTag = 0;
-      boolean insideTag = true;
+      boolean insideTag = currentChar == '<';
       final List<Character> delimiters = new ArrayList<>();
+      final StringBuilder line = new StringBuilder(128).append(currentChar);
       while (parser.isAvailable() && parser.nextChar() != '\n') {
         final char c = parser.getCurrentChar();
+        line.append(c);
 
         if (insideTag) {
           if (c == '>') {
@@ -468,25 +654,33 @@ public class SourceDiscovery {
         }
       }
 
-      if (!delimiters.isEmpty() && beginTag == endTag) {
-        boolean allDelimitersAreTheSame = true;
-        final char delimiter = delimiters.getFirst();
-        for (int i = 1; i < delimiters.size() - 1; ++i) {
-          if (delimiters.get(i) != delimiter) {
-            allDelimitersAreTheSame = false;
-            break;
-          }
-        }
-
-        if (allDelimitersAreTheSame) {
-          // RDF. THE DELIMITER FOUND HERE USED TO BE WRITTEN INTO settings.options ALTHOUGH THE RDF IMPORTER NEVER READS IT,
-          // WHERE IT LEAKED INTO THE NEXT CSV ENTITY OF THE SAME IMPORT (ISSUE #6946)
-          settings.typeIdProperty = "id";
-          return new RDFImporterFormat();
-        }
+      // RDF. RECOGNISED BY THE SHAPE OF THE STATEMENT - subject predicate object [.] - AND NO LONGER BY "EVERY
+      // CHARACTER OUTSIDE THE ANGLE BRACKETS IS THE SAME ONE", WHICH TOLERATED EXACTLY ONE TRAILING CHARACTER AND SO
+      // REJECTED TWO CANONICAL FORMS: A CRLF LINE ENDING (THE '\r' IS A SECOND ONE) AND ANY LITERAL OBJECT (EVERY
+      // CHARACTER OF IT IS OUTSIDE THE BRACKETS). BOTH FELL THROUGH TO THE CSV FALLBACK AND DIED ON A
+      // NumberFormatException ABOUT AN IRI (ISSUE #7346). THE SHAPE TEST IS STRICTER THAN THE UNIQUENESS ONE, NOT
+      // LOOSER: IT REQUIRES TWO IRI-SHAPED TERMS WHERE THE OLD ONE REQUIRED ONLY MATCHING '<' AND '>' COUNTS.
+      // THE SEPARATOR IS TAKEN FROM BETWEEN THE SUBJECT AND THE PREDICATE AND HANDED TO THE FORMAT, WHICH INHERITS
+      // CSVImporterFormat'S PARSER CONSTRUCTION AND WOULD OTHERWISE FALL BACK TO A COMMA (ISSUE #7315). PER-FORMAT
+      // AND NOT THROUGH settings.options, WHICH ONE IMPORT SHARES ACROSS ITS DOCUMENTS, VERTICES AND EDGES FILES -
+      // WRITING IT THERE IS WHAT LEAKED IT INTO THE NEXT CSV ENTITY (ISSUE #6946)
+      final char separator = nTriplesSeparator(line);
+      if (separator != 0) {
+        settings.typeIdProperty = "id";
+        return new RDFImporterFormat(resolveDelimiter(userDelimiter, separator));
       }
 
-      if (delimiters.size() <= 1)
+      // A LINE THAT OPENS WITH TWO IRI TERMS AND IS STILL NOT A TRIPLE IS AN RDF FILE THIS METHOD CANNOT PLACE.
+      // SAYING SO HERE IS THE ONLY PLACE IT CAN BE SAID: THE CSV FALLBACK BELOW REPORTS A NumberFormatException
+      // ABOUT AN IRI, WHICH NAMES NEITHER RDF NOR THE -delimiter WORKAROUND (ISSUE #7346)
+      if (looksLikeRdfStatementStart(line))
+        LogManager.instance().log(this, Level.WARNING,
+            "The source's first line begins with two RDF terms but is not a well-formed N-Triples statement, so it is "
+                + "analyzed as delimited text and a term may be reported as an unparseable number. Check the line for a "
+                + "malformed object or terminator, or set the field delimiter explicitly with -delimiter: %s",
+            line.length() > 200 ? line.substring(0, 200) + "..." : line.toString());
+
+      if (currentChar == '<' && delimiters.size() <= 1)
         return new XMLImporterFormat();
 
     } else if (currentChar == '{') {

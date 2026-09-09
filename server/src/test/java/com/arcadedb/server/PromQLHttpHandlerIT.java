@@ -34,6 +34,7 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 
@@ -180,6 +181,65 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
       final JSONArray data = result.getJSONArray("data");
       assertThat(data.length()).isGreaterThan(0);
       assertThat(data.getJSONObject(0).getString("__name__")).isEqualTo("prom_cpu");
+    });
+  }
+
+  /**
+   * Issue #7354: the label-values endpoint answers an O(cardinality) question, and used to do it by materialising
+   * and timestamp-sorting every sample of every type carrying the column. It now folds the rows through a bounded
+   * visitor instead, so what is pinned here is that the ANSWER did not move: the distinct set, sorted, and nothing
+   * else - one entry per distinct value however many samples carry it.
+   */
+  @Test
+  void labelValuesAreTheDistinctSetInSortedOrder() throws Exception {
+    testEachServer(serverIndex -> {
+      ingestTestData(serverIndex);
+      final JSONArray data = getPromQLLabelValues(serverIndex, "host").getJSONArray("data");
+
+      final List<String> values = new ArrayList<>();
+      for (int i = 0; i < data.length(); i++)
+        values.add(data.getString(i));
+
+      assertThat(values)
+          .as("eight samples over two hosts are two values, and the endpoint sorts what it returns")
+          .containsExactly("server1", "server2");
+    });
+  }
+
+  /** A label no type carries is an empty list, not an error and not a partial scan of something else. */
+  @Test
+  void labelValuesForAnUnknownLabelIsEmpty() throws Exception {
+    testEachServer(serverIndex -> {
+      ingestTestData(serverIndex);
+      final JSONObject result = getPromQLLabelValues(serverIndex, "no_such_label");
+      assertThat(result.getString("status")).isEqualTo("success");
+      assertThat(result.getJSONArray("data").length()).isZero();
+    });
+  }
+
+  /**
+   * Issue #7354: {@code start}/{@code end} default to the full range on this endpoint, so the no-range form used to
+   * read the whole series to enumerate a handful of label sets. The combinations it enumerates are what must not
+   * change - one per distinct set of tags, deduplicated across every sample that carries it.
+   */
+  @Test
+  void seriesEnumeratesEachLabelCombinationOnceWithOrWithoutATimeRange() throws Exception {
+    testEachServer(serverIndex -> {
+      ingestTestData(serverIndex);
+
+      for (final String range : new String[] { "&start=0&end=10", "" }) {
+        final JSONArray data = getPromQL(serverIndex, "series", "match%5B%5D=" + encode("prom_cpu") + range)
+            .getJSONArray("data");
+
+        final List<String> hosts = new ArrayList<>();
+        for (int i = 0; i < data.length(); i++) {
+          assertThat(data.getJSONObject(i).getString("__name__")).isEqualTo("prom_cpu");
+          hosts.add(data.getJSONObject(i).getString("host"));
+        }
+        assertThat(hosts)
+            .as("eight samples over two hosts are two series, with or without a time range (range='" + range + "')")
+            .containsExactlyInAnyOrder("server1", "server2");
+      }
     });
   }
 

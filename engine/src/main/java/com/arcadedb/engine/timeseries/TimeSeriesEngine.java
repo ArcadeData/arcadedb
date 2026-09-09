@@ -287,9 +287,17 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
-   * Returns a lazy merge-sorted iterator across all shards.
-   * Uses a min-heap to merge shard iterators by timestamp.
-   * Memory usage: O(shardCount * max(blockSize, pageSize)) instead of O(totalRows).
+   * Returns a merge-sorted iterator across all shards, using a min-heap to merge the per-shard iterators by
+   * timestamp.
+   * <p>
+   * <b>It is not lazy end to end,</b> whatever the merge itself is: {@link TimeSeriesSealedStore#iterateRange}
+   * materialises every matching row of the sealed layer before it returns an iterator over them, because the
+   * directory read lock has to be released before the caller iterates. So the residency of this method is
+   * O(matching rows), the same as {@link #query} without the sort. What it saves against {@code query} is the
+   * second copy and the sort, not the series.
+   * <p>
+   * A reader that folds the rows into an answer - a set of label values, a set of label combinations, an
+   * aggregate - wants {@link #forEachRow} instead, which is bounded by one block (issue #7354).
    */
   public Iterator<Object[]> iterateQuery(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
@@ -319,6 +327,29 @@ public class TimeSeriesEngine implements AutoCloseable {
         return row;
       }
     };
+  }
+
+  /**
+   * Hands every row matching the range and filter to {@code visitor}, shard by shard, without ever collecting them
+   * (issue #7354). Returns {@code false} when the visitor asked to stop.
+   * <p>
+   * The read path for a question whose ANSWER is small even though the range is not: the distinct values of a TAG
+   * column, the label combinations a metric carries, any fold over the rows. {@link #query} answers those by
+   * merging every shard's full range into one {@code ArrayList} and sorting it by timestamp - a sort such a caller
+   * then does not use - so the call allocates the whole series to produce a set of five strings.
+   * <p>
+   * No merge and no sort, therefore: the rows arrive shard by shard and, within a shard, sealed layer before
+   * mutable. Residency is one block plus one mutable bucket rather than the series. A caller that needs the rows
+   * in timestamp order wants {@link #iterateQuery}; a caller that needs them all in hand wants {@link #query}.
+   *
+   * @param metrics optional block-level counters, may be {@code null}
+   */
+  public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
+      final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+    for (final TimeSeriesShard shard : shards)
+      if (!shard.forEachRow(fromTs, toTs, columnIndices, tagFilter, metrics, visitor))
+        return false;
+    return true;
   }
 
   /**

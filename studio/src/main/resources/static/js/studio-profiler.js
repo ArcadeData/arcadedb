@@ -168,6 +168,7 @@ function profilerSetRecordingUI(recording) {
 }
 
 function profilerClearUI() {
+  jQuery("#profilerLegacyRecording").hide();
   jQuery("#profilerSummary").hide();
   jQuery("#profilerQueryListContainer").hide();
   jQuery("#profilerQueryDetail").hide();
@@ -196,6 +197,13 @@ function profilerRenderResults() {
 
   // Show AI button if configured
   profilerCheckAiAvailable();
+
+  // A recording saved by a build that predates per-step measurement coverage says so once, at the top, rather
+  // than letting every step in it read as fully timed (issue #7332).
+  if (profilerData.stepTimingComplete === false)
+    jQuery("#profilerLegacyRecording").show();
+  else
+    jQuery("#profilerLegacyRecording").hide();
 
   // Query table
   profilerRenderQueryTable();
@@ -409,7 +417,27 @@ function profilerRenderQueryTable() {
 // A step the engine never timed reports occurrences but no measured sample. Showing its timings as 0 reads as
 // "instant" instead of "unknown", so the table says so in words and the chart leaves it out (issue #7291).
 function profilerIsStepUntimed(step) {
-  return step.measuredCount === 0 && step.executionCount > 0;
+  return profilerStepMeasuredCount(step) === 0 && step.executionCount > 0;
+}
+
+// measuredCount, or null for a recording saved before the field existed. A missing field is NOT zero: the steps in
+// such a file may well have been timed, and nothing in it says which were - so it is rendered as unknown rather
+// than silently read as "all of them timed", which is what an undefined compared against 0 used to do (#7332).
+function profilerStepMeasuredCount(step) {
+  return typeof step.measuredCount === "number" ? step.measuredCount : null;
+}
+
+// Count is over every occurrence of the step; Total, Avg, Max and P99 are over the timed ones only. When the two
+// differ the page has to say so, or a step measured in 3 of 100 executions shows 100 next to an average drawn
+// from 3 with nothing indicating the mismatch (#7332).
+function profilerStepMeasuredCell(step) {
+  var measured = profilerStepMeasuredCount(step);
+  if (measured === null)
+    return '<span class="text-muted" title="This recording was saved before per-step timing reported its own coverage, so how many of these occurrences were timed is not recorded.">unknown</span>';
+  if (measured === step.executionCount)
+    return '' + measured;
+  return '<span class="text-warning" title="Total, Avg, Max and P99 are drawn from these ' + measured +
+    ' timed occurrences, not from all ' + step.executionCount + '.">' + measured + '</span>';
 }
 
 function profilerShowDetail(index) {
@@ -458,7 +486,8 @@ function profilerShowDetail(index) {
         '<td>' + s.p99CostMs + '</td>';
     jQuery("#profilerStepTable tbody").append(
       '<tr><td>' + escapeHtml(s.name) + '</td>' +
-      '<td>' + s.executionCount + '</td>' + cells + '</tr>'
+      '<td>' + s.executionCount + '</td>' +
+      '<td>' + profilerStepMeasuredCell(s) + '</td>' + cells + '</tr>'
     );
   }
 
