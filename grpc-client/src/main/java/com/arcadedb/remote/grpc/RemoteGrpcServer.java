@@ -18,13 +18,47 @@
  */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.grpc.AlignDatabaseRequest;
 import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
+import com.arcadedb.server.grpc.BackupInfo;
+import com.arcadedb.server.grpc.CloseDatabaseRequest;
 import com.arcadedb.server.grpc.CreateDatabaseRequest;
+import com.arcadedb.server.grpc.CreateUserRequest;
 import com.arcadedb.server.grpc.DatabaseCredentials;
+import com.arcadedb.server.grpc.DeleteBackupRequest;
+import com.arcadedb.server.grpc.DeleteUserRequest;
+import com.arcadedb.server.grpc.DisconnectClusterRequest;
 import com.arcadedb.server.grpc.DropDatabaseRequest;
+import com.arcadedb.server.grpc.GetBackupConfigRequest;
+import com.arcadedb.server.grpc.GetBackupConfigResponse;
+import com.arcadedb.server.grpc.GetServerEventsRequest;
+import com.arcadedb.server.grpc.GetServerEventsResponse;
+import com.arcadedb.server.grpc.HealthRequest;
+import com.arcadedb.server.grpc.ListBackupsRequest;
+import com.arcadedb.server.grpc.ListBackupsResponse;
 import com.arcadedb.server.grpc.ListDatabasesRequest;
 import com.arcadedb.server.grpc.ListDatabasesResponse;
+import com.arcadedb.server.grpc.ListUsersRequest;
+import com.arcadedb.server.grpc.OpenDatabaseRequest;
+import com.arcadedb.server.grpc.ProfilerDocumentResponse;
+import com.arcadedb.server.grpc.ProfilerListRequest;
+import com.arcadedb.server.grpc.ProfilerLoadRequest;
+import com.arcadedb.server.grpc.ProfilerResetRequest;
+import com.arcadedb.server.grpc.ProfilerRunInfo;
+import com.arcadedb.server.grpc.ProfilerResultsRequest;
+import com.arcadedb.server.grpc.ProfilerStartRequest;
+import com.arcadedb.server.grpc.ProfilerStopRequest;
+import com.arcadedb.server.grpc.ReadyRequest;
+import com.arcadedb.server.grpc.ReadyResponse;
+import com.arcadedb.server.grpc.SetBackupConfigRequest;
+import com.arcadedb.server.grpc.SetDatabaseSettingRequest;
+import com.arcadedb.server.grpc.SetServerSettingRequest;
+import com.arcadedb.server.grpc.ShutdownRequest;
+import com.arcadedb.server.grpc.TriggerBackupRequest;
+import com.arcadedb.server.grpc.UserGroups;
+import com.arcadedb.server.grpc.UserInfo;
 import io.grpc.CallCredentials;
 import io.grpc.Channel;
 import io.grpc.ClientInterceptor;
@@ -44,21 +78,26 @@ import javax.annotation.PreDestroy;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Minimal server-scope gRPC wrapper (HTTP RemoteServer equivalent), implemented
- * ONLY with RPCs present in your current proto.
+ * Server-scope gRPC client: the {@code RemoteServer} of this transport, one method per RPC of
+ * {@code ArcadeDbAdminService}.
  * <p>
- * Features: - listDatabases() - existsDatabase(name) via listDatabases() -
- * createDatabase(name, type) - createDatabaseIfMissing(name, type) -
- * dropDatabase(name, force?) // 'force' only if defined in your proto;
- * otherwise ignored
+ * It covers the discovery and database-lifecycle RPCs, and, since issue #7304, the rest of the
+ * control plane: settings, backup, users, the query profiler, server events, shutdown, cluster
+ * disconnect, and the two container probes. What it does not cover is what the proto does not carry
+ * either - restore and import (#7308), groups and API tokens (#7309), progress and sessions
+ * (#7310).
  * <p>
- * Add more methods later when you extend the proto (ping, serverInfo, user
- * mgmt, etc.).
+ * Every method carries the credentials this instance was built with in the request body, except
+ * {@link #health()} and {@link #ready()}: their requests have no credentials field, and the server
+ * exempts those two methods from the admin authentication gate, so a probe works whatever this
+ * instance was constructed with. (The shared stub still sends this instance's call credentials as
+ * headers on every call, probes included; the server does not read them for the admin service.)
  */
 public class RemoteGrpcServer implements AutoCloseable {
 
@@ -301,6 +340,198 @@ public class RemoteGrpcServer implements AutoCloseable {
     } catch (StatusException e) {
       throw new RuntimeException("Failed to drop database: " + e.getMessage(), e);
     }
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Control plane (issue #7304). Each method is one RPC of ArcadeDbAdminService; every one of them
+  // reaches the same com.arcadedb.server.ServerControlPlane the HTTP control plane reaches, so the
+  // behaviour matches RemoteServer's over HTTP.
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * Opens a database on the server, loading it if it was closed.
+   */
+  public void openDatabase(final String database) {
+    call("open database", stub -> stub.openDatabase(
+        OpenDatabaseRequest.newBuilder().setCredentials(buildCredentials()).setName(database).build()));
+  }
+
+  /**
+   * Closes a database on the server and removes it from the server's cache. The files stay on disk.
+   */
+  public void closeDatabase(final String database) {
+    call("close database", stub -> stub.closeDatabase(
+        CloseDatabaseRequest.newBuilder().setCredentials(buildCredentials()).setName(database).build()));
+  }
+
+  public void alignDatabase(final String database) {
+    call("align database", stub -> stub.alignDatabase(
+        AlignDatabaseRequest.newBuilder().setCredentials(buildCredentials()).setName(database).build()));
+  }
+
+  public void setServerSetting(final String key, final String value) {
+    call("set server setting", stub -> stub.setServerSetting(
+        SetServerSettingRequest.newBuilder().setCredentials(buildCredentials()).setKey(key).setValue(value).build()));
+  }
+
+  public void setDatabaseSetting(final String database, final String key, final String value) {
+    call("set database setting", stub -> stub.setDatabaseSetting(
+        SetDatabaseSettingRequest.newBuilder().setCredentials(buildCredentials()).setDatabase(database).setKey(key)
+            .setValue(value).build()));
+  }
+
+  /**
+   * Creates a server user with no grants beyond the server default.
+   */
+  public void createUser(final String user, final String password) {
+    createUser(user, password, Map.of());
+  }
+
+  /**
+   * Creates a server user holding {@code databases} - a database name (or {@code "*"}) to the list of
+   * groups the user holds on it, the same shape the HTTP {@code create user} document carries.
+   */
+  public void createUser(final String user, final String password, final Map<String, List<String>> databases) {
+    final CreateUserRequest.Builder request = CreateUserRequest.newBuilder().setCredentials(buildCredentials())
+        .setUser(user).setPassword(password);
+    databases.forEach((database, groups) -> request.putDatabases(database,
+        UserGroups.newBuilder().addAllGroups(groups).build()));
+
+    call("create user", stub -> stub.createUser(request.build()));
+  }
+
+  public void dropUser(final String user) {
+    call("drop user", stub -> stub.deleteUser(
+        DeleteUserRequest.newBuilder().setCredentials(buildCredentials()).setUser(user).build()));
+  }
+
+  /**
+   * The server's users, as {@code name -> (database -> groups)}. Password hashes are never returned.
+   */
+  public List<UserInfo> listUsers() {
+    return call("list users", stub -> stub.listUsers(
+        ListUsersRequest.newBuilder().setCredentials(buildCredentials()).build())).getUsersList();
+  }
+
+  public GetBackupConfigResponse getBackupConfig() {
+    return call("get backup config", stub -> stub.getBackupConfig(
+        GetBackupConfigRequest.newBuilder().setCredentials(buildCredentials()).build()));
+  }
+
+  public void setBackupConfig(final JSONObject config) {
+    call("set backup config", stub -> stub.setBackupConfig(
+        SetBackupConfigRequest.newBuilder().setCredentials(buildCredentials()).setConfigJson(config.toString()).build()));
+  }
+
+  public List<BackupInfo> listBackups(final String database) {
+    return call("list backups", stub -> stub.listBackups(
+        ListBackupsRequest.newBuilder().setCredentials(buildCredentials()).setDatabase(database).build())).getBackupsList();
+  }
+
+  /**
+   * Runs a full backup inline and returns the archive path.
+   */
+  public String triggerBackup(final String database) {
+    return call("trigger backup", stub -> stub.triggerBackup(
+        TriggerBackupRequest.newBuilder().setCredentials(buildCredentials()).setDatabase(database).build())).getBackupFile();
+  }
+
+  public void deleteBackup(final String database, final String fileName) {
+    call("delete backup", stub -> stub.deleteBackup(
+        DeleteBackupRequest.newBuilder().setCredentials(buildCredentials()).setDatabase(database).setFileName(fileName)
+            .build()));
+  }
+
+  /**
+   * Starts the query profiler. {@code timeoutSeconds} of 0 records until {@link #profilerStop()}.
+   */
+  public void profilerStart(final int timeoutSeconds) {
+    call("profiler start", stub -> stub.profilerStart(
+        ProfilerStartRequest.newBuilder().setCredentials(buildCredentials()).setTimeoutSeconds(timeoutSeconds).build()));
+  }
+
+  public JSONObject profilerStop() {
+    return profilerDocument(call("profiler stop", stub -> stub.profilerStop(
+        ProfilerStopRequest.newBuilder().setCredentials(buildCredentials()).build())));
+  }
+
+  public void profilerReset() {
+    call("profiler reset", stub -> stub.profilerReset(
+        ProfilerResetRequest.newBuilder().setCredentials(buildCredentials()).build()));
+  }
+
+  public JSONObject profilerResults() {
+    return profilerDocument(call("profiler results", stub -> stub.profilerResults(
+        ProfilerResultsRequest.newBuilder().setCredentials(buildCredentials()).build())));
+  }
+
+  /**
+   * The profiler runs saved on the server, newest first.
+   */
+  public List<ProfilerRunInfo> profilerList() {
+    return call("profiler list", stub -> stub.profilerList(
+        ProfilerListRequest.newBuilder().setCredentials(buildCredentials()).build())).getRunsList();
+  }
+
+  public JSONObject profilerLoad(final String fileName) {
+    return profilerDocument(call("profiler load", stub -> stub.profilerLoad(
+        ProfilerLoadRequest.newBuilder().setCredentials(buildCredentials()).setFileName(fileName).build())));
+  }
+
+  public GetServerEventsResponse getServerEvents(final String fileName) {
+    return call("get server events", stub -> stub.getServerEvents(
+        GetServerEventsRequest.newBuilder().setCredentials(buildCredentials()).setFileName(fileName).build()));
+  }
+
+  /**
+   * Stops the server that answers this call, or - when {@code serverName} is not empty - the named
+   * HA peer. The local shutdown is scheduled a second out server-side, so this call returns before
+   * the process exits.
+   */
+  public void shutdown(final String serverName) {
+    call("shutdown", stub -> stub.shutdown(
+        ShutdownRequest.newBuilder().setCredentials(buildCredentials()).setServerName(serverName).build()));
+  }
+
+  public void disconnectCluster() {
+    call("disconnect cluster", stub -> stub.disconnectCluster(
+        DisconnectClusterRequest.newBuilder().setCredentials(buildCredentials()).build()));
+  }
+
+  /**
+   * Liveness probe. Needs no credentials, like {@code GET /api/v1/health}.
+   */
+  public boolean health() {
+    return call("health", stub -> stub.health(HealthRequest.newBuilder().build())).getOk();
+  }
+
+  /**
+   * Readiness probe. Needs no credentials, like {@code GET /api/v1/ready}. A node that is not ready
+   * is a successful answer carrying {@code ready=false} and the reason, not an error.
+   */
+  public ReadyResponse ready() {
+    return call("ready", stub -> stub.ready(ReadyRequest.newBuilder().build()));
+  }
+
+  private static JSONObject profilerDocument(final ProfilerDocumentResponse response) {
+    return new JSONObject(response.getResultsJson());
+  }
+
+  /**
+   * Runs one admin RPC under the default deadline, reporting a failure the way the pre-existing
+   * admin methods of this class do.
+   */
+  private <T> T call(final String operation, final AdminCall<T> body) {
+    try {
+      return body.run(withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs));
+    } catch (final StatusException e) {
+      throw new RuntimeException("Failed to " + operation + ": " + e.getMessage(), e);
+    }
+  }
+
+  @FunctionalInterface
+  private interface AdminCall<T> {
+    T run(ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub stub) throws StatusException;
   }
 
   public String endpoint() {
