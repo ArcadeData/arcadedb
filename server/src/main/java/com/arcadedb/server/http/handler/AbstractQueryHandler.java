@@ -292,11 +292,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       // and a bare contains() over the whole header would read it as a request for the stream.
       for (final String entry : ACCEPT_ENTRY.split(header)) {
         final String[] parts = ACCEPT_PARAMETER.split(entry.trim());
-        if (!parts[0].trim().equalsIgnoreCase(NdJsonResultStream.CONTENT_TYPE))
-          continue;
-        if (isRejectedByQValue(parts))
-          return false;
-        return true;
+        if (parts[0].trim().equalsIgnoreCase(NdJsonResultStream.CONTENT_TYPE))
+          return !isRejectedByQValue(parts);
       }
     }
     return false;
