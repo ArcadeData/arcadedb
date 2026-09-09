@@ -372,6 +372,17 @@ public class GraphBatch implements AutoCloseable {
    */
   private int[] flushDurableOutRanges;
 
+  /**
+   * The indexes whose speculative background maintenance this batch suspended for the duration of the load
+   * (issue #7357), and the guard that makes resuming them happen exactly once.
+   * <p>
+   * Captured at construction rather than looked up again on the way out: an index dropped mid-load must still have
+   * its suspension lifted, and looking the list up again would silently leak the count of one that is no longer in
+   * the schema.
+   */
+  private final IndexInternal[] maintenanceSuspendedIndexes;
+  private final AtomicBoolean   maintenanceResumed = new AtomicBoolean();
+
   // --- Saved state for restore after close ---
   private final boolean savedReadYourWrites;
   private final boolean savedUseWAL;
@@ -507,6 +518,71 @@ public class GraphBatch implements AutoCloseable {
     } else {
       savedAsyncUseWAL = false;
       savedAsyncWALFlush = null;
+    }
+
+    // LAST: nothing below can throw, so a suspension taken here always has a live instance to lift it. Held for as
+    // long as this batch is open (issue #7357). The maintenance that matters today is the LSM vector index's
+    // inactivity graph rebuild: it reads the index going quiet as "the writer is done", which during a bulk load is
+    // produced by the load stalling on a compaction or a flush burst, and the rebuild it starts then covers only
+    // what has been loaded so far and is superseded by the rest of the load. A 4.2M-record load paid four full
+    // graph rebuilds that way and had not finished after six and a half hours; the same load with no vector index
+    // took twenty-six minutes. Suspending is a pure deferral - the writes stay searchable through the index's own
+    // delta path meanwhile - and close()/abandon() resume it, which is when the one rebuild the load is actually
+    // worth gets scheduled.
+    maintenanceSuspendedIndexes = suspendIndexBackgroundMaintenance();
+  }
+
+  /**
+   * Suspends the speculative background maintenance of every index of this database, returning the ones that were
+   * actually asked so {@link #resumeIndexBackgroundMaintenance()} can lift exactly those.
+   * <p>
+   * A failure to suspend one index must not leave the batch half-suspended and must not fail the load either - the
+   * suspension is an optimization, not a correctness requirement - so whatever was taken before the failure is
+   * given straight back and the batch proceeds with none.
+   */
+  private IndexInternal[] suspendIndexBackgroundMaintenance() {
+    final Index[] all = database.getSchema().getIndexes();
+    final IndexInternal[] suspended = new IndexInternal[all.length];
+    int count = 0;
+    try {
+      for (final Index idx : all) {
+        final IndexInternal index = (IndexInternal) idx;
+        index.suspendBackgroundMaintenance();
+        suspended[count++] = index;
+      }
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "GraphBatch: could not suspend the background maintenance of the indexes for the bulk load: %s", e,
+          e.getMessage());
+      for (int i = 0; i < count; i++)
+        resumeQuietly(suspended[i]);
+      return new IndexInternal[0];
+    }
+    return count == suspended.length ? suspended : Arrays.copyOf(suspended, count);
+  }
+
+  /**
+   * Lifts the suspensions {@link #suspendIndexBackgroundMaintenance()} took, once. Idempotent because
+   * {@link #abandon()} and {@link #close()} can both reach it, and a second lift would decrement a count this
+   * batch no longer holds - handing another batch's suspension away with it.
+   */
+  private void resumeIndexBackgroundMaintenance() {
+    if (!maintenanceResumed.compareAndSet(false, true))
+      return;
+    for (final IndexInternal index : maintenanceSuspendedIndexes)
+      resumeQuietly(index);
+  }
+
+  /**
+   * One index's resume, never allowed to throw: a batch on its way out must lift every OTHER suspension it holds
+   * whatever one index does, and an index dropped mid-load is the ordinary way this fails.
+   */
+  private void resumeQuietly(final IndexInternal index) {
+    try {
+      index.resumeBackgroundMaintenance();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE,
+          "GraphBatch: could not resume the background maintenance of index %s: %s", index.getName(), e.getMessage());
     }
   }
 
@@ -1412,6 +1488,7 @@ public class GraphBatch implements AutoCloseable {
   public void abandon() {
     database.setReadYourWrites(savedReadYourWrites);
     restoreAsyncSettings();
+    resumeIndexBackgroundMaintenance();
     releaseBatchGuard();
   }
 
@@ -1432,6 +1509,7 @@ public class GraphBatch implements AutoCloseable {
   private void restoreDatabaseSettings() {
     database.setReadYourWrites(savedReadYourWrites);
     restoreAsyncSettings();
+    resumeIndexBackgroundMaintenance();
 
     // If the thread still has no TransactionContext (the batch never began a transaction), nothing leaked.
     final TransactionContext tx = database.getTransactionIfExists();

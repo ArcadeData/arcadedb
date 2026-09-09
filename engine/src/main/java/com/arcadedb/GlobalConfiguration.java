@@ -119,6 +119,7 @@ public enum GlobalConfiguration {
         // VECTOR_INDEX_LOCATION_CACHE_SIZE is deliberately NOT capped here: it is not a cache, and bounding it
         // made this profile drop live vectors from searches (issue #5568).
         VECTOR_INDEX_SEARCH_CACHE_SIZE.setValue(10_000);
+        VECTOR_INDEX_DELTA_CACHE_SIZE.setValue(10_000);
 
         POLYGLOT_ENGINE_ENABLED.setValue(false);
 
@@ -1045,6 +1046,28 @@ public enum GlobalConfiguration {
       Ignored when the cache size is set explicitly. Values above 90 are clamped to 90: no cache is allowed to \
       plan on the whole heap.""",
       Integer.class, 25),
+
+  VECTOR_INDEX_DELTA_CACHE_SIZE("arcadedb.vectorIndex.deltaCacheSize", SCOPE.DATABASE,
+      """
+      Maximum number of vectors buffered since the last graph rebuild that keep their payload on the heap. \
+      Every write appends an entry to that delta buffer so the vector is searchable before it reaches the HNSW \
+      graph, and the entry used to carry the whole vector: an ingest that outruns the rebuilds therefore held a \
+      second full copy of the corpus in RAM, and a 4.2M x 768-dimension load died of it at -Xmx16g (issue #7357). \
+      The vector is already persisted before the entry is buffered, so entries past this cap keep only their id \
+      and RID and the delta scan reads the payload back from the pages. \
+      RAM usage = deltaCacheSize * (dimensions * 4 + 64) bytes. \
+      0 (default) sizes it automatically from arcadedb.vectorIndex.deltaCacheMaxHeapPercent. -1 keeps every \
+      buffered payload on the heap, which is the pre-#7357 behaviour and is unbounded.""",
+      Integer.class, 0),
+
+  VECTOR_INDEX_DELTA_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.deltaCacheMaxHeapPercent", SCOPE.DATABASE,
+      """
+      Share of the JVM heap ceiling (percentage) the automatically sized delta payload cache may use (see \
+      arcadedb.vectorIndex.deltaCacheSize). Ignored when that size is set explicitly. Taken as this percent of \
+      -Xmx and then capped at 90% of the heap currently AVAILABLE, the same denominator the graph-build cache \
+      uses, so a rebuild holding the old graph and an ingest filling the buffer cannot both plan on the same \
+      free heap. Values above 90 are clamped to 90.""",
+      Integer.class, 10),
 
   VECTOR_INDEX_SEARCHER_POOL_SIZE("arcadedb.vectorIndex.searcherPoolSize", SCOPE.DATABASE,
       """

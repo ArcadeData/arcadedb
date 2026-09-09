@@ -177,6 +177,32 @@ public interface IndexInternal extends Index {
   }
 
   /**
+   * Asks the index to hold off the maintenance it starts on its own initiative, for the duration of a bulk load.
+   * <p>
+   * "On its own initiative" is the whole distinction: work a read or a write NEEDS is not affected, and neither is
+   * anything a caller asked for explicitly. What is suspended is the speculative kind - maintenance an index
+   * schedules because it guessed the moment was a good one. During a bulk load that guess is systematically wrong,
+   * because the signal it reads (the index going quiet) is produced by the load itself stalling on a compaction, a
+   * flush burst or a GC pause, and the maintenance it triggers is then superseded by the rest of the load and has
+   * to be done again. On an LSM vector index that mistake costs a full graph rebuild per stall (issue #7357).
+   * <p>
+   * Reference-counted: every call must be matched by exactly one {@link #resumeBackgroundMaintenance()}, and
+   * overlapping suspensions compose rather than cancel each other. Most indexes run no such maintenance and both
+   * methods are no-ops for them.
+   */
+  default void suspendBackgroundMaintenance() {
+  }
+
+  /**
+   * Lifts one {@link #suspendBackgroundMaintenance()}. The suspended maintenance resumes once the last one lifts,
+   * and an index with work waiting is expected to schedule it then rather than wait for the next mutation.
+   * <p>
+   * Safe to call without a matching suspension: the count never goes below zero.
+   */
+  default void resumeBackgroundMaintenance() {
+  }
+
+  /**
    * Closes the index files. The caller must guarantee that every page committed against this index has already
    * reached disk (e.g. {@code PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(database)}) before calling
    * this: a page still queued for asynchronous flush (the default, see {@code TransactionContext.asyncFlush})
