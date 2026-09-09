@@ -29,7 +29,8 @@ import java.util.Map;
 /**
  * {@link GraphImporter.RecordSource} that reads CSV files with a header row.
  * Uses the first line as column names; subsequent lines are data records.
- * Supports configurable delimiter (default: comma).
+ * Supports configurable delimiter (default: comma). The delimiter is matched as a literal character, so any
+ * character is a usable field separator - {@code '|'} and {@code '.'} included (issue #7267).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -91,9 +92,41 @@ public class CsvRowSource implements GraphImporter.RecordSource {
     }
   }
 
+  /**
+   * Splits a line on the delimiter as a LITERAL character, keeping every empty field - the shape
+   * {@code String.split(literal, -1)} answers, which the header/value zip in {@link #forEach} is written against.
+   * <p>
+   * Issue #7267: do not go back to {@code line.split(String.valueOf(delimiter), -1)}. Its first argument is a
+   * <b>regular expression</b>, and the delimiter is a character the operator chooses, so a metacharacter was read
+   * as itself only by accident - {@code '|'} made every character its own field, {@code '.'} annihilated the row,
+   * {@code '$'} and {@code '^'} split nothing at all, and eight more threw {@code PatternSyntaxException} about a
+   * pattern nobody wrote. The first four were the worse half, because a shredded header means every
+   * {@code get(attribute)} misses and the import yields property-less vertices in silence. The full table is in
+   * {@code docs/7267-csvrowsource-regex-delimiter.md}.
+   * <p>
+   * {@code indexOf} is also cheaper than what it replaces: {@code String.split} takes its regex-free fast path only
+   * for a single <i>non-metacharacter</i> char and compiles a {@code Pattern} per call - per row of a bulk import -
+   * for the rest. {@code Pattern.quote} was rejected for the mirror image of that reason: {@code \Q;\E} is not a
+   * single character, so it would compile a {@code Pattern} for every delimiter, the default comma included.
+   * <p>
+   * Quoting is still unsupported, exactly as before - a delimiter inside a field value still separates fields. For
+   * quoted CSV use the Univocity-backed {@code CSVImporterFormat}.
+   */
   private String[] splitLine(final String line) {
-    // Simple CSV split (no quoting support — for quoted fields use Univocity)
-    return line.split(String.valueOf(delimiter), -1);
+    int fields = 1;
+    for (int pos = line.indexOf(delimiter); pos >= 0; pos = line.indexOf(delimiter, pos + 1))
+      ++fields;
+
+    final String[] values = new String[fields];
+    int start = 0;
+    for (int i = 0; i < fields - 1; ++i) {
+      final int pos = line.indexOf(delimiter, start);
+      values[i] = line.substring(start, pos);
+      start = pos + 1;
+    }
+    values[fields - 1] = line.substring(start);
+
+    return values;
   }
 
   private static class CsvRecordReader implements GraphImporter.RecordReader {
