@@ -223,7 +223,8 @@ https://github.com/ArcadeData/arcadedb/pull/7317
 | Cycle | Head SHA | Change | Bot review outcome |
 |---|---|---|---|
 | 1 | `c67cbf9215` | Initial push (14:46:19Z): the fix, 10 tests, this tracking doc. | Reviewed by `claude` at 14:50:12Z. No blocking objection - the fix, the deliberate `checkNotSplit` skip and the `notSet(Object)` overload were each traced and confirmed - plus two minor nits, both actionable and both applied in cycle 2. |
-| 2 | `2e059ac349` | Both nits addressed. No production code changed. | Pushed for review. |
+| 2 | `2e059ac349` | Both cycle-1 nits addressed. No production code changed. | Two further `claude` reviews landed (14:54:21Z, 14:55:50Z). The first repeated the cycle-1 duplicate-assertion nit against a pre-fix snapshot (it describes a 10-case suite, so it had not seen `2e059ac349`) - already fixed, nothing to do. The second raised one real coverage gap and one non-blocking performance note, both addressed in cycle 3. |
+| 3 | `<this commit>` | Truncated-text case for `getList`; native-array path reads the `JSONArray` `opt()` already built. | Pushed for review. |
 
 ### A correction about cycle 1
 
@@ -263,7 +264,15 @@ Two lessons for the loop, one of them the opposite of what the first correction 
 | Duplicate `assertThat(database.isTransactionActive()).isFalse();` in `aMalformedStringifiedArrayIsStillReported`. | **Real.** Verified: `grep -n isTransactionActive` showed the assertion at both line 424 and line 426, a copy/paste leftover introduced when the truncated-array case was added during the adversarial pass. | Removed the duplicate. |
 | `aWhitespaceOnlyValueReadsTheSameOnAllThreeSources` pins the whitespace-only case for the vector accessor only. The reviewer traced that `new JSONArray("  ")` throws where `VectorUtils.toFloatArray("  ")` returns an empty vector, so the list side behaves differently and nothing pinned it. | **Real, and the derivation was correct** - confirmed by running it rather than by agreeing with it. The asymmetry is inherited from the interface defaults and predates this change, so it is pinned, not fixed. | Added `aWhitespaceOnlyListStillAbortsOnEveryThreeSourcesAlike`, asserting all three sources reject a whitespace-only list value. It passed on the first run. |
 
-Nothing was deferred and nothing was skipped, so no `review-deferred-*.md` notes file was produced.
+### Cycle 2 feedback and its disposition
+
+| Item | Assessment | Action |
+|---|---|---|
+| `aMalformedStringifiedArrayIsStillReported` pins the truncated case (`"[0.1"`) for `getFloatArray` only; there is no equivalent for `getList` (`"[\"x\""`). The reviewer expected it to be fine but noted it was not directly pinned. | **Real.** It is a different parser (`new JSONArray(text)`, not `VectorUtils`) reached by a different branch, so "very likely fine" was worth converting into a test rather than accepting. | Added a truncated-list case to the same test, asserting it aborts naming the property and, like the vector case, without blaming a delimiter. It passed on the first run, so the expectation was correct - and is now pinned. |
+| The native-array branch called `json.opt(attribute)` and then `json.getJSONArray(attribute)`, so it paid for a second lookup and a second `elementToObject` conversion whose first result was used only for the `instanceof String` test. Flagged as pre-existing and explicitly non-blocking. | **Real, and worth taking.** It is on the row loop, and `opt()` already returns the constructed `JSONArray` (`JSONObject.elementToObject` builds one for a JSON array), so the value can simply be used. | Both accessors now branch on `value instanceof JSONArray` and read it directly; the `getJSONArray` call remains only on the cold error path, where it still raises the identical `JSONException`. The `float[]` loop moved into a small `toFloatArray(JSONArray)` helper so the error path needs no unreachable branch. The native path is now one lookup, down from two. |
+
+Nothing was deferred and nothing was skipped across the three reviews, so no `review-deferred-*.md`
+notes file was produced.
 
 ## Tests, final
 
@@ -276,7 +285,16 @@ is green after the review fixes:
 [INFO] BUILD SUCCESS
 ```
 
+The full reactor also compiles clean with the change in place:
+
+```
+$ mvn -o compile -DskipTests
+EXIT=0
+```
+
 ## Final state
 
-`clean-approval` on the substance: the one review received raised no correctness objection, and
-both of its nits are applied. The developer owns the merge - this workflow does not merge PRs.
+`clean-approval` on the substance: none of the three reviews received raised a correctness
+objection - each traced the fix, the deliberate `checkNotSplit` skip and the `notSet(Object)`
+overload independently and confirmed them - and every actionable item any of them raised is
+applied. The developer owns the merge - this workflow does not merge PRs.

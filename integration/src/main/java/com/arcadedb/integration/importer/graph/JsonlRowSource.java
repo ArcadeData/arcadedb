@@ -137,8 +137,8 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
     }
 
     /**
-     * Reads the JSON array natively into a {@code float[]}: no intermediate string, no boxed
-     * element, one allocation of exactly the vector's size.
+     * Reads the JSON array natively into a {@code float[]} via {@link #toFloatArray(JSONArray)}: no
+     * intermediate string and no boxed element.
      * <p>
      * A {@code String} takes the textual form instead - {@code "[0.1,0.2,0.3]"} - which is what
      * {@link GraphImporter.RecordReader#getFloatArray} parses for the flat formats and what a JSONL
@@ -159,10 +159,21 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
         return null;
       if (value instanceof String text)
         return VectorUtils.toFloatArray(text);
+      if (value instanceof JSONArray array)
+        // opt() already built this JSONArray, so the native path reads it rather than looking the
+        // attribute up a second time and converting the same element again
+        return toFloatArray(array);
       // anything that is neither text nor an array - a number, a boolean, a nested object - is a
       // data error, and getJSONArray raises the "is not a JSON array" JSONException that
-      // GraphImporter.readProperty has always reported as badValue
-      final JSONArray array = json.getJSONArray(attribute);
+      // GraphImporter.readProperty has always reported as badValue. It throws for every value that
+      // reaches this line, so the conversion is never actually run on its result
+      return toFloatArray(json.getJSONArray(attribute));
+    }
+
+    /**
+     * No intermediate string, no boxed element, one allocation of exactly the vector's size.
+     */
+    private static float[] toFloatArray(final JSONArray array) {
       final int length = array.length();
       final float[] result = new float[length];
       for (int i = 0; i < length; i++)
@@ -181,6 +192,8 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
         return null;
       if (value instanceof String text)
         return new JSONArray(text).toList();
+      if (value instanceof JSONArray array)
+        return array.toList();
       return json.getJSONArray(attribute).toList();
     }
   }

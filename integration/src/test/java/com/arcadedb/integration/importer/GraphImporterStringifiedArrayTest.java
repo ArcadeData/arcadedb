@@ -497,6 +497,20 @@ class GraphImporterStringifiedArrayTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("tags")
         .hasMessageContaining("declared as a list");
+
+    assertThat(database.isTransactionActive()).isFalse();
+
+    // the truncated case for the list accessor too, so the pairing is pinned symmetrically rather
+    // than inferred from the vector one: this goes through new JSONArray(text) instead of
+    // VectorUtils, a different parser reached by a different branch
+    final Throwable truncatedList = catchThrowable(() -> importList("truncated-list-vertices.jsonl", "\"[\\\"x\\\"\""));
+    assertThat(truncatedList)
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("tags")
+        .hasMessageContaining("declared as a list");
+    assertThat(truncatedList.getMessage())
+        .as("JSONL has no field separator here either, so this must not be blamed on a delimiter")
+        .doesNotContain("delimiter");
   }
 
   /**
