@@ -101,6 +101,18 @@ Both of the issue's claims reproduce exactly.
 | `RemoteGrpcDatabase` vector search | yes | yes |
 | `serializer=graph` / `serializer=studio` under NDJSON | **no - argued** | n/a |
 
+## Streaming is read-only
+
+A streamed response starts before the transaction commits, which makes a streamed write unsound in two ways
+that the buffered encoding is immune to: a failure part-way through cannot un-send the 200, so the auto-commit
+wrapper would commit a half-executed statement; and `database.transaction(..., retries)` re-runs its lambda on
+a commit conflict, which would re-execute the statement and stream into a closed exchange. Both hazards need a
+statement that writes. So `POST /command` and `POST /query` stream only a statement that
+`getQueryEngine(language).analyze(command).isIdempotent()` proves read-only, and refuse the rest with a 400
+naming the buffered encoding - which handles them exactly as before. A statement whose language cannot analyze
+it is refused too: "not provably read-only" is the safe reading. `GET /query` needs no gate; it already runs
+outside the wrapper (`requiresTransaction()` is false).
+
 ## Residual risk
 
 1. **`serializer=graph` / `serializer=studio` are not streamable.** Both build a single object with
@@ -138,11 +150,12 @@ Both of the issue's claims reproduce exactly.
 
 | Suite | Result |
 |---|---|
+| `network` unit | 478 pass |
 | `server` unit (surefire) | 971 pass |
-| `server` ITs, `com.arcadedb.server.http.**` | 733 pass, 2 skipped |
-| `mcp` unit + ITs | 316 + 11 pass |
-| `network` unit | all pass |
-| `grpcw` + `grpc-client` unit + ITs | all pass |
+| `server` ITs, `com.arcadedb.server.http.**` | 737 pass, 2 skipped |
+| `mcp` unit + ITs | 316 + 6 pass |
+| `grpcw` unit + ITs | 211 + 144 pass |
+| `grpc-client` unit + ITs | 150 + 106 pass |
 
 Every new and modified IT extends `BaseGraphServerTest` and reads its port back from
 `getServer(0).getHttpServer().getPort()`. None pins 2480 - including `OpenApiSpecGenerationIT`, which did
