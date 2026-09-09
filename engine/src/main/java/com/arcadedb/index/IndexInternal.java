@@ -191,6 +191,7 @@ public interface IndexInternal extends Index {
    * methods are no-ops for them.
    */
   default void suspendBackgroundMaintenance() {
+    // No-op: an index that schedules nothing on its own initiative has nothing to hold off.
   }
 
   /**
@@ -200,6 +201,7 @@ public interface IndexInternal extends Index {
    * Safe to call without a matching suspension: the count never goes below zero.
    */
   default void resumeBackgroundMaintenance() {
+    // No-op, for the same reason suspendBackgroundMaintenance() is one.
   }
 
   /**
