@@ -19,9 +19,6 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Document;
-import com.arcadedb.database.RID;
-import com.arcadedb.log.LogManager;
 
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
@@ -30,7 +27,6 @@ import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
 
 /**
  * A growable RandomAccessVectorValues with lazy disk fallback.
@@ -136,54 +132,19 @@ class GrowableVectorValues implements RandomAccessVectorValues {
       return cached;
 
     // Slow path: lazy-load from disk and cache
-    if (vectorIndex == null || database == null)
+    if (vectorIndex == null || database == null || lsmIndex == null)
       return null;
 
-    // One lookup, one word: nothing is materialized for an ordinal that turns out not to be live (issue #5588).
-    final long offsetAndFlag = vectorIndex.getOffsetAndFlag(ordinal);
-    if (offsetAndFlag == VectorLocationIndex.ABSENT)
+    // The read-back itself, and the validation of what comes back, belong to the index that persisted it: see
+    // LSMVectorIndex.readPersistedVectorArray(). What stays here is the caching policy, which is this cache's own.
+    final float[] vector = lsmIndex.readPersistedVectorArray(ordinal);
+    if (vector == null)
       return null;
 
-    try {
-      float[] vector = null;
-
-      // Try quantized pages first (INT8/BINARY)
-      if (lsmIndex != null)
-        vector = lsmIndex.readVectorFromOffset(VectorLocationIndex.offsetOf(offsetAndFlag),
-            VectorLocationIndex.isCompactedOf(offsetAndFlag));
-
-      // Fall back to document lookup. WARNING on unsupported types so an INT8 index silently
-      // losing vectors during search is observable, matching ArcadePageVectorValues.
-      if (vector == null && vectorPropertyName != null) {
-        final RID rid = vectorIndex.getRid(ordinal);
-        if (rid == null)
-          return null;
-        final var record = database.lookupByRID(rid, false);
-        final Document doc = (Document) record;
-        final Object raw = doc.get(vectorPropertyName);
-        if (raw != null) {
-          try {
-            vector = VectorUtils.toFloatArray(raw, lsmIndex != null ? lsmIndex.getMetadata().encoding : VectorEncoding.FLOAT32);
-          } catch (final IllegalArgumentException e) {
-            LogManager.instance().log(this, Level.WARNING,
-                "Vector property '%s' has unsupported type %s (RID=%s, ordinal=%d): %s",
-                vectorPropertyName, raw.getClass().getName(), rid, ordinal, e.getMessage());
-          }
-        }
-      }
-
-      if (vector != null && vector.length == dimensions && !VectorUtils.isZeroVector(vector)) {
-        final VectorFloat<?> vf = vts.createFloatVector(vector);
-        if (vectors.size() < maxCacheSize)
-          vectors.put(ordinal, vf); // Cache for next access while under the cap (issue #3144)
-        return vf;
-      }
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE,
-          "Could not lazy-load vector ordinal=%d: %s", ordinal, e.getMessage());
-    }
-
-    return null;
+    final VectorFloat<?> vf = vts.createFloatVector(vector);
+    if (vectors.size() < maxCacheSize)
+      vectors.put(ordinal, vf); // Cache for next access while under the cap (issue #3144)
+    return vf;
   }
 
   @Override
