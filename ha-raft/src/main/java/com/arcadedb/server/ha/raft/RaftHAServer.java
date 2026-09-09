@@ -1588,6 +1588,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // After stopLagMonitor(), which ends the capability refresh: nothing asks for the client past this point, and
     // an HttpClient left behind holds a connection pool and a selector thread for the life of the JVM - which in
     // the HA suites outlives many server start/stop cycles (PR #7314 review).
+    //
+    // This can BLOCK BRIEFLY, and that is deliberate rather than an oversight: the refresh sends its request
+    // outside the cache's monitor, so a probe already in flight when this runs holds HttpClient.close()'s orderly
+    // shutdown until it finishes - bounded by PeerCapabilityRegistry.PROBE_TIMEOUT_MS on a round that has already
+    // been told to stand down. Making the close asynchronous to avoid that wait would hand the shutdown path a
+    // client that outlives the server it belongs to, which is the leak this call exists to prevent.
     capabilityHttpsClients.close();
     stalledResyncExecutor.shutdownNow();
     channelRecoveryExecutor.shutdownNow();
