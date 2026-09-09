@@ -520,8 +520,9 @@ public class SourceDiscovery {
     return end;
   }
 
-  /** The first index after the run of {@code separator} starting at {@code pos}. */
-  private static int skipRunOf(final CharSequence line, int pos, final int end, final char separator) {
+  /** The first index after the run of {@code separator} starting at {@code from}. */
+  private static int skipRunOf(final CharSequence line, final int from, final int end, final char separator) {
+    int pos = from;
     while (pos < end && line.charAt(pos) == separator)
       ++pos;
     return pos;
