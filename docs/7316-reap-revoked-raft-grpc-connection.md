@@ -249,3 +249,33 @@ cycle 2:
    connection. Paragraph corrected, and the correction left visible rather than quietly reworded.
 
 Nothing was deferred and nothing was skipped.
+
+### Cycle 2 - `6c01e6d`
+
+`claude` reviewed again after the two doc fixes: no blocking findings, and it independently re-derived the two
+claims this change rests on - that `GrpcLogAppender.appendLogRequestObserver` is created once and reset only on
+error/completion, and that `MaxConnectionIdleManager`'s timer is only armed once `numActiveStreams()` reaches zero.
+It also noticed a side effect worth naming: `allowlistFilter`/`allowlistInterceptor` are now assigned on every
+`buildParameters` call rather than only when the allowlist branch is taken, so a rebuild with the allowlist turned
+off can no longer leave the previous call's references in place.
+
+Four non-blocking notes, none of which is a code change, with the reason for each:
+
+1. *The "window disabled" check exists in both `installGrpcServerCustomizations` and `customize`.* Left as is, and
+   the reviewer reached the same conclusion in the same comment: the two guards answer different questions - one
+   decides whether a customizer is installed at all, the other whether the builder method is called - and
+   collapsing them would mean the customizer could no longer be constructed with a disabled window by a caller that
+   wants only the allowlist.
+2. *Whether the release-notes process picks up a default-on behaviour change.* Checked: this repo has no
+   `CHANGELOG.md` and no release-notes file - `ls *.md` is ATTRIBUTIONS, CLAUDE, CONTRIBUTING, GOVERNANCE, PLUGINS,
+   README, SECURITY - so there is no file to add an entry to. The change is declared in the PR body, the setting's
+   own javadoc and this doc.
+3. *The test plan's "on a real cluster" checkbox is unchecked.* It is, deliberately: it is a multi-node manual step
+   this branch cannot run, it was written into the PR body as an unchecked box from the first push rather than
+   quietly omitted, and it is called out again at handoff.
+4. *#7339 is filed rather than silently left out.* Acknowledged, no action.
+
+## Final state
+
+`clean-approval` after 2 review cycles. Nothing deferred; every review point is either applied (cycle 1's two doc
+nits) or answered above with its evidence.
