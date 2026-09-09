@@ -36,6 +36,16 @@ import java.util.logging.Level;
 public class RDFImporterFormat extends CSVImporterFormat {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
 
+  /**
+   * No delimiter, so the inherited {@link CSVImporterFormat} parser construction falls back to the generic
+   * {@code delimiter} option and then to a comma.
+   * <p>
+   * Nothing in production builds the format this way: {@code SourceDiscovery.analyzeChar} is the only place one is
+   * constructed, and it always hands over the separator it took from between the first statement's terms. This
+   * form exists for a caller that drives {@code load()} directly with settings already carrying the delimiter -
+   * the format's own tests - and for parity with {@link CSVImporterFormat}'s own pair. A production caller
+   * reaching for it is a caller that has a detected separator to pass and is dropping it (issue #7315).
+   */
   public RDFImporterFormat() {
     super();
   }
