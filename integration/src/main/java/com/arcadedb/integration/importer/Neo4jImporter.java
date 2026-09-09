@@ -788,8 +788,15 @@ public class Neo4jImporter {
       // database.isTransactionActive(), for the reason spelled out at the same point in parseVertices(): begin()
       // nests, so ambient liveness is no evidence that the live transaction is the one this method pushed
       // (issue #7328).
-      if (ownTransactionIsResolvable(txOpen, ownTx))
+      //
+      // The flag is cleared BEFORE the commit, not after, and parseVertices() does the same: a commit that throws
+      // skips everything below it, so clearing afterwards would leave the flag set and hand the finally below a
+      // transaction this method no longer owns - which on a Database that does not expose its stack degrades to
+      // the ambient test and rolls back the CALLER's.
+      if (ownTransactionIsResolvable(txOpen, ownTx)) {
+        txOpen = false;
         database.commit();
+      }
       txOpen = false;
     } finally {
       // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import

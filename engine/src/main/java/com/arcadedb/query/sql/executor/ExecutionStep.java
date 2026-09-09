@@ -63,6 +63,9 @@ public interface ExecutionStep {
    * <p>
    * Never sum this across the steps of a plan - a parent's total already contains its children's. It is the number
    * to <i>display</i> for one node; {@link #getCost()} is the number to <i>aggregate</i>.
+   * <p>
+   * Re-walks the subtree on every call, so it is for the one node a caller is about to draw. A traversal that
+   * already visits every node folds the totals up instead of calling this per node - see {@link #toResult()}.
    */
   default long getTotalCost() {
     long total = getCost();
@@ -107,11 +110,11 @@ public interface ExecutionStep {
     // Self cost and subtree roll-up under distinct names: an aggregator sums "cost" across the whole tree, a
     // display picks "totalCost" for the node it is drawing. Emitting the roll-up as "cost" while also emitting
     // each sub-step with its own "cost" in the same node double-counted every container (issue #7329).
-    result.setProperty("cost", getCost());
-    result.setProperty("totalCost", getTotalCost());
+    final long selfCost = getCost();
+    result.setProperty("cost", selfCost);
 
     // Collect direct sub-steps
-    final List<Result> subStepResults = getSubSteps() == null ? null
+    List<Result> subStepResults = getSubSteps() == null ? null
         : getSubSteps().stream().map(ExecutionStep::toResult).collect(Collectors.toList());
 
     // Also include steps from sub-execution plans (e.g. SubQueryStep, GlobalLetQueryStep)
@@ -125,13 +128,23 @@ public interface ExecutionStep {
             for (final ExecutionStep s : planSteps)
               allSubSteps.add(s.toResult());
         }
-        result.setProperty("subSteps", allSubSteps);
-      } else {
-        result.setProperty("subSteps", subStepResults);
+        subStepResults = allSubSteps;
       }
-    } else {
-      result.setProperty("subSteps", subStepResults);
     }
+    result.setProperty("subSteps", subStepResults);
+
+    // The roll-up is folded up from the children's ALREADY-computed totals rather than read from
+    // getTotalCost(), which re-walks the whole subtree on every call: one such call per node, inside a
+    // traversal that already visits every node, makes serializing a plan quadratic in step count. Bottom-up
+    // here it is linear, and every node still reports the same number getTotalCost() would.
+    long totalCost = selfCost;
+    if (subStepResults != null)
+      for (final Result subStep : subStepResults) {
+        final Long subTotal = subStep.getProperty("totalCost");
+        // A step that overrides toResult() and omits the field contributes nothing rather than a wrong number.
+        totalCost = addCost(totalCost, subTotal != null ? subTotal : -1L);
+      }
+    result.setProperty("totalCost", totalCost);
 
     result.setProperty("description", getDescription());
     return result;
