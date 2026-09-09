@@ -53,6 +53,10 @@ import java.nio.charset.StandardCharsets;
 public final class NdJsonResultStream implements AutoCloseable {
   /**
    * Media type a client sends in {@code Accept} to select this encoding, and that the response carries back.
+   * <p>
+   * Deliberately duplicated as {@code RemoteDatabase.NDJSON_CONTENT_TYPE} in the {@code network} module, which
+   * cannot depend on {@code server}. Change one and you must change the other, or the driver stops selecting
+   * the encoding and silently falls back to the buffered body.
    */
   public static final String CONTENT_TYPE = "application/x-ndjson";
 

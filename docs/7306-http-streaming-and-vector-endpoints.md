@@ -117,7 +117,20 @@ Both of the issue's claims reproduce exactly.
 3. **Vector search does not generate embeddings.** Every surface takes `queryVector` from the caller. This is
    the pre-existing MCP contract, carried over unchanged.
 
-4. **The search core moved modules.** `MCPVectorLeg` is now `com.arcadedb.server.vector.VectorLeg`; the MCP
+4. **A stalled stream is not bounded by a timeout.** Every other `RemoteDatabase` request goes through
+   `sendWithWatchdog`, bounded by `NETWORK_SOCKET_TIMEOUT`. `queryStream` cannot: a fixed deadline that is
+   right for a request/response round trip would kill a legitimately long-running large stream, which is the
+   case the encoding exists for. So a server that answers 200 and then stalls mid-body without closing the
+   socket leaves `hasNext()` blocked in `readLine()`. Accepted, not overlooked - a caller that needs a bound
+   sets one on the thread it iterates from. This is a real difference from the buffered path's failure
+   characteristics.
+
+5. **Server metrics do not separate a stream that failed mid-body from one that completed.** A failure after
+   the first byte is written as an in-band `error` line and logged at WARNING, but the request still counts as
+   one `http.query` / `http.command` - a 200 was already on the wire and the counter follows the status code.
+   The log line is the server-side signal; the `error` line is the client's.
+
+6. **The search core moved modules.** `MCPVectorLeg` is now `com.arcadedb.server.vector.VectorLeg`; the MCP
    tool classes keep their public API and delegate. Anything outside this repository importing the old
    `com.arcadedb.mcp.tools.MCPVectorLeg` breaks - it was an internal helper, not published API.
 

@@ -78,6 +78,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * Media type of the HTTP streaming query encoding (issue #7306), sent in {@code Accept} to select it. The
    * server keeps answering the buffered {@code application/json} body to anything else, which is what let this
    * be added without changing a single existing response.
+   * <p>
+   * Deliberately duplicated as {@code NdJsonResultStream.CONTENT_TYPE} in the {@code server} module: this module
+   * cannot depend on it. Change one and you must change the other, or this driver stops selecting the encoding
+   * and silently falls back to the buffered body.
    */
   public static final String NDJSON_CONTENT_TYPE = "application/x-ndjson";
 
