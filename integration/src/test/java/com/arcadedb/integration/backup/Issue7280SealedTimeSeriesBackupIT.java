@@ -187,8 +187,8 @@ class Issue7280SealedTimeSeriesBackupIT {
   void aCompactionRacingTheBackupNeitherLosesNorDuplicatesSamples(final boolean snapshot) throws Exception {
     GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(snapshot);
 
-    final long countBefore;
-    final long countAfter;
+    final int countBefore;
+    final int countAfter;
     try (final Database database = createDatabase()) {
       // The bulk lives in the document type: it is what makes the throttled backup last long enough for a
       // compaction to both start and finish inside its window, which is the interleaving under test.
@@ -204,7 +204,6 @@ class Issue7280SealedTimeSeriesBackupIT {
       final AtomicInteger written = new AtomicInteger(SAMPLES);
       final AtomicInteger compactions = new AtomicInteger();
       final CountDownLatch warmedUp = new CountDownLatch(1);
-      final int compactionsAtStart = compactions.get();
 
       final Thread compactor = new Thread(() -> {
         DatabaseContext.INSTANCE.init((DatabaseInternal) database);
@@ -256,8 +255,8 @@ class Issue7280SealedTimeSeriesBackupIT {
         compactor.join(120_000);
       }
       assertThat(failure.get()).isNull();
-      assertThat(compactions.get()).as("compaction must survive the pause, not be deadlocked by it")
-          .isGreaterThan(compactionsAtStart);
+      assertThat(compactor.isAlive())
+          .as("the compactor must have finished, not still be blocked on a pause that was never released").isFalse();
       // Sampled only once the writer has stopped, so no chunk is half-committed behind the counter and the
       // upper bound is a real ceiling rather than a racing read.
       countAfter = written.get();
@@ -269,7 +268,7 @@ class Issue7280SealedTimeSeriesBackupIT {
       final List<Long> timestamps = readTimestamps(engineOf(restored));
 
       assertThat(timestamps.size()).as("the archive must be a point in time between the two samplings")
-          .isBetween((int) countBefore, (int) countAfter);
+          .isBetween(countBefore, countAfter);
       assertThat(timestamps).as("a repeated timestamp means a post-compaction sealed image was paired with a "
           + "pre-compaction page image").doesNotHaveDuplicates();
     }
