@@ -539,10 +539,20 @@ public class BasicCommandContext implements CommandContext {
   }
 
   public void setInputParameters(final Map<String, Object> inputParameters) {
-    this.inputParameters = inputParameters;
-    this.profiling = inputParameters != null && inputParameters.containsKey("$profileExecution") ?
-        (Boolean) inputParameters.remove("$profileExecution") :
-        false;
+    if (inputParameters != null && inputParameters.containsKey("$profileExecution")) {
+      this.profiling = Boolean.TRUE.equals(inputParameters.get("$profileExecution"));
+      // The flag is stripped so it cannot be mistaken for a query parameter, but out of a COPY. Removing it in
+      // place threw UnsupportedOperationException when the caller passed an immutable map (a plain Map.of(...)),
+      // and silently mutated the caller's own map otherwise - including the parameter map a cached execution plan
+      // holds on to, so a second run of the same plan no longer saw the flag. Copied only on the rare path that
+      // carries it, so the ordinary one still hands the map straight through (issue #7330).
+      final Map<String, Object> stripped = new HashMap<>(inputParameters);
+      stripped.remove("$profileExecution");
+      this.inputParameters = stripped;
+    } else {
+      this.inputParameters = inputParameters;
+      this.profiling = false;
+    }
   }
 
   public void setInputParameters(final Object[] args) {

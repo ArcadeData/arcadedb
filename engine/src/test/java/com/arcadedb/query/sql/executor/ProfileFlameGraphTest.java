@@ -144,11 +144,13 @@ class ProfileFlameGraphTest {
       final Result planResult = plan.toResult();
       final JSONObject planJson = planResult.toJSON();
 
-      // At least one step should have a positive cost when profiling is enabled
+      // At least one step should have a positive cost when profiling is enabled. Read from totalCost, the subtree
+      // roll-up: "cost" is a step's SELF cost, and the top-level step of a type scan is a container that dispatches
+      // to the bucket steps below it and so times nothing of its own (issue #7329).
       final JSONArray steps = planJson.getJSONArray("steps");
       boolean hasCost = false;
       for (int i = 0; i < steps.length(); i++) {
-        if (steps.getJSONObject(i).getLong("cost") > 0) {
+        if (steps.getJSONObject(i).getLong("totalCost") > 0) {
           hasCost = true;
           break;
         }

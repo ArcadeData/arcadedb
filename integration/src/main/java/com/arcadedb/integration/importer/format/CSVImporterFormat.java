@@ -308,13 +308,16 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   /**
    * {@code transactionActiveOnEntry}: the live transaction state, used by {@link #beginRowTransaction} to decide
    * whether to begin, reuse, or replace it. {@code ownsTransaction}: see
-   * {@link ImporterContext#callerTransactionActiveOnEntry}.
+   * {@link ImporterContext#importOwnsTransaction}.
    */
   private record TransactionOwnership(boolean transactionActiveOnEntry, boolean ownsTransaction) {
   }
 
   private TransactionOwnership computeTransactionOwnership(final Database database, final ImporterContext context) {
-    return new TransactionOwnership(database.isTransactionActive(), !context.callerTransactionActiveOnEntry);
+    // importOwnsTransaction() rather than the raw flag: a caller transaction recorded on entry that is no longer
+    // live leaves nothing for beginRowTransaction() to reuse, so the transaction it pushes instead is the import's
+    // own and has to be gated as such, or it stays on the stack with nothing allowed to resolve it (issue #7328).
+    return new TransactionOwnership(database.isTransactionActive(), context.importOwnsTransaction(database));
   }
 
   private void loadVertices(final SourceSchema sourceSchema, final Parser parser, final Database database,
