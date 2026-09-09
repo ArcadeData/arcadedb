@@ -222,23 +222,39 @@ https://github.com/ArcadeData/arcadedb/pull/7317
 
 | Cycle | Head SHA | Change | Bot review outcome |
 |---|---|---|---|
-| 1 | `c67cbf9215` | Initial push: the fix, 10 tests, this tracking doc. | Reviewed by `claude` at 14:50:12Z. No blocking objection - the fix, the deliberate `checkNotSplit` skip and the `notSet(Object)` overload were each traced and confirmed - plus two minor nits, both actionable and both applied in cycle 2. |
+| 1 | `c67cbf9215` | Initial push (14:46:19Z): the fix, 10 tests, this tracking doc. | Reviewed by `claude` at 14:50:12Z. No blocking objection - the fix, the deliberate `checkNotSplit` skip and the `notSet(Object)` overload were each traced and confirmed - plus two minor nits, both actionable and both applied in cycle 2. |
 | 2 | `2e059ac349` | Both nits addressed. No production code changed. | Pushed for review. |
 
 ### A correction about cycle 1
 
-An earlier revision of this document recorded cycle 1 as a **timeout**, stating that the reviewer
-"posted nothing on any of the three surfaces". That was wrong, and the error is worth recording
-rather than quietly overwriting.
+An earlier revision of this document recorded cycle 1 as a **timeout**, and claimed the reviewer
+had "posted nothing on any of the three surfaces" across "more than 80 minutes". Both halves were
+wrong, and the way they were wrong is worth recording rather than quietly overwriting.
 
-The review was posted at 14:50:12Z, under four minutes after the push. Repeated polls of
-`gh pr view 7317 --json comments` over the following eighty minutes listed the `coderabbitai`,
-`mergify` and `codacy-production` comments but **not** the `claude` one, and the
-`claude-review` workflow run stayed `in_progress` throughout, so both gating signals agreed on an
-answer that was false. The comment appeared in the identical query later. The lesson for the loop
-is that a `gh pr view --json comments` result which omits a comment is not evidence the comment
-does not exist, and that a workflow still showing `in_progress` is not evidence its output has not
-been posted - the job outlives the post.
+The facts, from the timestamps rather than from impression:
+
+- the branch was pushed at **14:46:19Z**;
+- the `claude` review was posted at **14:50:12Z**, three and a half minutes later;
+- the revision of this file that declared the timeout was committed at **14:50:25Z** - *thirteen
+  seconds after the review it said had never arrived*.
+
+So the reviewer was not slow and nothing was missing from the API. The mistake was in the waiting:
+each wait between polls was a `sleep` started as a **background** task, which returns control
+immediately instead of blocking. Every "wait, then poll again" cycle therefore consumed no real
+time at all, and what was believed to be eighty minutes of patient polling was roughly four minutes
+of rapid polling against a review that had not been written yet. The `claude-review` workflow run
+still showing `in_progress` was read as corroboration, when it was only the same few minutes seen
+from a second angle.
+
+Two lessons for the loop, one of them the opposite of what the first correction claimed:
+
+1. A poll loop is only as slow as its waits actually are. A backgrounded `sleep` does not pace an
+   agent, so a loop built from them can burn its whole retry budget inside a minute and report a
+   timeout that describes nothing but its own haste. Pace with a blocking wait, or with a monitor
+   that sleeps in the same process as the poll.
+2. Elapsed time has to be read off timestamps, not accumulated in the head. Both the false claim
+   here and its first correction were confident about a duration that a single `date -u` against
+   the comment's `created_at` would have refuted.
 
 ### Cycle 1 feedback and its disposition
 
