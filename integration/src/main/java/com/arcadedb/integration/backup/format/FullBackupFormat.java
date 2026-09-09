@@ -184,13 +184,17 @@ public class FullBackupFormat extends AbstractBackupFormat {
   }
 
   /**
-   * Archives the two configuration files plus every PAGE file as it stood at the snapshot's t0 (issue #6075).
+   * Archives the two configuration files and the TimeSeries sealed stores, plus every PAGE file as it stood at the
+   * snapshot's t0 (issue #6075).
    * <p>
    * The configuration files are still read straight off the filesystem: they are not page files, so the snapshot
    * does not cover them, and the database read lock this runs under is what keeps them consistent with the page
    * files - it excludes the DDL that rewrites them. Files created after t0 are absent from the snapshot by
    * construction, which is correct: they did not exist at the point in time being archived. Files DROPPED after t0
    * are still readable, because their physical deletion is deferred until the window closes.
+   * <p>
+   * The sealed stores are read straight off the filesystem for the same reason and are NOT covered by the read
+   * lock, which is why the caller's compaction pause is held until they have been read (issue #7280).
    */
   private long backupFromSnapshot(final BackupArchiveWriter archive, final TimeSeriesCompactionPause pause)
       throws Exception {
