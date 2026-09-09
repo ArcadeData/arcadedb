@@ -20,6 +20,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
@@ -28,12 +29,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -192,6 +195,68 @@ class Neo4jImporterReadFileTransactionLeakTest {
         .isEqualTo(1);
     assertThat(countOf("Node"))
         .as("the importer's abandoned row must not ride out on the caller's commit")
+        .isZero();
+  }
+
+  /**
+   * What a real commit failure leaves behind: {@code LocalDatabase.commit()} pops the transaction inside its own
+   * {@code finally}, so the transaction this method opened is already gone and the caller's is back on top.
+   */
+  private Database databaseWhoseCommitFails() {
+    return (Database) Proxy.newProxyInstance(Database.class.getClassLoader(), new Class<?>[] { Database.class },
+        (proxy, method, args) -> {
+          if ("commit".equals(method.getName()) && (args == null || args.length == 0)) {
+            database.rollback();
+            throw new TransactionException("Simulated commit failure");
+          }
+          try {
+            return method.invoke(database, args);
+          } catch (final InvocationTargetException e) {
+            throw e.getCause();
+          }
+        });
+  }
+
+  /**
+   * Issue #7328: the trailing {@code commit()} must clear {@code txOpen} BEFORE it runs, not after. A commit that
+   * throws skips everything below it, so clearing afterwards leaves the flag set and hands the {@code finally} a
+   * transaction this method no longer owns.
+   * <p>
+   * Proved on a {@link Proxy} that implements {@link Database} but not {@code DatabaseInternal} - a remote database
+   * has the same shape - because that is the case where the guard cannot read the transaction stack and degrades
+   * to the ambient {@code isTransactionActive()}. The failed commit has already popped the import's own
+   * transaction, so what that ambient test sees is the CALLER's, and a rollback issued on it discards the caller's
+   * unrelated pending work.
+   */
+  @Test
+  void aFailedCommitDoesNotRollBackTheCallersTransaction() throws Throwable {
+    final Neo4jImporter importer = new Neo4jImporter(databaseWhoseCommitFails(), new ImporterContext());
+
+    // The input is fully readable: the only failure is the trailing commit itself.
+    setInputStream(importer,
+        new ByteArrayInputStream("{\"type\":\"node\",\"id\":\"1\"}\n".getBytes(StandardCharsets.UTF_8)));
+
+    final Callable<Void, JSONObject> callback = json -> {
+      database.newDocument("Node").set("marker", true).save();
+      return null;
+    };
+
+    database.begin();
+    database.newDocument("Marker").set("name", "caller").save();
+
+    assertThatThrownBy(() -> invokeReadFile(importer, callback)).isInstanceOf(TransactionException.class);
+
+    assertThat(database.isTransactionActive())
+        .as("the caller's transaction must have survived the import's failed commit")
+        .isTrue();
+
+    database.commit();
+
+    assertThat(countOf("Marker"))
+        .as("the caller's own record must be what its own commit made durable")
+        .isEqualTo(1);
+    assertThat(countOf("Node"))
+        .as("the failed commit made nothing of the import's own row durable")
         .isZero();
   }
 }
