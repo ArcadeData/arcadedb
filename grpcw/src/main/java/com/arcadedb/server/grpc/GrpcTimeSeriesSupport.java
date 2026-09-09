@@ -92,7 +92,12 @@ final class GrpcTimeSeriesSupport {
       for (final Map.Entry<String, GrpcValue> tag : point.getTagsMap().entrySet()) {
         final Object value = GrpcTypeConverter.fromGrpcValue(tag.getValue());
         if (value != null)
-          tags.put(tag.getKey(), String.valueOf(value));
+          // The proto types tags as map<string, GrpcValue>, so nothing at the wire boundary stops a bytes,
+          // list or map value arriving here. Refuse it - String.valueOf(byte[]) is an object identity, stored
+          // as a different meaningless tag on every run. IllegalArgumentException, which GrpcErrorMapper turns
+          // into INVALID_ARGUMENT, matching how this class refuses an unrecognized precision or aggregation.
+          tags.put(tag.getKey(),
+              String.valueOf(TimeSeriesGateway.requireStorableTagValue(tag.getKey(), value)));
       }
 
       final Map<String, Object> fields = new LinkedHashMap<>();

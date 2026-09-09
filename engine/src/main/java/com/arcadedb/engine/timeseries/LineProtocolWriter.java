@@ -66,7 +66,11 @@ public final class LineProtocolWriter {
         out.append(',');
         escapeKey(out, tag.getKey());
         out.append('=');
-        escapeKey(out, String.valueOf(tag.getValue()));
+        // Refused rather than stringified: a byte[] has no toString() of its own, so it would be written as
+        // [B@6bc7c054 - a different meaningless tag on every run. Same rule the gRPC ingest path applies, so
+        // the two protocols reject the same value instead of both mis-encoding it.
+        escapeKey(out, String.valueOf(
+            TimeSeriesGateway.requireStorableTagValue(tag.getKey(), tag.getValue())));
       }
     }
 

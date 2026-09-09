@@ -26,6 +26,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -402,6 +403,32 @@ public final class TimeSeriesGateway {
     for (final ColumnDefinition column : selected)
       names.add(column.getName());
     return names;
+  }
+
+  /**
+   * Checks that a tag value has a meaningful text form, and returns it unchanged.
+   * <p>
+   * Every protocol stores a tag by its text: {@code LineProtocolParser} models tags as
+   * {@code Map<String, String>}, the column coerces that text to its declared type, and the gRPC path converts
+   * its typed value the same way so the two cannot store a tag differently. That works for anything whose
+   * {@code toString()} means something - a string, a number, a boolean, an enum, a temporal - and silently
+   * corrupts for anything whose does not. A {@code byte[]} is the sharp case: it has no {@code toString()}
+   * override, so it would be stored as {@code [B@6bc7c054}, a different meaningless value on every run
+   * (claude-review on PR #7323). Collections and maps are refused with it: their text form is stable but is not
+   * a tag value anyone means.
+   * <p>
+   * Fields are deliberately NOT subject to this - they carry typed values into typed columns, and the column
+   * decides what it can hold.
+   *
+   * @throws IllegalArgumentException if the value cannot be stored as a tag. Callers on the gRPC path let this
+   *                                  surface as {@code INVALID_ARGUMENT} through {@code GrpcErrorMapper}
+   */
+  public static Object requireStorableTagValue(final String tagName, final Object value) {
+    if (value != null && (value.getClass().isArray() || value instanceof Collection<?> || value instanceof Map<?, ?>))
+      throw new IllegalArgumentException("Tag '" + tagName + "' cannot hold a " + value.getClass().getSimpleName()
+          + ": a tag is stored by its text form, and this one has none that means anything. "
+          + "Use a string, a number or a boolean.");
+    return value;
   }
 
   /**

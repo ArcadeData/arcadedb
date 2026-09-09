@@ -259,3 +259,29 @@ refuses it on the HTTP side) and then asserts both protocols answer `null`. It w
 fix, with the output above.
 
 Nothing was deferred: every finding is fixed here or filed.
+
+### Cycle 2 — `934ac74e` — claude review, one finding plus a nit
+
+| Finding | Verified? | Disposition |
+|---|---|---|
+| A non-scalar tag value (`byte[]`, list, map) is stringified rather than refused, so it is stored as an object identity | **Yes** — `String.valueOf((Object) new byte[]{1,2,3})` gives `[B@2c7b84de`, and `GrpcTypeConverter.fromGrpcValue` returns `byte[]` for `BYTES_VALUE` | **Fixed** |
+| `TimeSeriesGateway.write`'s javadoc names `SecurityException` on a `throws Exception` signature | Yes | **Left as is**, deliberately: `SecurityException` is unchecked and genuinely thrown, and naming what a caller must handle is what the tag is for. Removing it would tell callers less |
+
+The tag fix is one rule, `TimeSeriesGateway.requireStorableTagValue`, enforced at the three boundaries a
+value can enter through, which is the same shape as the rest of this change:
+
+- `TimeSeriesPoint`'s constructor — both Java clients build their request from it, so a caller learns
+  which tag was wrong before anything reaches the wire;
+- `LineProtocolWriter.appendLine` — the HTTP encoding path, for any caller that uses it directly;
+- `GrpcTimeSeriesSupport.toSamples` — the server, because the proto types tags as
+  `map<string, GrpcValue>` and any gRPC client can put a bytes value there. `IllegalArgumentException`
+  here, which `GrpcErrorMapper` maps to `INVALID_ARGUMENT`, matching how the class already refuses an
+  unrecognized precision or aggregation.
+
+Arrays, collections and maps are refused; everything with a meaningful `toString()` still passes, which
+`TimeSeriesGatewayTagValueTest.theScalarsATagIsActuallyMadeOfPassThroughUnchanged` pins so the check
+cannot quietly become a whitelist that rejects ordinary tags. `GrpcTimeSeriesSupportTest` covers the
+server half, including that a numeric tag is still converted to the same text form the line-protocol path
+produces.
+
+Nothing deferred in this cycle either.

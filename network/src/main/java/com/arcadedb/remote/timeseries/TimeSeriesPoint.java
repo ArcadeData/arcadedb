@@ -18,6 +18,8 @@
  */
 package com.arcadedb.remote.timeseries;
 
+import com.arcadedb.engine.timeseries.TimeSeriesGateway;
+
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -44,6 +46,11 @@ public record TimeSeriesPoint(String type, long timestampMs, Map<String, Object>
     if (fields == null || fields.isEmpty())
       throw new IllegalArgumentException("A time-series point on type '" + type + "' needs at least one field");
     tags = tags == null ? Map.of() : tags;
+    // Checked here, at the boundary both clients build their request from, so a value that cannot be stored as
+    // a tag is refused where the caller can still see which tag it was - rather than reaching the wire as the
+    // text of an object identity. Fields are not checked: they carry typed values into typed columns.
+    for (final Map.Entry<String, Object> tag : tags.entrySet())
+      TimeSeriesGateway.requireStorableTagValue(tag.getKey(), tag.getValue());
   }
 
   /** A point with no tags. */
