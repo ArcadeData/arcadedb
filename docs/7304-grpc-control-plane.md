@@ -1,7 +1,9 @@
 # #7304 - gRPC control plane: database lifecycle, backup, security and profiler RPCs
 
 Issue: https://github.com/ArcadeData/arcadedb/issues/7304
+PR: https://github.com/ArcadeData/arcadedb/pull/7324
 Branch: `feat/7304-grpc-control-plane-admin-service`
+Final state: clean approval on cycle 2. The merge is the developer's.
 
 ## Correction to the issue's premise
 
@@ -307,6 +309,24 @@ Codacy reported 5 new "avoid throwing raw exception types" against 5 solved. Fou
 purpose: converting them to `CommandExecutionException` would change the HTTP error body's
 `exception` field and, through the mapping above, would have made a failed backup report as a
 precondition failure over gRPC. The fifth was `RemoteGrpcServer`, fixed by (3).
+
+### Cycle 2 - `5753212`
+
+Both cycle-1 findings confirmed fixed, and the two changes the review had not raised confirmed as
+well: "No new issues found in this incremental diff." Two observations, neither actionable:
+
+- the reviewer noted the `mapped.getMessage() == null || isBlank()` fallback to `RemoteException` in
+  `RemoteGrpcServer.call` is unreachable in practice, because `GrpcClientErrorMapper.toException`
+  always derives a message from the status description or the status code name. Correct, and it is
+  kept as a defensive guard: it costs one branch and it is what stops a future mapper change from
+  handing a caller an exception with no message at all.
+- it could not run Maven in that session, so cycle 2 is a diff-level read rather than a compiled
+  one. The suites listed above were run locally against exactly `5753212`.
+
+Codacy went from 5 new "avoid throwing raw exception types" to 4, the remaining ones being the
+verbatim-moved backup throws argued about in cycle 1.
+
+No deferred items: nothing in either review was left unaddressed or unanswered.
 
 ## Residual risk
 
