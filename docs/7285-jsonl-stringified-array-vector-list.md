@@ -223,7 +223,7 @@ https://github.com/ArcadeData/arcadedb/pull/7317
 | Cycle | Head SHA | Change | Bot review outcome |
 |---|---|---|---|
 | 1 | `c67cbf9215` | Initial push: the fix, 10 tests, this tracking doc. | Reviewed by `claude` at 14:50:12Z. No blocking objection - the fix, the deliberate `checkNotSplit` skip and the `notSet(Object)` overload were each traced and confirmed - plus two minor nits, both actionable and both applied in cycle 2. |
-| 2 | `4f5eb00` | Both nits addressed. No production code changed. | Pushed for review. |
+| 2 | `2e059ac349` | Both nits addressed. No production code changed. | Pushed for review. |
 
 ### A correction about cycle 1
 
