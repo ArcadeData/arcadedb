@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.StallAwareStopwatch;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -29,6 +30,8 @@ import org.junit.jupiter.api.Timeout;
 import org.mockito.MockedStatic;
 
 import java.io.IOException;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -37,14 +40,25 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mockStatic;
 
 /** Tests the persisted schema at the replacement boundary, including an unclean child-JVM exit. */
-@Timeout(180)
+@Timeout(300) // Separate wall-clock watchdog for a hung test; completion budgets below discount JVM stalls.
 class Issue6114AtomicSchemaWriteTest extends TestHelper {
+  @Test
+  void preservesUtf8PreviousSchemaDespiteANonUtf8EncodingSetting() throws Exception {
+    assertPreviousSchemaBytesAndRecovery(StandardCharsets.UTF_8);
+  }
+
+  @Test
+  void preservesNonUtf8PreviousSchemaAndRecoversNonAsciiPropertyNames() throws Exception {
+    assertPreviousSchemaBytesAndRecovery(StandardCharsets.ISO_8859_1);
+  }
+
   @Test
   void keepsPreviousSchemaAndReopensTheCompleteUtf8Replacement() throws Exception {
     createIndexedRecord();
@@ -139,6 +153,32 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
   }
 
   @Test
+  void explicitNullVersionIsRejectedBeforeEitherFileIsReplaced() throws Exception {
+    createIndexedRecord();
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    final byte[] before = Files.readAllBytes(schemaPath());
+    final byte[] previous = Files.readAllBytes(previousPath());
+    final long version = schema.getVersion();
+    final JSONObject invalid = replacement(schema, "invalid").put("schemaVersion", JSONObject.NULL);
+    assertThatThrownBy(() -> schema.update(invalid)).isInstanceOf(JSONException.class);
+    assertThat(Files.readAllBytes(schemaPath())).isEqualTo(before);
+    assertThat(Files.readAllBytes(previousPath())).isEqualTo(previous);
+    assertThat(schema.getVersion()).isEqualTo(version);
+    assertNoTemporaryFiles();
+  }
+
+  @Test
+  void absentVersionKeepsTheCurrentVersion() throws Exception {
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    final long version = schema.getVersion();
+    final JSONObject replacement = replacement(schema, "no-version");
+    replacement.remove("schemaVersion");
+    schema.update(replacement);
+    assertThat(schema.getVersion()).isEqualTo(version);
+    assertNoTemporaryFiles();
+  }
+
+  @Test
   void concurrentFileReadersOnlyObserveCompleteSchemas() throws Exception {
     final LocalSchema schema = database.getSchema().getEmbedded();
     final String first = replacement(schema, "a".repeat(64 * 1024)).toString();
@@ -160,13 +200,14 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
         return reads;
       });
       try {
-        assertThat(reading.await(30, TimeUnit.SECONDS)).isTrue();
+        awaitCompletion(() -> reading.getCount() == 0, 30_000, "a reader starting versus a hung reader");
         for (int i = 0; i < 32; ++i)
           schema.update(new JSONObject(i % 2 == 0 ? second : first));
       } finally {
         finished.set(true);
       }
-      assertThat(reader.get(30, TimeUnit.SECONDS)).isGreaterThan(0);
+      awaitCompletion(reader::isDone, 30_000, "a reader finishing versus a hung reader");
+      assertThat(reader.get()).isGreaterThan(0);
     }
     assertNoTemporaryFiles();
   }
@@ -184,11 +225,12 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
         InterruptedWriter.class.getName(), primary.getParent().toString())
         .redirectErrorStream(true).redirectOutput(log.toFile()).start();
     try {
-      assertThat(process.waitFor(120, TimeUnit.SECONDS)).as("disposable schema writer must terminate").isTrue();
+      awaitCompletion(() -> !process.isAlive(), 120_000, "a disposable writer terminating versus a hung writer");
       assertThat(process.exitValue()).as("child output: %s", Files.readString(log)).isEqualTo(73);
     } finally {
       if (process.isAlive()) {
         process.destroyForcibly();
+        // Cleanup watchdog only, not an assertion about operation latency.
         process.waitFor(30, TimeUnit.SECONDS);
       }
     }
@@ -232,6 +274,35 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
     database.transaction(() -> database.newDocument("Evidence").set("name", "café_日本").save());
   }
 
+  private void assertPreviousSchemaBytesAndRecovery(final Charset persistedCharset) throws Exception {
+    createIndexedRecord();
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    schema.getType("Evidence").createProperty("café", Type.STRING);
+    final String originalEncoding = schema.getEncoding();
+    // Model both a UTF-8 primary with a changed reader setting and a legacy non-UTF-8 primary.
+    Files.writeString(schemaPath(), schema.toJSON().toString(), persistedCharset);
+    final byte[] before = Files.readAllBytes(schemaPath());
+    schema.setEncoding(StandardCharsets.ISO_8859_1.name());
+    try {
+      schema.update(replacement(schema, "replacement"));
+      assertThat(Files.readAllBytes(previousPath())).isEqualTo(before);
+      assertNoTemporaryFiles();
+
+      // Exercise the configured recovery reader before closing, which would rotate the backup again.
+      Files.writeString(schemaPath(), "{\"schemaVersion\":");
+      schema.setEncoding(persistedCharset.name());
+      schema.readConfiguration();
+      assertThat(schema.getType("Evidence").existsProperty("café")).isTrue();
+      assertIndexedRecord();
+    } finally {
+      schema.setEncoding(originalEncoding);
+    }
+    // Recovery self-heals the primary; the normal UTF-8 reopen must retain the same names and index.
+    reopenDatabase();
+    assertThat(database.getSchema().getType("Evidence").existsProperty("café")).isTrue();
+    assertIndexedRecord();
+  }
+
   private void assertIndexedRecord() {
     assertThat(database.getSchema().getType("Evidence").getIndexByProperties("name")).isNotNull();
     try (final var cursor = database.lookupByKey("Evidence", "name", "café_日本")) {
@@ -243,6 +314,16 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
 
   private static JSONObject replacement(final LocalSchema schema, final String marker) {
     return schema.toJSON().put("schemaVersion", schema.getVersion() + 1).put("testMarker", marker);
+  }
+
+  /** Waits against an effective-time budget so JVM-wide stalls cannot exhaust a readiness/completion wait. */
+  private static void awaitCompletion(final BooleanSupplier completed, final long boundMs, final String whatItSeparates)
+      throws InterruptedException {
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    while (!completed.getAsBoolean()) {
+      stopwatch.assertGaveUpWithin(boundMs, whatItSeparates);
+      Thread.sleep(10);
+    }
   }
 
   private Path schemaPath() {

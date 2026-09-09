@@ -364,6 +364,14 @@ public class FileUtils {
    * Existing callers of the two-argument overload retain their best-effort fallback.
    */
   public static void atomicWriteFile(final File file, final String content, final boolean requireAtomicMove) throws IOException {
+    atomicWriteFile(file, content.getBytes(StandardCharsets.UTF_8), requireAtomicMove);
+  }
+
+  /**
+   * Atomically replaces a file with the supplied bytes, without decoding or re-encoding its content.
+   * When {@code requireAtomicMove} is true, unsupported atomic replacement fails without a fallback.
+   */
+  public static void atomicWriteFile(final File file, final byte[] content, final boolean requireAtomicMove) throws IOException {
     // Resolve to an absolute path so getParent() is never null for relative inputs (e.g. new
     // File("ai.json")); this keeps the temp file on the same file store as the target, which is
     // required for the ATOMIC_MOVE below to actually be atomic instead of falling back to a copy.
@@ -374,7 +382,7 @@ public class FileUtils {
     final Path tmp = Files.createTempFile(dir, file.getName() + ".", ".tmp");
     try {
       try (final FileOutputStream fos = new FileOutputStream(tmp.toFile())) {
-        fos.write(content.getBytes(StandardCharsets.UTF_8));
+        fos.write(content);
         fos.flush();
         fos.getFD().sync();
       }

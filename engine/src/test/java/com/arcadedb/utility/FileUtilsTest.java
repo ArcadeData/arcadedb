@@ -43,6 +43,20 @@ class FileUtilsTest {
   Path tempDir;
 
   @Test
+  void atomicByteWritePreservesContentWithoutCharacterConversion() throws Exception {
+    final Path target = tempDir.resolve("previous-schema.json");
+    final byte[] content = { 0, 0x7f, (byte) 0x80, (byte) 0xe9, (byte) 0xff };
+    Files.writeString(target, "old generation");
+
+    FileUtils.atomicWriteFile(target.toFile(), content, true);
+
+    assertThat(Files.readAllBytes(target)).isEqualTo(content);
+    try (final var files = Files.list(tempDir)) {
+      assertThat(files).containsExactly(target);
+    }
+  }
+
+  @Test
   void defaultAtomicWriteRetainsTheExistingFallbackForUnsupportedFileSystems() throws Exception {
     final Path target = tempDir.resolve("config.json").toAbsolutePath();
     Files.writeString(target, "old");

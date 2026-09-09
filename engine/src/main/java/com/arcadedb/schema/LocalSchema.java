@@ -76,6 +76,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.Callable;
@@ -2835,6 +2836,7 @@ public class LocalSchema implements Schema {
   }
 
   public synchronized void update(final JSONObject newSchema) throws IOException {
+    // An absent version keeps the current one, but an explicitly null version must still be rejected.
     final long newVersion = newSchema.has("schemaVersion") ? newSchema.getLong("schemaVersion") : versionSerial.get();
     final String latestSchema = newSchema.toString();
 
@@ -2842,7 +2844,7 @@ public class LocalSchema implements Schema {
       final File copy = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
       // Keep the primary in place while saving the previous generation. Moving it aside exposes a
       // missing/partial schema to readers and to recovery after an interrupted write (issue #6114).
-      FileUtils.atomicWriteFile(copy, FileUtils.readFileAsString(configurationFile, encoding), true);
+      FileUtils.atomicWriteFile(copy, Files.readAllBytes(configurationFile.toPath()), true);
     }
 
     FileUtils.atomicWriteFile(configurationFile, latestSchema, true);
