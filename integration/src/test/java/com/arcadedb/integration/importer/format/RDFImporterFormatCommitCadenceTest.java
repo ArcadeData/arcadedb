@@ -250,6 +250,47 @@ class RDFImporterFormatCommitCadenceTest {
   }
 
   /**
+   * The caller-owned path taken far enough to cross several commit boundaries and then fail, which is the
+   * combination neither of the other caller-owned tests reaches:
+   * {@code aCallerOwnedTransactionIsNeverCommittedByTheImport} runs to the end, and
+   * {@code RDFImporterFormatTransactionLeakTest#aFailedRowLeavesTheCallersOwnTransactionUntouched} fails on the
+   * second row, before any boundary. With {@code -commitEvery 2} and six rows there are three boundaries to get
+   * wrong, and the transaction is not the import's: nothing may become durable, so a rollback by the caller has
+   * to take every edge with it.
+   */
+  @Test
+  void noCallerOwnedRowIsMadeDurableByABoundaryBeforeAMidFileFailure() throws Exception {
+    final RDFImporterFormat format = new RDFImporterFormat();
+    final ImporterContext context = new ImporterContext();
+    context.callerTransactionActiveOnEntry = true;
+
+    database.begin();
+
+    final Parser parser = rdfParser("""
+        s,p,o
+        v1,rel,v2
+        v2,rel,v3
+        v3,rel,v4
+        v4,rel,v5
+        v5,rel,v6
+        v6,rel,v7
+        """ + ROW_THAT_ABORTS_THE_PARSE + "\n");
+
+    assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settingsWithCommitEvery(2)))
+        .isInstanceOf(TextParsingException.class);
+
+    assertThat(database.isTransactionActive())
+        .as("six rows and three boundaries later, the caller's transaction is still theirs and still open")
+        .isTrue();
+
+    database.rollback();
+
+    assertThat(countOf("Related"))
+        .as("no boundary may have committed a caller-owned row behind its owner's back: the rollback takes all six")
+        .isZero();
+  }
+
+  /**
    * The live CLI path, end to end: {@code Importer.load()} -> {@code loadFromSource()} ->
    * {@code SourceDiscovery} sniffing the {@code <a>,<b>,<c>} triples back to {@code RDFImporterFormat} ->
    * {@code load()}. What the run reports as {@code parsedRecords} is the counter the commit boundary was
