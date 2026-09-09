@@ -170,6 +170,37 @@ class RDFImporterFormatCommitCadenceTest {
   }
 
   /**
+   * {@code -commitEvery} is parsed with a bare {@code Integer.parseInt} and never range-checked
+   * ({@code ImporterSettings:177}), so a non-positive value reaches the loop. It used to reach a
+   * {@code % commitEvery}, which threw {@link ArithmeticException} on the first row; against the row count it
+   * now means "commit every row", which is what {@code CSVImporterFormat.loadEdges()} has always done with the
+   * same value and the same {@code txCount >= settings.commitEvery} shape. Pinned here because the change is a
+   * consequence of the fix rather than its subject, and because a degenerate setting turning a crash into a
+   * conservative cadence is the direction worth locking in.
+   */
+  @Test
+  void aNonPositiveCommitEveryCommitsEveryRowInsteadOfThrowing() throws Exception {
+    final RDFImporterFormat format = new RDFImporterFormat();
+    final ImporterContext context = new ImporterContext();
+    context.callerTransactionActiveOnEntry = false;
+
+    final Parser parser = rdfParser("""
+        s,p,o
+        v1,rel,v2
+        v2,rel,v3
+        v3,rel,v4
+        """ + ROW_THAT_ABORTS_THE_PARSE + "\n");
+
+    assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settingsWithCommitEvery(0)))
+        .as("the failure that propagates is the malformed row, not an ArithmeticException from the boundary")
+        .isInstanceOf(TextParsingException.class);
+
+    assertThat(countOf("Related"))
+        .as("-commitEvery 0 commits after every row, so all three rows before the malformed one are durable")
+        .isEqualTo(3);
+  }
+
+  /**
    * Finding 2: {@code context.parsed} is an import-wide counter that {@code Importer.load()} carries across
    * its four {@code loadFromSource()} phases, so a phase after the first entered with whatever the previous
    * one left in it. The cadence must not depend on that, and the count this phase reports must be its own
