@@ -405,6 +405,13 @@ function profilerRenderQueryTable() {
   });
 }
 
+
+// A step the engine never timed reports occurrences but no measured sample. Showing its timings as 0 reads as
+// "instant" instead of "unknown", so the table says so in words and the chart leaves it out (issue #7291).
+function profilerIsStepUntimed(step) {
+  return step.measuredCount === 0 && step.executionCount > 0;
+}
+
 function profilerShowDetail(index) {
   var q = profilerData.queries[index];
   if (!q) return;
@@ -441,30 +448,38 @@ function profilerShowDetail(index) {
   jQuery("#profilerStepTable tbody").empty();
   for (var j = 0; j < steps.length; j++) {
     var s = steps[j];
+    var untimed = profilerIsStepUntimed(s);
+    var cells = untimed
+      ? '<td colspan="5" class="text-muted" title="This step reports no timing: per-step timers only run when the engine is asked to profile the execution.">not timed</td>'
+      : '<td>' + s.totalCostMs + '</td>' +
+        '<td>' + s.minCostMs + '</td>' +
+        '<td>' + s.avgCostMs + '</td>' +
+        '<td>' + s.maxCostMs + '</td>' +
+        '<td>' + s.p99CostMs + '</td>';
     jQuery("#profilerStepTable tbody").append(
       '<tr><td>' + escapeHtml(s.name) + '</td>' +
-      '<td>' + s.executionCount + '</td>' +
-      '<td>' + s.totalCostMs + '</td>' +
-      '<td>' + s.minCostMs + '</td>' +
-      '<td>' + s.avgCostMs + '</td>' +
-      '<td>' + s.maxCostMs + '</td>' +
-      '<td>' + s.p99CostMs + '</td></tr>'
+      '<td>' + s.executionCount + '</td>' + cells + '</tr>'
     );
   }
 
-  // Step chart (horizontal bar)
+  // Step chart (horizontal bar). Only the timed steps are plotted: a step with no measured sample would
+  // otherwise draw a zero-length bar, which reads as "instant" and contradicts the "not timed" row above.
   jQuery("#profilerStepChart").empty();
-  if (steps.length > 0 && typeof ApexCharts !== "undefined") {
+  var timedSteps = [];
+  for (var t = 0; t < steps.length; t++)
+    if (!profilerIsStepUntimed(steps[t]))
+      timedSteps.push(steps[t]);
+  if (timedSteps.length > 0 && typeof ApexCharts !== "undefined") {
     var categories = [];
     var avgData = [];
     var maxData = [];
-    for (var k = 0; k < steps.length; k++) {
-      categories.push(steps[k].name);
-      avgData.push(steps[k].avgCostMs);
-      maxData.push(steps[k].maxCostMs);
+    for (var k = 0; k < timedSteps.length; k++) {
+      categories.push(timedSteps[k].name);
+      avgData.push(timedSteps[k].avgCostMs);
+      maxData.push(timedSteps[k].maxCostMs);
     }
     var chart = new ApexCharts(document.querySelector("#profilerStepChart"), {
-      chart: { type: "bar", height: Math.max(150, steps.length * 40) },
+      chart: { type: "bar", height: Math.max(150, timedSteps.length * 40) },
       plotOptions: { bar: { horizontal: true, barHeight: "60%" } },
       series: [
         { name: "Avg (ms)", data: avgData },

@@ -362,19 +362,33 @@ public class ServerQueryProfiler {
     final JSONArray result = new JSONArray();
     for (final Map.Entry<String, List<Long>> stepEntry : stepCosts.entrySet()) {
       final List<Long> costs = stepEntry.getValue();
-      final long[] costArray = costs.stream().mapToLong(Long::longValue).toArray();
-      Arrays.sort(costArray);
+
+      // A step reports cost -1 when it was never timed: per-step timing only runs when the command context has
+      // profiling on, which is not the case on every path that reaches the recorder. Summing that sentinel as if
+      // it were a duration turned "not measured" into a negative cost (issue #7291), so the statistics below are
+      // computed over the timed occurrences only, while executionCount still counts every occurrence.
+      final long[] costArray = costs.stream().mapToLong(Long::longValue).filter(c -> c >= 0).sorted().toArray();
 
       final JSONObject stepObj = new JSONObject();
       stepObj.put("name", stepEntry.getKey());
-      stepObj.put("executionCount", costArray.length);
+      stepObj.put("executionCount", costs.size());
+      stepObj.put("measuredCount", costArray.length);
 
-      final double totalCost = sumNanos(costArray) / 1_000_000.0;
-      stepObj.put("totalCostMs", round(totalCost));
-      stepObj.put("minCostMs", round(costArray[0] / 1_000_000.0));
-      stepObj.put("maxCostMs", round(costArray[costArray.length - 1] / 1_000_000.0));
-      stepObj.put("avgCostMs", round(totalCost / costArray.length));
-      stepObj.put("p99CostMs", round(percentile(costArray, 99) / 1_000_000.0));
+      if (costArray.length == 0) {
+        // Nothing timed: report zeros rather than a made-up cost.
+        stepObj.put("totalCostMs", 0d);
+        stepObj.put("minCostMs", 0d);
+        stepObj.put("maxCostMs", 0d);
+        stepObj.put("avgCostMs", 0d);
+        stepObj.put("p99CostMs", 0d);
+      } else {
+        final double totalCost = sumNanos(costArray) / 1_000_000.0;
+        stepObj.put("totalCostMs", round(totalCost));
+        stepObj.put("minCostMs", round(costArray[0] / 1_000_000.0));
+        stepObj.put("maxCostMs", round(costArray[costArray.length - 1] / 1_000_000.0));
+        stepObj.put("avgCostMs", round(totalCost / costArray.length));
+        stepObj.put("p99CostMs", round(percentile(costArray, 99) / 1_000_000.0));
+      }
 
       result.put(stepObj);
     }
@@ -384,8 +398,11 @@ public class ServerQueryProfiler {
   private void extractStepCosts(final JSONArray stepsArray, final Map<String, List<Long>> stepCosts) {
     for (int i = 0; i < stepsArray.length(); i++) {
       final JSONObject step = stepsArray.getJSONObject(i);
-      final String name = step.getString("name", "unknown");
-      final long cost = step.getLong("cost", 0);
+      final String rawName = step.getString("name", "unknown");
+      final String name = rawName.isBlank() ? "unknown" : rawName;
+      // Default to the same -1 the engine uses for "not calculated", so a plan that omits the field is classified
+      // as untimed rather than as a step that measurably took no time at all.
+      final long cost = step.getLong("cost", -1);
       stepCosts.computeIfAbsent(name, k -> new ArrayList<>()).add(cost);
 
       // Recurse into sub-steps

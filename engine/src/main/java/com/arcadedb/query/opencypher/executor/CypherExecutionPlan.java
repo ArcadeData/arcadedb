@@ -494,6 +494,16 @@ public class CypherExecutionPlan {
       }
 
       @Override
+      public String getName() {
+        return "SubquerySeedRowStep";
+      }
+
+      @Override
+      public String getType() {
+        return getName();
+      }
+
+      @Override
       public String prettyPrint(final int depth, final int indent) {
         return "  ".repeat(Math.max(0, depth * indent)) + "+ SUBQUERY SEED ROW";
       }
@@ -1116,6 +1126,16 @@ public class CypherExecutionPlan {
       }
 
       @Override
+      public String getName() {
+        return "OptimizedMatchStep";
+      }
+
+      @Override
+      public String getType() {
+        return getName();
+      }
+
+      @Override
       public String prettyPrint(final int depth, final int indent) {
         return "  ".repeat(Math.max(0, depth * indent)) + "+ OPTIMIZED MATCH (physical operators)\n" +
             physicalPlan.explain();
@@ -1463,6 +1483,19 @@ public class CypherExecutionPlan {
           }
           consumed = true;
           return new IteratorResultSet(singleRow.iterator());
+        }
+
+        // Both sites that build this step produce the same thing - one dummy row for a statement whose
+        // expressions stand on their own - so they deliberately share a name and aggregate together in the
+        // profiler's per-step statistics.
+        @Override
+        public String getName() {
+          return "DummyRowStep";
+        }
+
+        @Override
+        public String getType() {
+          return getName();
         }
 
         @Override
@@ -3191,6 +3224,19 @@ public class CypherExecutionPlan {
           }
           consumed = true;
           return new IteratorResultSet(singleRow.iterator());
+        }
+
+        // Both sites that build this step produce the same thing - one dummy row for a statement whose
+        // expressions stand on their own - so they deliberately share a name and aggregate together in the
+        // profiler's per-step statistics.
+        @Override
+        public String getName() {
+          return "DummyRowStep";
+        }
+
+        @Override
+        public String getType() {
+          return getName();
         }
 
         @Override

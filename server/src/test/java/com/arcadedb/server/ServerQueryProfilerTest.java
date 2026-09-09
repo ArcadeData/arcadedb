@@ -35,7 +35,10 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -48,6 +51,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 class ServerQueryProfilerTest extends StaticBaseServerTest {
+  private static final String CONSISTENCY_QUERY = "UNWIND $data AS row"
+      + " MATCH (source:`Entity` {id: row.source_id})"
+      + " MATCH (target:`Entity` {id: row.target_id})"
+      + " MERGE (source)-[:`RELATES` {name: row.name}]->(target)";
+
   private ArcadeDBServer server;
 
   @BeforeEach
@@ -505,5 +513,143 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
       server.removeDatabase("profiler-pm-db1");
       server.removeDatabase("profiler-pm-db2");
     }
+  }
+
+  /**
+   * Issue #7291: the query total reported by the profiler must cover the whole engine execution, so it can never
+   * come out below the timings of the steps that ran inside it.
+   * <p>
+   * The wrapper that records the entry used to start its clock in its own constructor, which runs only after the
+   * engine call has returned. Everything a non-streaming plan does had already happened by then - and while the
+   * profiler is recording, an OpenCypher statement is always non-streaming, because the recorder asks for per-step
+   * timings and that routes the statement through the plan's profiling path, which drains it eagerly. The recorded
+   * total was therefore the cost of walking an already-materialized iterator: microseconds, next to step rows
+   * reporting seconds.
+   * <p>
+   * The assertions are relational rather than wall-clock bounds: the defect is an inconsistency between two numbers
+   * measured in the same run, so a GC pause moves both and cannot make this flake.
+   */
+  @Test
+  void queryTotalCoversTheStepsItContains() {
+    server.createDatabase("profiler-consistency-db", ComponentFile.MODE.READ_WRITE);
+    final ServerDatabase db = server.getDatabase("profiler-consistency-db");
+    try {
+      db.command("sql", "CREATE VERTEX TYPE Entity");
+      db.command("sql", "CREATE PROPERTY Entity.id STRING");
+      db.command("sql", "CREATE INDEX ON Entity (id) UNIQUE");
+      db.command("sql", "CREATE EDGE TYPE RELATES");
+      for (int i = 0; i < 20; i++)
+        db.command("sql", "INSERT INTO Entity SET id = '" + i + "'");
+
+      final List<Map<String, Object>> rows = new ArrayList<>();
+      for (int i = 0; i < 15; i++)
+        rows.add(Map.of("source_id", String.valueOf(i), "target_id", String.valueOf(i + 1), "name", "r" + i));
+      final Map<String, Object> params = Map.of("data", rows);
+
+      final ServerQueryProfiler profiler = server.getQueryProfiler();
+      profiler.start();
+      try {
+        for (int run = 0; run < 3; run++)
+          try (final ResultSet rs = db.command("cypher", CONSISTENCY_QUERY, params)) {
+            while (rs.hasNext())
+              rs.next();
+          }
+      } finally {
+        if (profiler.isRecording())
+          profiler.stop();
+      }
+
+      final JSONObject query = findQuery(profiler.getResults(), CONSISTENCY_QUERY);
+      assertThat(query).as("the profiled Cypher statement must be in the results").isNotNull();
+      assertThat(query.getInt("executionCount")).isEqualTo(3);
+
+      final JSONArray steps = query.getJSONArray("steps");
+      assertThat(steps.length()).as("the plan of a profiled Cypher statement must carry its steps").isGreaterThan(0);
+
+      double stepsTotalMs = 0;
+      double slowestStepMs = 0;
+      for (int i = 0; i < steps.length(); i++) {
+        final JSONObject step = steps.getJSONObject(i);
+
+        // A never-timed step reports the -1 "not calculated" sentinel; the aggregation must not sum it as a duration.
+        assertThat(step.getDouble("totalCostMs")).as("step %s total", step.getString("name")).isGreaterThanOrEqualTo(0);
+        assertThat(step.getDouble("minCostMs")).as("step %s min", step.getString("name")).isGreaterThanOrEqualTo(0);
+
+        // An anonymous step class has an empty simple name, which used to surface as a nameless row.
+        assertThat(step.getString("name")).as("every step row must be named").isNotBlank();
+
+        stepsTotalMs += step.getDouble("totalCostMs");
+        slowestStepMs = Math.max(slowestStepMs, step.getDouble("maxCostMs"));
+      }
+
+      assertThat(stepsTotalMs).as("the profiled run must have timed at least one step").isGreaterThan(0);
+
+      // The reported inconsistency, expressed exactly: the engine total is the wall time of the executions the steps
+      // ran inside, so it cannot be smaller than what those steps spent.
+      assertThat(query.getDouble("engineTotalTimeMs")).as("engine total vs. summed step cost").isGreaterThanOrEqualTo(stepsTotalMs);
+      assertThat(query.getDouble("totalTimeMs")).as("query total vs. summed step cost").isGreaterThanOrEqualTo(stepsTotalMs);
+      assertThat(query.getDouble("maxTimeMs")).as("slowest execution vs. slowest step").isGreaterThanOrEqualTo(slowestStepMs);
+    } finally {
+      db.getEmbedded().drop();
+      server.removeDatabase("profiler-consistency-db");
+    }
+  }
+
+  /**
+   * Issue #7291: a step the engine never timed reports cost -1 ("not calculated"). Summing that sentinel as a
+   * duration produced negative step costs, so it is excluded from the statistics while still being counted as an
+   * occurrence. A step whose class is anonymous has an empty simple name and must not surface as a nameless row.
+   */
+  @Test
+  void untimedAndUnnamedStepsAreReportedHonestly() {
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+    profiler.start();
+
+    final JSONObject plan = new JSONObject();
+    plan.put("steps", new JSONArray()
+        .put(new JSONObject().put("name", "TimedStep").put("cost", 4_000_000L))
+        .put(new JSONObject().put("name", "UntimedStep").put("cost", -1L))
+        .put(new JSONObject().put("name", "NoCostStep"))
+        .put(new JSONObject().put("name", "").put("cost", -1L)));
+
+    profiler.recordQuery("testdb", "sql", "SELECT FROM Person", 10_000_000L, plan);
+
+    final JSONArray steps = findQuery(profiler.stop(), "SELECT FROM Person").getJSONArray("steps");
+
+    final JSONObject timed = findStep(steps, "TimedStep");
+    assertThat(timed.getInt("executionCount")).isEqualTo(1);
+    assertThat(timed.getInt("measuredCount")).isEqualTo(1);
+    assertThat(timed.getDouble("totalCostMs")).isEqualTo(4.0);
+
+    final JSONObject untimed = findStep(steps, "UntimedStep");
+    assertThat(untimed.getInt("executionCount")).isEqualTo(1);
+    assertThat(untimed.getInt("measuredCount")).isEqualTo(0);
+    assertThat(untimed.getDouble("totalCostMs")).isEqualTo(0.0);
+    assertThat(untimed.getDouble("minCostMs")).isEqualTo(0.0);
+    assertThat(untimed.getDouble("p99CostMs")).isEqualTo(0.0);
+
+    // A plan that omits the field entirely is untimed too, not a step that measurably took no time at all.
+    final JSONObject noCost = findStep(steps, "NoCostStep");
+    assertThat(noCost.getInt("measuredCount")).isEqualTo(0);
+    assertThat(noCost.getDouble("totalCostMs")).isEqualTo(0.0);
+
+    assertThat(findStep(steps, "unknown")).as("a blank step name must be labelled, not left empty").isNotNull();
+  }
+
+  private static JSONObject findQuery(final JSONObject results, final String queryText) {
+    final JSONArray queries = results.getJSONArray("queries");
+    for (int i = 0; i < queries.length(); i++) {
+      final JSONObject query = queries.getJSONObject(i);
+      if (ServerQueryProfiler.normalizeQuery(queryText).equals(ServerQueryProfiler.normalizeQuery(query.getString("queryText"))))
+        return query;
+    }
+    return null;
+  }
+
+  private static JSONObject findStep(final JSONArray steps, final String name) {
+    for (int i = 0; i < steps.length(); i++)
+      if (name.equals(steps.getJSONObject(i).getString("name")))
+        return steps.getJSONObject(i);
+    return null;
   }
 }
