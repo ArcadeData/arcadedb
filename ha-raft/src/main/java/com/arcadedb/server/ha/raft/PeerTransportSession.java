@@ -87,6 +87,12 @@ final class PeerTransportSession {
    * Marks this transport revoked. Idempotent, and the return value is what keeps a repeated reconciliation from
    * logging - and re-walking the call set of - a transport that was already cut.
    * <p>
+   * The {@code synchronized} makes the check-and-set atomic in this object rather than in its caller. It buys
+   * nothing today: {@code grep -rn "\.revoke()" ha-raft/src} finds one caller,
+   * {@code PeerAddressAllowlistFilter.doResolve()}, which already runs under that filter's monitor. It is here so
+   * that the guarantee this method's return value advertises belongs to this method, and a second caller does not
+   * have to discover that it was really the filter's lock all along.
+   * <p>
    * <b>Revocation is terminal for this transport, deliberately.</b> Nothing un-revokes a session when its address
    * becomes admissible again, so a peer whose name resolved elsewhere for one tick reconnects rather than resuming
    * on the connection it had - which Ratis does on its own, and which the allowlist then admits normally. The

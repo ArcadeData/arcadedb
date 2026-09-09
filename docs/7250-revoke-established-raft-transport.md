@@ -239,3 +239,15 @@ read is static and CI is what confirms the suite. Three nits, all addressed:
 | The `arcadedb.ha.peerAllowlist.enabled` text reads awkwardly ("what an already established connection of its could still do"). | **Applied** - rewritten to "loses the reach an already-established connection still gave it". |
 | `getSessions()` returns an unmodifiable *view*, not a snapshot, so it still reflects concurrent change. | **Applied** - returns `Set.copyOf(sessions)`. The existing `theSessionSetIsNotExposedForMutation` still holds, since a copy is immutable too. |
 | The per-RPC wrapper and set add/remove apply to all inter-node Raft traffic; worth checking it does not add up under connection churn. | **Argued, with one change.** The interceptor adds three short-lived allocations per RPC on a gated transport: the `RevocableServerCall`, the forwarding listener, and the set node. gRPC allocates strictly more than that per RPC on its own - a `ServerCallImpl`, the `Metadata`, the stream and the listener chain - so the marginal cost is a fraction of a baseline the RPC already pays, and it is proportional to RPCs rather than to bytes or log entries, so a busy follower does not pay more per entry. That is a reasoning argument, not a measurement: no benchmark was run, and the doc says so rather than claiming one. The one thing worth changing was unrelated to the wrapper - the per-session live-call set defaulted to 16 slots for a connection that has a handful of RPCs in flight, and is now sized 4. |
+
+### Cycle 2 - `d728df1`
+
+`claude` reviewed again and found **no blocking issues** and no coverage gap; it traced the same concurrency paths
+and confirmed the cycle-1 changes. Static read again - it could not run Maven either. Two notes, both about
+comments rather than behaviour, and both applied:
+
+| Note | Disposition |
+|---|---|
+| `resolveIfStale`'s early return skips `dispatchRevocations()` as well as the resolution. Correct once traced - the thread that short-circuits enqueued nothing, and the one that ran `doResolve()` dispatches - but it is a genuine asymmetry with the other three dispatch sites and a later edit could break it silently. | **Applied** - the method now carries a javadoc paragraph stating why the early return is not a dropped revocation, and naming the two edits that would make it one. |
+| `PeerTransportSession.revoke()` is `synchronized` although its only caller already holds the filter's monitor, so the keyword is currently redundant and could suggest that is where the sweep's safety lives. | **Applied as a comment, not a removal.** Verified the claim - `grep -rn "\.revoke()" ha-raft/src` finds exactly one caller, `doResolve()`. Kept, because the return value is a promise this method makes and it should be this method that keeps it; the javadoc now says the keyword buys nothing today and why it is there anyway. |
+| Per-RPC cost is reasoned rather than measured; the concurrent register/revoke race is correct-by-construction rather than tested. | **No change** - both were already stated as such here rather than implied, which is what the review was acknowledging. |

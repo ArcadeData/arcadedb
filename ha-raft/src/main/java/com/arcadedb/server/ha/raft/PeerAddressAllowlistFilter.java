@@ -517,7 +517,16 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     return Math.min(refreshIntervalMs, MISS_RESOLVE_FLOOR_MS);
   }
 
-  /** Re-resolves only if at least {@code floor} ms have elapsed since the last resolution. */
+  /**
+   * Re-resolves only if at least {@code floor} ms have elapsed since the last resolution.
+   * <p>
+   * The early return below skips {@link #dispatchRevocations()} as well as the resolution, which is deliberate and
+   * is the one asymmetry with this class's other three dispatch sites: a thread that finds the resolution still
+   * fresh performed none, so it has enqueued nothing, and the thread that actually ran {@code doResolve()} falls
+   * through the block and dispatches whatever that resolution revoked. Returning without dispatching is therefore
+   * not a dropped revocation - but moving the dispatch inside the synchronized block, or adding a second early
+   * return above it, would make it one.
+   */
   private void resolveIfStale(final long floor) {
     synchronized (this) {
       if (clock.getAsLong() - lastResolveMs < floor)
