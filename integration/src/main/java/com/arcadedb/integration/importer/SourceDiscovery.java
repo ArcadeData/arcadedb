@@ -639,10 +639,12 @@ public class SourceDiscovery {
       throws IOException {
     char currentChar = parser.getCurrentChar();
     if (currentChar == '<' || currentChar == '_') {
-      // READ THE FIRST LINE, KEEPING THE TAG BOOKKEEPING THE XML ARM BELOW NEEDS. THE LINE ITSELF IS KEPT TOO,
-      // BECAUSE THE RDF ARM DECIDES ON THE SHAPE OF THE WHOLE STATEMENT AND NOT ON THE CHARACTERS BETWEEN ITS TERMS
-      int beginTag = currentChar == '<' ? 1 : 0;
-      int endTag = 0;
+      // READ THE FIRST LINE, COUNTING THE CHARACTERS THAT FALL OUTSIDE <...> - WHICH IS ALL THE XML ARM BELOW
+      // NEEDS. THE LINE ITSELF IS KEPT TOO, BECAUSE THE RDF ARM DECIDES ON THE SHAPE OF THE WHOLE STATEMENT AND
+      // NOT ON THE CHARACTERS BETWEEN ITS TERMS.
+      // THE OPEN/CLOSE TAG COUNTERS THAT USED TO BE KEPT HERE WERE READ BY ONE CONDITION ONLY - THE RDF ARM'S
+      // `beginTag == endTag` - AND THE SHAPE TEST THAT REPLACED IT DOES NOT NEED THEM: A LINE WITH UNBALANCED
+      // BRACKETS FAILS `endOfIri` ANYWAY, AND STRICTLY, SINCE THE COUNTS BALANCE FOR AN XML ELEMENT TOO
       boolean insideTag = currentChar == '<';
       final List<Character> delimiters = new ArrayList<>();
       final StringBuilder line = new StringBuilder(128).append(currentChar);
@@ -651,15 +653,12 @@ public class SourceDiscovery {
         line.append(c);
 
         if (insideTag) {
-          if (c == '>') {
-            endTag++;
+          if (c == '>')
             insideTag = false;
-          }
         } else {
-          if (c == '<') {
-            beginTag++;
+          if (c == '<')
             insideTag = true;
-          } else
+          else
             delimiters.add(c);
         }
       }
