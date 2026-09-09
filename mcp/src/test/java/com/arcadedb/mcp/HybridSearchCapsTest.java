@@ -19,7 +19,7 @@
 package com.arcadedb.mcp;
 
 import com.arcadedb.mcp.tools.HybridSearchTool;
-import com.arcadedb.mcp.tools.MCPVectorLeg;
+import com.arcadedb.server.vector.VectorLeg;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,7 +39,7 @@ class HybridSearchCapsTest {
 
   @Test
   void legLimitIsBoundedRegardlessOfK() {
-    assertThat(HybridSearchTool.legLimit(MCPVectorLeg.MAX_K))
+    assertThat(HybridSearchTool.legLimit(VectorLeg.MAX_K))
         .isEqualTo(HybridSearchTool.MAX_LEG_CANDIDATES);
     // The multiplication must not overflow into a negative or tiny limit at the top of the range.
     assertThat(HybridSearchTool.legLimit(Integer.MAX_VALUE))

@@ -47,8 +47,13 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -69,6 +74,13 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase {
+  /**
+   * Media type of the HTTP streaming query encoding (issue #7306), sent in {@code Accept} to select it. The
+   * server keeps answering the buffered {@code application/json} body to anything else, which is what let this
+   * be added without changing a single existing response.
+   */
+  public static final String NDJSON_CONTENT_TYPE = "application/x-ndjson";
+
   public static final String ARCADEDB_SESSION_ID = "arcadedb-session-id";
 
   private final    String                               databaseName;
@@ -666,6 +678,196 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("command", language, command, params, false,
         (connection, response) -> createResultSet(response));
+  }
+
+  /**
+   * Runs a query and returns a {@link ResultSet} that reads the rows off the connection as they arrive, instead
+   * of the buffered {@link #query(String, String, Map)}, which waits for the server to serialize the entire
+   * result before it can return anything (issue #7306).
+   * <p>
+   * Both ends are streamed: the server holds one row at a time while it writes, and this driver holds one row at
+   * a time while it reads. That is a memory property, not only a latency one - it is what makes a result larger
+   * than either heap iterable at all.
+   * <p>
+   * The returned {@link ResultSet} owns an open HTTP connection until it is exhausted or closed, so it belongs in
+   * a try-with-resources. It is also single-pass: {@code reset()} is not supported, and the rows are gone once
+   * read. A caller that needs the whole result in memory, or the {@code explain} / {@code stats} envelope
+   * properties, wants {@link #query(String, String, Map)} instead - which is unchanged.
+   *
+   * @param params named parameters, or an empty map
+   *
+   * @throws RemoteException if the server answers anything other than 200, or the stream ends without its
+   *                         trailer
+   */
+  public ResultSet queryStream(final String language, final String query, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    stats.queries.incrementAndGet();
+    return streamingCommand("query", language, query, params);
+  }
+
+  /**
+   * Positional-parameter form of {@link #queryStream(String, String, Map)}.
+   */
+  public ResultSet queryStream(final String language, final String query, final Object... args) {
+    return queryStream(language, query, mapArgs(args));
+  }
+
+  /**
+   * Streaming counterpart of {@link #command(String, String, Map)}, for a command whose result is a row stream
+   * too large to buffer. Same contract and same caveats as {@link #queryStream(String, String, Map)}.
+   */
+  public ResultSet commandStream(final String language, final String command, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    stats.commands.incrementAndGet();
+    return streamingCommand("command", language, command, params);
+  }
+
+  /**
+   * kNN search over a dense {@code LSM_VECTOR} or sparse {@code LSM_SPARSE_VECTOR} index (issue #7306).
+   * <p>
+   * The request and response shapes, and every bound the server enforces on them, are documented under
+   * {@code POST /api/v1/vector/{database}/search} in the OpenAPI document, and are shared with the gRPC
+   * {@code VectorSearch} RPC and the MCP {@code vector_search} tool. ArcadeDB does not generate embeddings: the
+   * caller supplies {@code queryVector}.
+   *
+   * @param request at least {@code indexName}, {@code queryVector} and {@code k}
+   *
+   * @return the server's response object, carrying {@code results} plus the {@code scoring}, {@code count} and
+   *         {@code truncated} accounting
+   */
+  public JSONObject vectorSearch(final JSONObject request) {
+    return vectorOperation("search", request);
+  }
+
+  /**
+   * Fused vector + full-text + graph-expansion search, documented under
+   * {@code POST /api/v1/vector/{database}/hybrid}. Same sharing as {@link #vectorSearch(JSONObject)}.
+   *
+   * @param request at least {@code vectorIndexName}, {@code queryVector} and {@code k}
+   */
+  public JSONObject hybridSearch(final JSONObject request) {
+    return vectorOperation("hybrid", request);
+  }
+
+  /**
+   * Full-text search over a {@code FULL_TEXT} index, documented under
+   * {@code POST /api/v1/vector/{database}/fulltext}. Same sharing as {@link #vectorSearch(JSONObject)}.
+   *
+   * @param request at least {@code queryText}, plus {@code indexName} or {@code typeName} to address the index
+   */
+  public JSONObject fullTextSearch(final JSONObject request) {
+    return vectorOperation("fulltext", request);
+  }
+
+  private JSONObject vectorOperation(final String operation, final JSONObject request) {
+    checkDatabaseIsOpen();
+    if (request == null)
+      throw new IllegalArgumentException("The search request cannot be null");
+    stats.queries.incrementAndGet();
+
+    try {
+      final HttpRequest httpRequest = addReadConsistencyHeaders(createRequestBuilder("POST",
+          getUrl("vector/" + databaseName + "/" + operation)))
+          .method("POST", HttpRequest.BodyPublishers.ofString(request.toString()))
+          .header("Content-Type", "application/json")
+          .build();
+
+      // Through the same watchdog every other request uses, so a server that accepts the connection and then
+      // stops answering is bounded by the configured timeout rather than by the JDK's default of none.
+      final HttpResponse<String> response = sendWithWatchdog(httpRequest);
+      if (response.statusCode() != 200)
+        throw asRuntime(manageException(response, "vector " + operation), "vector " + operation);
+
+      return new JSONObject(response.body());
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RemoteException("Request interrupted", e);
+    } catch (final RemoteException | ArcadeDBException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new RemoteException("Error on executing vector " + operation, e);
+    }
+  }
+
+  /**
+   * Rethrows what {@link #manageException} mapped a failed response onto, unchanged when it is already an
+   * unchecked exception. Unchanged is the point: the mapping reconstructs the engine's own exception type and
+   * carries the server's explanation in its message, and re-wrapping it would hide both behind a generic
+   * "error on executing" - which is exactly what makes a bound crossed on one surface unreadable on another.
+   * This mirrors what the buffered {@code httpCommand} path does with the same value.
+   */
+  private static RuntimeException asRuntime(final Exception mapped, final String operation) {
+    if (mapped instanceof final RuntimeException runtime)
+      return runtime;
+    return new RemoteException("Error on executing " + operation, mapped);
+  }
+
+  /**
+   * Issues one query/command and hands back its NDJSON body as a lazily-read {@link ResultSet}.
+   * <p>
+   * Deliberately a single attempt against the currently selected server, unlike the buffered
+   * {@code httpCommand} path with its failover loop: a stream cannot be replayed once bytes have been delivered,
+   * and silently re-running a command on a second server after the first one failed mid-stream would hand the
+   * caller two partial results glued together. A failure before the stream starts still surfaces as a
+   * {@link RemoteException} naming the cause, which is what a caller can act on.
+   */
+  private ResultSet streamingCommand(final String operation, final String language, final String command,
+      final Map<String, Object> params) {
+    final JSONObject jsonRequest = new JSONObject();
+    if (language != null)
+      jsonRequest.put("language", language);
+    jsonRequest.put("command", command);
+    jsonRequest.put("serializer", "record");
+    // Same opt-in the buffered path makes (issue #5812): this driver rebuilds the exact Java type of a
+    // projection/aggregate column from the @props hint, so it has to ask for it.
+    jsonRequest.put("typeHints", true);
+    jsonRequest.put("retries", txRetries);
+    final Integer maxRows = getMaxResultRows();
+    if (maxRows != null)
+      jsonRequest.put("limit", maxRows);
+    if (params != null && !params.isEmpty())
+      jsonRequest.put("params", new JSONObject(params));
+
+    InputStream body = null;
+    try {
+      final HttpRequest request = addReadConsistencyHeaders(
+          createRequestBuilder("POST", getUrl(operation + "/" + databaseName)))
+          .method("POST", HttpRequest.BodyPublishers.ofString(jsonRequest.toString()))
+          .header("Content-Type", "application/json")
+          .header("Accept", NDJSON_CONTENT_TYPE)
+          .build();
+
+      final HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+      body = response.body();
+
+      if (response.statusCode() != 200) {
+        // The failure body is small and already complete: read it so the standard error mapping can name the
+        // exception type, exactly as the buffered path does.
+        final String errorBody = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+        body.close();
+        body = null;
+        throw asRuntime(manageException(response.statusCode(), errorBody, command), "streamed " + operation);
+      }
+
+      final BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8));
+      body = null; // ownership passes to the ResultSet, which closes it
+      return new RemoteStreamingResultSet(reader, this::json2Result, maxRows == null);
+
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RemoteException("Request interrupted", e);
+    } catch (final RemoteException | ArcadeDBException e) {
+      throw e;
+    } catch (final IOException e) {
+      throw new RemoteException("Error on executing streamed " + operation, e);
+    } finally {
+      if (body != null)
+        try {
+          body.close();
+        } catch (final IOException ignored) {
+          // Nothing left to do: the request already failed, and the connection is being discarded anyway.
+        }
+    }
   }
 
   public Database.TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {

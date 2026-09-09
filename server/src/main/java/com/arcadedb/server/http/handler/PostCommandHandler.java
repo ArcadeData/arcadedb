@@ -167,6 +167,18 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // Issue #5812: off unless the caller explicitly asks for the @props type hint on non-element rows.
     final boolean includeTypeHints = requestMap.get("typeHints") instanceof Boolean b && b;
 
+    // Negotiated up front (issue #7306) so a request the stream cannot express is refused before the command
+    // runs rather than after. A streamed response is rows and a trailer: the buffered envelope's 'explain',
+    // 'explainPlan', 'stats' and 'profile' properties have nowhere to go in it, and silently dropping the one
+    // the caller explicitly asked for would be worse than saying so.
+    final boolean streaming = isNdJsonRequested(exchange);
+    if (streaming) {
+      ndJsonRowSerializer(serializer, includeTypeHints);
+      if (profileExecution != null)
+        throw new IllegalArgumentException("'profileExecution' reports the plan and the timings in the response "
+            + "envelope, which the streaming encoding does not have: request it with 'Accept: application/json'");
+    }
+
     if (command == null || command.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
 
@@ -254,6 +266,14 @@ public class PostCommandHandler extends AbstractQueryHandler {
         final int limit = resolveLimit(requestLimit, planLimit);
         final SerializationOutcome outcome;
 
+        if (streaming && qResult instanceof ExplainResultSet)
+          // The same rule as the 'profileExecution' refusal above, for the spelling that carries no request
+          // field: EXPLAIN returns no rows at all, so streaming it would be an empty stream that told the
+          // caller nothing about the plan it asked for. Checked here because only the result set says so - the
+          // statement can be nested in a script.
+          throw new IllegalArgumentException("EXPLAIN produces a plan, not a row stream: request it with "
+              + "'Accept: application/json'");
+
         if (qResult instanceof ExplainResultSet) {
           // EXPLAIN (or SQL PROFILE): extract plan, then drain the single record
           // so serializeResultSet produces an empty result structure
@@ -286,6 +306,21 @@ public class PostCommandHandler extends AbstractQueryHandler {
           profile.addEngineNanos(System.nanoTime() - engineStart);
 
           final long serializationStart = System.nanoTime();
+          if (streaming) {
+            // Streamed responses carry the rows and the stats trailer only: 'stats', 'explain' and 'explainPlan'
+            // below are properties of the buffered envelope, which no longer exists here. A caller that wants
+            // them asks for the buffered encoding, where nothing changed.
+            outcome = streamResultSetAsNdJson(exchange, database, serializer, limit, maxResultRows, qResult,
+                includeTypeHints);
+            profile.addSerializationNanos(System.nanoTime() - serializationStart);
+            logIfTruncatedByDefault(database.getName(), originalCommand, limit, requestLimit, planLimit, outcome);
+
+            Metrics.counter("http.command").increment();
+            recordProfilerMetrics("http.command", profile);
+            recordServerProfile(database.getName(), language, command, profile, qResult);
+            return null;
+          }
+
           outcome = serializeResultSetBounded(database, serializer, limit, maxResultRows, response, qResult,
               includeTypeHints);
 
