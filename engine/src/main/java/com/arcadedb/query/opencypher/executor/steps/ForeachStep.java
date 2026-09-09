@@ -310,6 +310,16 @@ public class ForeachStep extends AbstractExecutionStep {
       }
 
       @Override
+      public String getName() {
+        return "ForeachInputStep";
+      }
+
+      @Override
+      public String getType() {
+        return getName();
+      }
+
+      @Override
       public String prettyPrint(final int depth, final int indent) {
         return "  ".repeat(Math.max(0, depth * indent)) + "+ FOREACH INPUT";
       }

@@ -100,6 +100,8 @@ public interface ExecutionStepInternal extends ExecutionStep {
       if (!name.isEmpty())
         return name;
     }
+    // Unreachable for any real step: the walk ends at Object, whose simple name is not empty. Kept so the method
+    // is total rather than relying on that being true of every classloader that ever produces a step class.
     return "ExecutionStep";
   }
 

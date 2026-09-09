@@ -130,6 +130,16 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
       private boolean executed = false;
 
       @Override
+      public String getName() {
+        return "NotMatchPatternInputStep";
+      }
+
+      @Override
+      public String getType() {
+        return getName();
+      }
+
+      @Override
       public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
         final InternalResultSet result = new InternalResultSet();
         if (!executed) {
