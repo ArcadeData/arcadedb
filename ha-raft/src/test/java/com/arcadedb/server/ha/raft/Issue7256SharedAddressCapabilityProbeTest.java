@@ -28,6 +28,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -204,6 +205,38 @@ class Issue7256SharedAddressCapabilityProbeTest {
         .as("an answer that names no peer cannot be credited to anyone")
         .isInstanceOf(IOException.class)
         .hasMessageContaining("names no peer");
+  }
+
+  /**
+   * Every unknown has a reason, including the one no failed probe produced. An advertisement that simply ages out
+   * means the leader stopped ASKING - a node that lost leadership and regained it has a window of exactly that
+   * shape, because {@code stopCapabilityMonitor} ends the refresh while the answers it took stay in the registry.
+   */
+  @Test
+  void everyKindOfUnknownReportsWhichKindItIs() {
+    final AtomicLong now = new AtomicLong(1_000_000L);
+    final PeerCapabilityRegistry registry = new PeerCapabilityRegistry(PeerCapabilityRegistry.ADVERTISEMENT_TTL_MS);
+    registry.setClock(now::get);
+
+    assertThat(registry.unknownReasonOf(PEER_A))
+        .as("a peer that was never asked about has nothing to explain")
+        .isNull();
+
+    registry.record(PEER_A, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1");
+    assertThat(registry.unknownReasonOf(PEER_A)).as("nor does one with a fresh answer").isNull();
+
+    now.addAndGet(PeerCapabilityRegistry.ADVERTISEMENT_TTL_MS + 1);
+    assertThat(registry.unknownReasonOf(PEER_A))
+        .as("an answer that aged out with no probe behind it is still a 'no', and now it says which 'no'")
+        .contains("older than");
+
+    registry.forget(PEER_A, "the probe failed");
+    assertThat(registry.unknownReasonOf(PEER_A))
+        .as("a recorded reason outranks the staleness note, being the more specific of the two")
+        .isEqualTo("the probe failed");
+
+    registry.record(PEER_A, Set.of(PeerCapabilities.SCHEMA_DELTA), "26.10.1");
+    assertThat(registry.unknownReasonOf(PEER_A)).as("and a fresh answer clears it").isNull();
   }
 
   private static PeerCapabilityQuery.Advertisement advertisement(final String peerId) {
