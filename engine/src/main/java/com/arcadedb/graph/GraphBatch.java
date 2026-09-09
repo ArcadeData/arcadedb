@@ -537,26 +537,31 @@ public class GraphBatch implements AutoCloseable {
    * actually asked so {@link #resumeIndexBackgroundMaintenance()} can lift exactly those.
    * <p>
    * A failure to suspend one index must not leave the batch half-suspended and must not fail the load either - the
-   * suspension is an optimization, not a correctness requirement - so whatever was taken before the failure is
-   * given straight back and the batch proceeds with none.
+   * suspension is an optimization, not a correctness requirement - so an index that cannot be asked is skipped and
+   * the rest are still suspended. Caught per index rather than around the loop for exactly that reason (PR #7360
+   * review): the cast is the failure this is most likely to see, and one {@code Index} that does not implement
+   * {@link IndexInternal} must not cost every OTHER index of the database its suspension.
+   * <p>
+   * The list is a snapshot. An index created while this batch is open runs its background maintenance as usual -
+   * an acceptable gap, since creating an index in the middle of a bulk load is not a shape worth complicating the
+   * lifetime of these suspensions for, and the maintenance it would do is over a corpus it has just been built on.
+   *
+   * @return the indexes actually suspended, empty when none was
    */
   private IndexInternal[] suspendIndexBackgroundMaintenance() {
     final Index[] all = database.getSchema().getIndexes();
     final IndexInternal[] suspended = new IndexInternal[all.length];
     int count = 0;
-    try {
-      for (final Index idx : all) {
+    for (final Index idx : all) {
+      try {
         final IndexInternal index = (IndexInternal) idx;
         index.suspendBackgroundMaintenance();
         suspended[count++] = index;
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "GraphBatch: could not suspend the background maintenance of index %s for the bulk load: %s", e,
+            idx.getName(), e.getMessage());
       }
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "GraphBatch: could not suspend the background maintenance of the indexes for the bulk load: %s", e,
-          e.getMessage());
-      for (int i = 0; i < count; i++)
-        resumeQuietly(suspended[i]);
-      return new IndexInternal[0];
     }
     return count == suspended.length ? suspended : Arrays.copyOf(suspended, count);
   }
@@ -576,6 +581,8 @@ public class GraphBatch implements AutoCloseable {
   /**
    * One index's resume, never allowed to throw: a batch on its way out must lift every OTHER suspension it holds
    * whatever one index does, and an index dropped mid-load is the ordinary way this fails.
+   *
+   * @param index the index to resume
    */
   private void resumeQuietly(final IndexInternal index) {
     try {
