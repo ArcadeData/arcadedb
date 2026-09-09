@@ -92,16 +92,17 @@ public final class PeerCapabilityQuery {
    * @param clusterToken   the inter-node cluster token, may be {@code null}/blank if not configured.
    * @param timeoutMs      per-request timeout in milliseconds.
    * @param server         the local server, used to read {@code arcadedb.ssl.enabled} and build the trust context.
+   * @param httpsClients   the caller's HTTPS client cache, used only when the HTTPS endpoint is the one dialled.
    *
    * @throws IOException          on transport error, a non-200 response (which is what a peer without this route
    *                              answers), or an advertisement that names another peer.
    * @throws InterruptedException if the calling thread is interrupted while waiting.
    */
   public static Advertisement fetch(final String expectedPeerId, final String httpAddr, final String httpsAddr,
-      final String clusterToken, final long timeoutMs, final ArcadeDBServer server)
-      throws IOException, InterruptedException {
+      final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
+      final TrustedHttpClientCache httpsClients) throws IOException, InterruptedException {
     return ask(Objects.requireNonNull(expectedPeerId, "expectedPeerId"), httpAddr, httpsAddr, clusterToken, timeoutMs,
-        server);
+        server, httpsClients);
   }
 
   /**
@@ -114,14 +115,14 @@ public final class PeerCapabilityQuery {
    * {@link #fetch}'s: same route, same authentication, same timeout, and a non-200 still means "no".
    */
   public static Advertisement fetchFromSharedEndpoint(final String httpAddr, final String httpsAddr,
-      final String clusterToken, final long timeoutMs, final ArcadeDBServer server)
-      throws IOException, InterruptedException {
-    return ask(null, httpAddr, httpsAddr, clusterToken, timeoutMs, server);
+      final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
+      final TrustedHttpClientCache httpsClients) throws IOException, InterruptedException {
+    return ask(null, httpAddr, httpsAddr, clusterToken, timeoutMs, server, httpsClients);
   }
 
   private static Advertisement ask(final String expectedPeerId, final String httpAddr, final String httpsAddr,
-      final String clusterToken, final long timeoutMs, final ArcadeDBServer server)
-      throws IOException, InterruptedException {
+      final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
+      final TrustedHttpClientCache httpsClients) throws IOException, InterruptedException {
 
     final boolean useSSL = server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final String url = chooseUrl(httpAddr, httpsAddr, useSSL);
@@ -149,16 +150,12 @@ public final class PeerCapabilityQuery {
     builder.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
     final HttpRequest request = builder.build();
 
-    if (url.startsWith("https://")) {
-      // A dedicated client carrying the cluster trust context, closed after the call - same reasoning as
-      // LeaderDatabaseQuery. This runs once per peer per refresh period, not on a hot path.
-      try (final HttpClient client = HttpClient.newBuilder()
-          .connectTimeout(Duration.ofSeconds(5))
-          .sslContext(SnapshotInstaller.buildSSLContext(server))
-          .build()) {
-        return parse(expectedPeerId, client.send(request, HttpResponse.BodyHandlers.ofString()), url);
-      }
-    }
+    if (url.startsWith("https://"))
+      // The client carrying the cluster trust context, built once per server and reused until its truststore
+      // changes (issue #7301). Owned by the caller rather than by this class, so several servers in one JVM - the
+      // shape every HA test takes - cannot invalidate and close each other's (issue #7314 review).
+      return parse(expectedPeerId, httpsClients.clientFor(server).send(request, HttpResponse.BodyHandlers.ofString()),
+          url);
     return parse(expectedPeerId, HTTP.send(request, HttpResponse.BodyHandlers.ofString()), url);
   }
 
