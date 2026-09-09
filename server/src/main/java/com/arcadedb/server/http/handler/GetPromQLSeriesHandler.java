@@ -121,16 +121,27 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
         // Reused across rows: the dedup key is built per row because that is what identifies the combination,
         // but the buffer it is built in need not be. The labels map is built only for a combination not seen
         // before, i.e. once per SERIES rather than once per sample (issue #7354).
+        //
+        // The visitor runs under the shard's read locks (see TimeSeriesRowVisitor): it folds, it does not compute
+        // and it never calls back into the engine.
         final StringBuilder key = new StringBuilder(64);
 
         engine.forEachRow(startMs, endMs, null, null, null, row -> {
           key.setLength(0);
-          key.append(vs.metricName());
+          // The metric name is length-prefixed for the same reason its tags are: two match[] patterns naming
+          // different metrics share this map.
+          key.append(vs.metricName().length()).append(':').append(vs.metricName());
           for (final int i : tagColumns)
-            if (i < row.length && row[i] != null)
-              // Separators no tag name or value realistically carries, so two different combinations cannot
-              // spell one key by concatenation
-              key.append('\u0000').append(columns.get(i).getName()).append('\u0001').append(row[i]);
+            if (i < row.length && row[i] != null) {
+              // LENGTH-PREFIXED, not separated by a character the value is assumed not to carry. A tag value is
+              // ingested from a remote-write client, so "realistically never contains this byte" is an assumption
+              // about somebody else's data; a length prefix makes the concatenation unambiguous whatever the
+              // value holds, and two distinct combinations cannot spell one key. Costs one int per tag.
+              final String name = columns.get(i).getName();
+              final String value = row[i].toString();
+              key.append(name.length()).append(':').append(name)
+                  .append(value.length()).append(':').append(value);
+            }
 
           final long timestamp = (long) row[0];
           final String combination = key.toString();

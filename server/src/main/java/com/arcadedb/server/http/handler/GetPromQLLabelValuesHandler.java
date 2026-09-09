@@ -98,6 +98,8 @@ public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
         // does not use at all. A Grafana datasource calls this to populate a label picker, on every dashboard load
         // and every variable refresh, so a type holding millions of samples used to allocate the whole series per
         // call. The rows still have to be READ, but they no longer have to be resident (issue #7354).
+        // The visitor runs under the shard's read locks (see TimeSeriesRowVisitor): it folds, it does not compute
+        // and it never calls back into the engine.
         final TimeSeriesEngine engine = tsType.getEngine();
         engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null, row -> {
           if (colIdx < row.length && row[colIdx] != null)
