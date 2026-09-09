@@ -87,19 +87,45 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
       return json.getString(attribute);
     }
 
+    /**
+     * "Not set" for a typed accessor: the attribute is absent, is an explicit JSON {@code null}, or
+     * is an empty string. The last of those is what {@link GraphImporter.RecordReader}'s default
+     * accessors have always meant by {@code !v.isEmpty()} and what {@code readProperty} means for a
+     * DATETIME since #7265 - an optional column a row leaves blank, the normal shape of a CSV export
+     * converted to JSONL. {@link JSONObject#isNull} alone is false for {@code ""}, so the empty
+     * string used to reach {@code getInt}/{@code getJSONArray} and end the whole import (#7269).
+     * <p>
+     * One predicate rather than the same test repeated in five overrides, which is how they drifted
+     * from the interface defaults in the first place.
+     * <p>
+     * Only an empty {@code String} counts. A JSON {@code 0}, {@code false} or {@code []} is a value
+     * in its own right, and a whitespace-only string is a data error, exactly as it is on every
+     * other source: {@code isEmpty()}, not {@code isBlank()}, is what the defaults test.
+     * <p>
+     * One map lookup, not the three an {@code isNull()} pre-check would cost on the row loop:
+     * {@code opt()} is already {@code null} for an absent attribute and for an explicit JSON null
+     * alike, because {@code JSONObject.elementToObject} screens {@code JsonNull.INSTANCE} - and
+     * {@code json} here only ever holds the {@code new JSONObject(line)} the parser built, so that
+     * screen is by the same singleton GSON parses a null into. {@link #get} relies on it already.
+     */
+    private boolean notSet(final String attribute) {
+      final Object value = json.opt(attribute);
+      return value == null || (value instanceof String text && text.isEmpty());
+    }
+
     @Override
     public int getInt(final String attribute) {
-      return json.isNull(attribute) ? 0 : json.getInt(attribute);
+      return notSet(attribute) ? 0 : json.getInt(attribute);
     }
 
     @Override
     public long getLong(final String attribute) {
-      return json.isNull(attribute) ? 0L : json.getLong(attribute);
+      return notSet(attribute) ? 0L : json.getLong(attribute);
     }
 
     @Override
     public double getDouble(final String attribute) {
-      return json.isNull(attribute) ? 0.0 : json.getDouble(attribute);
+      return notSet(attribute) ? 0.0 : json.getDouble(attribute);
     }
 
     /**
@@ -108,7 +134,7 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
      */
     @Override
     public float[] getFloatArray(final String attribute) {
-      if (json.isNull(attribute))
+      if (notSet(attribute))
         return null;
       final JSONArray array = json.getJSONArray(attribute);
       final int length = array.length();
@@ -120,7 +146,7 @@ public class JsonlRowSource implements GraphImporter.RecordSource {
 
     @Override
     public List<Object> getList(final String attribute) {
-      return json.isNull(attribute) ? null : json.getJSONArray(attribute).toList();
+      return notSet(attribute) ? null : json.getJSONArray(attribute).toList();
     }
   }
 }
