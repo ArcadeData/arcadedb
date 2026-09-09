@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -79,6 +80,9 @@ public final class PeerCapabilityQuery {
 
   /** One-time warning that SSL is enabled but the probe fell back to plain HTTP for lack of an HTTPS address. */
   private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
+
+  /** The HTTPS client and the truststore it was built from; guarded by this class's monitor. */
+  private static TrustedClient trustedClient;
 
   private PeerCapabilityQuery() {
   }
@@ -149,17 +153,76 @@ public final class PeerCapabilityQuery {
     builder.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
     final HttpRequest request = builder.build();
 
-    if (url.startsWith("https://")) {
-      // A dedicated client carrying the cluster trust context, closed after the call - same reasoning as
-      // LeaderDatabaseQuery. This runs once per peer per refresh period, not on a hot path.
-      try (final HttpClient client = HttpClient.newBuilder()
-          .connectTimeout(Duration.ofSeconds(5))
-          .sslContext(SnapshotInstaller.buildSSLContext(server))
-          .build()) {
-        return parse(expectedPeerId, client.send(request, HttpResponse.BodyHandlers.ofString()), url);
-      }
-    }
+    if (url.startsWith("https://"))
+      return parse(expectedPeerId, trustedHttpClient(server).send(request, HttpResponse.BodyHandlers.ofString()), url);
     return parse(expectedPeerId, HTTP.send(request, HttpResponse.BodyHandlers.ofString()), url);
+  }
+
+  /**
+   * The client carrying the cluster trust context, built once and reused until the truststore changes
+   * (issue #7301).
+   * <p>
+   * This used to build a fresh {@code SSLContext} - a file read, a certificate-chain parse and an
+   * {@code SSLContext.init} - and a fresh {@link HttpClient} for every probe: once per peer, every
+   * {@link PeerCapabilityRegistry#REFRESH_PERIOD_MS}, for the whole life of the leadership. That is a steady,
+   * avoidable cost on every TLS-enabled cluster, and it also threw away the connection pool between rounds, so
+   * each probe paid a fresh TLS handshake as well.
+   * <p>
+   * Rebuilt when the truststore this node reads has changed: its path, its password, or the file's modification
+   * time or size. That is the condition an operator rotating a certificate actually produces, and it is checked
+   * per probe - the cost of the check is one {@code stat}, against a probe that is about to open a socket.
+   * <p>
+   * The old client is closed on a rebuild. {@link HttpClient#close()} is an orderly shutdown that waits for
+   * in-flight operations, and the one production caller - the capability fan-out - is sequential on a single
+   * scheduled thread, so nothing of its own is ever in flight here.
+   */
+  // @VisibleForTesting
+  static synchronized HttpClient trustedHttpClient(final ArcadeDBServer server) throws IOException {
+    final String storePath = server != null
+        ? server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE) : null;
+    final String storePassword = server != null
+        ? server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD) : null;
+
+    long lastModified = -1L;
+    long length = -1L;
+    if (storePath != null && !storePath.isBlank()) {
+      final File store = new File(storePath);
+      lastModified = store.lastModified();
+      length = store.length();
+    }
+
+    // The password is fingerprinted rather than kept: this cache only ever has to answer "did it change".
+    final TrustedClient current = new TrustedClient(storePath, storePassword == null ? 0 : storePassword.hashCode(),
+        lastModified, length, null);
+
+    final TrustedClient cached = trustedClient;
+    if (cached != null && cached.sameTrustMaterialAs(current))
+      return cached.client();
+
+    final HttpClient client = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(5))
+        .sslContext(SnapshotInstaller.buildSSLContext(server))
+        .build();
+    trustedClient = current.withClient(client);
+    if (cached != null) {
+      LogManager.instance().log(PeerCapabilityQuery.class, Level.FINE,
+          "The truststore backing the cluster capability probe changed; its HTTPS client was rebuilt");
+      cached.client().close();
+    }
+    return client;
+  }
+
+  /** The cached client and the trust material it was built from, so a rotation is noticed and nothing else is. */
+  private record TrustedClient(String storePath, int passwordFingerprint, long lastModified, long length,
+                               HttpClient client) {
+    private boolean sameTrustMaterialAs(final TrustedClient other) {
+      return Objects.equals(storePath, other.storePath) && passwordFingerprint == other.passwordFingerprint
+          && lastModified == other.lastModified && length == other.length;
+    }
+
+    private TrustedClient withClient(final HttpClient built) {
+      return new TrustedClient(storePath, passwordFingerprint, lastModified, length, built);
+    }
   }
 
   /**

@@ -217,12 +217,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // integration test can stand a node up that behaves like a build predating a section - which is the only way to
   // exercise a mixed-version cluster inside one JVM.
   private volatile Set<String>               advertisedCapabilities = PeerCapabilities.LOCAL;
-  // Last capability set logged per peer, so the refresh reports a CHANGE (first observation, a peer losing a
-  // capability, an advertisement expiring) instead of a line per peer per five seconds.
-  private final    Map<String, Set<String>>  lastLoggedCapabilities = new ConcurrentHashMap<>();
-  // Sentinel stored in lastLoggedCapabilities for a peer whose last probe FAILED, so a repeated failure is
-  // distinguishable from a first one by identity. Not a capability set anyone reads - only ever compared with ==.
-  private static final Set<String>           PROBE_FAILED = Set.of("<probe-failed>");
   // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728). One worker is
   // enough since at most one resync fires per replica per stall streak; a small bounded queue with a
   // caller-runs policy degrades to running on the lag-monitor thread under the (unlikely) burst.
@@ -3892,13 +3886,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * leader ships whole schema documents: correct, but it is the state the whole mechanism exists to leave, and a
    * leader that has just been elected is precisely when a burst of DDL tends to arrive.
    */
-  private void startCapabilityMonitor() {
+  // @VisibleForTesting - the invalidation below is asserted through this method, not through the field it clears
+  void startCapabilityMonitor() {
     if (capabilityMonitorExecutor != null)
       return;
     // A fresh term says nothing about what the peers can decode - a build does not change because an election
     // happened - but the advertisements were observed under the previous leadership and their timestamps are
-    // what the TTL is measured against, so they are re-asked immediately rather than inherited silently.
-    lastLoggedCapabilities.clear();
+    // what the TTL is measured against, so they are re-asked immediately rather than inherited silently. Until
+    // #7301 only the log-throttle shadow was cleared and the advertisements themselves were inherited, so a node
+    // that led again believed the previous term's answers - and could write an optional wire-format section on
+    // them - for the length of one refresh round.
+    peerCapabilities.clear();
     capabilityMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
       final Thread t = new Thread(r, "arcadedb-raft-capability-monitor");
       t.setDaemon(true);
@@ -3908,8 +3906,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         PeerCapabilityRegistry.REFRESH_PERIOD_MS, TimeUnit.MILLISECONDS);
   }
 
-  /** Stops the peer-capability refresh. Called when this node loses leadership. */
-  private void stopCapabilityMonitor() {
+  /**
+   * Stops the peer-capability refresh. Called when this node loses leadership.
+   * <p>
+   * The advertisements are deliberately left in place rather than dropped here: they age out on their own, and
+   * {@code unknownReasonOf} has a sentence for exactly that window. Whatever survives it is cleared the moment
+   * this node leads again, which is where the invalidation belongs (issue #7301).
+   */
+  // @VisibleForTesting
+  void stopCapabilityMonitor() {
     if (capabilityMonitorExecutor != null) {
       capabilityMonitorExecutor.shutdownNow();
       capabilityMonitorExecutor = null;
@@ -3944,8 +3949,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final List<String> peerIds = new ArrayList<>(peers.size());
       for (final RaftPeer peer : peers)
         peerIds.add(peer.getId().toString());
-      // Bound the map by the live configuration: a long-lived leader of a cluster that has added and removed
-      // peers must not accumulate their advertisements for its whole uptime.
+      // Bound the registry by the live configuration: a long-lived leader of a cluster that has added and removed
+      // peers must not accumulate their advertisements - nor what it last reported about them - for its whole
+      // uptime (issue #7301).
       peerCapabilities.retainOnly(peerIds);
 
       final String clusterToken = getClusterToken();
@@ -4060,23 +4066,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   private void recordPeerCapabilities(final String peerId, final PeerCapabilityQuery.Advertisement advertisement) {
-    peerCapabilities.record(peerId, advertisement.capabilities(), advertisement.version());
-    final Set<String> previous = lastLoggedCapabilities.put(peerId, Set.copyOf(advertisement.capabilities()));
-    if (!advertisement.capabilities().equals(previous))
+    if (peerCapabilities.record(peerId, advertisement.capabilities(), advertisement.version()))
       LogManager.instance().log(this, Level.INFO,
           "Peer '%s' (version %s) advertises the cluster capabilities %s", peerId, advertisement.version(),
           new TreeSet<>(advertisement.capabilities()));
   }
 
   private void forgetPeerCapabilities(final String peerId, final String reason) {
-    peerCapabilities.forget(peerId, reason);
     // Reported on the TRANSITION into the failed state and not once per refresh period: a peer that is
     // permanently on an older build is the steady state of a half-finished rolling upgrade, and a line every five
     // seconds about it would be noise. It is reported the FIRST time as well as on a regression from a known-good
     // answer, because "no peer ever answered" and "a peer stopped answering" are both things an operator who has
     // noticed their entries are not shrinking needs told - and the first of the two is otherwise completely
     // silent, which is the failure mode this whole issue is about.
-    if (lastLoggedCapabilities.put(peerId, PROBE_FAILED) != PROBE_FAILED)
+    // The registry answers that question, because the shadow map deciding it has to be pruned by whatever prunes
+    // the entry it shadows - held here, nothing pruned it, and a re-added peer's first advertisement was
+    // suppressed against what it said before it left (issue #7301).
+    if (peerCapabilities.forget(peerId, reason))
       LogManager.instance().log(this, Level.WARNING,
           "Peer '%s' does not advertise any cluster capability (%s); optional wire-format sections will not be "
               + "written to this cluster until it answers again", peerId, reason);

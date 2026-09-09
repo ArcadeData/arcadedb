@@ -35,6 +35,10 @@ import java.util.function.LongSupplier;
  * {@link PeerCapabilityQuery}), and this holds the answers with the timestamp at which each was observed. Keeping
  * the two apart is what lets every arm of the decision be pinned without a cluster - the arms that matter here
  * are the ones that are invisible when they misfire, exactly like {@code RaftReplicatedDatabase.baseIsUsable}.
+ * <p>
+ * It also owns what was last REPORTED about each peer, which is why {@link #record} and {@link #forget} answer a
+ * boolean: the caller logs a transition, and the shadow that decides what counts as one has to be dropped by the
+ * same call that drops the entry it shadows (issue #7301).
  *
  * <h2>Every unknown is a "no"</h2>
  *
@@ -81,7 +85,22 @@ public final class PeerCapabilityRegistry {
   public record Advertisement(Set<String> capabilities, String version, long observedAtMs) {
   }
 
+  /**
+   * Sentinel stored in {@link #lastReported} for a peer whose last probe FAILED, so a repeated failure is not a
+   * change and is not reported again. Never a real capability set: no advertisement can contain this token.
+   */
+  private static final Set<String> PROBE_FAILED = Set.of("<probe-failed>");
+
   private final ConcurrentHashMap<String, Advertisement> advertisements = new ConcurrentHashMap<>();
+
+  /**
+   * What was last REPORTED about each peer, so the caller logs a transition rather than a line per refresh round
+   * for a state that has not moved. Deliberately owned here rather than by the caller: it shadows
+   * {@link #advertisements} entry for entry, and when the caller held it separately nothing pruned it in
+   * {@link #retainOnly} - so a peer that was removed and later re-added had its first advertisement suppressed as
+   * "unchanged", which is the one advertisement an operator most wants to see (issue #7301).
+   */
+  private final ConcurrentHashMap<String, Set<String>>   lastReported   = new ConcurrentHashMap<>();
 
   /**
    * Why each currently-unknown peer is unknown, so the cluster-status endpoint can say it (issue #7256). Purely
@@ -111,23 +130,49 @@ public final class PeerCapabilityRegistry {
   /**
    * Records what {@code peerId} just answered. The capability set is copied and frozen, so a caller reusing its
    * parsing buffer cannot mutate a recorded answer.
+   *
+   * @return true when this answer differs from the last one reported for {@code peerId} - including the first
+   * answer of all, and the first after a removal - so the caller can log a transition rather than a line every
+   * refresh period for a state that has not moved.
    */
-  public void record(final String peerId, final Set<String> capabilities, final String version) {
-    advertisements.put(peerId, new Advertisement(Set.copyOf(capabilities), version, clock.getAsLong()));
+  public boolean record(final String peerId, final Set<String> capabilities, final String version) {
+    final Set<String> frozen = Set.copyOf(capabilities);
+    advertisements.put(peerId, new Advertisement(frozen, version, clock.getAsLong()));
     unknownReasons.remove(peerId);
+    return !frozen.equals(lastReported.put(peerId, frozen));
   }
 
   /**
    * Drops what was known about {@code peerId}, so it counts as incapable from the next question on. Called when a
    * probe fails: a peer that stopped answering may have been replaced by an older build, and continuing to
    * believe its last answer until the TTL runs out would be believing it for the wrong reason.
+   *
+   * @return true on the TRANSITION into the failed state, false while it persists. Reported the first time as
+   * well as on a regression from a known-good answer, because "no peer ever answered" and "a peer stopped
+   * answering" are both things an operator needs told.
    */
-  public void forget(final String peerId, final String reason) {
+  public boolean forget(final String peerId, final String reason) {
     advertisements.remove(peerId);
     if (reason == null)
       unknownReasons.remove(peerId);
     else
       unknownReasons.put(peerId, reason);
+    return lastReported.put(peerId, PROBE_FAILED) != PROBE_FAILED;
+  }
+
+  /**
+   * Forgets everything, with nothing left to report as unchanged. Called when this node ACQUIRES leadership
+   * (issue #7301): the advertisements in here were observed under a previous leadership term and their
+   * timestamps are what the TTL is measured against, so a node that leads again would otherwise believe the
+   * previous term's answers until its first refresh round completes - the one window in which an optional
+   * wire-format section could be written to a peer whose capabilities have not been re-confirmed. A build does
+   * not change because an election happened, so nothing here is lost that the first round does not restore; what
+   * is dropped is the entitlement to act on it before that round has run.
+   */
+  public void clear() {
+    advertisements.clear();
+    unknownReasons.clear();
+    lastReported.clear();
   }
 
   /**
@@ -164,6 +209,9 @@ public final class PeerCapabilityRegistry {
     final Set<String> retained = new LinkedHashSet<>(peerIds);
     advertisements.keySet().retainAll(retained);
     unknownReasons.keySet().retainAll(retained);
+    // The report shadow goes with them, or a re-added peer's first advertisement is suppressed as "unchanged"
+    // against what it said before it left (issue #7301).
+    lastReported.keySet().retainAll(retained);
   }
 
   /** {@code peerId}'s last answer if it is still within the TTL, {@code null} when unknown or expired. */
