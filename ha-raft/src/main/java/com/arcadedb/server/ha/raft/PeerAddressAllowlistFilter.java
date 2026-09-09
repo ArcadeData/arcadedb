@@ -381,19 +381,24 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
       // the host that no longer tracks it. On Kubernetes that address is also published by the pinned
       // headless-service domain for as long as the pod runs, so without this the resolution below re-adds it and
       // the revocation reported by the log line never happens (issue #7302).
+      final Set<String> droppedIps = new HashSet<>();
       for (final String host : dropped) {
         final Set<String> ips = lastKnownIps.get(host);
         if (ips != null)
-          revokedPinnedIps.addAll(ips);
+          droppedIps.addAll(ips);
       }
+      revokedPinnedIps.addAll(droppedIps);
       republishLearnedHosts();
       // Unconditional for the same reason learnPeerHosts is: this is a membership change, not the periodic
       // DNS churn the refresh floors exist to throttle. doResolve() rebuilds the allowed set from the tracked
       // hosts, which is what actually evicts a departed peer's addresses.
       doResolve();
       // Read after the resolution, which is what settles the set: an address no pinned host publishes needs no
-      // revoking and is dropped there, so the log line names what is actually being held back.
-      revoked = Set.copyOf(revokedPinnedIps);
+      // revoking and is dropped there, so the log line names what is actually being held back. Narrowed to THIS
+      // removal's addresses, because the line is about the hosts named beside them - reporting the whole
+      // revocation set would attribute an earlier removal's addresses to this one (PR #7314 review).
+      droppedIps.retainAll(revokedPinnedIps);
+      revoked = Set.copyOf(droppedIps);
     }
     if (!dropped.isEmpty())
       // The revoked addresses are named only when there are any, which on Kubernetes is where the revocation is
