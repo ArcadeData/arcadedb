@@ -34,14 +34,14 @@ import java.util.StringJoiner;
  */
 final class TimeSeriesHandlerUtils {
 
-  private TimeSeriesHandlerUtils() {
-  }
-
   /**
    * Longest caller-supplied value echoed back in the refusal below. The payload is already bounded by the HTTP
    * body-size limit, so this only keeps a long-but-legal string out of an error body that exists to be read.
    */
   private static final int MAX_ECHOED_VALUE_LENGTH = 64;
+
+  private TimeSeriesHandlerUtils() {
+  }
 
   /**
    * Resolves the aggregation function named by one {@code aggregation.requests[]} entry, matching the

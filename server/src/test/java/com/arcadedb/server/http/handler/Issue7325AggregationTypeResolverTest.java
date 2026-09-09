@@ -22,6 +22,8 @@ import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -42,7 +44,7 @@ class Issue7325AggregationTypeResolverTest {
   @Test
   void resolvesTheLowerCasedAndPaddedSpellingsAHandWrittenClientSends() {
     for (final AggregationType expected : AggregationType.values()) {
-      assertThat(TimeSeriesHandlerUtils.resolveAggregationType(request(expected.name().toLowerCase()), 0))
+      assertThat(TimeSeriesHandlerUtils.resolveAggregationType(request(expected.name().toLowerCase(Locale.ENGLISH)), 0))
           .isEqualTo(expected);
       assertThat(TimeSeriesHandlerUtils.resolveAggregationType(request("  " + expected.name() + "  "), 0))
           .isEqualTo(expected);

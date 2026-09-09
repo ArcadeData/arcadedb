@@ -211,3 +211,44 @@ What it produced:
 4. **Echoing the caller's value into an error body.** Both renderings build the body with `JSONObject`, so
    the value is escaped, and the echo is truncated to 64 characters. Not a finding, but the truncation is
    pinned by a test so it stays that way.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7343
+
+## Review cycles
+
+### Cycle 1 - `0360f11`
+
+The `claude` review traced the PR's claims against the code and confirmed each one (the mapper's
+`IllegalArgumentException` arm and the production concealment of `detail`, the declaration order of
+`AggregationType`, `opt` vs `getString` for the absent key, the tightly-scoped `try` blocks, the escaping of
+the echoed value). It raised three observations and marked all three explicitly non-blocking:
+
+1. `req.getString("field")` still throws unguarded, ahead of the new resolver call - the reviewer noted this
+   is scoped out and filed as #7340, and called that a reasonable boundary. **No change**: it is #7340.
+2. "is required and must be one of ..." reads oddly when a value was supplied - the reviewer wrote "not
+   asking for a change". **No change**: the wording mirrors the gRPC message the issue quotes, and the
+   `: received '<value>'` clause separates the two cases.
+3. `unknownAggregationType` passes a `null` cause when the field is absent - "harmless ... not worth a
+   change". **No change**: `IllegalArgumentException(message, null)` is equivalent to the single-argument
+   constructor, and one call site keeps the real cause.
+
+Nothing in the review was actionable, so no code changed in response to it. What did change in the follow-up
+commit came from CI rather than from the review:
+
+- **Codacy Static Code Analysis** reported `Issues Added 1` on this head. Scanning the added lines for the
+  patterns Codacy's Java rule set flags found exactly one candidate,
+  `expected.name().toLowerCase()` in the new unit test - a locale-less case conversion
+  (`UseLocaleWithCaseConversions`). Fixed to `toLowerCase(Locale.ENGLISH)`, matching the
+  `toUpperCase(Locale.ENGLISH)` the resolver itself already used.
+- `MAX_ECHOED_VALUE_LENGTH` was declared between the private constructor and the first method; moved to the
+  top of the class, where a field declaration belongs.
+
+The reviewer also asked that CI be confirmed green before merge, since the two endpoint ITs run only there.
+That is the developer's check at merge time, and it is the reason the "not run locally" note is in the PR
+body rather than buried here.
+
+## Final state
+
+`clean-approval` - one review cycle, no actionable review items, no deferred items.
