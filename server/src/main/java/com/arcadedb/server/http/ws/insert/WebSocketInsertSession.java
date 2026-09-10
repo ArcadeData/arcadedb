@@ -137,6 +137,12 @@ public class WebSocketInsertSession {
    * mirroring the gRPC path. A row that fails is counted in {@code failed} and described in {@code errors}; the
    * rest of the chunk still goes in, because a duplex session exists so the client can decide what to do about a
    * partial chunk rather than have the server decide by aborting.
+   * <p>
+   * Anything else - a sequence that skips ahead of the next one due - is REFUSED. A watermark that simply
+   * follows whatever arrives would jump to 5 when a client sent chunk 5 before chunk 2, and chunk 2 would then
+   * be acknowledged as a replay of something that never happened: every row it carried silently dropped, with a
+   * successful-looking answer. Chunks are therefore contiguous from 1, which a client sending them in order
+   * satisfies without doing anything, and a gap is an error rather than an undocumented hazard.
    */
   JSONObject applyChunk(final long chunkSeq, final JSONArray records) {
     lock.lock();
@@ -149,6 +155,11 @@ public class WebSocketInsertSession {
       ack.put("action", "batchAck");
       ack.put("sessionId", id);
       ack.put("chunkSeq", chunkSeq);
+
+      if (chunkSeq > watermark + 1)
+        throw new IllegalArgumentException(
+            "Chunk " + chunkSeq + " skips ahead: session '" + id + "' has applied up to chunk " + watermark
+                + " and expects " + (watermark + 1) + " next. Chunk sequences must be contiguous from 1");
 
       if (chunkSeq <= watermark) {
         ack.put("received", 0L);

@@ -330,6 +330,36 @@ class WebSocketInsertSessionIT extends BaseGraphServerTest {
     assertThat(database.countType("Person", false)).isEqualTo(2);
   }
 
+  /**
+   * A chunk that skips ahead of the next sequence due is refused. Letting the watermark follow whatever arrived
+   * would make the skipped chunk, when it finally lands, look like a replay of something that never happened -
+   * every row in it dropped, under a successful-looking answer.
+   */
+  @Test
+  void aChunkThatSkipsAheadIsRefusedAndTheSkippedOneStillLands() throws Throwable {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    try (final var client = newClient()) {
+      final String sessionId = new JSONObject(client.send(start(null, "Person", null))).getString("sessionId");
+
+      assertThat(new JSONObject(client.send(chunk(sessionId, 1, "one"))).getLong("inserted", -1)).isEqualTo(1);
+
+      final JSONObject skipped = new JSONObject(client.send(chunk(sessionId, 5, "five")));
+      assertThat(skipped.getString("result", "")).isEqualTo("error");
+      assertThat(skipped.getString("detail", "")).contains("skips ahead").contains("expects 2");
+
+      // The refusal left the watermark alone, so the chunk that was actually next still goes in rather than
+      // being acknowledged as a replay of the jump.
+      final JSONObject second = new JSONObject(client.send(chunk(sessionId, 2, "two")));
+      assertThat(second.getBoolean("replay", false)).isFalse();
+      assertThat(second.getLong("inserted", -1)).isEqualTo(1);
+
+      new JSONObject(client.send(control("commit", sessionId)));
+    }
+
+    assertThat(database.countType("Person", false)).isEqualTo(2);
+  }
+
   /** Vertices and edges travel through the same session; an edge names its endpoints with {@code @from}/{@code @to}. */
   @Test
   void verticesAndEdgesGoInThroughTheSameSession() throws Throwable {
