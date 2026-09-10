@@ -72,6 +72,12 @@ public class PostgresPortal {
    */
   public boolean                   catalogQuery         = false;
   /**
+   * Non-null when the statement is a {@code COPY ... TO STDOUT} (issue #7188): Describe answers {@code NoData},
+   * since a COPY returns no result set, and Execute streams the rows as {@code CopyData} instead of
+   * {@code DataRow}. {@link #sqlStatement} then holds the parsed query INSIDE the COPY.
+   */
+  public PostgresCopyStatement     copyStatement;
+  /**
    * The complete materialized result of this portal's statement (issue #6458), set once - by whichever of a
    * Describe('P') or the first Execute runs the statement first - and read by every Execute after that to
    * hand out {@code limit}-sized slices via {@link #resultCursor}. {@link #cachedResultSet} holds only the
@@ -130,6 +136,7 @@ public class PostgresPortal {
     portal.ignoreExecution = template.ignoreExecution;
     portal.isExpectingResult = template.isExpectingResult;
     portal.catalogQuery = template.catalogQuery;
+    portal.copyStatement = template.copyStatement;
     portal.executed = template.executed;
     portal.cachedResultSet = template.cachedResultSet;
     portal.columns = template.columns;

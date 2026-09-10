@@ -84,6 +84,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -398,6 +399,17 @@ public class PostgresNetworkExecutor extends Thread {
       return;
     }
 
+    if (portal.copyStatement != null) {
+      // A COPY returns no result set (issue #7188): a statement Describe still owes the parameter description, and
+      // both kinds answer NoData for the rows - the client reads those from the CopyData stream Execute sends.
+      if (type == 'S')
+        writeParameterDescription(portal);
+      else if (type != 'P')
+        throw new PostgresProtocolException("Unexpected describe type '" + type + "'");
+      writeNoData();
+      return;
+    }
+
     if (type == 'P') {
       // Every Describe is owed exactly one reply - RowDescription or NoData - and a client counting one reply
       // per request desynchronizes on anything else, so the three arms below are exhaustive by construction
@@ -585,7 +597,18 @@ public class PostgresNetworkExecutor extends Thread {
         // SAVEPOINT/RELEASE/ROLLBACK TO/SET never produce rows: Execute must answer CommandComplete, not
         // NoData - NoData ('n') is a Describe-only reply and is never a legal answer to Execute (issue #6930).
         writeCommandComplete(portal.query, 0);
-      else {
+      else if (portal.copyStatement != null) {
+        // COPY ... TO STDOUT (issue #7188): the rows go out as CopyData, and there is nothing to slice by the
+        // Execute row-limit - PostgreSQL ignores it for COPY too. A COPY portal runs once; PostgreSQL refuses to
+        // run a completed one again, and so does this.
+        if (portal.executed)
+          writeError(ERROR_SEVERITY.ERROR, "portal already executed: a COPY cannot be run twice", "34000");
+        else {
+          portal.executed = true;
+          final int rows = copyOut(portal.copyStatement, portal.language, getParams(portal), portal.sqlStatement, profile);
+          writeCommandComplete("COPY", rows);
+        }
+      } else {
         if (!portal.executed) {
           final long engineStart = System.nanoTime();
           final ResultSet resultSet = runPortalQuery(portal);
@@ -697,6 +720,9 @@ public class PostgresNetworkExecutor extends Thread {
           profile.addSerializationNanos(System.nanoTime() - serStart);
         }
       }
+    } catch (final PostgresCopyStatement.CopyException e) {
+      setErrorInTx();
+      writeError(ERROR_SEVERITY.ERROR, e.getMessage(), e.sqlState);
     } catch (final CommandParsingException e) {
       // The "Syntax error" wording assumes only genuine parse failures reach this arm, which holds because this
       // path runs an already-parsed statement and execution failures are CommandExecutionException. If a
@@ -766,6 +792,17 @@ public class PostgresNetworkExecutor extends Thread {
       profile.addDeserializationNanos(System.nanoTime() - deserStart);
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s ", query);
+
+      // COPY ... TO STDOUT is answered by the protocol itself (issue #7188): its rows travel as CopyData rather than
+      // DataRow, so it shares nothing below but the query inside it. Recognised ahead of everything else because
+      // "COPY" is no SQL production of this server, exactly like SET/SHOW.
+      if (PostgresCopyStatement.isCopy(query.query)) {
+        final PostgresCopyStatement copy = PostgresCopyStatement.parse(query.query);
+        final Statement inner = "sql".equalsIgnoreCase(query.language) ? parseStatement(copy.getQuery()) : null;
+        final int rows = copyOut(copy, query.language, NO_PARAMETERS, inner, profile);
+        writeCommandComplete("COPY", rows);
+        return;
+      }
 
       // Reused below for both the schema-fallback and the target-type resolution, but only set in the one
       // branch that reaches database.command(...) below: none of SET/SAVEPOINT/RELEASE/ROLLBACK TO/SHOW/a
@@ -837,6 +874,10 @@ public class PostgresNetworkExecutor extends Thread {
       writeCommandComplete(queryText, cachedResultSet.size());
       profile.addSerializationNanos(System.nanoTime() - serStart);
 
+    } catch (final PostgresCopyStatement.CopyException e) {
+      // A COPY this server declines is not a syntax error, and the message says what to do instead.
+      setErrorInTx();
+      writeError(ERROR_SEVERITY.ERROR, e.getMessage(), e.sqlState);
     } catch (final CommandParsingException e) {
       // See the note on the same arm in executeCommand about the "Syntax error" wording.
       setErrorInTx();
@@ -1790,51 +1831,7 @@ public class PostgresNetworkExecutor extends Thread {
       int colIndex = 0;
       for (final Map.Entry<String, PostgresType> postgresTypeEntry : columns.entrySet()) {
         final String propertyName = postgresTypeEntry.getKey();
-
-        Object value = switch (propertyName) {
-          case RID_PROPERTY -> row.isElement() ? row.getElement().get().getIdentity() : row.getProperty(propertyName);
-          case TYPE_PROPERTY -> row.isElement() ? row.getElement().get().getTypeName() : row.getProperty(propertyName);
-          case OUT_PROPERTY -> {
-            if (row.isElement()) {
-              final Document record = row.getElement().get();
-              if (record instanceof Vertex vertex)
-                yield vertex.countEdges(Vertex.DIRECTION.OUT, null);
-              else if (record instanceof Edge edge)
-                yield edge.getOut();
-            }
-            yield row.getProperty(propertyName);
-          }
-          case IN_PROPERTY -> {
-            if (row.isElement()) {
-              final Document record = row.getElement().get();
-              if (record instanceof Vertex vertex)
-                yield vertex.countEdges(Vertex.DIRECTION.IN, null);
-              else if (record instanceof Edge edge)
-                yield edge.getIn();
-            }
-            yield row.getProperty(propertyName);
-          }
-          case CAT_PROPERTY -> {
-            if (row.isElement()) {
-              final Document record = row.getElement().get();
-              if (record instanceof Vertex)
-                yield "v";
-              else if (record instanceof Edge)
-                yield "e";
-              else
-                yield "d";
-            }
-            yield row.getProperty(propertyName);
-          }
-          default -> {
-            Object v = row.getProperty(propertyName);
-            // When content map exists but doesn't have the property (e.g., OpenCypher RETURN n
-            // sets content with variable name but element has the actual properties), fall back to element
-            if (v == null && row.isElement())
-              v = row.getElement().get().get(propertyName);
-            yield v;
-          }
-        };
+        final Object value = columnValue(row, propertyName);
 
         final PostgresType columnType = postgresTypeEntry.getValue();
         if (effectiveResultFormat(resultFormats, colIndex++, columnType) == 1)
@@ -1867,6 +1864,229 @@ public class PostgresNetworkExecutor extends Thread {
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) data written (thread=%s)", resultSet.size(),
           Thread.currentThread().threadId());
+  }
+
+  /**
+   * The value a row carries for a column: the property of that name, or for the metadata columns ({@code @rid},
+   * {@code @type}, {@code @cat}, {@code @in}, {@code @out}) what the row's element answers. Shared by the
+   * {@code DataRow} writer and by {@code COPY ... TO STDOUT} (issue #7188), so the two encode the same value for
+   * the same column.
+   */
+  private static Object columnValue(final Result row, final String propertyName) {
+    return switch (propertyName) {
+      case RID_PROPERTY -> row.isElement() ? row.getElement().get().getIdentity() : row.getProperty(propertyName);
+      case TYPE_PROPERTY -> row.isElement() ? row.getElement().get().getTypeName() : row.getProperty(propertyName);
+      case OUT_PROPERTY -> {
+        if (row.isElement()) {
+          final Document record = row.getElement().get();
+          if (record instanceof Vertex vertex)
+            yield vertex.countEdges(Vertex.DIRECTION.OUT, null);
+          else if (record instanceof Edge edge)
+            yield edge.getOut();
+        }
+        yield row.getProperty(propertyName);
+      }
+      case IN_PROPERTY -> {
+        if (row.isElement()) {
+          final Document record = row.getElement().get();
+          if (record instanceof Vertex vertex)
+            yield vertex.countEdges(Vertex.DIRECTION.IN, null);
+          else if (record instanceof Edge edge)
+            yield edge.getIn();
+        }
+        yield row.getProperty(propertyName);
+      }
+      case CAT_PROPERTY -> {
+        if (row.isElement()) {
+          final Document record = row.getElement().get();
+          if (record instanceof Vertex)
+            yield "v";
+          else if (record instanceof Edge)
+            yield "e";
+          else
+            yield "d";
+        }
+        yield row.getProperty(propertyName);
+      }
+      default -> {
+        Object v = row.getProperty(propertyName);
+        // When content map exists but doesn't have the property (e.g., OpenCypher RETURN n
+        // sets content with variable name but element has the actual properties), fall back to element
+        if (v == null && row.isElement())
+          v = row.getElement().get().get(propertyName);
+        yield v;
+      }
+    };
+  }
+
+  // ---- COPY ... TO STDOUT (issue #7188) ----
+
+  /**
+   * The signature that opens a binary COPY stream ({@code PGCOPY\n\377\r\n\0}), followed on the wire by the
+   * int32 flags and the int32 header-extension length, both zero.
+   */
+  private static final byte[] COPY_BINARY_SIGNATURE = { 'P', 'G', 'C', 'O', 'P', 'Y', '\n', (byte) 0377, '\r', '\n', 0 };
+  /**
+   * How much CopyData is buffered before it is written to the socket: one write per row would cost a system call
+   * per row on a statement whose whole point is to move rows in bulk, and one write for the whole result would
+   * hold it all in memory.
+   */
+  private static final int    COPY_FLUSH_THRESHOLD  = 64 * 1024;
+
+  /**
+   * Runs a {@code COPY ... TO STDOUT} and streams its rows: {@code CopyOutResponse}, one {@code CopyData} per row
+   * (plus, in binary format, one for the header and one for the trailer), then {@code CopyDone}. The caller writes
+   * the {@code CommandComplete} that follows, tagged with the row count this returns.
+   * <p>
+   * The columns are fixed BEFORE the first row goes out, the way {@code RowDescription} fixes them for a query,
+   * and they are resolved the way {@code Describe('S')} resolves them for the query inside the COPY: the Arrow
+   * ADBC driver describes that statement first and decodes the binary stream by the OIDs the description promised,
+   * so the two have to agree. A statement the schema can describe is streamed - no row is held and the
+   * {@link GlobalConfiguration#POSTGRES_QUERY_MAX_ROWS} cap does not apply, which is what a bulk export is for;
+   * one it cannot describe (a schemaless type with no sample row, another language) is materialized within the
+   * same bound as a plain query, since only its rows can name its columns.
+   * <p>
+   * A failure after the {@code CopyOutResponse} has gone out is reported the way the protocol defines for copy-out
+   * mode: the caller's {@code ErrorResponse} ends the copy on the client, which discards what it received.
+   *
+   * @return the number of rows sent
+   */
+  private int copyOut(final PostgresCopyStatement copy, final String language, final Object[] parameters,
+      final Statement parsed, final QueryProfile profile) throws IOException {
+    final String queryText = copy.getQuery();
+    final long engineStart = System.nanoTime();
+
+    Map<String, PostgresType> columns = "sql".equalsIgnoreCase(language) ? getColumnsFromQuerySchema(queryText, parsed) : null;
+
+    final ResultSet resultSet;
+    if (parsed != null) {
+      final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
+      try {
+        resultSet = parsed.execute(database, parameters, createCommandContext());
+      } finally {
+        QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), language, "command");
+      }
+    } else
+      resultSet = database.command(language, queryText, server.getConfiguration(), parameters);
+
+    List<Result> buffered = null;
+    if (columns == null || columns.isEmpty()) {
+      buffered = browseAndCacheBoundedResultSet(resultSet);
+      columns = getColumns(buffered, resolveQueryTargetType(parsed), resolveAliasToSourceProperty(parsed));
+      if (columns.isEmpty() && buffered.isEmpty()) {
+        final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(queryText, language, parameters, parsed);
+        if (schemaColumns != null)
+          columns = schemaColumns;
+      }
+    }
+    profile.addEngineNanos(System.nanoTime() - engineStart);
+
+    final long serStart = System.nanoTime();
+    final String[] names = columns.keySet().toArray(new String[0]);
+    final PostgresType[] types = columns.values().toArray(new PostgresType[0]);
+    final boolean binary = copy.getFormat() == PostgresCopyStatement.Format.BINARY;
+    if (binary)
+      // Unlike a DataRow, whose columns each carry their own format code, a binary COPY stream is binary in every
+      // field, so a column with no binary encoding cannot be sent in it at all.
+      for (int i = 0; i < types.length; i++)
+        if (!types[i].hasBinaryEncoding())
+          throw new PostgresCopyStatement.CopyException("column \"" + names[i] + "\" has type " + types[i].name().toLowerCase(Locale.ENGLISH)
+              + ", which has no binary encoding on this server: use FORMAT text or csv, or project it as a string",
+              PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
+
+    if (DEBUG)
+      LogManager.instance().log(this, Level.INFO, "PSQL:-> CopyOutResponse: %s, %d columns: %s (thread=%s)", copy.getFormat(),
+          names.length, columns.keySet(), Thread.currentThread().threadId());
+
+    writeMessage("copy out response", () -> {
+      channel.writeByte((byte) (binary ? 1 : 0));
+      channel.writeUnsignedShort((short) names.length);
+      for (int i = 0; i < names.length; i++)
+        channel.writeUnsignedShort((short) (binary ? 1 : 0));
+    }, 'H', 4 + 1 + 2 + 2 * names.length);
+
+    final Binary out = new Binary();
+    final Binary payload = new Binary();
+    final StringBuilder line = new StringBuilder();
+    final String[] texts = new String[names.length];
+
+    if (binary) {
+      payload.putByteArray(COPY_BINARY_SIGNATURE);
+      payload.putInt(0); // flags: no OIDs
+      payload.putInt(0); // header extension length
+      appendCopyData(out, payload);
+    } else if (copy.isHeader()) {
+      copy.appendHeader(line, columns.keySet());
+      appendCopyData(out, line);
+    }
+
+    int rows = 0;
+    try (resultSet) {
+      final Iterator<Result> iterator = buffered != null ? buffered.iterator() : resultSet;
+      while (iterator.hasNext()) {
+        final Result row = iterator.next();
+        if (row == null)
+          continue;
+
+        if (binary) {
+          payload.putShort((short) names.length);
+          for (int i = 0; i < names.length; i++)
+            types[i].serializeAsBinary(types[i], payload, columnValue(row, names[i]));
+          appendCopyData(out, payload);
+        } else {
+          for (int i = 0; i < names.length; i++)
+            texts[i] = types[i].toText(types[i], columnValue(row, names[i]));
+          copy.appendRow(line, texts, names);
+          appendCopyData(out, line);
+        }
+        rows++;
+
+        if (out.position() >= COPY_FLUSH_THRESHOLD)
+          flushCopyData(out);
+      }
+    }
+
+    if (binary) {
+      payload.putShort((short) -1); // trailer
+      appendCopyData(out, payload);
+    }
+    flushCopyData(out);
+
+    writeMessage("copy done", null, 'c', 4);
+    profile.addSerializationNanos(System.nanoTime() - serStart);
+
+    if (DEBUG)
+      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) copied out (thread=%s)", rows, Thread.currentThread().threadId());
+    return rows;
+  }
+
+  /**
+   * Frames the bytes in {@code payload} as one {@code CopyData} message into {@code out} and resets the payload.
+   */
+  private static void appendCopyData(final Binary out, final Binary payload) {
+    payload.flip();
+    final int length = payload.getByteBuffer().limit();
+    out.putByte((byte) 'd');
+    out.putInt(4 + length);
+    out.putBuffer(payload.getByteBuffer());
+    payload.clear();
+  }
+
+  private static void appendCopyData(final Binary out, final StringBuilder line) {
+    final byte[] bytes = line.toString().getBytes(DatabaseFactory.getDefaultCharset());
+    out.putByte((byte) 'd');
+    out.putInt(4 + bytes.length);
+    out.putByteArray(bytes);
+    line.setLength(0);
+  }
+
+  private void flushCopyData(final Binary out) throws IOException {
+    if (out.position() == 0)
+      return;
+    out.flip();
+    channel.writeBuffer(out.getByteBuffer());
+    channel.flush();
+    out.clear();
   }
 
   private void bindCommand() {
@@ -2172,6 +2392,17 @@ public class PostgresNetworkExecutor extends Thread {
         final String varName = portal.query.substring(5).trim().toLowerCase(Locale.ENGLISH);
         createResultSet(portal, varName, getShowConfigValue(varName));
 
+      } else if (PostgresCopyStatement.isCopy(portal.query)) {
+        // COPY ... TO STDOUT (issue #7188): the Arrow ADBC driver sends it through Parse/Bind/Describe/Execute
+        // (PQexecParams), so it is a portal like any other, except that Describe answers NoData and Execute
+        // streams CopyData. The query INSIDE the COPY is what the SQL engine parses, so a syntax error in it is
+        // reported here, at Parse, the way it is for a plain statement.
+        portal.copyStatement = PostgresCopyStatement.parse(portal.query);
+        if ("sql".equalsIgnoreCase(portal.language)) {
+          final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
+          portal.sqlStatement = sqlEngine.parse(portal.copyStatement.getQuery(), (DatabaseInternal) database);
+        }
+
       } else {
         // A query about the emulated system catalog. Every family of these used to be matched by string
         // equality here, several of them only when application_name was literally "dbvis", so the same
@@ -2232,6 +2463,9 @@ public class PostgresNetworkExecutor extends Thread {
       // ParseComplete
       writeMessage("parse complete", null, '1', 4);
 
+    } catch (final PostgresCopyStatement.CopyException e) {
+      setErrorInTx();
+      writeError(ERROR_SEVERITY.ERROR, e.getMessage(), e.sqlState);
     } catch (final CommandParsingException e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Syntax error on parsing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
@@ -2511,6 +2745,8 @@ public class PostgresNetworkExecutor extends Thread {
    * 42, syntax error or access rule violation - carries the client-vs-server verdict either way.
    */
   static String sqlStateFor(final Throwable error) {
+    if (error instanceof PostgresCopyStatement.CopyException copy)
+      return copy.sqlState;
     return switch (ErrorCategory.of(error)) {
       case RETRY -> "40001";          // serialization_failure - the code drivers auto-retry on
       case ARITHMETIC -> arithmeticSqlState(error);
@@ -2705,6 +2941,8 @@ public class PostgresNetworkExecutor extends Thread {
   private String getTag(String upperCaseText, int resultSetCount) {
     if (upperCaseText.startsWith("CREATE VERTEX") || upperCaseText.startsWith("INSERT INTO")) {
       return "INSERT 0 " + resultSetCount;
+    } else if (upperCaseText.startsWith("COPY")) {
+      return "COPY " + resultSetCount;
     } else if (upperCaseText.startsWith("SELECT") || upperCaseText.startsWith("MATCH")) {
       return "SELECT " + resultSetCount;
     } else if (upperCaseText.startsWith("UPDATE")) {

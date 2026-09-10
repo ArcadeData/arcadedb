@@ -392,10 +392,12 @@ public class TimeSeriesEngine implements AutoCloseable {
       accumulateToBucket(result, bucketTs, value, aggType);
     }
 
-    // Finalize AVG: divide accumulated sums by counts
+    // Finalize AVG: divide accumulated sums by the counts of real samples. A bucket with none keeps the absent
+    // marker its sum already is (issue #7089).
     if (aggType == AggregationType.AVG) {
       for (int i = 0; i < result.size(); i++)
-        result.updateValue(i, result.getValue(i) / result.getCount(i));
+        if (result.getCount(i) > 0)
+          result.updateValue(i, result.getValue(i) / result.getCount(i));
     }
 
     return result;
@@ -995,19 +997,21 @@ public class TimeSeriesEngine implements AutoCloseable {
     if (idx >= 0) {
       final double existing = result.getValue(idx);
       final long count = result.getCount(idx);
+      // NaN policy (issue #7089): SUM/AVG skip an absent sample the way MIN/MAX below do, and the count kept
+      // alongside is of the samples that contributed - what the AVG is divided by once the scan is over.
       final double merged = switch (type) {
-        case SUM -> existing + value;
+        case SUM, AVG -> TimeSeriesNaN.sum(existing, value);
         case COUNT -> existing + 1;
-        case AVG -> existing + value; // accumulate sum, divide by count later
         // NaN policy (issue #4596): NaN is treated as absent and skipped, so a real value always
         // wins over a NaN running value (e.g. when the bucket was seeded with a NaN first sample).
         case MIN -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.min(existing, value);
         case MAX -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.max(existing, value);
       };
       result.updateValue(idx, merged);
-      result.updateCount(idx, count + 1);
+      result.updateCount(idx, type == AggregationType.COUNT ? count + 1 : TimeSeriesNaN.countIfPresent(count, value));
     } else {
-      result.addBucket(bucketTs, type == AggregationType.COUNT ? 1.0 : value, 1);
+      result.addBucket(bucketTs, type == AggregationType.COUNT ? 1.0 : value,
+          type == AggregationType.COUNT ? 1 : TimeSeriesNaN.countIfPresent(0, value));
     }
   }
 }

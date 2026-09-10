@@ -97,7 +97,11 @@ class Issue6360SealedStoreIntegrityTest {
         DictionaryCodec.encode(hosts),
         GorillaXORCodec.encode(usage) };
 
-    store.appendBlock(timestamps.length, declaredMinTs, declaredMaxTs, compressed, mins, maxs, sums,
+    // The declared count follows the declared sum: a NaN sum says "no real sample", a finite one says every sample
+    // was real. Each case here departs from the truth in one statistic on purpose, and this keeps the count from
+    // being a second departure that would mask which one the checker caught.
+    final long[] counts = { 0, 0, Double.isNaN(sums[2]) ? 0 : timestamps.length };
+    store.appendBlock(timestamps.length, declaredMinTs, declaredMaxTs, compressed, mins, maxs, sums, counts,
         new String[][] { null, declaredHosts, null });
   }
 
@@ -162,7 +166,7 @@ class Issue6360SealedStoreIntegrityTest {
   void aBlockEntryIsTrustedOnlyOnceItsWrittenCRCIsRecorded() {
     final double[] stats = { Double.NaN, Double.NaN, 1.0 };
     final TimeSeriesSealedStore.BlockEntry entry =
-        new TimeSeriesSealedStore.BlockEntry(1_000L, 2_000L, 4, 3, stats, stats, stats, 27L);
+        new TimeSeriesSealedStore.BlockEntry(1_000L, 2_000L, 4, 3, stats, stats, stats, new long[] { 0, 0, 4 }, 27L);
 
     assertThat(entry.blockStartOffset).isEqualTo(27L);
     assertThat(entry.crcValidated).as("not trusted until the CRC it would be trusted against is known").isFalse();
