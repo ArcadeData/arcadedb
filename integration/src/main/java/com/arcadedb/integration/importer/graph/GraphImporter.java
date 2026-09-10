@@ -165,20 +165,28 @@ public class GraphImporter implements AutoCloseable {
     }
   }
 
-  /** Creates vertex and edge types declared in the JSON config (if they don't already exist). */
+  /**
+   * Creates vertex and edge types declared in the JSON config (if they don't already exist).
+   * <p>
+   * Reads its keys through {@link #required} for the same reason {@link #fromJSON} does, and because it runs
+   * FIRST on the command-line path ({@code main} calls it before {@code fromJSON}): a config with no
+   * {@code "type"} would otherwise be answered by the bare {@code JSONException} here and never reach the
+   * sentence written for it (issue #7302, PR #7314 review).
+   */
   public static void createSchemaFromConfig(final Database database, final JSONObject config) {
     database.transaction(() -> {
       if (config.has("vertices")) {
         final JSONArray vertices = config.getJSONArray("vertices");
         for (int i = 0; i < vertices.length(); i++) {
           final JSONObject vj = vertices.getJSONObject(i);
-          final String typeName = vj.getString("type");
+          final String typeName = required(vj, "type", "a vertex source", "the vertex type the rows are imported into");
           if (!database.getSchema().existsType(typeName))
             database.getSchema().createVertexType(typeName);
           if (vj.has("edges")) {
             final JSONArray edges = vj.getJSONArray("edges");
             for (int j = 0; j < edges.length(); j++) {
-              final String edgeType = edges.getJSONObject(j).getString("edge");
+              final String edgeType = required(edges.getJSONObject(j), "edge",
+                  "an \"edges\" entry of vertex source '" + typeName + "'", "the edge type to create");
               if (!database.getSchema().existsType(edgeType))
                 database.getSchema().createEdgeType(edgeType);
             }
@@ -188,7 +196,8 @@ public class GraphImporter implements AutoCloseable {
       if (config.has("edgeSources")) {
         final JSONArray edgeSources = config.getJSONArray("edgeSources");
         for (int i = 0; i < edgeSources.length(); i++) {
-          final String edgeType = edgeSources.getJSONObject(i).getString("edge");
+          final String edgeType = required(edgeSources.getJSONObject(i), "edge", "an edge source",
+              "the edge type the rows are imported into");
           if (!database.getSchema().existsType(edgeType))
             database.getSchema().createEdgeType(edgeType);
         }
@@ -303,8 +312,8 @@ public class GraphImporter implements AutoCloseable {
   }
 
   private static void parseVertexSource(final Builder b, final JSONObject vj, final String baseDir) {
-    final String typeName = vj.getString("type");
-    final RecordSource source = createRecordSource(vj, baseDir);
+    final String typeName = required(vj, "type", "a vertex source", "the vertex type the rows are imported into");
+    final RecordSource source = createRecordSource(vj, baseDir, "vertex source '" + typeName + "'");
 
     b.vertex(typeName, source, v -> {
       if (vj.has("id"))
@@ -346,9 +355,10 @@ public class GraphImporter implements AutoCloseable {
         final JSONArray edges = vj.getJSONArray("edges");
         for (int j = 0; j < edges.length(); j++) {
           final JSONObject ej = edges.getJSONObject(j);
-          final String attr = ej.getString("attribute");
-          final String edgeType = ej.getString("edge");
-          final String target = ej.getString("target");
+          final String where = "an \"edges\" entry of vertex source '" + typeName + "'";
+          final String attr = required(ej, "attribute", where, "the attribute holding the key of the vertex to link");
+          final String edgeType = required(ej, "edge", where, "the edge type to create");
+          final String target = required(ej, "target", where, "the vertex type the key resolves against");
 
           final boolean byName = ej.getBoolean("byName", false);
           if (ej.has("split"))
@@ -367,8 +377,8 @@ public class GraphImporter implements AutoCloseable {
   }
 
   private static void parseEdgeSource(final Builder b, final JSONObject ej, final String baseDir) {
-    final String edgeType = ej.getString("edge");
-    final RecordSource source = createRecordSource(ej, baseDir);
+    final String edgeType = required(ej, "edge", "an edge source", "the edge type the rows are imported into");
+    final RecordSource source = createRecordSource(ej, baseDir, "edge source '" + edgeType + "'");
 
     b.edgeSource(edgeType, source, e -> {
       // "from": "PostId:Post" → attribute:vertexType
@@ -414,23 +424,74 @@ public class GraphImporter implements AutoCloseable {
     return parts;
   }
 
+  /**
+   * Reads a mandatory string key, naming what is missing and what it is for when it is absent (issue #7302).
+   * <p>
+   * {@code getString(key)} throws a {@code JSONException} that names the key and nothing else - true, and no help
+   * to someone holding a configuration file that has to say something they were never told. Every other mistake
+   * this parser can catch answers with the form the value takes and why; an absent key is the same mistake one
+   * step earlier and now reads the same way, as {@link #splitEdgeSourceEndpoint} already made it for the edge
+   * endpoints.
+   *
+   * @param where   what carries the key, in the words the configuration uses ("a vertex source").
+   * @param purpose what the value is for, so the message says what to write and not only that something is
+   *                missing.
+   */
+  private static String required(final JSONObject config, final String key, final String where,
+      final String purpose) {
+    final String value = config.getString(key, null);
+    if (value == null)
+      throw new IllegalArgumentException(capitalize(where) + " declares no \"" + key + "\": add \"" + key
+          + "\": \"...\" to it, naming " + purpose);
+    if (value.isBlank())
+      throw new IllegalArgumentException(capitalize(where) + " declares \"" + key + "\" as an empty value: it names "
+          + purpose + ", so it cannot be blank");
+    return value;
+  }
+
+  private static String capitalize(final String text) {
+    return text.isEmpty() ? text : Character.toUpperCase(text.charAt(0)) + text.substring(1);
+  }
+
+  /**
+   * Splits a property spec into its type prefix and the source attribute it reads, and applies it.
+   * <p>
+   * Issue #7302: a prefix with nothing after it - {@code "int:"} - used to produce a property bound to an
+   * attribute named the empty string, which matches nothing in any of the three record sources. Silent, row after
+   * row, and indistinguishable in the result from a source file that simply has no such column. It is the same
+   * class of configuration mistake #7266 gave a named error to everywhere else in this parser.
+   */
   private static void parsePropertySpec(final PropertyConfig v, final String propName, final String spec) {
     if (spec.startsWith("int:"))
-      v.intProperty(propName, spec.substring(4));
+      v.intProperty(propName, attributeOf(propName, spec, 4));
     else if (spec.startsWith("long:"))
-      v.longProperty(propName, spec.substring(5));
+      v.longProperty(propName, attributeOf(propName, spec, 5));
     else if (spec.startsWith("double:"))
-      v.doubleProperty(propName, spec.substring(7));
+      v.doubleProperty(propName, attributeOf(propName, spec, 7));
     else if (spec.startsWith("bool:"))
-      v.boolProperty(propName, spec.substring(5));
+      v.boolProperty(propName, attributeOf(propName, spec, 5));
     else if (spec.startsWith("vector:"))
-      v.floatArrayProperty(propName, spec.substring(7));
+      v.floatArrayProperty(propName, attributeOf(propName, spec, 7));
     else if (spec.startsWith("list:"))
-      v.listProperty(propName, spec.substring(5));
+      v.listProperty(propName, attributeOf(propName, spec, 5));
     else if (spec.startsWith("datetime:"))
-      parseDatetimeSpec(v, propName, spec.substring(9));
+      parseDatetimeSpec(v, propName, attributeOf(propName, spec, 9));
+    else if (spec.isEmpty())
+      throw new IllegalArgumentException("Property '" + propName + "' declares an empty source attribute: the "
+          + "value names the attribute the property is read from, optionally prefixed with its type, as in "
+          + "\"int:Score\"");
     else
       v.property(propName, spec);
+  }
+
+  /** The source attribute a typed spec reads, refusing the prefix with nothing after it. */
+  private static String attributeOf(final String propName, final String spec, final int prefixLength) {
+    final String attribute = spec.substring(prefixLength);
+    if (attribute.isBlank())
+      throw new IllegalArgumentException("Property '" + propName + "' declares its source as '" + spec
+          + "': the form is \"" + spec.substring(0, prefixLength) + "SourceAttribute\", naming the attribute the "
+          + "property is read from");
+    return attribute;
   }
 
   /**
@@ -446,18 +507,27 @@ public class GraphImporter implements AutoCloseable {
     // Convention: if the rest contains no format separator, it's just the attribute name.
     // To specify a format, use "datetime:FORMAT|attribute" with pipe as separator.
     final int pipe = rest.indexOf('|');
-    if (pipe > 0) {
-      final String format = rest.substring(0, pipe);
-      final String attribute = rest.substring(pipe + 1);
-      v.datetimeProperty(propName, attribute, format);
-    } else {
+    if (pipe < 0) {
       v.datetimeProperty(propName, rest);
+      return;
     }
+
+    // Issue #7302: the separator was tested with `pipe > 0`, so a spec whose format half is missing -
+    // "datetime:|attr" - fell through to the no-format branch and bound the property to an attribute literally
+    // named "|attr", which matches nothing. A pipe that IS there is a request for a custom format, and both
+    // halves of that request have to be there.
+    final String format = rest.substring(0, pipe);
+    final String attribute = rest.substring(pipe + 1);
+    if (format.isBlank() || attribute.isBlank())
+      throw new IllegalArgumentException("Property '" + propName + "' declares its source as 'datetime:" + rest
+          + "': the form is \"datetime:FORMAT|SourceAttribute\", naming the date format and the attribute the "
+          + "property is read from, or \"datetime:SourceAttribute\" for the default format");
+    v.datetimeProperty(propName, attribute, format);
   }
 
   /** Creates the appropriate RecordSource based on file extension or explicit format. */
-  private static RecordSource createRecordSource(final JSONObject config, final String baseDir) {
-    final String fileName = config.getString("file");
+  private static RecordSource createRecordSource(final JSONObject config, final String baseDir, final String where) {
+    final String fileName = required(config, "file", where, "the file the rows are read from");
     final String filePath = new File(baseDir, fileName).getPath();
     final String autoFormat = fileName.endsWith(".csv") ? "csv" : fileName.endsWith(".jsonl") || fileName.endsWith(".ndjson") ? "jsonl" : "xml";
     final String format = config.getString("format", autoFormat);

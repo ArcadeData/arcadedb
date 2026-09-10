@@ -100,14 +100,34 @@ import java.util.logging.Level;
  * Neither ever shadows a configured host: {@code serverList} is configuration, not membership, and removing
  * a host from it is a configuration change rather than something a Raft configuration commit can do.
  * <p>
+ * <b>The pin does not undo the unlearning</b> (issue #7302). The exemption above is what made it possible for it
+ * to: on Kubernetes the pinned host is the headless service, whose A records are every pod backing the
+ * StatefulSet - including one that is not Ready, since the service that publishes it sets
+ * {@code publishNotReadyAddresses}. Kubernetes drops a pod's address when the POD terminates, not when Raft
+ * removes it from the configuration, so expanding the pinned domain into the same set as the membership hosts
+ * re-added a deliberately-removed-but-still-running pod's address on every resolve, and the INFO line written to
+ * confirm the revocation reported one that had not happened on the one deployment shape this project targets.
+ * So {@link #doResolve()} expands the pinned domain separately and subtracts the addresses of the peers the
+ * membership dropped, until either the peer is admitted again for some other reason or the address stops being
+ * published - at which point the pod is gone and a later reuse of the address belongs to a different one.
+ * <p>
+ * <b>The subtraction can only hold back an address it can name.</b> A departing peer's addresses come from its
+ * last successful resolution, or from one lookup made as it leaves; a peer whose name has never resolved and
+ * does not resolve now leaves nothing to subtract, and the pinned domain goes on admitting its pod until that pod
+ * terminates. That needs DNS to have been down for the whole time the peer was a member AND at the moment it is
+ * removed, which is why it is stated rather than worked around: any workaround would have to guess which of the
+ * pinned domain's addresses belonged to the departing peer, and guessing wrong locks out a healthy pod.
+ * <p>
  * Unlearning a host stops it being <i>admitted</i>, and since issue #7250 it also revokes what an
  * already-<i>established</i> transport of that host can still do. {@code ServerTransportFilter} is a one-shot
  * admission gate and gRPC hands it no handle on the transport it admitted, so every transport this filter admits
  * gets a {@link PeerTransportSession} stashed in its {@code Attributes}; a resolution that stops admitting the
  * session's address revokes it, {@link PeerAllowlistCallInterceptor} then refuses every further RPC on it, and the
- * RPCs already running on it are closed. The socket itself is not closed - gRPC's public API exposes no way to close
- * one established transport - so the accurate operator-facing claim is that removing a peer revokes its reach, not
- * that it drops its connection.
+ * RPCs already running on it are closed. The socket is not closed on the spot - gRPC's public API exposes no way to
+ * close one established transport on demand - but it is no longer left to the peer either: since issue #7316 the
+ * Raft listener carries {@code arcadedb.ha.grpcMaxConnectionIdleMs}, so a connection that stops carrying RPCs, which
+ * a revoked one does as soon as it stops retrying, is closed with a graceful GOAWAY. The accurate operator-facing
+ * claim is that removing a peer revokes its reach immediately and its connection once that connection falls idle.
  * <p>
  * This is NOT a substitute for mTLS: it does not authenticate peer identity and does not
  * encrypt the traffic. See GitHub issue #3890. The bounded startup fail-open is an acceptable
@@ -135,9 +155,15 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   // Hosts of the live Raft configuration, REPLACED wholesale on every reconciliation (issue #7225) so a peer
   // removed from the cluster stops being resolved and stops being admitted.
   private volatile Set<String>               memberHosts  = Collections.emptySet();
-  // pinnedHosts | memberHosts, republished whenever either changes. Copy-on-write so isAllowed()'s hot path
-  // never synchronises against a learner, and one volatile read so a resolution sees a consistent union.
+  // pinnedHosts | memberHosts, republished whenever either changes. Reporting only: what an operator is shown
+  // and what the tests read. Copy-on-write so nothing synchronises against a learner to read it.
   private volatile Set<String>               learnedHosts = Collections.emptySet();
+  // Addresses of peers deliberately removed from the Raft configuration that a PINNED host still publishes, i.e.
+  // the pods of a Kubernetes StatefulSet that are still running (issue #7302). Subtracted from the pinned
+  // expansion in doResolve(), and dropped again as soon as the pinned domain stops publishing the address - at
+  // which point the pod is gone and a later reuse of that address belongs to a different one. Mutated only under
+  // this object's monitor, like the sticky maps below.
+  private final Set<String>                  revokedPinnedIps = new HashSet<>();
   // Number of declared peer hosts that must resolve before the startup fail-open ends: a Raft
   // majority (floor(n/2)+1). Enough peers to form the cluster, so a single permanently-down peer
   // no longer holds the fail-open window open for its full duration (issue #4828).
@@ -420,6 +446,7 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
       }
 
     final Set<String> dropped;
+    final Set<String> revoked;
     synchronized (this) {
       if (memberHosts.equals(current))
         return false;
@@ -431,25 +458,90 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
       dropped.removeAll(current);
       dropped.removeAll(pinnedHosts);
       memberHosts = Collections.unmodifiableSet(current);
+      // What a departed peer's name resolved to LAST time, captured before doResolve() prunes the sticky maps of
+      // the host that no longer tracks it. On Kubernetes that address is also published by the pinned
+      // headless-service domain for as long as the pod runs, so without this the resolution below re-adds it and
+      // the revocation reported by the log line never happens (issue #7302).
+      final Set<String> droppedIps = new HashSet<>();
+      for (final String host : dropped) {
+        final Set<String> ips = lastKnownIps.get(host);
+        if (ips != null)
+          droppedIps.addAll(ips);
+        else
+          // The host left the membership without ever having resolved - DNS was down for the whole time it was a
+          // member - so there is no last-known address to revoke, and the pinned domain would readmit it. One
+          // lookup here, on a membership change and never on the periodic tick (which is the cost #7225 removed),
+          // covers the case where the name resolves again by the time the peer is removed. If it does not resolve
+          // now either, this peer's address cannot be identified from anything this class has, and the pinned
+          // domain keeps admitting it until its pod terminates - the limitation is stated on the class javadoc
+          // rather than left for a reader to discover (PR #7314 review).
+          droppedIps.addAll(resolveOnce(host));
+      }
+      revokedPinnedIps.addAll(droppedIps);
       republishLearnedHosts();
       // Unconditional for the same reason learnPeerHosts is: this is a membership change, not the periodic
       // DNS churn the refresh floors exist to throttle. doResolve() rebuilds the allowed set from the tracked
       // hosts, which is what actually evicts a departed peer's addresses.
       doResolve();
+      // Read after the resolution, which is what settles the set: an address no pinned host publishes needs no
+      // revoking and is dropped there, so the log line names what is actually being held back. Narrowed to THIS
+      // removal's addresses, because the line is about the hosts named beside them - reporting the whole
+      // revocation set would attribute an earlier removal's addresses to this one (PR #7314 review).
+      droppedIps.retainAll(revokedPinnedIps);
+      revoked = Set.copyOf(droppedIps);
     }
     dispatchRevocations();
     if (!dropped.isEmpty())
-      LogManager.instance().log(this, Level.INFO,
-          "Raft gRPC peer allowlist no longer admits %d host(s) that left the Raft configuration: %s",
-          dropped.size(), dropped);
+      // The revoked addresses are named only when there are any, which on Kubernetes is where the revocation is
+      // actually decided: a pinned headless service goes on publishing a removed pod's address until the pod
+      // terminates, and this half of the line is what says the allowlist is not honouring it (issue #7302).
+      LogManager.instance().log(this, Level.INFO, revoked.isEmpty()
+              ? "Raft gRPC peer allowlist no longer admits %d host(s) that left the Raft configuration: %s"
+              : "Raft gRPC peer allowlist no longer admits %d host(s) that left the Raft configuration: %s. Their "
+                  + "addresses %s stay out of it while a pinned host still publishes them",
+          dropped.size(), dropped, revoked);
     return true;
   }
 
-  /** Republishes the union the resolver walks. Callers hold this object's monitor. */
+  /**
+   * Republishes the union of the runtime hosts, for the reject log line and {@link #getLearnedHosts()}. The
+   * resolver walks the two sets separately (see {@link #doResolve()}), because only one of them can readmit a
+   * peer the membership just dropped. Callers hold this object's monitor.
+   */
   private void republishLearnedHosts() {
     final Set<String> union = new HashSet<>(pinnedHosts);
     union.addAll(memberHosts);
     learnedHosts = Collections.unmodifiableSet(union);
+  }
+
+  /**
+   * One best-effort resolution of {@code host}, touching none of the sticky retention state: for a host that is
+   * leaving and therefore has no business being tracked, but whose addresses still have to be identified so the
+   * pinned domain does not readmit them. Empty when the name does not resolve.
+   * <p>
+   * Called with this object's monitor held, and that is accepted rather than overlooked: {@code doResolve} and
+   * {@code resolveIfStale} already resolve under the same lock, so a hung resolver stalls the health-monitor tick
+   * that reaches here through {@code refreshPeerAllowlist} whichever of them it enters. What this adds is one more
+   * lookup, only on a membership change and only for a host that never resolved while it was a member - never on
+   * the periodic tick, which is the per-tick lookup #7225 removed. Resolving outside the lock would mean deciding
+   * the revocation against a membership that could have moved on by the time the answer arrived, which is a worse
+   * trade for a wait the class already takes on its other paths.
+   */
+  private Set<String> resolveOnce(final String host) {
+    try {
+      final InetAddress[] addrs = resolver.resolve(host);
+      if (addrs == null)
+        return Collections.emptySet();
+      final Set<String> ips = new HashSet<>();
+      for (final InetAddress a : addrs)
+        ips.add(a.getHostAddress());
+      return ips;
+    } catch (final UnknownHostException e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Cannot resolve departing cluster peer host '%s'; its addresses cannot be held back from the pinned "
+              + "host expansion: %s", host, e.getMessage());
+      return Collections.emptySet();
+    }
   }
 
   /** Trimmed host, or null when there is nothing usable to resolve. */
@@ -463,6 +555,14 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   /** The hosts learned after construction, pinned and membership-derived alike. Exposed for testing. */
   Set<String> getLearnedHosts() {
     return learnedHosts;
+  }
+
+  /**
+   * The addresses currently held back from the pinned host expansion, i.e. the removed-but-still-published pods
+   * of issue #7302. Exposed for testing.
+   */
+  synchronized Set<String> getRevokedPinnedIps() {
+    return Set.copyOf(revokedPinnedIps);
   }
 
   /** The hosts pinned by {@link #learnPeerHosts}, which no membership change unlearns. Exposed for testing. */
@@ -538,21 +638,44 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
 
   private synchronized void doResolve() {
     final long now = clock.getAsLong();
-    final Set<String> learned = learnedHosts; // one read: pinned and member hosts change under this monitor
+    final Set<String> pinned = pinnedHosts;  // one read each: both change under this monitor
+    final Set<String> members = memberHosts;
     final Set<String> effective = new HashSet<>(LoopbackHosts.IPS);
     int covered = 0;
     for (final String host : peerHosts)
       if (resolveHostInto(host, now, effective, true))
         covered++;
     // Learned hosts widen the allowlist but never the gates: see learnPeerHosts.
-    for (final String host : learned)
+    for (final String host : members)
       resolveHostInto(host, now, effective, false);
+
+    // The pinned domain is expanded SEPARATELY from everything above, because it is the one host whose expansion
+    // can readmit a peer the membership just dropped (issue #7302). On Kubernetes the pinned host is the headless
+    // service, whose A records are every pod backing the StatefulSet - a pod that is not Ready included, since the
+    // service that publishes it sets publishNotReadyAddresses. Kubernetes drops a pod's address when the POD
+    // terminates, not when Raft removes it from the configuration, so after
+    // DELETE /api/v1/cluster/peer/{id} against a still-running pod its address is still published here.
+    final Set<String> pinnedIps = new HashSet<>();
+    for (final String host : pinned)
+      resolveHostInto(host, now, pinnedIps, false);
+
+    // A revocation lasts exactly as long as the two facts that justify it. It ends when the peer is admitted for
+    // some other reason - back in the membership, or declared in serverList, which is configuration rather than
+    // membership - and it ends when no pinned domain publishes the address any more, because the pod is then gone
+    // and whatever gets that address next is a different one. Neither end is a timer: a wall-clock TTL would
+    // either readmit a removed-but-running pod or lock out a scale-up pod that inherited its address.
+    revokedPinnedIps.removeAll(effective);
+    revokedPinnedIps.retainAll(pinnedIps);
+    for (final String ip : pinnedIps)
+      if (!revokedPinnedIps.contains(ip))
+        effective.add(ip);
 
     // Forget the sticky retention of hosts nothing tracks any more (issue #7225). A peer removed from the
     // Raft configuration must not keep last-known-good IPs on standby: they would readmit it the moment
     // anything re-learned the name, from an entry that outlived the membership that created it.
     final Set<String> tracked = new HashSet<>(peerHosts);
-    tracked.addAll(learned);
+    tracked.addAll(members);
+    tracked.addAll(pinned);
     lastKnownIps.keySet().retainAll(tracked);
     lastKnownMs.keySet().retainAll(tracked);
 
@@ -603,8 +726,9 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
         continue; // swept while transportReady was still deciding: it is being rejected, and that is logged there
       LogManager.instance().log(this, Level.INFO,
           "Revoked the established Raft gRPC transport of %s: the address is no longer in the peer allowlist. "
-              + "%d in-flight RPC(s) closed; every further RPC on that transport is refused. The connection itself "
-              + "stays open until the peer drops it - gRPC exposes no way to close one established transport.",
+              + "%d in-flight RPC(s) closed; every further RPC on that transport is refused. gRPC exposes no way to "
+              + "close one established transport on demand, so the connection is closed once it has been idle for "
+              + "arcadedb.ha.grpcMaxConnectionIdleMs - a peer that keeps retrying keeps it open until it stops.",
           session.getRemoteIp(), closed);
     }
   }

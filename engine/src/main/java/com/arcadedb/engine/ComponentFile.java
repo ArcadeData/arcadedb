@@ -42,7 +42,31 @@ public class ComponentFile {
   protected       int     version = 0;      // STARTING FROM 21.10.2 COMPONENTS HAVE VERSION IN THE FILE NAME
   protected       String  componentName;
   protected       String  fileExtension;
-  protected       boolean open;
+  /**
+   * Volatile because it is read without any of this file's locks by the async flush thread while {@code close()}
+   * writes it under the channel write lock. That was already a race before issue #7363; what makes the ordering
+   * matter now is that a reader which observes the close of a dropped file has to observe the drop as well - see
+   * {@code dropped} below, written first, so the pair reads consistently in that direction.
+   */
+  protected volatile boolean open;
+  /**
+   * Set by {@link #drop()} <b>before</b> the file is closed, and never cleared: this file has been deliberately
+   * removed (an index compaction replacing a sub-index, a bucket or index drop), so anything still addressed to it
+   * is superseded rather than lost.
+   * <p>
+   * The ordering is the whole point (issue #7363). The async flush thread checks {@link #isOpen()} and then writes,
+   * and {@code close()} can run entirely between those two steps - which surfaced as
+   * {@code IllegalArgumentException: Cannot write page N because the file '...' is closed} logged at SEVERE by
+   * {@code PageManagerFlushThread}, on a path an operator watches for real corruption. Raising the flag first means
+   * a writer that loses that race can still tell "the file went away under me" from "a live file failed to write",
+   * whichever side of the window it observes.
+   * <p>
+   * Volatile rather than guarded: it is read by the flush thread without any of this file's locks, precisely
+   * because the lock it would need is the one {@code close()} is holding. Written BEFORE {@code open} is cleared
+   * and both being volatile, a reader that sees {@code open == false} is guaranteed to see this {@code true} as
+   * well, which is what lets a writer decide "dropped" and "closed" from one consistent pair of reads.
+   */
+  protected volatile boolean dropped;
 
   public ComponentFile() {
     this.mode = MODE.READ_ONLY;
@@ -96,9 +120,27 @@ public class ComponentFile {
   }
 
   public void drop() throws IOException {
+    markDropped();
     close();
     LogManager.instance().log(this, Level.FINE, "Deleting file %s (id=%d)...", null, filePath, fileId);
     Files.delete(Path.of(getFilePath()));
+  }
+
+  /**
+   * Says this file is being removed. The one place the "before the close" half of the {@code dropped} invariant
+   * lives, so that {@link FileManager#dropFile(int)} - which has to raise it before a DEFERRED drop that never
+   * calls {@link #drop()} - states the same thing by calling this rather than by writing the field itself.
+   */
+  void markDropped() {
+    // BEFORE close(), never after: see the field's note (issue #7363).
+    dropped = true;
+  }
+
+  /**
+   * @return {@code true} once {@link #drop()} has started removing this file. See the {@code dropped} field.
+   */
+  public boolean isDropped() {
+    return dropped;
   }
 
   public String getFileName() {

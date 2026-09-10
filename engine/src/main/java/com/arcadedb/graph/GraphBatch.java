@@ -372,6 +372,17 @@ public class GraphBatch implements AutoCloseable {
    */
   private int[] flushDurableOutRanges;
 
+  /**
+   * The indexes whose speculative background maintenance this batch suspended for the duration of the load
+   * (issue #7357), and the guard that makes resuming them happen exactly once.
+   * <p>
+   * Captured at construction rather than looked up again on the way out: an index dropped mid-load must still have
+   * its suspension lifted, and looking the list up again would silently leak the count of one that is no longer in
+   * the schema.
+   */
+  private final IndexInternal[] maintenanceSuspendedIndexes;
+  private final AtomicBoolean   maintenanceResumed = new AtomicBoolean();
+
   // --- Saved state for restore after close ---
   private final boolean savedReadYourWrites;
   private final boolean savedUseWAL;
@@ -507,6 +518,86 @@ public class GraphBatch implements AutoCloseable {
     } else {
       savedAsyncUseWAL = false;
       savedAsyncWALFlush = null;
+    }
+
+    // LAST: nothing below can throw, so a suspension taken here always has a live instance to lift it. Held for as
+    // long as this batch is open (issue #7357). The maintenance that matters today is the LSM vector index's
+    // inactivity graph rebuild: it reads the index going quiet as "the writer is done", which during a bulk load is
+    // produced by the load stalling on a compaction or a flush burst, and the rebuild it starts then covers only
+    // what has been loaded so far and is superseded by the rest of the load. A 4.2M-record load paid four full
+    // graph rebuilds that way and had not finished after six and a half hours; the same load with no vector index
+    // took twenty-six minutes. Suspending is a pure deferral - the writes stay searchable through the index's own
+    // delta path meanwhile - and close()/abandon() resume it, which is when the one rebuild the load is actually
+    // worth gets scheduled.
+    maintenanceSuspendedIndexes = suspendIndexBackgroundMaintenance();
+  }
+
+  /**
+   * Suspends the speculative background maintenance of every index of this database, returning the ones that were
+   * actually asked so {@link #resumeIndexBackgroundMaintenance()} can lift exactly those.
+   * <p>
+   * A failure to suspend one index must not leave the batch half-suspended and must not fail the load either - the
+   * suspension is an optimization, not a correctness requirement - so an index that cannot be asked is skipped and
+   * the rest are still suspended. Caught per index rather than around the loop for exactly that reason (PR #7360
+   * review): the cast is the failure this is most likely to see, and one {@code Index} that does not implement
+   * {@link IndexInternal} must not cost every OTHER index of the database its suspension.
+   * <p>
+   * The list is a snapshot. An index created while this batch is open runs its background maintenance as usual -
+   * an acceptable gap, since creating an index in the middle of a bulk load is not a shape worth complicating the
+   * lifetime of these suspensions for, and the maintenance it would do is over a corpus it has just been built on.
+   *
+   * @return the indexes actually suspended, empty when none was
+   */
+  private IndexInternal[] suspendIndexBackgroundMaintenance() {
+    final Index[] all = database.getSchema().getIndexes();
+    final IndexInternal[] suspended = new IndexInternal[all.length];
+    int count = 0;
+    for (final Index idx : all) {
+      try {
+        // Every index type in the tree implements IndexInternal, so this cast does not fail today: the catch is
+        // future-proofing for an implementation that does not, not cover for one that exists (PR #7360 review).
+        final IndexInternal index = (IndexInternal) idx;
+        index.suspendBackgroundMaintenance();
+        suspended[count++] = index;
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "GraphBatch: could not suspend the background maintenance of index %s for the bulk load: %s", e,
+            idx.getName(), e.getMessage());
+      }
+    }
+    return count == suspended.length ? suspended : Arrays.copyOf(suspended, count);
+  }
+
+  /**
+   * Lifts the suspensions {@link #suspendIndexBackgroundMaintenance()} took, once. Idempotent because
+   * {@link #abandon()} and {@link #close()} can both reach it, and a second lift would decrement a count this
+   * batch no longer holds - handing another batch's suspension away with it.
+   */
+  private void resumeIndexBackgroundMaintenance() {
+    if (!maintenanceResumed.compareAndSet(false, true))
+      return;
+    for (final IndexInternal index : maintenanceSuspendedIndexes)
+      resumeQuietly(index);
+  }
+
+  /**
+   * One index's resume, never allowed to throw: a batch on its way out must lift every OTHER suspension it holds
+   * whatever one index does, and an index dropped mid-load is the ordinary way this fails.
+   * <p>
+   * Logged at WARNING, the same level a failed suspension gets, and deliberately not lower (PR #7360 review): the
+   * two failures are not equally harmless. A suspension that could not be taken costs an optimization; one that
+   * could not be LIFTED strands that index's background maintenance off until the process reopens the database,
+   * and does it silently. That is worth seeing even when the cause turns out to be an index dropped mid-load.
+   *
+   * @param index the index to resume
+   */
+  private void resumeQuietly(final IndexInternal index) {
+    try {
+      index.resumeBackgroundMaintenance();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "GraphBatch: could not resume the background maintenance of index %s, it stays suspended until this "
+              + "database is reopened: %s", e, index.getName(), e.getMessage());
     }
   }
 
@@ -1356,17 +1447,22 @@ public class GraphBatch implements AutoCloseable {
     try {
       RuntimeException flushFailure = null;
 
-      // Flush any remaining outgoing edges. Capture rather than rethrow so we can still drain the
-      // deferred IN buffer for previously-flushed edges; otherwise a unique-constraint violation
-      // on the trailing buffer (issue #4113) would leave already-persisted edges with no
-      // back-pointer and trip the database integrity checker.
       try {
-        flush();
-      } catch (final RuntimeException e) {
-        flushFailure = e;
-      }
+        // Flush any remaining outgoing edges. Capture rather than rethrow so we can still drain the
+        // deferred IN buffer for previously-flushed edges; otherwise a unique-constraint violation
+        // on the trailing buffer (issue #4113) would leave already-persisted edges with no
+        // back-pointer and trip the database integrity checker.
+        //
+        // INSIDE the try whose finally restores the settings, not before it (PR #7360 review). Only a
+        // RuntimeException is caught here, so an Error out of flush() used to skip the restore entirely and leave
+        // this database with a relaxed WAL policy, read-your-writes off, and - since issue #7357 - the vector
+        // indexes' background rebuilds suspended, silently, until the process reopened it.
+        try {
+          flush();
+        } catch (final RuntimeException e) {
+          flushFailure = e;
+        }
 
-      try {
         // Connect all deferred incoming edges in one sorted pass. On a large load this is minutes of work and it
         // runs on the way out of a FAILED batch too - it has to, or the edges already persisted keep no back-pointer
         // and the integrity checker trips (see #4113 above). That is why a rejected batch can take a while to answer
@@ -1412,6 +1508,7 @@ public class GraphBatch implements AutoCloseable {
   public void abandon() {
     database.setReadYourWrites(savedReadYourWrites);
     restoreAsyncSettings();
+    resumeIndexBackgroundMaintenance();
     releaseBatchGuard();
   }
 
@@ -1432,6 +1529,7 @@ public class GraphBatch implements AutoCloseable {
   private void restoreDatabaseSettings() {
     database.setReadYourWrites(savedReadYourWrites);
     restoreAsyncSettings();
+    resumeIndexBackgroundMaintenance();
 
     // If the thread still has no TransactionContext (the batch never began a transaction), nothing leaked.
     final TransactionContext tx = database.getTransactionIfExists();

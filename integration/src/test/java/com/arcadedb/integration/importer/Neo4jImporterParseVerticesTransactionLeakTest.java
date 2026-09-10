@@ -28,6 +28,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -206,6 +207,60 @@ class Neo4jImporterParseVerticesTransactionLeakTest {
         .isFalse();
     assertThat(countOf("Marker"))
         .as("the caller's own record must be what its commit made durable")
+        .isEqualTo(1);
+  }
+
+  /**
+   * Issue #7328: {@code parsingCallback} belongs to the caller and runs inside the row loop, so it can resolve the
+   * transaction {@code parseVertices()} opened without the method's own {@code txOpen} flag hearing about it.
+   * Because {@code begin()} nests, the trailing commit issued on that stale flag then pops and commits whatever is
+   * left on top - the CALLER's transaction, with all of the caller's unrelated pending work in it.
+   * <p>
+   * Neither a liveness test nor the flag can tell that apart; only the identity of the transaction the loop itself
+   * opened can, which is what the commit and the rollback are now gated on.
+   */
+  @Test
+  void aCallbackResolvingTheImportTransactionDoesNotHandTheCallersToTheTrailingCommit() throws Throwable {
+    final ImporterContext context = new ImporterContext();
+    final Neo4jImporter importer = new Neo4jImporter(database, context);
+
+    final String lines = "{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"Person\"]}\n"
+        + "{\"type\":\"node\",\"id\":\"2\",\"labels\":[\"Person\"]}\n"
+        + "{\"type\":\"node\",\"id\":\"3\",\"labels\":[\"Person\"]}\n";
+
+    // Large enough that the periodic commit never fires: the only commit inside the loop is the callback's.
+    setField(importer, "batchSize", 1_000);
+    setField(importer, "inputStream", new ByteArrayInputStream(lines.getBytes(StandardCharsets.UTF_8)));
+
+    final boolean[] resolvedOnce = { false };
+    importer.parsingCallback = json -> {
+      if (!resolvedOnce[0]) {
+        resolvedOnce[0] = true;
+        // What a caller's callback is free to do, and what leaves parseVertices()' flag stale: the transaction the
+        // loop opened is gone from here on, and the caller's is back on top.
+        database.commit();
+      }
+      return null;
+    };
+
+    // The caller's transaction, with pending work of its own that the import must never resolve.
+    database.begin();
+    database.newDocument("Marker").set("name", "caller").save();
+
+    invokeParseVertices(importer);
+
+    assertThat(resolvedOnce[0]).as("the callback must actually have run").isTrue();
+    assertThat(database.isTransactionActive())
+        .as("the caller's transaction is still the caller's: the import had nothing of its own left to commit")
+        .isTrue();
+
+    database.rollback();
+
+    assertThat(countOf("Marker"))
+        .as("the caller's own pending work must still have been the caller's to discard")
+        .isZero();
+    assertThat(countOf("Person"))
+        .as("only the vertex the callback's own commit made durable survives")
         .isEqualTo(1);
   }
 

@@ -154,7 +154,7 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     final Schema<Object> request = SpecBuilders.object("One aggregation to compute over a bucket");
     request.addProperty("field", SpecBuilders.string("Field name to aggregate"));
     request.addProperty("type", SpecBuilders.string(
-        "Aggregation function, for example AVG, SUM, MIN, MAX, COUNT"));
+        "Aggregation function. Required, one of SUM, AVG, MIN, MAX, COUNT, matched case-insensitively."));
     request.addProperty("alias", SpecBuilders.string(
         "Output name. Defaults to the field name suffixed with the lower-cased aggregation type."));
 

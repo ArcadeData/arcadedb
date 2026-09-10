@@ -36,6 +36,28 @@ import java.util.logging.Level;
 public class RDFImporterFormat extends CSVImporterFormat {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
 
+  /**
+   * The delimiter fallback the inherited {@code createCSVParser}/{@code analyze} resolve to: the generic
+   * {@code delimiter} option, then a comma. Only the direct instantiations in the test sources take this form -
+   * {@link com.arcadedb.integration.importer.SourceDiscovery} builds the format through
+   * {@link #RDFImporterFormat(String)} with the delimiter it detected.
+   */
+  public RDFImporterFormat() {
+    super();
+  }
+
+  /**
+   * @param delimiter the delimiter this source is parsed with - the user's own when they set one, else the character
+   *                  content sniffing found repeating between the {@code <...>} terms, which is the very thing that
+   *                  identified the source as RDF. It is carried on the format rather than written into
+   *                  {@code settings.options}, which one import shares across its entities (issue #6946), and dropping
+   *                  it made the canonical space-delimited N-Triples form unimportable: the inherited fallback is a
+   *                  comma, so the whole line arrived as a single column (issue #7315).
+   */
+  public RDFImporterFormat(final String delimiter) {
+    super(delimiter);
+  }
+
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
@@ -59,8 +81,10 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // reuses it. Rolling that one back on failure is still right - the import aborts with it either way, and
     // the alternative is AbstractImporter.closeDatabase() committing a half-finished import. What must never
     // be rolled back is a transaction that predates the import, which is exactly what
-    // ImporterContext#callerTransactionActiveOnEntry records.
-    final boolean ownsTransaction = !context.callerTransactionActiveOnEntry;
+    // ImporterContext#callerTransactionActiveOnEntry records, and which ImporterContext#importOwnsTransaction()
+    // answers for every row loop in one place rather than five times by hand (issue #7328). Read here, before the
+    // begin() below, because after that begin() a transaction is always active.
+    final boolean ownsTransaction = context.importOwnsTransaction(database);
 
     // Whether a transaction this call owns is still the current one. Cleared right before every commit -
     // LocalDatabase#commit() pops the transaction in a finally, so a commit that throws still leaves it off the
