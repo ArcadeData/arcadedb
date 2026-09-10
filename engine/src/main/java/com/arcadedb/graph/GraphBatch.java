@@ -581,6 +581,11 @@ public class GraphBatch implements AutoCloseable {
   /**
    * One index's resume, never allowed to throw: a batch on its way out must lift every OTHER suspension it holds
    * whatever one index does, and an index dropped mid-load is the ordinary way this fails.
+   * <p>
+   * Logged at WARNING, the same level a failed suspension gets, and deliberately not lower (PR #7360 review): the
+   * two failures are not equally harmless. A suspension that could not be taken costs an optimization; one that
+   * could not be LIFTED strands that index's background maintenance off until the process reopens the database,
+   * and does it silently. That is worth seeing even when the cause turns out to be an index dropped mid-load.
    *
    * @param index the index to resume
    */
@@ -588,8 +593,9 @@ public class GraphBatch implements AutoCloseable {
     try {
       index.resumeBackgroundMaintenance();
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE,
-          "GraphBatch: could not resume the background maintenance of index %s: %s", index.getName(), e.getMessage());
+      LogManager.instance().log(this, Level.WARNING,
+          "GraphBatch: could not resume the background maintenance of index %s, it stays suspended until this "
+              + "database is reopened: %s", e, index.getName(), e.getMessage());
     }
   }
 
