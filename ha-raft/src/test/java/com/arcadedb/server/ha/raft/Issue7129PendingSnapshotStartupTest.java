@@ -43,7 +43,7 @@ class Issue7129PendingSnapshotStartupTest {
   @ValueSource(booleans = { false, true })
   @Timeout(90)
   void haStartupRecoversBeforeSecondBootScan(final boolean completeDownload) throws Exception {
-    final Path live = root.resolve("databases/Universe");
+    final Path live = root.resolve("databases").resolve("Universe");
     createDatabase(live.resolve(".snapshot-backup"), "old");
     createDatabase(live.resolve(".snapshot-new"), "new");
     Files.writeString(live.resolve(".snapshot-pending"), "");
@@ -120,7 +120,7 @@ class Issue7129PendingSnapshotStartupTest {
 
   @Test
   void evenLoadablePendingDatabaseIsNotRegisteredBeforeRecovery() throws Exception {
-    final Path live = root.resolve("databases/Universe");
+    final Path live = root.resolve("databases").resolve("Universe");
     createDatabase(live, "old");
     Files.writeString(live.resolve(".snapshot-pending"), "");
     final ArcadeDBServer server = newServer();
@@ -135,7 +135,7 @@ class Issue7129PendingSnapshotStartupTest {
 
   @Test
   void unrecoverableDirectoryRemainsIsolatedAcrossRestarts() throws Exception {
-    final Path live = root.resolve("databases/Universe");
+    final Path live = root.resolve("databases").resolve("Universe");
     Files.createDirectories(live);
     Files.writeString(live.resolve(".snapshot-pending"), "");
     Files.writeString(live.resolve("partial.bucket"), "incomplete");
