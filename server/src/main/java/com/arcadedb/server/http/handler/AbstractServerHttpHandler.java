@@ -71,6 +71,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 import java.util.logging.Level;
 
 public abstract class AbstractServerHttpHandler implements HttpHandler {
@@ -500,7 +501,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       final String rawRequestId = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID);
       final boolean idempotentPost = "POST".equalsIgnoreCase(exchange.getRequestMethod().toString())
           && rawRequestId != null && !rawRequestId.isBlank()
-          && exchange.getRequestHeaders().getFirst(SESSION_ID_HEADER) == null;
+          && exchange.getRequestHeaders().getFirst(SESSION_ID_HEADER) == null
+          // A request that negotiated the streaming encoding stays out of the replay cache entirely. The cache
+          // key is built from method, path, database and body - never from the Accept header - so a hit
+          // recorded by an earlier buffered request would be replayed to this caller as one application/json
+          // object, which is not the encoding it asked for and not a shape its NDJSON reader can parse. It
+          // could not populate the cache either: a streamed handler writes its own response and returns null,
+          // which aborts the reservation. Not reserving says that outright instead of leaving it implicit
+          // (issue #7311).
+          //
+          // Gated on the handler, not on the header alone: a route that cannot stream answers the same body
+          // whatever Accept says, so dropping ITS replay protection because a client sent a header it ignores
+          // would take away a guarantee and give nothing back.
+          && !(supportsNdJsonEncoding() && isNdJsonRequested(exchange));
 
       if (idempotentPost) {
         // Bind the key to method/path/database/body so a reused correlation id cannot replay a different
@@ -1240,6 +1253,69 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     return ServerControlPlane.filterAuthorizedDatabases(user, databaseNames);
   }
 
+
+  /**
+   * Tells a buffering reverse proxy to pass the streamed bytes through instead of accumulating them, which would
+   * silently undo the encoding. Same header the SSE endpoints already set.
+   */
+  protected static final HttpString X_ACCEL_BUFFERING = new HttpString("X-Accel-Buffering");
+
+  /** Precompiled rather than {@code String.split}, which recompiles the pattern on every request. */
+  private static final Pattern ACCEPT_ENTRY     = Pattern.compile(",");
+  private static final Pattern ACCEPT_PARAMETER = Pattern.compile(";");
+
+  /**
+   * True when the caller selected the streaming encoding by sending {@code Accept: application/x-ndjson}.
+   * <p>
+   * Negotiated rather than routed on purpose (issue #7306): the buffered {@code application/json} body is what
+   * every existing client - the Studio webapp included - parses, so streaming had to be reachable without
+   * changing what a request that does not ask for it receives. A caller that sends no {@code Accept}, or one
+   * that names any other type, gets exactly the response it got before.
+   * <p>
+   * Lives here rather than on {@code AbstractQueryHandler}, where #7306 first wrote it, because
+   * {@link PostBatchHandler} negotiates the same encoding for its streaming insert response (issue #7311) and
+   * does not extend that hierarchy. One parser, so the two surfaces cannot drift on what {@code q=0} means.
+   */
+  protected static boolean isNdJsonRequested(final HttpServerExchange exchange) {
+    final HeaderValues accept = exchange.getRequestHeaders().get(Headers.ACCEPT);
+    if (accept == null)
+      return false;
+    for (final String header : accept) {
+      if (header == null)
+        continue;
+      // One Accept header can list several types, each with its own parameters. Splitting them matters for
+      // 'q': 'application/json, application/x-ndjson;q=0' is the standard spelling of "anything but that one",
+      // and a bare contains() over the whole header would read it as a request for the stream.
+      for (final String entry : ACCEPT_ENTRY.split(header)) {
+        final String[] parts = ACCEPT_PARAMETER.split(entry.trim());
+        if (parts[0].trim().equalsIgnoreCase(NdJsonResultStream.CONTENT_TYPE))
+          return !isRejectedByQValue(parts);
+      }
+    }
+    return false;
+  }
+
+  /**
+   * True when an {@code Accept} entry carries {@code q=0}, which RFC 9110 defines as "not acceptable" rather
+   * than as a weak preference. An unparseable q is treated as absent, the same as any other malformed
+   * parameter: the type was still named.
+   */
+  private static boolean isRejectedByQValue(final String[] parts) {
+    for (int i = 1; i < parts.length; i++) {
+      final String parameter = parts[i].trim();
+      if (!parameter.regionMatches(true, 0, "q=", 0, 2))
+        continue;
+      try {
+        // Compared with a tolerance rather than against 0 exactly: q is a decimal with at most three digits,
+        // so anything this small is the "not acceptable" the sender meant, and an exact float comparison on a
+        // parsed decimal is the kind of thing that works until it does not.
+        return Double.parseDouble(parameter.substring(2).trim()) < 0.0001d;
+      } catch (final NumberFormatException ignored) {
+        return false;
+      }
+    }
+    return false;
+  }
   /**
    * Resolves the {@link HAReplicatedDatabase} backing {@code database}, either directly or through
    * {@link DatabaseInternal#getWrappedDatabaseInstance()}, or {@code null} on a standalone (non-HA)
@@ -1311,6 +1387,24 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
     return mustExecuteOnWorkerThread();
+  }
+
+  /**
+   * Whether this handler can answer in the {@code application/x-ndjson} streaming encoding when the caller
+   * negotiates it. False for every route that always writes the same buffered body.
+   * <p>
+   * Overridden by {@code PostCommandHandler} (issue #7306) and {@link PostBatchHandler} (issue #7311) - and by
+   * those two only, verified with
+   * {@code grep -rn 'protected boolean supportsNdJsonEncoding' server/src/main}. {@code GetQueryHandler}
+   * streams as well but does not override it, and does not need to: the only caller is the idempotency gate,
+   * which applies to POST requests alone.
+   * <p>
+   * That gate is the whole reason this exists: whether a streamed answer can be replayed from the cache is a
+   * property of the handler, and reading it off the request header alone would change the behaviour of routes
+   * that do not stream at all.
+   */
+  protected boolean supportsNdJsonEncoding() {
+    return false;
   }
 
   protected boolean requiresJsonPayload() {

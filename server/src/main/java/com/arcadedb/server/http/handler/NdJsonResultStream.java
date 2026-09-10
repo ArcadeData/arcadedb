@@ -25,8 +25,8 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Writes a query result to a client as newline-delimited JSON, one line per event, without ever holding more
- * than one row in memory (issue #7306).
+ * Writes a response to a client as newline-delimited JSON, one line per event, without ever holding more
+ * than one event in memory (issue #7306).
  * <p>
  * <b>Wire format.</b> Every line is a JSON object carrying exactly one key, which names the kind of event:
  * <ul>
@@ -48,7 +48,11 @@ import java.nio.charset.StandardCharsets;
  * latency on a slow one, instead of trading one away for the other. The trailer and the error line always
  * flush.
  * <p>
- * Not thread-safe, and does not need to be: one query is serialized by the one worker thread serving it.
+ * <b>Other event kinds.</b> {@link #writeEvent} takes the envelope key, so a second surface can define its own
+ * vocabulary on the same discipline instead of a second writer. {@code POST /api/v1/batch} does, with
+ * {@code progress} / {@code summary} / {@code error} (issue #7311).
+ * <p>
+ * Not thread-safe, and does not need to be: one request is serialized by the one worker thread serving it.
  */
 public final class NdJsonResultStream implements AutoCloseable {
   /**
@@ -110,6 +114,25 @@ public final class NdJsonResultStream implements AutoCloseable {
    */
   public void writeError(final String message) throws IOException {
     writeLine(new JSONObject().put("error", new JSONObject().put("message", message)), true);
+  }
+
+  /**
+   * Emits one event under an arbitrary envelope key, for a surface whose vocabulary is not the query one. The
+   * caller decides whether the line is flushed at once: an event a consumer is waiting on - a batch progress
+   * line, a trailer - has to be, while a high-rate event leaves the decision to the size/interval policy above.
+   */
+  public void writeEvent(final String kind, final JSONObject body, final boolean forceFlush) throws IOException {
+    writeLine(new JSONObject().put(kind, body), forceFlush);
+  }
+
+  /**
+   * Whether anything has been written yet, which for this stream means whether the response has been committed:
+   * the first line is always flushed. A caller that has written nothing can still let an exception travel to the
+   * standard error mapping and receive a real status code, instead of reporting it in band under a 200 that was
+   * never sent (issue #7311).
+   */
+  public boolean hasStarted() {
+    return started;
   }
 
   private void writeLine(final JSONObject event, final boolean forceFlush) throws IOException {

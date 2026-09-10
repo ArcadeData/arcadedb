@@ -72,6 +72,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
@@ -1256,22 +1257,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   JSONObject sendBatch(final String content, final Map<String, String> queryParams) {
     checkDatabaseIsOpen();
 
-    final StringBuilder urlBuilder = new StringBuilder(getUrl("batch", databaseName));
-    if (queryParams != null && !queryParams.isEmpty()) {
-      urlBuilder.append('?');
-      boolean first = true;
-      for (final Map.Entry<String, String> entry : queryParams.entrySet()) {
-        if (!first)
-          urlBuilder.append('&');
-        urlBuilder.append(entry.getKey()).append('=').append(entry.getValue());
-        first = false;
-      }
-    }
-
     try {
-      final HttpRequest request = createRequestBuilder("POST", urlBuilder.toString())
+      final HttpRequest request = createRequestBuilder("POST", batchUrl(queryParams))
           .POST(HttpRequest.BodyPublishers.ofString(content))
-          .header("Content-Type", "application/x-ndjson")
+          .header("Content-Type", NDJSON_CONTENT_TYPE)
           .build();
 
       final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -1293,6 +1282,132 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (final Exception e) {
       throw new DatabaseOperationException("Error on batch import", e);
     }
+  }
+
+  /**
+   * Sends one bulk-load payload to {@code POST /api/v1/batch} and returns the load's summary object.
+   * <p>
+   * With a {@code onProgress} listener the request negotiates the streaming encoding of issue #7311
+   * ({@code Accept: application/x-ndjson}) and the listener is handed every {@code progress} line as it arrives,
+   * so a caller learns what the server has committed while the rest of its payload is still being read. The
+   * object returned is the terminal {@code summary} line, which carries exactly the fields the buffered
+   * encoding returns - so nothing downstream of this method has to know which encoding was used.
+   * <p>
+   * With a {@code null} listener this delegates to {@link #sendBatch(String, Map)}, so a subclass that overrode
+   * that method to intercept every flush still sees it. A subclass that wants to intercept a load WITH a
+   * listener has to override this method too - there is no third place the two paths meet.
+   *
+   * @param onProgress notified once per chunk acknowledgement, or {@code null} to send an unnegotiated request
+   */
+  JSONObject sendBatch(final String content, final Map<String, String> queryParams,
+      final Consumer<JSONObject> onProgress) {
+    // Delegates rather than duplicates, and in this direction on purpose: sendBatch(content, queryParams) is an
+    // overridable extension point that a subclass replaces to intercept every flush - Issue7031RemoteClientIT
+    // does exactly that to simulate a failed request. Routing the no-listener case through the new overload
+    // instead would have walked straight past those overrides, silently, since the compiler is perfectly happy
+    // to call the sibling method nobody overrode.
+    if (onProgress == null)
+      return sendBatch(content, queryParams);
+
+    checkDatabaseIsOpen();
+
+    try {
+      final HttpRequest request = createRequestBuilder("POST", batchUrl(queryParams))
+          .POST(HttpRequest.BodyPublishers.ofString(content))
+          .header("Content-Type", NDJSON_CONTENT_TYPE)
+          .header("Accept", NDJSON_CONTENT_TYPE)
+          .build();
+
+      return readStreamedBatch(httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream()), onProgress);
+    } catch (final DatabaseOperationException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new DatabaseOperationException("Error on batch import", e);
+    }
+  }
+
+  /** The {@code POST /api/v1/batch} URL with the caller's options rendered as its query string. */
+  private String batchUrl(final Map<String, String> queryParams) {
+    final StringBuilder urlBuilder = new StringBuilder(getUrl("batch", databaseName));
+    if (queryParams != null && !queryParams.isEmpty()) {
+      urlBuilder.append('?');
+      boolean first = true;
+      for (final Map.Entry<String, String> entry : queryParams.entrySet()) {
+        if (!first)
+          urlBuilder.append('&');
+        urlBuilder.append(entry.getKey()).append('=').append(entry.getValue());
+        first = false;
+      }
+    }
+    return urlBuilder.toString();
+  }
+
+  /**
+   * Consumes the streaming answer of a bulk load: dispatches every {@code progress} line to the listener and
+   * returns the terminal {@code summary} (issue #7311).
+   * <p>
+   * A server that answered with the buffered encoding after being asked for the stream is an older node, and is
+   * read as the single object it is rather than fed to the line reader - the same fallback check
+   * {@code query()} makes for the streaming query, and for the same reason: without it the driver would fail
+   * somewhere in the middle of a body that is perfectly valid.
+   * <p>
+   * A stream that ends with neither {@code summary} nor {@code error} did not arrive whole - a dropped
+   * connection, a proxy that cut it - and is raised as a failure rather than returned as a load with no
+   * counters, which would look to the caller exactly like a load of an empty payload.
+   */
+  private JSONObject readStreamedBatch(final HttpResponse<InputStream> response,
+      final Consumer<JSONObject> onProgress) throws IOException {
+
+    final String contentType = response.headers().firstValue("Content-Type").orElse("");
+    if (!contentType.toLowerCase(Locale.ROOT).contains(NDJSON_CONTENT_TYPE)) {
+      // Compatibility only: reachable against a server that predates issue #7311 and ignored the Accept header.
+      // Deliberately not routed through manageException, which wants an HttpResponse<String> this path does not
+      // have - and building one to reuse it would add a conversion to a branch whose only job is to surface a
+      // server too old to stream, on its way to being unreachable.
+      try (final InputStream in = response.body()) {
+        final String body = new String(in.readAllBytes(), DatabaseFactory.getDefaultCharset());
+        if (response.statusCode() != 200)
+          throw new DatabaseOperationException(
+              "Error on batch import (server did not honour the streaming encoding, HTTP " + response.statusCode()
+                  + "): " + body);
+        return new JSONObject(body);
+      }
+    }
+
+    try (final BufferedReader reader = new BufferedReader(
+        new InputStreamReader(response.body(), DatabaseFactory.getDefaultCharset()))) {
+      for (String line = reader.readLine(); line != null; line = reader.readLine()) {
+        if (line.isBlank())
+          continue;
+        final JSONObject event = new JSONObject(line);
+        if (event.has("progress")) {
+          onProgress.accept(event.getJSONObject("progress"));
+          continue;
+        }
+        if (event.has("summary")) {
+          final JSONObject summary = event.getJSONObject("summary");
+          // The bookmark of issue #5862 rides in the terminal line on this encoding, because the response has
+          // already started by the time the server knows it and a header set then would be dropped in silence.
+          if (summary.has("commitIndex"))
+            updateLastCommitIndex(summary.getLong("commitIndex"));
+          return summary;
+        }
+        if (event.has("error")) {
+          final JSONObject error = event.getJSONObject("error");
+          if (error.has("commitIndex"))
+            updateLastCommitIndex(error.getLong("commitIndex"));
+          throw new DatabaseOperationException("Error on batch import (status " + error.getInt("status", 0) + "): "
+              + error.getString("error", "no message") + ". The load is not atomic: "
+              + error.getLong("verticesCreated", 0) + " vertices and " + error.getLong("edgesCreated", 0)
+              + " edges were attempted before it failed, and the chunks before the failure are durable - "
+              + "re-sending the whole payload would duplicate them");
+        }
+      }
+    }
+
+    throw new DatabaseOperationException(
+        "The streamed batch answer ended without a summary or an error line, so the load did not complete and how "
+            + "much of it was committed is unknown");
   }
 
   protected ResultSet createResultSet(final JSONObject response) {
