@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -38,9 +39,15 @@ import java.util.List;
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/1691">GitHub Issue #1691</a>
  */
 public class GetSessionsHandler extends AbstractServerHttpHandler {
+  /**
+   * The transport-independent control plane, shared with the gRPC {@code ListSessions} RPC so both
+   * protocols read the session manager through one implementation (issue #7310).
+   */
+  private final ServerControlPlane controlPlane;
 
   public GetSessionsHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.controlPlane = new ServerControlPlane(httpServer.getServer());
   }
 
   @Override
@@ -49,7 +56,7 @@ public class GetSessionsHandler extends AbstractServerHttpHandler {
     // Only root users can list sessions
     checkRootUser(user);
 
-    final List<HttpAuthSession> sessions = httpServer.getAuthSessionManager().getActiveSessions();
+    final List<HttpAuthSession> sessions = controlPlane.listHttpSessions();
 
     final JSONArray sessionsArray = new JSONArray();
     for (final HttpAuthSession session : sessions) {

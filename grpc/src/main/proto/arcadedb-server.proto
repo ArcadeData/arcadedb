@@ -960,6 +960,8 @@ message TimeSeriesLatestResponse {
 // requires:
 //   - Ping, GetServerInfo, ListDatabases, ExistsDatabase and GetDatabaseInfo need only a valid
 //     account, as GET /api/v1/databases and GET /api/v1/server do;
+//   - GetProgress needs a valid account that is also granted the database it names, the gate
+//     GET /api/v1/progress/{database} applies through checkAuthorizationOnDatabase;
 //   - every other RPC needs the server-admin (root) principal, the gate POST /api/v1/server and the
 //     /api/v1/server/* routes apply through checkRootUser.
 //
@@ -980,6 +982,7 @@ service ArcadeDbAdminService {
   rpc AlignDatabase  (AlignDatabaseRequest)  returns (AlignDatabaseResponse);
 
   rpc GetDatabaseInfo (GetDatabaseInfoRequest) returns (GetDatabaseInfoResponse);
+  rpc GetProgress     (GetProgressRequest)     returns (GetProgressResponse);
 
   rpc CreateUser     (CreateUserRequest)     returns (CreateUserResponse);
   rpc UpdateUser     (UpdateUserRequest)     returns (UpdateUserResponse);
@@ -1020,6 +1023,11 @@ service ArcadeDbAdminService {
   rpc GetServerEvents   (GetServerEventsRequest)   returns (GetServerEventsResponse);
   rpc Shutdown          (ShutdownRequest)          returns (ShutdownResponse);
   rpc DisconnectCluster (DisconnectClusterRequest) returns (DisconnectClusterResponse);
+
+  // Read-only administrative view of the server's open HTTP authentication sessions. gRPC has no
+  // session of its own - every admin RPC authenticates from the credentials on the request body - so
+  // there is no Login/Logout to go with it (issue #7310).
+  rpc ListSessions (ListSessionsRequest) returns (ListSessionsResponse);
 
   // probes - unauthenticated, see the service comment
   rpc Health (HealthRequest) returns (HealthResponse);
@@ -1458,6 +1466,73 @@ message DisconnectClusterRequest {
   DatabaseCredentials credentials = 1;
 }
 message DisconnectClusterResponse {}
+
+// -----------------------------------------------------------------------------
+// Control plane: discovery (issue #7310)
+// -----------------------------------------------------------------------------
+
+// One long-running maintenance operation (CHECK DATABASE, REBUILD INDEX, COMPACT INDEX, backup,
+// import) currently running on the server that answers the call. Field for field the document
+// OperationProgress.toJSON() emits on GET /api/v1/progress/{database}.
+message OperationProgressInfo {
+  int64  id          = 1;
+  string database    = 2;
+  string operation   = 3;
+  string step_name   = 4;
+  int32  step_index  = 5;
+  int32  total_steps = 6;
+  int64  done        = 7;
+  int64  total       = 8;  // -1 when the step total is unknown
+  int32  percentage  = 9;  // -1 when the step total is unknown
+  int64  started_on  = 10;
+  int64  elapsed_ms  = 11;
+}
+
+message GetProgressRequest {
+  DatabaseCredentials credentials = 1;
+  string database = 2; // required: the progress registry is keyed by database name
+}
+message GetProgressResponse {
+  // Oldest first, the order the registry snapshots them in. Empty when nothing is running - which is
+  // the normal answer, not an error.
+  //
+  // No 'count' field, deliberately, even though ListSessionsResponse below has one: each response
+  // mirrors the shape of the HTTP route it answers, and GET /api/v1/progress/{database} returns only
+  // 'result' while GET /api/v1/sessions returns 'result' and 'count'. Adding one here to make the two
+  // messages look alike would make each of them look less like the document it mirrors.
+  repeated OperationProgressInfo operations = 1;
+}
+
+// One open HTTP authentication session, field for field the document GET /api/v1/sessions emits.
+// The token is included for the same reason the HTTP route includes it and to the same principal
+// (root only): the two views would otherwise disagree about what an administrator can see.
+//
+// OPERATORS: that token is a live bearer credential for the HTTP surface, and one belonging to
+// ANOTHER user, not to the caller. This transport does not enable TLS by default (grpc.tls.enabled),
+// so a plaintext admin channel carrying ListSessions puts every open session's token on the wire
+// where anything between the client and the server can take it. Turn TLS on before reaching any admin
+// RPC across a network you do not control; this one raises the cost of not having done so.
+message SessionInfo {
+  string token       = 1;
+  string user        = 2;
+  int64  created_at  = 3;
+  int64  last_update = 4;
+  int64  elapsed_ms  = 5;
+  string source_ip   = 6;
+  string user_agent  = 7;
+  string country     = 8;
+  string city        = 9;
+}
+
+message ListSessionsRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ListSessionsResponse {
+  // Empty on a server running without the HTTP listener: there are no HTTP sessions to report, which
+  // is an answer rather than a failure.
+  repeated SessionInfo sessions = 1;
+  int32                count    = 2;
+}
 
 // -----------------------------------------------------------------------------
 // Control plane: probes

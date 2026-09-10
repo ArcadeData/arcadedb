@@ -22,6 +22,7 @@ import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -38,8 +39,16 @@ import java.util.Deque;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GetProgressHandler extends AbstractServerHttpHandler {
+  /**
+   * The transport-independent control plane, shared with the gRPC {@code GetProgress} RPC so the two
+   * protocols read the registry through one implementation rather than two that can drift (issue #7310),
+   * the same arrangement {@code PostServerCommandHandler} uses for the rest of the control plane.
+   */
+  private final ServerControlPlane controlPlane;
+
   public GetProgressHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.controlPlane = new ServerControlPlane(httpServer.getServer());
   }
 
   @Override
@@ -53,7 +62,7 @@ public class GetProgressHandler extends AbstractServerHttpHandler {
     checkAuthorizationOnDatabase(user, databaseName);
 
     final JSONArray operations = new JSONArray();
-    for (final OperationProgress op : OperationProgressRegistry.instance().getOperations(databaseName))
+    for (final OperationProgress op : controlPlane.getProgress(databaseName))
       operations.put(op.toJSON());
 
     final JSONObject response = new JSONObject();
