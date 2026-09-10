@@ -63,6 +63,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.BatchAck;
 import com.arcadedb.server.grpc.BeginTransactionRequest;
@@ -194,16 +195,39 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * caller against the database the calls actually target. Before #7320 no database travelled with the
    * call and the server fell back to the literal name {@code "default"}, which refused every principal
    * whose grants named real databases.
+   * <p>
+   * It also names THIS database's user rather than the {@link RemoteGrpcServer}'s. The two are separate
+   * constructor arguments and a scoped database user on a channel built for root is a supported
+   * combination; before #7374 only the request body carried the database's user, and the server prefers
+   * the principal it authenticated from the metadata - so the user the caller passed here was silently
+   * discarded on gRPC while the inherited HTTP methods still used it.
    */
   protected ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub createBlockingStub() {
-    return this.remoteGrpcServer.newBlockingStub(getTimeout(), databaseName);
+    return this.remoteGrpcServer.newBlockingStub(getTimeout(), databaseName, userName, userPassword);
   }
 
   /**
    * @see #createBlockingStub()
    */
   protected ArcadeDbServiceGrpc.ArcadeDbServiceStub createAsyncStub() {
-    return this.remoteGrpcServer.newAsyncStub(getTimeout(), databaseName);
+    return this.remoteGrpcServer.newAsyncStub(getTimeout(), databaseName, userName, userPassword);
+  }
+
+  /**
+   * A fresh admin stub carrying this database's user, for the admin-plane RPCs this class issues on its
+   * own behalf. The admin plane authenticates from the request body and reads no database metadata, so
+   * the stub names no database.
+   * <p>
+   * The stub is built per call, not cached: {@code withDeadlineAfter} fixes an ABSOLUTE deadline the
+   * moment it is applied, so a stub held across calls would carry a deadline that has already passed by
+   * the second poll. Building it also re-resolves the channel, so a server restarted through
+   * {@code start()} is honoured. The cost is a few field copies on a shared channel, which is nothing
+   * next to the round trip.
+   *
+   * @see #createBlockingStub()
+   */
+  protected ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub createAdminBlockingStub() {
+    return this.remoteGrpcServer.newAdminBlockingStub(getTimeout(), userName, userPassword);
   }
 
   @Override
@@ -239,12 +263,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         .setDatabase(getName()).build();
 
     try {
-      // The stub is built per call, not cached: withDeadlineAfter fixes an ABSOLUTE deadline the moment it
-      // is applied, so a stub held across calls would carry a deadline that has already passed by the second
-      // poll. Building it also re-resolves the channel, so a server restarted through start() is honoured.
-      // The cost is a few field copies on a shared channel, which is nothing next to the round trip.
       final GetProgressResponse response = callUnary("GetProgress",
-          () -> remoteGrpcServer.newAdminBlockingStub(getTimeout()).getProgress(request));
+          () -> createAdminBlockingStub().getProgress(request));
 
       final List<JSONObject> operations = new ArrayList<>(response.getOperationsCount());
       for (final OperationProgressInfo info : response.getOperationsList())

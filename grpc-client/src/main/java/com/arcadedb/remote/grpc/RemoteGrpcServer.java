@@ -279,8 +279,27 @@ public class RemoteGrpcServer implements AutoCloseable {
    */
   public ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub newBlockingStub(final int timeout, final String database) {
 
+    return newBlockingStub(timeout, database, null, null);
+  }
+
+  /**
+   * A data-plane stub for a principal that is not necessarily this server's own.
+   * <p>
+   * Issue #7374: {@link RemoteGrpcDatabase} takes a user of its own and puts it in every request body, but
+   * built its stubs through the database-only overload above - so the call metadata carried THIS server's
+   * account, the server authenticated that one, and the user the caller passed to the database was
+   * discarded on gRPC while the HTTP half of the same object still used it. A database opened by a scoped
+   * user on a channel built for root is a supported combination, so the stub has to be able to name which.
+   *
+   * @param userName     the principal the calls authenticate as, or {@code null}/blank to use this
+   *                     server's own account
+   * @param userPassword that principal's password
+   */
+  public ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub newBlockingStub(final int timeout, final String database,
+      final String userName, final String userPassword) {
+
     return ArcadeDbServiceGrpc.newBlockingV2Stub(channel())
-        .withCallCredentials(createCredentials(database))
+        .withCallCredentials(createCredentials(database, userName, userPassword))
         .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
         .withCompression("gzip");
   }
@@ -297,8 +316,17 @@ public class RemoteGrpcServer implements AutoCloseable {
    */
   public ArcadeDbServiceGrpc.ArcadeDbServiceStub newAsyncStub(final int timeout, final String database) {
 
+    return newAsyncStub(timeout, database, null, null);
+  }
+
+  /**
+   * @see #newBlockingStub(int, String, String, String)
+   */
+  public ArcadeDbServiceGrpc.ArcadeDbServiceStub newAsyncStub(final int timeout, final String database,
+      final String userName, final String userPassword) {
+
     return ArcadeDbServiceGrpc.newStub(channel())
-        .withCallCredentials(createCredentials(database))
+        .withCallCredentials(createCredentials(database, userName, userPassword))
         .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
         .withCompression("gzip");
   }
@@ -313,8 +341,19 @@ public class RemoteGrpcServer implements AutoCloseable {
    * is this instance's own and is not shared for that reason.
    */
   public ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub newAdminBlockingStub(final int timeout) {
+    return newAdminBlockingStub(timeout, null, null);
+  }
+
+  /**
+   * An admin stub for a principal that is not necessarily this server's own - the metadata half of what
+   * {@link #newAdminBlockingStub(int)}'s caller already does with the request body (issue #7374).
+   *
+   * @see #newBlockingStub(int, String, String, String)
+   */
+  public ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub newAdminBlockingStub(final int timeout,
+      final String userName, final String userPassword) {
     return ArcadeDbAdminServiceGrpc.newBlockingV2Stub(channel())
-        .withCallCredentials(createCredentials())
+        .withCallCredentials(createCredentials(null, userName, userPassword))
         .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS);
   }
 
@@ -946,6 +985,20 @@ public class RemoteGrpcServer implements AutoCloseable {
    */
   protected CallCredentials createCredentials(final String database) {
     return credentials(userName, userPassword, database);
+  }
+
+  /**
+   * Credentials for {@code user}, or for this server's own account when {@code user} is {@code null} or
+   * blank. The fallback is what keeps a {@link RemoteGrpcDatabase} constructed without credentials of its
+   * own speaking as the server it was opened on, exactly as it did before issue #7374 - metadata carries
+   * no null, so nothing has to special-case one.
+   *
+   * @param database the target database, or {@code null}/blank to omit the key entirely
+   */
+  protected CallCredentials createCredentials(final String database, final String user, final String password) {
+    if (user == null || user.isBlank())
+      return createCredentials(database);
+    return credentials(user, password == null ? "" : password, database);
   }
 
   private CallCredentials credentials(final String user, final String password, final String database) {
