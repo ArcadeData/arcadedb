@@ -29,6 +29,7 @@ import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import com.arcadedb.server.http.HttpServer;
 
 import io.undertow.server.handlers.PathHandler;
+import org.apache.ratis.protocol.RaftPeerId;
 
 import com.arcadedb.database.DatabaseInternal;
 
@@ -314,6 +315,35 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   @Override
   public String getClusterName() {
     return raftHAServer != null ? raftHAServer.getClusterName() : null;
+  }
+
+  @Override
+  public HAServerPlugin.PeerAuthSession lookupAuthSession(final String issuerServerName, final String token)
+      throws IOException {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      throw new IOException("Raft HA is not started");
+    final RaftPeerId issuer = raft.resolvePeerIdByServerName(issuerServerName);
+    // Not a member, or this node itself (which does not hold the token, or it would not be asking): definitive.
+    if (issuer == null || issuer.equals(raft.getLocalPeerId()))
+      return null;
+    return PeerAuthSessionQuery.validate(raft, issuer, token, authSessionRpcTimeoutMs());
+  }
+
+  @Override
+  public void revokeAuthSession(final String token) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      return;
+    PeerAuthSessionQuery.revokeEverywhere(raft, token, authSessionRpcTimeoutMs());
+  }
+
+  /**
+   * Budget for one authentication-session RPC to a peer: the leader proxy's connect timeout, because the RPC is
+   * one small request on a LAN and the caller is a client waiting on a 401-or-200 decision.
+   */
+  private long authSessionRpcTimeoutMs() {
+    return server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT);
   }
 
   @Override

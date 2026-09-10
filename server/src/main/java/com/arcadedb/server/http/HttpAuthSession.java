@@ -51,6 +51,13 @@ public class HttpAuthSession {
   private final String             userAgent;
   private final String             country;
   private final String             city;
+  /**
+   * Name of the cluster node that minted the token, or {@code null} for a session this node created itself. Set only
+   * on the local copy of a session resolved from a peer (issue #7424): that copy is a lease the issuer renews, see
+   * {@link #elapsedFromConfirmation()}.
+   */
+  private final String             issuer;
+  private volatile long            confirmedAt;
 
   public HttpAuthSession(final ServerSecurityUser user, final String token) {
     this(user, token, null, null, null, null);
@@ -67,11 +74,28 @@ public class HttpAuthSession {
    */
   HttpAuthSession(final ServerSecurityUser user, final String token, final String sourceIp,
       final String userAgent, final String country, final String city, final LongSupplier clock) {
+    this(user, token, sourceIp, userAgent, country, city, clock, null, clock.getAsLong());
+  }
+
+  /**
+   * The local copy of a session another node issued. {@code createdAt} is the issuer's, so the absolute timeout
+   * keeps counting from the original login rather than restarting on every node the token reaches.
+   */
+  HttpAuthSession(final ServerSecurityUser user, final String token, final String issuer, final long createdAt,
+      final LongSupplier clock) {
+    this(user, token, null, null, null, null, clock, issuer, createdAt);
+  }
+
+  private HttpAuthSession(final ServerSecurityUser user, final String token, final String sourceIp,
+      final String userAgent, final String country, final String city, final LongSupplier clock, final String issuer,
+      final long createdAt) {
     this.user = user;
     this.token = token;
     this.clock = clock;
-    this.createdAt = clock.getAsLong();
-    this.lastUpdate = this.createdAt;
+    this.issuer = issuer;
+    this.createdAt = createdAt;
+    this.lastUpdate = clock.getAsLong();
+    this.confirmedAt = this.lastUpdate;
     // Truncated here rather than at each call site so no future caller can reintroduce the unbounded
     // retention: this constructor is the only way a client-supplied string enters a session (issue #6809).
     this.sourceIp = truncate(sourceIp);
@@ -107,6 +131,34 @@ public class HttpAuthSession {
 
   public void touch() {
     this.lastUpdate = clock.getAsLong();
+  }
+
+  /**
+   * True when this is the local copy of a session another node issued, i.e. {@link #getIssuer()} is set.
+   */
+  public boolean isRemote() {
+    return issuer != null;
+  }
+
+  /**
+   * The node that minted the token, or {@code null} for a session this node created.
+   */
+  public String getIssuer() {
+    return issuer;
+  }
+
+  /**
+   * Milliseconds since the issuer last confirmed this copy is still valid. Always 0 for a local session.
+   */
+  public long elapsedFromConfirmation() {
+    return issuer == null ? 0 : clock.getAsLong() - confirmedAt;
+  }
+
+  /**
+   * Records that the issuer has just confirmed the session.
+   */
+  public void confirm() {
+    this.confirmedAt = clock.getAsLong();
   }
 
   public ServerSecurityUser getUser() {
