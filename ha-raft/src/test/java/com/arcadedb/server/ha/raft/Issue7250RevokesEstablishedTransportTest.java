@@ -55,9 +55,11 @@ import static org.mockito.Mockito.when;
  * <p>
  * The filter now attaches a {@link PeerTransportSession} to every transport it admits, revokes the sessions whose
  * address a resolution stopped admitting, and {@link PeerAllowlistCallInterceptor} enforces that per RPC: in-flight
- * calls are closed with {@code PERMISSION_DENIED} and later ones are refused. What is NOT closed is the socket -
- * gRPC's public API offers no way to close one established transport - which is the residual risk the tracking doc
- * records.
+ * calls are closed with {@code PERMISSION_DENIED} and later ones are refused. What is NOT closed on the spot is the
+ * socket - gRPC's public API offers no way to close one established transport on demand - which was the residual
+ * risk the tracking doc records, and which issue #7316 then bounded with a connection-idle window on the listener
+ * ({@code Issue7316ReapsIdleRaftConnectionTest}). Nothing below asserts on the socket either way: these tests are
+ * about reach.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */

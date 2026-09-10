@@ -2175,8 +2175,10 @@ public enum GlobalConfiguration {
       service behind arcadedb.ha.k8sSuffix is resolved too, so a StatefulSet scale-up pod can complete its \
       auto-join. Loopback is always allowed. A host that stops being admitted also loses the reach an \
       already-established connection still gave it: the Raft RPCs running on that connection are closed with \
-      a permission error and later ones are refused, though the connection itself stays open until the peer \
-      drops it. Does not provide peer identity or encryption: use mTLS on untrusted networks.""",
+      a permission error and later ones are refused. gRPC exposes no way to close one established transport on \
+      demand, so the connection itself goes when it falls idle, after arcadedb.ha.grpcMaxConnectionIdleMs - or \
+      never, if that window is set to 0. Does not provide peer identity or encryption: use mTLS on untrusted \
+      networks.""",
       Boolean.class, true),
 
   HA_GRPC_ALLOWLIST_REFRESH_MS("arcadedb.ha.grpcAllowlistRefreshMs", SCOPE.SERVER,
@@ -2202,6 +2204,21 @@ public enum GlobalConfiguration {
       when a later DNS re-resolution of that host fails. Bridges transient DNS outages and pod-IP churn so a peer that \
       resolved moments ago is not evicted from the allowlist by a momentary lookup failure. Set to 0 to disable \
       stickiness (drop a host from the allowlist as soon as it stops resolving).""",
+      Long.class, 300_000L),
+
+  HA_GRPC_MAX_CONNECTION_IDLE_MS("arcadedb.ha.grpcMaxConnectionIdleMs", SCOPE.SERVER,
+      """
+      How long in milliseconds an inbound Raft gRPC connection may carry no RPC before the server closes it with a \
+      graceful GOAWAY. Ratis leaves the Raft listener with no server-side lifetime bound at all, so a connection \
+      survives until the peer, the kernel or a network event drops it; that is what leaves the socket of a peer \
+      removed from the allowlist connected after its reach has been revoked (issue #7316). The window is measured \
+      from the moment the connection's last RPC finished, so it cannot reap the replication path: a leader's \
+      AppendEntries to a follower is one long-lived stream, which keeps that follower's inbound connection busy \
+      for as long as replication runs. What it does close are the quiet \
+      connections - a revoked peer that has stopped talking, a follower's channel to a peer it only dials to \
+      campaign, an idle Ratis admin/client channel - and a gRPC client answers the GOAWAY by reconnecting on its \
+      next call. Values below one second are raised to one second by gRPC. Set to 0 to leave connections unbounded, \
+      which is the behaviour before 26.10.1.""",
       Long.class, 300_000L),
 
   HA_TLS_ENABLED("arcadedb.ha.tls.enabled", SCOPE.SERVER,

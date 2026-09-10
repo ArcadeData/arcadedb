@@ -39,10 +39,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * neither the session nor a call outlives its transport, which is the part the issue asked to design carefully.
  * <p>
  * <b>What a revocation actually revokes.</b> gRPC's public API hands out no way to close one established transport
- * (checked across {@code ServerTransportFilter} and every public method of {@code NettyServerBuilder}), so the socket
- * stays connected until one side drops it. What is revoked is everything the socket can carry: in-flight calls are
- * closed with {@link #REVOKED} and every subsequent call on the transport is refused by the interceptor, which sits
- * in the server-wide interceptor chain that every RPC passes.
+ * on demand (checked across {@code ServerTransportFilter} and every public method of {@code NettyServerBuilder}), so
+ * revoking is not the same act as disconnecting. What is revoked is everything the socket can carry: in-flight calls
+ * are closed with {@link #REVOKED} and every subsequent call on the transport is refused by the interceptor, which
+ * sits in the server-wide interceptor chain that every RPC passes. The socket then goes when it falls idle: the one
+ * connection-lifetime knob {@code NettyServerBuilder} does expose is builder-wide, and
+ * {@link RaftGrpcServicesCustomizer} sets it from {@code arcadedb.ha.grpcMaxConnectionIdleMs} (issue #7316).
  */
 final class PeerTransportSession {
 
