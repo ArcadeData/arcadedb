@@ -269,3 +269,64 @@ against the issue with the same three questions. Findings:
 | `GrpcTransportSecurityInterceptor` might not run before the handler, leaving the gate to fail closed on every call and disabling the mint outright | **Not real.** `createApiTokenReturnsTheMaterialOnceAndListsTheTokenWithout` mints successfully over a real channel. Since the gate refuses when the key is absent, a successful mint is proof the interceptor ran and published a verdict - the positive control doubles as the registration and ordering test |
 | The token listing might carry the plaintext by copying the stored document | **Not real**, and now prevented by construction: `listApiTokens` names each field it copies rather than removing one from a copy. `createApiTokenReturnsTheMaterialOnceAndListsTheTokenWithout` asserts `etl.toString()` does not contain the minted token |
 | `PutUserHandler` could have changed which of "user not found" and "password too short" wins | **Not real.** Both old handler and `ServerControlPlane.updateUser` look the user up first and validate the password second; `updateUserAnswersNotFoundForAnAbsentUser` pins the order from the gRPC side and `UserManagementIT` from the HTTP side |
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7383
+
+### Review cycles
+
+**Cycle 1 - `2461063f`.** The `claude` reviewer traced each HTTP handler's old inline logic against
+the new `ServerControlPlane` method and confirmed the status codes match, calling out specifically
+that `PostApiTokenHandler`'s 409-vs-400 split survives as `AlreadyExistsException` vs
+`IllegalArgumentException`. It found one issue:
+
+- **Dangling `{@link Issue7309ApiTokenSecrecyTest}`** in the IT's class javadoc - a class that does
+  not exist, left over from an earlier plan to split these tests across two files. Fixed: the javadoc
+  now names `createApiTokenMintsOnlyOverAProtectedTransport` and
+  `GrpcTransportSecurityInterceptorTest`, which are where the refusal side actually lives.
+
+Codacy reported one minor CodeStyle issue on the same commit. Two changes went in for it:
+
+- `parseDocument` caught `RuntimeException` where `JSONObject(String)` raises exactly
+  `JSONException`. Narrowed - the broad catch would have reported a bug in that method as "your JSON
+  is malformed", sending the caller after a document that is fine.
+- `RemoteGrpcServer` imported `ListBackupsResponse` and never used it. Dead already on `main`;
+  re-sorting the import block to add this change's imports is what pulled it into the diff.
+
+**Cycle 2 - `3f4f90a8`.** The three fixes above. `grpcw` 223/223, the new IT 17/17, before pushing.
+Codacy still reported one minor CodeStyle issue on this commit, so neither of the two guesses made
+for cycle 1 was the one it meant.
+
+**Cycle 3 - the fully-qualified names, and the loopback assumption.** Two items, one from Codacy and
+one from the cycle-2 review, which independently named the same FQN problem.
+
+The cycle-2 `claude` review raised:
+
+- **The FQN nit** - `Issue7309GrpcSecurityControlPlaneIT` used fully-qualified names where an import
+  works. Already fixed locally when the review landed, from the same reasoning (below).
+- **The loopback trust assumption** - `isLoopbackPeer` cannot distinguish a genuinely local client
+  from a TLS-terminating reverse proxy forwarding a remote caller to cleartext 127.0.0.1, and the
+  reviewer asked for that to be stated where a future reader will find it. Fixed: it is now a
+  paragraph in `GrpcTransportSecurityInterceptor`'s class doc rather than only in this document's
+  residual-risk section.
+
+Everything else in that review was confirmation of choices already made, with no action.
+
+Codacy does not expose which line it flagged through the GitHub API, so the diff was re-read against
+the project's own rule instead - CLAUDE.md: "don't use fully qualified names if possible, always
+import the class and just use the name". Four violations, all in the two new test files:
+
+```
+Issue7309GrpcSecurityControlPlaneIT.java:423,501,502,505   com.arcadedb.log.Logger
+Issue7309GrpcSecurityControlPlaneIT.java:558              java.util.stream.IntStream
+GrpcTransportSecurityInterceptorTest.java:138             java.security.NoSuchAlgorithmException
+```
+
+All replaced with imports. Whether or not this is the line Codacy meant, it is a real violation of a
+rule this repository states, so it is worth fixing either way - and that is the honest reason for the
+change, not a claim to have identified the finding.
+
+### Deferred items
+
+None. Both reviews produced only actionable, clear comments, and every one was applied.

@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSession;
 import java.net.InetSocketAddress;
+import java.security.NoSuchAlgorithmException;
 import java.net.SocketAddress;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -135,7 +136,7 @@ class GrpcTransportSecurityInterceptorTest {
   private static SSLSession unhandshakenSslSession() {
     try {
       return SSLContext.getDefault().createSSLEngine().getSession();
-    } catch (final java.security.NoSuchAlgorithmException e) {
+    } catch (final NoSuchAlgorithmException e) {
       throw new IllegalStateException("the platform must provide a default SSLContext", e);
     }
   }

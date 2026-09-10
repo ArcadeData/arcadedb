@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -38,6 +39,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
+import java.util.stream.IntStream;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -412,7 +414,7 @@ class Issue7309GrpcSecurityControlPlaneIT extends BaseGraphServerTest {
    * The capture is installed through {@link LogManager#setLogger}, the engine's own logging seam,
    * rather than by attaching a {@code java.util.logging} handler to the root logger. That distinction
    * decides whether this test works at all: the engine logs through its pluggable
-   * {@link com.arcadedb.log.Logger}, so a JUL handler sees whatever that implementation chooses to
+   * {@link Logger}, so a JUL handler sees whatever that implementation chooses to
    * forward and at whatever level it is configured for - which was verified to miss an INFO-level leak
    * deliberately injected into {@code GrpcLoggingInterceptor.sendMessage}. Capturing at the seam sees
    * every call the engine makes, before any level or handler filtering.
@@ -420,7 +422,7 @@ class Issue7309GrpcSecurityControlPlaneIT extends BaseGraphServerTest {
   @Test
   void aMintedTokenReachesNoLogSinkAndNoMetricTag() {
     final LogManager logManager = LogManager.instance();
-    final com.arcadedb.log.Logger previousLogger = logManager.getLogger();
+    final Logger previousLogger = logManager.getLogger();
     final CapturingLogger captured = new CapturingLogger(previousLogger);
 
     final String token;
@@ -498,11 +500,11 @@ class Issue7309GrpcSecurityControlPlaneIT extends BaseGraphServerTest {
    * Records every engine log call, message and arguments alike, and forwards it to the logger it
    * replaced so a failing run still shows its normal output.
    */
-  private static final class CapturingLogger implements com.arcadedb.log.Logger {
-    private final com.arcadedb.log.Logger delegate;
+  private static final class CapturingLogger implements Logger {
+    private final Logger delegate;
     private final StringBuilder           text = new StringBuilder();
 
-    private CapturingLogger(final com.arcadedb.log.Logger delegate) {
+    private CapturingLogger(final Logger delegate) {
       this.delegate = delegate;
     }
 
@@ -555,7 +557,7 @@ class Issue7309GrpcSecurityControlPlaneIT extends BaseGraphServerTest {
   private List<String> grantsOf(final String userName) {
     final JSONObject databases = getServer(0).getSecurity().getUser(userName).toJSON().getJSONObject("databases");
     final JSONArray groups = databases.getJSONArray("*");
-    return java.util.stream.IntStream.range(0, groups.length()).mapToObj(groups::getString).toList();
+    return IntStream.range(0, groups.length()).mapToObj(groups::getString).toList();
   }
 
   private JSONObject wildcardGroups() {

@@ -48,6 +48,15 @@ import java.net.SocketAddress;
  * connection here rather than from configuration, so a TLS setting that did not actually take effect
  * cannot vouch for a plaintext socket.
  * <p>
+ * <b>What "loopback" assumes.</b> That the peer on the other end of a loopback socket is the client
+ * itself, and not a TLS-terminating reverse proxy forwarding a remote caller to cleartext 127.0.0.1.
+ * From inside this process the two are indistinguishable - a proxied remote caller presents exactly
+ * the same address - so such a deployment gets the token minted for it. That is the same trust model
+ * "trust loopback" HTTP setups already run on, and it is stated here rather than left to be
+ * rediscovered, because this class exists precisely to close a transport-trust gap: an operator who
+ * fronts the gRPC port with a proxy has moved the trust boundary to the proxy and needs to protect it
+ * there.
+ * <p>
  * <b>What it deliberately does not do</b> is refuse the call. It records a fact; the handler decides.
  * An interceptor that closed the call would have to know which methods carry secrets, putting that
  * list one refactor away from disagreeing with the service that defines them.
