@@ -60,7 +60,8 @@ public class WebSocketInsertSessionManager {
   private volatile boolean                              closed;
   /**
    * Notified when a session is rolled back by something other than its own client, so the client can be told.
-   * Its write is one of several independent senders on a {@code /ws} channel, which is issue #7423.
+   * Its write is one of several independent senders on a {@code /ws} channel; {@code WebSocketFrameSender}
+   * records why they need no lock between them (issue #7423).
    */
   private volatile ExpiryListener                       expiryListener = (session, reason) -> {
   };
