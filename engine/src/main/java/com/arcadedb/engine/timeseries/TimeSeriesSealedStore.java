@@ -419,11 +419,35 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
+    final List<Object[]> results = new ArrayList<>();
+    forEachRow(fromTs, toTs, columnIndices, tagFilter, null, row -> results.add(row));
+    return results.iterator();
+  }
+
+  /**
+   * Walks the same blocks {@link #iterateRange} does and hands each matching row to {@code visitor} instead of
+   * collecting it, so a caller folding the rows into an answer holds one block's worth of data rather than the
+   * series (issue #7354). Returns {@code false} when the visitor asked to stop.
+   * <p>
+   * This is the loop; {@code iterateRange} is this method with an {@code ArrayList} for a visitor, which is why
+   * the two cannot drift apart. Same read lock over all file I/O, same binary search into the block directory,
+   * same early termination, same per-row tag filtering.
+   * <p>
+   * <b>The visitor runs under the directory read lock</b>, which is what buys the bounded residency: the rows are
+   * produced as the file is read rather than after. That is a shared lock, so it blocks no other reader, but a
+   * writer that needs it - a truncate or a downsample replacing the file - waits for the whole fold rather than
+   * for a copy. A visitor is therefore expected to fold, not to compute: the cost per row belongs to the caller's
+   * answer, and anything expensive should collect and be done afterwards, at which point {@code iterateRange} is
+   * the method that was wanted.
+   *
+   * @param metrics counts the blocks this scan actually decompressed and the rows it materialised, or {@code null}
+   */
+  public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
+      final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
     // Hold the read lock for all file I/O to prevent stale offsets after
     // atomic file replacement by concurrent writers (truncate/downsample).
     directoryLock.readLock().lock();
     try {
-      final List<Object[]> results = new ArrayList<>();
       final int tsColIdx = findTimestampColumnIndex();
       final int dirSize = blockDirectory.size();
 
@@ -454,8 +478,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         final BlockMatchResult tagMatch = tagFilter != null
             ? blockMatchesTagFilter(entry, tagFilter)
             : BlockMatchResult.FAST_PATH;
-        if (tagMatch == BlockMatchResult.SKIP)
+        if (tagMatch == BlockMatchResult.SKIP) {
+          if (metrics != null)
+            metrics.addSkippedBlock();
           continue;
+        }
 
         final long[] ts = decompressTimestamps(entry, tsColIdx);
         final int start = lowerBound(ts, fromTs);
@@ -463,6 +490,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         if (start >= end)
           continue;
+
+        if (metrics != null) {
+          if (tagMatch == BlockMatchResult.SLOW_PATH)
+            metrics.addSlowPathBlock();
+          else
+            metrics.addFastPathBlock();
+        }
 
         final Object[][] decompCols = decompressColumns(entry, columnIndices, tsColIdx);
         final int resultCols = decompCols.length + 1;
@@ -475,10 +509,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           // Use matchesMapped() so the filter works correctly when columnIndices is a subset.
           if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, columnIndices))
             continue;
-          results.add(row);
+          if (metrics != null)
+            metrics.addMaterializedRows(1);
+          if (!visitor.visit(row))
+            return false;
         }
       }
-      return results.iterator();
+      return true;
     } finally {
       directoryLock.readLock().unlock();
     }

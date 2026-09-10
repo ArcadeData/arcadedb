@@ -396,6 +396,46 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
+   * Hands every row of both layers to {@code visitor} without collecting them, and returns {@code false} when the
+   * visitor asked to stop (issue #7354).
+   * <p>
+   * The counterpart of {@link #iterateRange} for a reader that folds the rows into an answer rather than returning
+   * them: the sealed layer streams block by block through {@link TimeSeriesSealedStore#forEachRow}, so the
+   * residency is one block instead of the whole range. The mutable bucket is still materialised, for the reason
+   * {@code iterateRange} materialises it - a lazy read of it could see pages a concurrent {@code compact()} has
+   * cleared - and it is bounded by the bucket, not by the series.
+   * <p>
+   * The rows arrive sealed-then-mutable, NOT merged by timestamp. Merging is what forces every shard's rows to be
+   * resident at once; a folding answer does not need the order, and one that does wants {@code iterateQuery}.
+   *
+   * @param metrics optional counters, may be {@code null}. Every visited row is counted in
+   *                {@code materializedRows}, but only the SEALED layer contributes block counts - the mutable
+   *                bucket is not organised into blocks - so {@code fastPathBlocks + slowPathBlocks} does not
+   *                account for every materialized row here, exactly as it does not in {@code scanRangeDescending}
+   */
+  public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
+      final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+    compactionLock.readLock().lock();
+    try {
+      if (!sealedStore.forEachRow(fromTs, toTs, columnIndices, tagFilter, metrics, visitor))
+        return false;
+
+      for (final Object[] row : mutableBucket.scanRange(fromTs, toTs, columnIndices)) {
+        // Use matchesMapped() so the filter works correctly when columnIndices is a subset.
+        if (tagFilter != null && !tagFilter.matchesMapped(row, columnIndices))
+          continue;
+        if (metrics != null)
+          metrics.addMaterializedRows(1);
+        if (!visitor.visit(row))
+          return false;
+      }
+      return true;
+    } finally {
+      compactionLock.readLock().unlock();
+    }
+  }
+
+  /**
    * Scans both layers newest-first and returns at most {@code limit} rows in descending timestamp
    * order (issue #5414).
    * <p>

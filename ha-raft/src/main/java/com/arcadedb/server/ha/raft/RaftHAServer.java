@@ -2548,6 +2548,85 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * A <b>candidate</b> HTTP endpoint for a peer whose derived address collapsed onto this node's own, obtained by
+   * carrying the peer's Raft-port offset over to the HTTP port (issue #7332).
+   * <p>
+   * It exists because the collapse is total on the very deployment shape the shared-endpoint recovery was written
+   * for. With no {@code http} port declared, {@link #resolveHttpAddress(RaftPeerId)} derives every peer's endpoint
+   * as <em>its</em> Raft host plus <em>this</em> node's HTTP port; on a cluster whose nodes differ by port rather
+   * than by host that address is this node's own for every peer, so {@code sharedEndpointOf} withheld it - rightly,
+   * dialling ourselves comes straight back - and the second pass never had an endpoint to probe at all.
+   * <p>
+   * The offset is the only signal left: a multi-node cluster on one host is configured by moving both ports
+   * together ({@code 2424/2480}, {@code 2425/2481}, {@code 2426/2482} is what the docs, the examples and the test
+   * fixtures all use), so {@code localHttpPort + (peerRaftPort - localRaftPort)} names the peer's listener whenever
+   * that convention holds and names nothing at all when it does not.
+   * <p>
+   * <b>Only the capability probe's second pass may use it, and that is what makes a guess acceptable here.</b>
+   * Every other caller acts on the peer it addressed and must never dial an address that might belong to someone
+   * else. The second pass does not: it is read-only, its reply names its own author, and it credits the answer to
+   * whoever actually answered - a peer of the current configuration, never this node, never one that already
+   * answered for itself. A wrong guess therefore reaches a socket that is not in the cluster and fails, or reaches
+   * one that is and is credited correctly. It is offered through {@link PeerDialAddress#sharedEndpoint()} for that
+   * reason, and never through {@link PeerDialAddress#httpAddress()}.
+   * <p>
+   * {@code null} - no candidate - when the peer declared its HTTP port (there is nothing to guess, and a declared
+   * address that still collides is a configuration fault to report rather than to work around), when either Raft
+   * port is unknown, when the two Raft ports are equal (the peers differ by host, so the derivation did not
+   * collapse them in the first place), when the arithmetic leaves the port range, or when the result is this
+   * node's own address after all.
+   */
+  public String getPortOffsetPeerHttpAddress(final RaftPeerId peerId) {
+    if (peerId == null || peerId.equals(localPeerId) || httpAddresses.containsKey(peerId))
+      return null;
+
+    final String peerRaft = peerRaftAddress(peerId);
+    final int peerRaftPort = extractPort(peerRaft);
+    final int localRaftPort = extractPort(peerRaftAddress(localPeerId));
+    if (peerRaftPort <= 0 || localRaftPort <= 0 || peerRaftPort == localRaftPort)
+      return null;
+
+    final HttpServer httpServer = arcadeServer.getHttpServer();
+    final int localHttpPort = httpServer != null ? httpServer.getPort() : -1;
+    if (localHttpPort <= 0)
+      return null;
+
+    // long because extractPort returns whatever integer the address carries, port range or not: a peer whose
+    // address ends in 2147483647 would wrap int arithmetic round to a small, plausible-looking port. Nothing
+    // between here and there validates it, so the range check below is done in a type that cannot wrap first.
+    final long candidatePort = (long) localHttpPort + peerRaftPort - localRaftPort;
+    if (candidatePort <= 0 || candidatePort > 65535)
+      return null;
+
+    final String host = extractHost(peerRaft);
+    if (host == null)
+      return null;
+
+    final String candidate = host + ":" + candidatePort;
+    return isSameHttpEndpoint(getLocalHttpAddress(), candidate) ? null : candidate;
+  }
+
+  /**
+   * Extracts the port from a {@code host:port} or {@code [ipv6]:port} address, or {@code -1} when the address
+   * carries none, is blank, or the port is not a number. The mirror of {@link #extractHost}, and it takes the
+   * LAST colon for the same reason: an unbracketed IPv6 literal carries colons of its own. Package-private for
+   * testing.
+   */
+  static int extractPort(final String address) {
+    if (address == null || address.isEmpty())
+      return -1;
+    final int closeBracket = address.lastIndexOf(']');
+    final int colon = address.lastIndexOf(':');
+    if (colon <= 0 || colon < closeBracket)
+      return -1;
+    try {
+      return Integer.parseInt(address.substring(colon + 1));
+    } catch (final NumberFormatException e) {
+      return -1;
+    }
+  }
+
+  /**
    * Extracts the host portion from a {@code host:port} or {@code [ipv6]:port} address. Returns the
    * input unchanged when it carries no port, or {@code null} when blank. Package-private for testing.
    */
@@ -3954,12 +4033,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * asked at all, and those have nothing in common as remedies (issue #7256).
    * <p>
    * <b>Two passes, because a shared address is still worth asking.</b> On a cluster that declares no {@code http}
-   * ports and whose nodes differ by port, every peer's endpoint is derived onto one address (#6202, #6267) and
+   * ports, peers sharing a host have their endpoints derived onto one address (#6202, #6267) and
    * {@link PeerDialAddress} withholds it - correctly, for a request that acts on the peer it addressed. This one
    * does not: it is read-only, and its reply names its own author. So a second pass asks each distinct withheld
    * address ONCE and credits the answer to whichever configured peer actually answered, which is the only peer it
    * can be true of. Everything the second pass does not account for stays a "no", so the mechanism still fails the
    * cheap way; what changes is that such a cluster can reach the negotiated feature at all (issue #7256).
+   * <p>
+   * On the sharpest form of that shape - every node on ONE host, differing only by port - the collapsed address is
+   * this node's own for every peer, and withholding it left the second pass with nothing to ask: the recovery was
+   * dead on its own target until {@code getPortOffsetPeerHttpAddress} gave it a candidate to probe there
+   * (issue #7332).
    */
   // @VisibleForTesting
   void refreshPeerCapabilities() {
@@ -4066,8 +4150,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // Nothing answers at a collapsed address that no peer is actually listening on, and a peer on an older
         // build answers 404 here exactly as it does on the guarded route. Either way the peers behind this address
         // keep the refusal already recorded against them, which is the more useful of the two reasons.
+        // describeProbeFailure, not getMessage(): a bare SocketTimeoutException carries no message, and that is
+        // exactly the failure the helper was written for - reporting it as "null" here left the second pass
+        // saying nothing about the one failure mode that motivated it (issue #7332).
         LogManager.instance().log(this, Level.FINE,
-            "No peer identified itself at the shared address %s: %s", endpoint.httpAddress(), e.getMessage());
+            "No peer identified itself at the shared address %s: %s", endpoint.httpAddress(),
+            describeProbeFailure(e));
       }
     }
     return true;

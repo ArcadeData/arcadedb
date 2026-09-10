@@ -37,10 +37,15 @@ public class RDFImporterFormat extends CSVImporterFormat {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
 
   /**
-   * The delimiter fallback the inherited {@code createCSVParser}/{@code analyze} resolve to: the generic
-   * {@code delimiter} option, then a comma. Only the direct instantiations in the test sources take this form -
-   * {@link com.arcadedb.integration.importer.SourceDiscovery} builds the format through
-   * {@link #RDFImporterFormat(String)} with the delimiter it detected.
+   * No delimiter, so the inherited {@code createCSVParser}/{@code analyze} fall back to the generic
+   * {@code delimiter} option and then to a comma.
+   * <p>
+   * Nothing in production builds the format this way: {@link com.arcadedb.integration.importer.SourceDiscovery}
+   * is the only place one is constructed, and it always hands over the separator it took from between the first
+   * statement's terms through {@link #RDFImporterFormat(String)}. This form exists for a caller that drives
+   * {@code load()} directly with settings already carrying the delimiter - the format's own tests - and for parity
+   * with {@link CSVImporterFormat}'s own pair. A production caller reaching for it is a caller that has a detected
+   * separator to pass and is dropping it (issue #7315).
    */
   public RDFImporterFormat() {
     super();
