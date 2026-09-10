@@ -25,6 +25,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CodeUtils;
@@ -544,11 +545,8 @@ public class SnapshotHttpHandler implements HttpHandler {
       // the FileManager, so they are absent from getFiles(). Add them explicitly so a snapshot-syncing
       // follower also receives the compacted time-series data instead of only the mutable buckets
       // (issue #4382).
-      final File dbDir = new File(db.getDatabasePath());
-      final File[] sealedFiles = dbDir.listFiles((d, name) -> name.endsWith(".ts.sealed"));
-      if (sealedFiles != null)
-        for (final File sealedFile : sealedFiles)
-          addFileToZip(zipOut, sealedFile, manifest);
+      for (final File sealedFile : TimeSeriesSealedStore.listSealedFiles(new File(db.getDatabasePath())))
+        addFileToZip(zipOut, sealedFile, manifest);
 
       // Ship the recency marker (issue #5277). last-tx-id.bin is written on a clean close and on WAL
       // rotation, but a follower that receives this database via snapshot and is later force-killed
@@ -649,10 +647,8 @@ public class SnapshotHttpHandler implements HttpHandler {
         if (file != null)
           total += file.getOSFile().length();
 
-    final File[] sealedFiles = new File(db.getDatabasePath()).listFiles((d, name) -> name.endsWith(".ts.sealed"));
-    if (sealedFiles != null)
-      for (final File sealedFile : sealedFiles)
-        total += sealedFile.length();
+    for (final File sealedFile : TimeSeriesSealedStore.listSealedFiles(new File(db.getDatabasePath())))
+      total += sealedFile.length();
 
     return total + Long.BYTES; // the last-tx-id marker
   }
