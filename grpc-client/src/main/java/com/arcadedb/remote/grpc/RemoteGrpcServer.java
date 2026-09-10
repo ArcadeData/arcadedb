@@ -160,6 +160,13 @@ public class RemoteGrpcServer implements AutoCloseable {
   // read it WITHOUT the monitor, so without volatile a reader racing the first start() or a close() has no
   // happens-before edge and may observe a stale (or half-published) value (issue #6762).
   private volatile ManagedChannel channel;
+  /**
+   * Bumped every time {@link #start()} builds a channel and every time {@link #close()} shuts one down. A gRPC
+   * stub binds the channel it was built on, so a
+   * {@link RemoteGrpcDatabase} that cached its stubs compares this against the generation it built them under
+   * and rebuilds them when a {@link #close()} / {@link #start()} cycle has replaced the channel (issue #7416).
+   */
+  private volatile long           channelGeneration;
   private volatile EventLoopGroup eventLoopGroup;
   /**
    * Set the moment {@link #close()} begins and cleared by the next explicit {@link #start()}. Without it,
@@ -235,6 +242,16 @@ public class RemoteGrpcServer implements AutoCloseable {
       chBuilder.usePlaintext();
 
     channel = chBuilder.build();
+    channelGeneration++;
+  }
+
+  /**
+   * Identifies the channel {@link #channel()} currently hands out: the value changes whenever {@link #start()}
+   * builds a new one and whenever {@link #close()} shuts one down. Cheaper than comparing channels, which
+   * {@link #channel()} may wrap in interceptors on every call.
+   */
+  public long channelGeneration() {
+    return channelGeneration;
   }
 
   /**
@@ -348,6 +365,10 @@ public class RemoteGrpcServer implements AutoCloseable {
       channel.shutdownNow();
     } finally {
       channel = null;
+      // Bumped on close as well as on start, so a stub cached against the channel just shut down is rebuilt on
+      // its next use - and, while the server stays closed, that rebuild is refused by channel() with the reason
+      // instead of the dead channel's "Channel shutdown invoked" (issue #7416).
+      channelGeneration++;
       adminServiceBlockingV2Stub = null;
       if (eventLoopGroup != null) {
         eventLoopGroup.shutdownGracefully(0, 2, TimeUnit.SECONDS);
@@ -392,35 +413,60 @@ public class RemoteGrpcServer implements AutoCloseable {
   }
 
   /**
-   * Creates a database with type "graph" or "document".
+   * Creates a database. A name already taken is refused with {@code ALREADY_EXISTS}, the same answer the HTTP
+   * {@code create database} command gives (issue #7413); use {@link #createDatabaseIfMissing(String)} for the
+   * idempotent form.
    */
   public void createDatabase(final String database) {
+    createDatabase(database, false);
+  }
 
+  /**
+   * Creates the database unless one of that name is already there, and says which happened. The decision is
+   * the server's, in one call: the previous exists-then-create pair left a window in which another client's
+   * create made the second half fail.
+   *
+   * @return {@code true} when this call created it, {@code false} when it already existed
+   */
+  public boolean createDatabaseIfMissing(final String database) {
+    return createDatabase(database, true);
+  }
+
+  private boolean createDatabase(final String database, final boolean ifNotExists) {
     try {
-      withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
-          .createDatabase(CreateDatabaseRequest.newBuilder().setName(database).setCredentials(buildCredentials()).build());
+      return withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
+          .createDatabase(CreateDatabaseRequest.newBuilder().setName(database).setCredentials(buildCredentials())
+              .setIfNotExists(ifNotExists).build())
+          .getCreated();
     } catch (StatusException e) {
       throw new RuntimeException("Failed to create database: " + e.getMessage(), e);
     }
   }
 
   /**
-   * No-op if already present; creates otherwise.
+   * Drops a database. A name that does not exist is refused with {@code NOT_FOUND}, the same answer the HTTP
+   * {@code drop database} command gives (issue #7413); use {@link #dropDatabaseIfExists(String)} for the
+   * idempotent form.
    */
-  public void createDatabaseIfMissing(final String database) {
-    if (!existsDatabase(database)) {
-      createDatabase(database);
-    }
+  public void dropDatabase(final String database) {
+    dropDatabase(database, false);
   }
 
   /**
-   * Drops a database. If your proto supports 'force', add it here.
+   * Drops the database if there is one of that name, and says which happened.
+   *
+   * @return {@code true} when this call dropped it, {@code false} when there was nothing to drop
    */
-  public void dropDatabase(final String database) {
+  public boolean dropDatabaseIfExists(final String database) {
+    return dropDatabase(database, true);
+  }
 
+  private boolean dropDatabase(final String database, final boolean ifExists) {
     try {
-      withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
-          .dropDatabase(DropDatabaseRequest.newBuilder().setName(database).setCredentials(buildCredentials()).build());
+      return withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
+          .dropDatabase(DropDatabaseRequest.newBuilder().setName(database).setCredentials(buildCredentials())
+              .setIfExists(ifExists).build())
+          .getDropped();
     } catch (StatusException e) {
       throw new RuntimeException("Failed to drop database: " + e.getMessage(), e);
     }

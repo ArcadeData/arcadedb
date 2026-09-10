@@ -139,6 +139,9 @@ import java.util.logging.Level;
  * gRPC Service implementation for ArcadeDB
  */
 public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImplBase {
+  /** The {@code protocol} tag every query this service runs is metered under. */
+  private static final String GRPC_PROTOCOL = "grpc";
+
 
   // Pick serializer once
   private static final JsonSerializer FAST = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(false)
@@ -4214,7 +4217,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
+  /**
+   * Runs on whichever thread the caller hands it: {@code bulkInsert}'s own, a transaction's dedicated executor,
+   * or the {@code insertStream} / {@code insertBidirectional} stream executors. The upsert and ignore lookups
+   * inside are real SQL, so the protocol tag is set HERE, around the work, rather than on the RPC's entry thread:
+   * the streaming RPCs do their work from observer callbacks that hop threads, and a tag set in {@code onNext}
+   * never reached the thread the lookup ran on, which metered every conflict probe as {@code internal}
+   * (issue #7407). Left alone when the caller already tagged the thread, so {@code bulkInsert}'s outer
+   * set/clear pair still owns it.
+   */
   private Counts insertRows(InsertContext ctx, Iterator<GrpcRecord> it) {
+    final boolean tagHere = !GRPC_PROTOCOL.equals(ProtocolContext.get());
+    if (tagHere)
+      ProtocolContext.set(GRPC_PROTOCOL);
+    try {
+      return insertRowsTagged(ctx, it);
+    } finally {
+      if (tagHere)
+        ProtocolContext.clear();
+    }
+  }
+
+  private Counts insertRowsTagged(InsertContext ctx, Iterator<GrpcRecord> it) {
 
     Counts c = new Counts();
 

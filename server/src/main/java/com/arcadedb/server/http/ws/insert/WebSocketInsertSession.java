@@ -21,10 +21,17 @@ package com.arcadedb.server.http.ws.insert;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
@@ -33,15 +40,29 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.WebSocketChannel;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 
 /**
  * One duplex insert session opened on {@code /ws} by a {@code start} frame (issue #7382). Mirrors the state the
  * gRPC {@code InsertBidirectional} RPC keeps for the lifetime of its stream: the transaction, the running totals,
  * and the chunk watermark that makes a replayed chunk idempotent.
+ * <p>
+ * <b>Conflicts.</b> The {@code conflictMode} / {@code keyColumns} / {@code updateColumnsOnConflict} /
+ * {@code validateOnly} options are honoured the way {@code ArcadeDbGrpcService.insertRows} honours them (issue
+ * #7404): a row is first matched on its {@code keyColumns} with a {@code SELECT} against its type, and the mode
+ * decides whether a match is updated in place, dropped, or reported as a {@code CONFLICT}. A duplicate the engine
+ * itself detects - a unique index the session named no key columns for - is answered by the same mode, wherever
+ * it surfaces: at the row's own {@code save()} when the twin was written by this same transaction, at the chunk's
+ * commit under {@code per_batch}, at the row's commit under {@code per_row}, and at the session's {@code commit}
+ * frame under {@code per_stream}. That last case is the engine's contract, not this session's: a unique index is
+ * checked against durable state when the transaction commits, so a session that wants a conflict reported on
+ * the row that caused it names its {@code keyColumns}.
  * <p>
  * <b>Threading.</b> The session's {@link TransactionContext} is bound to whichever thread is currently running one
  * of its frames and detached again when that frame finishes - the same borrow-per-request lifecycle
@@ -79,6 +100,8 @@ public class WebSocketInsertSession {
   /** Highest chunk sequence already applied. A chunk at or below it is acknowledged without being applied again. */
   private       long                          watermark;
   private volatile boolean                    closed;
+  /** Set once the "out/in in updateColumnsOnConflict are ignored" warning has been logged for this session. */
+  private          boolean                    warnedEdgeEndpointUpdateColumns;
   private volatile long                       lastUsed   = System.currentTimeMillis();
   /** The connection this session was opened on, so the idle sweep can tell its client it gave up on it. */
   private volatile WebSocketChannel            channel;
@@ -191,6 +214,9 @@ public class WebSocketInsertSession {
       final int rows = records == null ? 0 : records.length();
 
       DatabaseContext.INSTANCE.init(database, transaction);
+      // The key lookups below are real SQL: tagged with the transport they serve so they are metered as such,
+      // which is the misattribution issue #7407 found on the gRPC streaming inserts.
+      ProtocolContext.set("ws");
       try {
         DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).setCurrentUser(user.getDatabaseUser(database));
 
@@ -209,8 +235,17 @@ public class WebSocketInsertSession {
           for (int i = 0; i < rows; i++) {
             final int row = i;
             try {
-              counts.absorb(inOwnTransaction(attempt -> applyRow(records.getJSONObject(row), row, attempt)));
+              counts.absorb(inOwnTransaction(attempt -> applyRowCounting(records, row, attempt)));
+            } catch (final DuplicatedKeyException e) {
+              // The row's own commit hit a unique index the session named no key columns for. The row IS the
+              // transaction here, so the mode can still answer per row: dropped under ignore, a CONFLICT
+              // otherwise.
+              if (options.conflictMode == InsertSessionOptions.ConflictMode.IGNORE)
+                counts.ignored++;
+              else
+                counts.conflict(row, e);
             } catch (final Exception e) {
+              // Anything else that stops the row's commit is reported on the row, since the row is the transaction.
               counts.fail(row, e);
             }
           }
@@ -218,6 +253,7 @@ public class WebSocketInsertSession {
         default -> throw new IllegalStateException("Unsupported transaction mode " + options.transactionMode);
         }
       } finally {
+        ProtocolContext.clear();
         DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
       }
 
@@ -259,6 +295,11 @@ public class WebSocketInsertSession {
     try {
       requireOpen();
 
+      // Closed BEFORE the commit is attempted: a commit the engine refuses - a unique index it checks only now,
+      // see the class comment - rolls the transaction back, and a session whose transaction is gone must not
+      // stay open to take more chunks.
+      closed = true;
+
       if (transaction != null) {
         DatabaseContext.INSTANCE.init(database, transaction);
         try {
@@ -271,8 +312,6 @@ public class WebSocketInsertSession {
           transaction = null;
         }
       }
-
-      closed = true;
 
       final JSONObject summary = new JSONObject();
       summary.put("received", received);
@@ -392,13 +431,26 @@ public class WebSocketInsertSession {
 
   private void applyRows(final JSONArray records, final int rows, final ChunkCounts counts) {
     for (int i = 0; i < rows; i++)
-      try {
-        applyRow(records.getJSONObject(i), i, counts);
-      } catch (final Exception e) {
-        counts.fail(i, e);
-      }
+      applyRowCounting(records, i, counts);
   }
 
+  /** {@link #applyRow} with its outcome tallied: a row that cannot be applied is counted, never thrown. */
+  private void applyRowCounting(final JSONArray records, final int rowIndex, final ChunkCounts counts) {
+    try {
+      applyRow(records.getJSONObject(rowIndex), rowIndex, counts);
+    } catch (final DuplicatedKeyException e) {
+      // Reaches here only from the modes that report a duplicate rather than absorb it.
+      counts.conflict(rowIndex, e);
+    } catch (final Exception e) {
+      counts.fail(rowIndex, e);
+    }
+  }
+
+  /**
+   * Applies one record under the session's conflict mode. Throws for a row that could not be applied; the
+   * caller decides how that is tallied. A {@link DuplicatedKeyException} that escapes is one the mode wants
+   * reported as a {@code CONFLICT}.
+   */
   private void applyRow(final JSONObject record, final int rowIndex, final ChunkCounts counts) {
     final String typeName = record.getString(CLASS_KEY, options.targetType);
     if (typeName == null || typeName.isBlank())
@@ -406,12 +458,15 @@ public class WebSocketInsertSession {
           "Record " + rowIndex + " has no type: set '@class' on it or 'targetType' in the start frame options");
 
     final DocumentType type = database.getSchema().getType(typeName);
+    final boolean isEdge = type instanceof EdgeType;
     final Map<String, Object> properties = record.toMap();
     properties.remove(CLASS_KEY);
 
-    if (type instanceof EdgeType) {
-      final String from = firstNonBlank(record.getString(FROM_KEY, null), record.getString(OUT_KEY, null));
-      final String to = firstNonBlank(record.getString(TO_KEY, null), record.getString(IN_KEY, null));
+    String from = null;
+    String to = null;
+    if (isEdge) {
+      from = firstNonBlank(record.getString(FROM_KEY, null), record.getString(OUT_KEY, null));
+      to = firstNonBlank(record.getString(TO_KEY, null), record.getString(IN_KEY, null));
       if (from == null || to == null)
         throw new IllegalArgumentException(
             "Edge record " + rowIndex + " of type '" + typeName + "' needs both '@from' and '@to' (or 'out' and 'in')");
@@ -421,6 +476,60 @@ public class WebSocketInsertSession {
       properties.remove(OUT_KEY);
       properties.remove(IN_KEY);
 
+      warnAboutEdgeEndpointUpdateColumns(typeName);
+    }
+
+    // A dry run parses and validates the row - the type, the endpoints - and stops here, so `received` counts it
+    // and nothing else does. Same as gRPC's validate_only.
+    if (options.validateOnly)
+      return;
+
+    try {
+      switch (options.conflictMode) {
+      case UPDATE -> {
+        if (updateExisting(typeName, properties)) {
+          counts.updated++;
+          return;
+        }
+      }
+      case IGNORE -> {
+        if (findByKey(typeName, properties) != null) {
+          counts.ignored++;
+          return;
+        }
+      }
+      case ERROR, ABORT -> {
+        // With key columns the conflict is found on the row that caused it rather than left to the engine,
+        // which reports it only where the transaction commits.
+        // The "index" the exception names is the session's key, which reads as such: "Keyed on [name]".
+        final RID taken = findByKey(typeName, properties);
+        if (taken != null)
+          throw new DuplicatedKeyException(typeName + " on " + options.keyColumns, keyValues(properties), taken);
+      }
+      }
+
+      insert(type, typeName, properties, from, to);
+      counts.inserted++;
+    } catch (final DuplicatedKeyException dup) {
+      switch (options.conflictMode) {
+      case IGNORE -> counts.ignored++;
+      // A concurrent writer landed this key after the lookup above; the index proves it exists now, so update
+      // it rather than lose the row. If the match is gone again (a transient window), or a third writer races
+      // the retry too, it is a retriable CONFLICT. Anything else is a real failure, not a conflict.
+      case UPDATE -> {
+        if (updateExisting(typeName, properties))
+          counts.updated++;
+        else
+          throw dup;
+      }
+      case ERROR, ABORT -> throw dup;
+      }
+    }
+  }
+
+  private void insert(final DocumentType type, final String typeName, final Map<String, Object> properties,
+      final String from, final String to) {
+    if (type instanceof EdgeType) {
       final Vertex fromVertex = database.lookupByRID(database.newRID(from), false).asVertex(false);
       final MutableEdge edge = fromVertex.newEdge(typeName, database.newRID(to));
       edge.set(properties);
@@ -434,7 +543,95 @@ public class WebSocketInsertSession {
       document.set(properties);
       document.save();
     }
-    counts.inserted++;
+  }
+
+  /**
+   * Matches an existing record of {@code typeName} on the session's key columns and merges the incoming values
+   * onto it: the {@code updateColumnsOnConflict} when the session names some, every non-key property sent
+   * otherwise. A property whose incoming value is absent or null is left as it is, so nothing can be nulled
+   * through this path. An edge's endpoints are never rewritten - {@code set()} would bypass the graph engine's
+   * edge-list bookkeeping - which needs no check here: {@link #applyRow} strips {@code @from}/{@code @to} and
+   * {@code out}/{@code in} out of {@code properties} before this runs, so naming them in
+   * {@code updateColumnsOnConflict} finds no value and is skipped like any absent column. The same rules as
+   * gRPC's {@code applyConflictUpdates}.
+   *
+   * @return {@code false} when no record matched, in which case the caller inserts
+   */
+  private boolean updateExisting(final String typeName, final Map<String, Object> properties) {
+    try (final ResultSet rs = lookupByKey(typeName, properties)) {
+      if (!rs.hasNext())
+        return false;
+
+      final Result match = rs.next();
+      if (!match.isElement())
+        return false;
+
+      final MutableDocument existing = match.getElement().get().asDocument().modify();
+
+      final boolean mergeAll = options.updateColumnsOnConflict.isEmpty();
+      final Iterable<String> columns = mergeAll ? properties.keySet() : options.updateColumnsOnConflict;
+      for (final String column : columns) {
+        if (column.startsWith("@"))
+          continue;
+        if (mergeAll && options.keyColumnSet.contains(column))
+          continue;
+        final Object value = properties.get(column);
+        if (value == null)
+          continue;
+        existing.set(column, value);
+      }
+      existing.save();
+      return true;
+    }
+  }
+
+  /** @return the record of {@code typeName} carrying this row's key values, or {@code null} when there is none */
+  private RID findByKey(final String typeName, final Map<String, Object> properties) {
+    if (options.keyColumns.isEmpty())
+      return null;
+    try (final ResultSet rs = lookupByKey(typeName, properties)) {
+      return rs.hasNext() ? rs.next().getIdentity().orElse(null) : null;
+    }
+  }
+
+  /**
+   * {@code SELECT FROM type WHERE k1 = ? AND k2 = ?} on the session's key columns. Identifiers are
+   * backtick-quoted so a client-supplied name cannot inject SQL; the values stay parameters.
+   */
+  private ResultSet lookupByKey(final String typeName, final Map<String, Object> properties) {
+    final List<String> keys = options.keyColumns;
+    final StringBuilder sql = new StringBuilder("SELECT FROM ").append(Identifier.quote(typeName)).append(" WHERE ");
+    final Object[] params = new Object[keys.size()];
+    for (int i = 0; i < params.length; i++) {
+      if (i > 0)
+        sql.append(" AND ");
+      sql.append(Identifier.quote(keys.get(i))).append(" = ?");
+      params[i] = properties.get(keys.get(i));
+    }
+    return database.query("sql", sql.toString(), params);
+  }
+
+  private String keyValues(final Map<String, Object> properties) {
+    final List<String> keys = options.keyColumns;
+    final Object[] values = new Object[keys.size()];
+    for (int i = 0; i < values.length; i++)
+      values[i] = properties.get(keys.get(i));
+    return Arrays.toString(values);
+  }
+
+  /**
+   * Tells the operator, once per session, that the endpoints named in {@code updateColumnsOnConflict} are not
+   * going to be rewritten, rather than dropping them silently. Same warning gRPC logs for an edge target.
+   */
+  private void warnAboutEdgeEndpointUpdateColumns(final String typeName) {
+    if (warnedEdgeEndpointUpdateColumns || options.conflictMode != InsertSessionOptions.ConflictMode.UPDATE)
+      return;
+    if (!options.updateColumnsOnConflict.contains(OUT_KEY) && !options.updateColumnsOnConflict.contains(IN_KEY))
+      return;
+    warnedEdgeEndpointUpdateColumns = true;
+    LogManager.instance().log(this, Level.WARNING,
+        "/ws insert session %s: upsert on edge type '%s' ignores 'out'/'in' in updateColumnsOnConflict (edge endpoints cannot be re-pointed by an upsert)",
+        id, typeName);
   }
 
   private static String firstNonBlank(final String first, final String second) {
@@ -464,7 +661,18 @@ public class WebSocketInsertSession {
 
     private void fail(final int rowIndex, final Exception e) {
       failed++;
-      errors.put(error(rowIndex, "DB_ERROR", e));
+      errors.put(error(rowIndex, codeOf(e), e));
+    }
+
+    /** A row refused because its key is already taken: the {@code CONFLICT} code of the gRPC {@code InsertError}. */
+    private void conflict(final int rowIndex, final DuplicatedKeyException e) {
+      failed++;
+      errors.put(error(rowIndex, "CONFLICT", e));
+    }
+
+    /** A duplicate the engine reported on a commit rather than on a row is still a conflict, not a server fault. */
+    private static String codeOf(final Exception e) {
+      return e instanceof DuplicatedKeyException ? "CONFLICT" : "DB_ERROR";
     }
 
     /**
@@ -479,7 +687,7 @@ public class WebSocketInsertSession {
       failed = rows;
       wholeChunkFailed = true;
       errors = new JSONArray();
-      errors.put(error(-1, "DB_ERROR", e));
+      errors.put(error(-1, codeOf(e), e));
     }
 
     private static JSONObject error(final int rowIndex, final String code, final Exception e) {
