@@ -291,6 +291,10 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       if (database.isEmpty())
         throw new IllegalArgumentException("Database parameter is null");
 
+      // The null arm is unreachable today - authenticate() either returns a user or throws - and is kept
+      // deliberately, as the same guard in getDatabaseInfo is: it is the shape checkAuthorizationOnDatabase
+      // has on the HTTP side, where a null user means an unauthenticated handler, and it keeps this check
+      // fail-safe rather than fail-open if authenticate() ever grows a permissive mode.
       if (user != null && !user.canAccessToDatabase(database))
         throw new ServerSecurityException(
             "User '" + user.getName() + "' is not allowed to access database '" + database + "'");
