@@ -124,7 +124,10 @@ public class GrafanaApiSpec implements OpenApiContributor {
   private Schema<?> createQueryRequestSchema() {
     final Schema<Object> aggregationRequest = SpecBuilders.object("One aggregation to compute");
     aggregationRequest.addProperty("field", SpecBuilders.string("Field name to aggregate"));
-    aggregationRequest.addProperty("type", SpecBuilders.string("Aggregation function"));
+    aggregationRequest.addProperty("type", SpecBuilders.string(
+        "Aggregation function. Required, one of SUM, AVG, MIN, MAX, COUNT, matched case-insensitively. "
+            + "A value that matches none is reported as an error frame on this target, leaving the other "
+            + "targets served."));
     aggregationRequest.addProperty("alias", SpecBuilders.string(
         "Output field name. Defaults to the field name suffixed with the lower-cased aggregation type."));
 

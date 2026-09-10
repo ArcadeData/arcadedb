@@ -138,6 +138,88 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #7325: an aggregation function the server does not know must be refused with a message that names the
+   * field and lists the accepted values. It used to reach {@code AggregationType.valueOf} unguarded, whose
+   * {@code IllegalArgumentException} the generic mapper answers as "Cannot execute command" with the specifics in
+   * the {@code detail} field - and {@code detail} is concealed whenever the server runs in production mode, so the
+   * caller was left with no way to tell which field was wrong.
+   */
+  @Test
+  void aggregationRejectsUnknownTypeWithANamedError() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      final JSONObject error = postTsQueryError(serverIndex, aggregationRequest("MEDIAN"));
+
+      assertThat(error.getString("error"))
+          .as("must name the field that was wrong and every value it accepts")
+          .contains("aggregation.requests[0].type")
+          .contains("SUM", "AVG", "MIN", "MAX", "COUNT")
+          .contains("MEDIAN");
+    });
+  }
+
+  /**
+   * Issue #7325: a missing aggregation function is the same client error as an unknown one and gets the same
+   * answer, instead of the JSONException the raw {@code getString} used to throw.
+   */
+  @Test
+  void aggregationTypeIsRequired() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      final JSONObject error = postTsQueryError(serverIndex, aggregationRequest(null));
+
+      assertThat(error.getString("error"))
+          .contains("aggregation.requests[0].type")
+          .contains("SUM", "AVG", "MIN", "MAX", "COUNT");
+    });
+  }
+
+  /**
+   * Issue #7325: the lower-cased spelling a hand-written client is most likely to send now resolves instead of
+   * being refused, and the default alias is unchanged by which spelling arrived.
+   */
+  @Test
+  void aggregationTypeIsCaseInsensitive() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      for (final String spelling : new String[] { "avg", " Avg ", "AVG" }) {
+        final JSONObject result = postTsQuery(serverIndex, aggregationRequest(spelling));
+
+        assertThat(result.getJSONArray("aggregations").getString(0))
+            .as("alias defaults to the field name plus the canonical lower-cased function name")
+            .isEqualTo("temperature_avg");
+        assertThat(result.getJSONArray("buckets").length()).isGreaterThan(0);
+      }
+    });
+  }
+
+  /**
+   * Builds a bucketed aggregation over the ingested "weather" type whose single request carries the given
+   * function name, or no "type" member at all when it is null.
+   */
+  private static JSONObject aggregationRequest(final String aggregationType) {
+    final JSONObject aggRequest = new JSONObject();
+    aggRequest.put("field", "temperature");
+    if (aggregationType != null)
+      aggRequest.put("type", aggregationType);
+
+    final JSONArray requests = new JSONArray();
+    requests.put(aggRequest);
+
+    final JSONObject aggregation = new JSONObject();
+    aggregation.put("bucketInterval", 5000L);
+    aggregation.put("requests", requests);
+
+    final JSONObject request = new JSONObject();
+    request.put("type", "weather");
+    request.put("aggregation", aggregation);
+    return request;
+  }
+
   @Test
   void queryWithTagFilter() throws Exception {
     testEachServer(serverIndex -> {
