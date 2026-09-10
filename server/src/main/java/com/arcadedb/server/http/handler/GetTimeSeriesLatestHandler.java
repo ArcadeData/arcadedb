@@ -114,30 +114,15 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
     return new ExecutionResponse(200, result.toString());
   }
 
+  /**
+   * Reads EVERY occurrence of the 'tag' query parameter and conjoins them, so a type with more than one
+   * tag column can name a single series: {@code ?tag=host:a&tag=region:eu} means host=a AND region=eu.
+   * <p>
+   * Deliberately not {@link #getQueryParameter(HttpServerExchange, String)}, which returns the Deque's
+   * first entry and so dropped every occurrence past the first (issue #7321). The conjunction itself is
+   * the same helper POST /ts/{database}/query uses for its 'tags' object.
+   */
   private TagFilter buildTagFilter(final HttpServerExchange exchange, final List<ColumnDefinition> columns) {
-    final String tagParam = getQueryParameter(exchange, "tag");
-    if (tagParam == null || tagParam.isBlank())
-      return null;
-
-    final int colonIdx = tagParam.indexOf(':');
-    if (colonIdx <= 0)
-      return null;
-
-    final String tagName = tagParam.substring(0, colonIdx);
-    final String tagValue = tagParam.substring(colonIdx + 1);
-
-    // columnIndex for TagFilter is among non-timestamp columns (0-based)
-    int nonTsIdx = 0;
-    for (final ColumnDefinition col : columns) {
-      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-        continue;
-      if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(tagName))
-        // The tag value arrives as request text; coerce it to the column's declared type so it matches
-        // what both storage layers hand back (issue #5475).
-        return TagFilter.eq(nonTsIdx, col.coerceValue(tagValue));
-      nonTsIdx++;
-    }
-
-    return null;
+    return TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(exchange.getQueryParameters().get("tag"), columns);
   }
 }

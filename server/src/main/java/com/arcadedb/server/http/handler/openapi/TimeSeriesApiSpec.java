@@ -130,11 +130,16 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
         "Read the most recent sample of a series",
         """
             Returns the most recent sample of a time-series type, optionally narrowed to one series \
-            by tag. 'latest' is null when the type or the selected series holds no sample.""");
+            by tag. Repeat 'tag' once per tag column to name a single series on a type that carries \
+            several. 'latest' is null when the type or the selected series holds no sample.""");
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     get.addParametersItem(SpecBuilders.queryParam("type", "Time-series type name", true));
-    get.addParametersItem(SpecBuilders.queryParam("tag",
-        "Tag filter in name:value form. Only the first occurrence is honored if the parameter repeats.",
+    // Repeatable since issue #7321: the handler conjoins every occurrence, the way the query endpoint
+    // conjoins the pairs of its 'tags' object, so a plain string parameter would understate the contract
+    // and hold generated clients down to one tag.
+    get.addParametersItem(SpecBuilders.repeatableQueryParam("tag",
+        "Tag filter in name:value form. Repeat the parameter to narrow to one series across several tags: "
+            + "every occurrence must match.",
         false));
     get.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Most recent sample", "TimeSeriesLatestResponse"),
