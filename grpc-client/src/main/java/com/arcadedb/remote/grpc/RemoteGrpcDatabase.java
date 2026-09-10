@@ -79,8 +79,12 @@ import com.arcadedb.server.grpc.ExecuteCommandRequest;
 import com.arcadedb.server.grpc.ExecuteCommandResponse;
 import com.arcadedb.server.grpc.ExecuteQueryRequest;
 import com.arcadedb.server.grpc.ExecuteQueryResponse;
+import com.arcadedb.server.grpc.FullTextSearchRequest;
+import com.arcadedb.server.grpc.FullTextSearchResponse;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcValue;
+import com.arcadedb.server.grpc.HybridSearchRequest;
+import com.arcadedb.server.grpc.HybridSearchResponse;
 import com.arcadedb.server.grpc.InsertChunk;
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertRequest;
@@ -88,8 +92,8 @@ import com.arcadedb.server.grpc.InsertResponse;
 import com.arcadedb.server.grpc.InsertSummary;
 import com.arcadedb.server.grpc.LookupByRidRequest;
 import com.arcadedb.server.grpc.LookupByRidResponse;
-import com.arcadedb.server.grpc.ProjectionSettings;
 import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
+import com.arcadedb.server.grpc.ProjectionSettings;
 import com.arcadedb.server.grpc.PropertiesUpdate;
 import com.arcadedb.server.grpc.QueryResult;
 import com.arcadedb.server.grpc.RollbackTransactionRequest;
@@ -100,6 +104,8 @@ import com.arcadedb.server.grpc.TransactionContext;
 import com.arcadedb.server.grpc.TransactionIsolation;
 import com.arcadedb.server.grpc.UpdateRecordRequest;
 import com.arcadedb.server.grpc.UpdateRecordResponse;
+import com.arcadedb.server.grpc.VectorSearchRequest;
+import com.arcadedb.server.grpc.VectorSearchResponse;
 import com.google.protobuf.Int32Value;
 import io.grpc.Status;
 import io.grpc.StatusException;
@@ -2153,6 +2159,68 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
               d.dbName, d.id,
               tidName(d.ownerThread), tidName(now), d.txLabel, d.beginSite);
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Vector, hybrid and full-text retrieval (issue #7306)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * kNN search over a dense {@code LSM_VECTOR} or sparse {@code LSM_SPARSE_VECTOR} index.
+   * <p>
+   * The request and response shapes, and every bound the server enforces on them, are the ones the HTTP
+   * {@code POST /api/v1/vector/{database}/search} route and the MCP {@code vector_search} tool share: the server
+   * runs one implementation behind all three. ArcadeDB does not generate embeddings - the caller supplies
+   * {@code queryVector}.
+   * <p>
+   * An argument outside its bound comes back as INVALID_ARGUMENT carrying the same message the HTTP surface
+   * answers 400 with, so a client can distinguish "I asked for something illegal" from "the server broke".
+   */
+  public VectorSearchResponse vectorSearch(final VectorSearchRequest request) {
+    return searchCall("VectorSearch", request.toBuilder()
+            .setDatabase(getName()).setCredentials(buildCredentials()).build(),
+        req -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).vectorSearch(req));
+  }
+
+  /**
+   * Fused vector + full-text + graph-expansion search. Same sharing and same error contract as
+   * {@link #vectorSearch(VectorSearchRequest)}.
+   */
+  public HybridSearchResponse hybridSearch(final HybridSearchRequest request) {
+    return searchCall("HybridSearch", request.toBuilder()
+            .setDatabase(getName()).setCredentials(buildCredentials()).build(),
+        req -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).hybridSearch(req));
+  }
+
+  /**
+   * Full-text search over a {@code FULL_TEXT} index. Same sharing and same error contract as
+   * {@link #vectorSearch(VectorSearchRequest)}.
+   */
+  public FullTextSearchResponse fullTextSearch(final FullTextSearchRequest request) {
+    return searchCall("FullTextSearch", request.toBuilder()
+            .setDatabase(getName()).setCredentials(buildCredentials()).build(),
+        req -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).fullTextSearch(req));
+  }
+
+  /**
+   * Runs one of the three search RPCs. The database name and the credentials are stamped on by the caller rather
+   * than left to the application, so a request built by hand cannot address a database other than the one this
+   * connection is open on.
+   */
+  private <Req, Resp> Resp searchCall(final String operation, final Req request, final SearchRpc<Req, Resp> rpc) {
+    checkDatabaseIsOpen();
+    stats.queries.incrementAndGet();
+    try {
+      return callUnary(operation, () -> rpc.run(request));
+    } catch (final StatusRuntimeException | StatusException e) {
+      handleGrpcException(e); // rethrows the mapped domain exception
+      throw new IllegalStateException("unreachable");
+    }
+  }
+
+  @FunctionalInterface
+  private interface SearchRpc<Req, Resp> {
+    Resp run(Req request) throws StatusException;
   }
 
   @FunctionalInterface

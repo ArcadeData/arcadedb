@@ -260,7 +260,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   @Override
   public void handleRequest(final HttpServerExchange exchange) {
-    if (mustExecuteOnWorkerThread() && exchange.isInIoThread()) {
+    if (mustExecuteOnWorkerThread(exchange) && exchange.isInIoThread()) {
       exchange.dispatch(this);
       return;
     }
@@ -1301,6 +1301,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   protected boolean mustExecuteOnWorkerThread() {
     return false;
+  }
+
+  /**
+   * Whether <b>this</b> request must run on a worker thread rather than on the Undertow IO thread. Defaults to
+   * the handler-wide {@link #mustExecuteOnWorkerThread()}; a handler whose answer depends on the request
+   * overrides this one instead - {@code GetQueryHandler} does, because the NDJSON encoding it negotiates per
+   * request writes blocking output, and blocking an IO thread starves the server.
+   */
+  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
+    return mustExecuteOnWorkerThread();
   }
 
   protected boolean requiresJsonPayload() {
