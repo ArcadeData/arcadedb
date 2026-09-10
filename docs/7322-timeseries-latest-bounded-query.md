@@ -229,3 +229,37 @@ Re-verified after the change: `Issue7322LatestBoundedTest` 6/6 green on the fixe
 `aTieAtTheNewestTimestampGoesToTheRowTheNewestFirstScanYieldsFirst` with
 `expected: "in_shard_0" but was: "in_shard_1"`. The oracle swap did not weaken the pin.
 Full suite re-run: 278 tests, 0 failures.
+
+## Review cycle 2 - `ee07eac1`
+
+`claude` re-reviewed and closed with **"No blocking issues found."** It re-traced the stable-sort
+tie-break, the inclusive `lowerBound` pruning and the single-gateway claim independently, and
+called the oracle replacement "exactly the kind of self-correction that should happen in response
+to review feedback."
+
+Three non-blocking notes, none of them changes to this branch:
+
+| Comment | Disposition |
+|---|---|
+| A non-matching tag filter still forces a full walk | Already documented as out of scope; the review agreed it is a pre-existing `queryDescending` limitation shared with the SQL path, not a regression. |
+| Confirm the two port-blocked ITs are green in CI before merge | For the developer. They are the only tests exercising the real HTTP/gRPC entry points end to end. |
+| The tracking doc is long for the size of the code change | Noted by the review itself as consistent with the repo's `docs/73xx-*.md` convention. No change. |
+
+**No deferred items.** `docs/review-deferred-47afd7da.md` in this worktree is not from this run - it
+came in on `main` with #7210 (`git log -1 --format=%H -- docs/review-deferred-47afd7da.md` is an
+ancestor of `main`). This branch touches exactly four files.
+
+## Outcome
+
+- PR: https://github.com/ArcadeData/arcadedb/pull/7376
+- Final state: **clean-approval** after 2 review cycles.
+- Follow-up filed: #7371 (PromQL discovery still materialises whole series).
+- Merge belongs to the developer.
+
+### Ledger
+
+- [x] Move `TimeSeriesGateway.latest` onto `queryDescending(from, to, null, tagFilter, 1, null)` - done.
+- [x] Decide and document the tie-break - done: the timestamp is the guarantee; among rows sharing
+      it the newest-first scan's first row wins. Stated in the javadoc.
+- [x] Add a test that pins it - `aTieAtTheNewestTimestampGoesToTheRowTheNewestFirstScanYieldsFirst`,
+      verified red against the unfixed tree both before and after the review change.
