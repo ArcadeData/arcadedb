@@ -35,6 +35,7 @@ import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
+import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
@@ -395,6 +396,290 @@ public class ServerControlPlane {
 
     if (!server.getSecurity().dropUserClusterWide(userName))
       throw new IllegalArgumentException("User '" + userName + "' not found on server");
+  }
+
+  /**
+   * Applies a partial update to an existing user, the operation {@code PUT /server/users} performs.
+   * <p>
+   * {@code newPassword} and {@code newDatabases} are independent and each may be null, meaning "leave
+   * this part of the user alone". That is the distinction the HTTP body draws by omitting a key, and
+   * it matters: an update that always rewrote both would let a password change silently drop the
+   * user's grants. A non-null-but-empty {@code newDatabases} does clear them - that is a caller
+   * saying so, not a caller staying silent.
+   * <p>
+   * The update is composed onto a <b>copy</b> of the stored user, so a failure part way through
+   * leaves the live object untouched, and is applied through
+   * {@link ServerSecurity#updateUserClusterWide} so an HA cluster converges on it (issue #6808).
+   *
+   * @throws NotFoundException        when no user by that name exists
+   * @throws IllegalArgumentException when the new password violates the length policy
+   */
+  public void updateUser(final String userName, final String newPassword, final JSONObject newDatabases) {
+    if (userName == null || userName.isBlank())
+      throw new IllegalArgumentException("User name was missing");
+
+    final ServerSecurity security = server.getSecurity();
+
+    final ServerSecurityUser existingUser = security.getUser(userName);
+    if (existingUser == null)
+      throw new NotFoundException("User '" + userName + "' not found");
+
+    final JSONObject updatedConfig = existingUser.toJSON().copy();
+
+    if (newPassword != null) {
+      validatePasswordLength(newPassword);
+      updatedConfig.put("password", security.encodePassword(newPassword));
+    }
+
+    if (newDatabases != null)
+      updatedConfig.put("databases", newDatabases);
+
+    security.updateUserClusterWide(updatedConfig);
+  }
+
+  /**
+   * The password policy {@code PUT /server/users} has always applied to an update. It is deliberately
+   * NOT {@code CredentialsValidator}, which {@link #createUser} uses: the validator also checks the
+   * password against the user name, and this method is reached with the name of a user that already
+   * exists, so routing an update through it would start refusing passwords that creation accepted.
+   * Changing that is a policy decision, not a refactor, so the bound stays where it was.
+   */
+  private static void validatePasswordLength(final String password) {
+    if (password.length() < 8)
+      throw new IllegalArgumentException("User password must be at least 8 characters");
+    if (password.length() > 256)
+      throw new IllegalArgumentException("User password cannot be longer than 256 characters");
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Security: groups
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * The whole group document, as {@code GET /server/groups} returns it. It carries no secret: a group
+   * is a set of permissions, and the users holding it are named in the user documents, not here.
+   */
+  public JSONObject listGroups() {
+    return server.getSecurity().groupsToJSON();
+  }
+
+  /**
+   * Creates or replaces one group and refreshes the permissions of every open database it applies to.
+   * <p>
+   * The refresh is the half that is easy to leave out and impossible to notice from the response: the
+   * group document on disk is the durable state, but each open {@code DatabaseInternal} caches the
+   * permissions derived from it, so without {@link ServerSecurity#updateSchema} a saved group takes
+   * effect only for databases opened afterwards. It lives here rather than in the HTTP handler for
+   * exactly that reason - a second transport calling only {@code saveGroup} would have written the
+   * file and changed nothing.
+   *
+   * @param groupConfig the group definition, replacing any existing one of the same name. Missing
+   *                    keys are defaulted the way the HTTP body defaults them.
+   */
+  public void saveGroup(final String database, final String name, final JSONObject groupConfig) {
+    if (database == null || database.isBlank())
+      throw new IllegalArgumentException("Database name is required");
+    if (name == null || name.isBlank())
+      throw new IllegalArgumentException("Group name is required");
+
+    final JSONObject normalized = new JSONObject();
+    normalized.put("resultSetLimit", groupConfig.getLong("resultSetLimit", -1L));
+    normalized.put("readTimeout", groupConfig.getLong("readTimeout", -1L));
+    normalized.put("access", groupConfig.has("access") ? groupConfig.getJSONArray("access") : new JSONArray());
+    normalized.put("types", groupConfig.has("types") ? groupConfig.getJSONObject("types") : new JSONObject());
+
+    server.getSecurity().saveGroup(database, name, normalized);
+    refreshPermissionsOf(database);
+  }
+
+  /**
+   * Drops a group and refreshes the permissions of every open database it applied to.
+   *
+   * @throws IllegalArgumentException when asked for the {@code admin} group of the default
+   *                                  {@code "*"} database, which every deployment relies on
+   * @throws NotFoundException        when no such group exists on that database
+   */
+  public void deleteGroup(final String database, final String name) {
+    if (database == null || database.isBlank())
+      throw new IllegalArgumentException("Database parameter is required");
+    if (name == null || name.isBlank())
+      throw new IllegalArgumentException("Group name parameter is required");
+
+    if ("admin".equals(name) && "*".equals(database))
+      throw new IllegalArgumentException("Cannot delete the admin group from the default (*) database");
+
+    if (!server.getSecurity().deleteGroup(database, name))
+      throw new NotFoundException("Group '" + name + "' not found in database '" + database + "'");
+
+    refreshPermissionsOf(database);
+  }
+
+  /**
+   * Re-derives the cached permissions of every open database the group change applies to - all of
+   * them when the change was made against {@code "*"}.
+   */
+  private void refreshPermissionsOf(final String database) {
+    final ServerSecurity security = server.getSecurity();
+    for (final String databaseName : server.getDatabaseNames()) {
+      if ("*".equals(database) || databaseName.equals(database))
+        security.updateSchema((DatabaseInternal) server.getDatabase(databaseName));
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Security: API tokens
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * The issued tokens, in the projection {@code GET /server/api-tokens} returns: each token's
+   * metadata, its SHA-256 hash - the handle needed to revoke it - and its last four characters.
+   * <p>
+   * The projection is explicit, field by field, rather than a copy of the stored document with the
+   * secret removed. The stored document happens to hold no plaintext today, but a listing built by
+   * subtraction is one added field away from disclosing one, and this list is the thing an operator
+   * reads.
+   */
+  public JSONArray listApiTokens() {
+    final JSONArray result = new JSONArray();
+    for (final JSONObject token : server.getSecurity().getApiTokenConfiguration().listTokens()) {
+      final JSONObject entry = new JSONObject();
+      entry.put("name", token.getString("name"));
+      entry.put("database", token.getString("database"));
+      entry.put("expiresAt", token.getLong("expiresAt", 0));
+      entry.put("createdAt", token.getLong("createdAt", 0));
+      entry.put("permissions", token.getJSONObject("permissions"));
+      entry.put("tokenHash", token.getString("tokenHash"));
+      entry.put("tokenSuffix", token.getString("tokenSuffix", ""));
+      result.put(entry);
+    }
+    return result;
+  }
+
+  /**
+   * Mints an API token and returns it <b>including the plaintext token under {@code "token"}</b>. The
+   * server keeps only the hash, so this is the one and only time that value exists outside the
+   * caller's hands.
+   * <p>
+   * <b>This method performs no transport check.</b> It cannot: it does not know how the caller
+   * arrived. Deciding whether the answer may be written back is the transport's job. gRPC does it,
+   * through {@code GrpcTransportSecurityInterceptor}: the mint is refused unless the call arrived
+   * over TLS or from a loopback peer. <b>HTTP does not</b> - {@code POST /server/api-tokens} mints a
+   * token over a cleartext listener to any host, as it always has - which is filed as issue #7372
+   * rather than changed here, because tightening a route that already behaves this way is a
+   * compatibility decision and not part of adding a second transport.
+   *
+   * A blank {@code database} means {@code "*"}, every database. That is what an omitted key has always
+   * meant over HTTP; it now also covers an explicitly empty one, which previously stored a token scoped
+   * to the database named "" - a scope no database can match, so the token could never have been used.
+   * gRPC needs the same normalization for a different reason: an unset proto3 string is "" and cannot
+   * be told from an omitted one.
+   *
+   * @throws IllegalArgumentException when the name is missing or the permission document is malformed
+   * @throws AlreadyExistsException   when a token of that name has already been issued
+   */
+  public JSONObject createApiToken(final String name, final String database, final long expiresAt,
+      final JSONObject permissions) {
+    if (name == null || name.isBlank())
+      throw new IllegalArgumentException("Token name is required");
+
+    final JSONObject effectivePermissions = permissions != null ? permissions : new JSONObject();
+
+    final String validationError = validateTokenPermissions(effectivePermissions);
+    if (validationError != null)
+      throw new IllegalArgumentException(validationError);
+
+    final String effectiveDatabase = database == null || database.isBlank() ? "*" : database;
+
+    try {
+      return server.getSecurity().getApiTokenConfiguration()
+          .createToken(name, effectiveDatabase, expiresAt, effectivePermissions);
+    } catch (final IllegalArgumentException e) {
+      // ApiTokenConfiguration.createToken raises this for exactly one reason - a duplicate name - and
+      // that is a conflict (409 / ALREADY_EXISTS), not a malformed request. Re-typing it here keeps
+      // both transports from having to tell the two apart by matching on the message text.
+      throw new AlreadyExistsException(e.getMessage());
+    }
+  }
+
+  /**
+   * Revokes a token by its SHA-256 hash.
+   *
+   * @throws IllegalArgumentException when handed a plaintext token instead of a hash. Accepting one
+   *                                  would put live token material into whatever logged the call,
+   *                                  which is the exposure the revocation is trying to end.
+   * @throws NotFoundException        when no token has that hash
+   */
+  public void deleteApiToken(final String tokenHash) {
+    if (tokenHash == null || tokenHash.isBlank())
+      throw new IllegalArgumentException("Token hash parameter is required");
+
+    if (ApiTokenConfiguration.isApiToken(tokenHash))
+      throw new IllegalArgumentException("Use token hash (from list endpoint) instead of plaintext token for deletion");
+
+    if (!server.getSecurity().getApiTokenConfiguration().deleteToken(tokenHash))
+      throw new NotFoundException("Token not found");
+  }
+
+  private static final Set<String> VALID_TOKEN_ACCESS_VALUES = Set.of(
+      "createRecord", "readRecord", "updateRecord", "deleteRecord");
+
+  /**
+   * Checks the shape of a token's permission document, returning the complaint or null. It is a
+   * shape check, not a semantic one: an unknown type name is allowed - the type may be created later -
+   * while an access verb outside the four the engine defines is not, because it would silently grant
+   * nothing.
+   */
+  private static String validateTokenPermissions(final JSONObject permissions) {
+    if (permissions.has("types")) {
+      if (!(permissions.get("types") instanceof final JSONObject types))
+        return "'permissions.types' must be a JSON object";
+
+      for (final String typeName : types.keySet()) {
+        if (!(types.get(typeName) instanceof final JSONObject typeObj))
+          return "'permissions.types." + typeName + "' must be a JSON object";
+
+        if (typeObj.has("access")) {
+          if (!(typeObj.get("access") instanceof final JSONArray access))
+            return "'permissions.types." + typeName + ".access' must be a JSON array";
+
+          for (int i = 0; i < access.length(); i++) {
+            final String value = access.getString(i);
+            if (!VALID_TOKEN_ACCESS_VALUES.contains(value))
+              return "Invalid access value '" + value + "' in permissions.types." + typeName
+                  + ". Valid values: " + VALID_TOKEN_ACCESS_VALUES;
+          }
+        }
+      }
+    }
+
+    if (permissions.has("database") && !(permissions.get("database") instanceof JSONArray))
+      return "'permissions.database' must be a JSON array";
+
+    return null;
+  }
+
+  /**
+   * Raised when the operation names something that does not exist - a user, a group, a token. HTTP
+   * answers it 404 and gRPC {@code NOT_FOUND}; both carry this message verbatim.
+   * <p>
+   * It is a distinct type rather than an {@link IllegalArgumentException} because the two mean
+   * different things to a caller: a malformed argument is worth fixing and retrying, an absent target
+   * is not.
+   */
+  public static class NotFoundException extends RuntimeException {
+    public NotFoundException(final String message) {
+      super(message);
+    }
+  }
+
+  /**
+   * Raised when the operation would create something whose identity is already taken. HTTP answers it
+   * 409 and gRPC {@code ALREADY_EXISTS}.
+   */
+  public static class AlreadyExistsException extends RuntimeException {
+    public AlreadyExistsException(final String message) {
+      super(message);
+    }
   }
 
   // ---------------------------------------------------------------------------------------------

@@ -269,15 +269,25 @@ public final class TimeSeriesGateway {
   /**
    * The newest sample matching {@code tagFilter}, or {@code null} when the selection holds none.
    * <p>
-   * This scans the whole range and takes the last row, which is what the HTTP {@code /ts/{database}/latest}
-   * endpoint has always done and therefore what the gRPC {@code TimeSeriesLatest} RPC must answer identically.
-   * {@link TimeSeriesEngine#queryDescending} would answer the same question in O(shards x blocks touched)
-   * instead of O(series) - that is a change of behaviour in the tie case, so it is tracked separately rather
-   * than smuggled in here (see the follow-up named in the PR).
+   * Asks {@link TimeSeriesEngine#queryDescending} for a single row, so the cost is O(shards x blocks touched)
+   * rather than O(series): each shard stops walking blocks as soon as its own limit is satisfied, and the
+   * running lower bound prunes the shards visited after the first hit. Until #7322 this merged every shard's
+   * whole range into one list and sorted it, which meant a type holding millions of samples allocated all of
+   * them to answer a question about one row - on the endpoint a Grafana single-stat panel polls.
+   * <p>
+   * <b>Tie-break.</b> The guarantee is the timestamp: the returned row's timestamp is the newest in the
+   * selection. When several samples share it, the row the newest-first scan yields first wins. Both this scan
+   * and the whole-series scan it replaced sort stably over the same shard-ordered list, in opposite
+   * directions, so the two disagree on exactly that case and only on it - the pre-#7322 answer was the last of
+   * the tied rows, this one is the first. Nothing specified either. A caller that must distinguish samples
+   * sharing a timestamp narrows the selection with tags instead.
+   * <p>
+   * Both the HTTP {@code GET /ts/{database}/latest} endpoint and the gRPC {@code TimeSeriesLatest} RPC call
+   * this method and nothing else, so the two protocols cannot answer different rows (issue #7305).
    */
   public static Object[] latest(final TimeSeriesEngine engine, final TagFilter tagFilter) throws IOException {
-    final List<Object[]> rows = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, tagFilter);
-    return rows.isEmpty() ? null : rows.get(rows.size() - 1);
+    final List<Object[]> newest = engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, tagFilter, 1, null);
+    return newest.isEmpty() ? null : newest.getFirst();
   }
 
   /**
