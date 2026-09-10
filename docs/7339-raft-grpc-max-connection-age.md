@@ -2,6 +2,8 @@
 
 Follow-up to #7316 (chain: #7132 -> #7225 -> #7250 -> #7316).
 
+PR: https://github.com/ArcadeData/arcadedb/pull/7419
+
 ## The defect
 
 #7316 gave the Raft gRPC listener a server-side connection-lifetime bound,
@@ -248,6 +250,22 @@ it is now stated in the class javadoc together with why per-stream replenishment
 absent rather than merely missing: RFC 9113 lets a peer treat a WINDOW_UPDATE on a closed stream as a
 connection error, and every stream this probe opens is closed by the server almost at once. The
 behaviour is unchanged; a future reuser now sees the constraint before hitting it.
+
+## Review cycle 2 - clean
+
+`ad4c235a`: "Nothing here needs to hold up merging." The one remark - that
+`Http2ConnectionProbe` replenishes only the connection-level window - was the cycle 1 point read
+again after the javadoc landed, and the review credits that javadoc with covering it. No change
+applied, no item deferred.
+
+## Final state
+
+`clean-approval`, two cycles.
+
+| Cycle | Head | What it was |
+|---|---|---|
+| 1 | `14f2b71b` | the fix, the settings, seven unit tests and the two-test measurement IT |
+| 2 | `ad4c235a` | measured the reviewer's `-am` test-jar prediction and disproved it; documented the probe's connection-only flow control; corrected the test-plan command |
 
 ## Residual risk
 
