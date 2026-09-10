@@ -110,8 +110,15 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       if (!securityEnabled)
         return next.startCall(call, headers);
 
-      // All admin RPCs are unary, so onMessage fires exactly once with the full request carrying the
-      // credentials. If a client-streaming admin RPC is ever added, revisit this per-message logic.
+      // Every admin RPC takes exactly one request message - the unary ones, and the server-streaming
+      // RestoreBackup / RestoreDatabase / ImportDatabase added in issue #7308, whose stream is on the
+      // response side only. So onMessage fires exactly once, with the full request carrying the
+      // credentials, and authenticating there closes the call before the handler runs.
+      //
+      // A CLIENT-streaming admin RPC would break that: onMessage would fire per chunk, the first
+      // chunk would be the only one carrying credentials, and this listener would either re-check
+      // every chunk or trust chunks it never checked. Nothing in the service is client-streaming
+      // today; adding one means reworking this, not extending it.
       return new ForwardingServerCallListener.SimpleForwardingServerCallListener<>(next.startCall(call, headers)) {
         private boolean halted = false;
 

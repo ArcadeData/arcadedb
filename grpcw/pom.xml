@@ -68,6 +68,19 @@
             <scope>test</scope>
             <type>test-jar</type>
         </dependency>
+        <!--
+            The restore and import RPCs (issue #7308) reach the integration module reflectively, the
+            same way the HTTP commands do, so it has to be on the test classpath for those ITs to
+            exercise anything but the "libs not found in classpath" arm. Test scope only: at runtime
+            the server assembly is what puts it on the classpath, and the wire module must not drag
+            it into a distribution of its own.
+        -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-integration</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>io.grpc</groupId>
             <artifactId>grpc-testing</artifactId>
