@@ -52,6 +52,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -1062,9 +1063,18 @@ public class GraphImporter implements AutoCloseable {
     // of every subtype through one bucket index per bucket, and each of those names the SUBTYPE that owns the
     // bucket, so an import that writes only to a subtype matches its bucket index here without walking the
     // hierarchy (PR #7433 review; pinned by Issue7432GraphImporterVectorGraphTest).
-    final Set<String> touchedTypes = new HashSet<>(typeStates.keySet());
+    //
+    // "Wrote to" is counted, not configured (PR #7433 review): a type is in typeStates as soon as a source names
+    // it, or as soon as an edge points at it, and an edge collector exists for every edge mapping - a source that
+    // was filtered down to nothing, or one that turned out empty, must not have this import rebuild an index it
+    // never touched, over pending work that is somebody else's.
+    final Set<String> touchedTypes = new HashSet<>();
+    for (final Map.Entry<String, TypeState> entry : typeStates.entrySet())
+      if (entry.getValue().count > 0)
+        touchedTypes.add(entry.getKey());
     for (final EdgeCollector ec : edgeCollectors.values())
-      touchedTypes.add(ec.edgeTypeName);
+      if (ec.srcIdx.size > 0)
+        touchedTypes.add(ec.edgeTypeName);
 
     for (final Index index : database.getSchema().getIndexes()) {
       if (!(index instanceof LSMVectorIndex vectorIndex) || !touchedTypes.contains(vectorIndex.getTypeName()))
@@ -1078,6 +1088,10 @@ public class GraphImporter implements AutoCloseable {
         else
           LogManager.instance().log(this, Level.FINE, "  Vector graph for index '%s' already current, nothing to build",
               vectorIndex.getName());
+      } catch (final CancellationException e) {
+        // The importer's own thread was interrupted: every later build would see the flag too and fail the same
+        // way, so this is the caller's cancellation to receive now, not a failure to log and carry on from.
+        throw e;
       } catch (final RuntimeException e) {
         if (firstFailure == null)
           firstFailure = e;
