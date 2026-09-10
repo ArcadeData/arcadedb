@@ -18,18 +18,23 @@
  */
 package com.arcadedb.server.http.ws.insert;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
- * The subset of the gRPC {@code InsertOptions} message a {@code /ws} insert session understands, parsed from the
+ * The gRPC {@code InsertOptions} message as a {@code /ws} insert session understands it, parsed from the
  * {@code options} object of a {@code start} frame (issue #7382).
  * <p>
- * Only the fields whose behaviour the control frames change are here. {@code conflictMode}, {@code keyColumns},
- * {@code updateColumnsOnConflict} and {@code validateOnly} are gRPC-only for now and are rejected rather than
- * ignored, so a client porting a working {@code InsertBidirectional} loader is told what is missing instead of
- * silently getting plain inserts where it asked for upserts - see issue #7404.
+ * The control frames decide WHEN a transaction commits ({@code transactionMode}); the conflict options decide
+ * WHAT HAPPENS TO A ROW THAT ALREADY EXISTS ({@code conflictMode}, {@code keyColumns},
+ * {@code updateColumnsOnConflict}) and {@code validateOnly} whether anything is written at all. All of them are
+ * honoured with the semantics gRPC gives them (issue #7404), so a loader ported from {@code InsertBidirectional}
+ * keeps its behaviour. The gRPC spellings of the enum values ({@code CONFLICT_UPDATE}, {@code PER_BATCH}) are
+ * accepted next to the short ones.
  *
  * @author Arcade Data Ltd
  */
@@ -58,13 +63,52 @@ public class InsertSessionOptions {
     NONE
   }
 
+  /**
+   * What to do with a row whose key is already taken. Mirrors {@code InsertOptions.ConflictMode}, and like it a
+   * "key" is either the {@link #keyColumns} the session names or, when it names none, whatever unique index the
+   * insert trips over.
+   */
+  public enum ConflictMode {
+    /** The row is counted in {@code failed} and described in {@code errors} with the code {@code CONFLICT}. */
+    ERROR,
+    /**
+     * The matching record is updated in place with the incoming values - {@link #updateColumnsOnConflict} when
+     * given, every non-key property of the record otherwise - and the row is counted in {@code updated}. Needs
+     * {@link #keyColumns}: with nothing to look the existing record up by, there is nothing to update.
+     */
+    UPDATE,
+    /** The row is dropped and counted in {@code ignored}. */
+    IGNORE,
+    /**
+     * Accepted for parity with gRPC, where it is answered exactly as {@link #ERROR} is: the row is reported as a
+     * {@code CONFLICT} and the rest of the chunk still goes in.
+     */
+    ABORT
+  }
+
   /** Default type of the records of every chunk, overridable per record with {@code @class}. */
   public final String          targetType;
   public final TransactionMode transactionMode;
+  public final ConflictMode    conflictMode;
+  /** The properties a row is matched on for {@link ConflictMode#UPDATE} and {@link ConflictMode#IGNORE}. */
+  public final List<String>    keyColumns;
+  /** {@link #keyColumns} as a set, for the per-property "is this a key" check of a merge. */
+  public final Set<String>     keyColumnSet;
+  /** The properties an {@link ConflictMode#UPDATE} overwrites; empty means every non-key property sent. */
+  public final List<String>    updateColumnsOnConflict;
+  /** Rows are received, parsed and counted but nothing is written. */
+  public final boolean         validateOnly;
 
-  private InsertSessionOptions(final String targetType, final TransactionMode transactionMode) {
+  private InsertSessionOptions(final String targetType, final TransactionMode transactionMode,
+      final ConflictMode conflictMode, final List<String> keyColumns, final List<String> updateColumnsOnConflict,
+      final boolean validateOnly) {
     this.targetType = targetType;
     this.transactionMode = transactionMode;
+    this.conflictMode = conflictMode;
+    this.keyColumns = keyColumns;
+    this.keyColumnSet = Set.copyOf(keyColumns);
+    this.updateColumnsOnConflict = updateColumnsOnConflict;
+    this.validateOnly = validateOnly;
   }
 
   /**
@@ -76,42 +120,91 @@ public class InsertSessionOptions {
    */
   public static InsertSessionOptions parse(final JSONObject options) {
     if (options == null)
-      return new InsertSessionOptions(null, TransactionMode.PER_STREAM);
-
-    for (final String unsupported : new String[] { "conflictMode", "keyColumns", "updateColumnsOnConflict",
-        "validateOnly" })
-      if (options.has(unsupported) && !options.isNull(unsupported))
-        throw new IllegalArgumentException(
-            "Option '" + unsupported + "' is not supported by a /ws insert session yet (issue #7404)");
+      return new InsertSessionOptions(null, TransactionMode.PER_STREAM, ConflictMode.ERROR, List.of(), List.of(), false);
 
     final String targetType = options.getString("targetType", null);
+    final TransactionMode mode = parseTransactionMode(options.getString("transactionMode", null));
+    final ConflictMode conflictMode = parseConflictMode(options.getString("conflictMode", null));
+    final List<String> keyColumns = parseColumns(options, "keyColumns");
+    final List<String> updateColumns = parseColumns(options, "updateColumnsOnConflict");
+    final boolean validateOnly = options.getBoolean("validateOnly", false);
 
-    final String rawMode = options.getString("transactionMode", null);
-    final TransactionMode mode;
+    // gRPC accepts this combination and then reports every conflicting row as a CONFLICT, because with no key
+    // to look the existing record up by tryUpsertByRecord never matches. A session that asked for updates and
+    // can never perform one is better refused at start than discovered chunk by chunk.
+    if (conflictMode == ConflictMode.UPDATE && keyColumns.isEmpty())
+      throw new IllegalArgumentException(
+          "conflictMode 'update' needs 'keyColumns': the properties an existing record is matched on before it is updated");
+
+    return new InsertSessionOptions(targetType, mode, conflictMode, keyColumns, updateColumns, validateOnly);
+  }
+
+  private static TransactionMode parseTransactionMode(final String rawMode) {
     if (rawMode == null || rawMode.isBlank())
-      mode = TransactionMode.PER_STREAM;
-    else {
-      final String normalized = rawMode.trim().toUpperCase(Locale.ENGLISH);
-      if ("PER_REQUEST".equals(normalized))
-        mode = TransactionMode.PER_STREAM;
-      else
-        try {
-          mode = TransactionMode.valueOf(normalized);
-        } catch (final IllegalArgumentException e) {
-          throw new IllegalArgumentException("Unknown transactionMode '" + rawMode
-              + "'. Expected one of: per_stream, per_request, per_batch, per_row, none");
-        }
+      return TransactionMode.PER_STREAM;
+
+    final String normalized = rawMode.trim().toUpperCase(Locale.ENGLISH);
+    if ("PER_REQUEST".equals(normalized))
+      return TransactionMode.PER_STREAM;
+
+    final TransactionMode mode;
+    try {
+      mode = TransactionMode.valueOf(normalized);
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException("Unknown transactionMode '" + rawMode
+          + "'. Expected one of: per_stream, per_request, per_batch, per_row, none");
     }
 
     if (mode == TransactionMode.NONE)
       throw new IllegalArgumentException(
           "transactionMode 'none' needs an externally-managed transaction, which a /ws insert session cannot name yet (issue #7403)");
 
-    return new InsertSessionOptions(targetType, mode);
+    return mode;
+  }
+
+  private static ConflictMode parseConflictMode(final String rawMode) {
+    if (rawMode == null || rawMode.isBlank())
+      return ConflictMode.ERROR;
+
+    // "CONFLICT_UPDATE" is how the gRPC enum spells it; a ported loader may well send that.
+    String normalized = rawMode.trim().toUpperCase(Locale.ENGLISH);
+    if (normalized.startsWith("CONFLICT_"))
+      normalized = normalized.substring("CONFLICT_".length());
+
+    try {
+      return ConflictMode.valueOf(normalized);
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Unknown conflictMode '" + rawMode + "'. Expected one of: error, update, ignore, abort");
+    }
+  }
+
+  /**
+   * A list of property names. Refuses a blank name up front, the way gRPC's {@code INVALID_KEY_COLUMN} does,
+   * rather than letting every row fail on the quoting of an empty identifier.
+   */
+  private static List<String> parseColumns(final JSONObject options, final String key) {
+    if (!options.has(key) || options.isNull(key))
+      return List.of();
+
+    final JSONArray array = options.getJSONArray(key);
+    final String[] columns = new String[array.length()];
+    for (int i = 0; i < columns.length; i++) {
+      final Object column = array.isNull(i) ? null : array.get(i);
+      if (!(column instanceof String name) || name.isBlank())
+        throw new IllegalArgumentException("Option '" + key + "' must not contain empty names");
+      columns[i] = name;
+    }
+    return List.of(columns);
   }
 
   /** The name this mode is spelled with on the wire, i.e. what a {@code started} frame echoes back. */
   public String transactionModeName() {
     return transactionMode.name().toLowerCase(Locale.ENGLISH);
+  }
+
+  /** The name this mode is spelled with on the wire, i.e. what a {@code started} frame echoes back. */
+  public String conflictModeName() {
+    return conflictMode.name().toLowerCase(Locale.ENGLISH);
   }
 }

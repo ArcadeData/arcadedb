@@ -56,11 +56,22 @@ public class WebSocketClientHelper implements AutoCloseable {
   private final XnioWorker                 worker;
   private final ByteBufferPool             pool         = new DefaultByteBufferPool(true, BUFFER_SIZE, 1000, 10, 100);
   private final WebSocketChannel           channel;
-  private final ArrayBlockingQueue<String> messageQueue = new ArrayBlockingQueue<>(20);
+  private final ArrayBlockingQueue<String> messageQueue;
 
   private static final int DEFAULT_DELAY = 5_000;
 
   public WebSocketClientHelper(final String uri, final String user, final String pass) throws URISyntaxException, IOException {
+    this(uri, user, pass, 20);
+  }
+
+  /**
+   * @param queueCapacity how many frames the client keeps before dropping the next one on the floor. The default
+   *                      of 20 fits a request/answer exchange; a test that has the server push a change stream
+   *                      at the client while it drives its own frames needs room for all of them
+   */
+  public WebSocketClientHelper(final String uri, final String user, final String pass, final int queueCapacity)
+      throws URISyntaxException, IOException {
+    this.messageQueue = new ArrayBlockingQueue<>(queueCapacity);
     final Xnio xnio = Xnio.getInstance(BaseGraphServerTest.class.getClassLoader());
     worker = xnio.createWorker(OptionMap.builder()//
         .set(Options.WORKER_IO_THREADS, 4)//
@@ -115,9 +126,14 @@ public class WebSocketClientHelper implements AutoCloseable {
   }
 
   public String send(final String payload) throws URISyntaxException, IOException {
+    sendWithoutWaiting(payload);
+    return this.popMessage(DEFAULT_DELAY);
+  }
+
+  /** Queues a frame and returns at once, for a test that pipelines frames or reads the answers separately. */
+  public void sendWithoutWaiting(final String payload) throws IOException {
     final var sendChannel = this.channel.send(WebSocketFrameType.TEXT);
     new StringWriteChannelListener(payload).setup(sendChannel);
-    return this.popMessage(DEFAULT_DELAY);
   }
 
   public String popMessage() {

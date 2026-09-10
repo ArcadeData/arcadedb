@@ -87,6 +87,22 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
     assertThat(server.existsDatabase("nonexistent_database")).isFalse();
   }
 
+  /** Issue #7413: the client's two create flavours map onto the server's strict and idempotent contracts. */
+  @Test
+  void createIfMissingSaysWhetherItCreatedAndStrictCreateRefusesATakenName() {
+    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    final String testDb = "test_grpc_if_missing_db";
+    try {
+      assertThat(server.createDatabaseIfMissing(testDb)).isTrue();
+      assertThat(server.createDatabaseIfMissing(testDb)).isFalse();
+      assertThatThrownBy(() -> server.createDatabase(testDb)).hasMessageContaining("ALREADY_EXISTS");
+    } finally {
+      assertThat(server.dropDatabaseIfExists(testDb)).isTrue();
+    }
+    assertThat(server.dropDatabaseIfExists(testDb)).isFalse();
+    assertThatThrownBy(() -> server.dropDatabase(testDb)).hasMessageContaining("NOT_FOUND");
+  }
+
   @Test
   void shouldCreateAndDropDatabase() {
     server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
@@ -147,13 +163,8 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
   void shouldHandleDropNonExistentDatabase() {
     server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
-    // Dropping a non-existent database may or may not throw an exception depending on implementation
-    try {
-      server.dropDatabase("nonexistent_database_12345");
-    } catch (final Exception e) {
-      // Expected - database doesn't exist
-      assertThat(e.getMessage()).containsIgnoringCase("not found");
-    }
+    // Strict by contract since issue #7413: the same answer the HTTP `drop database` command gives.
+    assertThatThrownBy(() -> server.dropDatabase("nonexistent_database_12345")).hasMessageContaining("NOT_FOUND");
   }
 
   @Test

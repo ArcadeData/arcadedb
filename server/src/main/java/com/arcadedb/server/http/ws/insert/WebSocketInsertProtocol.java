@@ -18,14 +18,15 @@
  */
 package com.arcadedb.server.http.ws.insert;
 
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
+import com.arcadedb.server.http.ws.WebSocketFrameSender;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.WebSocketChannel;
-import io.undertow.websockets.core.WebSockets;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -47,8 +48,9 @@ import java.util.logging.Level;
  * Client to server, on the existing {@code /ws} connection, as the {@code action} of a JSON text frame:
  * <ul>
  * <li>{@code start} - {@code database} (required), {@code sessionId} (optional; the server generates one when it
- *     is absent) and {@code options} ({@code targetType}, {@code transactionMode}). Answered with
- *     {@code started}. A client-chosen id lives in ONE server-wide namespace, not one per user or per database -
+ *     is absent) and {@code options} ({@code targetType}, {@code transactionMode}, and the conflict options of
+ *     issue #7404: {@code conflictMode}, {@code keyColumns}, {@code updateColumnsOnConflict},
+ *     {@code validateOnly}). Answered with {@code started}, which echoes the modes the session runs under. A client-chosen id lives in ONE server-wide namespace, not one per user or per database -
  *     that is what makes "the same session id is refused to a second concurrent {@code start}" true whichever
  *     connection the second one arrives on. Two unrelated clients that both pick a house convention like
  *     {@code batch-1} will therefore collide; a client that does not need to name its own session should leave
@@ -159,6 +161,8 @@ public class WebSocketInsertProtocol {
         started.put("sessionId", session.id);
         started.put("database", session.databaseName);
         started.put("transactionMode", session.options.transactionModeName());
+        started.put("conflictMode", session.options.conflictModeName());
+        started.put("validateOnly", session.options.validateOnly);
         send(channel, started);
       }
       case "chunk" -> {
@@ -189,11 +193,12 @@ public class WebSocketInsertProtocol {
       }
     } catch (final SecurityException e) {
       send(channel, error("Security error", e.getMessage(), message.getString("sessionId", null), e));
-    } catch (final JSONException | IllegalArgumentException | IllegalStateException e) {
+    } catch (final JSONException | IllegalArgumentException | IllegalStateException | DuplicatedKeyException e) {
       // JSONException joins them because a frame whose 'options' carries a value of the wrong JSON TYPE is the
       // same class of mistake as one carrying a value of the wrong content, and answering the first with
       // "Internal error" and the second with "Insert session error" told a client the server had broken when it
-      // had not.
+      // had not. DuplicatedKeyException is the per_stream commit refusing a key the client sent twice (issue
+      // #7404): the client's data, not the server's fault.
       send(channel, error("Insert session error", e.getMessage(), message.getString("sessionId", null), e));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on /ws insert session action '%s'", e, action);
@@ -218,9 +223,12 @@ public class WebSocketInsertProtocol {
     return json;
   }
 
+  /**
+   * One of several independent senders on a {@code /ws} channel; see {@link WebSocketFrameSender} for why they
+   * need no lock between them (issue #7423).
+   */
   private static void send(final WebSocketChannel channel, final JSONObject message) {
-    if (channel.isOpen())
-      WebSockets.sendText(message.toString(), channel, null);
+    WebSocketFrameSender.sendIfOpen(channel, message.toString());
   }
 
   private void registerCloseHook(final WebSocketChannel channel, final UUID channelId) {

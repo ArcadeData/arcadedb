@@ -25,7 +25,6 @@ import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.WebSocketCallback;
 import io.undertow.websockets.core.WebSocketChannel;
-import io.undertow.websockets.core.WebSockets;
 
 import java.io.IOException;
 import java.util.Collection;
@@ -178,7 +177,7 @@ public class WebSocketEventBus {
         }
 
         try {
-          WebSockets.sendText(json, subscription.getChannel(), callback);
+          WebSocketFrameSender.send(subscription.getChannel(), json, callback);
         } catch (final Exception e) {
           // The frame never reached Undertow, so nothing is outstanding: give the reservation back rather than let
           // a channel that fails synchronously look like a slow consumer.

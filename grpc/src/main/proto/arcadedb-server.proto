@@ -1083,14 +1083,25 @@ message CreateDatabaseRequest {
   DatabaseCredentials credentials = 1;
   string name = 2; // database name
   string type = 3; // "graph" or "document" (logical)
+  // When false (the default) a name already taken is answered ALREADY_EXISTS, as the HTTP `create database`
+  // command answers it. When true the call is idempotent: an existing database of that name is left as it
+  // is and the response says so with created = false. Names are exact, never case-folded.
+  bool if_not_exists = 4;
 }
-message CreateDatabaseResponse {}
+message CreateDatabaseResponse {
+  bool created = 1; // true when this call created the database, false when if_not_exists found it already there
+}
 
 message DropDatabaseRequest {
   DatabaseCredentials credentials = 1;
   string name = 2; // database name
+  // When false (the default) a name that does not exist is answered NOT_FOUND, as the HTTP `drop database`
+  // command answers it. When true the call is idempotent and the response says which with dropped = false.
+  bool if_exists = 3;
 }
-message DropDatabaseResponse {}
+message DropDatabaseResponse {
+  bool dropped = 1; // true when this call dropped the database, false when if_exists found nothing to drop
+}
 
 message GetDatabaseInfoRequest {
   DatabaseCredentials credentials = 1;

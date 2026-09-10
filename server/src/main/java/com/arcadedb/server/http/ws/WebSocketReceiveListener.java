@@ -30,7 +30,6 @@ import io.undertow.websockets.core.AbstractReceiveListener;
 import io.undertow.websockets.core.BufferedTextMessage;
 import io.undertow.websockets.core.StreamSourceFrameChannel;
 import io.undertow.websockets.core.WebSocketChannel;
-import io.undertow.websockets.core.WebSockets;
 
 import java.io.IOException;
 import java.util.Locale;
@@ -120,7 +119,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   private void sendAck(final WebSocketChannel channel, final ACTION action) {
     final var json = new JSONObject("{\"result\": \"ok\"}");
     json.put("action", action.toString().toLowerCase(Locale.ENGLISH));
-    WebSockets.sendText(json.toString(), channel, null);
+    WebSocketFrameSender.send(channel, json.toString(), null);
   }
 
   private void sendError(final WebSocketChannel channel, final String error, final String detail, final Throwable exception) {
@@ -130,7 +129,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
       json.put("detail", encodeError(detail));
     if (exception != null)
       json.put("exception", exception.getClass().getName());
-    WebSockets.sendText(json.toString(), channel, null);
+    WebSocketFrameSender.send(channel, json.toString(), null);
   }
 
   private String encodeError(final String message) {

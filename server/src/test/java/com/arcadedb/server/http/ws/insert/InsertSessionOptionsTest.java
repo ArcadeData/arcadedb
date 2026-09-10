@@ -101,23 +101,82 @@ class InsertSessionOptionsTest {
    * asked for upserts must not silently get plain inserts (#7404).
    */
   @Test
-  void everyOptionThisServerDoesNotImplementIsRefusedByName() {
-    assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject().put("conflictMode", "update")))
-        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("conflictMode").hasMessageContaining("#7404");
-    assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject().put("keyColumns", new JSONArray().put("id"))))
-        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("keyColumns");
-    assertThatThrownBy(
-        () -> InsertSessionOptions.parse(new JSONObject().put("updateColumnsOnConflict", new JSONArray().put("name"))))
-        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("updateColumnsOnConflict");
-    assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject().put("validateOnly", true)))
-        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("validateOnly");
+  void noConflictOptionsMeansErrorOnADuplicateWithNoKeyColumnsAndNoDryRun() {
+    final InsertSessionOptions options = InsertSessionOptions.parse(new JSONObject().put("targetType", "Person"));
+    assertThat(options.conflictMode).isEqualTo(InsertSessionOptions.ConflictMode.ERROR);
+    assertThat(options.conflictModeName()).isEqualTo("error");
+    assertThat(options.keyColumns).isEmpty();
+    assertThat(options.updateColumnsOnConflict).isEmpty();
+    assertThat(options.validateOnly).isFalse();
   }
 
-  /** An explicit JSON null is "not set", not "set to something unsupported". */
+  /** Issue #7404: the four gRPC conflict options are honoured, in either the short or the gRPC spelling. */
   @Test
-  void anExplicitNullForAnUnsupportedOptionIsNotTreatedAsAskingForIt() {
+  void everyConflictModeIsAcceptedInEitherSpelling() {
+    final JSONArray key = new JSONArray().put("id");
+    assertThat(InsertSessionOptions.parse(new JSONObject().put("conflictMode", "update").put("keyColumns", key)).conflictMode)
+        .isEqualTo(InsertSessionOptions.ConflictMode.UPDATE);
+    assertThat(InsertSessionOptions.parse(new JSONObject().put("conflictMode", "CONFLICT_UPDATE").put("keyColumns", key)).conflictMode)
+        .isEqualTo(InsertSessionOptions.ConflictMode.UPDATE);
+    assertThat(InsertSessionOptions.parse(new JSONObject().put("conflictMode", " Ignore ")).conflictMode)
+        .isEqualTo(InsertSessionOptions.ConflictMode.IGNORE);
+    assertThat(InsertSessionOptions.parse(new JSONObject().put("conflictMode", "conflict_abort")).conflictMode)
+        .isEqualTo(InsertSessionOptions.ConflictMode.ABORT);
+    assertThat(InsertSessionOptions.parse(new JSONObject().put("conflictMode", "error")).conflictMode)
+        .isEqualTo(InsertSessionOptions.ConflictMode.ERROR);
+  }
+
+  @Test
+  void keyColumnsUpdateColumnsAndValidateOnlyAreCarried() {
+    final InsertSessionOptions options = InsertSessionOptions.parse(new JSONObject().put("conflictMode", "update")
+        .put("keyColumns", new JSONArray().put("id").put("tenant"))
+        .put("updateColumnsOnConflict", new JSONArray().put("name"))
+        .put("validateOnly", true));
+    assertThat(options.keyColumns).containsExactly("id", "tenant");
+    assertThat(options.keyColumnSet).containsExactlyInAnyOrder("id", "tenant");
+    assertThat(options.updateColumnsOnConflict).containsExactly("name");
+    assertThat(options.validateOnly).isTrue();
+  }
+
+  @Test
+  void anUnknownConflictModeIsRefusedAndTheMessageListsTheRealOnes() {
+    assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject().put("conflictMode", "merge")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("merge")
+        .hasMessageContaining("update")
+        .hasMessageContaining("ignore");
+  }
+
+  /**
+   * gRPC accepts an update mode with no key columns and then reports every duplicate as a CONFLICT, because it
+   * has nothing to match the existing record on. A session that can never perform the update it asked for is
+   * refused up front instead.
+   */
+  @Test
+  void updateWithoutKeyColumnsIsRefusedAtStart() {
+    assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject().put("conflictMode", "update")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("keyColumns");
+  }
+
+  @Test
+  void aBlankOrNonStringKeyColumnIsRefusedByName() {
+    assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject().put("keyColumns", new JSONArray().put("id").put(" "))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("keyColumns");
+    assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject().put("updateColumnsOnConflict", new JSONArray().put(42))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("updateColumnsOnConflict");
+  }
+
+  @Test
+  void anExplicitNullForAConflictOptionMeansItsDefault() {
     final JSONObject options = new JSONObject().put("targetType", "Person");
     options.put("conflictMode", (Object) null);
-    assertThat(InsertSessionOptions.parse(options).targetType).isEqualTo("Person");
+    options.put("keyColumns", (Object) null);
+    final InsertSessionOptions parsed = InsertSessionOptions.parse(options);
+    assertThat(parsed.targetType).isEqualTo("Person");
+    assertThat(parsed.conflictMode).isEqualTo(InsertSessionOptions.ConflictMode.ERROR);
+    assertThat(parsed.keyColumns).isEmpty();
   }
 }

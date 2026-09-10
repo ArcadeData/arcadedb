@@ -256,17 +256,13 @@ class WebSocketInsertSessionIT extends BaseGraphServerTest {
 
   /**
    * The options a {@code /ws} session does not implement are refused at {@code start}, not ignored: a loader
-   * ported from {@code InsertBidirectional} must not silently get plain inserts where it asked for upserts
-   * (issues #7403, #7404).
+   * ported from {@code InsertBidirectional} must not silently run under a different policy than the one it
+   * asked for (issue #7403). The conflict options are honoured since issue #7404; see
+   * {@link WebSocketInsertSessionConflictIT}.
    */
   @Test
   void optionsThisServerDoesNotImplementAreRefusedRatherThanIgnored() throws Throwable {
     try (final var client = newClient()) {
-      final JSONObject options = new JSONObject().put("targetType", "Person").put("conflictMode", "update");
-      final JSONObject refused = new JSONObject(client.send(startWithOptions(null, options)));
-      assertThat(refused.getString("result", "")).isEqualTo("error");
-      assertThat(refused.getString("detail", "")).contains("conflictMode").contains("#7404");
-
       final JSONObject noneMode = new JSONObject(
           client.send(startWithOptions(null, new JSONObject().put("targetType", "Person").put("transactionMode", "none"))));
       assertThat(noneMode.getString("result", "")).isEqualTo("error");
