@@ -1255,48 +1255,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   JSONObject sendBatch(final String content, final Map<String, String> queryParams) {
-    return sendBatch(content, queryParams, null);
-  }
-
-  /**
-   * Sends one bulk-load payload to {@code POST /api/v1/batch} and returns the load's summary object.
-   * <p>
-   * With a {@code onProgress} listener the request negotiates the streaming encoding of issue #7311
-   * ({@code Accept: application/x-ndjson}) and the listener is handed every {@code progress} line as it arrives,
-   * so a caller learns what the server has committed while the rest of its payload is still being read. The
-   * object returned is the terminal {@code summary} line, which carries exactly the fields the buffered
-   * encoding returns - so nothing downstream of this method has to know which encoding was used.
-   * <p>
-   * With a {@code null} listener nothing is negotiated and the buffered request goes out exactly as before.
-   *
-   * @param onProgress notified once per chunk acknowledgement, or {@code null} to send an unnegotiated request
-   */
-  JSONObject sendBatch(final String content, final Map<String, String> queryParams,
-      final Consumer<JSONObject> onProgress) {
     checkDatabaseIsOpen();
 
-    final StringBuilder urlBuilder = new StringBuilder(getUrl("batch", databaseName));
-    if (queryParams != null && !queryParams.isEmpty()) {
-      urlBuilder.append('?');
-      boolean first = true;
-      for (final Map.Entry<String, String> entry : queryParams.entrySet()) {
-        if (!first)
-          urlBuilder.append('&');
-        urlBuilder.append(entry.getKey()).append('=').append(entry.getValue());
-        first = false;
-      }
-    }
-
     try {
-      final HttpRequest.Builder builder = createRequestBuilder("POST", urlBuilder.toString())
+      final HttpRequest request = createRequestBuilder("POST", batchUrl(queryParams))
           .POST(HttpRequest.BodyPublishers.ofString(content))
-          .header("Content-Type", NDJSON_CONTENT_TYPE);
-      if (onProgress != null)
-        builder.header("Accept", NDJSON_CONTENT_TYPE);
-      final HttpRequest request = builder.build();
-
-      if (onProgress != null)
-        return readStreamedBatch(httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream()), onProgress);
+          .header("Content-Type", NDJSON_CONTENT_TYPE)
+          .build();
 
       final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -1317,6 +1282,64 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (final Exception e) {
       throw new DatabaseOperationException("Error on batch import", e);
     }
+  }
+
+  /**
+   * Sends one bulk-load payload to {@code POST /api/v1/batch} and returns the load's summary object.
+   * <p>
+   * With a {@code onProgress} listener the request negotiates the streaming encoding of issue #7311
+   * ({@code Accept: application/x-ndjson}) and the listener is handed every {@code progress} line as it arrives,
+   * so a caller learns what the server has committed while the rest of its payload is still being read. The
+   * object returned is the terminal {@code summary} line, which carries exactly the fields the buffered
+   * encoding returns - so nothing downstream of this method has to know which encoding was used.
+   * <p>
+   * With a {@code null} listener this delegates to {@link #sendBatch(String, Map)}, so a subclass that overrode
+   * that method to intercept every flush still sees it. A subclass that wants to intercept a load WITH a
+   * listener has to override this method too - there is no third place the two paths meet.
+   *
+   * @param onProgress notified once per chunk acknowledgement, or {@code null} to send an unnegotiated request
+   */
+  JSONObject sendBatch(final String content, final Map<String, String> queryParams,
+      final Consumer<JSONObject> onProgress) {
+    // Delegates rather than duplicates, and in this direction on purpose: sendBatch(content, queryParams) is an
+    // overridable extension point that a subclass replaces to intercept every flush - Issue7031RemoteClientIT
+    // does exactly that to simulate a failed request. Routing the no-listener case through the new overload
+    // instead would have walked straight past those overrides, silently, since the compiler is perfectly happy
+    // to call the sibling method nobody overrode.
+    if (onProgress == null)
+      return sendBatch(content, queryParams);
+
+    checkDatabaseIsOpen();
+
+    try {
+      final HttpRequest request = createRequestBuilder("POST", batchUrl(queryParams))
+          .POST(HttpRequest.BodyPublishers.ofString(content))
+          .header("Content-Type", NDJSON_CONTENT_TYPE)
+          .header("Accept", NDJSON_CONTENT_TYPE)
+          .build();
+
+      return readStreamedBatch(httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream()), onProgress);
+    } catch (final DatabaseOperationException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new DatabaseOperationException("Error on batch import", e);
+    }
+  }
+
+  /** The {@code POST /api/v1/batch} URL with the caller's options rendered as its query string. */
+  private String batchUrl(final Map<String, String> queryParams) {
+    final StringBuilder urlBuilder = new StringBuilder(getUrl("batch", databaseName));
+    if (queryParams != null && !queryParams.isEmpty()) {
+      urlBuilder.append('?');
+      boolean first = true;
+      for (final Map.Entry<String, String> entry : queryParams.entrySet()) {
+        if (!first)
+          urlBuilder.append('&');
+        urlBuilder.append(entry.getKey()).append('=').append(entry.getValue());
+        first = false;
+      }
+    }
+    return urlBuilder.toString();
   }
 
   /**

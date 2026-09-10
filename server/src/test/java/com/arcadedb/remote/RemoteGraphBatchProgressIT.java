@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -177,6 +178,39 @@ class RemoteGraphBatchProgressIT extends BaseGraphServerTest {
     }
     try (final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM Person")) {
       assertThat(((Number) rs.nextIfAvailable().getProperty("cnt")).longValue()).isEqualTo(10);
+    }
+  }
+
+  /**
+   * The progress listener is an overload, and an overload is a second path: a flush that asks for no progress
+   * has to keep going through {@code sendBatch(content, queryParams)}, which is the method a subclass replaces
+   * to intercept every request this client makes. Routing it through the new three-argument sibling instead
+   * walks past those overrides in silence - the compiler is perfectly happy to call the method nobody
+   * overrode - and the only symptom is a stub that never fires, which reads as a test that stopped reproducing
+   * its own bug rather than as a broken client.
+   */
+  @Test
+  @Timeout(120)
+  void aFlushWithNoListenerStillGoesThroughTheOverridableSend() {
+    final List<String> intercepted = new ArrayList<>();
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", httpPort(), DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS) {
+      @Override
+      JSONObject sendBatch(final String content, final Map<String, String> queryParams) {
+        intercepted.add(content);
+        return super.sendBatch(content, queryParams);
+      }
+    }) {
+      database.command("sql", "CREATE VERTEX TYPE Person");
+
+      try (final RemoteGraphBatch batch = database.batch().build()) {
+        batch.createVertex("Person", "name", "Alice");
+      }
+
+      assertThat(intercepted)
+          .as("a flush without a progress listener must still reach the method subclasses override")
+          .hasSize(1);
+      assertThat(intercepted.getFirst()).contains("Alice");
     }
   }
 

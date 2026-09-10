@@ -233,6 +233,29 @@ could tell anyone at that point.
 
 Deferred: none. Disagreed: none.
 
+### Cycle 4 - `188e328f76`
+
+Found by widening the regression run to the whole `com.arcadedb.remote` IT package rather than the classes
+this branch touches - which is the only reason it was found at all, and it is a defect this branch
+introduced, not a review comment.
+
+**`Issue7031RemoteClientIT` broke, 3 of 4 tests.** `RemoteGraphBatch.flush()` had been changed to call the new
+`sendBatch(content, queryParams, onProgress)` overload, and the two-argument `sendBatch(content, queryParams)`
+was left delegating to it. But the two-argument method is an **overridable extension point**: that test
+subclasses `RemoteDatabase` and overrides it to record every payload and to simulate a failed request. With
+the delegation pointing that way, every flush went to the sibling the subclass had not overridden, so the stub
+never fired and three tests that exercise #7031's "a failed flush is not re-sent" contract silently stopped
+exercising anything. Nothing in the compiler or in the classes this branch changed says so.
+
+The delegation is inverted: the two-argument method holds the buffered implementation again, and the overload
+returns `sendBatch(content, queryParams)` when there is no listener. `RemoteGraphBatchProgressIT.
+aFlushWithNoListenerStillGoesThroughTheOverridableSend` pins the direction with its own recording subclass, and
+both it and the three `Issue7031RemoteClientIT` tests were confirmed to fail against the inverted form.
+
+This is the "dual-path trap" shape: a new overload beside an existing overridable method is a second path, and
+the callers have to be moved deliberately rather than by whichever signature is most convenient at the call
+site.
+
 Other reviewers on this PR: CodeRabbit reached its free-tier review limit and produced no findings. Codacy
 reported "4 new issues (1 high ErrorProne, 3 minor CodeStyle)" and **its findings are not retrievable from
 here** - neither `gh pr view --json comments` nor the check-run summary carries them, only the Codacy
@@ -290,3 +313,26 @@ promise held for one shape of failure and not the other.
 3. **Cosmetic:** the double blank lines introduced around the new blocks are collapsed.
 
 Deferred: none. Disagreed: none.
+
+### Cycle 4 - `188e328f76`
+
+Found by widening the regression run to the whole `com.arcadedb.remote` IT package rather than the classes
+this branch touches - which is the only reason it was found at all, and it is a defect this branch
+introduced, not a review comment.
+
+**`Issue7031RemoteClientIT` broke, 3 of 4 tests.** `RemoteGraphBatch.flush()` had been changed to call the new
+`sendBatch(content, queryParams, onProgress)` overload, and the two-argument `sendBatch(content, queryParams)`
+was left delegating to it. But the two-argument method is an **overridable extension point**: that test
+subclasses `RemoteDatabase` and overrides it to record every payload and to simulate a failed request. With
+the delegation pointing that way, every flush went to the sibling the subclass had not overridden, so the stub
+never fired and three tests that exercise #7031's "a failed flush is not re-sent" contract silently stopped
+exercising anything. Nothing in the compiler or in the classes this branch changed says so.
+
+The delegation is inverted: the two-argument method holds the buffered implementation again, and the overload
+returns `sendBatch(content, queryParams)` when there is no listener. `RemoteGraphBatchProgressIT.
+aFlushWithNoListenerStillGoesThroughTheOverridableSend` pins the direction with its own recording subclass, and
+both it and the three `Issue7031RemoteClientIT` tests were confirmed to fail against the inverted form.
+
+This is the "dual-path trap" shape: a new overload beside an existing overridable method is a second path, and
+the callers have to be moved deliberately rather than by whichever signature is most convenient at the call
+site.
