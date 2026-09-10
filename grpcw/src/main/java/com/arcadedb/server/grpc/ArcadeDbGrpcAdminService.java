@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
-import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
@@ -33,7 +32,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerControlPlane;
-import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
@@ -1165,19 +1163,23 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   }
 
   /**
-   * Create DB physically with READ_WRITE mode.
+   * Creates the database across the cluster, through the same control-plane method the HTTP
+   * {@code create database} command uses: on a replicated database that also submits the Raft
+   * install-database entry, so the peers install it too. This RPC created the database locally only
+   * until issue #7389, and the {@link #requireLeader} gate above meant the divergence it produced
+   * always landed on the node the followers treat as authoritative.
    */
   private void createDatabasePhysical(final String name) {
-    server.createDatabase(name, ComponentFile.MODE.READ_WRITE);
+    controlPlane.createDatabase(name);
   }
 
   /**
-   * Drop DB physically. Gets the database, drops it via embedded, then removes from server cache.
+   * Drops the database across the cluster, through the same control-plane method the HTTP
+   * {@code drop database} command uses: Raft-first on a replicated database, local otherwise. See
+   * {@link #createDatabasePhysical} for why this RPC no longer touches the embedded database itself.
    */
   private void dropDatabasePhysical(final String name) {
-    final ServerDatabase database = server.getDatabase(name);
-    database.getEmbedded().drop();
-    server.removeDatabase(database.getName());
+    controlPlane.dropDatabase(name);
   }
 
   /**
