@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
@@ -181,12 +182,18 @@ class Issue7031RemoteClientIT extends BaseGraphServerTest {
       super(server, port, databaseName, userName, userPassword);
     }
 
+    /**
+     * The single method that puts a batch on the wire, whatever encoding it negotiates, so overriding it here
+     * intercepts every flush - which is the whole point of this stub (issue #7353 folded the two overloads
+     * into one precisely so a subclass could not miss half of them).
+     */
     @Override
-    JSONObject sendBatch(final String content, final Map<String, String> queryParams) {
+    JSONObject sendBatch(final String content, final Map<String, String> queryParams,
+        final Consumer<JSONObject> onProgress) {
       sentPayloads.add(content);
       if (failNextSend)
         throw new ArcadeDBException("simulated failure of the batch request");
-      return super.sendBatch(content, queryParams);
+      return super.sendBatch(content, queryParams, onProgress);
     }
   }
 }
