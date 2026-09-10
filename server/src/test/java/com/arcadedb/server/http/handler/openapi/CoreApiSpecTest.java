@@ -352,23 +352,48 @@ class CoreApiSpecTest {
    * Issue #7351: the read-your-writes bookmark is emitted on the streamed encoding as well as the buffered one,
    * so it belongs on the response rather than on either media type - and a generated client has no way to know
    * it exists unless the document says so.
+   * <p>
+   * Asserted in both directions, because the document can be wrong either way. The response-commit listener is
+   * registered partway through {@code DatabaseAbstractHandler.execute}, once the request has been authenticated
+   * and its database resolved, so a 401 or a 404 for a database that does not exist is decided before the
+   * bookmark exists and can never carry it. Declaring it there would be the same doc/runtime mismatch this test
+   * exists to prevent, only pointing the other way.
    */
   @Test
-  void everyQueryOperationDeclaresTheReadYourWritesBookmarkHeader() {
+  void theQueryOperationsDeclareTheBookmarkExactlyWhereItCanBeSent() {
     final List<Operation> operations = List.of(
         openAPI.getPaths().get("/api/v1/query/{database}/{language}/{command}").getGet(),
         openAPI.getPaths().get("/api/v1/query/{database}").getPost(),
         openAPI.getPaths().get("/api/v1/command/{database}").getPost());
 
     for (final Operation operation : operations) {
-      final Header bookmark = operation.getResponses().get("200").getHeaders().get("X-ArcadeDB-Commit-Index");
-      assertThat(bookmark)
-          .as("%s must declare the read-your-writes bookmark on its 200", operation.getOperationId())
-          .isNotNull();
-      assertThat(bookmark.getDescription())
-          .as("the description has to name the request-side header the value is fed back as, or a client "
-              + "cannot act on it")
-          .contains("X-ArcadeDB-Read-After");
+      assertThat(operation.getResponses().keySet())
+          .as("the statuses below are the ones this assertion is written against")
+          .contains("200", "400", "401", "404", "500");
+
+      for (final String status : operation.getResponses().keySet()) {
+        final Header bookmark = operation.getResponses().get(status).getHeaders() == null
+            ? null
+            : operation.getResponses().get(status).getHeaders().get("X-ArcadeDB-Commit-Index");
+
+        if ("401".equals(status) || "404".equals(status)) {
+          assertThat(bookmark)
+              .as("%s answers %s before the request reaches the database, so it never carries the bookmark and "
+                  + "must not promise it", operation.getOperationId(), status)
+              .isNull();
+          continue;
+        }
+
+        assertThat(bookmark)
+            .as("%s must declare the read-your-writes bookmark on its %s: the listener emits it whatever the "
+                + "outcome once the request is inside the database, and a document that named only the 200 "
+                + "would hide that", operation.getOperationId(), status)
+            .isNotNull();
+        assertThat(bookmark.getDescription())
+            .as("the description has to name the request-side header the value is fed back as, or a client "
+                + "cannot act on it")
+            .contains("X-ArcadeDB-Read-After");
+      }
     }
   }
 }
