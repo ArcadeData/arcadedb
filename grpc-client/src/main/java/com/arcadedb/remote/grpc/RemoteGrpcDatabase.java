@@ -2471,6 +2471,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     if (query.getLimit() > 0)
       request.setLimit(query.getLimit());
 
+    // Issue #7370: a query issued while this connection holds an open transaction names it, so the server
+    // streams the answer on that transaction's thread instead of on a gRPC worker - the same stamping
+    // executeQuery, lookupByRid and the three search RPCs already do.
+    if (transactionId != null)
+      request.setTransaction(openTransaction());
+
     if (query.isAggregated()) {
       final TimeSeriesAggregation.Builder aggregation = TimeSeriesAggregation.newBuilder()
           .setBucketIntervalMs(query.getBucketIntervalMs());
@@ -2538,6 +2544,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         .setType(typeName);
     if (tagName != null && !tagName.isBlank())
       request.setTags(toGrpcTagFilter(Map.of(tagName, tagValue)));
+    // Issue #7370: same stamping as timeSeriesQuery above.
+    if (transactionId != null)
+      request.setTransaction(openTransaction());
 
     try {
       final TimeSeriesLatestResponse response = callUnary("TimeSeriesLatest",
