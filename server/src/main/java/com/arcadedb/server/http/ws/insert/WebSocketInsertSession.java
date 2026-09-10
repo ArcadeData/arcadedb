@@ -469,7 +469,7 @@ public class WebSocketInsertSession {
     try {
       switch (options.conflictMode) {
       case UPDATE -> {
-        if (updateExisting(typeName, properties, isEdge)) {
+        if (updateExisting(typeName, properties)) {
           counts.updated++;
           return;
         }
@@ -498,7 +498,7 @@ public class WebSocketInsertSession {
       // it rather than lose the row. If the match is gone again (a transient window), or a third writer races
       // the retry too, it is a retriable CONFLICT. Anything else is a real failure, not a conflict.
       case UPDATE -> {
-        if (updateExisting(typeName, properties, isEdge))
+        if (updateExisting(typeName, properties))
           counts.updated++;
         else
           throw dup;
@@ -530,12 +530,15 @@ public class WebSocketInsertSession {
    * Matches an existing record of {@code typeName} on the session's key columns and merges the incoming values
    * onto it: the {@code updateColumnsOnConflict} when the session names some, every non-key property sent
    * otherwise. A property whose incoming value is absent or null is left as it is, so nothing can be nulled
-   * through this path; an edge's endpoints are never rewritten, because {@code set()} would bypass the graph
-   * engine's edge-list bookkeeping. The same rules as gRPC's {@code applyConflictUpdates}.
+   * through this path. An edge's endpoints are never rewritten - {@code set()} would bypass the graph engine's
+   * edge-list bookkeeping - which needs no check here: {@link #applyRow} strips {@code @from}/{@code @to} and
+   * {@code out}/{@code in} out of {@code properties} before this runs, so naming them in
+   * {@code updateColumnsOnConflict} finds no value and is skipped like any absent column. The same rules as
+   * gRPC's {@code applyConflictUpdates}.
    *
    * @return {@code false} when no record matched, in which case the caller inserts
    */
-  private boolean updateExisting(final String typeName, final Map<String, Object> properties, final boolean isEdge) {
+  private boolean updateExisting(final String typeName, final Map<String, Object> properties) {
     try (final ResultSet rs = lookupByKey(typeName, properties)) {
       if (!rs.hasNext())
         return false;
@@ -552,8 +555,6 @@ public class WebSocketInsertSession {
         if (column.startsWith("@"))
           continue;
         if (mergeAll && options.keyColumnSet.contains(column))
-          continue;
-        if (isEdge && (OUT_KEY.equals(column) || IN_KEY.equals(column)))
           continue;
         final Object value = properties.get(column);
         if (value == null)
