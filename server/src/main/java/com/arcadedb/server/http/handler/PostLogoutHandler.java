@@ -51,6 +51,9 @@ public class PostLogoutHandler extends AbstractServerHttpHandler {
       if (auth.startsWith(AUTHORIZATION_BEARER)) {
         final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
         httpServer.getAuthSessionManager().removeSession(token);
+        // The other nodes of a cluster may hold a copy of this session (issue #7424): drop those too, so a
+        // logout is a logout wherever the load balancer sends the next request.
+        httpServer.getClusterAuthSessionResolver().revoke(token);
       }
     }
 

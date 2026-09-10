@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
@@ -259,6 +260,36 @@ public interface HAServerPlugin extends ServerPlugin {
    *
    * @param usersJsonArray a JSON array string representing the full current users list
    */
+  /**
+   * What the node that issued an authentication token says about it when asked (issue #7424): the principal it
+   * belongs to and when it was created.
+   */
+  record PeerAuthSession(String userName, long createdAt) {
+  }
+
+  /**
+   * Asks the node named {@code issuerServerName} whether it still holds the authentication session {@code token}
+   * (issue #7424). A login token lives on the node that answered {@code /api/v1/login}; behind a load balancer the
+   * next request lands elsewhere, and this is how that node finds out whether the token is good.
+   *
+   * @return the session as the issuer describes it, or {@code null} when the answer is definitive: the issuer is
+   * not a member of this cluster, is this node itself, or does not know the token
+   *
+   * @throws IOException when the issuer could not be asked (unreachable, timed out, no usable address); the caller
+   *                     treats it as "unknown for now", not as a revocation
+   */
+  default PeerAuthSession lookupAuthSession(final String issuerServerName, final String token) throws IOException {
+    return null;
+  }
+
+  /**
+   * Tells every other node of the cluster to drop its copy of the authentication session {@code token} (issue
+   * #7424). Best effort and bounded in time: a peer that cannot be reached drops the copy on its own at its next
+   * renewal with the issuer, which no longer holds it.
+   */
+  default void revokeAuthSession(final String token) {
+  }
+
   default void replicateSecurityUsers(final String usersJsonArray) {
     // No-op by default; Raft implementation overrides.
   }

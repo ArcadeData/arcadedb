@@ -194,6 +194,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // not advertised. Re-reported whenever the verdict changes, see {@code isNewAmbiguityVerdict} (issue #6297).
   private final    Map<HAServerPlugin.ROUTING_PROTOCOL, AtomicReference<String>> routingAmbiguityReported = createRoutingProtocolVerdicts();
   private final    Map<RaftPeerId, String> peerDisplayNames   = new ConcurrentHashMap<>();
+  // The server list as configured, in order, and the names the operator gave its entries: what
+  // resolvePeerIdByServerName() applies the local-peer resolution rules to (issue #7424).
+  private final    List<RaftPeer>          configuredPeerList;
+  private final    Map<RaftPeerId, String> configuredPeerNames;
   private final    String                  clusterName;
 
   // volatile: reassigned by the recovery path (restartRatis) and cleared by stop(), while background
@@ -356,6 +360,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           serverName, configuredPeers, synthesized.getId());
     }
     this.localPeerId = resolvedLocalPeerId;
+    this.configuredPeerList = peers;
+    this.configuredPeerNames = configuredPeerNames;
 
     // If this node is configured as a replica, override its Raft peer priority to 0
     // so Ratis never elects it as leader (useful for read-scale or witness nodes).
@@ -954,6 +960,31 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Returns a human-readable display name for a peer, e.g. "arcadedb-0 (localhost:2480)".
    * Falls back to the raw peer ID string if the peer is unknown.
    */
+  /**
+   * The peer whose {@code arcadedb.server.name} is {@code serverName}, or {@code null} when no peer of the
+   * configured server list answers to it (issue #7424). Applies the rules a node uses to find ITSELF in the list
+   * ({@link RaftPeerAddressResolver#findLocalPeerId}) to another node's name: a configured {@code name@host}
+   * entry, a host equal to the name, or a {@code -N}/{@code _N} suffix naming the position in the list. Those
+   * rules hold on every node because every node reads the same list, so the answer here is the peer that node
+   * resolved itself to.
+   */
+  public RaftPeerId resolvePeerIdByServerName(final String serverName) {
+    if (serverName == null || serverName.isBlank())
+      return null;
+    try {
+      return RaftPeerAddressResolver.findLocalPeerId(configuredPeerList, configuredPeerNames, serverName, arcadeServer);
+    } catch (final IllegalArgumentException e) {
+      return null;
+    }
+  }
+
+  /**
+   * The HTTPS clients this node uses for its peer-to-peer RPCs, built once per server and reused (issue #7301).
+   */
+  TrustedHttpClientCache getHttpsClients() {
+    return capabilityHttpsClients;
+  }
+
   public String getPeerDisplayName(final RaftPeerId peerId) {
     final String name = peerDisplayNames.get(peerId);
     return name != null ? name : peerId.toString();

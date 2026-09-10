@@ -54,6 +54,7 @@ import com.arcadedb.server.http.handler.PutUserHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
 import com.arcadedb.server.http.handler.PostLoginHandler;
+import com.arcadedb.server.http.handler.PostClusterAuthSessionHandler;
 import com.arcadedb.server.http.handler.PostLogoutHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
 import com.arcadedb.server.http.handler.PostRollbackHandler;
@@ -124,6 +125,7 @@ public class HttpServer implements ServerPlugin {
   private final    ArcadeDBServer         server;
   private final    HttpSessionManager     sessionManager;
   private final    HttpAuthSessionManager authSessionManager;
+  private final    ClusterAuthSessionResolver clusterAuthSessionResolver;
   private final    WebSocketEventBus      webSocketEventBus;
   private final    WebSocketInsertSessionManager  insertSessionManager;
   private final    WebSocketInsertProtocol        insertProtocol;
@@ -143,7 +145,9 @@ public class HttpServer implements ServerPlugin {
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_EXPIRE_TIMEOUT) * 1_000L,
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_ABSOLUTE_TIMEOUT) * 1_000L,
         server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX),
-        server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER));
+        server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER),
+        server.getServerName());
+    this.clusterAuthSessionResolver = new ClusterAuthSessionResolver(server, authSessionManager);
     this.webSocketEventBus = new WebSocketEventBus(this.server);
     // A /ws insert session holds a transaction between frames, so an abandoned one has to expire the way an
     // 'arcadedb-session-id' transaction does - on its own budget, because a bulk loader pauses between chunks
@@ -244,6 +248,7 @@ public class HttpServer implements ServerPlugin {
         .get("/progress/{database}", new GetProgressHandler(this))
         .post("/login", new PostLoginHandler(this))
         .post("/logout", new PostLogoutHandler(this))
+        .post("/cluster/auth-session", new PostClusterAuthSessionHandler(this))
         .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))
         .get("/sessions", new GetSessionsHandler(this))
         .post("/query/{database}", new PostQueryHandler(this))
@@ -441,6 +446,10 @@ public class HttpServer implements ServerPlugin {
 
   public HttpAuthSessionManager getAuthSessionManager() {
     return authSessionManager;
+  }
+
+  public ClusterAuthSessionResolver getClusterAuthSessionResolver() {
+    return clusterAuthSessionResolver;
   }
 
   public ArcadeDBServer getServer() {

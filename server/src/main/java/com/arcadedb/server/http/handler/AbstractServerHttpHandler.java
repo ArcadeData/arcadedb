@@ -32,6 +32,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.http.ClusterAuthSessionResolver;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
@@ -400,9 +401,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                   return;
                 }
               } else {
-                // Session token authentication (AU- prefix)
-                final HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
-                if (authSession == null) {
+                // Session token authentication (AU- prefix). A token this node has never seen may have been
+                // issued by another node of the cluster - the token names it - and a copy this node holds is
+                // a lease the issuer renews (issue #7424).
+                final ClusterAuthSessionResolver clusterResolver = httpServer.getClusterAuthSessionResolver();
+                HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
+                if (authSession == null)
+                  authSession = clusterResolver.resolve(token);
+                if (authSession == null || !clusterResolver.renew(authSession)) {
                   exchange.setStatusCode(401);
                   sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
                   return;
