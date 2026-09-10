@@ -184,14 +184,22 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   /**
-   * Override this method to customize blocking stub creation
+   * Override this method to customize blocking stub creation.
+   * <p>
+   * The stub names this database on every call, so the server's auth interceptor authenticates the
+   * caller against the database the calls actually target. Before #7320 no database travelled with the
+   * call and the server fell back to the literal name {@code "default"}, which refused every principal
+   * whose grants named real databases.
    */
   protected ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub createBlockingStub() {
-    return this.remoteGrpcServer.newBlockingStub(getTimeout());
+    return this.remoteGrpcServer.newBlockingStub(getTimeout(), databaseName);
   }
 
+  /**
+   * @see #createBlockingStub()
+   */
   protected ArcadeDbServiceGrpc.ArcadeDbServiceStub createAsyncStub() {
-    return this.remoteGrpcServer.newAsyncStub(getTimeout());
+    return this.remoteGrpcServer.newAsyncStub(getTimeout(), databaseName);
   }
 
   @Override
