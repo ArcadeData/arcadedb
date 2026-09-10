@@ -5032,6 +5032,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return the capacity, never negative
    */
   private int computeDeltaPayloadCapacity() {
+    return computeDeltaPayloadCapacity(VectorHeapBudget.maxHeapBytes(), VectorHeapBudget.availableHeapBytes());
+  }
+
+  /**
+   * Same decision as {@link #computeDeltaPayloadCapacity()}, with the heap figures supplied so a test can pin the
+   * auto-sizing branch instead of relying on whatever the live JVM happens to have free (PR #7360 review).
+   * <p>
+   * The auto-sized branch is what an installation that never touches either new setting gets, so it is the one
+   * that most needs pinning - and it is the only one of the three whose answer a test cannot otherwise predict.
+   * Package-private and mirroring
+   * {@link VectorHeapBudget#buildCacheBudgetBytes(int, long, long)}'s existing seam rather than inventing a new
+   * shape for it.
+   *
+   * @param maxHeap       the heap ceiling to size against
+   * @param availableHeap the heap currently free, which caps the answer
+   *
+   * @return the capacity, never negative
+   */
+  int computeDeltaPayloadCapacity(final long maxHeap, final long availableHeap) {
     final ContextConfiguration configuration = mutable.getDatabase().getConfiguration();
 
     final int configured = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_SIZE);
@@ -5044,7 +5063,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (heapPercent <= 0)
       return 0;
 
-    final long heapBudget = VectorHeapBudget.buildCacheBudgetBytes(heapPercent);
+    final long heapBudget = VectorHeapBudget.buildCacheBudgetBytes(heapPercent, maxHeap, availableHeap);
     final long affordable = heapBudget / VectorHeapBudget.bytesPerCachedVector(metadata.dimensions);
     return (int) Math.max(0L, Math.min(affordable, Integer.MAX_VALUE / 2));
   }
