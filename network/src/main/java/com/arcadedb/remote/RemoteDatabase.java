@@ -1263,16 +1263,51 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     return getUrl(command) + "/" + databaseName;
   }
 
+  /**
+   * Convenience form for a caller with nothing to listen to. Delegates, and never sends: there is exactly one
+   * method on this class that puts a batch on the wire, and it is {@link #sendBatch(String, Map, Consumer)}.
+   */
   JSONObject sendBatch(final String content, final Map<String, String> queryParams) {
+    return sendBatch(content, queryParams, null);
+  }
+
+  /**
+   * Sends one bulk-load payload to {@code POST /api/v1/batch} and returns the load's summary object.
+   * <p>
+   * <b>The single place a batch request is sent</b>, and therefore the method a subclass overrides to intercept
+   * every flush this client makes. It used to be the two-argument overload, with this one delegating to it for a
+   * {@code null} listener and duplicating it otherwise - which meant a subclass intercepting flushes saw only
+   * the ones that asked for no progress, silently, since the compiler is perfectly happy to call the sibling
+   * method nobody overrode. Now that {@code RemoteGraphBatch} always negotiates the streaming encoding
+   * (issue #7353) that split would have hidden every flush it makes, so the two paths were folded into one:
+   * there is no second method to forget.
+   * <p>
+   * With an {@code onProgress} listener the request negotiates the streaming encoding of issue #7311
+   * ({@code Accept: application/x-ndjson}) and the listener is handed every {@code progress} line as it arrives,
+   * so a caller learns what the server has committed - and, since issue #7353, which temporary ids it resolved -
+   * while the rest of its payload is still being read. The object returned is the terminal {@code summary} line,
+   * which carries exactly the fields the buffered encoding returns, so nothing downstream of this method has to
+   * know which encoding was used.
+   *
+   * @param onProgress notified once per chunk acknowledgement, or {@code null} to send an unnegotiated request
+   *                   answered by the single buffered object
+   */
+  JSONObject sendBatch(final String content, final Map<String, String> queryParams,
+      final Consumer<JSONObject> onProgress) {
     checkDatabaseIsOpen();
 
     try {
-      final HttpRequest request = createRequestBuilder("POST", batchUrl(queryParams))
+      final HttpRequest.Builder builder = createRequestBuilder("POST", batchUrl(queryParams))
           .POST(HttpRequest.BodyPublishers.ofString(content))
-          .header("Content-Type", NDJSON_CONTENT_TYPE)
-          .build();
+          .header("Content-Type", NDJSON_CONTENT_TYPE);
 
-      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      if (onProgress != null)
+        return readStreamedBatch(
+            httpClient.send(builder.header("Accept", NDJSON_CONTENT_TYPE).build(),
+                HttpResponse.BodyHandlers.ofInputStream()),
+            onProgress);
+
+      final HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
 
       // GraphBatch commits internally every commitEvery records (issue #5862), so unlike a single
       // begin/commit/rollback a non-200 response here can still carry chunks the server already made
@@ -1286,48 +1321,6 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       }
 
       return new JSONObject(response.body());
-    } catch (final DatabaseOperationException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new DatabaseOperationException("Error on batch import", e);
-    }
-  }
-
-  /**
-   * Sends one bulk-load payload to {@code POST /api/v1/batch} and returns the load's summary object.
-   * <p>
-   * With a {@code onProgress} listener the request negotiates the streaming encoding of issue #7311
-   * ({@code Accept: application/x-ndjson}) and the listener is handed every {@code progress} line as it arrives,
-   * so a caller learns what the server has committed while the rest of its payload is still being read. The
-   * object returned is the terminal {@code summary} line, which carries exactly the fields the buffered
-   * encoding returns - so nothing downstream of this method has to know which encoding was used.
-   * <p>
-   * With a {@code null} listener this delegates to {@link #sendBatch(String, Map)}, so a subclass that overrode
-   * that method to intercept every flush still sees it. A subclass that wants to intercept a load WITH a
-   * listener has to override this method too - there is no third place the two paths meet.
-   *
-   * @param onProgress notified once per chunk acknowledgement, or {@code null} to send an unnegotiated request
-   */
-  JSONObject sendBatch(final String content, final Map<String, String> queryParams,
-      final Consumer<JSONObject> onProgress) {
-    // Delegates rather than duplicates, and in this direction on purpose: sendBatch(content, queryParams) is an
-    // overridable extension point that a subclass replaces to intercept every flush - Issue7031RemoteClientIT
-    // does exactly that to simulate a failed request. Routing the no-listener case through the new overload
-    // instead would have walked straight past those overrides, silently, since the compiler is perfectly happy
-    // to call the sibling method nobody overrode.
-    if (onProgress == null)
-      return sendBatch(content, queryParams);
-
-    checkDatabaseIsOpen();
-
-    try {
-      final HttpRequest request = createRequestBuilder("POST", batchUrl(queryParams))
-          .POST(HttpRequest.BodyPublishers.ofString(content))
-          .header("Content-Type", NDJSON_CONTENT_TYPE)
-          .header("Accept", NDJSON_CONTENT_TYPE)
-          .build();
-
-      return readStreamedBatch(httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream()), onProgress);
     } catch (final DatabaseOperationException e) {
       throw e;
     } catch (final Exception e) {

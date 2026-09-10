@@ -88,7 +88,10 @@ import java.util.logging.Level;
  * <p>
  * Response: {@code verticesCreated}, {@code edgesCreated}, {@code elapsedMs}, {@code bytesRead} and, when temporary
  * ids were used, {@code idMapping} - replaced by {@code idMappingOmitted} / {@code idMappingSize} past
- * {@link #MAX_ID_MAPPING_IN_RESPONSE} entries, unless {@code idMapping=true} demands it.
+ * {@link #MAX_ID_MAPPING_IN_RESPONSE} entries, unless {@code idMapping=true} demands it. On the streaming
+ * encoding the mapping is not in this object at all: it travelled in the acknowledgements, and the terminal line
+ * says {@code idMappingStreamed} with the {@code idMappingSize} to check the received pieces against
+ * (issue #7353).
  * <p>
  * Streaming response ({@code Accept: application/x-ndjson}): the answer above is a single object written after the
  * whole body has been consumed, so a caller learns nothing about chunk <i>n</i> until chunk <i>n+1</i> and every
@@ -97,9 +100,14 @@ import java.util.logging.Level;
  * newline-delimited stream, written while its own upload is still being read:
  * <ul>
  * <li>{@code {"progress": {...}}} - emitted at every vertex commit and every {@code commitEvery} edges, carrying
- *     the same counters the final answer carries, plus {@code phase} ({@code vertices} or {@code edges});</li>
- * <li>{@code {"summary": {...}}} - the last line of a successful load. Byte-for-byte the object the buffered
- *     encoding would have sent, produced by the same code, plus {@code commitIndex} on a replicated database;</li>
+ *     the same counters the final answer carries, plus {@code phase} ({@code vertices} or {@code edges}) and
+ *     {@code idMapping}: the temporary ids THIS chunk resolved, and only those. Concatenating them yields what
+ *     the buffered encoding returns in one object, which is the point - neither end ever holds the mapping of
+ *     the whole load, and the {@link #MAX_ID_MAPPING_IN_RESPONSE} cap that exists because the buffered encoding
+ *     does has no counterpart here (issue #7353);</li>
+ * <li>{@code {"summary": {...}}} - the last line of a successful load. The object the buffered encoding would
+ *     have sent, produced by the same code, plus {@code commitIndex} on a replicated database, and with
+ *     {@code idMappingStreamed} / {@code idMappingSize} where that object carries the mapping itself;</li>
  * <li>{@code {"error": {...}}} - the last line of a failed one: the object the buffered encoding would have sent,
  *     plus the {@code status} it would have sent it under. A 200 is already on the wire by then and cannot be
  *     taken back, so the status travels in band and the line is the only terminator a consumer gets - a stream
@@ -180,8 +188,10 @@ import java.util.logging.Level;
  *   one transaction. On a replicated database that transaction becomes a single Raft entry, so this is the
  *   knob to lower when the server warns that a replicated entry approaches the maximum entry size
  *   (issue #5470); on an embedded/standalone database it only trades memory for throughput
- * - idMapping (auto|true|false, default auto): whether the response echoes the temporary-id to RID mapping. See
- *   {@link #echoIdMapping}
+ * - idMapping (auto|true|false, default auto): whether the response returns the temporary-id to RID mapping. On
+ *   the buffered encoding it is echoed in the terminal object under a size cap - see {@link #echoIdMapping}; on
+ *   the streaming one it is handed back one committed chunk at a time and there is no cap, because nothing is
+ *   ever built that a cap would protect - see {@link #streamIdMapping} (issue #7353)
  * - refMode (id|ordinal, default id): how edges name the vertices they connect. {@code id} resolves the
  *   {@code @from} / {@code @to} against the {@code @id} each vertex declared, which costs the id itself plus a hash
  *   slot for every vertex of the request; {@code ordinal} resolves them against the 0-based POSITION of the vertex
@@ -332,8 +342,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
             vertexBatchSize, expectedRecords, haDb);
 
       try {
+        // No mapping sink: the buffered encoding has nowhere to put a chunk of it before the end, so it keeps
+        // echoing the whole mapping in the terminal object under the MAX_ID_MAPPING_IN_RESPONSE cap.
         return streamRecords(exchange, databaseName, isCsv, builder, inputStream, vertexRefs,
-            System.currentTimeMillis(), vertexBatchSize, expectedRecords, BatchProgressSink.NONE);
+            System.currentTimeMillis(), vertexBatchSize, expectedRecords, BatchProgressSink.NONE, null);
       } finally {
         emitCommitIndexBookmark(exchange, haDb);
       }
@@ -355,7 +367,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   private ExecutionResponse streamRecords(final HttpServerExchange exchange, final String databaseName,
       final boolean isCsv, final GraphBatch.Builder builder, final CountingInputStream inputStream,
       final VertexRefResolver vertexRefs, final long startTime, final int vertexBatchSize,
-      final long expectedRecords, final BatchProgressSink progress) throws Exception {
+      final long expectedRecords, final BatchProgressSink progress,
+      final VertexRefResolver.EntryConsumer mappingSink) throws Exception {
 
     long verticesCreated = 0;
     long edgesCreated = 0;
@@ -396,7 +409,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           // Transition to edge phase: flush remaining vertices
           if (!vertexPropsBatch.isEmpty()) {
             verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, vertexRefs,
-                verticesCreated);
+                verticesCreated, mappingSink);
             progress.chunk(VERTEX_PHASE, verticesCreated, edgesCreated, stream, vertexRefs, inputStream);
           }
 
@@ -413,7 +426,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // Accumulate vertex — flush when type changes or batch is full
         if (currentTypeName != null && !currentTypeName.equals(rec.typeName)) {
           verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, vertexRefs,
-              verticesCreated);
+              verticesCreated, mappingSink);
           progress.chunk(VERTEX_PHASE, verticesCreated, edgesCreated, stream, vertexRefs, inputStream);
         }
         currentTypeName = rec.typeName;
@@ -422,7 +435,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
         if (vertexPropsBatch.size() >= vertexBatchSize) {
           verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, vertexRefs,
-              verticesCreated);
+              verticesCreated, mappingSink);
           progress.chunk(VERTEX_PHASE, verticesCreated, edgesCreated, stream, vertexRefs, inputStream);
         }
       }
@@ -430,7 +443,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // Flush remaining vertices (e.g., vertex-only import or last batch before EOF)
       if (!vertexPropsBatch.isEmpty()) {
         verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, vertexRefs,
-            verticesCreated);
+            verticesCreated, mappingSink);
         progress.chunk(VERTEX_PHASE, verticesCreated, edgesCreated, stream, vertexRefs, inputStream);
       }
 
@@ -560,7 +573,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // Include temp ID mapping if any temp IDs were used, unless the load was too big for the mapping to be worth
     // (or even possible to) send back - see MAX_ID_MAPPING_IN_RESPONSE and the 'idMapping' parameter.
     if (!vertexRefs.isEmpty()) {
-      if (echoIdMapping(exchange, vertexRefs.size())) {
+      if (mappingSink != null) {
+        // The mapping has been travelling one committed chunk at a time since the load started, so putting it
+        // here as well would rebuild in this single object the very thing streaming it was for. What the
+        // terminal line owes the client is the count, so it can check it received all of it (issue #7353).
+        result.put("idMappingStreamed", true);
+        result.put("idMappingSize", vertexRefs.size());
+      } else if (echoIdMapping(exchange, vertexRefs.size())) {
         final JSONObject mapping = new JSONObject();
         vertexRefs.forEach((ref, rid) -> mapping.put(ref, rid.toString()));
         result.put("idMapping", mapping);
@@ -634,6 +653,16 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // Counters as of the last acknowledgement, so a failure that cannot reach streamRecords' own counters -
     // an engine exception raised after the stream started - still has something honest to report.
     final long[] lastProgress = new long[2];
+
+    // The temporary-id mapping of the vertices committed since the last acknowledgement, and never more than
+    // that: it is drained into every progress line and into the terminal one, so no line - and no server-side
+    // object - ever holds the mapping of the whole load (issue #7353). Null when the client asked not to
+    // receive the mapping at all, which is the only way to switch the accumulation off.
+    final JSONObject[] pendingMapping = { streamIdMapping(exchange) ? new JSONObject() : null };
+    final VertexRefResolver.EntryConsumer mappingSink = pendingMapping[0] == null
+        ? null
+        : (ref, rid) -> pendingMapping[0].put(ref, rid.toString());
+
     try {
       final ExecutionResponse unary = streamRecords(exchange, databaseName, isCsv, builder, inputStream, vertexRefs,
           System.currentTimeMillis(), vertexBatchSize, expectedRecords,
@@ -643,6 +672,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
             event.put("verticesCreated", verticesCreated);
             event.put("edgesCreated", edgesCreated);
             addLineAccounting(event, stream, refs, in);
+            drainPendingMapping(pendingMapping, event);
             lastProgress[0] = verticesCreated;
             lastProgress[1] = edgesCreated;
             try {
@@ -655,7 +685,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
               // and completely wrong diagnosis: the body arrived, it is the RESPONSE that could not be written.
               throw new BatchResponseWriteException(e);
             }
-          });
+          }, mappingSink);
 
       if (unary.getCode() != 200 && !response.hasStarted()) {
         // A failure streamRecords REPORTS BY RETURNING - a malformed record, an unknown temporary id, a
@@ -670,6 +700,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       }
 
       final JSONObject terminal = new JSONObject(unary.getResponse());
+      // Whatever the last flush resolved after the final acknowledgement, so the client's mapping is complete
+      // when it reads 'idMappingStreamed' and can check it against 'idMappingSize' (issue #7353). Normally
+      // empty - every vertex flush is followed by an acknowledgement - and bounded by one flush when it is not.
+      drainPendingMapping(pendingMapping, terminal);
       // The bookmark of issue #5862 cannot be a header on this encoding: by the time the commit index is known
       // the response has usually started, and a header set then is dropped without a word. It carries the same
       // meaning in band, on the same line as the counters a READ_YOUR_WRITES client is reconciling against.
@@ -877,6 +911,42 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     if (value == null || value.isEmpty() || "auto".equalsIgnoreCase(value))
       return size <= MAX_ID_MAPPING_IN_RESPONSE;
     return Boolean.parseBoolean(value);
+  }
+
+  /**
+   * Whether the streaming encoding hands the mapping back one committed chunk at a time (issue #7353).
+   * <p>
+   * {@code auto} streams it, with no cap: {@link #MAX_ID_MAPPING_IN_RESPONSE} exists because the buffered
+   * encoding has to build the whole mapping as one JSON object and one string before it can send anything, and
+   * that is what turns the last step of a successful 17-million-vertex import into an OutOfMemoryError. Here
+   * neither ever exists - each line carries the vertices of one {@code vertexBatchSize} flush and is dropped
+   * after it is written - so the reason to refuse a large mapping is gone, and refusing one anyway would leave
+   * the streaming encoding delivering strictly less than the buffered one it is supposed to supersede.
+   * <p>
+   * {@code idMapping=false} still means never: a client loading vertices nothing will reference has no use for
+   * the mapping, and not sending it saves both ends the bytes.
+   */
+  private boolean streamIdMapping(final HttpServerExchange exchange) {
+    final String value = getQueryParameter(exchange, "idMapping");
+    if (value == null || value.isEmpty() || "auto".equalsIgnoreCase(value))
+      return true;
+    return Boolean.parseBoolean(value);
+  }
+
+  /**
+   * Moves whatever the mapping sink has collected since the previous line onto {@code event} and empties it, so
+   * the accumulator never grows past one committed chunk (issue #7353). A no-op when the client asked for no
+   * mapping, and when a chunk resolved nothing nameable - an edge-phase acknowledgement, or a vertex flush in
+   * which every vertex declared no {@code @id} under {@code refMode=tempId}.
+   */
+  private static void drainPendingMapping(final JSONObject[] pending, final JSONObject event) {
+    final JSONObject mapping = pending[0];
+    if (mapping == null || mapping.isEmpty())
+      return;
+    event.put("idMapping", mapping);
+    // A fresh object rather than a clear(): the one just attached belongs to the event being written, and
+    // clearing it in place would empty the line that is about to be serialized.
+    pending[0] = new JSONObject();
   }
 
   /**
@@ -1337,16 +1407,28 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     }
   }
 
+  /**
+   * @param mappingSink notified of every reference this flush resolved, or {@code null} when the mapping is not
+   *                    being streamed back. It is fed here rather than read off the resolver afterwards because
+   *                    neither resolver keeps insertion order - and the point of streaming it is to never build
+   *                    a structure that does (issue #7353).
+   */
   private int flushVertexBatch(final GraphBatch batch, final String typeName,
       final List<Object[]> propsBatch, final List<String> tempIds, final VertexRefResolver vertexRefs,
-      final long firstOrdinal) {
+      final long firstOrdinal, final VertexRefResolver.EntryConsumer mappingSink) {
 
     final int count = propsBatch.size();
     final Object[][] propsArray = propsBatch.toArray(new Object[count][]);
     final RID[] rids = batch.createVertices(typeName, propsArray);
 
-    for (int i = 0; i < count; i++)
+    for (int i = 0; i < count; i++) {
       vertexRefs.put(tempIds.get(i), (int) (firstOrdinal + i), rids[i]);
+      if (mappingSink != null) {
+        final String ref = vertexRefs.refOf(tempIds.get(i), firstOrdinal + i);
+        if (ref != null)
+          mappingSink.accept(ref, rids[i]);
+      }
+    }
 
     propsBatch.clear();
     tempIds.clear();
