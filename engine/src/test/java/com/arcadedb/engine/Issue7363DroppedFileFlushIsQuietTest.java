@@ -24,6 +24,7 @@ import com.arcadedb.log.WarningCapture;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -71,7 +72,7 @@ class Issue7363DroppedFileFlushIsQuietTest extends TestHelper {
     assertThat(db.getFileManager().existsFile(file.getFileId()))
         .as("dropping the file object alone leaves it registered - the window the report caught").isTrue();
 
-    final List<WarningCapture.LogLine> lines = WarningCapture.capture(java.util.logging.Level.WARNING,
+    final List<WarningCapture.LogLine> lines = WarningCapture.capture(Level.WARNING,
         () -> assertThatCode(() -> PageManager.INSTANCE.flushPage(page))
             .as("a page addressed to a deleted file must not fail the flush of the batch it is in")
             .doesNotThrowAnyException());
@@ -99,7 +100,7 @@ class Issue7363DroppedFileFlushIsQuietTest extends TestHelper {
     db.getFileManager().dropFile(file.getFileId());
     assertThat(db.getFileManager().existsFile(file.getFileId())).isFalse();
 
-    final List<WarningCapture.LogLine> lines = WarningCapture.capture(java.util.logging.Level.WARNING,
+    final List<WarningCapture.LogLine> lines = WarningCapture.capture(Level.WARNING,
         () -> assertThatCode(() -> PageManager.INSTANCE.flushPage(page)).doesNotThrowAnyException());
 
     assertThat(lines).as("got: %s", lines)

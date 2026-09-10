@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
+import com.arcadedb.utility.LockManager;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -32,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.TimeUnit;
 
@@ -136,6 +138,7 @@ class Issue7361GraphPersistCommitLockTimeoutTest extends TestHelper {
     final CountDownLatch held = new CountDownLatch(1);
     final CountDownLatch release = new CountDownLatch(1);
     final Object holder = new Object();
+    final AtomicBoolean contended = new AtomicBoolean();
 
     // Stands in for the importer thread of the report: it holds the vecgraph file - which every commit touching
     // this index locks (#4937) - for far longer than the interactive budget, and far less than the bulk one.
@@ -155,14 +158,21 @@ class Issue7361GraphPersistCommitLockTimeoutTest extends TestHelper {
 
     assertThat(held.await(30, TimeUnit.SECONDS)).isTrue();
 
-    // Releases the file a beat after the persist has started queueing for it, so the persist genuinely waits past
-    // the interactive budget instead of never contending at all.
+    // Releases the file only once the persist is OBSERVABLY queued behind it, so the test cannot pass for the
+    // wrong reason - a sleep long enough on a fast machine is not long enough on a loaded CI runner, and the
+    // persist would then take an uncontended lock and prove nothing.
     final Thread releaser = new Thread(() -> {
-      try {
-        Thread.sleep(1_000);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
+      while (waitersOn(db, graphFileId) == 0) {
+        if (release.getCount() == 0)
+          return;
+        try {
+          Thread.sleep(5);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return;
+        }
       }
+      contended.set(true);
       release.countDown();
     }, "issue7361-releaser");
     releaser.setDaemon(true);
@@ -182,6 +192,63 @@ class Issue7361GraphPersistCommitLockTimeoutTest extends TestHelper {
     assertThat(graphFile.getManifest().read()).isNotNull();
     assertThat(graphFile.getManifest().read().vectorCount())
         .as("and its manifest vouches for the pages rather than refusing them").isEqualTo(LIVE);
+    assertThat(contended.get())
+        .as("the persist has to have actually queued behind the holder, or this proves nothing").isTrue();
+  }
+
+  /**
+   * The other branch of the budget: {@code 0} is the lock manager's "wait indefinitely", and it has to survive
+   * the clamp against {@code arcadedb.commitLockTimeout} rather than being read as "smaller, so use the other
+   * one". The clamp exists so the budget can never make a build give up SOONER than today, and waiting forever
+   * is the opposite of sooner.
+   */
+  @Test
+  void anIndefiniteBulkBudgetIsNotClampedAwayByTheCommitDefault() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 5_000L);
+    db.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_COMMIT_LOCK_TIMEOUT, 0L);
+
+    createSchema();
+    insertDocs(8);
+
+    final List<Long> observed = new ArrayList<>();
+
+    database.begin();
+    try {
+      vectorIndex().build((document, totalIndexed) -> observed.add(db.getTransaction().getCommitLockTimeout()), null);
+    } finally {
+      if (database.isTransactionActive())
+        database.commit();
+    }
+
+    assertThat(observed).isNotEmpty();
+    assertThat(observed).as("0 means wait indefinitely, and no positive commit default outranks it").containsOnly(0L);
+
+    // And a negative value, which the lock manager reads the same way, is carried through just as it is.
+    db.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_COMMIT_LOCK_TIMEOUT, -1L);
+    observed.clear();
+
+    database.begin();
+    try {
+      vectorIndex().build((document, totalIndexed) -> observed.add(db.getTransaction().getCommitLockTimeout()), null);
+    } finally {
+      if (database.isTransactionActive())
+        database.commit();
+    }
+
+    assertThat(observed).isNotEmpty();
+    assertThat(observed).as("anything <= 0 is the same 'wait indefinitely' to the lock manager").containsOnly(-1L);
+  }
+
+  /**
+   * @return how many requesters are queued behind whoever holds {@code fileId} right now
+   */
+  private static int waitersOn(final DatabaseInternal db, final int fileId) {
+    for (final LockManager.LockStats stats : db.getTransactionManager().getLockStats())
+      if (String.valueOf(fileId).equals(stats.resource()))
+        return stats.waiters();
+    return 0;
   }
 
   /**
