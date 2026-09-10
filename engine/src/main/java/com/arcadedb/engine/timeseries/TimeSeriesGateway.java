@@ -292,23 +292,38 @@ public final class TimeSeriesGateway {
 
     TagFilter filter = null;
 
-    for (final Map.Entry<String, Object> tag : tags.entrySet()) {
-      int nonTsIdx = 0;
-      for (final ColumnDefinition col : columns) {
-        if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-          continue;
-        if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(tag.getKey())) {
-          final Object coerced = col.coerceValue(tag.getValue());
-          if (filter == null)
-            filter = TagFilter.eq(nonTsIdx, coerced);
-          else
-            filter = filter.and(nonTsIdx, coerced);
-          break;
-        }
-        nonTsIdx++;
-      }
-    }
+    for (final Map.Entry<String, Object> tag : tags.entrySet())
+      filter = andTag(filter, tag.getKey(), tag.getValue(), columns);
 
+    return filter;
+  }
+
+  /**
+   * ANDs one tag condition onto {@code filter}, resolving {@code tagName} to its position among the
+   * non-timestamp columns. Every protocol's tag selection converges here - the gRPC {@code TimeSeries*} RPCs
+   * through {@link #buildTagFilter(Map, List)}, the {@code tags} object of {@code POST /ts/{database}/query},
+   * and the repeated {@code tag=name:value} parameter of {@code GET /ts/{database}/latest} - so the three
+   * cannot drift apart on how a tag is resolved, which is how two of them came to disagree in the first place
+   * (issue #7321).
+   * <p>
+   * The value is coerced to the column's declared type so it matches what both storage layers hand back
+   * (issue #5475).
+   *
+   * @return {@code filter} unchanged when no TAG column carries that name, a new filter otherwise -
+   * {@link TagFilter} is immutable, so the return value must be used
+   */
+  public static TagFilter andTag(final TagFilter filter, final String tagName, final Object tagValue,
+      final List<ColumnDefinition> columns) {
+    int nonTsIdx = 0;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(tagName)) {
+        final Object coerced = col.coerceValue(tagValue);
+        return filter == null ? TagFilter.eq(nonTsIdx, coerced) : filter.and(nonTsIdx, coerced);
+      }
+      nonTsIdx++;
+    }
     return filter;
   }
 

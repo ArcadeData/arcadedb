@@ -767,6 +767,26 @@ message TimeSeriesLatestResponse {
 // Admin service
 // -----------------------------------------------------------------------------
 
+// The control plane. Every RPC here reaches the same implementation the HTTP control plane reaches
+// (com.arcadedb.server.ServerControlPlane), so the two protocols cannot drift apart on what an
+// administrative operation does - see issue #7304.
+//
+// Authentication is enforced centrally by GrpcAuthInterceptor from the 'credentials' field every
+// request carries, before the call reaches a handler. Health and Ready are exempt from it, exactly
+// as GET /health and GET /ready are unauthenticated over HTTP, so a container orchestrator can probe
+// the node without credentials.
+//
+// Authorization on top of that is per RPC, and mirrors what the HTTP counterpart of each operation
+// requires:
+//   - Ping, GetServerInfo, ListDatabases, ExistsDatabase and GetDatabaseInfo need only a valid
+//     account, as GET /api/v1/databases and GET /api/v1/server do;
+//   - every other RPC needs the server-admin (root) principal, the gate POST /api/v1/server and the
+//     /api/v1/server/* routes apply through checkRootUser.
+//
+// Leader routing: CreateDatabase, DropDatabase, CreateUser and DeleteUser are refused on a follower
+// with FAILED_PRECONDITION and the leader's address on the arcadedb-leader-* trailers. That is this
+// transport's equivalent of the HTTP handler forwarding those four commands to the leader; gRPC has
+// no request proxy, so the caller redirects itself.
 service ArcadeDbAdminService {
   rpc Ping           (PingRequest)           returns (PingResponse);
   rpc GetServerInfo  (GetServerInfoRequest)  returns (GetServerInfoResponse);
@@ -775,11 +795,43 @@ service ArcadeDbAdminService {
   rpc ExistsDatabase (ExistsDatabaseRequest) returns (ExistsDatabaseResponse);
   rpc CreateDatabase (CreateDatabaseRequest) returns (CreateDatabaseResponse);
   rpc DropDatabase   (DropDatabaseRequest)   returns (DropDatabaseResponse);
+  rpc OpenDatabase   (OpenDatabaseRequest)   returns (OpenDatabaseResponse);
+  rpc CloseDatabase  (CloseDatabaseRequest)  returns (CloseDatabaseResponse);
+  rpc AlignDatabase  (AlignDatabaseRequest)  returns (AlignDatabaseResponse);
 
   rpc GetDatabaseInfo (GetDatabaseInfoRequest) returns (GetDatabaseInfoResponse);
 
   rpc CreateUser     (CreateUserRequest)     returns (CreateUserResponse);
   rpc DeleteUser     (DeleteUserRequest)     returns (DeleteUserResponse);
+  rpc ListUsers      (ListUsersRequest)      returns (ListUsersResponse);
+
+  // settings
+  rpc SetServerSetting   (SetServerSettingRequest)   returns (SetServerSettingResponse);
+  rpc SetDatabaseSetting (SetDatabaseSettingRequest) returns (SetDatabaseSettingResponse);
+
+  // backup
+  rpc GetBackupConfig (GetBackupConfigRequest) returns (GetBackupConfigResponse);
+  rpc SetBackupConfig (SetBackupConfigRequest) returns (SetBackupConfigResponse);
+  rpc ListBackups     (ListBackupsRequest)     returns (ListBackupsResponse);
+  rpc TriggerBackup   (TriggerBackupRequest)   returns (TriggerBackupResponse);
+  rpc DeleteBackup    (DeleteBackupRequest)    returns (DeleteBackupResponse);
+
+  // query profiler
+  rpc ProfilerStart   (ProfilerStartRequest)   returns (ProfilerStateResponse);
+  rpc ProfilerStop    (ProfilerStopRequest)    returns (ProfilerDocumentResponse);
+  rpc ProfilerReset   (ProfilerResetRequest)   returns (ProfilerStateResponse);
+  rpc ProfilerResults (ProfilerResultsRequest) returns (ProfilerDocumentResponse);
+  rpc ProfilerList    (ProfilerListRequest)    returns (ProfilerListResponse);
+  rpc ProfilerLoad    (ProfilerLoadRequest)    returns (ProfilerDocumentResponse);
+
+  // server lifecycle and cluster
+  rpc GetServerEvents   (GetServerEventsRequest)   returns (GetServerEventsResponse);
+  rpc Shutdown          (ShutdownRequest)          returns (ShutdownResponse);
+  rpc DisconnectCluster (DisconnectClusterRequest) returns (DisconnectClusterResponse);
+
+  // probes - unauthenticated, see the service comment
+  rpc Health (HealthRequest) returns (HealthResponse);
+  rpc Ready  (ReadyRequest)  returns (ReadyResponse);
 }
 
 message PingRequest {
@@ -852,7 +904,14 @@ message CreateUserRequest {
   DatabaseCredentials credentials = 1; // admin creds
   string user     = 2;
   string password = 3;
-  string role     = 4; // optional, depending on your model
+  // Deprecated and ignored: the server's security model grants authority through per-database groups
+  // (the 'databases' map below), not through a single server-wide role. Kept so the field number is
+  // not reused.
+  string role     = 4 [deprecated = true];
+  // The groups the new user holds per database, the same map the HTTP "create user" document carries
+  // under "databases". Absent means no grants beyond the server default. The key "*" applies to every
+  // database, as it does over HTTP.
+  map<string, UserGroups> databases = 5;
 }
 message CreateUserResponse {
   bool success = 1;
@@ -866,4 +925,228 @@ message DeleteUserRequest {
 message DeleteUserResponse {
   bool success = 1;
   string message = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Control plane: database lifecycle beyond create/drop
+// -----------------------------------------------------------------------------
+
+message OpenDatabaseRequest {
+  DatabaseCredentials credentials = 1;
+  string name = 2;
+}
+message OpenDatabaseResponse {}
+
+message CloseDatabaseRequest {
+  DatabaseCredentials credentials = 1;
+  string name = 2;
+}
+message CloseDatabaseResponse {}
+
+message AlignDatabaseRequest {
+  DatabaseCredentials credentials = 1;
+  string name = 2;
+}
+message AlignDatabaseResponse {}
+
+// -----------------------------------------------------------------------------
+// Control plane: settings
+// -----------------------------------------------------------------------------
+
+// key and value are separate fields here, so - unlike the HTTP "set server setting <key> <value>"
+// command, which splits on the first space - a value containing a space needs no quoting. Both
+// transports then run the same coercion, so a DECLARED setting accepts and refuses the same values
+// on either one.
+message SetServerSettingRequest {
+  DatabaseCredentials credentials = 1;
+  string key   = 2;
+  string value = 3;
+}
+message SetServerSettingResponse {}
+
+message SetDatabaseSettingRequest {
+  DatabaseCredentials credentials = 1;
+  string database = 2;
+  string key      = 3;
+  string value    = 4;
+}
+message SetDatabaseSettingResponse {}
+
+// -----------------------------------------------------------------------------
+// Control plane: security
+// -----------------------------------------------------------------------------
+
+// The groups a user holds on one database.
+message UserGroups {
+  repeated string groups = 1;
+}
+
+// A user as the control plane reports it. Password hashes are never included.
+message UserInfo {
+  string name = 1;
+  map<string, UserGroups> databases = 2;
+}
+
+message ListUsersRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ListUsersResponse {
+  repeated UserInfo users = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Control plane: backup
+// -----------------------------------------------------------------------------
+
+message GetBackupConfigRequest {
+  DatabaseCredentials credentials = 1;
+}
+message GetBackupConfigResponse {
+  // false when the auto-backup plugin is not running; a config may still be present, saved but not
+  // yet in effect, in which case 'message' says so.
+  bool   enabled     = 1;
+  // AutoBackupConfig as a JSON document. Empty when no configuration exists. It is carried as JSON
+  // rather than as proto fields because it is the same free-form document the config file holds, and
+  // a second declaration of its shape here would be one more thing to keep in step with it.
+  string config_json = 2;
+  string message     = 3;
+}
+
+message SetBackupConfigRequest {
+  DatabaseCredentials credentials = 1;
+  // AutoBackupConfig as a JSON document - the same object POST /api/v1/server takes under "config".
+  string config_json = 2;
+}
+message SetBackupConfigResponse {}
+
+message BackupInfo {
+  string file_name        = 1;
+  int64  size_bytes       = 2;
+  int64  last_modified_ms = 3;
+  // ISO-8601 local date-time parsed out of the archive name, empty when the name does not carry one.
+  string timestamp        = 4;
+}
+
+message ListBackupsRequest {
+  DatabaseCredentials credentials = 1;
+  string database = 2;
+}
+message ListBackupsResponse {
+  string              database   = 1;
+  repeated BackupInfo backups    = 2;
+  // Retention-manager totals; both are 0 when no retention manager is running.
+  int64               total_size  = 3;
+  int64               total_count = 4;
+}
+
+message TriggerBackupRequest {
+  DatabaseCredentials credentials = 1;
+  string database = 2;
+}
+message TriggerBackupResponse {
+  // Absolute path of the archive that was written.
+  string backup_file = 1;
+}
+
+message DeleteBackupRequest {
+  DatabaseCredentials credentials = 1;
+  string database  = 2;
+  // A plain archive file name inside the database's backup directory. Path separators and traversal
+  // sequences are refused.
+  string file_name = 3;
+}
+message DeleteBackupResponse {}
+
+// -----------------------------------------------------------------------------
+// Control plane: query profiler
+// -----------------------------------------------------------------------------
+
+message ProfilerStartRequest {
+  DatabaseCredentials credentials = 1;
+  // Seconds after which recording stops on its own. 0 records until ProfilerStop.
+  int32 timeout_seconds = 2;
+}
+message ProfilerStopRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ProfilerResetRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ProfilerResultsRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ProfilerListRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ProfilerLoadRequest {
+  DatabaseCredentials credentials = 1;
+  string file_name = 2;
+}
+
+message ProfilerStateResponse {
+  bool recording = 1;
+}
+
+// A profiler run. The document's shape is the profiler's own and changes with it, so it travels as
+// JSON rather than as a proto schema that would have to be revised in step.
+message ProfilerDocumentResponse {
+  string results_json = 1;
+}
+
+// One saved profiler run on disk, as ServerQueryProfiler.listSavedRuns reports it.
+message ProfilerRunInfo {
+  string file_name        = 1;
+  int64  size_bytes       = 2;
+  int64  last_modified_ms = 3;
+}
+
+message ProfilerListResponse {
+  // Newest first, the order the profiler lists them in.
+  repeated ProfilerRunInfo runs = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Control plane: server lifecycle and cluster
+// -----------------------------------------------------------------------------
+
+message GetServerEventsRequest {
+  DatabaseCredentials credentials = 1;
+  // Empty reads the current event file.
+  string file_name = 2;
+}
+message GetServerEventsResponse {
+  // JSON array of event objects.
+  string          events_json = 1;
+  repeated string files       = 2;
+}
+
+message ShutdownRequest {
+  DatabaseCredentials credentials = 1;
+  // Empty shuts down the server that receives the call; otherwise the named HA peer.
+  string server_name = 2;
+}
+message ShutdownResponse {}
+
+message DisconnectClusterRequest {
+  DatabaseCredentials credentials = 1;
+}
+message DisconnectClusterResponse {}
+
+// -----------------------------------------------------------------------------
+// Control plane: probes
+// -----------------------------------------------------------------------------
+
+// Liveness, the equivalent of GET /api/v1/health. Unauthenticated: reaching the handler is the
+// whole answer, and a probe that needs credentials is not usable as a container liveness probe.
+message HealthRequest {}
+message HealthResponse {
+  bool ok = 1;
+}
+
+// Readiness, the equivalent of GET /api/v1/ready. Unauthenticated for the same reason as Health.
+message ReadyRequest {}
+message ReadyResponse {
+  bool ready = 1;
+  // Why the node is not ready; empty when it is.
+  string reason = 2;
 }

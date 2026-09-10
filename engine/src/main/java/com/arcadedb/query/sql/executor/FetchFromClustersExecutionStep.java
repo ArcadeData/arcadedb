@@ -163,7 +163,9 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
     builder.append(ind);
     builder.append("+ FETCH FROM BUCKETS");
     if( context.isProfiling() ) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      // The subtree roll-up rather than a self cost this pure-dispatch step does not have - see
+      // FetchFromTypeExecutionStep.prettyPrint() (issue #7329).
+      builder.append(" (").append(getTotalCostFormatted()).append(")");
     }
     builder.append("\n");
     for (int i = 0; i < subSteps.size(); i++) {
@@ -179,11 +181,6 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
   @Override
   public List<ExecutionStep> getSubSteps() {
     return subSteps;
-  }
-
-  @Override
-  public long getCost() {
-    return subSteps.stream().map(ExecutionStep::getCost).reduce((a, b) -> a > 0 && b > 0 ? a + b : a > 0 ? a : b > 0 ? b : -1L).orElse(-1L);
   }
 
 }

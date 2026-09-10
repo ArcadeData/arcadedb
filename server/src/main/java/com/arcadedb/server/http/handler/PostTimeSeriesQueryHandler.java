@@ -176,7 +176,16 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     for (int i = 0; i < requestsJson.length(); i++) {
       final JSONObject req = requestsJson.getJSONObject(i);
       final String fieldName = req.getString("field");
-      final AggregationType aggType = AggregationType.valueOf(req.getString("type"));
+      final AggregationType aggType;
+      try {
+        aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, i);
+      } catch (final IllegalArgumentException e) {
+        // An explicit 400 rather than the throw the generic mapper would turn into "Cannot execute command":
+        // that mapper puts the specifics in the 'detail' field, which buildErrorBody conceals in production
+        // mode, so the caller would be told nothing about which field was wrong (issue #7325). This is the same
+        // shape as the "Field '...' not found in type" refusal below.
+        return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
+      }
       final String alias = req.getString("alias", fieldName + "_" + aggType.name().toLowerCase());
 
       // The shared helper, as the Grafana handler and the gRPC aggregation path already use: this was the last

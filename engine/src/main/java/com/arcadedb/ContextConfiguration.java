@@ -44,7 +44,7 @@ public class ContextConfiguration implements Serializable {
   private transient final SystemVariableResolver customResolver = new SystemVariableResolver() {
     @Override
     public String resolve(final String variable) {
-      Object result = config.get(variable);
+      Object result = config.get(normalizeKey(variable));
       if (result == null)
         result = super.resolve(variable);
       return result != null ? result.toString() : null;
@@ -63,7 +63,8 @@ public class ContextConfiguration implements Serializable {
    * @param iConfig Map of parameters of type {@literal Map<String, Object>}.
    */
   public ContextConfiguration(final Map<String, Object> iConfig) {
-    this.config.putAll(iConfig);
+    for (final Map.Entry<String, Object> entry : iConfig.entrySet())
+      this.config.put(normalizeKey(entry.getKey()), entry.getValue());
   }
 
   public ContextConfiguration(final ContextConfiguration iParent) {
@@ -114,9 +115,19 @@ public class ContextConfiguration implements Serializable {
         //
         // What the callback makes of it is what gets stored, so a callback that NORMALISES its argument
         // normalises it here too rather than only on the enum's own path.
-        config.put(GlobalConfiguration.PREFIX + k,
-            GlobalConfiguration.externalizeValue(cfgEntry.applyContextValue(coerced)));
-      }
+        //
+        // Under the DECLARED key, not the file's spelling. findByKey is case-INSENSITIVE while this map is not,
+        // so "ha.tls.mutualauth" used to resolve to the right setting, pass the coercion, the allow-list and the
+        // callback, and then land under a name no reader looks up - every reader asks for iConfig.getKey(). The
+        // setting silently kept its default while the operator had positive evidence it had been understood: no
+        // error, and for a setting with a callback, visible side effects at startup (issue #7297).
+        config.put(cfgEntry.getKey(), GlobalConfiguration.externalizeValue(cfgEntry.applyContextValue(coerced)));
+      } else
+        // A key that resolves to no setting is dropped, and used to be dropped in silence, which makes a typo in
+        // the key name the same silent no-op the case variant above was. Say so once: the file is operator-authored
+        // and the line is wrong however it got there (issue #7297).
+        LogManager.instance().log(this, Level.WARNING,
+            "Unknown setting '%s' in the server configuration file: ignored", GlobalConfiguration.PREFIX + k);
     }
   }
 
@@ -142,11 +153,19 @@ public class ContextConfiguration implements Serializable {
     return config.put(iConfig.getKey(), iConfig.applyContextValue(iValue));
   }
 
+  /**
+   * Issue #7297: the key stored is the resolved setting's DECLARED key, not the caller's spelling. Resolution is
+   * case-insensitive and this map is not, so a case variant used to be applied - callback included - and then
+   * stored where no reader looks. Only a name that resolves to no setting keeps the caller's spelling, because
+   * there is no declared one to use.
+   */
   public Object setValue(final String iName, final Object iValue) {
     final GlobalConfiguration cfg = GlobalConfiguration.findByKey(iName);
+    if (cfg != null)
+      return setValue(cfg, iValue);
     if (iValue == null)
-      return removeValue(cfg, iName);
-    return config.put(iName, cfg != null ? cfg.applyContextValue(iValue) : iValue);
+      return removeValue(null, iName);
+    return config.put(iName, iValue);
   }
 
   /**
@@ -209,13 +228,16 @@ public class ContextConfiguration implements Serializable {
   }
 
   public boolean hasValue(final String iName) {
-    return config.containsKey(iName);
+    return config.containsKey(normalizeKey(iName));
   }
 
   @SuppressWarnings("unchecked")
   public <T> T getValue(final String iName, final T defaultValue) {
-    if (config.containsKey(iName))
-      return (T) config.get(iName);
+    // Normalized for the same reason the writers are: the string-keyed accessors have to agree with the
+    // GlobalConfiguration-keyed ones about which entry a case variant names (issue #7297).
+    final String key = normalizeKey(iName);
+    if (config.containsKey(key))
+      return (T) config.get(key);
 
     final String sysProperty = System.getProperty(iName);
     if (sysProperty != null)
@@ -348,6 +370,27 @@ public class ContextConfiguration implements Serializable {
 
   public void reset() {
     config.clear();
+  }
+
+  /**
+   * Maps a caller-supplied key onto the declared key of the setting it names, when it names one.
+   * <p>
+   * {@link GlobalConfiguration#findByKey(String)} is case-INSENSITIVE by design - its javadoc says so - while this
+   * overlay is a plain map keyed by the declared spelling, which is what every {@code GlobalConfiguration}-keyed
+   * accessor looks up. Without this, a key written in another case resolved to the right setting on the way in,
+   * passed the type coercion, the allow-list and the callback, and was then stored under a name nothing reads:
+   * the setting silently kept its default, with no error and, for a setting with a callback, visible side effects
+   * that made it look applied. That is the shape {@code PostServerCommandHandler.applySetting} was fixed into in
+   * issue #6875; this is the same fix for the two string-keyed writers and their matching readers (issue #7297).
+   * <p>
+   * A key that resolves to no setting is returned unchanged: an overlay also carries plugin-defined entries that
+   * this enum knows nothing about, and those keep the spelling their owner uses.
+   */
+  private static String normalizeKey(final String key) {
+    if (key == null)
+      return null;
+    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
+    return cfg != null ? cfg.getKey() : key;
   }
 
   private String getVariable(final String name, final String defValue) {

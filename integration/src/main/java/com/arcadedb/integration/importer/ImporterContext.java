@@ -18,6 +18,8 @@
  */
 package com.arcadedb.integration.importer;
 
+import com.arcadedb.database.Database;
+
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -60,6 +62,30 @@ public class ImporterContext {
   public       long          lastVertices;
   public       long          lastEdges;
   public       long          lastLinkedEdges;
+
+  /**
+   * Whether the transaction the row loop about to run will use belongs to the import, as opposed to predating it -
+   * and therefore whether that loop may commit it, roll it back, and correct its own counters against it.
+   * <p>
+   * The single place this decision is made, so the five row loops that gate on it cannot each answer it slightly
+   * differently. The last time the answer was hand-applied per loop, one of the four operations in
+   * {@code RDFImporterFormat.load()} came apart from its siblings and committed the caller's transaction
+   * (issues #7272, #7328).
+   * <p>
+   * Two conditions, both meaning "not the caller's":
+   * <ul>
+   *   <li>{@link #callerTransactionActiveOnEntry} is false - nothing predating the import was ever there;</li>
+   *   <li>or it is true but no transaction is active any more. A caller transaction that has since been resolved
+   *   is not a caller transaction: the loop's own {@code begin()} pushes a fresh one, and calling that fresh one
+   *   the caller's would leave it on the stack with nothing allowed to resolve it - not the loop's gates, and not
+   *   {@code Importer.load()}'s own cleanup, which is gated on the same flag.</li>
+   * </ul>
+   * Call it once, immediately before the loop's {@code begin()}, and keep the answer in a local: after that
+   * {@code begin()} a transaction is always active, so asking again would always say "the caller's".
+   */
+  public boolean importOwnsTransaction(final Database database) {
+    return !callerTransactionActiveOnEntry || !database.isTransactionActive();
+  }
 
   public Map<String, Object> toMap() {
     final LinkedHashMap<String, Object> map = new LinkedHashMap<>();

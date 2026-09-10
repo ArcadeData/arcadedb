@@ -20,14 +20,20 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.Component;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.disk.IndexWriter;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.logging.Level;
 
 import static java.util.logging.Level.FINE;
 
@@ -83,6 +89,20 @@ public class ContiguousPageWriter implements IndexWriter {
   private MutablePage currentPage;
   private int         currentPageNum;
 
+  /**
+   * Pages the file already held when this writer was created. A page number below it addresses a page that exists,
+   * whatever this writer does; one at or above it is an append. See {@link #ensurePageLoaded(int)}.
+   */
+  private final int existingPages;
+
+  /**
+   * Highest page number this writer has already acquired, across chunk commits. Writing is strictly sequential
+   * from logical position 0, so the first time a page number is seen it is the one being appended - and only that
+   * first sight may register it as new. Needed separately from {@code currentPageNum} because a chunk commit
+   * resets that to -1 and the next write re-acquires the same, now committed, page.
+   */
+  private int highestPageAcquired = -1;
+
   // Chunking support (for large bulk writes with WAL disabled)
   private long                 totalBytesWritten;   // Track bytes written in current chunk
   private final long           chunkSizeBytes;      // Chunk size in bytes (0 = no chunking)
@@ -115,6 +135,7 @@ public class ContiguousPageWriter implements IndexWriter {
     this.totalBytesWritten = 0;
     this.chunkSizeBytes = chunkSizeMB * 1024 * 1024;
     this.chunkCallback = chunkCallback;
+    this.existingPages = countExistingPages(database, fileId);
 
     // Allocate reusable buffer once (8 bytes for largest primitive type)
     this.buffer = new byte[Binary.LONG_SERIALIZED_SIZE];
@@ -276,19 +297,39 @@ public class ContiguousPageWriter implements IndexWriter {
   }
 
   /**
-   * Ensures a page is loaded for writing. Creates new pages as needed.
+   * Ensures a page is loaded for writing, appending one to the file when the logical address has run past its end.
+   * <p>
+   * An appended page MUST be registered with {@link TransactionContext#addPage}, not merely read and modified
+   * (issue #7362). {@code addPage} is the only thing that raises the transaction's page counter for this file, and
+   * that counter is what the commit hands to {@link PaginatedComponent#updatePageCount} - so it is what makes
+   * {@code getTotalPages()} answer for the pages this write just produced, both DURING the write and immediately
+   * after the commit. Until this fix the append went through {@code getPage() + getPageToModify()}, which never
+   * fails on a page past the end of the file: {@code getPage} asks the page manager with {@code createIfNotExists},
+   * so it invents a zero-filled page and the {@code addPage} fallback below was unreachable. Every graph page
+   * landed among the transaction's MODIFIED pages, no counter moved, and the component's page count was left to be
+   * raised asynchronously, one page at a time, by the flush thread. A graph persisted and reloaded in the same
+   * breath therefore measured itself against whatever the flusher happened to have written by then - which for a
+   * multi-GB graph is a length short by gigabytes, and a JVector footer read off the middle of the payload.
+   * <p>
+   * "Appended" is decided by two facts and not by a failed read: the page is past what the file held when this
+   * writer started, AND this writer has not already acquired it (a chunk commit resets {@code currentPageNum}, so
+   * the page a chunk boundary fell inside is re-acquired right after it was committed - existing, by then).
    */
   private void ensurePageLoaded(final int pageNum) throws IOException {
     if (pageNum != currentPageNum) {
       final PageId pageId = new PageId(database, fileId, pageNum);
+      final TransactionContext transaction = database.getTransaction();
 
-      // Try to get existing page, or create new one
-      try {
-        final var existingPage = database.getTransaction().getPage(pageId, pageSize);
-        currentPage = database.getTransaction().getPageToModify(existingPage);
-      } catch (final Exception e) {
-        // Page doesn't exist, create new one
-        currentPage = database.getTransaction().addPage(pageId, pageSize);
+      if (pageNum > highestPageAcquired && pageNum >= existingPages)
+        currentPage = transaction.addPage(pageId, pageSize);
+      else {
+        try {
+          final BasePage existingPage = transaction.getPage(pageId, pageSize);
+          currentPage = transaction.getPageToModify(existingPage);
+        } catch (final Exception e) {
+          // Page doesn't exist, create new one
+          currentPage = transaction.addPage(pageId, pageSize);
+        }
       }
 
       if (currentPage == null) {
@@ -296,6 +337,51 @@ public class ContiguousPageWriter implements IndexWriter {
       }
 
       currentPageNum = pageNum;
+      if (pageNum > highestPageAcquired)
+        highestPageAcquired = pageNum;
+    }
+  }
+
+  /**
+   * Pages the file behind {@code fileId} holds right now, as the largest of the two counts that can answer it: the
+   * physical file (which lags a committed page until the flush thread writes it) and the component's own counter
+   * (which lags a page this very writer appended, until the commit). Overestimating is the safe direction - a page
+   * wrongly judged to exist is merely read and modified instead of appended, which is what the whole file used to
+   * do - while underestimating would let {@link TransactionContext#addPage} replace a page holding real bytes with
+   * an empty one.
+   * <p>
+   * A file with no {@link PaginatedComponent} registered against it answers {@link Integer#MAX_VALUE}, which turns
+   * the append path off entirely for it. Nothing is lost: the transaction page counter this whole change exists to
+   * raise is consumed at commit as {@code getFileById(id).updatePageCount(...)}, so for a file the schema does not
+   * own there is nothing on the other end to receive it - and a counter naming an unregistered file is a
+   * deliberately loud failure on that path, which this must not start triggering.
+   *
+   * @return the page count, or {@link Integer#MAX_VALUE} when it cannot be established or has nowhere to go, so
+   * nothing is ever appended blind
+   */
+  private static int countExistingPages(final DatabaseInternal database, final int fileId) {
+    try {
+      final Component component = database.getSchema().getFileByIdIfExists(fileId);
+      if (!(component instanceof final PaginatedComponent paginatedComponent))
+        return Integer.MAX_VALUE;
+
+      int pages = paginatedComponent.getTotalPages();
+
+      final ComponentFile file = database.getFileManager().getFileIfExists(fileId);
+      if (file instanceof final PaginatedComponentFile paginatedFile)
+        // The narrowing cast is the engine's existing ceiling, not a new one: PaginatedComponent tracks its page
+        // count in an AtomicInteger and PageId addresses pages by int, so a component cannot hold more than 2^31
+        // pages whatever this returns. Should that ever change, this and every other int page count change with it.
+        pages = Math.max(pages, (int) paginatedFile.getTotalPages());
+
+      return pages;
+    } catch (final Exception e) {
+      // WARNING and not FINE: this fallback puts the file back on the pre-issue-#7362 behaviour wholesale, so an
+      // exception here silently defeats the fix rather than degrading it. It has to be visible to an operator.
+      LogManager.instance().log(ContiguousPageWriter.class, Level.WARNING,
+          "Could not establish the page count of file %d (%s): every page will be acquired as an existing one, so the "
+              + "component's page count will not account for the pages this write appends", fileId, e.getMessage());
+      return Integer.MAX_VALUE;
     }
   }
 }

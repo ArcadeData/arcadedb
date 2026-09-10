@@ -32,7 +32,6 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.Deque;
 import java.util.List;
-import java.util.Map;
 
 /**
  * HTTP handler for retrieving the latest TimeSeries value.
@@ -107,25 +106,14 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * Builds the tag selection from the {@code tag=name:value} query parameter. The parameter carries ONE
-   * predicate: {@code getQueryParameter} reads the first occurrence and the rest are ignored, which is the
-   * behaviour {@code TimeSeriesApiSpecTest} pins and this change deliberately leaves alone. The gRPC
-   * {@code TimeSeriesLatest} RPC takes a whole filter map, so it is strictly more expressive here; closing that
-   * asymmetry means changing this endpoint's contract, which is tracked separately (see the follow-up named in
-   * the PR for issue #7305).
+   * Reads EVERY occurrence of the 'tag' query parameter and conjoins them, so a type with more than one
+   * tag column can name a single series: {@code ?tag=host:a&tag=region:eu} means host=a AND region=eu.
+   * <p>
+   * Deliberately not {@link #getQueryParameter(HttpServerExchange, String)}, which returns the Deque's
+   * first entry and so dropped every occurrence past the first (issue #7321). The conjunction itself is
+   * the same helper POST /ts/{database}/query uses for its 'tags' object.
    */
   private TagFilter buildTagFilter(final HttpServerExchange exchange, final List<ColumnDefinition> columns) {
-    final String tagParam = getQueryParameter(exchange, "tag");
-    if (tagParam == null || tagParam.isBlank())
-      return null;
-
-    final int colonIdx = tagParam.indexOf(':');
-    if (colonIdx <= 0)
-      return null;
-
-    // One equality predicate, built by the same code the JSON and gRPC paths use, so the coercion of the
-    // request text to the column's declared type (issue #5475) cannot drift between the three.
-    return TimeSeriesGateway.buildTagFilter(
-        Map.of(tagParam.substring(0, colonIdx), tagParam.substring(colonIdx + 1)), columns);
+    return TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(exchange.getQueryParameters().get("tag"), columns);
   }
 }
