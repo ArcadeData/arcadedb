@@ -758,37 +758,4 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (ha != null && !ha.isLeader())
       throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderName());
   }
-
-  private HAServerPlugin getHA() {
-    final HAServerPlugin ha = httpServer.getServer().getHA();
-    if (ha == null)
-      throw new CommandExecutionException(
-          "ArcadeDB is not running with High Availability module enabled. Please add this setting at startup: -Darcadedb.ha.enabled=true");
-    return ha;
-  }
-
-  /**
-   * Post-restore HA hook. In HA mode, submits an install-database Raft entry with
-   * forceSnapshot=true so every replica pulls the restored files. On any failure,
-   * drops the just-restored local database so the operator can retry cleanly.
-   */
-  private void replicateRestoredDatabase(final ArcadeDBServer server, final ServerDatabase restored,
-      final String databaseName) {
-    if (!(restored.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb))
-      return;
-
-    try {
-      haDb.createInReplicas(true);
-    } catch (final RuntimeException e) {
-      // Compensate: drop the locally-restored database so the operator can retry cleanly.
-      try {
-        restored.getEmbedded().drop();
-        server.removeDatabase(databaseName);
-      } catch (final Exception inner) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Compensating drop after failed restore replication failed for '%s'", inner, databaseName);
-      }
-      throw e;
-    }
-  }
 }

@@ -110,6 +110,15 @@ final class GrpcProgressStream<T> implements ServerControlPlane.ProgressListener
    * Sends one progress message, unless the call is already over. A client that cancelled or went
    * away must not turn into a failure of the operation itself: the restore is running server-side
    * and has no interruption point, so the only sane response is to stop reporting.
+   * <p>
+   * The catch is <b>deliberately wider than the {@link #isCancelled()} check above it</b>, and covers
+   * a transport failure as well as a cancellation. That is not an oversight of the two cases: what
+   * either one means here is the same thing, which is that this call can no longer carry messages.
+   * Neither one can undo the work already done, neither can stop the work still running, and failing
+   * the operation because its progress could not be reported would turn a delivery problem into data
+   * loss. So both stop the reporting and leave the operation alone, and the reason they are told
+   * apart at all is the log line. Once this fires, {@code terminated} keeps {@link #complete} and
+   * {@link #fail} from writing to a call gRPC has already closed, which would throw again.
    */
   synchronized void send(final T message) {
     if (terminated || isCancelled())
@@ -117,9 +126,10 @@ final class GrpcProgressStream<T> implements ServerControlPlane.ProgressListener
     try {
       resp.onNext(message);
     } catch (final RuntimeException e) {
-      // The call died under us. Stop writing to it; the operation itself carries on to its end.
+      // The call died under us - cancelled, or a transport failure. Stop writing to it; the
+      // operation itself carries on to its end.
       terminated = true;
-      LogManager.instance().log(this, Level.FINE, "Progress stream closed by the client: %s", e.getMessage());
+      LogManager.instance().log(this, Level.FINE, "Progress stream can no longer be written to: %s", e.getMessage());
     }
   }
 
