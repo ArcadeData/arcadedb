@@ -151,9 +151,9 @@ public class WebSocketInsertProtocol {
     try {
       switch (action) {
       case "start" -> {
-        final WebSocketInsertSession session = sessionManager.start(user, channelId, message.getString("database", null),
-            message.getString("sessionId", null), message.getJSONObject("options", null));
-        session.setChannel(channel);
+        final WebSocketInsertSession session = sessionManager.start(user, channel, channelId,
+            message.getString("database", null), message.getString("sessionId", null),
+            message.getJSONObject("options", null));
 
         final JSONObject started = new JSONObject();
         started.put("result", "ok");
