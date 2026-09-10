@@ -80,6 +80,10 @@ class Issue7357DeltaBufferHeapBoundTest {
   /** Records written after the persisted graph, i.e. the gap the reuse re-queues. Must exceed {@link #BUDGET}. */
   private static final int GAP_VECTORS       = 200;
 
+  /** Fixture for the orphan re-queue: a graph small enough to build quickly, a budget well under it. */
+  private static final int ORPHAN_RECORDS = 120;
+  private static final int ORPHAN_BUDGET  = 10;
+
   private String dbPath;
 
   @BeforeEach
@@ -284,6 +288,59 @@ class Issue7357DeltaBufferHeapBoundTest {
   }
 
   /**
+   * The orphan re-queue, the third producer of buffered payloads (PR #7360 review).
+   * <p>
+   * A build re-queues the vectors of every node it left unreachable, carrying their payloads, and that append used
+   * to go around the budget. It is the worst of the three to leave uncapped, because a Vamana build orphans a
+   * FRESH set each time and the count does not converge downwards (issue #7190), so a corpus that keeps
+   * re-triggering rebuilds would keep adding full payloads to a buffer nothing else is allowed to grow.
+   * <p>
+   * Driven through {@code requeueIntoDeltaBufferForTest()}, which puts the index into exactly that state, because
+   * whether a build orphans a node is decided between the data and JVector's diversity heuristic and cannot be
+   * demanded from the public API - which is why that hook exists at all. What is asserted is the property the fix
+   * establishes: a re-queue is charged the budget like any other arrival, whoever produced it.
+   */
+  @Test
+  @Tag("vector")
+  void aReQueuedOrphanHonoursTheSameBudgetAsAWrite() {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        createSchema(db, ORPHAN_BUDGET);
+        insert(db, 0, ORPHAN_RECORDS);
+
+        final LSMVectorIndex index = vectorIndex(db);
+        index.buildVectorGraphNow();
+
+        assertThat(index.getStats().get("deltaVectorsCount"))
+            .as("precondition: the build drained the buffer, so what follows is only the re-queue")
+            .isZero();
+        assertThat(index.getStats().get("deltaResidentVectors"))
+            .as("precondition: and gave every payload back")
+            .isZero();
+
+        int requeued = 0;
+        for (int id = 0; id < ORPHAN_RECORDS && requeued < ORPHAN_BUDGET * 3; id++) {
+          if (index.requeueIntoDeltaBufferForTest(ridOf(db, id)) >= 0)
+            requeued++;
+        }
+
+        assertThat(requeued)
+            .as("precondition: enough orphans re-queued to exceed the budget of %d", ORPHAN_BUDGET)
+            .isGreaterThan(ORPHAN_BUDGET);
+        assertThat(index.getStats().get("deltaVectorsCount"))
+            .as("every re-queued orphan is buffered - the bound drops payloads, never entries")
+            .isEqualTo((long) requeued);
+        assertThat(index.getStats().get("deltaResidentVectors"))
+            .as("but the heap holds at most the budget, the same as for a write (issue #7357)")
+            .isLessThanOrEqualTo((long) ORPHAN_BUDGET);
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  /**
    * The auto-sized branch, which is what every installation that never touches either new setting gets, and the
    * only one of the three whose answer a test cannot otherwise predict (PR #7360 review).
    * <p>
@@ -374,6 +431,16 @@ class Issue7357DeltaBufferHeapBoundTest {
     final List<Pair<RID, Float>> hits = new ArrayList<>();
     db.transaction(() -> hits.addAll(vectorIndex(db).findNeighborsFromVector(query, k)));
     return hits;
+  }
+
+  private static RID ridOf(final Database db, final int id) {
+    final RID[] rid = new RID[1];
+    db.transaction(() -> {
+      try (final var rs = db.query("sql", "SELECT @rid FROM Doc WHERE id = ?", id)) {
+        rid[0] = rs.hasNext() ? rs.next().getProperty("@rid") : null;
+      }
+    });
+    return rid[0];
   }
 
   private static int idOf(final Database db, final RID rid) {

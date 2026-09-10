@@ -3399,10 +3399,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // ("would rebuild itself forever"); the state flag was not.
         final boolean hasPendingWrites = !remaining.isEmpty();
 
-        remaining.addAll(unreachableEntries);
-
+        // The survivors are published FIRST, and the orphans queued through the door afterwards, rather than the
+        // one addAll() this replaces (PR #7360 review). addAll() went around queueDeltaEntry(), so the payload
+        // budget did not reach these entries - the third site with that shape, after the write path and the
+        // stale-prefix gap. It is also the worst of the three to leave uncapped: a Vamana build orphans a FRESH
+        // set every time, so this count does not converge downwards (issue #7190), and on a corpus that keeps
+        // re-triggering rebuilds it would keep adding full payloads to a buffer nothing else was allowed to grow.
         this.deltaVectors = remaining;
         recountDeltaResidentPayloads();
+        for (final DeltaVectorEntry unreachable : unreachableEntries)
+          queueDeltaEntry(unreachable);
 
         // Subtract only mutations present at build start, preserving concurrent ones
         mutationsSinceSerialize.addAndGet(-mutationsAtBuildStart);
@@ -7497,10 +7503,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Remove matching entries from delta buffer
           if (!deltaVectors.isEmpty()) {
-            deltaVectors.removeIf(entry -> entry.rid.equals(rid));
             // The payloads those entries held are gone with them, so the heap accounting has to give them back:
             // leaving it high would keep declining payloads for writes the buffer now has room for (issue #7357).
-            recountDeltaResidentPayloads();
+            // Counted inside the predicate rather than by a recount afterwards, because this runs on every delete
+            // and not only during a bulk load, and a recount walks the whole buffer a second time right after
+            // removeIf() has already walked it (PR #7360 review). The holder array is what a lambda needs to
+            // accumulate; the write lock is held throughout, so nothing else is reading the counter meanwhile.
+            final int[] releasedPayloads = new int[1];
+            deltaVectors.removeIf(entry -> {
+              if (!entry.rid.equals(rid))
+                return false;
+              if (entry.vector != null)
+                releasedPayloads[0]++;
+              return true;
+            });
+            if (releasedPayloads[0] > 0)
+              deltaResidentPayloads.addAndGet(-releasedPayloads[0]);
           }
 
           // Phase 5+: Periodic rebuild strategy (amortizes cost over many operations)
