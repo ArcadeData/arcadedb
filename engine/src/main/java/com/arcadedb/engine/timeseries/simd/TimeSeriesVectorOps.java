@@ -26,7 +26,16 @@ package com.arcadedb.engine.timeseries.simd;
  */
 public interface TimeSeriesVectorOps {
 
+  /**
+   * Sum of the REAL samples in the range, under the NaN policy of {@code TimeSeriesNaN} (issue #7089): a NaN
+   * element is skipped, and a range with no real element answers the absent marker rather than zero.
+   */
   double sum(double[] data, int offset, int length);
+
+  /**
+   * How many elements of the range are real (non-NaN): the denominator of an average over {@link #sum}.
+   */
+  long countPresent(double[] data, int offset, int length);
 
   double min(double[] data, int offset, int length);
 

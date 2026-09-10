@@ -79,7 +79,7 @@ class TimeSeriesBlockStatsTest {
 
     // Write block with stats
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
-      store.appendBlock(5, 1000L, 5000L, compressed, mins, maxs, sums, null);
+      store.appendBlock(5, 1000L, 5000L, compressed, mins, maxs, sums, new long[] { 0, 5, 5 }, null);
       assertThat(store.getBlockCount()).isEqualTo(1);
     }
 
@@ -115,7 +115,7 @@ class TimeSeriesBlockStatsTest {
     final double[] sums = { Double.NaN, 150.0, 30.0 };
 
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
-      store.appendBlock(5, 0L, 4000L, compressed, mins, maxs, sums, null);
+      store.appendBlock(5, 0L, 4000L, compressed, mins, maxs, sums, new long[] { 0, 5, 5 }, null);
 
       final long bucketInterval = 3600000L; // 1 hour
 
@@ -167,7 +167,7 @@ class TimeSeriesBlockStatsTest {
     final double[] sums = { Double.NaN, 100.0, 10.0 };
 
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
-      store.appendBlock(4, 500L, 1500L, compressed, mins, maxs, sums, null);
+      store.appendBlock(4, 500L, 1500L, compressed, mins, maxs, sums, new long[] { 0, 4, 4 }, null);
 
       final long bucketInterval = 1000L;
 
@@ -211,12 +211,12 @@ class TimeSeriesBlockStatsTest {
       store.appendBlock(2, 1000L, 2000L, block1,
           new double[] { Double.NaN, 10.0, 1.0 },
           new double[] { Double.NaN, 20.0, 2.0 },
-          new double[] { Double.NaN, 30.0, 3.0 }, null);
+          new double[] { Double.NaN, 30.0, 3.0 }, new long[] { 0, 2, 2 }, null);
 
       store.appendBlock(2, 3000L, 4000L, block2,
           new double[] { Double.NaN, 30.0, 3.0 },
           new double[] { Double.NaN, 40.0, 4.0 },
-          new double[] { Double.NaN, 70.0, 7.0 }, null);
+          new double[] { Double.NaN, 70.0, 7.0 }, new long[] { 0, 2, 2 }, null);
 
       assertThat(store.getBlockCount()).isEqualTo(2);
 
@@ -255,12 +255,12 @@ class TimeSeriesBlockStatsTest {
       store.appendBlock(2, 1000L, 2000L, block1,
           new double[] { Double.NaN, 10.0, 1.0 },
           new double[] { Double.NaN, 20.0, 2.0 },
-          new double[] { Double.NaN, 30.0, 3.0 }, null);
+          new double[] { Double.NaN, 30.0, 3.0 }, new long[] { 0, 2, 2 }, null);
 
       store.appendBlock(2, 5000L, 6000L, block2,
           new double[] { Double.NaN, 50.0, 5.0 },
           new double[] { Double.NaN, 60.0, 6.0 },
-          new double[] { Double.NaN, 110.0, 11.0 }, null);
+          new double[] { Double.NaN, 110.0, 11.0 }, new long[] { 0, 2, 2 }, null);
 
       // Truncate: remove block 1
       store.truncateBefore(3000L);
@@ -301,12 +301,12 @@ class TimeSeriesBlockStatsTest {
       store.appendBlock(2, 1000L, 2000L, block1,
           new double[] { Double.NaN, 10.0, 1.0 },
           new double[] { Double.NaN, 20.0, 2.0 },
-          new double[] { Double.NaN, 30.0, 3.0 }, null);
+          new double[] { Double.NaN, 30.0, 3.0 }, new long[] { 0, 2, 2 }, null);
 
       store.appendBlock(2, 5000L, 6000L, block2,
           new double[] { Double.NaN, 50.0, 5.0 },
           new double[] { Double.NaN, 60.0, 6.0 },
-          new double[] { Double.NaN, 110.0, 11.0 }, null);
+          new double[] { Double.NaN, 110.0, 11.0 }, new long[] { 0, 2, 2 }, null);
 
       store.truncateBefore(3000L);
     }

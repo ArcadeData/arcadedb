@@ -315,9 +315,11 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     retentionMs = json.getLong("retentionMs", 0L);
     compactionBucketIntervalMs = json.getLong("compactionBucketIntervalMs", 0L);
     sealedFormatVersion = json.getInt("sealedFormatVersion", 0);
-    if (sealedFormatVersion != TimeSeriesSealedStore.CURRENT_VERSION)
+    // Older sealed formats are read as they stand (issue #7089 added a statistic without dropping the previous
+    // layout); only a NEWER one, which this build cannot know how to read, is refused - as the mutable check below.
+    if (sealedFormatVersion > TimeSeriesSealedStore.CURRENT_VERSION)
       throw new IllegalStateException(
-          "Unsupported sealed store format version " + sealedFormatVersion + " (expected " +
+          "Unsupported sealed store format version " + sealedFormatVersion + " (this build supports up to " +
               TimeSeriesSealedStore.CURRENT_VERSION + ") for TimeSeries type '" + name + "'");
     // Older mutable formats stay readable: the version selects the row layout rather than gating the
     // open, so a type written before the tag dictionary (issue #5519) keeps its inline tag columns.

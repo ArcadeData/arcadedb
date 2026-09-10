@@ -338,7 +338,7 @@ class TimeSeriesCrashRecoveryTest extends TestHelper {
     mins[2] = 40.0;
     maxs[2] = 50.0;
     sums[2] = 90.0;
-    shard.getSealedStore().appendBlock(2, 4000L, 5000L, compressedExtra, mins, maxs, sums, null);
+    shard.getSealedStore().appendBlock(2, 4000L, 5000L, compressedExtra, mins, maxs, sums, new long[] { 0, 0, 2 }, null);
     shard.getSealedStore().flushHeader();
 
     final long blocksWithExtra = shard.getSealedStore().getBlockCount();

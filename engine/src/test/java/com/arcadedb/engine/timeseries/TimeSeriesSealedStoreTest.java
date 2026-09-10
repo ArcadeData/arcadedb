@@ -48,6 +48,7 @@ class TimeSeriesSealedStoreTest {
   private static final double[] NO_MINS = { Double.NaN, Double.NaN, Double.NaN };
   private static final double[] NO_MAXS = { Double.NaN, Double.NaN, Double.NaN };
   private static final double[] NO_SUMS = { Double.NaN, Double.NaN, Double.NaN };
+  private static final long[]   NO_COUNTS = { 0, 0, 0 };
 
   @BeforeEach
   void setUp() {
@@ -89,7 +90,7 @@ class TimeSeriesSealedStoreTest {
       store.appendBlock(5, 1000L, 5000L, compressed,
           new double[] { Double.NaN, Double.NaN, 19.5 },
           new double[] { Double.NaN, Double.NaN, 23.0 },
-          new double[] { Double.NaN, Double.NaN, 106.0 }, null);
+          new double[] { Double.NaN, Double.NaN, 106.0 }, new long[] { 0, 0, 5 }, null);
 
       assertThat(store.getBlockCount()).isEqualTo(1);
       assertThat(store.getGlobalMinTimestamp()).isEqualTo(1000L);
@@ -121,7 +122,7 @@ class TimeSeriesSealedStoreTest {
           DictionaryCodec.encode(sensorIds),
           GorillaXORCodec.encode(temperatures)
       };
-      store.appendBlock(5, 1000L, 5000L, compressed, NO_MINS, NO_MAXS, NO_SUMS, null);
+      store.appendBlock(5, 1000L, 5000L, compressed, NO_MINS, NO_MAXS, NO_SUMS, NO_COUNTS, null);
 
       // Query subset
       final List<Object[]> results = store.scanRange(2000L, 4000L, null, null);
@@ -139,14 +140,14 @@ class TimeSeriesSealedStoreTest {
           DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L, 3000L }),
           DictionaryCodec.encode(new String[] { "A", "A", "A" }),
           GorillaXORCodec.encode(new double[] { 10.0, 11.0, 12.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS, null);
+      }, NO_MINS, NO_MAXS, NO_SUMS, NO_COUNTS, null);
 
       // Block 2: timestamps 4000-6000
       store.appendBlock(3, 4000L, 6000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 4000L, 5000L, 6000L }),
           DictionaryCodec.encode(new String[] { "B", "B", "B" }),
           GorillaXORCodec.encode(new double[] { 20.0, 21.0, 22.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS, null);
+      }, NO_MINS, NO_MAXS, NO_SUMS, NO_COUNTS, null);
 
       assertThat(store.getBlockCount()).isEqualTo(2);
       assertThat(store.getGlobalMinTimestamp()).isEqualTo(1000L);
@@ -165,13 +166,13 @@ class TimeSeriesSealedStoreTest {
           DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L }),
           DictionaryCodec.encode(new String[] { "A", "A" }),
           GorillaXORCodec.encode(new double[] { 10.0, 11.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS, null);
+      }, NO_MINS, NO_MAXS, NO_SUMS, NO_COUNTS, null);
 
       store.appendBlock(2, 5000L, 6000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 5000L, 6000L }),
           DictionaryCodec.encode(new String[] { "B", "B" }),
           GorillaXORCodec.encode(new double[] { 20.0, 21.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS, null);
+      }, NO_MINS, NO_MAXS, NO_SUMS, NO_COUNTS, null);
 
       // Query only block 2
       final List<Object[]> results = store.scanRange(5000L, 6000L, null, null);
@@ -203,7 +204,7 @@ class TimeSeriesSealedStoreTest {
       store.appendBlock(5, 1000L, 5000L, compressed,
           new double[] { Double.NaN, Double.NaN, 19.5 },
           new double[] { Double.NaN, Double.NaN, 23.0 },
-          new double[] { Double.NaN, Double.NaN, 106.0 }, tagDV);
+          new double[] { Double.NaN, Double.NaN, 106.0 }, new long[] { 0, 0, 5 }, tagDV);
 
       // Filter for sensor_id == "A" only — should return rows at t=1000 and t=3000
       final TagFilter filterA = TagFilter.eq(0, "A");
@@ -235,7 +236,7 @@ class TimeSeriesSealedStoreTest {
           GorillaXORCodec.encode(temperatures)
       }, new double[] { Double.NaN, Double.NaN, 10.0 },
           new double[] { Double.NaN, Double.NaN, 30.0 },
-          new double[] { Double.NaN, Double.NaN, 60.0 }, tagDV);
+          new double[] { Double.NaN, Double.NaN, 60.0 }, new long[] { 0, 0, 3 }, tagDV);
 
       final TagFilter filterX = TagFilter.eq(0, "X");
       final Iterator<Object[]> iter = store.iterateRange(1000L, 3000L, null, filterX);
@@ -265,7 +266,7 @@ class TimeSeriesSealedStoreTest {
           DeltaOfDeltaCodec.encode(new long[] { 1000L }),
           DictionaryCodec.encode(new String[] { longValue }),
           GorillaXORCodec.encode(new double[] { 1.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS, tagDV))
+      }, NO_MINS, NO_MAXS, NO_SUMS, NO_COUNTS, tagDV))
           .isInstanceOf(IllegalArgumentException.class)
           .hasMessageContaining("too long");
     }
@@ -283,7 +284,7 @@ class TimeSeriesSealedStoreTest {
           DeltaOfDeltaCodec.encode(new long[] { 1000L }),
           DictionaryCodec.encode(new String[] { "A" }),
           GorillaXORCodec.encode(new double[] { 1.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS, null);
+      }, NO_MINS, NO_MAXS, NO_SUMS, NO_COUNTS, null);
     }
 
     // Try to reopen with a different schema (2 columns instead of 3)
@@ -317,13 +318,13 @@ class TimeSeriesSealedStoreTest {
       store.appendBlock(3, 6_000L, 8_000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 6_000L, 7_000L, 8_000L }),
           GorillaXORCodec.encode(new double[] { 1.0, 2.0, 3.0 })
-      }, new double[] { Double.NaN, 1.0 }, new double[] { Double.NaN, 3.0 }, new double[] { Double.NaN, 6.0 }, null);
+      }, new double[] { Double.NaN, 1.0 }, new double[] { Double.NaN, 3.0 }, new double[] { Double.NaN, 6.0 }, new long[] { 0, 3 }, null);
 
       // Newer block: t=100_000..102_000 — retained (beyond cutoff)
       store.appendBlock(3, 100_000L, 102_000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 100_000L, 101_000L, 102_000L }),
           GorillaXORCodec.encode(new double[] { 10.0, 20.0, 30.0 })
-      }, new double[] { Double.NaN, 10.0 }, new double[] { Double.NaN, 30.0 }, new double[] { Double.NaN, 60.0 }, null);
+      }, new double[] { Double.NaN, 10.0 }, new double[] { Double.NaN, 30.0 }, new double[] { Double.NaN, 60.0 }, new long[] { 0, 3 }, null);
 
       // Downsample blocks older than t=10_000 to 5_000ms granularity
       store.downsampleBlocks(10_000L, 5_000L, 0,
@@ -356,13 +357,13 @@ class TimeSeriesSealedStoreTest {
           DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L }),
           DictionaryCodec.encode(new String[] { "A", "A" }),
           GorillaXORCodec.encode(new double[] { 10.0, 11.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS, null);
+      }, NO_MINS, NO_MAXS, NO_SUMS, NO_COUNTS, null);
 
       store.appendBlock(2, 5000L, 6000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 5000L, 6000L }),
           DictionaryCodec.encode(new String[] { "B", "B" }),
           GorillaXORCodec.encode(new double[] { 20.0, 21.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS, null);
+      }, NO_MINS, NO_MAXS, NO_SUMS, NO_COUNTS, null);
 
       // Truncate old data
       store.truncateBefore(3000L);
@@ -393,7 +394,7 @@ class TimeSeriesSealedStoreTest {
           DictionaryCodec.encode(new String[] { "A", "B" }),
           GorillaXORCodec.encode(new double[] { 1.0, 2.0 })
       }, new double[] { Double.NaN, Double.NaN, 1.0 }, new double[] { Double.NaN, Double.NaN, 2.0 },
-          new double[] { Double.NaN, Double.NaN, 3.0 }, null);
+          new double[] { Double.NaN, Double.NaN, 3.0 }, new long[] { 0, 0, 2 }, null);
       source.flushHeader();
       sealedV1 = source.readWholeSealedFile();
 
@@ -402,7 +403,7 @@ class TimeSeriesSealedStoreTest {
           DictionaryCodec.encode(new String[] { "C", "D" }),
           GorillaXORCodec.encode(new double[] { 3.0, 4.0 })
       }, new double[] { Double.NaN, Double.NaN, 3.0 }, new double[] { Double.NaN, Double.NaN, 4.0 },
-          new double[] { Double.NaN, Double.NaN, 7.0 }, null);
+          new double[] { Double.NaN, Double.NaN, 7.0 }, new long[] { 0, 0, 2 }, null);
       source.flushHeader();
       sealedV2 = source.readWholeSealedFile();
     }

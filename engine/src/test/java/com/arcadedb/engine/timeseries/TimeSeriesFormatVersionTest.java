@@ -71,7 +71,7 @@ class TimeSeriesFormatVersionTest {
       store.appendBlock(3, 1000L, 3000L, new byte[][] {
           DeltaOfDeltaCodec.encode(timestamps),
           GorillaXORCodec.encode(values)
-      }, new double[] { Double.NaN, 10.0 }, new double[] { Double.NaN, 30.0 }, new double[] { Double.NaN, 60.0 }, null);
+      }, new double[] { Double.NaN, 10.0 }, new double[] { Double.NaN, 30.0 }, new double[] { Double.NaN, 60.0 }, new long[] { 0, 3 }, null);
     }
 
     // Read raw file bytes and verify version byte at offset 4
@@ -101,7 +101,7 @@ class TimeSeriesFormatVersionTest {
       store.appendBlock(1, 1000L, 1000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 1000L }),
           GorillaXORCodec.encode(new double[] { 10.0 })
-      }, new double[] { Double.NaN, 10.0 }, new double[] { Double.NaN, 10.0 }, new double[] { Double.NaN, 10.0 }, null);
+      }, new double[] { Double.NaN, 10.0 }, new double[] { Double.NaN, 10.0 }, new double[] { Double.NaN, 10.0 }, new long[] { 0, 1 }, null);
     }
 
     // Corrupt the version byte to 99
@@ -125,7 +125,7 @@ class TimeSeriesFormatVersionTest {
       store.appendBlock(3, 1000L, 3000L, new byte[][] {
           DeltaOfDeltaCodec.encode(timestamps),
           GorillaXORCodec.encode(values)
-      }, new double[] { Double.NaN, 10.0 }, new double[] { Double.NaN, 30.0 }, new double[] { Double.NaN, 60.0 }, null);
+      }, new double[] { Double.NaN, 10.0 }, new double[] { Double.NaN, 30.0 }, new double[] { Double.NaN, 60.0 }, new long[] { 0, 3 }, null);
     }
 
     // Flip a byte in the compressed data region (somewhere after the header + block meta)
@@ -163,7 +163,7 @@ class TimeSeriesFormatVersionTest {
       store.appendBlock(3, 1000L, 3000L, new byte[][] {
           DeltaOfDeltaCodec.encode(timestamps),
           GorillaXORCodec.encode(values)
-      }, mins, maxs, sums, null);
+      }, mins, maxs, sums, new long[] { 0, 3 }, null);
     }
 
     // Reload and verify data + stats-based aggregation both work
