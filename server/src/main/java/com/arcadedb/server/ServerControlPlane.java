@@ -314,7 +314,7 @@ public class ServerControlPlane {
     if (database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb)
       haDb.dropInReplicas();
     else {
-      // Non-HA mode: drop locally as before.
+      // Non-HA: there is no cluster to tell, so delete the files here.
       database.getEmbedded().drop();
       server.removeDatabase(databaseName);
     }

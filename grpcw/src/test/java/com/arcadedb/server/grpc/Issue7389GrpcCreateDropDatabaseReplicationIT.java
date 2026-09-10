@@ -221,7 +221,7 @@ class Issue7389GrpcCreateDropDatabaseReplicationIT extends BaseRaftHATest {
     try {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
-          "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
       connection.setDoOutput(true);
 
       final byte[] payload = new JSONObject().put("command", command).toString().getBytes(StandardCharsets.UTF_8);
