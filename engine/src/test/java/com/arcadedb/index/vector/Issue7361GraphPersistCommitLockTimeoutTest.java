@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -204,10 +205,13 @@ class Issue7361GraphPersistCommitLockTimeoutTest extends TestHelper {
 
     final List<Long> observed = new ArrayList<>();
 
+    final AtomicReference<Long> budgetAfterBuild = new AtomicReference<>(-1L);
+
     database.begin();
     try {
       // Every record of the bulk load is indexed inside the transaction build() itself opened and commits.
       vectorIndex().build((document, totalIndexed) -> observed.add(db.getTransaction().getCommitLockTimeout()), null);
+      budgetAfterBuild.set(db.getTransaction().getCommitLockTimeout());
     } finally {
       if (database.isTransactionActive())
         database.commit();
@@ -218,6 +222,10 @@ class Issue7361GraphPersistCommitLockTimeoutTest extends TestHelper {
         .as("every commit of a bulk build waits on the bulk budget, from the first one: the transaction it all "
             + "runs in is opened by build() itself, so nothing under it can be the thing that sets this")
         .containsOnly(30_000L);
+    assertThat(budgetAfterBuild.get())
+        .as("and the budget is put back the way the WAL setting is: build() is public, so a caller that already "
+            + "had a transaction open must not have its own later commit inherit a bulk build's budget")
+        .isNull();
   }
 
   // ------------------------------------------------------------------------------------------------- helpers

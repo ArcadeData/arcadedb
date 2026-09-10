@@ -336,6 +336,12 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       return totalBytes;
 
     } catch (final Exception e) {
+      // Dropped with the manifest and for the same reason: past a failure the manifest is the sole authority on
+      // these pages, and recordedGraphBytes() prefers this field over it. A failure landing after the position
+      // was captured - the logging below it, say - would otherwise leave a length in here that outlives the
+      // markUnusable() on the next line and lets a later loadGraph() in this session trust pages the manifest
+      // has just refused (issue #7362).
+      lastWrittenGraphBytes = -1L;
       // The caller rolls back and carries on without a persisted graph. Whatever the rollback leaves on these
       // pages - the previous generation untouched, or a partial rewrite whose earlier chunks already committed -
       // nothing here knows which, so the manifest must refuse them rather than be simply absent: absent means
