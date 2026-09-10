@@ -307,3 +307,37 @@ An earlier session left this worktree with the fix and its tests uncommitted, un
 work rather than discarding it, then rebased it onto `main`, re-ran the completeness sweep over the
 grown RPC surface, rewrote the IT off the hardcoded port, proved the tests fail without the fix, and
 filed the two follow-ups. Nothing here is inherited on trust.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7377
+
+## Review cycles
+
+- **cycle 1 - `432716f5`** - `claude` reviewed the diff and re-derived the doc's claims against the
+  source rather than taking them: it re-read `ServerSecurity.authenticate` and confirmed the bounded
+  set of three messages (so echoing `e.getMessage()` adds no user-enumeration vector), confirmed the
+  blank-vs-absent normalization is symmetric on both sides of the wire, confirmed
+  `userName`/`userPassword` are `Objects.requireNonNull`'d in the `RemoteGrpcServer` constructor so
+  the unconditional `headers.put` cannot NPE, and confirmed `RemoteGrpcDatabase.databaseName` is
+  `final`. Verdict: **no bugs, no blocking issues**, security a net narrowing. No code changes were
+  applied, so no second cycle was needed. Two non-blocking observations, both declined with reasons:
+
+  1. *"`Issue7320ScopedUserGrpcIT.createUser` duplicates the `HttpURLConnection` POST helper from
+     `Issue7305TimeSeriesGrpcAclIT` almost verbatim - worth lifting into a shared helper if a third
+     gRPC IT needs it."* Declined here, and the reviewer's own condition says why: there are two
+     copies, not three. Extracting a shared helper means editing `Issue7305TimeSeriesGrpcAclIT`, an
+     existing test this workflow does not modify, and #7375 is already queued to touch that file -
+     which is the right moment to extract it, with a third caller in sight or not.
+  2. *"The bearer-token branch's `database` parameter is effectively dead (used only in `FINE` log
+     messages); consider wiring it into a real check or dropping it."* Declined: the parameter is not
+     dead, it is diagnostic - it is what tells an operator reading FINE logs which database a
+     rejected token was aimed at. Wiring it into a real grant check would be a behaviour change to
+     the token path, which is not what this issue reports and would want its own review. Worth
+     knowing: after this fix those three log lines print `database: null` for a header-less call,
+     which is honest (no database was named) but reads oddly. Left alone rather than churning a PR
+     the reviewer passed.
+
+## Final state
+
+`clean-approval` - one cycle, no review-driven code changes, no deferred items.
