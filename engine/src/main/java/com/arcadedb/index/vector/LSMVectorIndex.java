@@ -8345,6 +8345,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Every commit of this build - the vector-data chunks, the graph persist chunks, and the final one -
           // waits on the bulk budget rather than the interactive default (issue #7361). Set here rather than
           // only where the graph is persisted: it is one build, and the transaction is this one throughout.
+          // Captured and restored in the finally exactly like originalWAL above, and for the same reason: when
+          // this build did NOT open the transaction it is running in (build() is public and an embedded caller
+          // may hold one), the caller's own later commit must not inherit a budget meant for a bulk build.
+          final Long originalCommitLockTimeout = db.getTransaction().getCommitLockTimeout();
           db.getTransaction().setCommitLockTimeout(getGraphPersistCommitLockTimeout());
 
           LogManager.instance().log(this, Level.INFO,
@@ -8402,6 +8406,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           } finally {
             // RESTORE WAL setting
             db.getTransaction().setUseWAL(originalWAL);
+            db.getTransaction().setCommitLockTimeout(originalCommitLockTimeout);
           }
 
         } finally {
@@ -8530,7 +8535,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // transaction this runs in, so startedTransaction is false on the real path - gating the budget on it left
     // the first chunk commit, and a whole single-chunk persist, back on the interactive 5s default (issue #7361).
     // Applying it to whichever transaction is current is right either way: this method is a bulk persist, and the
-    // budget is a property of what the commit is FOR, not of who opened it.
+    // budget is a property of what the commit is FOR, not of who opened it. Restored in the finally below for the
+    // same reason build() restores its own: a transaction this method did not open outlives it.
+    final Long originalCommitLockTimeout = db.getTransaction().getCommitLockTimeout();
     db.getTransaction().setCommitLockTimeout(commitLockTimeout);
 
     try {
@@ -8578,6 +8585,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (startedTransaction)
         db.rollback();
       throw e;
+    } finally {
+      db.getTransaction().setCommitLockTimeout(originalCommitLockTimeout);
     }
   }
 
