@@ -2911,24 +2911,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // resolveDatabasePath itself, since six other call sites lean on it without saying so.
       final ArcadeDBServer localServer = this.server;
 
-      final long persistedApplied = readPersistedAppliedIndex(databaseName);
-      if (persistedApplied >= entryIndex) {
-        if (localServer != null && localServer.existsDatabase(databaseName)) {
-          LogManager.instance().log(this, Level.INFO,
-              "Database '%s' already reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
-                  + "entryIndex=%d) and is registered on this node; skipping the snapshot re-download",
-              databaseName, persistedApplied, entryIndex);
-          return;
-        }
-        LogManager.instance().log(this, Level.WARNING,
-            "Database '%s' was reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
-                + "entryIndex=%d) but is not registered on this node now; reinstalling it from the leader",
-            databaseName, persistedApplied, entryIndex);
-      }
-
-      // Restore flow: replace files from the leader's snapshot even if the DB exists.
-      // The leader's own files are already authoritative, so the leader skips the reinstall;
-      // replicas close their local copy and pull the fresh snapshot from the leader.
+      // Restore flow: replace files from the leader's snapshot even if the DB exists. The leader's own files are
+      // already authoritative, so the leader skips the reinstall; replicas close their local copy and pull the
+      // fresh snapshot from the leader.
+      //
+      // Checked FIRST, ahead of the replay guard below, because it is unconditional: a leader takes no action
+      // whatever the guard decides, and the guard's own WARNING announces a reinstall from the leader. Logged
+      // before the skip, that line recorded an action that never happened - on the node whose log an operator
+      // reads to find out what the cluster did with the entry (issue #7302).
       //
       // The volatile field is read ONCE into a local. resolveSnapshotSource guards a null HA server and refuses
       // cleanly, but evaluating raftHAServer.getLeaderId() as its ARGUMENT dereferenced the field before that
@@ -2944,6 +2934,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (raftHA != null && raftHA.isLeader()) {
         HALog.log(this, HALog.TRACE, "Leader skips forceSnapshot reinstall for '%s'", databaseName);
         return;
+      }
+
+      final long persistedApplied = readPersistedAppliedIndex(databaseName);
+      if (persistedApplied >= entryIndex) {
+        if (localServer != null && localServer.existsDatabase(databaseName)) {
+          LogManager.instance().log(this, Level.INFO,
+              "Database '%s' already reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
+                  + "entryIndex=%d) and is registered on this node; skipping the snapshot re-download",
+              databaseName, persistedApplied, entryIndex);
+          return;
+        }
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s' was reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
+                + "entryIndex=%d) but is not registered on this node now; reinstalling it from the leader",
+            databaseName, persistedApplied, entryIndex);
       }
 
       // Same refusals as every other path that pulls a snapshot, through the same helper (issue #6202): a

@@ -19,22 +19,51 @@
 package com.arcadedb.server.ha.raft;
 
 import org.apache.ratis.grpc.server.GrpcServices;
+import org.apache.ratis.thirdparty.io.grpc.ServerInterceptor;
 import org.apache.ratis.thirdparty.io.grpc.ServerTransportFilter;
 import org.apache.ratis.thirdparty.io.grpc.netty.NettyServerBuilder;
 
 import java.util.EnumSet;
+import java.util.concurrent.TimeUnit;
 
 /**
- * {@link GrpcServices.Customizer} that installs the configured server-side transport filters
- * on the Ratis Netty gRPC server builder. Ratis 3.2.2 routes all service types (ADMIN, CLIENT,
- * SERVER) through the same listener, so one customizer covers every inbound RPC.
+ * {@link GrpcServices.Customizer} that installs the configured server-side transport filters and call interceptors
+ * on the Ratis Netty gRPC server builder. Ratis (3.3.0, the version {@code ha-raft/pom.xml} pins) routes ADMIN,
+ * CLIENT and SERVER through one listener unless {@code raft.grpc.admin.port} or {@code raft.grpc.client.port} names
+ * a different port; either way this customizer covers every inbound RPC, because {@code GrpcServicesImpl.buildServer}
+ * runs it on each builder it constructs rather than only on the SERVER one.
+ * <p>
+ * A transport filter gates a connection once, when it is established; an interceptor is consulted on every RPC. The
+ * peer allowlist needs both (issue #7250): the filter to refuse a connection, the interceptor to revoke one that was
+ * established before its address stopped being admitted. Interceptors registered on the builder are server-wide -
+ * {@code ServerImpl} applies them to every call whatever order the services were added in - so the two are installed
+ * together here rather than per service.
+ * <p>
+ * It also carries the connection-lifetime bound the Raft listener otherwise has none of (issue #7316). Neither of the
+ * two surfaces above can close a connection: {@code ServerTransportFilter} is handed no reference to the transport it
+ * admits, and a {@code ServerCall} reaches only its own HTTP/2 stream. So a peer whose reach a revocation took away
+ * kept its socket until something else dropped it. The only knobs gRPC exposes for that are builder-wide, and
+ * {@code GrpcServicesImpl.newNettyServerBuilder} sets none of them, which is why this customizer is where the window
+ * is applied.
  */
 final class RaftGrpcServicesCustomizer implements GrpcServices.Customizer {
 
-  private final ServerTransportFilter[] filters;
+  private static final ServerTransportFilter[] NO_FILTERS      = new ServerTransportFilter[0];
+  private static final ServerInterceptor[]     NO_INTERCEPTORS = new ServerInterceptor[0];
 
-  RaftGrpcServicesCustomizer(final ServerTransportFilter... filters) {
-    this.filters = filters == null ? new ServerTransportFilter[0] : filters;
+  private final ServerTransportFilter[] filters;
+  private final ServerInterceptor[]     interceptors;
+  private final long                    maxConnectionIdleMs;
+
+  /**
+   * @param maxConnectionIdleMs how long a connection may carry no RPC before the server closes it, or {@code 0} or
+   *                            less to leave connections unbounded, which is what Ratis does on its own
+   */
+  RaftGrpcServicesCustomizer(final ServerTransportFilter[] filters, final ServerInterceptor[] interceptors,
+      final long maxConnectionIdleMs) {
+    this.filters = filters == null ? NO_FILTERS : filters;
+    this.interceptors = interceptors == null ? NO_INTERCEPTORS : interceptors;
+    this.maxConnectionIdleMs = maxConnectionIdleMs;
   }
 
   @Override
@@ -42,6 +71,13 @@ final class RaftGrpcServicesCustomizer implements GrpcServices.Customizer {
     NettyServerBuilder result = builder;
     for (final ServerTransportFilter f : filters)
       result = result.addTransportFilter(f);
+    for (final ServerInterceptor i : interceptors)
+      result = result.intercept(i);
+    // Not gated on the allowlist: this is a connection-lifetime bound, and Ratis leaves the Raft listener without
+    // one whether or not the allowlist is installed. gRPC clamps anything under a second up to a second and treats
+    // anything from 1000 days up as "disabled", so the only value handled here is the one that means off.
+    if (maxConnectionIdleMs > 0)
+      result = result.maxConnectionIdle(maxConnectionIdleMs, TimeUnit.MILLISECONDS);
     return result;
   }
 }

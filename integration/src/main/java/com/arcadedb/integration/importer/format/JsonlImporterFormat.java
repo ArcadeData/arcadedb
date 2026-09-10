@@ -116,6 +116,12 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     logger.logLine(2, "Start importing... ");
 
+    // One ImporterContext serves every phase of an import, so this counter arrives carrying whatever an earlier
+    // phase left in it, and the periodic commit below is taken off it: an inherited offset moved the first commit
+    // to somewhere inside the first batch. Zeroed here the way RDFImporterFormat and the six other formats zero
+    // it, so the boundary counts this phase's own records (issue #7313).
+    context.parsed.set(0);
+
     // Governs the commit granularity below (see the loop): skip mode needs one record per transaction so a
     // failed record's rollback can never discard an earlier, already-successful one riding in the same batch.
     final boolean skipOnRowError = settings.isSkipOnRowError();
@@ -126,6 +132,13 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     // at all, so a caller-managed transaction's pending work is never at risk (issue #6561).
     if (skipOnRowError && context.callerTransactionActiveOnEntry)
       throw ImporterSettings.newExclusiveTransactionRequiredException();
+
+    // Whether the transaction the loop below will use belongs to the import, as opposed to predating it, and so
+    // whether the periodic commit, the rollback and the trailing commit may resolve it. Resolved once, here, rather
+    // than by re-reading callerTransactionActiveOnEntry at each of the three gates: the answer also depends on the
+    // transaction still being live, and after the begin() below one always is. Nothing between this line and that
+    // begin() touches the database, so this reading is the state that begin() will see (issue #7328).
+    final boolean ownsTransaction = context.importOwnsTransaction(database);
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
@@ -181,8 +194,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         // and rolls back the whole in-flight batch anyway (see the ImportException catch below). Neither runs at
         // all when the caller already owns the active transaction (skip mode never reaches here - see the guard
         // above): a caller-managed transaction is never ours to commit piecemeal, only to accumulate into and hand
-        // back to whoever owns it (issue #6561).
-        if (!context.callerTransactionActiveOnEntry && (skipOnRowError || context.parsed.get() % COMMIT_EVERY == 0
+        // back to whoever owns it (issue #6561). ownsTransaction is that question, answered once above.
+        if (ownsTransaction && (skipOnRowError || context.parsed.get() % COMMIT_EVERY == 0
             || timeSeriesSamplesSinceCommit >= COMMIT_EVERY)) {
           database.commit();
           database.begin();
@@ -193,22 +206,22 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       // Issue #6460: resolve any LINK / LIST-of-LINK / MAP-of-LINK property values that were still forward
       // references when their owning record was loaded (see the field comment on pendingLinkReconciliation).
       // Every RID mapping is known by now, so this is the only point where they can be reliably fixed up.
-      reconcileUnresolvedLinks(database, context, skipOnRowError);
+      reconcileUnresolvedLinks(database, context, skipOnRowError, ownsTransaction);
     } catch (ImportException e) {
       // A per-record failure in default "abort" mode must fail the whole import loudly (issue #6468): rolling
       // back the in-flight batch here - instead of committing it below - is what keeps a partial import from
-      // masquerading as a successful one, and the callerTransactionActiveOnEntry guard mirrors
-      // JSONImporterFormat's contract of never discarding a caller's own transaction.
-      if (!context.callerTransactionActiveOnEntry && database.isTransactionActive())
+      // masquerading as a successful one, and the ownsTransaction guard mirrors JSONImporterFormat's contract of
+      // never discarding a caller's own transaction.
+      if (ownsTransaction && database.isTransactionActive())
         database.rollback();
       throw e;
     } catch (ClassNotFoundException e) {
       throw new RuntimeException(e);
     } finally {
-      // Gated on callerTransactionActiveOnEntry exactly like the ImportException catch above (issue #6561): a
+      // Gated on ownsTransaction exactly like the ImportException catch above (issue #6561): a
       // transaction that predates this import is never ours to commit, on success or on failure - it's left open
       // for whoever owns it to decide.
-      if (!context.callerTransactionActiveOnEntry && database.isTransactionActive())
+      if (ownsTransaction && database.isTransactionActive())
         database.commit();
     }
     context.lastLapOn = System.currentTimeMillis();
@@ -816,7 +829,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    * {@code context.errors}, and either aborted via {@link ImportException} or skipped per {@code skipOnRowError},
    * rather than propagating raw and uncounted past this method.
    */
-  private void reconcileUnresolvedLinks(final DatabaseInternal database, final ImporterContext context, final boolean skipOnRowError) {
+  private void reconcileUnresolvedLinks(final DatabaseInternal database, final ImporterContext context, final boolean skipOnRowError,
+      final boolean ownsTransaction) {
     if (pendingLinkReconciliation.isEmpty())
       return;
 
@@ -916,10 +930,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       // already committed for the initial load, producing one very large WAL transaction for a restore with many
       // forward-referencing LINK properties. Skip mode commits every record individually, same reasoning as the
       // main loop: a failed record's rollback must never discard an earlier, already-reconciled one riding in the
-      // same batch. Same callerTransactionActiveOnEntry gate as load()'s own periodic commit, and for the same
+      // same batch. Same ownsTransaction gate as load()'s own periodic commit, and for the same
       // reason (issue #6561): skip mode never reaches here when the caller owns the transaction (rejected eagerly
       // in load()), and the default mode must not commit a transaction it doesn't own either.
-      if (!context.callerTransactionActiveOnEntry && (skipOnRowError || ++reconciled % 1000 == 0)) {
+      if (ownsTransaction && (skipOnRowError || ++reconciled % 1000 == 0)) {
         database.commit();
         database.begin();
       }

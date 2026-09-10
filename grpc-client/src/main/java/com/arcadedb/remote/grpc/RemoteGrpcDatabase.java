@@ -18,6 +18,25 @@
  */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.engine.timeseries.AggregationType;
+import com.arcadedb.remote.RemoteException;
+import com.arcadedb.remote.timeseries.TimeSeriesBucket;
+import com.arcadedb.remote.timeseries.TimeSeriesLatestResult;
+import com.arcadedb.remote.timeseries.TimeSeriesPoint;
+import com.arcadedb.remote.timeseries.TimeSeriesQuery;
+import com.arcadedb.remote.timeseries.TimeSeriesQueryResult;
+import com.arcadedb.remote.timeseries.TimeSeriesWriteSummary;
+import com.arcadedb.server.grpc.TimeSeriesAggregation;
+import com.arcadedb.server.grpc.TimeSeriesAggregationRequest;
+import com.arcadedb.server.grpc.TimeSeriesAggregationType;
+import com.arcadedb.server.grpc.TimeSeriesLatestRequest;
+import com.arcadedb.server.grpc.TimeSeriesLatestResponse;
+import com.arcadedb.server.grpc.TimeSeriesPrecision;
+import com.arcadedb.server.grpc.TimeSeriesQueryRequest;
+import com.arcadedb.server.grpc.TimeSeriesRow;
+import com.arcadedb.server.grpc.TimeSeriesTagFilter;
+import com.arcadedb.server.grpc.TimeSeriesWriteChunk;
+import com.arcadedb.server.grpc.TimeSeriesWriteRequest;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
@@ -2207,6 +2226,297 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   @FunctionalInterface
   private interface Rpc<T> {
     T run() throws StatusException; // V2 throws this; v1 lambdas compile fine too
+  }
+
+  // ---------------------------------------------------------------------------------------------------------
+  // Time series API over gRPC (issue #7305)
+  //
+  // These override the HTTP implementations inherited from RemoteDatabase, so the same application code runs
+  // over either protocol and the two are directly testable against each other. Only the transport differs: the
+  // server side of both reaches the samples through the one shared TimeSeriesGateway.
+  // ---------------------------------------------------------------------------------------------------------
+
+  @Override
+  public TimeSeriesWriteSummary timeSeriesWrite(final List<TimeSeriesPoint> points) {
+    checkDatabaseIsOpen();
+    if (points == null || points.isEmpty())
+      return TimeSeriesWriteSummary.empty();
+
+    final TimeSeriesWriteRequest.Builder request = TimeSeriesWriteRequest.newBuilder()
+        .setDatabase(getName())
+        .setCredentials(buildCredentials())
+        // The engine stores milliseconds and TimeSeriesPoint carries milliseconds, so the RPC's zero-value
+        // precision is already the right one; set explicitly so the intent survives a future default change.
+        .setPrecision(TimeSeriesPrecision.TS_PRECISION_MILLISECONDS);
+
+    for (final TimeSeriesPoint point : points)
+      request.addPoints(toGrpcPoint(point));
+
+    try {
+      final com.arcadedb.server.grpc.TimeSeriesWriteSummary response = callUnary("TimeSeriesWrite",
+          () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+              .timeSeriesWrite(request.build()));
+      return toWriteSummary(response);
+    } catch (final StatusRuntimeException | StatusException e) {
+      handleGrpcException(e);
+      throw new IllegalStateException("unreachable");
+    }
+  }
+
+  /**
+   * Ingests through the client-streaming {@code TimeSeriesWriteStream} RPC: one call, one chunk per
+   * {@code chunkSize} points, one summary. This is the shape time-series ingest is best served by, and the
+   * reason the RPC exists - the HTTP implementation this overrides can only issue one request per chunk.
+   * <p>
+   * Still not atomic: each chunk's measurements commit their own shard transactions as they are appended, so a
+   * failure part-way leaves the earlier chunks durable.
+   * <p>
+   * <b>The whole stream runs under one deadline</b> - {@link #getTimeout()}, which defaults to
+   * {@code arcadedb.network.socketTimeout} (30 s) - because a gRPC deadline covers the call, not each message.
+   * An ingest that takes longer than that fails with DEADLINE_EXCEEDED however many chunks it had already made
+   * durable, so a caller feeding a large batch through here should raise {@code setTimeout} first, or split the
+   * batch across several calls.
+   */
+  @Override
+  public TimeSeriesWriteSummary timeSeriesWriteStream(final Iterable<TimeSeriesPoint> points, final int chunkSize) {
+    checkDatabaseIsOpen();
+    if (chunkSize <= 0)
+      throw new IllegalArgumentException("chunkSize must be positive");
+
+    final CountDownLatch completed = new CountDownLatch(1);
+    final AtomicReference<com.arcadedb.server.grpc.TimeSeriesWriteSummary> summary = new AtomicReference<>();
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+    final StreamObserver<TimeSeriesWriteChunk> requests = callAsyncDuplex("TimeSeriesWriteStream", getTimeout(),
+        (stub, responseObserver) -> stub.timeSeriesWriteStream(responseObserver),
+        new StreamObserver<com.arcadedb.server.grpc.TimeSeriesWriteSummary>() {
+          @Override
+          public void onNext(final com.arcadedb.server.grpc.TimeSeriesWriteSummary value) {
+            summary.set(value);
+          }
+
+          @Override
+          public void onError(final Throwable t) {
+            failure.set(t);
+            completed.countDown();
+          }
+
+          @Override
+          public void onCompleted() {
+            completed.countDown();
+          }
+        });
+
+    int sent = 0;
+    try {
+      TimeSeriesWriteChunk.Builder chunk = newWriteChunk(true);
+      for (final TimeSeriesPoint point : points) {
+        chunk.addPoints(toGrpcPoint(point));
+        if (chunk.getPointsCount() >= chunkSize) {
+          requests.onNext(chunk.build());
+          sent++;
+          chunk = newWriteChunk(false);
+        }
+      }
+      // The first chunk carries the database, so an empty stream still has to send it: without a chunk the
+      // server never resolves a database and answers an empty summary, which is the right answer for no
+      // points anyway - so only send a trailing chunk when it holds something, or when nothing was sent yet
+      // and the caller therefore expects the (empty) round trip.
+      if (chunk.getPointsCount() > 0 || sent == 0)
+        requests.onNext(chunk.build());
+      requests.onCompleted();
+    } catch (final RuntimeException e) {
+      requests.onError(e);
+      throw e;
+    }
+
+    try {
+      if (!completed.await(getTimeout(), TimeUnit.MILLISECONDS))
+        throw new RemoteException("Timeout waiting for the TimeSeriesWriteStream summary");
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RemoteException("Interrupted while waiting for the TimeSeriesWriteStream summary", e);
+    }
+
+    if (failure.get() != null) {
+      // callAsyncDuplex wraps the response observer, and that wrapper has ALREADY run the failure through
+      // handleGrpcException before handing it here - so this is the engine exception type the server named
+      // (SecurityException for a denied type, DuplicatedKeyException, ...), not a raw gRPC status. Mapping it a
+      // second time finds no status on it and flattens every one of them to "gRPC error: UNKNOWN", which is how
+      // a PERMISSION_DENIED on the streaming write stopped being distinguishable from any other failure.
+      final Throwable cause = failure.get();
+      if (cause instanceof RuntimeException mapped)
+        throw mapped;
+      handleGrpcException(cause);
+    }
+
+    final com.arcadedb.server.grpc.TimeSeriesWriteSummary response = summary.get();
+    if (response == null)
+      throw new RemoteException("TimeSeriesWriteStream completed without a summary");
+
+    return toWriteSummary(response);
+  }
+
+  @Override
+  public TimeSeriesQueryResult timeSeriesQuery(final TimeSeriesQuery query) {
+    checkDatabaseIsOpen();
+    stats.queries.incrementAndGet();
+
+    final TimeSeriesQueryRequest.Builder request = TimeSeriesQueryRequest.newBuilder()
+        .setDatabase(getName())
+        .setCredentials(buildCredentials())
+        .setType(query.getType());
+
+    if (query.getFromTimestamp() != null)
+      request.setFromTimestamp(query.getFromTimestamp());
+    if (query.getToTimestamp() != null)
+      request.setToTimestamp(query.getToTimestamp());
+    request.addAllFields(query.getFields());
+    if (!query.getTags().isEmpty())
+      request.setTags(toGrpcTagFilter(query.getTags()));
+    if (query.getLimit() > 0)
+      request.setLimit(query.getLimit());
+
+    if (query.isAggregated()) {
+      final TimeSeriesAggregation.Builder aggregation = TimeSeriesAggregation.newBuilder()
+          .setBucketIntervalMs(query.getBucketIntervalMs());
+      for (final TimeSeriesQuery.Aggregation requested : query.getAggregations())
+        aggregation.addRequests(TimeSeriesAggregationRequest.newBuilder()
+            .setField(requested.field())
+            .setType(toGrpcAggregationType(requested.type()))
+            .setAlias(requested.resolvedAlias())
+            .build());
+      request.setAggregation(aggregation.build());
+    }
+
+    final BlockingClientCall<?, com.arcadedb.server.grpc.TimeSeriesQueryResult> stream =
+        callServerStreaming("TimeSeriesQuery",
+            () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+                .timeSeriesQuery(request.build()));
+
+    final List<String> columns = new ArrayList<>();
+    final List<String> aggregations = new ArrayList<>();
+    final List<Object[]> rows = new ArrayList<>();
+    final List<TimeSeriesBucket> buckets = new ArrayList<>();
+    boolean truncated = false;
+
+    try {
+      while (stream.hasNext()) {
+        final com.arcadedb.server.grpc.TimeSeriesQueryResult message = stream.read();
+        if (message == null)
+          break;
+        // The header repeats on every message; take it from the first one that carries it so a caller reading
+        // an answer with no rows at all still learns the column names.
+        if (columns.isEmpty())
+          columns.addAll(message.getColumnsList());
+        if (aggregations.isEmpty())
+          aggregations.addAll(message.getAggregationsList());
+        for (final TimeSeriesRow row : message.getRowsList())
+          rows.add(fromGrpcRow(row));
+        for (final com.arcadedb.server.grpc.TimeSeriesBucket bucket : message.getBucketsList())
+          buckets.add(new TimeSeriesBucket(bucket.getTimestamp(), fromGrpcValues(bucket.getValuesList())));
+        if (message.getLast())
+          truncated = message.getTruncated();
+      }
+    } catch (final StatusRuntimeException | StatusException e) {
+      // BlockingClientCall reports a failed stream as a checked StatusException on hasNext()/read(); map it to
+      // the engine exception type the server named, exactly as a unary call's StatusRuntimeException is.
+      handleGrpcException(e);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RemoteException("Interrupted while reading the TimeSeriesQuery stream", e);
+    }
+
+    // An aggregated answer carries no columns and a raw one carries no aggregations, which is what
+    // TimeSeriesQueryResult.isAggregated() reads; keep the two apart rather than filling both.
+    return new TimeSeriesQueryResult(query.getType(), aggregations.isEmpty() ? columns : List.of(),
+        rows, aggregations, buckets, truncated);
+  }
+
+  @Override
+  public TimeSeriesLatestResult timeSeriesLatest(final String typeName, final String tagName,
+      final Object tagValue) {
+    checkDatabaseIsOpen();
+
+    final TimeSeriesLatestRequest.Builder request = TimeSeriesLatestRequest.newBuilder()
+        .setDatabase(getName())
+        .setCredentials(buildCredentials())
+        .setType(typeName);
+    if (tagName != null && !tagName.isBlank())
+      request.setTags(toGrpcTagFilter(Map.of(tagName, tagValue)));
+
+    try {
+      final TimeSeriesLatestResponse response = callUnary("TimeSeriesLatest",
+          () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+              .timeSeriesLatest(request.build()));
+
+      return new TimeSeriesLatestResult(response.getType(), response.getColumnsList(),
+          response.getFound() ? fromGrpcRow(response.getLatest()) : null);
+    } catch (final StatusRuntimeException | StatusException e) {
+      handleGrpcException(e);
+      throw new IllegalStateException("unreachable");
+    }
+  }
+
+  /** The first chunk of a write stream carries the database and credentials; later ones do not need to. */
+  private TimeSeriesWriteChunk.Builder newWriteChunk(final boolean first) {
+    final TimeSeriesWriteChunk.Builder chunk = TimeSeriesWriteChunk.newBuilder()
+        .setPrecision(TimeSeriesPrecision.TS_PRECISION_MILLISECONDS);
+    if (first)
+      chunk.setDatabase(getName()).setCredentials(buildCredentials());
+    return chunk;
+  }
+
+  private static com.arcadedb.server.grpc.TimeSeriesPoint toGrpcPoint(final TimeSeriesPoint point) {
+    final com.arcadedb.server.grpc.TimeSeriesPoint.Builder builder =
+        com.arcadedb.server.grpc.TimeSeriesPoint.newBuilder()
+            .setType(point.type())
+            .setTimestamp(point.timestampMs());
+    for (final Map.Entry<String, Object> tag : point.tags().entrySet())
+      if (tag.getValue() != null)
+        builder.putTags(tag.getKey(), ProtoUtils.toGrpcValue(tag.getValue()));
+    for (final Map.Entry<String, Object> field : point.fields().entrySet())
+      if (field.getValue() != null)
+        // A null field is how a sample says "no measurement for this column"; sending it as an unset GrpcValue
+        // would be indistinguishable from a value the server should store, so it is simply omitted - which is
+        // exactly what the line-protocol writer does on the HTTP path.
+        builder.putFields(field.getKey(), ProtoUtils.toGrpcValue(field.getValue()));
+    return builder.build();
+  }
+
+  private static TimeSeriesTagFilter toGrpcTagFilter(final Map<String, Object> tags) {
+    final TimeSeriesTagFilter.Builder filter = TimeSeriesTagFilter.newBuilder();
+    for (final Map.Entry<String, Object> tag : tags.entrySet())
+      filter.putEquals(tag.getKey(), ProtoUtils.toGrpcValue(tag.getValue()));
+    return filter.build();
+  }
+
+  private static TimeSeriesAggregationType toGrpcAggregationType(final AggregationType type) {
+    return switch (type) {
+      case SUM -> TimeSeriesAggregationType.TS_AGG_SUM;
+      case AVG -> TimeSeriesAggregationType.TS_AGG_AVG;
+      case MIN -> TimeSeriesAggregationType.TS_AGG_MIN;
+      case MAX -> TimeSeriesAggregationType.TS_AGG_MAX;
+      case COUNT -> TimeSeriesAggregationType.TS_AGG_COUNT;
+    };
+  }
+
+  private static Object[] fromGrpcRow(final TimeSeriesRow row) {
+    return fromGrpcValues(row.getValuesList());
+  }
+
+  private static Object[] fromGrpcValues(final List<GrpcValue> values) {
+    final Object[] decoded = new Object[values.size()];
+    for (int i = 0; i < decoded.length; i++)
+      // An unset GrpcValue decodes to null, which is how both protocols spell "no measurement".
+      decoded[i] = ProtoUtils.fromGrpcValue(values.get(i));
+    return decoded;
+  }
+
+  private static TimeSeriesWriteSummary toWriteSummary(
+      final com.arcadedb.server.grpc.TimeSeriesWriteSummary response) {
+    return new TimeSeriesWriteSummary(response.getReceived(), response.getWritten(), response.getDropped(),
+        response.getUnknownTypesList(), response.getNonTimeSeriesTypesList(), response.getUnavailableTypesList());
   }
 
   private <Resp> Resp callUnary(String opName, Rpc<Resp> rpc) throws StatusException {

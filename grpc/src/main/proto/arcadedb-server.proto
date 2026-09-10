@@ -186,6 +186,15 @@ service ArcadeDbService {
   rpc VectorSearch   (VectorSearchRequest)   returns (VectorSearchResponse);
   rpc HybridSearch   (HybridSearchRequest)   returns (HybridSearchResponse);
   rpc FullTextSearch (FullTextSearchRequest) returns (FullTextSearchResponse);
+
+  // Time series (issue #7305). The streaming write is the one that matters most: time-series ingest is
+  // high-rate, small and uniformly shaped, which is the case gRPC is best suited to. The query streams its
+  // answer rather than buffering it, so a wide range is bounded by the client's consumption and not by the
+  // server's heap.
+  rpc TimeSeriesWrite       (TimeSeriesWriteRequest)      returns (TimeSeriesWriteSummary);
+  rpc TimeSeriesWriteStream (stream TimeSeriesWriteChunk) returns (TimeSeriesWriteSummary);
+  rpc TimeSeriesQuery       (TimeSeriesQueryRequest)      returns (stream TimeSeriesQueryResult);
+  rpc TimeSeriesLatest      (TimeSeriesLatestRequest)     returns (TimeSeriesLatestResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -759,9 +768,187 @@ message GraphBatchResult {
 }
 
 // -----------------------------------------------------------------------------
+// Time series API (issue #7305)
+// -----------------------------------------------------------------------------
+
+// Unit of TimeSeriesPoint.timestamp. Unlike the HTTP /ts/{database}/write endpoint - which speaks InfluxDB
+// Line Protocol and therefore defaults to that protocol's nanoseconds - this API is typed and its zero value
+// is MILLISECONDS, the unit the engine actually stores. The common case needs no conversion and no field set.
+enum TimeSeriesPrecision {
+  TS_PRECISION_MILLISECONDS = 0;
+  TS_PRECISION_NANOSECONDS  = 1;
+  TS_PRECISION_MICROSECONDS = 2;
+  TS_PRECISION_SECONDS      = 3;
+}
+
+// One sample. Values reuse GrpcValue rather than a parallel scalar encoding, so the type-fidelity fixes made
+// there (#4149 temporal precision, #5046 byte/short widths, decimal) apply to time series too. A tag or field
+// the type does not declare is ignored, exactly as an unknown line-protocol tag is; a declared column with no
+// entry here is stored as absent, which reads back as null.
+message TimeSeriesPoint {
+  // The measurement, i.e. the TIMESERIES type name. Empty means the request- or chunk-level default, which is
+  // how a single-measurement stream avoids repeating the name on every point.
+  string type = 1;
+  int64  timestamp = 2;
+  map<string, GrpcValue> tags = 3;
+  map<string, GrpcValue> fields = 4;
+}
+
+message TimeSeriesWriteRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  // Default measurement for points that do not name one.
+  string type = 3;
+  TimeSeriesPrecision precision = 4;
+  repeated TimeSeriesPoint points = 5;
+}
+
+message TimeSeriesWriteChunk {
+  // REQUIRED on the first chunk; ignored on later ones (the server caches the first chunk's database).
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  // Default measurement for points in THIS chunk that do not name one, so a stream can switch measurement
+  // between chunks without naming it on every point.
+  string type = 3;
+  TimeSeriesPrecision precision = 4;
+  repeated TimeSeriesPoint points = 5;
+}
+
+// A write is NOT atomic: each measurement's batch commits its own shard transaction as it is appended, so a
+// failure part-way leaves the measurements before it durable. `dropped` is therefore a partial-write signal,
+// not a rollback - the same contract the HTTP endpoint reports with its 400. Every point is either written or
+// counted in exactly one of the three type lists, so written + dropped == received.
+message TimeSeriesWriteSummary {
+  int64 received = 1;
+  int64 written  = 2;
+  int64 dropped  = 3;
+  // No type with this name exists: create it first with CREATE TIMESERIES TYPE.
+  repeated string unknown_types = 4;
+  // The type exists but is not a TIMESERIES type.
+  repeated string non_time_series_types = 5;
+  // The type IS a TIMESERIES type; its storage engine failed to load (see the server log for why).
+  repeated string unavailable_types = 6;
+  int64 execution_time_ms = 7;
+}
+
+// Mirrors com.arcadedb.engine.timeseries.AggregationType. UNSPECIFIED is the proto3 zero value and is
+// rejected rather than silently defaulted, so a client that forgets the field is told so.
+enum TimeSeriesAggregationType {
+  TS_AGG_UNSPECIFIED = 0;
+  TS_AGG_SUM         = 1;
+  TS_AGG_AVG         = 2;
+  TS_AGG_MIN         = 3;
+  TS_AGG_MAX         = 4;
+  TS_AGG_COUNT       = 5;
+}
+
+// Conjunction of tag equality predicates. Values are coerced to the tag column's declared type, so a tag
+// declared INTEGER matches whether the client sent int32_value or string_value. A name that is not a TAG
+// column of the type contributes no predicate.
+message TimeSeriesTagFilter {
+  map<string, GrpcValue> equals = 1;
+}
+
+message TimeSeriesAggregationRequest {
+  string field = 1;
+  TimeSeriesAggregationType type = 2;
+  // Output name. Empty defaults to "<field>_<type>" lowercased, matching the HTTP endpoint.
+  string alias = 3;
+}
+
+message TimeSeriesAggregation {
+  int64 bucket_interval_ms = 1;
+  repeated TimeSeriesAggregationRequest requests = 2;
+}
+
+message TimeSeriesQueryRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  string type = 3;
+  // Inclusive bounds. Optional because 0 is a real epoch timestamp and not the same thing as "no bound":
+  // unset means unbounded in that direction.
+  optional int64 from_timestamp = 4;
+  optional int64 to_timestamp   = 5;
+  // Column projection; empty means every column. The timestamp column is always included and always first.
+  repeated string fields = 6;
+  TimeSeriesTagFilter tags = 7;
+  // Maximum rows returned across the whole stream. Non-positive means the server default; the server-side
+  // hard ceiling (arcadedb.server.httpQueryMaxResultRows) still applies and cannot be widened from here.
+  int32 limit = 8;
+  // Rows (or buckets) per streamed message. 0 lets the server choose.
+  int32 batch_size = 9;
+  // When set, the answer carries buckets instead of rows.
+  TimeSeriesAggregation aggregation = 10;
+}
+
+// A row of a raw query, or the values of one aggregation bucket. A value that stands for "no measurement" -
+// an absent MIN/MAX, a non-finite sample - is sent with no kind set, which decodes to null; it is NOT sent as
+// double_value NaN, which a client would read as a number.
+message TimeSeriesRow {
+  repeated GrpcValue values = 1;
+}
+
+message TimeSeriesBucket {
+  int64 timestamp = 1;
+  repeated GrpcValue values = 2;
+}
+
+// Streamed answer. `columns` and `aggregations` are carried on every message so a consumer that starts
+// reading mid-stream (or drops the first message on a retry) is never left without the header.
+message TimeSeriesQueryResult {
+  string type = 1;
+  // Names of the values in each `rows` entry, in order. Empty for an aggregated answer.
+  repeated string columns = 2;
+  // Aliases of the values in each `buckets` entry, in order. Empty for a raw answer.
+  repeated string aggregations = 3;
+  repeated TimeSeriesRow rows = 4;
+  repeated TimeSeriesBucket buckets = 5;
+  int64 running_total_emitted = 6;
+  bool  last = 7;
+  // The limit cut the answer short: what follows this stream is not the end of the data. Only meaningful on
+  // the message whose `last` is true.
+  bool  truncated = 8;
+}
+
+message TimeSeriesLatestRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  string type = 3;
+  TimeSeriesTagFilter tags = 4;
+}
+
+message TimeSeriesLatestResponse {
+  string type = 1;
+  repeated string columns = 2;
+  // False when the type (or the tag selection) holds no sample at all; `latest` is then unset.
+  bool  found = 3;
+  TimeSeriesRow latest = 4;
+}
+
+// -----------------------------------------------------------------------------
 // Admin service
 // -----------------------------------------------------------------------------
 
+// The control plane. Every RPC here reaches the same implementation the HTTP control plane reaches
+// (com.arcadedb.server.ServerControlPlane), so the two protocols cannot drift apart on what an
+// administrative operation does - see issue #7304.
+//
+// Authentication is enforced centrally by GrpcAuthInterceptor from the 'credentials' field every
+// request carries, before the call reaches a handler. Health and Ready are exempt from it, exactly
+// as GET /health and GET /ready are unauthenticated over HTTP, so a container orchestrator can probe
+// the node without credentials.
+//
+// Authorization on top of that is per RPC, and mirrors what the HTTP counterpart of each operation
+// requires:
+//   - Ping, GetServerInfo, ListDatabases, ExistsDatabase and GetDatabaseInfo need only a valid
+//     account, as GET /api/v1/databases and GET /api/v1/server do;
+//   - every other RPC needs the server-admin (root) principal, the gate POST /api/v1/server and the
+//     /api/v1/server/* routes apply through checkRootUser.
+//
+// Leader routing: CreateDatabase, DropDatabase, CreateUser and DeleteUser are refused on a follower
+// with FAILED_PRECONDITION and the leader's address on the arcadedb-leader-* trailers. That is this
+// transport's equivalent of the HTTP handler forwarding those four commands to the leader; gRPC has
+// no request proxy, so the caller redirects itself.
 service ArcadeDbAdminService {
   rpc Ping           (PingRequest)           returns (PingResponse);
   rpc GetServerInfo  (GetServerInfoRequest)  returns (GetServerInfoResponse);
@@ -770,11 +957,43 @@ service ArcadeDbAdminService {
   rpc ExistsDatabase (ExistsDatabaseRequest) returns (ExistsDatabaseResponse);
   rpc CreateDatabase (CreateDatabaseRequest) returns (CreateDatabaseResponse);
   rpc DropDatabase   (DropDatabaseRequest)   returns (DropDatabaseResponse);
+  rpc OpenDatabase   (OpenDatabaseRequest)   returns (OpenDatabaseResponse);
+  rpc CloseDatabase  (CloseDatabaseRequest)  returns (CloseDatabaseResponse);
+  rpc AlignDatabase  (AlignDatabaseRequest)  returns (AlignDatabaseResponse);
 
   rpc GetDatabaseInfo (GetDatabaseInfoRequest) returns (GetDatabaseInfoResponse);
 
   rpc CreateUser     (CreateUserRequest)     returns (CreateUserResponse);
   rpc DeleteUser     (DeleteUserRequest)     returns (DeleteUserResponse);
+  rpc ListUsers      (ListUsersRequest)      returns (ListUsersResponse);
+
+  // settings
+  rpc SetServerSetting   (SetServerSettingRequest)   returns (SetServerSettingResponse);
+  rpc SetDatabaseSetting (SetDatabaseSettingRequest) returns (SetDatabaseSettingResponse);
+
+  // backup
+  rpc GetBackupConfig (GetBackupConfigRequest) returns (GetBackupConfigResponse);
+  rpc SetBackupConfig (SetBackupConfigRequest) returns (SetBackupConfigResponse);
+  rpc ListBackups     (ListBackupsRequest)     returns (ListBackupsResponse);
+  rpc TriggerBackup   (TriggerBackupRequest)   returns (TriggerBackupResponse);
+  rpc DeleteBackup    (DeleteBackupRequest)    returns (DeleteBackupResponse);
+
+  // query profiler
+  rpc ProfilerStart   (ProfilerStartRequest)   returns (ProfilerStateResponse);
+  rpc ProfilerStop    (ProfilerStopRequest)    returns (ProfilerDocumentResponse);
+  rpc ProfilerReset   (ProfilerResetRequest)   returns (ProfilerStateResponse);
+  rpc ProfilerResults (ProfilerResultsRequest) returns (ProfilerDocumentResponse);
+  rpc ProfilerList    (ProfilerListRequest)    returns (ProfilerListResponse);
+  rpc ProfilerLoad    (ProfilerLoadRequest)    returns (ProfilerDocumentResponse);
+
+  // server lifecycle and cluster
+  rpc GetServerEvents   (GetServerEventsRequest)   returns (GetServerEventsResponse);
+  rpc Shutdown          (ShutdownRequest)          returns (ShutdownResponse);
+  rpc DisconnectCluster (DisconnectClusterRequest) returns (DisconnectClusterResponse);
+
+  // probes - unauthenticated, see the service comment
+  rpc Health (HealthRequest) returns (HealthResponse);
+  rpc Ready  (ReadyRequest)  returns (ReadyResponse);
 }
 
 message PingRequest {
@@ -847,7 +1066,14 @@ message CreateUserRequest {
   DatabaseCredentials credentials = 1; // admin creds
   string user     = 2;
   string password = 3;
-  string role     = 4; // optional, depending on your model
+  // Deprecated and ignored: the server's security model grants authority through per-database groups
+  // (the 'databases' map below), not through a single server-wide role. Kept so the field number is
+  // not reused.
+  string role     = 4 [deprecated = true];
+  // The groups the new user holds per database, the same map the HTTP "create user" document carries
+  // under "databases". Absent means no grants beyond the server default. The key "*" applies to every
+  // database, as it does over HTTP.
+  map<string, UserGroups> databases = 5;
 }
 message CreateUserResponse {
   bool success = 1;
@@ -861,4 +1087,228 @@ message DeleteUserRequest {
 message DeleteUserResponse {
   bool success = 1;
   string message = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Control plane: database lifecycle beyond create/drop
+// -----------------------------------------------------------------------------
+
+message OpenDatabaseRequest {
+  DatabaseCredentials credentials = 1;
+  string name = 2;
+}
+message OpenDatabaseResponse {}
+
+message CloseDatabaseRequest {
+  DatabaseCredentials credentials = 1;
+  string name = 2;
+}
+message CloseDatabaseResponse {}
+
+message AlignDatabaseRequest {
+  DatabaseCredentials credentials = 1;
+  string name = 2;
+}
+message AlignDatabaseResponse {}
+
+// -----------------------------------------------------------------------------
+// Control plane: settings
+// -----------------------------------------------------------------------------
+
+// key and value are separate fields here, so - unlike the HTTP "set server setting <key> <value>"
+// command, which splits on the first space - a value containing a space needs no quoting. Both
+// transports then run the same coercion, so a DECLARED setting accepts and refuses the same values
+// on either one.
+message SetServerSettingRequest {
+  DatabaseCredentials credentials = 1;
+  string key   = 2;
+  string value = 3;
+}
+message SetServerSettingResponse {}
+
+message SetDatabaseSettingRequest {
+  DatabaseCredentials credentials = 1;
+  string database = 2;
+  string key      = 3;
+  string value    = 4;
+}
+message SetDatabaseSettingResponse {}
+
+// -----------------------------------------------------------------------------
+// Control plane: security
+// -----------------------------------------------------------------------------
+
+// The groups a user holds on one database.
+message UserGroups {
+  repeated string groups = 1;
+}
+
+// A user as the control plane reports it. Password hashes are never included.
+message UserInfo {
+  string name = 1;
+  map<string, UserGroups> databases = 2;
+}
+
+message ListUsersRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ListUsersResponse {
+  repeated UserInfo users = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Control plane: backup
+// -----------------------------------------------------------------------------
+
+message GetBackupConfigRequest {
+  DatabaseCredentials credentials = 1;
+}
+message GetBackupConfigResponse {
+  // false when the auto-backup plugin is not running; a config may still be present, saved but not
+  // yet in effect, in which case 'message' says so.
+  bool   enabled     = 1;
+  // AutoBackupConfig as a JSON document. Empty when no configuration exists. It is carried as JSON
+  // rather than as proto fields because it is the same free-form document the config file holds, and
+  // a second declaration of its shape here would be one more thing to keep in step with it.
+  string config_json = 2;
+  string message     = 3;
+}
+
+message SetBackupConfigRequest {
+  DatabaseCredentials credentials = 1;
+  // AutoBackupConfig as a JSON document - the same object POST /api/v1/server takes under "config".
+  string config_json = 2;
+}
+message SetBackupConfigResponse {}
+
+message BackupInfo {
+  string file_name        = 1;
+  int64  size_bytes       = 2;
+  int64  last_modified_ms = 3;
+  // ISO-8601 local date-time parsed out of the archive name, empty when the name does not carry one.
+  string timestamp        = 4;
+}
+
+message ListBackupsRequest {
+  DatabaseCredentials credentials = 1;
+  string database = 2;
+}
+message ListBackupsResponse {
+  string              database   = 1;
+  repeated BackupInfo backups    = 2;
+  // Retention-manager totals; both are 0 when no retention manager is running.
+  int64               total_size  = 3;
+  int64               total_count = 4;
+}
+
+message TriggerBackupRequest {
+  DatabaseCredentials credentials = 1;
+  string database = 2;
+}
+message TriggerBackupResponse {
+  // Absolute path of the archive that was written.
+  string backup_file = 1;
+}
+
+message DeleteBackupRequest {
+  DatabaseCredentials credentials = 1;
+  string database  = 2;
+  // A plain archive file name inside the database's backup directory. Path separators and traversal
+  // sequences are refused.
+  string file_name = 3;
+}
+message DeleteBackupResponse {}
+
+// -----------------------------------------------------------------------------
+// Control plane: query profiler
+// -----------------------------------------------------------------------------
+
+message ProfilerStartRequest {
+  DatabaseCredentials credentials = 1;
+  // Seconds after which recording stops on its own. 0 records until ProfilerStop.
+  int32 timeout_seconds = 2;
+}
+message ProfilerStopRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ProfilerResetRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ProfilerResultsRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ProfilerListRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ProfilerLoadRequest {
+  DatabaseCredentials credentials = 1;
+  string file_name = 2;
+}
+
+message ProfilerStateResponse {
+  bool recording = 1;
+}
+
+// A profiler run. The document's shape is the profiler's own and changes with it, so it travels as
+// JSON rather than as a proto schema that would have to be revised in step.
+message ProfilerDocumentResponse {
+  string results_json = 1;
+}
+
+// One saved profiler run on disk, as ServerQueryProfiler.listSavedRuns reports it.
+message ProfilerRunInfo {
+  string file_name        = 1;
+  int64  size_bytes       = 2;
+  int64  last_modified_ms = 3;
+}
+
+message ProfilerListResponse {
+  // Newest first, the order the profiler lists them in.
+  repeated ProfilerRunInfo runs = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Control plane: server lifecycle and cluster
+// -----------------------------------------------------------------------------
+
+message GetServerEventsRequest {
+  DatabaseCredentials credentials = 1;
+  // Empty reads the current event file.
+  string file_name = 2;
+}
+message GetServerEventsResponse {
+  // JSON array of event objects.
+  string          events_json = 1;
+  repeated string files       = 2;
+}
+
+message ShutdownRequest {
+  DatabaseCredentials credentials = 1;
+  // Empty shuts down the server that receives the call; otherwise the named HA peer.
+  string server_name = 2;
+}
+message ShutdownResponse {}
+
+message DisconnectClusterRequest {
+  DatabaseCredentials credentials = 1;
+}
+message DisconnectClusterResponse {}
+
+// -----------------------------------------------------------------------------
+// Control plane: probes
+// -----------------------------------------------------------------------------
+
+// Liveness, the equivalent of GET /api/v1/health. Unauthenticated: reaching the handler is the
+// whole answer, and a probe that needs credentials is not usable as a container liveness probe.
+message HealthRequest {}
+message HealthResponse {
+  bool ok = 1;
+}
+
+// Readiness, the equivalent of GET /api/v1/ready. Unauthenticated for the same reason as Health.
+message ReadyRequest {}
+message ReadyResponse {
+  bool ready = 1;
+  // Why the node is not ready; empty when it is.
+  string reason = 2;
 }

@@ -36,10 +36,39 @@ import java.util.logging.Level;
 public class RDFImporterFormat extends CSVImporterFormat {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
 
+  /**
+   * The delimiter fallback the inherited {@code createCSVParser}/{@code analyze} resolve to: the generic
+   * {@code delimiter} option, then a comma. Only the direct instantiations in the test sources take this form -
+   * {@link com.arcadedb.integration.importer.SourceDiscovery} builds the format through
+   * {@link #RDFImporterFormat(String)} with the delimiter it detected.
+   */
+  public RDFImporterFormat() {
+    super();
+  }
+
+  /**
+   * @param delimiter the delimiter this source is parsed with - the user's own when they set one, else the character
+   *                  content sniffing found repeating between the {@code <...>} terms, which is the very thing that
+   *                  identified the source as RDF. It is carried on the format rather than written into
+   *                  {@code settings.options}, which one import shares across its entities (issue #6946), and dropping
+   *                  it made the canonical space-delimited N-Triples form unimportable: the inherited fallback is a
+   *                  comma, so the whole line arrived as a single column (issue #7315).
+   */
+  public RDFImporterFormat(final String delimiter) {
+    super(delimiter);
+  }
+
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
     final AbstractParser csvParser = createCSVParser(settings);
+
+    // One ImporterContext serves every phase of an import - Importer.load() calls loadFromSource() for the url,
+    // documents, vertices and edges sources against the same context - so this counter arrives carrying whatever an
+    // earlier phase left in it. Zeroed here the way CSVImporterFormat, Neo4jImporterFormat, OrientDBImporterFormat,
+    // GloVeImporterFormat, Word2VecImporterFormat and Word2VecImporterFormatLSM all zero it, so the number this
+    // phase reports is its own row count (issue #7288).
+    context.parsed.set(0);
 
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
     if (settings.edgesSkipEntries == null)
@@ -52,8 +81,10 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // reuses it. Rolling that one back on failure is still right - the import aborts with it either way, and
     // the alternative is AbstractImporter.closeDatabase() committing a half-finished import. What must never
     // be rolled back is a transaction that predates the import, which is exactly what
-    // ImporterContext#callerTransactionActiveOnEntry records.
-    final boolean ownsTransaction = !context.callerTransactionActiveOnEntry;
+    // ImporterContext#callerTransactionActiveOnEntry records, and which ImporterContext#importOwnsTransaction()
+    // answers for every row loop in one place rather than five times by hand (issue #7328). Read here, before the
+    // begin() below, because after that begin() a transaction is always active.
+    final boolean ownsTransaction = context.importOwnsTransaction(database);
 
     // Whether a transaction this call owns is still the current one. Cleared right before every commit -
     // LocalDatabase#commit() pops the transaction in a finally, so a commit that throws still leaves it off the
@@ -68,6 +99,14 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // transaction in its own finally, so txOpen is already false there, yet the batch it failed to make
     // durable still has to come back off the counter.
     boolean completed = false;
+
+    // Edges created since the last commit, and the only thing the commit boundary below is measured against. It used
+    // to be measured against context.parsed, which is neither: that counter also advances for the header rows this
+    // loop skips, and it was incremented twice per row, so under the default one-line header skip the value reaching
+    // the modulo was 2N+1 for the Nth data row - always odd, which an even -commitEvery (5000 is the default) never
+    // matches, so the commit never ran at all. A count of the rows this loop has created since the last boundary is
+    // what -commitEvery actually asks for, and is the same shape CSVImporterFormat.loadEdges() uses (issue #7288).
+    int txCount = 0;
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
@@ -101,23 +140,30 @@ public class RDFImporterFormat extends CSVImporterFormat {
             edgeLabel);
 
         context.createdEdges.incrementAndGet();
-        context.parsed.incrementAndGet();
 
         // Gated on ownsTransaction the same way JsonlImporterFormat.load() gates its own periodic commit: a
         // transaction that predates this import is never ours to commit piecemeal, only to accumulate into and
         // hand back to whoever owns it (issue #6561). That guard is also what makes the txOpen below
         // unconditional - reached only when the begin() above pushed a transaction this call exclusively owns.
-        if (ownsTransaction && context.parsed.get() % settings.commitEvery == 0) {
+        // txCount is incremented inside the guard rather than beside the counter above so that it cannot run away
+        // on the caller-owned path, where nothing would ever reset it.
+        if (ownsTransaction && ++txCount >= settings.commitEvery) {
           txOpen = false;
           database.commit();
           committedEdges = context.createdEdges.get();
           database.begin();
           txOpen = true;
+          txCount = 0;
         }
       }
 
       txOpen = false;
-      database.commit();
+      // Same ownsTransaction gate as the periodic commit above and as CSVImporterFormat.loadDocuments()'s own
+      // trailing commit: a transaction that predates the import stays the caller's to commit or discard, and this
+      // one used to commit it as a side effect of the import succeeding. The edges are left staged in it instead
+      // (issue #7288).
+      if (ownsTransaction)
+        database.commit();
       completed = true;
 
     } catch (final IOException e) {

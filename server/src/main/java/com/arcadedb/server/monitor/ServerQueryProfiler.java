@@ -402,6 +402,11 @@ public class ServerQueryProfiler {
       final String name = rawName.isBlank() ? "unknown" : rawName;
       // Default to the same -1 the engine uses for "not calculated", so a plan that omits the field is classified
       // as untimed rather than as a step that measurably took no time at all.
+      //
+      // "cost" is the step's SELF cost and never the subtree roll-up: the roll-up travels as "totalCost" and is
+      // deliberately not read here. Reading it while also recursing into the children it already contains charged
+      // the same nanoseconds to both the container and the step that actually timed them, so a plain type scan
+      // showed up twice and the per-step totals added up to more than the Engine total (issue #7329).
       final long cost = step.getLong("cost", -1);
       stepCosts.computeIfAbsent(name, k -> new ArrayList<>()).add(cost);
 
