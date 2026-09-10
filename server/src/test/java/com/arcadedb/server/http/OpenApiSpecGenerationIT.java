@@ -76,11 +76,25 @@ import static org.assertj.core.api.Assertions.fail;
 class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   private final HttpClient client = HttpClient.newHttpClient();
 
+  /**
+   * Base URL of the server this test started, taken from the port it actually bound rather than from the bottom
+   * of the configured range.
+   * <p>
+   * {@code SERVER_HTTP_INCOMING_PORT} defaults to the range 2480-2489, so the server takes the first free port
+   * in it. Pinning 2480 in the URL therefore does not address "the test server": it addresses whatever holds
+   * 2480, which on a developer machine running a local ArcadeDB is that other server. The requests then fail as
+   * 403 / "Too many failed authentication attempts", or - worse for this test - succeed against a different
+   * build and compare this branch's route inventory against someone else's specification.
+   */
+  private String baseUrl() {
+    return "http://localhost:" + getServer(0).getHttpServer().getPort() + "/api/v1";
+  }
+
   @Test
   void openApiSpecEndpointIsAccessible() throws Exception {
     // Test that the OpenAPI spec endpoint exists and returns valid JSON
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/openapi.json"))
+        .uri(new URI(baseUrl() + "/openapi.json"))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -360,7 +374,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   void apiTokenAuthenticatesAgainstTheDeclaredBearerScheme() throws Exception {
     // Mint a real API token through the documented endpoint.
     final HttpRequest createToken = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/server/api-tokens"))
+        .uri(new URI(baseUrl() + "/server/api-tokens"))
         .header("Content-Type", "application/json")
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -379,7 +393,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
 
     // The server accepts it as a bearer token on an ordinary documented operation.
     final HttpRequest listDatabases = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/databases"))
+        .uri(new URI(baseUrl() + "/databases"))
         .GET()
         .setHeader("Authorization", "Bearer " + token)
         .build();
@@ -417,6 +431,9 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
       "GET /api/v1/progress/{database}",
       "POST /api/v1/begin/{database}", "POST /api/v1/commit/{database}",
       "POST /api/v1/rollback/{database}",
+      // Vector, hybrid and full-text retrieval (issue #7306)
+      "POST /api/v1/vector/{database}/search", "POST /api/v1/vector/{database}/hybrid",
+      "POST /api/v1/vector/{database}/fulltext",
       // Auth
       "POST /api/v1/login", "POST /api/v1/logout", "GET /api/v1/sessions",
       // Security admin
@@ -489,14 +506,14 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void specDocumentsExactlyTheExpectedSixtyFiveOperations() throws Exception {
+  void specDocumentsExactlyTheExpectedSixtyEightOperations() throws Exception {
     final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
     final List<String> declared = declaredOperations(openAPI);
 
     assertThat(EXPECTED_OPERATIONS)
         .as("the inventory itself must hold no duplicate")
         .doesNotHaveDuplicates()
-        .hasSize(65);
+        .hasSize(68);
 
     assertThat(declared)
         .as("operations missing from the specification")
@@ -563,7 +580,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
         .as("client generators derive a method name per operationId, so a collision breaks codegen")
         .doesNotHaveDuplicates()
         .doesNotContainNull()
-        .hasSize(65);
+        .hasSize(68);
   }
 
   @Test
@@ -655,7 +672,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
    */
   private String getOpenApiSpec() throws Exception {
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/openapi.json"))
+        .uri(new URI(baseUrl() + "/openapi.json"))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))

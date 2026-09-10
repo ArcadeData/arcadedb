@@ -65,6 +65,15 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   private LSMVectorIndex mainIndex;
 
   /**
+   * Bytes the last {@link #writeGraph} on this object wrote, in the gap-free logical address space
+   * {@code ContiguousPageWriter} provides - i.e. the exact length {@code OnDiskGraphIndex.load()} has to measure
+   * its footer back from (issue #7362). Handed to the manifest once the caller has committed, since the manifest
+   * is what carries the fact into the next session; kept here because the two happen at different moments and on
+   * different objects.
+   */
+  private volatile long lastWrittenGraphBytes = -1L;
+
+  /**
    * Says which records the graph on these pages was built over. The graph itself is addressed by ordinal and carries
    * nothing that identifies them, so this is what makes reusing it safe (issue #6106).
    */
@@ -104,19 +113,38 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
     this.mainIndex = mainIndex;
   }
 
+  /**
+   * Length of the JVector payload on these pages.
+   * <p>
+   * Taken from the manifest whenever it records one, because that is the number the write actually ended on
+   * (issue #7362). The page-count derivation below it stays as the answer for a graph persisted before that was
+   * recorded, and it is only ever an approximation of the truth: the component's page count is raised
+   * asynchronously by the flush thread while a multi-GB persist is still running, so a graph reloaded in the same
+   * breath as it was written measured itself gigabytes short and JVector read its footer magic off the middle of
+   * the payload; and the count can only grow, so a generation smaller than the one it replaced is measured with
+   * its predecessor's size.
+   */
   private long computeTotalGraphBytes() throws IOException {
-    final int totalPages = getTotalPages();
-    if (totalPages == 0)
-      return 0;
-
     final int usablePageSize = pageSize - BasePage.PAGE_HEADER_SIZE;
 
-    // Load last page to get actual content size.
-    // The page count reported by the component can be ahead of what is actually on disk when the
-    // graph file has been truncated or the page was never flushed/evicted. In that case the page
-    // manager either returns null or raises IllegalArgumentException ("page does not exist").
-    // Treat the persisted graph as absent (return 0) so loadGraph() falls through to the
-    // "rebuild graph from scratch" recovery path instead of aborting startup.
+    final long recorded = recordedGraphBytes();
+    final int totalPages;
+    if (recorded > 0)
+      // Ceiling division: the last byte of the payload sits on page (recorded - 1) / usablePageSize.
+      totalPages = (int) ((recorded + usablePageSize - 1) / usablePageSize);
+    else {
+      totalPages = getTotalPages();
+      if (totalPages == 0)
+        return 0;
+    }
+
+    // Load the last page. Whichever number named it, the pages have to be there: the count reported by the
+    // component can be ahead of what is actually on disk when the graph file has been truncated or the page was
+    // never flushed/evicted, and a recorded length can outlive the pages it described just as easily (a restore
+    // that brought the manifest and a truncated file, a file damaged after the persist). In that case the page
+    // manager either returns null or raises IllegalArgumentException ("page does not exist"). Treat the persisted
+    // graph as absent (return 0) so loadGraph() falls through to the "rebuild graph from scratch" recovery path
+    // instead of aborting startup.
     final int lastPageId = totalPages - 1;
     final BasePage lastPage;
     try {
@@ -135,6 +163,9 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
               getName(), totalPages, lastPageId);
       return 0;
     }
+
+    if (recorded > 0)
+      return recorded;
 
     // Compute contiguous logical size (excluding headers from logical address space)
     // Each full page contributes usablePageSize bytes, last page contributes its actual content
@@ -197,6 +228,7 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
     // which the load path reads as "cannot be verified" and judges by node count - so any failure this method can
     // still observe replaces it with a manifest that refuses the pages outright (see the catch below).
     manifest.invalidate();
+    lastWrittenGraphBytes = -1L;
 
     try {
       if (chunkSizeMB > 0 && chunkCallback != null) {
@@ -283,11 +315,18 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       writer.close();
 
       final long totalBytes = writer.position();
+      lastWrittenGraphBytes = totalBytes;
 
       if (storeVectors) {
+        // The inline vectors are float32 whatever the index quantization is: JVector's InlineVectors feature
+        // reserves dimension * Float.BYTES per node and ArcadePageVectorValues hands it dequantized floats, so
+        // naming the quantization on this line read as a claim about the bytes it had just counted (issue #7362).
+        // The quantization is still worth reporting - it is what the delta scan and the PQ file use - but as the
+        // index setting it is, next to the size the inline vectors actually cost.
         LogManager.instance().log(this, Level.INFO,
-                "Graph written to pages (sequential): %d nodes, %d bytes, %d pages (WITH inline vectors, quantization=%s)",
-                graph.getIdUpperBound(), totalBytes, getTotalPages(), mainIndex.metadata.quantizationType);
+                "Graph written to pages (sequential): %d nodes, %d bytes, %d pages (WITH inline vectors, float32 x %d dims; "
+                    + "index quantization=%s applies to the index data, not to these inline vectors)",
+                graph.getIdUpperBound(), totalBytes, getTotalPages(), storedDimension, mainIndex.metadata.quantizationType);
       } else {
         LogManager.instance().log(this, Level.INFO,
                 "Graph written to pages (sequential): %d nodes, %d bytes, %d pages (topology only, vectors in documents)",
@@ -295,6 +334,12 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       }
 
     } catch (final Exception e) {
+      // Dropped with the manifest and for the same reason: past a failure the manifest is the sole authority on
+      // these pages, and recordedGraphBytes() prefers this field over it. A failure landing after the position
+      // was captured - the logging below it, say - would otherwise leave a length in here that outlives the
+      // markUnusable() on the next line and lets a later loadGraph() in this session trust pages the manifest
+      // has just refused (issue #7362).
+      lastWrittenGraphBytes = -1L;
       // The caller rolls back and carries on without a persisted graph. Whatever the rollback leaves on these
       // pages - the previous generation untouched, or a partial rewrite whose earlier chunks already committed -
       // nothing here knows which, so the manifest must refuse them rather than be simply absent: absent means
@@ -309,9 +354,11 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * Load a graph from pages as OnDiskGraphIndex for lazy-loading.
    */
   public OnDiskGraphIndex loadGraph() throws IOException {
-    final int totalPages = getTotalPages();
+    // The length alone decides whether there is a graph here: computeTotalGraphBytes() already answers 0 for
+    // "no pages" and for "the pages this length describes are not readable", and gating on the component's page
+    // count on top of it would put the very counter issue #7362 is about back on the load path.
     final long totalBytes = computeTotalGraphBytes();
-    if (totalPages == 0 || totalBytes == 0)
+    if (totalBytes == 0)
       return null;
 
     try {
@@ -338,5 +385,40 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    */
   public boolean hasPersistedGraph() {
     return getTotalPages() > 0;
+  }
+
+  /**
+   * @return bytes the last {@link #writeGraph} on this object wrote, or {@code -1} when none has run (or the last
+   * one failed). Read by the persist once it has committed, to hand the length to the manifest.
+   */
+  public long getLastWrittenGraphBytes() {
+    return lastWrittenGraphBytes;
+  }
+
+  /**
+   * Drops the in-memory record of the last write's length, for a persist failure {@link #writeGraph} cannot
+   * observe: the FINAL commit is the caller's, and it happens after that method has returned. A failure there
+   * leaves this object as the one the next search loads from - a rebuild in place reuses the same instance - with
+   * a length {@link #recordedGraphBytes()} would prefer over the manifest the caller has just marked unusable.
+   * Pairs with {@code markUnusable()} at every call site that has to refuse these pages (issue #7362).
+   */
+  public void discardRecordedGraphBytes() {
+    lastWrittenGraphBytes = -1L;
+  }
+
+  /**
+   * The graph length as recorded, preferring what this session's own write measured over what the manifest on disk
+   * says: within a session the two agree, but the field is the one that is right during the window between the
+   * write and the manifest being written (issue #7362).
+   *
+   * @return the recorded length, or {@code 0} when nothing recorded one
+   */
+  private long recordedGraphBytes() {
+    final long written = lastWrittenGraphBytes;
+    if (written > 0)
+      return written;
+
+    final LSMVectorIndexGraphManifest.Content content = manifest.read();
+    return content != null ? content.graphBytes() : 0L;
   }
 }

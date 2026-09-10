@@ -77,7 +77,11 @@ public class RemoteHttpComponent extends RWLockContext {
   protected final ContextConfiguration        configuration;
   private         int                         sameServerErrorRetries;
   private         int                         haServerErrorRetries;
-  private final   Integer                     txRetries;
+  /**
+   * Attempts an auto-committed request gets, echoed back to the server as the {@code retries} field. Visible to
+   * {@link RemoteDatabase} so every request path states the same number.
+   */
+  final           Integer                     txRetries;
   private         int                         apiVersion                = 1;
   private         CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
   private volatile Pair<String, Integer>       leaderServer;
@@ -144,7 +148,12 @@ public class RemoteHttpComponent extends RWLockContext {
     httpClient.close();
   }
 
-  private HttpResponse<String> sendWithWatchdog(final HttpRequest request) throws IOException, InterruptedException {
+  /**
+   * Sends one request under the shared watchdog budget. Package-private rather than private since #7306, so the
+   * request paths that do not go through {@code httpCommand} - the vector endpoints - are bounded by the same
+   * timeout instead of by the JDK's default of none.
+   */
+  HttpResponse<String> sendWithWatchdog(final HttpRequest request) throws IOException, InterruptedException {
     return sendWithWatchdog(request, computeWatchdogMs(timeout));
   }
 
@@ -322,16 +331,7 @@ public class RemoteHttpComponent extends RWLockContext {
         //   X-ArcadeDB-Commit-Index     : response-only - the server echoes its current
         //                                 last-applied commit index so the client can
         //                                 use it as the next Read-After bookmark.
-        if (this instanceof RemoteDatabase remoteDb) {
-          final ReadConsistency rc = remoteDb.getReadConsistency();
-          if (rc != ReadConsistency.EVENTUAL)
-            requestBuilder = requestBuilder.header("X-ArcadeDB-Read-Consistency", rc.name().toLowerCase());
-          if (rc == ReadConsistency.READ_YOUR_WRITES) {
-            final long last = remoteDb.getLastCommitIndex();
-            if (last >= 0)
-              requestBuilder = requestBuilder.header("X-ArcadeDB-Read-After", String.valueOf(last));
-          }
-        }
+        requestBuilder = addReadConsistencyHeaders(requestBuilder);
 
         HttpRequest request;
 
@@ -473,6 +473,33 @@ public class RemoteHttpComponent extends RWLockContext {
 
     throw new RemoteException(
         "Error on executing remote operation '" + operation + "' (server=" + server + " retry=" + maxRetry + ")", lastException);
+  }
+
+  /**
+   * Adds the HA read-consistency request headers a {@link RemoteDatabase} is configured with, and returns the
+   * builder unchanged for every other component.
+   * <ul>
+   * <li>{@code X-ArcadeDB-Read-Consistency} - the consistency level the client is asking for;</li>
+   * <li>{@code X-ArcadeDB-Read-After} - the commit index the follower must have applied before serving this
+   *     read, i.e. the read-your-writes barrier. The response echo is {@code X-ArcadeDB-Commit-Index}.</li>
+   * </ul>
+   * Package-private and shared rather than inlined in {@code httpCommand}, so a request path added later - the
+   * streaming query encoding of issue #7306 is the first - cannot silently drop the consistency level the
+   * application configured and read from a follower that is behind.
+   */
+  HttpRequest.Builder addReadConsistencyHeaders(HttpRequest.Builder requestBuilder) {
+    if (!(this instanceof final RemoteDatabase remoteDb))
+      return requestBuilder;
+
+    final ReadConsistency rc = remoteDb.getReadConsistency();
+    if (rc != ReadConsistency.EVENTUAL)
+      requestBuilder = requestBuilder.header("X-ArcadeDB-Read-Consistency", rc.name().toLowerCase());
+    if (rc == ReadConsistency.READ_YOUR_WRITES) {
+      final long last = remoteDb.getLastCommitIndex();
+      if (last >= 0)
+        requestBuilder = requestBuilder.header("X-ArcadeDB-Read-After", String.valueOf(last));
+    }
+    return requestBuilder;
   }
 
   public int getApiVersion() {
@@ -671,12 +698,21 @@ public class RemoteHttpComponent extends RWLockContext {
     return jsonRequest.toString();
   }
 
+  /**
+   * Maps a failed HTTP response onto the ArcadeDB exception it stands for. Kept in terms of the status code and
+   * the body rather than the {@link HttpResponse} itself so the streaming path - whose response body arrives as
+   * an {@link java.io.InputStream} - can reach the same mapping instead of growing a second, divergent one.
+   */
   protected Exception manageException(final HttpResponse<String> response, final String operation) {
+    return manageException(response.statusCode(), response.body(), operation);
+  }
+
+  protected Exception manageException(final int statusCode, final String responseBody, final String operation) {
     String detail = null;
     String reason = null;
     String exception = null;
     String exceptionArgs = null;
-    String responsePayload = response.body();
+    final String responsePayload = responseBody;
 
     try {
       if (responsePayload != null && !responsePayload.isEmpty()) {
@@ -749,7 +785,7 @@ public class RemoteHttpComponent extends RWLockContext {
         return new NeedRetryException(detail);
       } else if (exception.equals(NeedRetryException.class.getName())) {
         return new NeedRetryException(detail);
-      } else if (response.statusCode() == 503) {
+      } else if (statusCode == 503) {
         // An unrecognised exception type (e.g. added by a newer server) delivered with 503 is still
         // retry-worthy by the status-code contract below.
         return new NeedRetryException(detail);
@@ -767,25 +803,25 @@ public class RemoteHttpComponent extends RWLockContext {
     // (TransactionCommittedRemotely, DuplicatedKey) precisely so 503 can carry this meaning.
     // Typed 503s are deliberately NOT handled here: they are dispatched above so a caller still sees the
     // specific type (QuorumNotReachedException in particular, which the server sends with 503).
-    if (response.statusCode() == 503) {
+    if (statusCode == 503) {
       final String message = detail != null && !detail.isEmpty() ? detail :
           reason != null ? reason : "Server temporarily unavailable, please retry";
       return new NeedRetryException(message);
     }
 
-    final String httpErrorDescription = response.statusCode() == 400 ? "Bad Request" :
-        response.statusCode() == 404 ? "Not Found" :
-            response.statusCode() == 500 ? "Internal Server Error" :
+    final String httpErrorDescription = statusCode == 400 ? "Bad Request" :
+        statusCode == 404 ? "Not Found" :
+            statusCode == 500 ? "Internal Server Error" :
                 "HTTP Error";
 
     // TEMPORARY FIX FOR AN ISSUE WITH THE CLIENT/SERVER COMMUNICATION WHERE THE PAYLOAD ARRIVES AS EMPTY
-    if (response.statusCode() == 400 && "Bad Request".equals(httpErrorDescription) && "Command text is null".equals(reason)) {
+    if (statusCode == 400 && "Bad Request".equals(httpErrorDescription) && "Command text is null".equals(reason)) {
       // RETRY
       return new RemoteException("Empty payload received");
     }
 
     return new RemoteException(
-        "Error on executing remote command '" + operation + "' (httpErrorCode=" + response.statusCode()
+        "Error on executing remote command '" + operation + "' (httpErrorCode=" + statusCode
             + " httpErrorDescription=" + httpErrorDescription + " reason=" + reason + " detail=" + detail + " exception="
             + exception + ")");
   }

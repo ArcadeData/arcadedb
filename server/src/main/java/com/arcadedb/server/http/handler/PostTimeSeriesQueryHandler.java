@@ -26,10 +26,9 @@ import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationResult;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway.TypeResolution;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalTimeSeriesType;
-import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -74,29 +73,17 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     final String typeName = payload.getString("type");
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
 
-    if (!database.getSchema().existsType(typeName))
-      return new ExecutionResponse(400, "{ \"error\" : \"Type '" + typeName + "' does not exist\"}");
+    // Type resolution and the per-type read ACL both live in TimeSeriesGateway, shared with the gRPC
+    // TimeSeriesQuery RPC (issue #7305). The ACL matters here more than anywhere else: a TimeSeries type owns
+    // no record bucket, so this type-name check is the only thing that can enforce a "readRecord" denial on it.
+    // It throws SecurityException -> HTTP 403, and it runs BEFORE the engine-availability branch so a denied
+    // caller gets the 403 and not the unavailable-engine diagnostic, which names a file path on disk.
+    final TypeResolution resolved = TimeSeriesGateway.resolveForRead(database, typeName);
+    if (!resolved.isSuccess())
+      return TimeSeriesHandlerUtils.resolutionError(typeName, resolved);
 
-    final DocumentType docType = database.getSchema().getType(typeName);
-    if (!(docType instanceof LocalTimeSeriesType tsType))
-      return new ExecutionResponse(400, "{ \"error\" : \"Type '" + typeName + "' is not a TimeSeries type\"}");
-    // Gated accessor (per-type ACL): a TimeSeries type owns no record bucket, so this type-name check is
-    // the only thing that can enforce a "readRecord" denial on it. Throws SecurityException -> HTTP 403.
-    // It runs BEFORE the engine-availability branch below (it returns null exactly where isEngineAvailable()
-    // was false) so a denied caller gets the 403 and not the unavailable-engine diagnostic, which names a file
-    // path on disk. The "does not exist" / "is not a TimeSeries type" answers above stay where they are: the ACL
-    // is keyed by type NAME and has no entry for a name that is not in the schema, so it cannot be consulted
-    // before the type resolves - and a 403 that only a real type can produce is the behaviour every other
-    // per-type check in the engine already has.
-    final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
-    if (engine == null)
-      // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS one,
-      // its storage just failed to load - the old shared message sent an operator chasing the wrong cause.
-      // Built with JSONObject rather than string concatenation because the reason embeds a file path that could
-      // contain a double quote or backslash, which raw concatenation would turn into invalid JSON.
-      return new ExecutionResponse(400, new JSONObject().put("error", "TimeSeries type '" + typeName
-          + "' has no storage engine available: " + tsType.getEngineUnavailableReason()).toString());
-    final List<ColumnDefinition> columns = tsType.getTsColumns();
+    final TimeSeriesEngine engine = resolved.engine();
+    final List<ColumnDefinition> columns = resolved.columns();
 
     final long fromTs = payload.getLong("from", Long.MIN_VALUE);
     final long toTs = payload.getLong("to", Long.MAX_VALUE);
@@ -140,14 +127,7 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       throw resultSetTooLarge(maxResultRows);
 
     // Build column names for response
-    final JSONArray colNames = new JSONArray();
-    if (columnIndices == null) {
-      for (final ColumnDefinition col : columns)
-        colNames.put(col.getName());
-    } else {
-      for (final int idx : columnIndices)
-        colNames.put(columns.get(idx).getName());
-    }
+    final JSONArray colNames = new JSONArray(TimeSeriesGateway.columnNames(columns, columnIndices));
 
     // Build rows array, applying limit
     final JSONArray rowsArray = new JSONArray();
@@ -196,17 +176,22 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     for (int i = 0; i < requestsJson.length(); i++) {
       final JSONObject req = requestsJson.getJSONObject(i);
       final String fieldName = req.getString("field");
-      final AggregationType aggType = AggregationType.valueOf(req.getString("type"));
+      final AggregationType aggType;
+      try {
+        aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, i);
+      } catch (final IllegalArgumentException e) {
+        // An explicit 400 rather than the throw the generic mapper would turn into "Cannot execute command":
+        // that mapper puts the specifics in the 'detail' field, which buildErrorBody conceals in production
+        // mode, so the caller would be told nothing about which field was wrong (issue #7325). This is the same
+        // shape as the "Field '...' not found in type" refusal below.
+        return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
+      }
       final String alias = req.getString("alias", fieldName + "_" + aggType.name().toLowerCase());
 
-      // Find column index by name
-      int colIndex = -1;
-      for (int c = 0; c < columns.size(); c++) {
-        if (columns.get(c).getName().equals(fieldName)) {
-          colIndex = c;
-          break;
-        }
-      }
+      // The shared helper, as the Grafana handler and the gRPC aggregation path already use: this was the last
+      // site outside the gateway still hand-rolling the lookup, and therefore the last place the full-schema vs
+      // non-timestamp index conventions could be confused (claude-review on PR #7323).
+      final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
 
       if (colIndex < 0)
         return new ExecutionResponse(400, "{ \"error\" : \"Field '" + fieldName + "' not found in type\"}");

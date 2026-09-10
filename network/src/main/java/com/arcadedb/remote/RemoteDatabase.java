@@ -21,6 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -43,18 +44,32 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.engine.timeseries.LineProtocolWriter;
+import com.arcadedb.remote.timeseries.TimeSeriesBucket;
+import com.arcadedb.remote.timeseries.TimeSeriesLatestResult;
+import com.arcadedb.remote.timeseries.TimeSeriesPoint;
+import com.arcadedb.remote.timeseries.TimeSeriesQuery;
+import com.arcadedb.remote.timeseries.TimeSeriesQueryResult;
+import com.arcadedb.remote.timeseries.TimeSeriesWriteSummary;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.URLEncoder;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -69,6 +84,17 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase {
+  /**
+   * Media type of the HTTP streaming query encoding (issue #7306), sent in {@code Accept} to select it. The
+   * server keeps answering the buffered {@code application/json} body to anything else, which is what let this
+   * be added without changing a single existing response.
+   * <p>
+   * Deliberately duplicated as {@code NdJsonResultStream.CONTENT_TYPE} in the {@code server} module: this module
+   * cannot depend on it. Change one and you must change the other, or this driver stops selecting the encoding
+   * and silently falls back to the buffered body.
+   */
+  public static final String NDJSON_CONTENT_TYPE = "application/x-ndjson";
+
   public static final String ARCADEDB_SESSION_ID = "arcadedb-session-id";
 
   private final    String                               databaseName;
@@ -668,6 +694,213 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         (connection, response) -> createResultSet(response));
   }
 
+  /**
+   * Runs a query and returns a {@link ResultSet} that reads the rows off the connection as they arrive, instead
+   * of the buffered {@link #query(String, String, Map)}, which waits for the server to serialize the entire
+   * result before it can return anything (issue #7306).
+   * <p>
+   * Both ends are streamed: the server holds one row at a time while it writes, and this driver holds one row at
+   * a time while it reads. That is a memory property, not only a latency one - it is what makes a result larger
+   * than either heap iterable at all.
+   * <p>
+   * The returned {@link ResultSet} owns an open HTTP connection until it is exhausted or closed, so it belongs in
+   * a try-with-resources. It is also single-pass: {@code reset()} is not supported, and the rows are gone once
+   * read. A caller that needs the whole result in memory, or the {@code explain} / {@code stats} envelope
+   * properties, wants {@link #query(String, String, Map)} instead - which is unchanged.
+   *
+   * @param params named parameters, or an empty map
+   *
+   * @throws RemoteException if the server answers anything other than 200, or the stream ends without its
+   *                         trailer
+   */
+  public ResultSet queryStream(final String language, final String query, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    stats.queries.incrementAndGet();
+    return streamingCommand("query", language, query, params);
+  }
+
+  /**
+   * Positional-parameter form of {@link #queryStream(String, String, Map)}.
+   */
+  public ResultSet queryStream(final String language, final String query, final Object... args) {
+    return queryStream(language, query, mapArgs(args));
+  }
+
+  /**
+   * Streaming counterpart of {@link #command(String, String, Map)}, for a command whose result is a row stream
+   * too large to buffer. Same contract and same caveats as {@link #queryStream(String, String, Map)}.
+   */
+  public ResultSet commandStream(final String language, final String command, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    stats.commands.incrementAndGet();
+    return streamingCommand("command", language, command, params);
+  }
+
+  /**
+   * kNN search over a dense {@code LSM_VECTOR} or sparse {@code LSM_SPARSE_VECTOR} index (issue #7306).
+   * <p>
+   * The request and response shapes, and every bound the server enforces on them, are documented under
+   * {@code POST /api/v1/vector/{database}/search} in the OpenAPI document, and are shared with the gRPC
+   * {@code VectorSearch} RPC and the MCP {@code vector_search} tool. ArcadeDB does not generate embeddings: the
+   * caller supplies {@code queryVector}.
+   *
+   * @param request at least {@code indexName}, {@code queryVector} and {@code k}
+   *
+   * @return the server's response object, carrying {@code results} plus the {@code scoring}, {@code count} and
+   *         {@code truncated} accounting
+   */
+  public JSONObject vectorSearch(final JSONObject request) {
+    return vectorOperation("search", request);
+  }
+
+  /**
+   * Fused vector + full-text + graph-expansion search, documented under
+   * {@code POST /api/v1/vector/{database}/hybrid}. Same sharing as {@link #vectorSearch(JSONObject)}.
+   *
+   * @param request at least {@code vectorIndexName}, {@code queryVector} and {@code k}
+   */
+  public JSONObject hybridSearch(final JSONObject request) {
+    return vectorOperation("hybrid", request);
+  }
+
+  /**
+   * Full-text search over a {@code FULL_TEXT} index, documented under
+   * {@code POST /api/v1/vector/{database}/fulltext}. Same sharing as {@link #vectorSearch(JSONObject)}.
+   *
+   * @param request at least {@code queryText}, plus {@code indexName} or {@code typeName} to address the index
+   */
+  public JSONObject fullTextSearch(final JSONObject request) {
+    return vectorOperation("fulltext", request);
+  }
+
+  private JSONObject vectorOperation(final String operation, final JSONObject request) {
+    checkDatabaseIsOpen();
+    if (request == null)
+      throw new IllegalArgumentException("The search request cannot be null");
+    stats.queries.incrementAndGet();
+
+    try {
+      final HttpRequest httpRequest = addReadConsistencyHeaders(createRequestBuilder("POST",
+          getUrl("vector/" + databaseName + "/" + operation)))
+          .method("POST", HttpRequest.BodyPublishers.ofString(request.toString()))
+          .header("Content-Type", "application/json")
+          .build();
+
+      // Through the same watchdog every other request uses, so a server that accepts the connection and then
+      // stops answering is bounded by the configured timeout rather than by the JDK's default of none.
+      final HttpResponse<String> response = sendWithWatchdog(httpRequest);
+      if (response.statusCode() != 200)
+        throw asRuntime(manageException(response, "vector " + operation), "vector " + operation);
+
+      return new JSONObject(response.body());
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RemoteException("Request interrupted", e);
+    } catch (final RuntimeException e) {
+      // Unchanged, for the reason RemoteHttpComponent.httpCommand gives at its own generic clause: manageException
+      // reconstructs the server's exception type, and SecurityException and NoSuchElementException are neither
+      // RemoteException nor ArcadeDBException. Catching only those two supertypes buried a denied vector search as
+      // a generic RemoteException, so a caller could not tell authorization from transport (claude-review).
+      throw e;
+    } catch (final Exception e) {
+      throw new RemoteException("Error on executing vector " + operation, e);
+    }
+  }
+
+  /**
+   * Rethrows what {@link #manageException} mapped a failed response onto, unchanged when it is already an
+   * unchecked exception. Unchanged is the point: the mapping reconstructs the engine's own exception type and
+   * carries the server's explanation in its message, and re-wrapping it would hide both behind a generic
+   * "error on executing" - which is exactly what makes a bound crossed on one surface unreadable on another.
+   * This mirrors what the buffered {@code httpCommand} path does with the same value.
+   */
+  private static RuntimeException asRuntime(final Exception mapped, final String operation) {
+    if (mapped instanceof final RuntimeException runtime)
+      return runtime;
+    return new RemoteException("Error on executing " + operation, mapped);
+  }
+
+  /**
+   * Issues one query/command and hands back its NDJSON body as a lazily-read {@link ResultSet}.
+   * <p>
+   * Deliberately a single attempt against the currently selected server, unlike the buffered
+   * {@code httpCommand} path with its failover loop: a stream cannot be replayed once bytes have been delivered,
+   * and silently re-running a command on a second server after the first one failed mid-stream would hand the
+   * caller two partial results glued together. A failure before the stream starts still surfaces as a
+   * {@link RemoteException} naming the cause, which is what a caller can act on.
+   */
+  private ResultSet streamingCommand(final String operation, final String language, final String command,
+      final Map<String, Object> params) {
+    final JSONObject jsonRequest = new JSONObject();
+    if (language != null)
+      jsonRequest.put("language", language);
+    jsonRequest.put("command", command);
+    jsonRequest.put("serializer", "record");
+    // Same opt-in the buffered path makes (issue #5812): this driver rebuilds the exact Java type of a
+    // projection/aggregate column from the @props hint, so it has to ask for it.
+    jsonRequest.put("typeHints", true);
+    jsonRequest.put("retries", txRetries);
+    final Integer maxRows = getMaxResultRows();
+    if (maxRows != null)
+      jsonRequest.put("limit", maxRows);
+    if (params != null && !params.isEmpty())
+      jsonRequest.put("params", new JSONObject(params));
+
+    InputStream body = null;
+    try {
+      final HttpRequest request = addReadConsistencyHeaders(
+          createRequestBuilder("POST", getUrl(operation + "/" + databaseName)))
+          .method("POST", HttpRequest.BodyPublishers.ofString(jsonRequest.toString()))
+          .header("Content-Type", "application/json")
+          .header("Accept", NDJSON_CONTENT_TYPE)
+          .build();
+
+      final HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+      body = response.body();
+
+      if (response.statusCode() != 200) {
+        // The failure body is small and already complete: read it so the standard error mapping can name the
+        // exception type, exactly as the buffered path does.
+        final String errorBody = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+        body.close();
+        body = null;
+        throw asRuntime(manageException(response.statusCode(), errorBody, command), "streamed " + operation);
+      }
+
+      // A server that predates #7306 ignores the Accept header and answers the buffered envelope with a 200.
+      // Without this check the driver would hand that body to the NDJSON reader and fail somewhere in the middle
+      // of it with a parse error, which says nothing about the actual cause. Checking the type the server
+      // committed to says it once, up front.
+      final String contentType = response.headers().firstValue("content-type").orElse("");
+      if (!contentType.toLowerCase(Locale.ROOT).contains(NDJSON_CONTENT_TYPE)) {
+        body.close();
+        body = null;
+        throw new RemoteException("The server answered '" + (contentType.isEmpty() ? "no content type" : contentType)
+            + "' instead of '" + NDJSON_CONTENT_TYPE + "': it does not support streamed queries. Use query() "
+            + "instead, or upgrade the server");
+      }
+
+      final BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8));
+      body = null; // ownership passes to the ResultSet, which closes it
+      return new RemoteStreamingResultSet(reader, this::json2Result, maxRows == null);
+
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RemoteException("Request interrupted", e);
+    } catch (final RemoteException | ArcadeDBException e) {
+      throw e;
+    } catch (final IOException e) {
+      throw new RemoteException("Error on executing streamed " + operation, e);
+    } finally {
+      if (body != null)
+        try {
+          body.close();
+        } catch (final IOException ignored) {
+          // Nothing left to do: the request already failed, and the connection is being discarded anyway.
+        }
+    }
+  }
+
   public Database.TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {
     return transactionIsolationLevel;
   }
@@ -749,6 +982,252 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (final Exception e) {
       throw new RemoteException("Error on requesting operation progress", e);
     }
+  }
+
+  // ---------------------------------------------------------------------------------------------------------
+  // Time series API (issue #7305)
+  //
+  // The server has had /ts/write, /ts/query and /ts/latest for a long time; this client could not reach any of
+  // them, so a Java application had to hand-roll HTTP to use its own database's time-series store. These four
+  // methods close that, in a shape RemoteGrpcDatabase overrides with the equivalent gRPC RPCs - so the same
+  // application code runs over either protocol, and the two are testable against each other.
+  // ---------------------------------------------------------------------------------------------------------
+
+  /**
+   * Ingests time-series samples.
+   * <p>
+   * Not atomic: each measurement's batch commits its own shard transaction as it is appended, so a summary
+   * reporting drops is a partial write and not a rollback - see {@link TimeSeriesWriteSummary}. A caller that
+   * needs to know nothing was dropped checks {@link TimeSeriesWriteSummary#isComplete()}.
+   *
+   * @param points the samples; timestamps are epoch milliseconds
+   *
+   * @return what was written and what was dropped
+   */
+  public TimeSeriesWriteSummary timeSeriesWrite(final List<TimeSeriesPoint> points) {
+    checkDatabaseIsOpen();
+    if (points == null || points.isEmpty())
+      return TimeSeriesWriteSummary.empty();
+
+    final StringBuilder body = new StringBuilder(points.size() * 64);
+    for (final TimeSeriesPoint point : points)
+      LineProtocolWriter.appendLine(body, point.type(), point.tags(), point.fields(), point.timestampMs());
+
+    try {
+      // precision=ms is not optional: the endpoint defaults to nanoseconds, which would divide every timestamp
+      // LineProtocolWriter emits by a million.
+      final HttpRequest request = createRequestBuilder("POST",
+          getUrl("ts", databaseName) + "/write?precision=ms")
+          .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+          .header("Content-Type", "text/plain")
+          .build();
+
+      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      // Captured unconditionally, not only on success: a partial write's already-appended samples are durable,
+      // so a READ_YOUR_WRITES client that skipped the bookmark on the 400 would silently miss them - the same
+      // reasoning sendBatch applies to a partially committed batch.
+      captureCommitIndexHeader(response);
+
+      if (response.statusCode() == 204)
+        return new TimeSeriesWriteSummary(points.size(), points.size(), 0, List.of(), List.of(), List.of());
+
+      if (response.statusCode() == 400) {
+        final JSONObject error = new JSONObject(response.body());
+        // A partial write and a rejected request share the 400. The counts are what tells them apart: a
+        // rejected request (empty body, missing database) carries none.
+        if (error.has("written") && error.has("dropped"))
+          return new TimeSeriesWriteSummary(points.size(), error.getLong("written"), error.getLong("dropped"),
+              stringList(error.getJSONArray("unknownTypes", null)), stringList(error.getJSONArray("nonTimeSeriesTypes", null)),
+              stringList(error.getJSONArray("unavailableTypes", null)));
+      }
+
+      throw new RemoteException("Error on time series write", manageException(response, "ts write"));
+    } catch (final RemoteException | SecurityException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new RemoteException("Error on time series write", e);
+    }
+  }
+
+  /**
+   * Ingests time-series samples in chunks, for a producer whose whole batch should not be materialized as one
+   * request. Over HTTP this is one request per chunk, whose summaries are added together; over gRPC
+   * ({@code RemoteGrpcDatabase}) it is a single client-streaming call.
+   * <p>
+   * Because each chunk is its own write, a failure part-way leaves the earlier chunks durable - the same
+   * partial-write contract a single call has, one level up.
+   *
+   * @param points    the samples to ingest
+   * @param chunkSize samples per chunk; must be positive
+   */
+  public TimeSeriesWriteSummary timeSeriesWriteStream(final Iterable<TimeSeriesPoint> points, final int chunkSize) {
+    checkDatabaseIsOpen();
+    if (chunkSize <= 0)
+      throw new IllegalArgumentException("chunkSize must be positive");
+
+    TimeSeriesWriteSummary summary = TimeSeriesWriteSummary.empty();
+    final List<TimeSeriesPoint> chunk = new ArrayList<>(chunkSize);
+    for (final TimeSeriesPoint point : points) {
+      chunk.add(point);
+      if (chunk.size() == chunkSize) {
+        summary = summary.plus(timeSeriesWrite(chunk));
+        chunk.clear();
+      }
+    }
+    if (!chunk.isEmpty())
+      summary = summary.plus(timeSeriesWrite(chunk));
+    return summary;
+  }
+
+  /**
+   * Reads samples from a time-series type, raw or aggregated into fixed-interval buckets according to whether
+   * {@code query} states an aggregation.
+   */
+  public TimeSeriesQueryResult timeSeriesQuery(final TimeSeriesQuery query) {
+    checkDatabaseIsOpen();
+
+    final JSONObject payload = new JSONObject();
+    payload.put("type", query.getType());
+    if (query.getFromTimestamp() != null)
+      payload.put("from", query.getFromTimestamp().longValue());
+    if (query.getToTimestamp() != null)
+      payload.put("to", query.getToTimestamp().longValue());
+    if (!query.getFields().isEmpty())
+      payload.put("fields", new JSONArray(query.getFields()));
+    if (!query.getTags().isEmpty()) {
+      final JSONObject tags = new JSONObject();
+      for (final Map.Entry<String, Object> tag : query.getTags().entrySet())
+        tags.put(tag.getKey(), tag.getValue());
+      payload.put("tags", tags);
+    }
+    if (query.getLimit() > 0)
+      payload.put("limit", query.getLimit());
+    if (query.isAggregated()) {
+      final JSONArray requests = new JSONArray();
+      for (final TimeSeriesQuery.Aggregation aggregation : query.getAggregations()) {
+        final JSONObject request = new JSONObject();
+        request.put("field", aggregation.field());
+        request.put("type", aggregation.type().name());
+        request.put("alias", aggregation.resolvedAlias());
+        requests.put(request);
+      }
+      final JSONObject aggregation = new JSONObject();
+      aggregation.put("bucketInterval", query.getBucketIntervalMs());
+      aggregation.put("requests", requests);
+      payload.put("aggregation", aggregation);
+    }
+
+    final JSONObject response = postToTimeSeriesEndpoint("query", payload, "ts query");
+
+    if (query.isAggregated()) {
+      final JSONArray aggregations = response.getJSONArray("aggregations", null);
+      final JSONArray buckets = response.getJSONArray("buckets", null);
+      final List<TimeSeriesBucket> parsed = new ArrayList<>(buckets == null ? 0 : buckets.length());
+      if (buckets != null)
+        for (int i = 0; i < buckets.length(); i++) {
+          final JSONObject bucket = buckets.getJSONObject(i);
+          parsed.add(new TimeSeriesBucket(bucket.getLong("timestamp"), jsonValues(bucket.getJSONArray("values"))));
+        }
+      return new TimeSeriesQueryResult(response.getString("type"), List.of(), List.of(), stringList(aggregations),
+          parsed, false);
+    }
+
+    final JSONArray rows = response.getJSONArray("rows", null);
+    final List<Object[]> parsed = new ArrayList<>(rows == null ? 0 : rows.length());
+    if (rows != null)
+      for (int i = 0; i < rows.length(); i++)
+        parsed.add(jsonValues(rows.getJSONArray(i)));
+
+    return new TimeSeriesQueryResult(response.getString("type"), stringList(response.getJSONArray("columns", null)),
+        parsed, List.of(), List.of(), response.getBoolean("truncated", false));
+  }
+
+  /** The newest sample of {@code typeName}, across every series. */
+  public TimeSeriesLatestResult timeSeriesLatest(final String typeName) {
+    return timeSeriesLatest(typeName, null, null);
+  }
+
+  /**
+   * The newest sample of {@code typeName} among the series whose {@code tagName} equals {@code tagValue}.
+   * <p>
+   * One predicate, not a map, because that is what both protocols express identically: the HTTP endpoint's
+   * {@code tag} query parameter carries a single {@code name:value} pair and ignores any repeat, a contract
+   * {@code TimeSeriesApiSpecTest} pins. The gRPC {@code TimeSeriesLatest} RPC does accept a whole filter map -
+   * a gRPC client using the proto directly can use it - and closing that asymmetry on the HTTP side is tracked
+   * separately (see the follow-up named in the PR for issue #7305).
+   *
+   * @param tagName  the tag column, or {@code null} to select every series
+   * @param tagValue the value that tag must equal
+   */
+  public TimeSeriesLatestResult timeSeriesLatest(final String typeName, final String tagName,
+      final Object tagValue) {
+    checkDatabaseIsOpen();
+
+    final StringBuilder url = new StringBuilder(getUrl("ts", databaseName)).append("/latest?type=")
+        .append(URLEncoder.encode(typeName, DatabaseFactory.getDefaultCharset()));
+    if (tagName != null && !tagName.isBlank())
+      url.append("&tag=").append(URLEncoder.encode(tagName + ":" + tagValue, DatabaseFactory.getDefaultCharset()));
+
+    try {
+      final HttpRequest request = createRequestBuilder("GET", url.toString()).GET().build();
+      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 200)
+        throw new RemoteException("Error on time series latest", manageException(response, "ts latest"));
+
+      final JSONObject body = new JSONObject(response.body());
+      final Object[] latest = body.isNull("latest") ? null : jsonValues(body.getJSONArray("latest"));
+      return new TimeSeriesLatestResult(body.getString("type"), stringList(body.getJSONArray("columns", null)), latest);
+    } catch (final RemoteException | SecurityException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new RemoteException("Error on time series latest", e);
+    }
+  }
+
+  private JSONObject postToTimeSeriesEndpoint(final String endpoint, final JSONObject payload,
+      final String operation) {
+    try {
+      final HttpRequest request = createRequestBuilder("POST", getUrl("ts", databaseName) + "/" + endpoint)
+          .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
+          .header("Content-Type", "application/json")
+          .build();
+
+      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() != 200)
+        throw new RemoteException("Error on time series " + endpoint, manageException(response, operation));
+
+      return new JSONObject(response.body());
+    } catch (final RemoteException | SecurityException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new RemoteException("Error on time series " + endpoint, e);
+    }
+  }
+
+  /**
+   * Reads a JSON array of sample values, turning JSON null into Java null. A value that stands for "no
+   * measurement" - an absent MIN/MAX, a non-finite sample - arrives as JSON null and must not become the
+   * string "null" or a zero.
+   * <p>
+   * Numbers keep whatever concrete {@link Number} the JSON parser chose for their text, so a caller comparing
+   * against an embedded or gRPC result should compare numerically rather than by {@code equals}.
+   */
+  private static Object[] jsonValues(final JSONArray array) {
+    final Object[] values = new Object[array.length()];
+    for (int i = 0; i < values.length; i++)
+      values[i] = array.isNull(i) ? null : array.get(i);
+    return values;
+  }
+
+  private static List<String> stringList(final JSONArray array) {
+    if (array == null || array.length() == 0)
+      return List.of();
+    final List<String> values = new ArrayList<>(array.length());
+    for (int i = 0; i < array.length(); i++)
+      values.add(array.getString(i));
+    return values;
   }
 
   String getSessionId() {

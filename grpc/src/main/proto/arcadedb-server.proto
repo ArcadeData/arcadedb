@@ -178,6 +178,177 @@ service ArcadeDbService {
 
   // Graph batch load (client-streaming)
   rpc GraphBatchLoad (stream GraphBatchChunk) returns (GraphBatchResult);
+
+  // Vector, hybrid and full-text retrieval (issue #7306). Every bound these enforce - k, ef_search, the filter
+  // length, the full-text limit, the expansion caps - is enforced by the same server-side implementation the
+  // HTTP /api/v1/vector/* routes and the MCP search tools call, so a request that is legal on one protocol is
+  // legal on all of them and rejected with the same message everywhere.
+  rpc VectorSearch   (VectorSearchRequest)   returns (VectorSearchResponse);
+  rpc HybridSearch   (HybridSearchRequest)   returns (HybridSearchResponse);
+  rpc FullTextSearch (FullTextSearchRequest) returns (FullTextSearchResponse);
+
+  // Time series (issue #7305). The streaming write is the one that matters most: time-series ingest is
+  // high-rate, small and uniformly shaped, which is the case gRPC is best suited to. The query streams its
+  // answer rather than buffering it, so a wide range is bounded by the client's consumption and not by the
+  // server's heap.
+  rpc TimeSeriesWrite       (TimeSeriesWriteRequest)      returns (TimeSeriesWriteSummary);
+  rpc TimeSeriesWriteStream (stream TimeSeriesWriteChunk) returns (TimeSeriesWriteSummary);
+  rpc TimeSeriesQuery       (TimeSeriesQueryRequest)      returns (stream TimeSeriesQueryResult);
+  rpc TimeSeriesLatest      (TimeSeriesLatestRequest)     returns (TimeSeriesLatestResponse);
+}
+
+// -----------------------------------------------------------------------------
+// Vector, hybrid and full-text retrieval (issue #7306)
+// -----------------------------------------------------------------------------
+
+message VectorSearchRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+
+  // Name of an LSM_VECTOR index, or of an LSM_SPARSE_VECTOR index when `sparse` is set.
+  string index_name = 3;
+
+  // Dense query vector, or the sparse weights matching `query_indices`. ArcadeDB does not generate embeddings.
+  repeated float query_vector = 4;
+
+  // Sparse dimension ids matching the `query_vector` weights; leave empty to use the vector's own positions.
+  // Only meaningful when `sparse` is set.
+  repeated int32 query_indices = 5;
+
+  // Maximum number of results. Bounded server-side; 0 means "use the server default".
+  int32 k = 6;
+
+  // Dense-index search beam width. Optional because 0 is a legal-looking value that is not a legal beam width,
+  // so "unset" has to be distinguishable from "zero". Rejected for a sparse index.
+  optional int32 ef_search = 7;
+
+  // Optional read-only SQL WHERE predicate applied to a bounded candidate window.
+  string filter = 8;
+
+  // Search an LSM_SPARSE_VECTOR index instead of a dense one.
+  bool sparse = 9;
+}
+
+// One hit of any of the three searches. `distance` and `score` rank in opposite directions, so which of them is
+// populated is decided by the index that was searched and reported by the response's `scoring` field; a client
+// reads that rather than assuming. `sources`, `depth` and `path` are populated by HybridSearch only.
+message SearchHit {
+  string rid = 1;
+  GrpcRecord record = 2;
+
+  // Dense vector distance, lower is better. Unset (0 with has_distance false) on a scored hit.
+  optional double distance = 3;
+  // Sparse, full-text or fused score, higher is better. Unset on a distance hit.
+  optional double score = 4;
+
+  // Which retrieval legs contributed this hit: "vector", "fulltext", "expand".
+  repeated string sources = 5;
+  // Hops from the seed, for a hit the graph expansion leg contributed.
+  optional int32 depth = 6;
+  // Record ids from the seed to this hit, the seed included.
+  repeated string path = 7;
+}
+
+message VectorSearchResponse {
+  string index_name = 1;
+  bool sparse = 2;
+
+  // How the index ranks, e.g. "distance_lower_is_better:COSINE" or "score_higher_is_better:dot_product".
+  string scoring = 3;
+
+  // Size of the candidate window the search inspected, which a filtered search over-fetches into.
+  int32 candidate_limit = 4;
+
+  // True when the result window was filled, so further matches may exist: raise k to see them. False for a
+  // short result, which means the search already returned every match within `candidate_limit`.
+  bool truncated = 5;
+
+  int32 count = 6;
+  repeated SearchHit results = 7;
+}
+
+message HybridExpand {
+  repeated string edge_types = 1;
+  string direction = 2;  // "out", "in" or "both"
+  int32 max_depth = 3;
+}
+
+message HybridSearchRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+
+  string vector_index_name = 3;
+  repeated float query_vector = 4;
+  repeated int32 query_indices = 5;
+  int32 k = 6;
+  optional int32 ef_search = 7;
+  bool sparse = 8;
+
+  // Optional read-only SQL WHERE predicate applied to the vector leg's candidate window.
+  string filter = 9;
+
+  // Full-text leg. Both fields go together: half a leg is a mistake, and the server refuses it rather than
+  // silently returning a result that ignored what the caller asked for. Leave both empty to search without one.
+  string fulltext_query = 10;
+  string fulltext_index_name = 11;
+
+  // How the legs are combined. Only RRF can consume the graph expansion leg, which is ranked by traversal order
+  // and carries no score.
+  string fusion_strategy = 12;
+
+  // Per-leg weight applied to every rank contribution. The only accepted keys are "vector", "fulltext" and
+  // "expand", and a weight for a leg the request does not ask for is refused rather than ignored.
+  map<string, float> weights = 13;
+
+  // Optional graph expansion leg, seeded from the union of the retrieval legs.
+  HybridExpand expand = 14;
+}
+
+message HybridSearchResponse {
+  string vector_index_name = 1;
+
+  // Present whenever the full-text leg ran, including when it matched nothing and so could not become a fusion
+  // source.
+  string fulltext_index_name = 2;
+
+  bool sparse = 3;
+  string scoring = 4;
+
+  // False when only one leg produced rows: fusion needs at least two sources, so the results carry that leg's
+  // native distance or score instead of a fabricated fused one.
+  bool fused = 5;
+  string fusion_strategy = 6;
+
+  bool truncated = 7;
+  int32 count = 8;
+  repeated SearchHit results = 9;
+
+  // Per-leg accounting, the same structure the HTTP response reports under "legs".
+  map<string, GrpcValue> legs = 10;
+}
+
+message FullTextSearchRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+
+  // Lucene-syntax query, e.g. "java" or "+java -python". Must not be blank.
+  string query_text = 3;
+
+  // Address the index either by `index_name`, or by `type_name` with optional `properties`. `index_name` wins
+  // when both are supplied.
+  string index_name = 4;
+  string type_name = 5;
+  repeated string properties = 6;
+
+  // Maximum number of results. Bounded server-side; 0 means "use the server default".
+  int32 limit = 7;
+}
+
+message FullTextSearchResponse {
+  string index_name = 1;
+  string similarity = 2;  // similarity function the index scores with, e.g. BM25
+  int32 count = 3;
+  repeated SearchHit results = 4;
 }
 
 // -----------------------------------------------------------------------------
@@ -594,6 +765,164 @@ message GraphBatchResult {
   // lead a caller to re-send too little. vertices_created needs no such distinction - a vertex is counted once
   // its own commit has returned.
   bool  partial_commit           = 7;
+}
+
+// -----------------------------------------------------------------------------
+// Time series API (issue #7305)
+// -----------------------------------------------------------------------------
+
+// Unit of TimeSeriesPoint.timestamp. Unlike the HTTP /ts/{database}/write endpoint - which speaks InfluxDB
+// Line Protocol and therefore defaults to that protocol's nanoseconds - this API is typed and its zero value
+// is MILLISECONDS, the unit the engine actually stores. The common case needs no conversion and no field set.
+enum TimeSeriesPrecision {
+  TS_PRECISION_MILLISECONDS = 0;
+  TS_PRECISION_NANOSECONDS  = 1;
+  TS_PRECISION_MICROSECONDS = 2;
+  TS_PRECISION_SECONDS      = 3;
+}
+
+// One sample. Values reuse GrpcValue rather than a parallel scalar encoding, so the type-fidelity fixes made
+// there (#4149 temporal precision, #5046 byte/short widths, decimal) apply to time series too. A tag or field
+// the type does not declare is ignored, exactly as an unknown line-protocol tag is; a declared column with no
+// entry here is stored as absent, which reads back as null.
+message TimeSeriesPoint {
+  // The measurement, i.e. the TIMESERIES type name. Empty means the request- or chunk-level default, which is
+  // how a single-measurement stream avoids repeating the name on every point.
+  string type = 1;
+  int64  timestamp = 2;
+  map<string, GrpcValue> tags = 3;
+  map<string, GrpcValue> fields = 4;
+}
+
+message TimeSeriesWriteRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  // Default measurement for points that do not name one.
+  string type = 3;
+  TimeSeriesPrecision precision = 4;
+  repeated TimeSeriesPoint points = 5;
+}
+
+message TimeSeriesWriteChunk {
+  // REQUIRED on the first chunk; ignored on later ones (the server caches the first chunk's database).
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  // Default measurement for points in THIS chunk that do not name one, so a stream can switch measurement
+  // between chunks without naming it on every point.
+  string type = 3;
+  TimeSeriesPrecision precision = 4;
+  repeated TimeSeriesPoint points = 5;
+}
+
+// A write is NOT atomic: each measurement's batch commits its own shard transaction as it is appended, so a
+// failure part-way leaves the measurements before it durable. `dropped` is therefore a partial-write signal,
+// not a rollback - the same contract the HTTP endpoint reports with its 400. Every point is either written or
+// counted in exactly one of the three type lists, so written + dropped == received.
+message TimeSeriesWriteSummary {
+  int64 received = 1;
+  int64 written  = 2;
+  int64 dropped  = 3;
+  // No type with this name exists: create it first with CREATE TIMESERIES TYPE.
+  repeated string unknown_types = 4;
+  // The type exists but is not a TIMESERIES type.
+  repeated string non_time_series_types = 5;
+  // The type IS a TIMESERIES type; its storage engine failed to load (see the server log for why).
+  repeated string unavailable_types = 6;
+  int64 execution_time_ms = 7;
+}
+
+// Mirrors com.arcadedb.engine.timeseries.AggregationType. UNSPECIFIED is the proto3 zero value and is
+// rejected rather than silently defaulted, so a client that forgets the field is told so.
+enum TimeSeriesAggregationType {
+  TS_AGG_UNSPECIFIED = 0;
+  TS_AGG_SUM         = 1;
+  TS_AGG_AVG         = 2;
+  TS_AGG_MIN         = 3;
+  TS_AGG_MAX         = 4;
+  TS_AGG_COUNT       = 5;
+}
+
+// Conjunction of tag equality predicates. Values are coerced to the tag column's declared type, so a tag
+// declared INTEGER matches whether the client sent int32_value or string_value. A name that is not a TAG
+// column of the type contributes no predicate.
+message TimeSeriesTagFilter {
+  map<string, GrpcValue> equals = 1;
+}
+
+message TimeSeriesAggregationRequest {
+  string field = 1;
+  TimeSeriesAggregationType type = 2;
+  // Output name. Empty defaults to "<field>_<type>" lowercased, matching the HTTP endpoint.
+  string alias = 3;
+}
+
+message TimeSeriesAggregation {
+  int64 bucket_interval_ms = 1;
+  repeated TimeSeriesAggregationRequest requests = 2;
+}
+
+message TimeSeriesQueryRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  string type = 3;
+  // Inclusive bounds. Optional because 0 is a real epoch timestamp and not the same thing as "no bound":
+  // unset means unbounded in that direction.
+  optional int64 from_timestamp = 4;
+  optional int64 to_timestamp   = 5;
+  // Column projection; empty means every column. The timestamp column is always included and always first.
+  repeated string fields = 6;
+  TimeSeriesTagFilter tags = 7;
+  // Maximum rows returned across the whole stream. Non-positive means the server default; the server-side
+  // hard ceiling (arcadedb.server.httpQueryMaxResultRows) still applies and cannot be widened from here.
+  int32 limit = 8;
+  // Rows (or buckets) per streamed message. 0 lets the server choose.
+  int32 batch_size = 9;
+  // When set, the answer carries buckets instead of rows.
+  TimeSeriesAggregation aggregation = 10;
+}
+
+// A row of a raw query, or the values of one aggregation bucket. A value that stands for "no measurement" -
+// an absent MIN/MAX, a non-finite sample - is sent with no kind set, which decodes to null; it is NOT sent as
+// double_value NaN, which a client would read as a number.
+message TimeSeriesRow {
+  repeated GrpcValue values = 1;
+}
+
+message TimeSeriesBucket {
+  int64 timestamp = 1;
+  repeated GrpcValue values = 2;
+}
+
+// Streamed answer. `columns` and `aggregations` are carried on every message so a consumer that starts
+// reading mid-stream (or drops the first message on a retry) is never left without the header.
+message TimeSeriesQueryResult {
+  string type = 1;
+  // Names of the values in each `rows` entry, in order. Empty for an aggregated answer.
+  repeated string columns = 2;
+  // Aliases of the values in each `buckets` entry, in order. Empty for a raw answer.
+  repeated string aggregations = 3;
+  repeated TimeSeriesRow rows = 4;
+  repeated TimeSeriesBucket buckets = 5;
+  int64 running_total_emitted = 6;
+  bool  last = 7;
+  // The limit cut the answer short: what follows this stream is not the end of the data. Only meaningful on
+  // the message whose `last` is true.
+  bool  truncated = 8;
+}
+
+message TimeSeriesLatestRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  string type = 3;
+  TimeSeriesTagFilter tags = 4;
+}
+
+message TimeSeriesLatestResponse {
+  string type = 1;
+  repeated string columns = 2;
+  // False when the type (or the tag selection) holds no sample at all; `latest` is then unset.
+  bool  found = 3;
+  TimeSeriesRow latest = 4;
 }
 
 // -----------------------------------------------------------------------------

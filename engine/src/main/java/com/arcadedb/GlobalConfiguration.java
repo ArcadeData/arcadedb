@@ -119,6 +119,7 @@ public enum GlobalConfiguration {
         // VECTOR_INDEX_LOCATION_CACHE_SIZE is deliberately NOT capped here: it is not a cache, and bounding it
         // made this profile drop live vectors from searches (issue #5568).
         VECTOR_INDEX_SEARCH_CACHE_SIZE.setValue(10_000);
+        VECTOR_INDEX_DELTA_CACHE_SIZE.setValue(10_000);
 
         POLYGLOT_ENGINE_ENABLED.setValue(false);
 
@@ -935,6 +936,21 @@ public enum GlobalConfiguration {
       Recommended: 50MB for typical workloads, 100MB for high-memory systems, 25MB for constrained environments.""",
       Long.class, 50L),
 
+  INDEX_BUILD_COMMIT_LOCK_TIMEOUT("arcadedb.index.buildCommitLockTimeout", SCOPE.DATABASE,
+      """
+      Timeout in ms a bulk index build waits for the file locks of ONE of its chunk commits, replacing \
+      arcadedb.commitLockTimeout for those commits only. \
+      The default there is sized for an interactive transaction, where giving up quickly is right because the \
+      caller can retry cheaply. A vector graph persist is the opposite case: it follows a build that can cost tens \
+      of minutes, it commits every arcadedb.index.buildChunkSizeMB, and a single chunk that cannot take the lock \
+      discards the whole build (issue #7361) - while the contender it waits behind is an ordinary commit that will \
+      be done in milliseconds. Waiting is nearly free here; giving up is not. \
+      This bounds only how long the build WAITS, never how long it HOLDS, so raising it cannot make any other \
+      transaction slower. 0 or less waits indefinitely. \
+      The effective value is clamped to be at least arcadedb.commitLockTimeout, so this can never make a build \
+      give up sooner than it already would: setting it BELOW that one has no effect.""",
+      Long.class, 60_000L),
+
   INDEX_COMPACTION_RAM_MB("arcadedb.indexCompactionRAM", SCOPE.DATABASE, "Maximum amount of RAM to use for index compaction, in MB",
       Long.class, 300),
 
@@ -1045,6 +1061,28 @@ public enum GlobalConfiguration {
       Ignored when the cache size is set explicitly. Values above 90 are clamped to 90: no cache is allowed to \
       plan on the whole heap.""",
       Integer.class, 25),
+
+  VECTOR_INDEX_DELTA_CACHE_SIZE("arcadedb.vectorIndex.deltaCacheSize", SCOPE.DATABASE,
+      """
+      Maximum number of vectors buffered since the last graph rebuild that keep their payload on the heap. \
+      Every write appends an entry to that delta buffer so the vector is searchable before it reaches the HNSW \
+      graph, and the entry used to carry the whole vector: an ingest that outruns the rebuilds therefore held a \
+      second full copy of the corpus in RAM, and a 4.2M x 768-dimension load died of it at -Xmx16g (issue #7357). \
+      The vector is already persisted before the entry is buffered, so entries past this cap keep only their id \
+      and RID and the delta scan reads the payload back from the pages. \
+      RAM usage = deltaCacheSize * (dimensions * 4 + 64) bytes. \
+      0 (default) sizes it automatically from arcadedb.vectorIndex.deltaCacheMaxHeapPercent. -1 keeps every \
+      buffered payload on the heap, which is the pre-#7357 behaviour and is unbounded.""",
+      Integer.class, 0),
+
+  VECTOR_INDEX_DELTA_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.deltaCacheMaxHeapPercent", SCOPE.DATABASE,
+      """
+      Share of the JVM heap ceiling (percentage) the automatically sized delta payload cache may use (see \
+      arcadedb.vectorIndex.deltaCacheSize). Ignored when that size is set explicitly. Taken as this percent of \
+      -Xmx and then capped at 90% of the heap currently AVAILABLE, the same denominator the graph-build cache \
+      uses, so a rebuild holding the old graph and an ingest filling the buffer cannot both plan on the same \
+      free heap. Values above 90 are clamped to 90.""",
+      Integer.class, 10),
 
   VECTOR_INDEX_SEARCHER_POOL_SIZE("arcadedb.vectorIndex.searcherPoolSize", SCOPE.DATABASE,
       """
@@ -2137,8 +2175,10 @@ public enum GlobalConfiguration {
       service behind arcadedb.ha.k8sSuffix is resolved too, so a StatefulSet scale-up pod can complete its \
       auto-join. Loopback is always allowed. A host that stops being admitted also loses the reach an \
       already-established connection still gave it: the Raft RPCs running on that connection are closed with \
-      a permission error and later ones are refused, though the connection itself stays open until the peer \
-      drops it. Does not provide peer identity or encryption: use mTLS on untrusted networks.""",
+      a permission error and later ones are refused. gRPC exposes no way to close one established transport on \
+      demand, so the connection itself goes when it falls idle, after arcadedb.ha.grpcMaxConnectionIdleMs - or \
+      never, if that window is set to 0. Does not provide peer identity or encryption: use mTLS on untrusted \
+      networks.""",
       Boolean.class, true),
 
   HA_GRPC_ALLOWLIST_REFRESH_MS("arcadedb.ha.grpcAllowlistRefreshMs", SCOPE.SERVER,
@@ -2164,6 +2204,21 @@ public enum GlobalConfiguration {
       when a later DNS re-resolution of that host fails. Bridges transient DNS outages and pod-IP churn so a peer that \
       resolved moments ago is not evicted from the allowlist by a momentary lookup failure. Set to 0 to disable \
       stickiness (drop a host from the allowlist as soon as it stops resolving).""",
+      Long.class, 300_000L),
+
+  HA_GRPC_MAX_CONNECTION_IDLE_MS("arcadedb.ha.grpcMaxConnectionIdleMs", SCOPE.SERVER,
+      """
+      How long in milliseconds an inbound Raft gRPC connection may carry no RPC before the server closes it with a \
+      graceful GOAWAY. Ratis leaves the Raft listener with no server-side lifetime bound at all, so a connection \
+      survives until the peer, the kernel or a network event drops it; that is what leaves the socket of a peer \
+      removed from the allowlist connected after its reach has been revoked (issue #7316). The window is measured \
+      from the moment the connection's last RPC finished, so it cannot reap the replication path: a leader's \
+      AppendEntries to a follower is one long-lived stream, which keeps that follower's inbound connection busy \
+      for as long as replication runs. What it does close are the quiet \
+      connections - a revoked peer that has stopped talking, a follower's channel to a peer it only dials to \
+      campaign, an idle Ratis admin/client channel - and a gRPC client answers the GOAWAY by reconnecting on its \
+      next call. Values below one second are raised to one second by gRPC. Set to 0 to leave connections unbounded, \
+      which is the behaviour before 26.10.1.""",
       Long.class, 300_000L),
 
   HA_TLS_ENABLED("arcadedb.ha.tls.enabled", SCOPE.SERVER,

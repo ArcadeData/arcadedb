@@ -38,6 +38,9 @@ import java.util.List;
  * lifecycle.
  */
 public class CoreApiSpec implements OpenApiContributor {
+  /** Media type of the streaming query encoding (issue #7306). */
+  private static final String NDJSON = "application/x-ndjson";
+
 
   private static final String SESSION_HEADER = HttpSessionManager.ARCADEDB_SESSION_ID;
 
@@ -87,6 +90,7 @@ public class CoreApiSpec implements OpenApiContributor {
 
     openAPI.getComponents().addSchemas("QueryRequest", createQueryRequestSchema());
     openAPI.getComponents().addSchemas("QueryResponse", createQueryResponseSchema());
+    openAPI.getComponents().addSchemas("NdJsonQueryEvent", createNdJsonQueryEventSchema());
     openAPI.getComponents().addSchemas("CommandRequest", createCommandRequestSchema());
     openAPI.getComponents().addSchemas("ErrorResponse", createErrorResponseSchema());
     openAPI.getComponents().addSchemas("ServerInfo", createServerInfoSchema());
@@ -211,7 +215,9 @@ public class CoreApiSpec implements OpenApiContributor {
         List.of("sql", "cypher", "gremlin", "graphql", "mongo")));
     getOp.addParametersItem(SpecBuilders.pathParam("command", "Query or command to execute"));
     getOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    getOp.addParametersItem(ndJsonAcceptParam());
     getOp.setResponses(createGetQueryResponses());
+    addNdJsonAlternative(getOp.getResponses());
     pathItem.setGet(getOp);
 
     return pathItem;
@@ -227,8 +233,10 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Query");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    postOp.addParametersItem(ndJsonAcceptParam());
     postOp.setRequestBody(SpecBuilders.jsonBody("Query request with command and optional parameters", "QueryRequest", true));
     postOp.setResponses(createQueryResponses());
+    addNdJsonAlternative(postOp.getResponses());
     pathItem.setPost(postOp);
 
     return pathItem;
@@ -244,8 +252,10 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Command");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    postOp.addParametersItem(ndJsonAcceptParam());
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
     postOp.setResponses(createCommandResponses());
+    addNdJsonAlternative(postOp.getResponses());
     pathItem.setPost(postOp);
 
     return pathItem;
@@ -627,6 +637,61 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("truncated", SpecBuilders.bool(
         "True when the cap stopped the serialization with rows still pending, so the response is incomplete"));
     return schema;
+  }
+
+  /**
+   * One line of the {@code application/x-ndjson} streaming encoding (issue #7306). Every line is an object with
+   * exactly one key naming the kind of event, which is what makes the stream self-delimiting: a consumer can
+   * tell a row from the trailer without guessing, and a stream that ends with no {@code stats} line is one that
+   * did not complete.
+   */
+  private Schema<?> createNdJsonQueryEventSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        One line of a newline-delimited streaming response. Exactly one of 'record', 'stats' or 'error' is \
+        present.""");
+    schema.addProperty("record", SpecBuilders.object("""
+        One result row, identical to an element of the 'result' array of the buffered application/json \
+        response."""));
+
+    final Schema<Object> stats = SpecBuilders.object("""
+        Trailer, always the last line of a complete stream. Carries the same three numbers the buffered \
+        response reports at top level.""");
+    stats.addProperty("limit", SpecBuilders.integer("Effective row cap applied while streaming, -1 when uncapped"));
+    stats.addProperty("returned", SpecBuilders.integer("Number of rows that reached the client"));
+    stats.addProperty("truncated", SpecBuilders.bool(
+        "True when the cap stopped the stream with rows still pending, so the result is incomplete"));
+    schema.addProperty("stats", stats);
+
+    final Schema<Object> error = SpecBuilders.object("""
+        A failure raised after the 200 had already been sent. The status code cannot be taken back at that \
+        point, so the failure is reported in band and no 'stats' line follows.""");
+    error.addProperty("message", SpecBuilders.string("Why the stream failed"));
+    schema.addProperty("error", error);
+    return schema;
+  }
+
+  /**
+   * Adds the streaming encoding to a 200 that already documents the buffered one. Negotiated by {@code Accept}
+   * rather than routed, so the buffered body every existing client parses is what a request that does not ask
+   * for the stream still receives (issue #7306).
+   */
+  private static void addNdJsonAlternative(final ApiResponses responses) {
+    final MediaType ndjson = new MediaType();
+    ndjson.setSchema(SpecBuilders.ref("NdJsonQueryEvent"));
+    responses.get("200").getContent().addMediaType(NDJSON, ndjson);
+  }
+
+  /**
+   * The {@code Accept} header that selects the streaming encoding. Declared as an explicit parameter as well as
+   * a response content type because a generated client otherwise has no way to ask for it.
+   */
+  private static Parameter ndJsonAcceptParam() {
+    final Parameter accept = SpecBuilders.headerParam("Accept", """
+        Send 'application/x-ndjson' to receive the result as a stream of newline-delimited JSON events, one row \
+        per line, flushed as the engine produces them instead of buffered in full server-side. Anything else - \
+        including an absent header - returns the buffered application/json body unchanged.""", false);
+    accept.getSchema().setEnum(List.of(SpecBuilders.JSON, NDJSON));
+    return accept;
   }
 
   private Schema<?> createErrorResponseSchema() {

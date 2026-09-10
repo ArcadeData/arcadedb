@@ -27,6 +27,7 @@ import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -37,6 +38,7 @@ import java.io.File;
 import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 public class BackupDatabaseStatement extends SimpleExecStatement {
@@ -51,6 +53,19 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
   @Override
   public boolean isIdempotent() {
     return true;
+  }
+
+  /**
+   * BACKUP DATABASE mutates no record, which is why {@link #isIdempotent()} answers true and the statement may be
+   * run through {@code query()}. It is not read-only, though: it writes a whole archive to the server filesystem.
+   * The inherited implementation derives the operation types from {@code isIdempotent()} and so would report this
+   * as a plain {@code READ}, indistinguishable from a SELECT - which is how it slipped through a caller that
+   * needed "writes nothing" rather than "conflicts with nothing" (issue #7306). Reporting the write it actually
+   * performs lets such a caller tell the two apart without special-casing this class by name.
+   */
+  @Override
+  public Set<OperationType> getOperationTypes() {
+    return Set.of(OperationType.READ, OperationType.CREATE);
   }
 
   @Override

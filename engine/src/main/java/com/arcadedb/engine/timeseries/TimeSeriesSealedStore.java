@@ -105,6 +105,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   private static final double SUM_RELATIVE_TOLERANCE = 1e-9;
 
+  /**
+   * The filename suffix of a sealed store, as built by {@link #sealedFileNameFor(String, int)}. Public because
+   * every layer that copies a database whole - backup, HA snapshot ship - has to be able to recognise a file the
+   * paginated layer knows nothing about.
+   */
+  public static final String FILE_EXTENSION = ".ts.sealed";
+
+  private static final File[] EMPTY_FILES = new File[0];
+
   private final String               basePath;
   private final List<ColumnDefinition> columns;
   private       RandomAccessFile     indexFile;
@@ -2350,6 +2359,27 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public static String sealedFileNameFor(final String typeName, final int shardIndex) {
     return typeName + "_shard_" + shardIndex + ".ts.sealed";
+  }
+
+  /**
+   * Every sealed store in a database directory, as files. This is the only way to find them: a sealed store is
+   * opened with raw {@link RandomAccessFile}/{@link FileChannel} I/O and is never registered as a
+   * {@code ComponentFile}, so it appears in neither {@code FileManager.getFiles()} nor a {@code PageSnapshot} -
+   * which is what made a full backup omit every compacted sample (issue #7280) and, before it, an HA snapshot
+   * ship (issue #4382).
+   * <p>
+   * The suffix match is exact and therefore excludes the two neighbours that share its prefix and must never be
+   * copied anywhere: {@code .ts.sealed.tmp}, the half-written file of a compaction in flight, and
+   * {@code .ts.sealed.incoming}, the staging file of an HA install. It is also narrow enough not to pick up an
+   * unrelated file that happens to live in the database directory - a backup archive written there, say.
+   *
+   * @param databaseDirectory the database directory to list
+   *
+   * @return the sealed-store files, never {@code null} and empty when the directory holds none or cannot be read
+   */
+  public static File[] listSealedFiles(final File databaseDirectory) {
+    final File[] files = databaseDirectory.listFiles((dir, name) -> name.endsWith(FILE_EXTENSION));
+    return files != null ? files : EMPTY_FILES;
   }
 
   /**

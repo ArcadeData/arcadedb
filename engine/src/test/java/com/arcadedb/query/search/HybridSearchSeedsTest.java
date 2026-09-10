@@ -16,10 +16,10 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.mcp.tools;
+package com.arcadedb.query.search;
 
 import com.arcadedb.database.RID;
-import com.arcadedb.mcp.tools.HybridSearchTool.LegRow;
+import com.arcadedb.query.search.HybridSearch.LegRow;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -30,7 +30,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Exercises {@link HybridSearchTool#collectSeeds} directly against synthetic rows, with no database
+ * Exercises {@link HybridSearch#collectSeeds} directly against synthetic rows, with no database
  * involved: the seed-collection rule (cap, interleaving, de-duplication) is pure list arithmetic.
  */
 class HybridSearchSeedsTest {
@@ -44,24 +44,24 @@ class HybridSearchSeedsTest {
 
   @Test
   void seedListFillsExactlyToTheCap() {
-    final List<LegRow> vectorLeg = rowsFor(1, HybridSearchTool.MAX_SEEDS * 2);
-    final List<LegRow> fullTextLeg = rowsFor(2, HybridSearchTool.MAX_SEEDS * 2);
+    final List<LegRow> vectorLeg = rowsFor(1, HybridSearch.MAX_SEEDS * 2);
+    final List<LegRow> fullTextLeg = rowsFor(2, HybridSearch.MAX_SEEDS * 2);
 
-    final List<RID> seeds = HybridSearchTool.collectSeeds(vectorLeg, fullTextLeg);
+    final List<RID> seeds = HybridSearch.collectSeeds(vectorLeg, fullTextLeg);
 
     // Both legs offer far more than the cap, so the result must sit exactly on it. Asserting only an
     // upper bound would hold just as well for an empty list and prove nothing about the cap.
-    assertThat(seeds.size()).isEqualTo(HybridSearchTool.MAX_SEEDS);
+    assertThat(seeds.size()).isEqualTo(HybridSearch.MAX_SEEDS);
   }
 
   @Test
   void bothLegsContributeEvenWhenTheVectorLegAloneWouldFillTheCap() {
     // The vector leg alone has more rows than the cap, so a naive vector-first-then-fulltext
     // concatenation would starve the full-text leg out of the seed set entirely.
-    final List<LegRow> vectorLeg = rowsFor(1, HybridSearchTool.MAX_SEEDS * 2);
+    final List<LegRow> vectorLeg = rowsFor(1, HybridSearch.MAX_SEEDS * 2);
     final List<LegRow> fullTextLeg = rowsFor(2, 10);
 
-    final List<RID> seeds = HybridSearchTool.collectSeeds(vectorLeg, fullTextLeg);
+    final List<RID> seeds = HybridSearch.collectSeeds(vectorLeg, fullTextLeg);
     final Set<RID> seedSet = new HashSet<>(seeds);
 
     for (final LegRow row : fullTextLeg)
@@ -74,7 +74,7 @@ class HybridSearchSeedsTest {
     final List<LegRow> vectorLeg = List.of(new LegRow(shared, -0.1), new LegRow(new RID(1, 1), -0.2));
     final List<LegRow> fullTextLeg = List.of(new LegRow(shared, 5.0), new LegRow(new RID(2, 1), 4.0));
 
-    final List<RID> seeds = HybridSearchTool.collectSeeds(vectorLeg, fullTextLeg);
+    final List<RID> seeds = HybridSearch.collectSeeds(vectorLeg, fullTextLeg);
 
     assertThat(seeds).filteredOn(shared::equals).hasSize(1);
   }
