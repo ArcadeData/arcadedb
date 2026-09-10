@@ -23,6 +23,10 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.backup.AutoBackupConfig;
@@ -33,18 +37,31 @@ import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.IPAddressBlocklist;
 
+import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
+import java.net.InetAddress;
+import java.net.URI;
+import java.net.UnknownHostException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 /**
  * The server's control plane: the administrative operations that do not depend on the transport
@@ -57,10 +74,11 @@ import java.util.TimerTask;
  * protocols differ in how a caller names an operation and how a failure is reported, not in what
  * the operation does.
  * <p>
- * What stayed behind in the HTTP handler is what is genuinely HTTP: parsing the command string,
- * forwarding a write to the leader, mapping a result to a status code, and the three operations
- * that stream progress over the {@code HttpServerExchange} itself (restore backup, restore
- * database, import database - tracked for gRPC in issue #7308).
+ * What stays behind in the HTTP handler is what is genuinely HTTP: parsing the command string,
+ * forwarding a write to the leader, and mapping a result to a status code. The three operations
+ * that report progress while they run - restore backup, restore database, import database - live
+ * here too since issue #7308; the transport supplies a {@link ProgressListener} and decides whether
+ * an event becomes an SSE frame or a message on a server-streaming RPC.
  * <p>
  * <b>This class performs no authorization, and no leader routing.</b> Each transport supplies both:
  * HTTP through {@code AbstractServerHttpHandler.checkRootUser} and
@@ -74,6 +92,8 @@ import java.util.TimerTask;
  * {@code GrpcMetricsInterceptor}.
  */
 public class ServerControlPlane {
+  private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
+
   private final ArcadeDBServer server;
 
   public ServerControlPlane(final ArcadeDBServer server) {
@@ -676,6 +696,22 @@ public class ServerControlPlane {
   }
 
   /**
+   * Raised by {@link #validateClientRestoreImportUrl(String)} when a caller-supplied restore or
+   * import URL is not one this server will fetch - the SSRF and local-file guard.
+   * <p>
+   * A {@link SecurityException} so that HTTP keeps answering it 403, which is what
+   * {@code AbstractServerHttpHandler} does with every security failure. A <i>distinct</i> one so
+   * gRPC can answer {@code PERMISSION_DENIED} rather than the {@code UNAUTHENTICATED} it uses for a
+   * failed login: the caller's credentials are fine and re-sending them will not help, it is the URL
+   * that is refused (issue #7308).
+   */
+  public static class RestoreImportUrlNotAllowedException extends SecurityException {
+    public RestoreImportUrlNotAllowedException(final String message) {
+      super(message);
+    }
+  }
+
+  /**
    * Raised by {@link #triggerBackup(String)} when the database is already being backed up. HTTP
    * answers it with a 409 and gRPC with {@code ABORTED}; both carry this message verbatim.
    */
@@ -724,6 +760,426 @@ public class ServerControlPlane {
 
   public JSONObject profilerLoad(final String fileName) {
     return server.getQueryProfiler().loadSavedRun(fileName);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Restore and import
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * The sink a transport supplies for the progress of a long-running control-plane operation
+   * (issue #7308). The HTTP handler turns each event into an SSE frame on the {@code
+   * HttpServerExchange}; {@code ArcadeDbGrpcAdminService} turns it into a message on a
+   * server-streaming RPC. The operation itself knows about neither.
+   * <p>
+   * <b>Implementations must tolerate concurrent calls.</b> More than one thread reports here: an
+   * import polls {@code ImporterContext} for counters on a timer thread while the importer logs on
+   * the calling thread, and since issue #6086 a parallel restore logs one line per archive entry
+   * from its worker pool.
+   * <p>
+   * There is no {@code onError}: a failure is thrown, not reported, so that a transport cannot
+   * quietly turn one into a success. Each transport decides what a thrown failure looks like on the
+   * wire.
+   */
+  public interface ProgressListener {
+    /** A free-form progress line produced by the underlying restore or import machinery. */
+    void onProgress(String message);
+
+    /**
+     * Structured import counters, sampled once a second while an import runs. Never called by a
+     * restore, which has no equivalent counters to report.
+     */
+    default void onImportCounters(final long parsed, final long vertices, final long edges) {
+      // opt-in: a transport that only renders log lines ignores these
+    }
+
+    /** Discards every event, for a caller that wants only the final outcome. */
+    ProgressListener NOOP = message -> {
+    };
+  }
+
+  /**
+   * Restores a database from a backup archive at {@code url}, under the name {@code databaseName}.
+   * The caller supplies the URL, so it is validated against
+   * {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS} first.
+   *
+   * @throws IllegalArgumentException when the name is invalid or the database already exists
+   * @throws SecurityException        when the URL is not one this server accepts from a client
+   */
+  public void restoreDatabase(final String databaseName, final String url, final ProgressListener listener) {
+    if (databaseName == null || databaseName.isEmpty() || url == null || url.isEmpty())
+      throw new IllegalArgumentException("Usage: restore database <name> <url>");
+
+    validateClientRestoreImportUrl(url);
+
+    // Prevent path traversal via the caller-supplied database name (GHSA-qwgr-2c45-63xx).
+    server.checkDatabaseNameIsValid(databaseName);
+
+    final String dbPath = databaseDirectory(databaseName);
+    if (new File(dbPath).exists())
+      throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
+
+    performRestore(databaseName, dbPath, url, listener);
+  }
+
+  /**
+   * Restores a backup archive that this server produced into {@code targetDatabase}. The archive is
+   * resolved server-side out of the configured auto-backup directory by
+   * {@link #resolveBackupFile}, so the caller never supplies a filesystem path and the resulting
+   * {@code file://} URL needs no SSRF check.
+   * <p>
+   * {@code overwrite} decides what happens when the target already exists. Even with it set, the
+   * existing database is dropped only once the restore into a temporary directory has succeeded
+   * (issue #5027).
+   *
+   * @throws IllegalArgumentException when a name is invalid, or the target exists and {@code overwrite} is false
+   */
+  public void restoreBackup(final String databaseName, final String fileName, final String targetDatabase,
+      final boolean overwrite, final ProgressListener listener) {
+    if (databaseName == null || databaseName.isEmpty() || fileName == null || fileName.isEmpty()
+        || targetDatabase == null || targetDatabase.isEmpty())
+      throw new IllegalArgumentException("Usage: restore backup <database> <fileName> as <targetDatabase>");
+
+    // The target is a caller-supplied name that becomes a directory under SERVER_DATABASE_DIRECTORY,
+    // exactly as 'restore database' name is; validating only the latter left this one able to escape
+    // the directory (issue #7308).
+    server.checkDatabaseNameIsValid(targetDatabase);
+
+    final Path backupFile = resolveBackupFile(databaseName, fileName);
+
+    final String dbPath = databaseDirectory(targetDatabase);
+    if ((server.existsDatabase(targetDatabase) || new File(dbPath).exists()) && !overwrite)
+      throw new IllegalArgumentException(
+          "Database '" + targetDatabase + "' already exists. Enable overwrite to replace it with the backup");
+
+    performRestore(targetDatabase, dbPath, "file://" + backupFile.toAbsolutePath(), listener);
+  }
+
+  /**
+   * Creates {@code databaseName} and imports {@code url} into it in one step, returning the
+   * importer's own final report. The database is created cluster-wide first, so in HA every replica
+   * has it before the import's transactions start replicating; a failure to create it on the
+   * replicas drops the local one again so the operator can retry cleanly.
+   *
+   * @throws SecurityException when the URL is not one this server accepts from a client
+   */
+  public JSONObject importDatabase(final String databaseName, final String url, final ProgressListener listener) {
+    if (databaseName == null || databaseName.isEmpty() || url == null || url.isEmpty())
+      throw new IllegalArgumentException("Usage: import database <name> <url>");
+
+    // Validate BEFORE creating the database so a rejected URL leaves no empty database behind.
+    validateClientRestoreImportUrl(url);
+
+    server.checkDatabaseNameIsValid(databaseName);
+
+    final ServerDatabase createdDb = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+    if (createdDb.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb) {
+      try {
+        haDb.createInReplicas();
+      } catch (final RuntimeException e) {
+        dropQuietly(createdDb, databaseName);
+        throw e;
+      }
+    }
+
+    // A failed import deliberately leaves the created database in place, as both HTTP branches do:
+    // dropping it would destroy whatever was imported before the failure, and the operator needs to
+    // see it to decide whether to retry or to drop it.
+    return runImport(createdDb, databaseName, url, listener);
+  }
+
+  /**
+   * Runs the importer against an already-created database, reporting log lines and, once a second,
+   * the {@code ImporterContext} counters. Reflective because the {@code arcadedb-integration}
+   * module is optional on the server's classpath.
+   */
+  private JSONObject runImport(final Database database, final String databaseName, final String url,
+      final ProgressListener listener) {
+    final Timer progressTimer = new Timer("import-progress-" + databaseName, true);
+    // Published to GET /api/v1/progress/{database}, the console and Studio while the import runs, as
+    // ImportDatabaseStatement does for the SQL form (issue #5376). The HTTP command used to inherit
+    // this only on its synchronous branch, which went through SQL; both transports get it now.
+    final OperationProgress progress = OperationProgressRegistry.instance().register(databaseName, "import database");
+    progress.onProgress("Importing database", 1, 1, 0, -1);
+    try {
+      final Class<?> clazz = Class.forName("com.arcadedb.integration.importer.Importer");
+      // The outermost wrapper (HAReplicatedDatabase in HA mode), so the importer's commits are
+      // intercepted for replication - the same reason ImportDatabaseStatement unwraps before handing
+      // the database to the importer. Outside HA this is the database itself.
+      final Database effectiveDb =
+          database instanceof DatabaseInternal internal ? internal.getWrappedDatabaseInstance() : database;
+      final Object importer = clazz.getConstructor(Database.class, String.class).newInstance(effectiveDb, url);
+      // The same boolean validateClientRestoreImportUrl() already validated this URL against: the fetch inside
+      // SourceDiscovery must agree with this server's own configuration rather than falling back to the static
+      // default, or a per-server override that let the command through would still have the fetch refuse it (#6474).
+      clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(importer, isRestoreImportLocalUrlsAllowed());
+      clazz.getMethod("setLogger", loggerClass()).invoke(importer, progressLogger(listener));
+
+      listener.onProgress("Importing " + databaseName + "...");
+
+      scheduleImportCounters(progressTimer, importerContext(clazz, importer), listener);
+
+      @SuppressWarnings("unchecked")
+      final Map<String, Object> result = (Map<String, Object>) clazz.getMethod("load").invoke(importer);
+
+      final JSONObject report = new JSONObject();
+      if (result != null)
+        for (final Map.Entry<String, Object> e : result.entrySet())
+          report.put(e.getKey(), e.getValue());
+      return report;
+    } catch (final InvocationTargetException e) {
+      throw new CommandExecutionException("Error importing database '" + databaseName + "'", e.getTargetException());
+    } catch (final ReflectiveOperationException e) {
+      throw new CommandExecutionException("Import libs not found in classpath", e);
+    } finally {
+      progressTimer.cancel();
+      OperationProgressRegistry.instance().unregister(progress);
+    }
+  }
+
+  /** The {@code ImporterContext} of a running import, or null when this importer build exposes none. */
+  private static Object importerContext(final Class<?> importerClass, final Object importer) {
+    try {
+      return importerClass.getMethod("getContext").invoke(importer);
+    } catch (final Exception ignored) {
+      return null;
+    }
+  }
+
+  private static void scheduleImportCounters(final Timer timer, final Object context, final ProgressListener listener) {
+    if (context == null)
+      return;
+
+    timer.schedule(new TimerTask() {
+      @Override
+      public void run() {
+        try {
+          final Class<?> ctxClass = context.getClass();
+          final long vertices = ((AtomicLong) ctxClass.getField("createdVertices").get(context)).get();
+          final long edges = ((AtomicLong) ctxClass.getField("createdEdges").get(context)).get();
+          final long parsed = ((AtomicLong) ctxClass.getField("parsed").get(context)).get();
+          if (parsed > 0)
+            listener.onImportCounters(parsed, vertices, edges);
+        } catch (final Exception ignored) {
+          // a counter this importer build does not carry: report nothing rather than fail the import
+        }
+      }
+    }, 1000, 1000);
+  }
+
+  /**
+   * The restore both {@code restore database} and {@code restore backup} run.
+   * <p>
+   * Restores into a temporary sibling directory first and swaps it into place only on success, so a
+   * failed restore leaves an existing target database intact (issue #5027). The temp directory name
+   * carries the reserved-database marker so that, if the process dies mid-restore,
+   * {@code loadDatabases()} skips the orphan at next startup instead of opening it as a user
+   * database.
+   * <p>
+   * The caller is responsible for the pre-restore existence and overwrite checks.
+   */
+  private void performRestore(final String databaseName, final String dbPath, final String url,
+      final ProgressListener listener) {
+    final File finalDir = new File(dbPath);
+    final File tempDir = new File(finalDir.getParentFile(),
+        ArcadeDBServer.RESERVED_DATABASE_PREFIX + "restore-tmp-" + databaseName + "-" + System.nanoTime());
+
+    try {
+      final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
+      final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
+      // The same boolean validateClientRestoreImportUrl() already validated this URL against: the fetch inside
+      // FullRestoreFormat must agree with this server's own configuration rather than falling back to the static
+      // default, or a per-server override that let the command through would still have the fetch refuse it.
+      clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(restorer, isRestoreImportLocalUrlsAllowed());
+      clazz.getMethod("setLogger", loggerClass()).invoke(restorer, progressLogger(listener));
+
+      listener.onProgress("Downloading and restoring " + databaseName + "...");
+      clazz.getMethod("restoreDatabase").invoke(restorer);
+    } catch (final InvocationTargetException e) {
+      FileUtils.deleteRecursively(tempDir);
+      throw new CommandExecutionException("Error restoring database", e.getTargetException());
+    } catch (final ReflectiveOperationException e) {
+      FileUtils.deleteRecursively(tempDir);
+      throw new CommandExecutionException("Restore libs not found in classpath", e);
+    } catch (final RuntimeException e) {
+      FileUtils.deleteRecursively(tempDir);
+      throw e;
+    }
+
+    swapRestoredDatabase(databaseName, finalDir, tempDir);
+    replicateRestoredDatabase(server.getDatabase(databaseName), databaseName);
+    // Completion is the transport's to announce, not this method's: HTTP writes a 'completed' SSE
+    // frame, gRPC a final message with completed=true, and a synchronous caller just returns.
+  }
+
+  /**
+   * Swaps a freshly-restored temporary directory into the final database directory. The existing
+   * target database (if any) is dropped only now that the restore into {@code tempDir} has
+   * succeeded, so a failed restore never destroys the original data (issue #5027).
+   */
+  private void swapRestoredDatabase(final String databaseName, final File finalDir, final File tempDir) {
+    try {
+      // Drop the previous target (HA-aware) BEFORE taking the registry lock and only after a
+      // successful restore into tempDir. In HA mode dropDatabase() round-trips through Raft and the
+      // apply thread itself acquires databasesLock, so holding that lock here would deadlock; only the
+      // pure-local file swap below runs under the lock, matching the snapshot-installer pattern (#4832).
+      if (server.existsDatabase(databaseName))
+        dropDatabaseForRestore(databaseName);
+
+      // Serialise the on-disk swap against concurrent getDatabase / createDatabase so no concurrent
+      // open observes the transient half-swapped directory.
+      synchronized (server.getDatabasesLock()) {
+        if (finalDir.exists())
+          FileUtils.deleteRecursively(finalDir);
+
+        try {
+          Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.ATOMIC_MOVE);
+        } catch (final AtomicMoveNotSupportedException e) {
+          Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        }
+      }
+    } catch (final CommandExecutionException e) {
+      FileUtils.deleteRecursively(tempDir);
+      throw e;
+    } catch (final Exception e) {
+      FileUtils.deleteRecursively(tempDir);
+      throw new CommandExecutionException("Error activating restored database '" + databaseName + "'", e);
+    }
+  }
+
+  /**
+   * Drops the database a restore is about to replace. HA-aware in the same way the {@code drop
+   * database} command is: on a replicated database the drop is submitted through Raft and applied on
+   * every peer including this one, rather than performed locally behind the cluster's back.
+   */
+  private void dropDatabaseForRestore(final String databaseName) {
+    final ServerDatabase database = server.getDatabase(databaseName);
+    if (database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb)
+      haDb.dropInReplicas();
+    else {
+      database.getEmbedded().drop();
+      server.removeDatabase(databaseName);
+    }
+  }
+
+  /**
+   * Post-restore HA hook. In HA mode, submits an install-database Raft entry with
+   * {@code forceSnapshot=true} so every replica pulls the restored files. On any failure, drops the
+   * just-restored local database so the operator can retry cleanly.
+   */
+  private void replicateRestoredDatabase(final ServerDatabase restored, final String databaseName) {
+    if (!(restored.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb))
+      return;
+
+    try {
+      haDb.createInReplicas(true);
+    } catch (final RuntimeException e) {
+      dropQuietly(restored, databaseName);
+      throw e;
+    }
+  }
+
+  /** Best-effort compensating drop after a failed restore or import. Never masks the original failure. */
+  private void dropQuietly(final ServerDatabase database, final String databaseName) {
+    try {
+      database.getEmbedded().drop();
+      server.removeDatabase(databaseName);
+    } catch (final Exception inner) {
+      LogManager.instance().log(this, Level.SEVERE, "Compensating drop for '%s' failed", inner, databaseName);
+    }
+  }
+
+  private String databaseDirectory(final String databaseName) {
+    return server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator
+        + databaseName;
+  }
+
+  private static Class<?> loggerClass() throws ClassNotFoundException {
+    return Class.forName("com.arcadedb.integration.importer.ConsoleLogger");
+  }
+
+  /**
+   * A {@code ConsoleLogger} whose every line goes to {@code listener} instead of stdout. Built
+   * reflectively because {@code arcadedb-integration} is an optional dependency of the server.
+   */
+  private static Object progressLogger(final ProgressListener listener) throws ReflectiveOperationException {
+    final Class<?> listenerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger$LogListener");
+    final Object logListener = Proxy.newProxyInstance(listenerClass.getClassLoader(), new Class<?>[] { listenerClass },
+        (proxy, method, methodArgs) -> {
+          if ("onLogLine".equals(method.getName()))
+            listener.onProgress((String) methodArgs[0]);
+          return null;
+        });
+    return loggerClass().getConstructor(int.class, listenerClass).newInstance(2, logListener);
+  }
+
+  /**
+   * Validates a client-supplied restore/import URL to prevent SSRF and local-file reads. Unless the
+   * operator enables {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS}, only
+   * {@code http}/{@code https} URLs to non-private hosts are accepted; {@code file://} and any
+   * private, loopback, link-local, site-local, multicast, wildcard or unresolvable host is rejected.
+   */
+  public void validateClientRestoreImportUrl(final String url) {
+    if (isRestoreImportLocalUrlsAllowed())
+      return;
+
+    final URI uri;
+    try {
+      uri = URI.create(url.trim());
+    } catch (final IllegalArgumentException e) {
+      throw new RestoreImportUrlNotAllowedException("Invalid restore/import URL");
+    }
+
+    final String scheme = uri.getScheme() == null ? null : uri.getScheme().toLowerCase(Locale.ENGLISH);
+    if (scheme == null)
+      throw new RestoreImportUrlNotAllowedException("Restore/import URL must use the 'http' or 'https' scheme");
+
+    if (!"http".equals(scheme) && !"https".equals(scheme))
+      throw new RestoreImportUrlNotAllowedException("Restore/import URL scheme '" + scheme + "' is not allowed. Enable '"
+          + GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getKey()
+          + "' to permit local-file and non-HTTP URLs");
+
+    final String host = uri.getHost();
+    if (host == null || host.isBlank())
+      throw new RestoreImportUrlNotAllowedException("Restore/import URL host is missing");
+
+    if (isBlockedRestoreImportHost(host))
+      throw new RestoreImportUrlNotAllowedException("Restore/import from private, loopback or link-local hosts is blocked. Enable '"
+          + GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getKey() + "' to override");
+  }
+
+  /**
+   * The single source of truth for {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS} on this server
+   * instance, read from the server's own (possibly per-instance-overridden) {@link ContextConfiguration} rather than
+   * the static default. {@link #validateClientRestoreImportUrl} and {@link #performRestore} must agree on this value:
+   * the pre-check decides whether to accept the command at all, and the actual fetch inside {@code FullRestoreFormat}
+   * decides whether to follow it, and letting them read from two different configuration sources would let one permit
+   * what the other refuses on the very same server.
+   */
+  public boolean isRestoreImportLocalUrlsAllowed() {
+    return server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS);
+  }
+
+  /**
+   * Returns true when {@code host} resolves to (or is) an address in a range that must not be reached
+   * from a client-supplied restore/import URL. Every resolved address is checked so a hostname that
+   * resolves to a mix of public and private addresses is still rejected. An unresolvable host is
+   * treated as blocked.
+   * <p>
+   * Delegates to {@link IPAddressBlocklist#defaultReservedRanges()}, the single shared implementation also used
+   * by {@code ImportSecurityValidator.isBlockedAddress} in the integration module and by {@code LOAD CSV}. A
+   * previous version duplicated this logic ad-hoc; see {@code ImportSecurityValidator.isBlockedAddress} for why
+   * that was the root cause of GHSA-67m7-7w7g-mpmh.
+   */
+  public static boolean isBlockedRestoreImportHost(final String host) {
+    try {
+      for (final InetAddress addr : InetAddress.getAllByName(host))
+        if (RESERVED_ADDRESSES.isBlocked(addr))
+          return true;
+      return false;
+    } catch (final UnknownHostException e) {
+      return true;
+    }
   }
 
   // ---------------------------------------------------------------------------------------------

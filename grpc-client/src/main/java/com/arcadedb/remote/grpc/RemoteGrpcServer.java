@@ -37,6 +37,8 @@ import com.arcadedb.server.grpc.GetBackupConfigResponse;
 import com.arcadedb.server.grpc.GetServerEventsRequest;
 import com.arcadedb.server.grpc.GetServerEventsResponse;
 import com.arcadedb.server.grpc.HealthRequest;
+import com.arcadedb.server.grpc.ImportDatabaseRequest;
+import com.arcadedb.server.grpc.ImportProgress;
 import com.arcadedb.server.grpc.ListBackupsRequest;
 import com.arcadedb.server.grpc.ListBackupsResponse;
 import com.arcadedb.server.grpc.ListDatabasesRequest;
@@ -53,6 +55,9 @@ import com.arcadedb.server.grpc.ProfilerStartRequest;
 import com.arcadedb.server.grpc.ProfilerStopRequest;
 import com.arcadedb.server.grpc.ReadyRequest;
 import com.arcadedb.server.grpc.ReadyResponse;
+import com.arcadedb.server.grpc.RestoreBackupRequest;
+import com.arcadedb.server.grpc.RestoreDatabaseRequest;
+import com.arcadedb.server.grpc.RestoreProgress;
 import com.arcadedb.server.grpc.SetBackupConfigRequest;
 import com.arcadedb.server.grpc.SetDatabaseSettingRequest;
 import com.arcadedb.server.grpc.SetServerSettingRequest;
@@ -74,6 +79,7 @@ import io.grpc.netty.shaded.io.netty.channel.EventLoopGroup;
 import io.grpc.netty.shaded.io.netty.channel.nio.NioEventLoopGroup;
 import io.grpc.netty.shaded.io.netty.channel.socket.nio.NioSocketChannel;
 import io.grpc.stub.AbstractStub;
+import io.grpc.stub.BlockingClientCall;
 
 import javax.annotation.PreDestroy;
 import java.net.InetAddress;
@@ -83,6 +89,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * Server-scope gRPC client: the {@code RemoteServer} of this transport, one method per RPC of
@@ -91,8 +98,9 @@ import java.util.concurrent.TimeUnit;
  * It covers the discovery and database-lifecycle RPCs, and, since issue #7304, the rest of the
  * control plane: settings, backup, users, the query profiler, server events, shutdown, cluster
  * disconnect, and the two container probes. What it does not cover is what the proto does not carry
- * either - restore and import (#7308), groups and API tokens (#7309), progress and sessions
- * (#7310).
+ * either - groups and API tokens (#7309), progress and sessions (#7310). Restore and import came
+ * with #7308 and are the only methods here that stream: they block until the operation finishes,
+ * handing each progress message to a callback on the way.
  * <p>
  * Every method carries the credentials this instance was built with in the request body, except
  * {@link #health()} and {@link #ready()}: their requests have no credentials field, and the server
@@ -512,6 +520,102 @@ public class RemoteGrpcServer implements AutoCloseable {
    */
   public ReadyResponse ready() {
     return call("ready", stub -> stub.ready(ReadyRequest.newBuilder().build()));
+  }
+
+  // ------------------------------------------------------------------------------------
+  // Restore and import (server-streaming, issue #7308)
+  // ------------------------------------------------------------------------------------
+
+  /**
+   * Restores a backup archive this server produced into {@code targetDatabase}, blocking until the
+   * restore finishes and handing every progress message to {@code onProgress} on the way. The
+   * archive is named, not uploaded: the server resolves {@code fileName} inside {@code database}'s
+   * own backup directory.
+   * <p>
+   * {@code overwrite} replaces an existing target. Without it an existing target fails the call, and
+   * with it the existing database is dropped only once the restore has succeeded, so a failed
+   * restore leaves it intact.
+   *
+   * @param onProgress called on this thread as each message arrives, or null to ignore progress
+   *
+   * @throws RuntimeException the failure the server raised, mapped by {@link GrpcClientErrorMapper}.
+   *                          A restore that fails ends the stream with an error status, so a normal
+   *                          return means the restore completed.
+   */
+  public void restoreBackup(final String database, final String fileName, final String targetDatabase,
+      final boolean overwrite, final Consumer<RestoreProgress> onProgress) {
+    drain("restore backup", onProgress,
+        stub -> stub.restoreBackup(RestoreBackupRequest.newBuilder().setCredentials(buildCredentials())
+            .setDatabase(database).setFileName(fileName).setTargetDatabase(targetDatabase).setOverwrite(overwrite)
+            .build()));
+  }
+
+  /**
+   * Creates {@code database} by restoring the archive at {@code url} into it, blocking until the
+   * restore finishes.
+   * <p>
+   * The server fetches the URL, so unless the operator enabled
+   * {@code arcadedb.server.restoreImportAllowLocalUrls} only http/https URLs to non-private hosts
+   * are accepted; anything else fails the call rather than being fetched.
+   *
+   * @param onProgress called on this thread as each message arrives, or null to ignore progress
+   */
+  public void restoreDatabase(final String database, final String url, final Consumer<RestoreProgress> onProgress) {
+    drain("restore database", onProgress,
+        stub -> stub.restoreDatabase(RestoreDatabaseRequest.newBuilder().setCredentials(buildCredentials())
+            .setDatabase(database).setUrl(url).build()));
+  }
+
+  /**
+   * Creates {@code database} and imports {@code url} into it in one step, blocking until the import
+   * finishes and returning the importer's own final report.
+   * <p>
+   * Progress messages carry either a log line or the importer's running counters, never both.
+   *
+   * @param onProgress called on this thread as each message arrives, or null to ignore progress
+   *
+   * @return the importer's report, or an empty document when this server sent none
+   */
+  public JSONObject importDatabase(final String database, final String url, final Consumer<ImportProgress> onProgress) {
+    final ImportProgress last = drain("import database", onProgress,
+        stub -> stub.importDatabase(ImportDatabaseRequest.newBuilder().setCredentials(buildCredentials())
+            .setDatabase(database).setUrl(url).build()));
+    return last == null || last.getResultJson().isEmpty() ? new JSONObject() : new JSONObject(last.getResultJson());
+  }
+
+  /**
+   * Opens a server-streaming admin call, feeds every message to {@code onProgress} and returns the
+   * last one - the {@code completed} message, since the server sends exactly one and sends it last.
+   * <p>
+   * The deadline is deliberately <b>not</b> the default admin one: a restore or an import runs for
+   * as long as the data takes, and a call that outlives a 30-second deadline is the normal case, not
+   * a fault. The operation's own end is what ends the call.
+   */
+  private <T> T drain(final String operation, final Consumer<T> onProgress,
+      final StreamingAdminCall<T> body) {
+    T last = null;
+    try {
+      final BlockingClientCall<?, T> stream = body.run(adminServiceBlockingV2Stub());
+      while (stream.hasNext()) {
+        last = stream.read();
+        if (onProgress != null)
+          onProgress.accept(last);
+      }
+      return last;
+    } catch (final StatusException e) {
+      final RuntimeException mapped = GrpcClientErrorMapper.toException(e);
+      if (mapped.getMessage() == null || mapped.getMessage().isBlank())
+        throw new RemoteException("Failed to " + operation, e);
+      throw mapped;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RemoteException("Interrupted while waiting for '" + operation + "' to finish", e);
+    }
+  }
+
+  @FunctionalInterface
+  private interface StreamingAdminCall<T> {
+    BlockingClientCall<?, T> run(ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub stub) throws StatusException;
   }
 
   private static JSONObject profilerDocument(final ProfilerDocumentResponse response) {

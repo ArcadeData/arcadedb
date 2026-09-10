@@ -526,6 +526,90 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   }
 
   // ------------------------------------------------------------------------------------
+  // Restore and import
+  // ------------------------------------------------------------------------------------
+
+  /**
+   * Restores a backup archive this server produced into a database, reporting progress as it goes
+   * (issue #7308). The gRPC counterpart of {@code restore backup <db> <file> as <target>} over HTTP,
+   * which streams the same progress as Server-Sent Events.
+   * <p>
+   * Server-streaming rather than unary because a restore takes as long as it takes: a unary call
+   * would hold the connection open for its whole duration with nothing to show, and a client could
+   * not tell a slow restore from a hung one.
+   */
+  @Override
+  public void restoreBackup(final RestoreBackupRequest req, final StreamObserver<RestoreProgress> resp) {
+    GrpcProgressStream.stream(resp, ArcadeDbGrpcAdminService::restoreLine, null,
+        report -> RestoreProgress.newBuilder().setCompleted(true)
+            .setMessage(req.getTargetDatabase() + " restored successfully").build(),
+        listener -> {
+          requireServerAdmin(authenticate(req.getCredentials()));
+          requireLeader("RestoreBackup");
+
+          controlPlane.restoreBackup(req.getDatabase(), req.getFileName(), req.getTargetDatabase(), req.getOverwrite(),
+              listener);
+          return null;
+        },
+        e -> toStatus("restoreBackup", e));
+  }
+
+  /**
+   * Creates a database by restoring the archive at a URL into it, reporting progress as it goes.
+   * The gRPC counterpart of {@code restore database <name> <url>}.
+   * <p>
+   * The URL is the caller's, so it goes through the same SSRF and local-file guard the HTTP command
+   * applies - {@code ServerControlPlane.validateClientRestoreImportUrl}, which this transport reaches
+   * through the shared implementation rather than by repeating the check here.
+   */
+  @Override
+  public void restoreDatabase(final RestoreDatabaseRequest req, final StreamObserver<RestoreProgress> resp) {
+    GrpcProgressStream.stream(resp, ArcadeDbGrpcAdminService::restoreLine, null,
+        report -> RestoreProgress.newBuilder().setCompleted(true)
+            .setMessage(req.getDatabase() + " restored successfully").build(),
+        listener -> {
+          requireServerAdmin(authenticate(req.getCredentials()));
+          requireLeader("RestoreDatabase");
+
+          controlPlane.restoreDatabase(req.getDatabase(), req.getUrl(), listener);
+          return null;
+        },
+        e -> toStatus("restoreDatabase", e));
+  }
+
+  /**
+   * Creates a database and imports a source URL into it in one step, reporting the importer's log
+   * lines and its running counters. The gRPC counterpart of {@code import database <name> <url>}.
+   */
+  @Override
+  public void importDatabase(final ImportDatabaseRequest req, final StreamObserver<ImportProgress> resp) {
+    GrpcProgressStream.stream(resp,
+        message -> ImportProgress.newBuilder().setMessage(message).build(),
+        (parsed, vertices, edges) -> ImportProgress.newBuilder().setParsed(parsed).setVertices(vertices)
+            .setEdges(edges).build(),
+        report -> {
+          final ImportProgress.Builder completed = ImportProgress.newBuilder().setCompleted(true)
+              .setMessage(req.getDatabase() + " imported successfully");
+          // The importer's own report, verbatim: its keys are the importer's and change with it, so
+          // they travel as JSON rather than as proto fields that would have to be revised in step.
+          if (report instanceof JSONObject document)
+            completed.setResultJson(document.toString());
+          return completed.build();
+        },
+        listener -> {
+          requireServerAdmin(authenticate(req.getCredentials()));
+          requireLeader("ImportDatabase");
+
+          return controlPlane.importDatabase(req.getDatabase(), req.getUrl(), listener);
+        },
+        e -> toStatus("importDatabase", e));
+  }
+
+  private static RestoreProgress restoreLine(final String message) {
+    return RestoreProgress.newBuilder().setMessage(message).build();
+  }
+
+  // ------------------------------------------------------------------------------------
   // Server lifecycle and cluster
   // ------------------------------------------------------------------------------------
 
@@ -630,6 +714,13 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       return new StatusException(mapped.getStatus(), mapped.getTrailers());
     }
     if (e instanceof AdminAuthorizationException)
+      return Status.PERMISSION_DENIED.withDescription(e.getMessage()).asException();
+    // A restore/import URL this server refuses to fetch. Checked before the plain SecurityException
+    // arm below because it is a subtype of it, and because it is emphatically not an authentication
+    // failure: the caller is authenticated, and re-sending credentials will not make the URL
+    // acceptable. PERMISSION_DENIED says that; UNAUTHENTICATED would send the caller to fix the wrong
+    // thing (issue #7308).
+    if (e instanceof ServerControlPlane.RestoreImportUrlNotAllowedException)
       return Status.PERMISSION_DENIED.withDescription(e.getMessage()).asException();
     if (e instanceof SecurityException)
       return Status.UNAUTHENTICATED.withDescription(e.getMessage()).asException();

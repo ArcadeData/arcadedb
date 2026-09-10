@@ -148,6 +148,17 @@
             <scope>test</scope>
             <type>test-jar</type>
         </dependency>
+        <!--
+            The restore and import client methods (issue #7308) drive a real restore against the test
+            server, which reaches the integration module reflectively. Test scope only: nothing in
+            src/main/java touches it.
+        -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-integration</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+        </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
