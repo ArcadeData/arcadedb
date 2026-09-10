@@ -190,3 +190,30 @@ That is a weaker version of the check and is recorded as such.
 ## Follow-up issues
 
 - **#7416** - `RemoteGrpcDatabase` caches its data-plane stubs on a channel a server restart replaces.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7417
+
+## Review cycles
+
+### Cycle 1 - `876f991` - clean approval
+
+The `claude` reviewer posted one PR comment and no inline comments or formal review. It confirmed the
+root-cause analysis, verified independently that `e2e` and `load-tests` call none of the three stub
+factories directly (so the "purely additive" claim holds), and agreed that the cached-stub/channel gap
+is correctly scoped out to #7416.
+
+Nothing actionable was raised. The three non-blocking notes and what was done with each:
+
+| Note | Disposition |
+|---|---|
+| `Issue7374GrpcDatabaseCredentialsTest` relies on `DEAD_HTTP_PORT = 59374` staying unbound in CI | Skipped, and the reviewer agreed it is reasonable. Breaking it needs a real ArcadeDB server bound to that exact port answering 401/403 - every other outcome, an unbound port included, is swallowed by `requestClusterConfiguration()`. The constant already carries the comment saying so. Removing the risk entirely would mean not constructing a `RemoteDatabase` at all, which is the object under test |
+| The Javadoc is more verbose than the norm elsewhere in `grpc-client` | Skipped on the reviewer's own recommendation ("I'd leave it as-is"): it cross-links #7310/#7320/#7374, which is what makes the two-principal split legible |
+| The `blockingStub`/`asyncStub` channel-lifetime gap | Already filed as #7416 before the PR opened, and named under **Known gaps** in the PR body |
+
+No commits were needed to address review feedback.
+
+## Final state
+
+`clean-approval` after 1 cycle. Merge remains the developer's.
