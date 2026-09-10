@@ -350,6 +350,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * Both signals are checked because neither alone is reliable: the flag is what {@code PageManager} leaves behind,
    * but a layer in between may have cleared it while wrapping the exception; the cause chain carries the
    * {@link InterruptedIOException} in that case, but not when the read was refused by a check of the flag alone.
+   * Either way the flag is set when this throws, so the cancellation is observable both ways.
    *
    * @param failure the exception the read failed with
    * @param ordinal the ordinal being read, for the message; -1 when the caller reads by offset rather than ordinal
@@ -357,8 +358,13 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * @throws CancellationException when the failure is an interruption
    */
   static void abortIfInterrupted(final Exception failure, final int ordinal) {
-    if (!Thread.currentThread().isInterrupted() && !causedByInterrupt(failure))
-      return;
+    if (!Thread.currentThread().isInterrupted()) {
+      if (!causedByInterrupt(failure))
+        return;
+      // A caught InterruptedException has cleared the flag as part of being thrown; put it back so a caller that
+      // keys off the flag rather than off this exception's type still sees the cancellation (PR #7433 review).
+      Thread.currentThread().interrupt();
+    }
     final CancellationException cancelled = new CancellationException(
         "Vector read interrupted" + (ordinal >= 0 ? " (ordinal=" + ordinal + ")" : "") + ": " + failure.getMessage());
     cancelled.initCause(failure);

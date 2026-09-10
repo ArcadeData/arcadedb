@@ -163,6 +163,58 @@ class Issue7432GraphImporterVectorGraphTest {
   }
 
   /**
+   * The per-index loop: a second vector index on a type the import never touched keeps its own pending vectors
+   * and is not built (it is not this import's business), and an index declared on a PARENT type is built when the
+   * import writes only to a subtype. The importer matches on the type each bucket index names, and the subtype's
+   * bucket index names the subtype - pinned here because it is what makes the match correct without a walk of the
+   * hierarchy (PR #7433 review).
+   */
+  @Test
+  void aParentTypeIndexIsBuiltAndAnUntouchedTypeIndexIsLeftAlone() throws Exception {
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 600_000);
+    database.command("sqlscript", """
+        CREATE VERTEX TYPE PAPER EXTENDS WORK;
+        CREATE VERTEX TYPE NOTE;
+        CREATE PROPERTY NOTE.embedding ARRAY_OF_FLOATS;
+        CREATE INDEX ON NOTE (embedding) LSM_VECTOR METADATA { "dimensions": %d, "similarity": "COSINE" };
+        """.formatted(DIMENSIONS));
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++)
+        database.newVertex("NOTE").set("embedding", embedding(i)).save();
+    });
+    final LSMVectorIndex noteIndex = (LSMVectorIndex) database.getSchema().getType("NOTE")
+        .getPolymorphicIndexByProperties("embedding").getIndexesOnBuckets()[0];
+    assertThat(noteIndex.getStats().get("mutationsSinceRebuild")).as("precondition: NOTE has work pending").isEqualTo(5L);
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("PAPER", new JsonlRowSource(DATA_DIR + "/vertices.jsonl"), v -> {
+          v.id("id");
+          v.longProperty("id", "id");
+          v.floatArrayProperty("embedding", "embedding");
+        })
+        .build()) {
+      importer.run();
+      assertThat(importer.getVertexCount()).isEqualTo(VERTICES);
+    }
+
+    // The index on WORK covers PAPER's bucket through its own bucket index, which names PAPER as its type.
+    final int paperBucket = database.getSchema().getType("PAPER").getBuckets(false).get(0).getFileId();
+    final LSMVectorIndex paperIndex = (LSMVectorIndex) Arrays.stream(database.getSchema().getType("PAPER")
+            .getPolymorphicIndexByProperties("embedding").getIndexesOnBuckets())
+        .filter(i -> i.getAssociatedBucketId() == paperBucket).findFirst().orElseThrow();
+    assertThat(paperIndex.getTypeName()).as("the shape the type match relies on: the subtype's bucket index names the subtype")
+        .isEqualTo("PAPER");
+    assertThat(paperIndex.getStats().get("graphRebuildCount"))
+        .as("the parent-type index the import wrote into through the subtype is built").isEqualTo(1L);
+    assertThat(paperIndex.getStats().get("graphNodeCount")).isEqualTo((long) VERTICES);
+    assertThat(paperIndex.getStats().get("mutationsSinceRebuild")).isZero();
+
+    assertThat(noteIndex.getStats().get("graphRebuildCount"))
+        .as("an index on a type the import never touched is left to its own rebuild").isZero();
+    assertThat(noteIndex.getStats().get("mutationsSinceRebuild")).isEqualTo(5L);
+  }
+
+  /**
    * The JSON form of the opt-out, for a loader that keeps the database open and prefers the index's background
    * rebuild. The load leaves its vectors pending and the index unsuspended, and nothing has been built on the
    * importer's thread.

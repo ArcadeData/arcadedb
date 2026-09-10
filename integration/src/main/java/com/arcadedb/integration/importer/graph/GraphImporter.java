@@ -70,7 +70,11 @@ import java.util.logging.Level;
  * <p>
  * The speculative background maintenance of the database's indexes (the vector index's inactivity rebuild) is
  * suspended for the whole of {@link #run()}, not only while one of its batches is open: the gap between the two
- * passes is where it used to fire and then run alongside the whole edge pass (issue #7432).
+ * passes is where it used to fire and then run alongside the whole edge pass (issue #7432). The suspension covers
+ * EVERY index of the database, as a {@link GraphBatch}'s does, and lasts for the load plus the graph build at the
+ * end of it - half an hour at a few million vectors. An unrelated writer sharing the same open database has that
+ * index's automatic rebuild deferred for that long; its writes stay searchable through the delta scan meanwhile.
+ * The importer is meant for a database being loaded, not one serving other writers at the same time.
  * <p>
  * Usage:
  * <pre>
@@ -1051,6 +1055,10 @@ public class GraphImporter implements AutoCloseable {
    * that is not.
    */
   private void buildVectorGraphs() {
+    // Matched on the type each bucket index names. A vector index declared on a parent type covers the buckets
+    // of every subtype through one bucket index per bucket, and each of those names the SUBTYPE that owns the
+    // bucket, so an import that writes only to a subtype matches its bucket index here without walking the
+    // hierarchy (PR #7433 review; pinned by Issue7432GraphImporterVectorGraphTest).
     final Set<String> touchedTypes = new HashSet<>(typeStates.keySet());
     for (final EdgeCollector ec : edgeCollectors.values())
       touchedTypes.add(ec.edgeTypeName);
@@ -1060,13 +1068,11 @@ public class GraphImporter implements AutoCloseable {
         continue;
 
       final long t = System.currentTimeMillis();
-      LogManager.instance().log(this, Level.INFO, "Building vector graph for index '%s' on type '%s'...",
-          vectorIndex.getName(), vectorIndex.getTypeName());
       if (vectorIndex.buildVectorGraphIfPending(null))
-        LogManager.instance().log(this, Level.INFO, "  Vector graph for index '%s' built in %,d ms",
-            vectorIndex.getName(), System.currentTimeMillis() - t);
+        LogManager.instance().log(this, Level.INFO, "  Vector graph for index '%s' on type '%s' built in %,d ms",
+            vectorIndex.getName(), vectorIndex.getTypeName(), System.currentTimeMillis() - t);
       else
-        LogManager.instance().log(this, Level.INFO, "  Vector graph for index '%s' already current, nothing to build",
+        LogManager.instance().log(this, Level.FINE, "  Vector graph for index '%s' already current, nothing to build",
             vectorIndex.getName());
     }
   }
