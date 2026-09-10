@@ -18,21 +18,24 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 /**
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * {@code POST /server/groups}: creates or replaces one group. The operation - normalizing the group
+ * document and refreshing the permissions cached by every open database it applies to - lives in
+ * {@link ServerControlPlane#saveGroup} so the gRPC {@code SaveGroup} RPC does both halves too
+ * (issue #7309).
  */
 public class PostGroupHandler extends AbstractServerHttpHandler {
+  private final ServerControlPlane controlPlane;
 
   public PostGroupHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.controlPlane = new ServerControlPlane(httpServer.getServer());
   }
 
   @Override
@@ -44,29 +47,12 @@ public class PostGroupHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
 
     final String database = payload.getString("database", "");
-    if (database.isBlank())
-      return new ExecutionResponse(400, new JSONObject().put("error", "Database name is required").toString());
-
     final String name = payload.getString("name", "");
-    if (name.isBlank())
-      return new ExecutionResponse(400, new JSONObject().put("error", "Group name is required").toString());
 
-    // Build group config
-    final JSONObject groupConfig = new JSONObject();
-    groupConfig.put("resultSetLimit", payload.getLong("resultSetLimit", -1L));
-    groupConfig.put("readTimeout", payload.getLong("readTimeout", -1L));
-    groupConfig.put("access", payload.has("access") ? payload.getJSONArray("access") : new JSONArray());
-    groupConfig.put("types", payload.has("types") ? payload.getJSONObject("types") : new JSONObject());
-
-    final ServerSecurity security = httpServer.getServer().getSecurity();
-    security.saveGroup(database, name, groupConfig);
-
-    // Refresh permissions on affected open databases
-    for (final String dbName : httpServer.getServer().getDatabaseNames()) {
-      if ("*".equals(database) || dbName.equals(database)) {
-        final DatabaseInternal db = (DatabaseInternal) httpServer.getServer().getDatabase(dbName);
-        security.updateSchema(db);
-      }
+    try {
+      controlPlane.saveGroup(database, name, payload);
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
     }
 
     final JSONObject response = new JSONObject();
