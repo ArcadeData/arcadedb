@@ -187,6 +187,44 @@ class RaftStreamedQueryBookmarkIT extends BaseRaftHATest {
     }
   }
 
+  /**
+   * The response-commit listener fires whatever the outcome, which the eager emission it replaces did not: a
+   * request answered 400 used to carry no bookmark at all. The widening is deliberate and matches what the write
+   * endpoints already do (issue #5862) - the value means the same thing on a refused request, namely what this
+   * server had applied when it answered - so it is locked in here rather than left to be flipped by accident.
+   * <p>
+   * A malformed {@code X-ArcadeDB-Read-After} is the reachable 400: it is refused inside the very block that
+   * registers the listener.
+   */
+  @Test
+  void aRefusedRequestCarriesTheBookmarkToo() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    httpCommand(leaderIndex, "CREATE DOCUMENT TYPE " + TYPE_NAME + "Refused IF NOT EXISTS");
+    httpCommand(leaderIndex, "INSERT INTO " + TYPE_NAME + "Refused SET id = 'r1'");
+
+    final JSONObject payload = new JSONObject().put("language", "sql")
+        .put("command", "SELECT FROM " + TYPE_NAME + "Refused");
+    final HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(baseUrl(leaderIndex) + "/query/" + getDatabaseName()))
+        .timeout(HTTP_TIMEOUT)
+        .header("Authorization", basicAuth())
+        .header("Content-Type", "application/json")
+        .header("X-ArcadeDB-Read-After", "not-a-number")
+        .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
+        .build();
+
+    final HttpResponse<String> response = newClient().send(request, HttpResponse.BodyHandlers.ofString());
+    assertThat(response.statusCode())
+        .as("a malformed bookmark header is a client error, not a 500: %s", response.body())
+        .isEqualTo(400);
+    assertThat(bookmarkOf(response))
+        .as("a refused request still tells the client what this server had applied, which is a valid barrier "
+            + "for its next read")
+        .isGreaterThanOrEqualTo(0);
+  }
+
   private long bookmarkOf(final HttpResponse<?> response) {
     return response.headers().firstValue(BOOKMARK).map(Long::parseLong).orElse(-1L);
   }
