@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.serializer.json.JSONArray;
@@ -25,13 +26,77 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.StringJoiner;
 
 /**
  * Shared utilities for TimeSeries HTTP handlers.
  */
 final class TimeSeriesHandlerUtils {
 
+  /**
+   * Longest caller-supplied value echoed back in the refusal below. The payload is already bounded by the HTTP
+   * body-size limit, so this only keeps a long-but-legal string out of an error body that exists to be read.
+   */
+  private static final int MAX_ECHOED_VALUE_LENGTH = 64;
+
   private TimeSeriesHandlerUtils() {
+  }
+
+  /**
+   * Resolves the aggregation function named by one {@code aggregation.requests[]} entry, matching the
+   * {@link AggregationType} names case-insensitively after trimming.
+   * <p>
+   * Both time-series HTTP endpoints route through this so the same bad request gets the same answer on either.
+   * It exists because {@code AggregationType.valueOf} is exact: a lower-cased {@code avg} - the spelling a
+   * hand-written client is most likely to send - used to throw an {@link IllegalArgumentException} the generic
+   * handler mapper renders as "Cannot execute command", with the JVM's own "No enum constant ..." text in the
+   * {@code detail} field that {@code buildErrorBody} conceals in production mode. Accepting the lower-cased
+   * spelling only widens what is accepted, so no request that used to work stops working, and it matches the SQL
+   * push-down planner, which has always matched the same five functions on a lower-cased function name.
+   * <p>
+   * The message is built from {@link AggregationType#values()} rather than a literal list so a new constant cannot
+   * leave it stale. The caller renders it on whatever surface that endpoint answers errors on - a 400 body or a
+   * Grafana error frame - which is why this signals with an exception rather than choosing one itself.
+   *
+   * @param request the aggregation request object, expected to carry a {@code type} member
+   * @param index   position of this entry in {@code aggregation.requests}, used to name the field in the message
+   *
+   * @throws IllegalArgumentException if {@code type} is absent, null, not a string, or matches no aggregation type
+   */
+  static AggregationType resolveAggregationType(final JSONObject request, final int index) {
+    final Object rawType = request.opt("type");
+    if (rawType instanceof String name) {
+      final String trimmed = name.trim();
+      if (!trimmed.isEmpty()) {
+        try {
+          return AggregationType.valueOf(trimmed.toUpperCase(Locale.ENGLISH));
+        } catch (final IllegalArgumentException e) {
+          throw unknownAggregationType(index, rawType, e);
+        }
+      }
+    }
+    throw unknownAggregationType(index, rawType, null);
+  }
+
+  /**
+   * Refusal of an aggregation function name, worded identically on both time-series HTTP endpoints so the two
+   * surfaces report the same thing. Names the field, lists every accepted value, and echoes what arrived.
+   */
+  private static IllegalArgumentException unknownAggregationType(final int index, final Object rawType,
+      final Throwable cause) {
+    final StringJoiner accepted = new StringJoiner(", ");
+    for (final AggregationType type : AggregationType.values())
+      accepted.add(type.name());
+
+    return new IllegalArgumentException(
+        "'aggregation.requests[" + index + "].type' is required and must be one of " + accepted
+            + (rawType == null ? "" : ": received '" + truncate(String.valueOf(rawType)) + "'"), cause);
+  }
+
+  private static String truncate(final String value) {
+    return value.length() <= MAX_ECHOED_VALUE_LENGTH ? value
+        : value.substring(0, MAX_ECHOED_VALUE_LENGTH) + "...";
   }
 
   static TagFilter buildTagFilter(final JSONObject tagsJson, final List<ColumnDefinition> columns) {
