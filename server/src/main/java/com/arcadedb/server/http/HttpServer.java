@@ -47,6 +47,9 @@ import com.arcadedb.server.http.handler.PostBatchHandler;
 import com.arcadedb.server.http.handler.PostBeginHandler;
 import com.arcadedb.server.http.handler.PostGroupHandler;
 import com.arcadedb.server.http.handler.PostUserHandler;
+import com.arcadedb.server.http.handler.PostVectorFullTextSearchHandler;
+import com.arcadedb.server.http.handler.PostVectorHybridSearchHandler;
+import com.arcadedb.server.http.handler.PostVectorSearchHandler;
 import com.arcadedb.server.http.handler.PutUserHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
@@ -234,6 +237,9 @@ public class HttpServer implements ServerPlugin {
         .get("/sessions", new GetSessionsHandler(this))
         .post("/query/{database}", new PostQueryHandler(this))
         .post("/rollback/{database}", new PostRollbackHandler(this))
+        .post("/vector/{database}/search", new PostVectorSearchHandler(this))
+        .post("/vector/{database}/hybrid", new PostVectorHybridSearchHandler(this))
+        .post("/vector/{database}/fulltext", new PostVectorFullTextSearchHandler(this))
         .get("/server", new GetServerHandler(this))
         .post("/server", new PostServerCommandHandler(this))
         .get("/ready", new GetReadyHandler(this))

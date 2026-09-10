@@ -88,6 +88,7 @@ import com.google.protobuf.Timestamp;
 import io.grpc.Context;
 import io.grpc.Metadata;
 import io.grpc.Status;
+import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
@@ -5066,6 +5067,63 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } catch (Exception ignore) {
       }
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Vector, hybrid and full-text retrieval (issue #7306)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * kNN search over a dense {@code LSM_VECTOR} or sparse {@code LSM_SPARSE_VECTOR} index.
+   * <p>
+   * Vector search had no wire surface at all on either protocol before #7306. These three handlers close that on
+   * the gRPC side, and they close it with the <i>same</i> implementation the HTTP {@code /api/v1/vector/*} routes
+   * and the MCP search tools use - see {@link GrpcVectorSearch} - so the asymmetry the issue is about is not
+   * re-created one protocol lower down.
+   */
+  @Override
+  public void vectorSearch(final VectorSearchRequest request, final StreamObserver<VectorSearchResponse> resp) {
+    GrpcUnaryCall.respond(resp,
+        () -> GrpcVectorSearch.search(getDatabase(request.getDatabase(), request.getCredentials()), request),
+        e -> toSearchStatus("VectorSearch", e));
+  }
+
+  /**
+   * Fused vector + full-text + graph-expansion search. Same sharing as {@link #vectorSearch}.
+   */
+  @Override
+  public void hybridSearch(final HybridSearchRequest request, final StreamObserver<HybridSearchResponse> resp) {
+    GrpcUnaryCall.respond(resp,
+        () -> GrpcVectorSearch.hybridSearch(getDatabase(request.getDatabase(), request.getCredentials()), request),
+        e -> toSearchStatus("HybridSearch", e));
+  }
+
+  /**
+   * Full-text search over a {@code FULL_TEXT} index. Same sharing as {@link #vectorSearch}.
+   */
+  @Override
+  public void fullTextSearch(final FullTextSearchRequest request, final StreamObserver<FullTextSearchResponse> resp) {
+    GrpcUnaryCall.respond(resp,
+        () -> GrpcVectorSearch.fullTextSearch(getDatabase(request.getDatabase(), request.getCredentials()), request),
+        e -> toSearchStatus("FullTextSearch", e));
+  }
+
+  /**
+   * Maps a search failure to the status the client receives. Every bound the shared implementation enforces is
+   * reported as an {@link IllegalArgumentException} naming the offending argument, so it must reach the client as
+   * INVALID_ARGUMENT with that message intact - a caller that crossed a documented limit has to be able to tell
+   * that from a server fault, exactly as the HTTP surface distinguishes 400 from 500.
+   */
+  private static StatusException toSearchStatus(final String operation, final Exception e) {
+    if (e instanceof final StatusException se)
+      return se;
+    if (e instanceof final StatusRuntimeException sre)
+      return new StatusException(sre.getStatus(), sre.getTrailers());
+    if (e instanceof IllegalArgumentException)
+      return Status.INVALID_ARGUMENT.withDescription(operation + ": " + e.getMessage()).asException();
+    if (e instanceof SecurityException || e instanceof ServerSecurityException)
+      return Status.PERMISSION_DENIED.withDescription(operation + ": " + e.getMessage()).asException();
+    return Status.INTERNAL.withDescription(operation + ": " + e.getMessage()).asException();
   }
 
   // Helper methods

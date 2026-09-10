@@ -29,7 +29,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.UnsupportedEncodingException;
+import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
@@ -41,7 +41,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
       final JSONObject payload)
-      throws UnsupportedEncodingException {
+      throws IOException {
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
     try {
@@ -65,6 +65,12 @@ public class GetQueryHandler extends AbstractQueryHandler {
       final String limitPar = getQueryParameter(exchange, "limit");
       profile.addDeserializationNanos(System.nanoTime() - deserializationStart);
 
+      // Negotiated up front so the serializer check refuses an unstreamable serializer before any query runs.
+      final boolean streaming = isNdJsonRequested(exchange);
+      if (streaming)
+        ndJsonRowSerializer(serializer, includeTypeHints);
+      boolean streamed = false;
+
       final JSONObject response = new JSONObject();
 
       ResultSet qResult = null;
@@ -81,13 +87,23 @@ public class GetQueryHandler extends AbstractQueryHandler {
         profile.addEngineNanos(System.nanoTime() - engineStart);
 
         final long serializationStart = System.nanoTime();
-        // ... and above all of them the hard ceiling, which no caller can widen: a response that would exceed
-        // it is refused with 413 rather than truncated (issue #5719).
-        final SerializationOutcome outcome = serializeResultSetBounded(database, serializer, limit, getMaxResultRows(),
-            response, qResult, includeTypeHints);
-        reportLimits(response, limit, outcome);
-        logIfTruncatedByDefault(database.getName(), text, limit, requestLimit, planLimit, outcome);
-        profile.addSerializationNanos(System.nanoTime() - serializationStart);
+        if (streaming) {
+          // The response is written here, row by row, and the method returns null below so the request pipeline
+          // does not send a second one (issue #7306).
+          final SerializationOutcome outcome = streamResultSetAsNdJson(exchange, database, serializer, limit,
+              getMaxResultRows(), qResult, includeTypeHints);
+          logIfTruncatedByDefault(database.getName(), text, limit, requestLimit, planLimit, outcome);
+          profile.addSerializationNanos(System.nanoTime() - serializationStart);
+          streamed = true;
+        } else {
+          // ... and above all of them the hard ceiling, which no caller can widen: a response that would exceed
+          // it is refused with 413 rather than truncated (issue #5719).
+          final SerializationOutcome outcome = serializeResultSetBounded(database, serializer, limit, getMaxResultRows(),
+              response, qResult, includeTypeHints);
+          reportLimits(response, limit, outcome);
+          logIfTruncatedByDefault(database.getName(), text, limit, requestLimit, planLimit, outcome);
+          profile.addSerializationNanos(System.nanoTime() - serializationStart);
+        }
 
       } finally {
         try {
@@ -104,7 +120,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
         }
       }
 
-      return new ExecutionResponse(200, response.toString());
+      return streamed ? null : new ExecutionResponse(200, response.toString());
     } finally {
       QueryProfile.popCurrent();
     }
@@ -132,5 +148,15 @@ public class GetQueryHandler extends AbstractQueryHandler {
   @Override
   protected boolean requiresTransaction() {
     return false;
+  }
+
+  /**
+   * A buffered GET query is short enough to answer on the IO thread, which is what this handler has always done.
+   * A streamed one is not: it writes blocking output for as long as the client takes to read it, and blocking an
+   * IO thread starves every other connection the server is serving on it.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
+    return isNdJsonRequested(exchange);
   }
 }

@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.mcp.tools;
+package com.arcadedb.query.search;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
@@ -43,11 +43,13 @@ import java.util.TreeSet;
 /**
  * Shared vector-retrieval leg. Resolves and validates a dense or sparse vector index against
  * caller-supplied arguments and produces the read-only SQL statement plus bound parameters that
- * fetch its ranked neighbors. Both the standalone vector search tool and the hybrid search tool
- * build their vector leg here, so a given malformed argument produces one error message rather
- * than two divergent ones.
+ * fetch its ranked neighbors. Every surface that exposes vector retrieval - the HTTP
+ * {@code /api/v1/vector/*} routes, the gRPC vector RPCs and the MCP {@code vector_search} /
+ * {@code hybrid_search} tools - builds its vector leg here, so a given malformed argument produces
+ * one error message rather than several divergent ones, and the bounds below are the only bounds
+ * any of them enforce.
  */
-public final class MCPVectorLeg {
+public final class VectorLeg {
   public static final int DEFAULT_K             = 10;
   public static final int MAX_K                 = 1_000;
   /**
@@ -71,7 +73,7 @@ public final class MCPVectorLeg {
   private record SparseQuery(int[] indices, float[] values) {
   }
 
-  private MCPVectorLeg() {
+  private VectorLeg() {
   }
 
   /**
@@ -80,7 +82,7 @@ public final class MCPVectorLeg {
    * reported as an argument fault regardless of whether the database also resolves.
    */
   public static void validateArguments(final JSONObject args, final String indexNameField) {
-    MCPToolUtils.requireString(args, indexNameField);
+    VectorArgs.requireString(args, indexNameField);
     final boolean sparse = args.getBoolean("sparse", false);
     final Integer efSearch = args.has("efSearch") ? args.getInt("efSearch") : null;
     if (efSearch != null && (efSearch < 1 || efSearch > MAX_EF_SEARCH))
@@ -103,7 +105,7 @@ public final class MCPVectorLeg {
   public static VectorLegQuery build(final Database database, final JSONObject args, final String indexNameField,
       final int limit) {
     validateArguments(args, indexNameField);
-    final String indexName = MCPToolUtils.requireString(args, indexNameField);
+    final String indexName = VectorArgs.requireString(args, indexNameField);
     final boolean sparse = args.getBoolean("sparse", false);
     final Integer efSearch = args.has("efSearch") ? args.getInt("efSearch") : null;
 

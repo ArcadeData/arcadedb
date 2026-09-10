@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.query.search.VectorLeg;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -49,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The bound cases deliberately name indexes that do not exist in the fixture ({@code Person[name]},
  * {@code Doc[embedding]}). Every check under test runs before the index is resolved - {@code FullTextSearchTool}
  * validates 'limit' ahead of {@code resolveIndex}, and {@code VectorSearchTool} calls
- * {@code MCPVectorLeg.validateArguments} ahead of {@code resolveDatabase} - so a test that reached the lookup would
+ * {@code VectorLeg.validateArguments} ahead of {@code resolveDatabase} - so a test that reached the lookup would
  * be reporting an addressing error rather than the bound. Asserting on the message is what keeps that distinction
  * honest: if a check ever moved behind index resolution, these tests would fail rather than pass for a new reason.
  *
@@ -113,7 +114,7 @@ class Issue6837ToolInputBoundsFollowUpTest extends BaseGraphServerTest {
         .put("queryVector", new JSONArray().put(1.0f))
         .put("efSearch", Integer.MAX_VALUE), config))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("'efSearch' must be between 1 and " + MCPVectorLeg.MAX_EF_SEARCH);
+        .hasMessageContaining("'efSearch' must be between 1 and " + VectorLeg.MAX_EF_SEARCH);
   }
 
   @Test

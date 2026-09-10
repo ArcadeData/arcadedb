@@ -132,6 +132,18 @@ public final class SpecBuilders {
     return schema;
   }
 
+  /**
+   * A floating-point property. Distinct from {@link #integer(String)} because a generated client derives the
+   * Java/TypeScript type from it: a vector component or a similarity score documented as {@code integer} tells
+   * a client to round the value it is about to send.
+   */
+  public static Schema<Number> number(final String description) {
+    final Schema<Number> schema = new Schema<>();
+    schema.setType("number");
+    schema.setDescription(description);
+    return schema;
+  }
+
   public static Schema<Boolean> bool(final String description) {
     final Schema<Boolean> schema = new Schema<>();
     schema.setType("boolean");
