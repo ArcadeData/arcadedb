@@ -21,28 +21,134 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerPlugin;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.IOException;
 import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Exercises the real boot scans against interrupted snapshot installs (issue #7129). */
 class Issue7129PendingSnapshotStartupTest {
   @TempDir
   Path root;
 
+  @Test
+  void failedRuntimeSwapReopensWhilePendingMarkerStillExists() throws Exception {
+    final Path live = root.resolve("databases").resolve("Universe");
+    createDatabase(live, "old");
+    final ArcadeDBServer server = newServer();
+    try {
+      server.start();
+      // A missing staging directory makes phase 2 fail after the live files have moved to backup.
+      final Path staged = live.resolve(".snapshot-new");
+      final Path marker = live.resolve(".snapshot-pending");
+      Files.writeString(marker, "");
+
+      assertThatThrownBy(() -> SnapshotInstaller.swapAndReopen("Universe", live, staged,
+          live.resolve(".snapshot-backup"), marker, server))
+          .isInstanceOf(IOException.class).hasMessageContaining("Snapshot swap failed");
+      assertThat(marker).exists();
+      assertThat(server.existsDatabase("Universe")).as("rollback reopens the original database").isTrue();
+      assertValue(server, "Universe", "old");
+    } finally {
+      server.stop();
+    }
+  }
+
   @ParameterizedTest
   @ValueSource(booleans = { false, true })
+  void defaultDatabaseMustDeferPendingDirectory(final boolean pending) throws Exception {
+    final Path live = root.resolve("databases").resolve("Universe");
+    createDatabase(live, "old");
+    if (pending)
+      Files.writeString(live.resolve(".snapshot-pending"), "");
+    final ArcadeDBServer server = newServer();
+    server.getConfiguration().setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Universe[root]");
+    try {
+      server.start();
+      assertThat(server.existsDatabase("Universe")).isEqualTo(!pending);
+      if (!pending)
+        assertValue(server, "Universe", "old");
+    } finally {
+      server.stop();
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = { false, true })
+  void directLoadDuringStartupMustDeferPendingDirectory(final boolean pending) throws Exception {
+    final Path live = root.resolve("databases").resolve("Universe");
+    createDatabase(live, "old");
+    if (pending)
+      Files.writeString(live.resolve(".snapshot-pending"), "");
+    final ArcadeDBServer server = newServer(StartupLoadProbe.class.getName());
+    // HA stays disabled so the marker survives until the AFTER_HTTP_ON probe observes the startup window.
+    StartupLoadProbe.probe = running -> {
+      assertThat(running.getStatus()).isEqualTo(ArcadeDBServer.STATUS.STARTING);
+      if (pending)
+        assertThatThrownBy(() -> assertValue(running, "Universe", "old"))
+            .as("a concurrent direct load must not open a pending database during STARTING")
+            .isInstanceOf(DatabaseNotAvailableException.class);
+      else
+        assertValue(running, "Universe", "old");
+    };
+    StartupLoadProbe.executed = false;
+    try {
+      server.start();
+      assertThat(StartupLoadProbe.executed).isTrue();
+      assertThat(server.existsDatabase("Universe")).isEqualTo(!pending);
+    } finally {
+      server.stop();
+      StartupLoadProbe.probe = null;
+    }
+  }
+
+  /** Runs an independent database lookup while HTTP is on and the server is still STARTING. */
+  public static class StartupLoadProbe implements ServerPlugin {
+    static Consumer<ArcadeDBServer> probe;
+    static boolean executed;
+    private ArcadeDBServer server;
+
+    @Override
+    public void configure(final ArcadeDBServer server, final ContextConfiguration configuration) {
+      this.server = server;
+    }
+
+    @Override
+    public PluginInstallationPriority getInstallationPriority() {
+      return PluginInstallationPriority.AFTER_HTTP_ON;
+    }
+
+    @Override
+    public void startService() {
+      try (final var executor = Executors.newSingleThreadExecutor()) {
+        executor.submit(() -> probe.accept(server)).get(10, TimeUnit.SECONDS);
+        executed = true;
+      } catch (final Exception e) {
+        throw new RuntimeException(e);
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @CsvSource({ "false,false", "true,false", "false,true", "true,true" })
   @Timeout(90)
-  void haStartupRecoversBeforeSecondBootScan(final boolean completeDownload) throws Exception {
+  void haStartupRecoversBeforeSecondBootScan(final boolean completeDownload, final boolean defaultDatabase) throws Exception {
     final Path live = root.resolve("databases").resolve("Universe");
     createDatabase(live.resolve(".snapshot-backup"), "old");
     createDatabase(live.resolve(".snapshot-new"), "new");
@@ -58,6 +164,8 @@ class Issue7129PendingSnapshotStartupTest {
     }
     final ArcadeDBServer server = newServer();
     server.getConfiguration().setValue(GlobalConfiguration.HA_ENABLED, true);
+    if (defaultDatabase)
+      server.getConfiguration().setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Universe[root]");
     server.getConfiguration().setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:" + raftPort + ":" + httpPort);
     server.getConfiguration().setValue(GlobalConfiguration.HA_RAFT_PORT, raftPort);
     server.getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
@@ -154,7 +262,12 @@ class Issue7129PendingSnapshotStartupTest {
   }
 
   private ArcadeDBServer newServer() {
+    return newServer("");
+  }
+
+  private ArcadeDBServer newServer(final String plugins) {
     final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.SERVER_PLUGINS, plugins);
     config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, root.toString());
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, root.resolve("databases").toString());
     config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "TestPassword7129");
