@@ -2300,6 +2300,34 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Builds the vector graph now if, and only if, the index has vectors the graph does not cover yet.
+   * <p>
+   * The end of a bulk load, done synchronously. {@link #buildVectorGraphNow(GraphBuildCallback)} always rebuilds;
+   * a loader that touched a type carrying several vector indexes, or one whose index was already current, would
+   * pay a full O(N) build for nothing. The other trigger a load has is the inactivity timer, and that one is
+   * asynchronous: it fires a window after the load, on a background thread, and a caller that closes the database
+   * once the load returns - which is what every loader does - cancels it and loses the build (issue #7432, where a
+   * 20-minute build over 4.2M vectors was cancelled five seconds after "Import complete"). A load is not complete
+   * until the index it wrote to is queryable at index speed, so {@code GraphImporter} calls this before returning.
+   * <p>
+   * Pending work is what {@link #put} and the reopen gap detection count in {@code mutationsSinceSerialize}: the
+   * vectors the delta scan is serving in place of the graph. A count of zero means the graph already covers every
+   * vector this index holds, and nothing is built.
+   *
+   * @param graphCallback optional progress callback invoked during graph construction/persistence; null logs the
+   *                      build's progress the way an automatic rebuild does
+   *
+   * @return true when a build ran, false when the graph was already current
+   */
+  public boolean buildVectorGraphIfPending(final GraphBuildCallback graphCallback) {
+    checkIsValid();
+    if (mutationsSinceSerialize.get() == 0)
+      return false;
+    buildVectorGraphNow(graphCallback);
+    return true;
+  }
+
+  /**
    * Build (or rebuild) the vector graph immediately with an optional progress callback.
    * This forces a full rebuild even if the mutation threshold has not been reached yet.
    *
@@ -3642,9 +3670,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.INFO, "Built graph for index: " + indexName);
 
     } catch (final CancellationException e) {
-      // releaseBackgroundResources() is this exception's only source (issue #5872): it sets valid = false
-      // before ever cancelling the insertion task, so isValid() is always false by the time this runs. Expected
-      // shutdown, not a build failure: no SEVERE log, and IndexException would misreport it as one.
+      // releaseBackgroundResources() is this exception's only source, by two routes: it cancels the insertion task
+      // directly (issue #5872), and its pool shutdownNow() interrupts the workers, whose next vector read then
+      // throws this rather than feeding the builder a sentinel (issue #7432). Either way it sets valid = false
+      // first, so isValid() is always false by the time this runs. Expected shutdown, not a build failure: no
+      // SEVERE log, and IndexException would misreport it as one.
       LogManager.instance().log(this, Level.INFO, "Graph build for index %s cancelled: index is closing", indexName);
       throw e;
     } catch (final Exception e) {
@@ -5328,6 +5358,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
     } catch (final Exception e) {
+      // An interrupted thread has been told to stop, not handed a bad vector (issue #7432): see
+      // ArcadePageVectorValues.abortIfInterrupted() for why this must not be logged and swallowed like one.
+      ArcadePageVectorValues.abortIfInterrupted(e, -1);
       LogManager.instance().log(this, Level.WARNING, "Error reading vector from offset %d: %s", fileOffset,
           e.getMessage());
       return null;
