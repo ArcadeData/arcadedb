@@ -135,7 +135,8 @@ class CypherCarriedPathRelationshipUniquenessIssue7366Test extends TestHelper {
   /** A path a previous {@code MATCH} bound is no more one of the next clause's relationships than a created one is. */
   @Test
   void aPathBoundByAnEarlierMatchDoesNotBlockTheFollowingMatchEither() {
-    database.transaction(() -> database.command("opencypher", CREATE_NAMED_PATH.replace("p0 = ", "")));
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (:A {id: 1}) -[:E]-> (:B {klist: [], k7: 'q'}) <-[:R]- (:C {k4: 'f', k8: true}) -[:E2]-> (:D {klist: []})"));
 
     assertThat(queryColumn("""
         MATCH p1 = (:A)-[:E]->(n0:B)<-[:R]-(:C)-[:E2]->(:D)
