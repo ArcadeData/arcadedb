@@ -86,8 +86,10 @@ class CypherCarriedPathRelationshipUniquenessIssue7366Test extends TestHelper {
    */
   @Test
   void aMatchStraightAfterTheCreateThatBoundThePathIsEnoughToShowIt() {
-    assertThat(commandColumn(CREATE_NAMED_PATH + MATCH_BACK_OVER_THE_PATH.replace("(n1)", "(n0)")
-        .replace("n1.k7", "n0.k7"), "binding")).containsExactly("C/D/q");
+    assertThat(commandColumn(CREATE_NAMED_PATH + """
+        MATCH (n5:D {klist: []}) <-[r4]- (n4 {k4: 'f', k8: true}) -[]-> (n0)
+        RETURN labels(n4)[0] + '/' + labels(n5)[0] + '/' + n0.k7 AS binding""", "binding"))
+        .containsExactly("C/D/q");
   }
 
   /**
@@ -191,7 +193,10 @@ class CypherCarriedPathRelationshipUniquenessIssue7366Test extends TestHelper {
         .containsExactly("D");
   }
 
-  /** {@code command} rather than {@code query}: the reporter's queries write before they read. */
+  /**
+   * {@code command} rather than {@code query}: the reporter's queries write before they read. The transaction
+   * is opened here rather than at the call sites, since every one of them needs it and none of them nests.
+   */
   private List<Object> commandColumn(final String cypher, final String column) {
     final List<Object> values = new ArrayList<>();
     database.transaction(() -> {
