@@ -27,6 +27,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
@@ -472,7 +473,10 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       return new JSONObject();
     try {
       return new JSONObject(json);
-    } catch (final RuntimeException e) {
+    } catch (final JSONException e) {
+      // Narrow deliberately: JSONObject(String) wraps a parse failure in exactly this type, and a
+      // broader catch here would also turn a bug in this method into a 'your JSON is malformed'
+      // answer, sending the caller after a document that is fine.
       throw new IllegalArgumentException("'" + fieldName + "' is not a valid JSON document: " + e.getMessage());
     }
   }

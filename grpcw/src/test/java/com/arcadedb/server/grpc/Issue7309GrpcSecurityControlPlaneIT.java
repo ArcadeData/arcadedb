@@ -54,8 +54,11 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  * {@code ServerSecurity} itself. A test that asserted only on the RPC's own response would pass
  * against a handler that built a convincing answer and wrote nothing.
  * <p>
- * The channel is loopback, so {@code CreateApiToken}'s transport gate permits the mint here. The
- * refusal side of that gate is {@link Issue7309ApiTokenSecrecyTest}'s subject.
+ * The channel is loopback, so {@code CreateApiToken}'s transport gate permits the mint here - which
+ * makes the successful mint a positive control for the gate as well as for the RPC. The refusal side
+ * is {@link #createApiTokenMintsOnlyOverAProtectedTransport}, which drives the verdict into the
+ * handler directly because every channel an in-process test can open is loopback, and
+ * {@link GrpcTransportSecurityInterceptorTest}, which covers how that verdict is reached.
  */
 class Issue7309GrpcSecurityControlPlaneIT extends BaseGraphServerTest {
 

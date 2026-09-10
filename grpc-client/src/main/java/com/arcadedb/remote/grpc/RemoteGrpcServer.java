@@ -44,7 +44,6 @@ import com.arcadedb.server.grpc.GetServerEventsResponse;
 import com.arcadedb.server.grpc.HealthRequest;
 import com.arcadedb.server.grpc.ListApiTokensRequest;
 import com.arcadedb.server.grpc.ListBackupsRequest;
-import com.arcadedb.server.grpc.ListBackupsResponse;
 import com.arcadedb.server.grpc.ListDatabasesRequest;
 import com.arcadedb.server.grpc.ListDatabasesResponse;
 import com.arcadedb.server.grpc.ListGroupsRequest;
