@@ -1029,6 +1029,12 @@ service ArcadeDbAdminService {
   rpc GetServerEvents   (GetServerEventsRequest)   returns (GetServerEventsResponse);
   rpc Shutdown          (ShutdownRequest)          returns (ShutdownResponse);
   rpc DisconnectCluster (DisconnectClusterRequest) returns (DisconnectClusterResponse);
+  // The other half of the cluster pair (issue #7400). A thin adapter over the same
+  // ServerControlPlane.connectCluster the HTTP `connect cluster` verb calls, so the two transports
+  // cannot answer the verb differently. The current HA stack does not implement a client-initiated
+  // join, so today the shared implementation refuses and this answers FAILED_PRECONDITION - see
+  // issue #7401.
+  rpc ConnectCluster    (ConnectClusterRequest)    returns (ConnectClusterResponse);
 
   // Read-only administrative view of the server's open HTTP authentication sessions. gRPC has no
   // session of its own - every admin RPC authenticates from the credentials on the request body - so
@@ -1548,6 +1554,16 @@ message DisconnectClusterRequest {
   DatabaseCredentials credentials = 1;
 }
 message DisconnectClusterResponse {}
+
+message ConnectClusterRequest {
+  DatabaseCredentials credentials = 1;
+  // The `<host>:<port>` of the server to join, as the HTTP verb's `connect cluster <address>`
+  // argument. Not validated here: the HTTP verb accepts an empty argument too and the shared
+  // implementation refuses before reading it, so rejecting it on this transport alone would make
+  // the two disagree on the same input.
+  string server_address = 2;
+}
+message ConnectClusterResponse {}
 
 // -----------------------------------------------------------------------------
 // Control plane: discovery (issue #7310)
