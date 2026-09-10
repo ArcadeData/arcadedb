@@ -59,6 +59,7 @@ import com.arcadedb.remote.RemoteImmutableVertex;
 import com.arcadedb.remote.RemoteSchema;
 import com.arcadedb.remote.RemoteTransactionExplicitLock;
 import com.arcadedb.remote.grpc.utils.ProtoUtils;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
@@ -81,6 +82,8 @@ import com.arcadedb.server.grpc.ExecuteQueryRequest;
 import com.arcadedb.server.grpc.ExecuteQueryResponse;
 import com.arcadedb.server.grpc.FullTextSearchRequest;
 import com.arcadedb.server.grpc.FullTextSearchResponse;
+import com.arcadedb.server.grpc.GetProgressRequest;
+import com.arcadedb.server.grpc.GetProgressResponse;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcValue;
 import com.arcadedb.server.grpc.HybridSearchRequest;
@@ -88,6 +91,7 @@ import com.arcadedb.server.grpc.HybridSearchResponse;
 import com.arcadedb.server.grpc.InsertChunk;
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertRequest;
+import com.arcadedb.server.grpc.OperationProgressInfo;
 import com.arcadedb.server.grpc.InsertResponse;
 import com.arcadedb.server.grpc.InsertSummary;
 import com.arcadedb.server.grpc.LookupByRidRequest;
@@ -202,6 +206,65 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   @Override
   public RemoteSchema getSchema() {
     return schema;
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Overridden to poll over gRPC. The inherited {@code RemoteDatabase.getProgress()} issues
+   * {@code GET /api/v1/progress/{database}} against the HTTP port - the port a gRPC-only deployment does
+   * not open - so on such a server the inherited method could only fail to connect (issue #7310). Nothing
+   * about it said so: it compiled, it existed, and it asked for a listener that was not there.
+   * <p>
+   * The returned documents carry the same keys the HTTP route emits, so a caller already reading
+   * {@code RemoteDatabase.getProgress()} needs no change to run over gRPC.
+   * <p>
+   * The request carries THIS database's credentials, not the {@link RemoteGrpcServer}'s: the two are
+   * constructed separately and a database opened by a scoped user may share a channel with a server built
+   * for another account.
+   */
+  @Override
+  public List<JSONObject> getProgress() {
+    checkDatabaseIsOpen();
+
+    final GetProgressRequest request = GetProgressRequest.newBuilder().setCredentials(buildCredentials())
+        .setDatabase(getName()).build();
+
+    try {
+      // The stub is built per call, not cached: withDeadlineAfter fixes an ABSOLUTE deadline the moment it
+      // is applied, so a stub held across calls would carry a deadline that has already passed by the second
+      // poll. Building it also re-resolves the channel, so a server restarted through start() is honoured.
+      // The cost is a few field copies on a shared channel, which is nothing next to the round trip.
+      final GetProgressResponse response = callUnary("GetProgress",
+          () -> remoteGrpcServer.newAdminBlockingStub(getTimeout()).getProgress(request));
+
+      final List<JSONObject> operations = new ArrayList<>(response.getOperationsCount());
+      for (final OperationProgressInfo info : response.getOperationsList())
+        operations.add(toProgressJson(info));
+      return operations;
+    } catch (final StatusRuntimeException | StatusException e) {
+      handleGrpcException(e); // rethrows mapped domain exception
+      throw new IllegalStateException("unreachable");
+    }
+  }
+
+  /**
+   * One progress entry as the JSON document {@code RemoteDatabase.getProgress()} contracts to return -
+   * the same keys, in the same units, that {@code OperationProgress.toJSON()} writes on the HTTP route.
+   */
+  private static JSONObject toProgressJson(final OperationProgressInfo info) {
+    return new JSONObject()
+        .put("id", info.getId())
+        .put("database", info.getDatabase())
+        .put("operation", info.getOperation())
+        .put("stepName", info.getStepName())
+        .put("stepIndex", info.getStepIndex())
+        .put("totalSteps", info.getTotalSteps())
+        .put("done", info.getDone())
+        .put("total", info.getTotal())
+        .put("percentage", info.getPercentage())
+        .put("startedOn", info.getStartedOn())
+        .put("elapsedMs", info.getElapsedMs());
   }
 
   @Override

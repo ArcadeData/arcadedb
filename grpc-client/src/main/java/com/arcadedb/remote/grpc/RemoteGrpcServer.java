@@ -34,6 +34,7 @@ import com.arcadedb.server.grpc.DisconnectClusterRequest;
 import com.arcadedb.server.grpc.DropDatabaseRequest;
 import com.arcadedb.server.grpc.GetBackupConfigRequest;
 import com.arcadedb.server.grpc.GetBackupConfigResponse;
+import com.arcadedb.server.grpc.GetProgressRequest;
 import com.arcadedb.server.grpc.GetServerEventsRequest;
 import com.arcadedb.server.grpc.GetServerEventsResponse;
 import com.arcadedb.server.grpc.HealthRequest;
@@ -41,8 +42,10 @@ import com.arcadedb.server.grpc.ListBackupsRequest;
 import com.arcadedb.server.grpc.ListBackupsResponse;
 import com.arcadedb.server.grpc.ListDatabasesRequest;
 import com.arcadedb.server.grpc.ListDatabasesResponse;
+import com.arcadedb.server.grpc.ListSessionsRequest;
 import com.arcadedb.server.grpc.ListUsersRequest;
 import com.arcadedb.server.grpc.OpenDatabaseRequest;
+import com.arcadedb.server.grpc.OperationProgressInfo;
 import com.arcadedb.server.grpc.ProfilerDocumentResponse;
 import com.arcadedb.server.grpc.ProfilerListRequest;
 import com.arcadedb.server.grpc.ProfilerLoadRequest;
@@ -55,6 +58,7 @@ import com.arcadedb.server.grpc.ReadyRequest;
 import com.arcadedb.server.grpc.ReadyResponse;
 import com.arcadedb.server.grpc.SetBackupConfigRequest;
 import com.arcadedb.server.grpc.SetDatabaseSettingRequest;
+import com.arcadedb.server.grpc.SessionInfo;
 import com.arcadedb.server.grpc.SetServerSettingRequest;
 import com.arcadedb.server.grpc.ShutdownRequest;
 import com.arcadedb.server.grpc.TriggerBackupRequest;
@@ -90,9 +94,9 @@ import java.util.concurrent.TimeUnit;
  * <p>
  * It covers the discovery and database-lifecycle RPCs, and, since issue #7304, the rest of the
  * control plane: settings, backup, users, the query profiler, server events, shutdown, cluster
- * disconnect, and the two container probes. What it does not cover is what the proto does not carry
- * either - restore and import (#7308), groups and API tokens (#7309), progress and sessions
- * (#7310).
+ * disconnect, and the two container probes. Issue #7310 added the last two discovery reads,
+ * {@link #getProgress(String)} and {@link #listSessions()}. What it does not cover is what the proto
+ * does not carry either - restore and import (#7308), groups and API tokens (#7309).
  * <p>
  * Every method carries the credentials this instance was built with in the request body, except
  * {@link #health()} and {@link #ready()}: their requests have no credentials field, and the server
@@ -233,6 +237,21 @@ public class RemoteGrpcServer implements AutoCloseable {
         .withCallCredentials(createCredentials())
         .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
         .withCompression("gzip");
+  }
+
+  /**
+   * A fresh admin stub on this instance's channel, under {@code timeout} milliseconds of deadline.
+   * <p>
+   * Exists for {@link RemoteGrpcDatabase}, which shares this server's channel but not necessarily its
+   * account - the two are constructed with separate credentials and a scoped database user against a root
+   * server is a supported combination - so it must put its OWN credentials in the request body rather than
+   * borrow {@link #getProgress(String)}'s (issue #7310). The cached {@link #adminServiceBlockingV2Stub()}
+   * is this instance's own and is not shared for that reason.
+   */
+  public ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub newAdminBlockingStub(final int timeout) {
+    return ArcadeDbAdminServiceGrpc.newBlockingV2Stub(channel())
+        .withCallCredentials(createCredentials())
+        .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS);
   }
 
   private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub adminServiceBlockingV2Stub() {
@@ -497,6 +516,36 @@ public class RemoteGrpcServer implements AutoCloseable {
   public void disconnectCluster() {
     call("disconnect cluster", stub -> stub.disconnectCluster(
         DisconnectClusterRequest.newBuilder().setCredentials(buildCredentials()).build()));
+  }
+
+  /**
+   * The long-running maintenance operations the server is running for {@code database}, oldest first, or
+   * an empty list when it is running none. Safe to poll: the server answers from a lock-free in-memory
+   * snapshot without touching the database.
+   * <p>
+   * Authorized per database rather than root-only, as {@code GET /api/v1/progress/{database}} is, so the
+   * account that started an operation can watch it. Reports what THIS node is doing: the registry behind
+   * it is process-local, so in a cluster each node is polled for its own work.
+   * <p>
+   * {@link RemoteGrpcDatabase#getProgress()} is the database-scoped form of this call, and returns the
+   * same operations as JSON documents.
+   */
+  public List<OperationProgressInfo> getProgress(final String database) {
+    return call("get progress", stub -> stub.getProgress(
+        GetProgressRequest.newBuilder().setCredentials(buildCredentials()).setDatabase(database).build()))
+        .getOperationsList();
+  }
+
+  /**
+   * The server's open HTTP authentication sessions - root only, as {@code GET /api/v1/sessions} is.
+   * <p>
+   * A read of server state, not a session API: gRPC authenticates every call from the credentials on the
+   * request body and has no session of its own, so there is no login or logout to pair with this. Empty
+   * on a server running without the HTTP listener, which has no HTTP sessions to report.
+   */
+  public List<SessionInfo> listSessions() {
+    return call("list sessions", stub -> stub.listSessions(
+        ListSessionsRequest.newBuilder().setCredentials(buildCredentials()).build())).getSessionsList();
   }
 
   /**

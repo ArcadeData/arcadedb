@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -33,6 +34,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -44,6 +46,7 @@ import io.grpc.stub.StreamObserver;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -257,6 +260,48 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * the HTTP {@code create user} command takes. The deprecated {@code role} field is ignored: the
    * security model has no server-wide role, only groups held per database.
    */
+  /**
+   * The long-running maintenance operations this server is running for one database, the RPC equivalent
+   * of {@code GET /api/v1/progress/{database}} (issue #7310). Answered from the lock-free progress
+   * registry, so a client may poll it as often as it likes without touching the database or the operation
+   * it is watching.
+   * <p>
+   * Gated like its HTTP counterpart and not like the rest of this service: {@code GetProgressHandler} runs
+   * {@code checkAuthorizationOnDatabase}, so any authenticated account may poll a database it is granted.
+   * Making it root-only would be a stricter gate than HTTP applies and would put the progress of an
+   * operation out of reach of the very user who started it.
+   * <p>
+   * An unauthorized caller is refused rather than answered empty. Unlike {@link #getDatabaseInfo}, which
+   * hides existence behind NOT_FOUND, the progress registry discloses nothing about a database that is
+   * not running an operation - the empty answer is the same for a database that does not exist - so the
+   * refusal costs no secrecy and matches the 403 the HTTP route returns.
+   */
+  @Override
+  public void getProgress(final GetProgressRequest req, final StreamObserver<GetProgressResponse> resp) {
+    respond(resp, "getProgress", () -> {
+      final ServerSecurityUser user = authenticate(req.getCredentials());
+
+      final String database = req.getDatabase();
+
+      // ORDER MATTERS, and it is the order checkAuthorizationOnDatabase applies: a missing name is
+      // rejected BEFORE authorization is evaluated. Reversed, an empty name would be answered by
+      // whatever canAccessToDatabase("") happens to return - PERMISSION_DENIED for a scoped account,
+      // and for a wildcard-granted one a fall-through to the registry - instead of the INVALID_ARGUMENT
+      // that says what the caller actually got wrong.
+      if (database.isEmpty())
+        throw new IllegalArgumentException("Database parameter is null");
+
+      if (user != null && !user.canAccessToDatabase(database))
+        throw new ServerSecurityException(
+            "User '" + user.getName() + "' is not allowed to access database '" + database + "'");
+
+      final GetProgressResponse.Builder builder = GetProgressResponse.newBuilder();
+      for (final OperationProgress operation : controlPlane.getProgress(database))
+        builder.addOperations(toProgressInfo(operation));
+      return builder.build();
+    });
+  }
+
   @Override
   public void createUser(final CreateUserRequest req, final StreamObserver<CreateUserResponse> resp) {
     respond(resp, "createUser", () -> {
@@ -571,6 +616,34 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     });
   }
 
+  /**
+   * The server's open HTTP authentication sessions, the RPC equivalent of {@code GET /api/v1/sessions}
+   * (issue #7310), root-only as {@code GetSessionsHandler}'s {@code checkRootUser} makes it.
+   * <p>
+   * This is not a session API. gRPC has no session of its own - every admin RPC authenticates from the
+   * credentials on the request body - so there is no {@code Login}/{@code Logout} to go with it. What it
+   * is, is an administrative read of server state like any other, and without it an operator driving the
+   * server over gRPC alone cannot see who is logged in over HTTP.
+   * <p>
+   * The token is returned because {@code GET /api/v1/sessions} returns it, to the same root principal.
+   * Redacting it here alone would make the two administrative views disagree while leaving the HTTP
+   * disclosure exactly as it was.
+   */
+  @Override
+  public void listSessions(final ListSessionsRequest req, final StreamObserver<ListSessionsResponse> resp) {
+    respond(resp, "listSessions", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      // Empty on a server running without the HTTP listener: no HTTP listener, no HTTP sessions.
+      final List<HttpAuthSession> sessions = controlPlane.listHttpSessions();
+
+      final ListSessionsResponse.Builder builder = ListSessionsResponse.newBuilder();
+      for (final HttpAuthSession session : sessions)
+        builder.addSessions(toSessionInfo(session));
+      return builder.setCount(sessions.size()).build();
+    });
+  }
+
   // ------------------------------------------------------------------------------------
   // Probes
   // ------------------------------------------------------------------------------------
@@ -603,6 +676,60 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   // ------------------------------------------------------------------------------------
   // Helpers
   // ------------------------------------------------------------------------------------
+
+  /**
+   * One progress entry as the wire message, field for field the document {@code OperationProgress.toJSON()}
+   * emits over HTTP.
+   * <p>
+   * Each volatile is read ONCE, and {@code percentage} is computed from the values already read rather than
+   * through {@code getPercentage()}, which would re-read {@code done} and {@code total}: that is what keeps
+   * the three mutually consistent inside one message, the same rule {@code toJSON()} follows. The snapshot
+   * stays weakly consistent across fields - the producer takes no lock - which is the documented contract
+   * and harmless for a progress display.
+   */
+  private static OperationProgressInfo toProgressInfo(final OperationProgress operation) {
+    final long done = operation.getDone();
+    final long total = operation.getTotal();
+    final long startedOn = operation.getStartedOn();
+
+    return OperationProgressInfo.newBuilder()
+        .setId(operation.getId())
+        .setDatabase(nullToEmpty(operation.getDatabaseName()))
+        .setOperation(nullToEmpty(operation.getOperation()))
+        .setStepName(nullToEmpty(operation.getStepName()))
+        .setStepIndex(operation.getStepIndex())
+        .setTotalSteps(operation.getTotalSteps())
+        .setDone(done)
+        .setTotal(total)
+        .setPercentage(total <= 0 ? -1 : (int) Math.min(100L, done * 100L / total))
+        .setStartedOn(startedOn)
+        .setElapsedMs(System.currentTimeMillis() - startedOn)
+        .build();
+  }
+
+  /**
+   * One session as the wire message, field for field the document {@code GetSessionsHandler} emits.
+   * {@code sourceIp}, {@code userAgent}, {@code country} and {@code city} are null on a session logged in
+   * without those client headers, and proto3 has no null, so they travel as empty strings.
+   */
+  private static SessionInfo toSessionInfo(final HttpAuthSession session) {
+    return SessionInfo.newBuilder()
+        .setToken(nullToEmpty(session.getToken()))
+        .setUser(session.getUser() == null ? "" : nullToEmpty(session.getUser().getName()))
+        .setCreatedAt(session.getCreatedAt())
+        .setLastUpdate(session.getLastUpdate())
+        .setElapsedMs(session.elapsedFromLastUpdate())
+        .setSourceIp(nullToEmpty(session.getSourceIp()))
+        .setUserAgent(nullToEmpty(session.getUserAgent()))
+        .setCountry(nullToEmpty(session.getCountry()))
+        .setCity(nullToEmpty(session.getCity()))
+        .build();
+  }
+
+  /** proto3 string fields reject null; an absent value is the empty string on this wire. */
+  private static String nullToEmpty(final String value) {
+    return value == null ? "" : value;
+  }
 
   /**
    * Every unary handler of this service goes through here so the call is terminated exactly once (issue #7035):

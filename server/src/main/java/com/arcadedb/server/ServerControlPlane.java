@@ -22,6 +22,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -29,6 +31,9 @@ import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.server.backup.BackupRetentionManager;
+import com.arcadedb.server.http.HttpAuthSession;
+import com.arcadedb.server.http.HttpAuthSessionManager;
+import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -42,6 +47,7 @@ import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -192,6 +198,44 @@ public class ServerControlPlane {
    */
   public Set<String> listAuthorizedDatabases(final ServerSecurityUser user) {
     return filterAuthorizedDatabases(user, server.getDatabaseNames());
+  }
+
+  /**
+   * The long-running maintenance operations (CHECK DATABASE, REBUILD INDEX, COMPACT INDEX, backup,
+   * import) this server is running for {@code databaseName}, oldest first. Reads only the lock-free
+   * {@link OperationProgressRegistry} snapshot - no database access, no transaction - so it is safe to
+   * poll at any frequency and cannot interfere with the operation being watched.
+   * <p>
+   * The registry is keyed by database name, which is why a missing name is refused rather than answered
+   * with an empty list: "nothing is running" would be a lie told to a caller that named nothing. HTTP
+   * maps the refusal to 400 and gRPC to {@code INVALID_ARGUMENT}.
+   * <p>
+   * Deliberately process-local, as the registry is: each node reports what it is doing, which is what an
+   * operator polling that node wants to see.
+   */
+  public List<OperationProgress> getProgress(final String databaseName) {
+    if (databaseName == null || databaseName.isEmpty())
+      throw new IllegalArgumentException("Database parameter is null");
+
+    return OperationProgressRegistry.instance().getOperations(databaseName);
+  }
+
+  /**
+   * The server's open HTTP authentication sessions, the administrative view {@code GET /api/v1/sessions}
+   * gives root and, since issue #7310, the gRPC {@code ListSessions} gives it too.
+   * <p>
+   * Empty on a server running without the HTTP listener: {@link ArcadeDBServer#getHttpServer()} is then
+   * null - the state {@code GrpcServerPlugin} already handles when it wires the gRPC auth interceptor -
+   * and a server with no HTTP listener genuinely has no HTTP sessions. That is an answer, not a failure,
+   * so a gRPC-only operator gets an empty list rather than an error it cannot act on.
+   */
+  public List<HttpAuthSession> listHttpSessions() {
+    final HttpServer httpServer = server.getHttpServer();
+    if (httpServer == null)
+      return List.of();
+
+    final HttpAuthSessionManager sessionManager = httpServer.getAuthSessionManager();
+    return sessionManager == null ? List.of() : sessionManager.getActiveSessions();
   }
 
   // ---------------------------------------------------------------------------------------------
