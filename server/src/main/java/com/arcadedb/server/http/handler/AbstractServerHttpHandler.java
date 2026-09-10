@@ -95,7 +95,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final HttpString SESSION_ID_HEADER = HttpString.tryFromString(HttpSessionManager.ARCADEDB_SESSION_ID);
   // The read-your-writes bookmark echo, cached for the same reason and because it is now looked up as well as
   // written: the response-commit listener of issue #7351 has to ask whether the eager emission already set it.
-  static final         HttpString COMMIT_INDEX_HEADER = HttpString.tryFromString("X-ArcadeDB-Commit-Index");
+  private static final HttpString COMMIT_INDEX_HEADER = HttpString.tryFromString("X-ArcadeDB-Commit-Index");
   // Bounded wait for a concurrent identical retry to observe the in-flight winner's result before it
   // gives up and executes on its own. Caps worker-thread blocking so a slow request cannot pile up retries.
   private static final long       IN_FLIGHT_WAIT_MS = 5_000L;
@@ -1375,14 +1375,34 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Not usable on the streamed <b>write</b> path: {@code PostBatchHandler}'s per-chunk encoding only learns its
    * commit index after the load has run, by which time the response has started, so it carries the bookmark in
    * band in its terminal line instead (issue #7311).
+   * <p>
+   * <b>It fires on a failed response too</b>, which the eager call did not: that one sits on the success path,
+   * so a request answered 400 or 500 carried no bookmark. That widening is deliberate and matches what the
+   * write endpoints already do - {@code PostBatchHandler} emits the header on its 400 and 408 answers precisely
+   * because a batch is not atomic and the chunks committed before the failure still have to be readable
+   * (issue #5862). The value means the same thing on either outcome: this server had applied at least that
+   * index when it answered, which is a valid barrier for the client's next read whether or not this request
+   * succeeded. It is registered after the per-database authorization check in
+   * {@link DatabaseAbstractHandler#execute}, so a caller refused access to the database never reaches it.
    */
   protected static void emitCommitIndexBookmarkOnResponseCommit(final HttpServerExchange exchange,
       final HAReplicatedDatabase haDb) {
     if (haDb == null)
       return;
     exchange.addResponseCommitListener(ex -> {
-      if (!ex.getResponseHeaders().contains(COMMIT_INDEX_HEADER))
+      if (ex.getResponseHeaders().contains(COMMIT_INDEX_HEADER))
+        return;
+      try {
         emitCommitIndexBookmark(ex, haDb);
+      } catch (final RuntimeException e) {
+        // This runs from inside Undertow's response-commit path, not from the handler, so it is outside the
+        // exception mapping in handleRequest: letting anything escape here would tear down a response that is
+        // otherwise complete and correct. A missing bookmark costs the client one stale follower read; a torn
+        // response costs it the answer.
+        LogManager.instance().log(AbstractServerHttpHandler.class, Level.FINE,
+            "Cannot read the last applied index while committing the response, the read-your-writes bookmark is "
+                + "not emitted for this request", e);
+      }
     });
   }
 

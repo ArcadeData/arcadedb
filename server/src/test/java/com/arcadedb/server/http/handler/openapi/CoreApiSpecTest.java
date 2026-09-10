@@ -360,15 +360,18 @@ class CoreApiSpecTest {
         openAPI.getPaths().get("/api/v1/query/{database}").getPost(),
         openAPI.getPaths().get("/api/v1/command/{database}").getPost());
 
-    for (final Operation operation : operations) {
-      final Header bookmark = operation.getResponses().get("200").getHeaders().get("X-ArcadeDB-Commit-Index");
-      assertThat(bookmark)
-          .as("%s must declare the read-your-writes bookmark on its 200", operation.getOperationId())
-          .isNotNull();
-      assertThat(bookmark.getDescription())
-          .as("the description has to name the request-side header the value is fed back as, or a client "
-              + "cannot act on it")
-          .contains("X-ArcadeDB-Read-After");
-    }
+    for (final Operation operation : operations)
+      for (final String status : operation.getResponses().keySet()) {
+        final Header bookmark = operation.getResponses().get(status).getHeaders().get("X-ArcadeDB-Commit-Index");
+        assertThat(bookmark)
+            .as("%s must declare the read-your-writes bookmark on its %s: the response-commit listener emits it "
+                + "whatever the outcome, and a document that named only the 200 would hide that",
+                operation.getOperationId(), status)
+            .isNotNull();
+        assertThat(bookmark.getDescription())
+            .as("the description has to name the request-side header the value is fed back as, or a client "
+                + "cannot act on it")
+            .contains("X-ArcadeDB-Read-After");
+      }
   }
 }

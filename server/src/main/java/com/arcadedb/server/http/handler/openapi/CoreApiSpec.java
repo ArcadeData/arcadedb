@@ -22,6 +22,7 @@ import com.arcadedb.server.http.HttpSessionManager;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
+import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.media.Content;
 import io.swagger.v3.oas.models.media.MediaType;
 import io.swagger.v3.oas.models.media.Schema;
@@ -704,17 +705,23 @@ public class CoreApiSpec implements OpenApiContributor {
   }
 
   /**
-   * Declares the read-your-writes bookmark on a 200. It is emitted on both encodings - on the streamed one
-   * before the first row, since a header cannot be set once the body has started (issue #7351) - so it is a
-   * property of the response rather than of either media type, and a generated client can rely on it either
-   * way.
+   * Declares the read-your-writes bookmark on EVERY response of an operation, not only its 200. It is emitted on
+   * both encodings - on the streamed one before the first row, since a header cannot be set once the body has
+   * started (issue #7351) - so it is a property of the response rather than of either media type; and it is
+   * emitted whatever the outcome, because the value means the same thing on a refused request as on a
+   * successful one. A document that declared it only on the 200 would send a generated client looking for it in
+   * the one place it is guaranteed and nowhere else.
    */
   private static void addCommitIndexBookmarkHeader(final ApiResponses responses) {
-    responses.get("200").addHeaderObject(COMMIT_INDEX_HEADER, SpecBuilders.stringHeader("""
+    final Header bookmark = SpecBuilders.stringHeader("""
         On a replicated (HA) database, the last Raft index this server had applied when it answered. Feed it \
         back as 'X-ArcadeDB-Read-After' on the next request to get read-your-writes consistency from a \
-        follower. Absent on a standalone database, and on a replicated one that has applied nothing yet.\
-        """));
+        follower. Present on error responses too - it bookmarks what the server had applied when it refused, \
+        which is still a valid barrier for the next read. Absent on a standalone database, and on a replicated \
+        one that has applied nothing yet.\
+        """);
+    for (final ApiResponse response : responses.values())
+      response.addHeaderObject(COMMIT_INDEX_HEADER, bookmark);
   }
 
   /**
