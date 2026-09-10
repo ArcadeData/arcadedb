@@ -256,11 +256,6 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   }
 
   /**
-   * Creates a server user with the per-database groups the request carries, which is the same document
-   * the HTTP {@code create user} command takes. The deprecated {@code role} field is ignored: the
-   * security model has no server-wide role, only groups held per database.
-   */
-  /**
    * The long-running maintenance operations this server is running for one database, the RPC equivalent
    * of {@code GET /api/v1/progress/{database}} (issue #7310). Answered from the lock-free progress
    * registry, so a client may poll it as often as it likes without touching the database or the operation
@@ -306,6 +301,11 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     });
   }
 
+  /**
+   * Creates a server user with the per-database groups the request carries, which is the same document
+   * the HTTP {@code create user} command takes. The deprecated {@code role} field is ignored: the
+   * security model has no server-wide role, only groups held per database.
+   */
   @Override
   public void createUser(final CreateUserRequest req, final StreamObserver<CreateUserResponse> resp) {
     respond(resp, "createUser", () -> {
