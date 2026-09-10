@@ -4212,7 +4212,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       LogManager.instance().log(this, Level.INFO,
           "Raft gRPC transport secured with TLS (mutual authentication: %s)", tlsConfig.getMtlsEnabled());
 
-    installPeerAllowlist(configuration, parameters);
+    installGrpcServerCustomizations(configuration, parameters);
 
     // Last line on every path: see the field's comment. Nothing above may publish a partially-configured
     // Parameters, and nothing below may add to it.
@@ -4220,9 +4220,40 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return parameters;
   }
 
-  private void installPeerAllowlist(final ContextConfiguration configuration, final Parameters parameters) {
-    if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED))
+  /**
+   * Installs the one {@code GrpcServices.Customizer} the Raft listener gets: the peer allowlist's transport filter
+   * and call interceptor (issues #7132, #7225, #7250) and the connection-idle window (issue #7316).
+   * <p>
+   * The two are configured independently, so this method is not gated on either of them: gating it on
+   * {@code arcadedb.ha.peerAllowlist.enabled}, which is where the allowlist install used to live, would have made
+   * {@code arcadedb.ha.grpcMaxConnectionIdleMs} a setting that silently does nothing on exactly the clusters that
+   * turned the allowlist off. When neither is configured no customizer is installed at all, which leaves Ratis's
+   * builder exactly as it was.
+   */
+  private void installGrpcServerCustomizations(final ContextConfiguration configuration, final Parameters parameters) {
+    final PeerAddressAllowlistFilter filter = buildPeerAllowlistFilter(configuration);
+    final PeerAllowlistCallInterceptor interceptor = filter == null ? null : new PeerAllowlistCallInterceptor();
+    // The filter gates a connection once, when it is established. The interceptor enforces the same decision on
+    // every RPC, which is what revokes a transport already open when its address stopped being admitted (#7250):
+    // it reads the session the filter attached to the transport and refuses the call when that session is revoked.
+    this.allowlistFilter = filter;
+    this.allowlistInterceptor = interceptor;
+
+    // Neither surface can close the connection itself, so the socket of a revoked peer outlived its reach (#7316).
+    final long maxConnectionIdleMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_IDLE_MS);
+    if (filter == null && maxConnectionIdleMs <= 0)
       return;
+
+    GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(
+        filter == null ? new ServerTransportFilter[0] : new ServerTransportFilter[] { filter },
+        interceptor == null ? new ServerInterceptor[0] : new ServerInterceptor[] { interceptor },
+        maxConnectionIdleMs));
+  }
+
+  /** The inbound peer allowlist filter, or {@code null} when it is disabled or has no host to admit. */
+  private PeerAddressAllowlistFilter buildPeerAllowlistFilter(final ContextConfiguration configuration) {
+    if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED))
+      return null;
 
     final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
     final long refreshMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_ALLOWLIST_REFRESH_MS);
@@ -4241,7 +4272,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (peerHosts.isEmpty()) {
       LogManager.instance().log(this, Level.WARNING,
           "arcadedb.ha.peerAllowlist.enabled=true but arcadedb.ha.serverList is empty; allowlist not installed");
-      return;
+      return null;
     }
     final PeerAddressAllowlistFilter filter = new PeerAddressAllowlistFilter(peerHosts, refreshMs, startupGraceMs,
         stickyTtlMs);
@@ -4259,14 +4290,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (serviceDomain != null)
       filter.learnPeerHosts(List.of(serviceDomain));
 
-    // The filter gates a connection once, when it is established. The interceptor enforces the same decision on
-    // every RPC, which is what revokes a transport already open when its address stopped being admitted (#7250):
-    // it reads the session the filter attached to the transport and refuses the call when that session is revoked.
-    final PeerAllowlistCallInterceptor interceptor = new PeerAllowlistCallInterceptor();
-    this.allowlistFilter = filter;
-    this.allowlistInterceptor = interceptor;
-    GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(
-        new ServerTransportFilter[] { filter }, new ServerInterceptor[] { interceptor }));
+    return filter;
   }
 
   /**
