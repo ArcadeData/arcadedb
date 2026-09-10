@@ -210,6 +210,30 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGraphServerTest {
     assertThat(getServer(0).existsDatabase(target)).isTrue();
   }
 
+  /**
+   * A throw from the caller's own progress callback reaches the caller as itself, not swallowed and
+   * not rewrapped as a {@link com.arcadedb.remote.RemoteException} - the callback failed, the RPC did
+   * not, and telling the caller otherwise would send them looking at the server.
+   * <p>
+   * <b>What this test does not assert:</b> that the abandoned stream is cancelled. {@code drain} does
+   * cancel it in a {@code finally}, which matters because these RPCs carry no deadline and a call
+   * nobody is reading would otherwise sit open until the channel closed - but that is not observable
+   * from this side of the wire, and asserting the client still works afterwards proves nothing,
+   * because it passes with the cancellation removed too (checked). Rather than leave a test that
+   * cannot fail for the thing it names, this asserts the part that can.
+   */
+  @Test
+  void aThrowingProgressCallbackReachesTheCallerUnwrapped() {
+    final String target = "client7308_throwing_callback";
+    databasesToDrop.add(target);
+
+    final Path archive = backupPath(triggerBackupAndGetFileName());
+
+    assertThatThrownBy(() -> client.restoreDatabase(target, "file://" + archive.toAbsolutePath(), progress -> {
+      throw new IllegalStateException("callback blew up");
+    })).isInstanceOf(IllegalStateException.class).hasMessage("callback blew up");
+  }
+
   /** The progress callback is optional: a caller that only wants the outcome passes null. */
   @Test
   void restoreBackupAcceptsNoProgressCallback() {

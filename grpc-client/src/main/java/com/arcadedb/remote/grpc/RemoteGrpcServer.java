@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.grpc.AlignDatabaseRequest;
@@ -90,6 +91,7 @@ import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 
 /**
  * Server-scope gRPC client: the {@code RemoteServer} of this transport, one method per RPC of
@@ -596,10 +598,22 @@ public class RemoteGrpcServer implements AutoCloseable {
     T last = null;
     try {
       final BlockingClientCall<?, T> stream = body.run(adminServiceBlockingV2Stub());
-      while (stream.hasNext()) {
-        last = stream.read();
-        if (onProgress != null)
-          onProgress.accept(last);
+      boolean drained = false;
+      try {
+        while (stream.hasNext()) {
+          last = stream.read();
+          if (onProgress != null)
+            onProgress.accept(last);
+        }
+        drained = true;
+      } finally {
+        // The caller's progress consumer is arbitrary code, and a throw from it leaves this call half
+        // read. Cancel it rather than let it leak: these RPCs deliberately carry no deadline, because
+        // a restore runs for as long as the data takes, so a call nobody is reading has nothing that
+        // would ever end it. Cancelling stops the reporting, not the restore, which runs to its end
+        // server-side either way.
+        if (!drained)
+          cancelQuietly(stream, operation);
       }
       return last;
     } catch (final StatusException e) {
@@ -610,6 +624,20 @@ public class RemoteGrpcServer implements AutoCloseable {
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new RemoteException("Interrupted while waiting for '" + operation + "' to finish", e);
+    }
+  }
+
+  /**
+   * Cancels a stream that will not be read to its end. Never throws: it runs from a {@code finally}
+   * while another failure is already on its way out, and masking that failure with a cancellation
+   * problem would hide the reason the stream was abandoned in the first place.
+   */
+  private static void cancelQuietly(final BlockingClientCall<?, ?> stream, final String operation) {
+    try {
+      stream.cancel("'" + operation + "' abandoned by the client", null);
+    } catch (final Exception e) {
+      LogManager.instance().log(RemoteGrpcServer.class, Level.FINE,
+          "Exception while cancelling the '%s' progress stream: %s", operation, e.getMessage());
     }
   }
 

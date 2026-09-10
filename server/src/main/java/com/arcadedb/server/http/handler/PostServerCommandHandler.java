@@ -420,6 +420,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (databaseName.isEmpty() || url.isEmpty())
       throw new IllegalArgumentException("Usage: restore database <name> <url>");
 
+    // The leader gate now precedes the URL guard, which the shared implementation applies (it used to
+    // run here, first). Deliberate: a node that is going to refuse the command should not first
+    // resolve a hostname the caller chose, and the caller has to take the command to the leader
+    // either way, where the URL refusal is what they will get. Issue #7308.
     checkServerIsLeaderIfInHA();
     Metrics.counter("http.restore-database").increment();
 
@@ -496,6 +500,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (databaseName.isEmpty() || url.isEmpty())
       throw new IllegalArgumentException("Usage: import database <name> <url>");
 
+    // The leader gate now precedes the URL guard, which the shared implementation applies (it used to
+    // run here, first). Deliberate: a node that is going to refuse the command should not first
+    // resolve a hostname the caller chose, and the caller has to take the command to the leader
+    // either way, where the URL refusal is what they will get. Issue #7308.
     checkServerIsLeaderIfInHA();
     Metrics.counter("http.import-database").increment();
 
