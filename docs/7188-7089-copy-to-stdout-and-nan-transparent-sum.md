@@ -114,8 +114,9 @@ sample count. Three ways to get there were weighed:
 Each block declares its own layout through its magic: `TSBL` (the pre-#7089 `[min, max, sum]` triplet) or
 `TSB2` (`[min, max, sum, count]`). A legacy block is read as it stands: its sum was a plain `+=`, so a
 finite sum proves the column held no NaN and its count is the block's, while a NaN sum leaves the count
-`COUNT_UNKNOWN`, which routes `SUM`/`AVG` over that block through the values and leaves `MIN`/`MAX`/`COUNT`
-on the header. Every rewrite (compaction, downsampling, truncation) writes `TSB2`, recomputing the two
+`COUNT_UNKNOWN`, which routes every request but `COUNT` over that block through the values (`SUM`/`AVG` for
+the value, `MIN`/`MAX` for the count of contributing samples recorded next to theirs) and leaves only
+`COUNT`, the block's row count, on the header. So the marker never reaches an accumulator. Every rewrite (compaction, downsampling, truncation) writes `TSB2`, recomputing the two
 statistics for a column it copies with `COUNT_UNKNOWN`, so the marker cannot outlive the next rewrite. The
 file header's version moved from 0 to 1 so that an older build refuses a newer file loudly, instead of
 stopping its directory scan at the first magic it does not know and silently losing every block after it;
