@@ -25,7 +25,7 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.vector.VectorLeg;
+import com.arcadedb.query.search.VectorLeg;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

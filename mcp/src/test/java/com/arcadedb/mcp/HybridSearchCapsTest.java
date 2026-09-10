@@ -19,7 +19,7 @@
 package com.arcadedb.mcp;
 
 import com.arcadedb.mcp.tools.HybridSearchTool;
-import com.arcadedb.server.vector.VectorLeg;
+import com.arcadedb.query.search.VectorLeg;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

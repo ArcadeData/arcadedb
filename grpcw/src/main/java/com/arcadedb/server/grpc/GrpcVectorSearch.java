@@ -21,9 +21,9 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.vector.FullTextQuery;
-import com.arcadedb.server.vector.HybridSearch;
-import com.arcadedb.server.vector.VectorSearch;
+import com.arcadedb.query.search.FullTextQuery;
+import com.arcadedb.query.search.HybridSearch;
+import com.arcadedb.query.search.VectorSearch;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -31,7 +31,7 @@ import java.util.Map;
 
 /**
  * Bridges the vector, hybrid and full-text gRPC RPCs onto the shared implementation in
- * {@code com.arcadedb.server.vector} (issue #7306).
+ * {@code com.arcadedb.query.search} (issue #7306).
  * <p>
  * The bridge is deliberately a pure translation, request to arguments and result to message, with no validation
  * and no bounds of its own. That is what makes the gRPC surface agree with the HTTP routes and the MCP tools by

@@ -21,7 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.vector.FullTextQuery;
+import com.arcadedb.query.search.FullTextQuery;
 
 /**
  * Full-text (Lucene-syntax) retrieval over a FULL_TEXT index.

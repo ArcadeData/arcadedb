@@ -23,9 +23,9 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.vector.FullTextQuery;
-import com.arcadedb.server.vector.HybridSearch;
-import com.arcadedb.server.vector.VectorLeg;
+import com.arcadedb.query.search.FullTextQuery;
+import com.arcadedb.query.search.HybridSearch;
+import com.arcadedb.query.search.VectorLeg;
 import org.junit.jupiter.api.Test;
 
 import java.net.URI;

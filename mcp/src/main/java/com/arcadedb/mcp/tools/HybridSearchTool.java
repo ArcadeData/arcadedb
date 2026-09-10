@@ -24,8 +24,8 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
-import com.arcadedb.server.vector.HybridSearch;
-import com.arcadedb.server.vector.VectorLeg;
+import com.arcadedb.query.search.HybridSearch;
+import com.arcadedb.query.search.VectorLeg;
 
 /**
  * MCP {@code hybrid_search} tool: the MCP-shaped wrapper - tool schema, read permission, database resolution -

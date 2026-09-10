@@ -24,7 +24,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
-import com.arcadedb.server.vector.FullTextQuery;
+import com.arcadedb.query.search.FullTextQuery;
 
 /**
  * MCP {@code full_text_search} tool: the MCP-shaped wrapper - tool schema, database resolution - around

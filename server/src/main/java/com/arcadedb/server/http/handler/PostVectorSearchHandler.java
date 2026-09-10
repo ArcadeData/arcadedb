@@ -21,7 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.vector.VectorSearch;
+import com.arcadedb.query.search.VectorSearch;
 
 /**
  * kNN retrieval over a dense LSM_VECTOR or sparse LSM_SPARSE_VECTOR index.

@@ -16,10 +16,10 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.vector;
+package com.arcadedb.query.search;
 
 import com.arcadedb.database.RID;
-import com.arcadedb.server.vector.HybridSearch.LegRow;
+import com.arcadedb.query.search.HybridSearch.LegRow;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

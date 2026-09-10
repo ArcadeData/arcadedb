@@ -19,9 +19,9 @@
 package com.arcadedb.server.http.handler.openapi;
 
 import com.arcadedb.server.http.handler.OpenApiSpecGenerator;
-import com.arcadedb.server.vector.FullTextQuery;
-import com.arcadedb.server.vector.HybridSearch;
-import com.arcadedb.server.vector.VectorLeg;
+import com.arcadedb.query.search.FullTextQuery;
+import com.arcadedb.query.search.HybridSearch;
+import com.arcadedb.query.search.VectorLeg;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;

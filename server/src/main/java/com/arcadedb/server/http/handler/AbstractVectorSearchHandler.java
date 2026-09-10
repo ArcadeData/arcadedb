@@ -31,7 +31,7 @@ import io.undertow.server.HttpServerExchange;
  * The routes exist because vector retrieval had no structured wire surface at all before issue #7306: the only
  * way to reach it over HTTP was to hand-write the {@code vector.neighbors} SQL, and the only bounded, validated
  * surface was MCP. Each handler is therefore deliberately thin - it resolves nothing and validates nothing of
- * its own. Everything is delegated to {@code com.arcadedb.server.vector}, which the MCP tools and the gRPC
+ * its own. Everything is delegated to {@code com.arcadedb.query.search}, which the MCP tools and the gRPC
  * vector RPCs call as well, so a request that one surface accepts every surface accepts, and a request one
  * rejects every surface rejects with the same message.
  * <p>
@@ -45,7 +45,7 @@ public abstract class AbstractVectorSearchHandler extends DatabaseAbstractHandle
 
   /**
    * Runs the search. Implementations delegate straight to the matching service in
-   * {@code com.arcadedb.server.vector}; an {@link IllegalArgumentException} raised there is mapped to HTTP 400
+   * {@code com.arcadedb.query.search}; an {@link IllegalArgumentException} raised there is mapped to HTTP 400
    * by {@link AbstractServerHttpHandler}'s error mapping, which is what makes the argument bounds observable
    * to a client as a client error rather than a 500.
    */

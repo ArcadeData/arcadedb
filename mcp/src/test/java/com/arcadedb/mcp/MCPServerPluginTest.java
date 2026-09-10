@@ -20,7 +20,7 @@ package com.arcadedb.mcp;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.server.vector.VectorLeg;
+import com.arcadedb.query.search.VectorLeg;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;

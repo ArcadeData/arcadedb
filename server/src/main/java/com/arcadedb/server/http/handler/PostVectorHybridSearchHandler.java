@@ -21,7 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.vector.HybridSearch;
+import com.arcadedb.query.search.HybridSearch;
 
 /**
  * Fused vector + full-text + graph-expansion retrieval.
