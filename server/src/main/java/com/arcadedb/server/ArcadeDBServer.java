@@ -408,10 +408,10 @@ public class ArcadeDBServer {
       getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "HA", null, haWarning);
     }
 
-    loadDefaultDatabases();
-
-    // RELOAD DATABASE IF A PLUGIN REGISTERED A NEW DATABASE (LIKE THE GREMLIN SERVER)
+    // Load databases recovered by HA before defaults can mistake them for absent databases and try to create them.
     loadDatabases();
+
+    loadDefaultDatabases();
 
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN);
 
@@ -1276,6 +1276,11 @@ public class ArcadeDBServer {
         final String path =
             configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName;
 
+        // HTTP is already accepting requests while startup recovery is still pending. Runtime snapshot
+        // rollback must remain able to reopen the restored database before removing its pending marker.
+        if (status == STATUS.STARTING && new File(path, SNAPSHOT_PENDING_FILE).exists())
+          throw new DatabaseNotAvailableException("Database '" + databaseName + "' is awaiting snapshot recovery");
+
         final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);
 
         factory.setSecurity(getSecurity());
@@ -1372,6 +1377,14 @@ public class ArcadeDBServer {
         }
 
         final String dbName = db.substring(0, credentialBegin);
+        final File databaseDirectory =
+            new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), dbName);
+        if (new File(databaseDirectory, SNAPSHOT_PENDING_FILE).exists()) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Skipping default database '%s': pending snapshot recovery must complete before it can be opened", dbName);
+          continue;
+        }
+
         final int credentialEnd = db.indexOf(']', credentialBegin);
         final String credentials = db.substring(credentialBegin + 1, credentialEnd);
 
