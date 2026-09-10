@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Client-side batch graph importer that buffers vertices and edges as JSONL,
@@ -71,6 +72,11 @@ public class RemoteGraphBatch implements AutoCloseable {
   private final   RemoteDatabase      database;
   private final   Map<String, String> queryParams;
   private final   int                 flushEvery;
+  /**
+   * Notified once per server-side chunk acknowledgement while a flush is still uploading, or {@code null} when
+   * the caller did not ask for progress and the flush uses the buffered request it always used (issue #7311).
+   */
+  private final   Consumer<JSONObject> progressListener;
   private final   StringBuilder       buffer;
   protected       int                 vertexCounter;
   /** Position of the first vertex of the buffer being filled, i.e. what the server has to number this payload from. */
@@ -96,6 +102,12 @@ public class RemoteGraphBatch implements AutoCloseable {
   private int    resolvedCount; // number of vertices whose RIDs have been resolved
 
   RemoteGraphBatch(final RemoteDatabase database, final Map<String, String> queryParams, final int flushEvery) {
+    this(database, queryParams, flushEvery, null);
+  }
+
+  RemoteGraphBatch(final RemoteDatabase database, final Map<String, String> queryParams, final int flushEvery,
+      final Consumer<JSONObject> progressListener) {
+    this.progressListener = progressListener;
     this.database = database;
     this.queryParams = queryParams;
     // Edges buffered in a later flush reference vertices created by an earlier one, so this client cannot work
@@ -123,6 +135,7 @@ public class RemoteGraphBatch implements AutoCloseable {
    */
   protected RemoteGraphBatch(final RemoteDatabase database) {
     this.database = database;
+    this.progressListener = null;
     this.queryParams = null;
     this.flushEvery = Integer.MAX_VALUE;
     this.buffer = null;
@@ -231,7 +244,7 @@ public class RemoteGraphBatch implements AutoCloseable {
 
     queryParams.put("ordinalBase", Integer.toString(bufferOrdinalBase));
 
-    final JSONObject response = database.sendBatch(buffer.toString(), queryParams);
+    final JSONObject response = database.sendBatch(buffer.toString(), queryParams, progressListener);
 
     totalVerticesCreated += response.getLong("verticesCreated");
     totalEdgesCreated += response.getLong("edgesCreated");
@@ -571,6 +584,7 @@ public class RemoteGraphBatch implements AutoCloseable {
     protected Boolean parallelFlush;
     protected Integer commitRetries;
     protected Long    commitRetryDelayMs;
+    protected Consumer<JSONObject> progressListener;
 
     /** Not for direct use: a builder comes from {@link RemoteDatabase#batch()}, which picks the right one for its transport. */
     protected Builder(final RemoteDatabase database) {
@@ -706,10 +720,32 @@ public class RemoteGraphBatch implements AutoCloseable {
         queryParams.put(name, value.toString());
     }
 
+    /**
+     * Asks the server to acknowledge each chunk while a flush is still being uploaded, and hands every
+     * acknowledgement to {@code listener} (issue #7311).
+     * <p>
+     * Without this the answer to a flush arrives only once the server has consumed the whole payload, so a
+     * flush of 50,000 records reports nothing for its entire duration. With it the request negotiates the
+     * streaming encoding and the listener sees a {@code progress} object - {@code phase},
+     * {@code verticesCreated}, {@code edgesCreated} and the line accounting - at every server-side commit
+     * boundary. The counters are records ATTEMPTED, the same upper bound the partial-commit counters of a
+     * failed load carry.
+     * <p>
+     * The listener runs on the thread calling {@link RemoteGraphBatch#flush()}, in line with reading the
+     * response, so anything slow in it delays the load it is reporting on.
+     * <p>
+     * A server too old to understand the encoding answers with the buffered object as it always did and the
+     * listener is simply never called; the load itself is unaffected either way.
+     */
+    public Builder withProgressListener(final Consumer<JSONObject> listener) {
+      this.progressListener = listener;
+      return this;
+    }
+
     /** Creates the {@link RemoteGraphBatch} ready for buffering vertices and edges. */
     public RemoteGraphBatch build() {
       final int effectiveFlushEvery = flushEvery == 0 ? Integer.MAX_VALUE : flushEvery;
-      return new RemoteGraphBatch(database, toQueryParams(), effectiveFlushEvery);
+      return new RemoteGraphBatch(database, toQueryParams(), effectiveFlushEvery, progressListener);
     }
   }
 }

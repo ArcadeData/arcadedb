@@ -133,6 +133,12 @@ public class PostCommandHandler extends AbstractQueryHandler {
     return true;
   }
 
+  /** Answers {@code Accept: application/x-ndjson} with a streamed result set (issue #7306). */
+  @Override
+  protected boolean supportsNdJsonEncoding() {
+    return true;
+  }
+
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
       final JSONObject json)

@@ -39,14 +39,11 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.HttpServerExchange;
-import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
-import io.undertow.util.HttpString;
 
 import java.io.IOException;
 import java.util.*;
 import java.util.logging.Level;
-import java.util.regex.Pattern;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 
@@ -79,16 +76,6 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * the log: the leading characters are what identifies the query for an operator.
    */
   private static final int MAX_LOGGED_COMMAND_CHARS = 120;
-
-  /**
-   * Tells a buffering reverse proxy to pass the streamed bytes through instead of accumulating them, which would
-   * silently undo the encoding. Same header the SSE endpoints already set.
-   */
-  private static final HttpString X_ACCEL_BUFFERING = new HttpString("X-Accel-Buffering");
-
-  /** Precompiled rather than {@code String.split}, which recompiles the pattern on every request. */
-  private static final Pattern ACCEPT_ENTRY     = Pattern.compile(",");
-  private static final Pattern ACCEPT_PARAMETER = Pattern.compile(";");
 
   /**
    * Outcome of serializing a {@link ResultSet} into an HTTP response: how many rows reached the response and
@@ -270,55 +257,6 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     if (limit != statedLimit && outcome.truncated())
       throw resultSetTooLarge(maxResultRows);
     return outcome;
-  }
-
-  /**
-   * True when the caller selected the streaming encoding by sending {@code Accept: application/x-ndjson}.
-   * <p>
-   * Negotiated rather than routed on purpose (issue #7306): the buffered {@code application/json} body is what
-   * every existing client - the Studio webapp included - parses, so streaming had to be reachable without
-   * changing what a request that does not ask for it receives. A caller that sends no {@code Accept}, or one
-   * that names any other type, gets exactly the response it got before.
-   */
-  protected static boolean isNdJsonRequested(final HttpServerExchange exchange) {
-    final HeaderValues accept = exchange.getRequestHeaders().get(Headers.ACCEPT);
-    if (accept == null)
-      return false;
-    for (final String header : accept) {
-      if (header == null)
-        continue;
-      // One Accept header can list several types, each with its own parameters. Splitting them matters for
-      // 'q': 'application/json, application/x-ndjson;q=0' is the standard spelling of "anything but that one",
-      // and a bare contains() over the whole header would read it as a request for the stream.
-      for (final String entry : ACCEPT_ENTRY.split(header)) {
-        final String[] parts = ACCEPT_PARAMETER.split(entry.trim());
-        if (parts[0].trim().equalsIgnoreCase(NdJsonResultStream.CONTENT_TYPE))
-          return !isRejectedByQValue(parts);
-      }
-    }
-    return false;
-  }
-
-  /**
-   * True when an {@code Accept} entry carries {@code q=0}, which RFC 9110 defines as "not acceptable" rather
-   * than as a weak preference. An unparseable q is treated as absent, the same as any other malformed
-   * parameter: the type was still named.
-   */
-  private static boolean isRejectedByQValue(final String[] parts) {
-    for (int i = 1; i < parts.length; i++) {
-      final String parameter = parts[i].trim();
-      if (!parameter.regionMatches(true, 0, "q=", 0, 2))
-        continue;
-      try {
-        // Compared with a tolerance rather than against 0 exactly: q is a decimal with at most three digits,
-        // so anything this small is the "not acceptable" the sender meant, and an exact float comparison on a
-        // parsed decimal is the kind of thing that works until it does not.
-        return Double.parseDouble(parameter.substring(2).trim()) < 0.0001d;
-      } catch (final NumberFormatException ignored) {
-        return false;
-      }
-    }
-    return false;
   }
 
   /**
