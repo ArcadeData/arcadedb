@@ -458,6 +458,40 @@ class WebSocketInsertSessionIT extends BaseGraphServerTest {
     assertThat(getServerDatabase(0, getDatabaseName()).countType("Person", false)).isZero();
   }
 
+  /**
+   * A frame whose fields carry the wrong JSON TYPE is a client mistake, and is answered as one. It used to reach
+   * the catch-all and come back as "Internal error", telling a client the server had broken when it had not.
+   */
+  @Test
+  void aFrameWithAWronglyTypedFieldIsAClientErrorNotAnInternalOne() throws Throwable {
+    try (final var client = newClient()) {
+      final JSONObject badOptions = new JSONObject();
+      badOptions.put("action", "start");
+      badOptions.put("database", getDatabaseName());
+      badOptions.put("options", "not-an-object");
+
+      final JSONObject refused = new JSONObject(client.send(badOptions.toString()));
+      assertThat(refused.getString("result", "")).isEqualTo("error");
+      assertThat(refused.getString("error", "")).isEqualTo("Insert session error");
+
+      final String sessionId = new JSONObject(client.send(start(null, "Person", null))).getString("sessionId");
+
+      final JSONObject badRecords = new JSONObject();
+      badRecords.put("action", "chunk");
+      badRecords.put("sessionId", sessionId);
+      badRecords.put("chunkSeq", 1);
+      badRecords.put("records", "not-an-array");
+
+      final JSONObject refusedChunk = new JSONObject(client.send(badRecords.toString()));
+      assertThat(refusedChunk.getString("result", "")).isEqualTo("error");
+      assertThat(refusedChunk.getString("error", "")).isEqualTo("Insert session error");
+
+      new JSONObject(client.send(control("rollback", sessionId)));
+    }
+
+    assertThat(getServer(0).getHttpServer().getInsertSessionManager().getOpenSessionCount()).isZero();
+  }
+
   /** A finished session releases its connection, which can then open another one. */
   @Test
   void aConnectionCanOpenANewSessionOnceTheFirstIsFinished() throws Throwable {

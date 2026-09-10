@@ -20,6 +20,7 @@ package com.arcadedb.server.http.ws.insert;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -180,7 +181,11 @@ public class WebSocketInsertProtocol {
       }
     } catch (final SecurityException e) {
       send(channel, error("Security error", e.getMessage(), message.getString("sessionId", null), e));
-    } catch (final IllegalArgumentException | IllegalStateException e) {
+    } catch (final JSONException | IllegalArgumentException | IllegalStateException e) {
+      // JSONException joins them because a frame whose 'options' carries a value of the wrong JSON TYPE is the
+      // same class of mistake as one carrying a value of the wrong content, and answering the first with
+      // "Internal error" and the second with "Insert session error" told a client the server had broken when it
+      // had not.
       send(channel, error("Insert session error", e.getMessage(), message.getString("sessionId", null), e));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on /ws insert session action '%s'", e, action);
