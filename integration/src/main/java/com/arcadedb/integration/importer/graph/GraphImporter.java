@@ -1052,9 +1052,12 @@ public class GraphImporter implements AutoCloseable {
    * whose index would need another half hour of background work the caller cannot see is not complete.
    * <p>
    * A build that fails propagates: the data is on disk, but "Import complete" must not be logged over an index
-   * that is not.
+   * that is not. It propagates AFTER the other indexes have had their builds (PR #7433 review): one index whose
+   * build fails must not leave the graphs of the others unbuilt as well, or the caller would have to rerun the
+   * whole import to get them. The first failure is what is thrown; the later ones are logged against it.
    */
   private void buildVectorGraphs() {
+    RuntimeException firstFailure = null;
     // Matched on the type each bucket index names. A vector index declared on a parent type covers the buckets
     // of every subtype through one bucket index per bucket, and each of those names the SUBTYPE that owns the
     // bucket, so an import that writes only to a subtype matches its bucket index here without walking the
@@ -1068,13 +1071,25 @@ public class GraphImporter implements AutoCloseable {
         continue;
 
       final long t = System.currentTimeMillis();
-      if (vectorIndex.buildVectorGraphIfPending(null))
-        LogManager.instance().log(this, Level.INFO, "  Vector graph for index '%s' on type '%s' built in %,d ms",
-            vectorIndex.getName(), vectorIndex.getTypeName(), System.currentTimeMillis() - t);
-      else
-        LogManager.instance().log(this, Level.FINE, "  Vector graph for index '%s' already current, nothing to build",
-            vectorIndex.getName());
+      try {
+        if (vectorIndex.buildVectorGraphIfPending(null))
+          LogManager.instance().log(this, Level.INFO, "  Vector graph for index '%s' on type '%s' built in %,d ms",
+              vectorIndex.getName(), vectorIndex.getTypeName(), System.currentTimeMillis() - t);
+        else
+          LogManager.instance().log(this, Level.FINE, "  Vector graph for index '%s' already current, nothing to build",
+              vectorIndex.getName());
+      } catch (final RuntimeException e) {
+        if (firstFailure == null)
+          firstFailure = e;
+        else
+          firstFailure.addSuppressed(e);
+        LogManager.instance().log(this, Level.SEVERE, "  Vector graph for index '%s' on type '%s' could not be built: %s",
+            e, vectorIndex.getName(), vectorIndex.getTypeName(), e.getMessage());
+      }
     }
+
+    if (firstFailure != null)
+      throw firstFailure;
   }
 
   /**
