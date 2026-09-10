@@ -93,6 +93,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // Response header set by session-establishing routes (e.g. /begin). Its presence means the response
   // is session-scoped and must not be replayed from the idempotency cache (the session id would be lost).
   private static final HttpString SESSION_ID_HEADER = HttpString.tryFromString(HttpSessionManager.ARCADEDB_SESSION_ID);
+  // The read-your-writes bookmark echo, cached for the same reason and because it is now looked up as well as
+  // written: the response-commit listener of issue #7351 has to ask whether the eager emission already set it.
+  static final         HttpString COMMIT_INDEX_HEADER = HttpString.tryFromString("X-ArcadeDB-Commit-Index");
   // Bounded wait for a concurrent identical retry to observe the in-flight winner's result before it
   // gives up and executes on its own. Caps worker-thread blocking so a slow request cannot pile up retries.
   private static final long       IN_FLIGHT_WAIT_MS = 5_000L;
@@ -1344,7 +1347,43 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     final long lastApplied = haDb.getLastAppliedIndex();
     if (lastApplied >= 0)
-      exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), String.valueOf(lastApplied));
+      exchange.getResponseHeaders().put(COMMIT_INDEX_HEADER, String.valueOf(lastApplied));
+  }
+
+  /**
+   * Guarantees the {@code X-ArcadeDB-Commit-Index} bookmark reaches the client even when the handler writes the
+   * response itself, which the eager {@link #emitCommitIndexBookmark} call in
+   * {@link DatabaseAbstractHandler#execute} cannot do (issue #7351).
+   * <p>
+   * That call runs <b>after</b> the handler body returns. For a buffered response that is before anything has
+   * been written, so the header is serialized with the rest. For a <b>streamed</b> response - the NDJSON query
+   * encoding of issue #7306 - the body has been written and the output stream closed by the time the handler
+   * returns, so the response headers went out long before: the {@code put} lands on a header map nothing will
+   * read again, and the header is dropped with no error and no log line.
+   * <p>
+   * Rather than repeating the emission inside every streaming path - which is a fix that has to be remembered
+   * again the next time one is added - this registers it on the exchange, where Undertow runs it at the one
+   * moment that is correct on both encodings: immediately before the response is committed, i.e. before the
+   * first byte of a streamed body and before the buffered body is written. A response that already carries the
+   * header keeps the value it was given, so the buffered encoding stays byte-identical to what it sent before
+   * and the eager call remains the one that decides its value.
+   * <p>
+   * On a read that value is a lower bound on the state the response reflects, which is exactly what the
+   * bookmark means: a client feeding it back as {@code X-ArcadeDB-Read-After} asks a follower to have applied
+   * at least that much. Emitting it before the rows can therefore only be conservative, never stale.
+   * <p>
+   * Not usable on the streamed <b>write</b> path: {@code PostBatchHandler}'s per-chunk encoding only learns its
+   * commit index after the load has run, by which time the response has started, so it carries the bookmark in
+   * band in its terminal line instead (issue #7311).
+   */
+  protected static void emitCommitIndexBookmarkOnResponseCommit(final HttpServerExchange exchange,
+      final HAReplicatedDatabase haDb) {
+    if (haDb == null)
+      return;
+    exchange.addResponseCommitListener(ex -> {
+      if (!ex.getResponseHeaders().contains(COMMIT_INDEX_HEADER))
+        emitCommitIndexBookmark(ex, haDb);
+    });
   }
 
   /**

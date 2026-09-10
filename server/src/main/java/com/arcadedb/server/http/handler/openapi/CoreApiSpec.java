@@ -40,9 +40,8 @@ import java.util.List;
 public class CoreApiSpec implements OpenApiContributor {
   /** Media type of the streaming query encoding (issue #7306). */
   private static final String NDJSON = "application/x-ndjson";
-
-
   private static final String SESSION_HEADER = HttpSessionManager.ARCADEDB_SESSION_ID;
+  private static final String COMMIT_INDEX_HEADER = "X-ArcadeDB-Commit-Index";
 
   private static final String SESSION_REQUEST_DESCRIPTION = """
       Session id returned by 'beginTransaction'. Present it on every call that must run inside that \
@@ -219,6 +218,7 @@ public class CoreApiSpec implements OpenApiContributor {
     getOp.addParametersItem(ndJsonAcceptParam());
     getOp.setResponses(createGetQueryResponses());
     addNdJsonAlternative(getOp.getResponses());
+    addCommitIndexBookmarkHeader(getOp.getResponses());
     pathItem.setGet(getOp);
 
     return pathItem;
@@ -238,6 +238,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setRequestBody(SpecBuilders.jsonBody("Query request with command and optional parameters", "QueryRequest", true));
     postOp.setResponses(createQueryResponses());
     addNdJsonAlternative(postOp.getResponses());
+    addCommitIndexBookmarkHeader(postOp.getResponses());
     pathItem.setPost(postOp);
 
     return pathItem;
@@ -257,6 +258,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
     postOp.setResponses(createCommandResponses());
     addNdJsonAlternative(postOp.getResponses());
+    addCommitIndexBookmarkHeader(postOp.getResponses());
     pathItem.setPost(postOp);
 
     return pathItem;
@@ -699,6 +701,20 @@ public class CoreApiSpec implements OpenApiContributor {
     final MediaType ndjson = new MediaType();
     ndjson.setSchema(SpecBuilders.ref("NdJsonQueryEvent"));
     responses.get("200").getContent().addMediaType(NDJSON, ndjson);
+  }
+
+  /**
+   * Declares the read-your-writes bookmark on a 200. It is emitted on both encodings - on the streamed one
+   * before the first row, since a header cannot be set once the body has started (issue #7351) - so it is a
+   * property of the response rather than of either media type, and a generated client can rely on it either
+   * way.
+   */
+  private static void addCommitIndexBookmarkHeader(final ApiResponses responses) {
+    responses.get("200").addHeaderObject(COMMIT_INDEX_HEADER, SpecBuilders.stringHeader("""
+        On a replicated (HA) database, the last Raft index this server had applied when it answered. Feed it \
+        back as 'X-ArcadeDB-Read-After' on the next request to get read-your-writes consistency from a \
+        follower. Absent on a standalone database, and on a replicated one that has applied nothing yet.\
+        """));
   }
 
   /**
