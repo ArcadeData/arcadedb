@@ -28,6 +28,7 @@ import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
@@ -180,6 +181,43 @@ class Issue7361GraphPersistCommitLockTimeoutTest extends TestHelper {
     assertThat(graphFile.getManifest().read()).isNotNull();
     assertThat(graphFile.getManifest().read().vectorCount())
         .as("and its manifest vouches for the pages rather than refusing them").isEqualTo(LIVE);
+  }
+
+  /**
+   * The ordinary bulk build path - {@code build()}, what {@code CREATE INDEX ... TYPE LSM_VECTOR} runs - and not
+   * only the rebuild one. {@code build()} opens the transaction the whole build runs in before anything under it
+   * gets a say, so a budget applied only by a nested method that thinks it opened its own transaction never
+   * applies at all: the first chunk commit, and a whole single-chunk persist, stayed on the interactive default.
+   * <p>
+   * Asserted on the transaction itself rather than through contention, because that is the fact that decides it
+   * and it holds for every commit of the build, not only for one that happens to be contended.
+   */
+  @Test
+  void theOrdinaryBulkBuildRunsItsCommitsOnTheBulkBudgetToo() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 100L);
+    db.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_COMMIT_LOCK_TIMEOUT, 30_000L);
+
+    createSchema();
+    insertDocs(LIVE);
+
+    final List<Long> observed = new ArrayList<>();
+
+    database.begin();
+    try {
+      // Every record of the bulk load is indexed inside the transaction build() itself opened and commits.
+      vectorIndex().build((document, totalIndexed) -> observed.add(db.getTransaction().getCommitLockTimeout()), null);
+    } finally {
+      if (database.isTransactionActive())
+        database.commit();
+    }
+
+    assertThat(observed).as("the build has to have indexed something for this to say anything").isNotEmpty();
+    assertThat(observed)
+        .as("every commit of a bulk build waits on the bulk budget, from the first one: the transaction it all "
+            + "runs in is opened by build() itself, so nothing under it can be the thing that sets this")
+        .containsOnly(30_000L);
   }
 
   // ------------------------------------------------------------------------------------------------- helpers

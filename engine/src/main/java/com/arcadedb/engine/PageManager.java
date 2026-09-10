@@ -37,6 +37,7 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.nio.ByteBuffer;
@@ -1737,7 +1738,7 @@ public class PageManager extends LockContext {
       if (file == null || file.isDropped()) {
         // The file left the manager, or is on its way out, between existsFile() above and now - the same
         // superseded page the else branch below handles, observed one instant earlier (issue #7363).
-        discardPageOfDroppedFile(page, file);
+        discardPageOfDroppedFile(page, file, null);
         return;
       }
 
@@ -1753,21 +1754,24 @@ public class PageManager extends LockContext {
           final int written = file.write(page);
           totalPagesWrittenSize.addAndGet(written);
         });
-      } catch (final RuntimeException | IOException e) {
-        // An index compaction drops the sub-index file it replaced while this thread is between the isOpen()
-        // check above and the write. PaginatedComponentFile.close() nulls the channel under its own write lock,
-        // and write() then raises IllegalArgumentException, an UNCHECKED exception that used to escape every
-        // catch in PageManagerFlushThread and land on its top-level handler as
-        // "Error on processing page flush requests" at SEVERE (issue #7363). The checked half is the same event
-        // a moment later: a write already inside the channel gets ClosedChannelException, and the reopen that
-        // handles an accidental close correctly refuses to re-create a deleted file, so it comes back out as
-        // FileNotFoundException. Loud either way, and about a page that is superseded by construction - the file
-        // it belongs to has been deleted, so there is nowhere for it to go and nothing to lose.
-        // Re-checking isDropped() - raised BEFORE the close, see ComponentFile - is what separates that from a
-        // live file whose write genuinely failed, which still propagates with its own reporting intact.
+      } catch (final IllegalArgumentException | FileNotFoundException e) {
+        // The two - and only two - ways PaginatedComponentFile.write() reports "the file went away under me",
+        // caught by type rather than by catching everything and letting isDropped() decide: a coincidentally
+        // dropped file must not turn some unrelated failure into a FINE line and a released WAL ack.
+        //   IllegalArgumentException: an index compaction drops the sub-index file it replaced while this thread
+        // is between the isOpen() check above and the write, so close() has nulled the channel under its own
+        // write lock. Unchecked, so it used to escape every catch in PageManagerFlushThread and land on its
+        // top-level handler as "Error on processing page flush requests" at SEVERE (issue #7363).
+        //   FileNotFoundException: the same event a moment later. A write already inside the channel gets
+        // ClosedChannelException, and the reopen that correctly handles an ACCIDENTAL close refuses to re-create
+        // a file that was closed on purpose or already deleted, reporting it as this.
+        // Loud either way, and about a page that is superseded by construction - the file it belongs to has been
+        // deleted, so there is nowhere for it to go and nothing to lose. Re-checking isDropped() - raised BEFORE
+        // the close, see ComponentFile - is what separates that from a live file whose write genuinely failed,
+        // which still propagates with its own reporting intact.
         if (!file.isDropped())
           throw e;
-        discardPageOfDroppedFile(page, file);
+        discardPageOfDroppedFile(page, file, e);
         return;
       }
 
@@ -1803,7 +1807,7 @@ public class PageManager extends LockContext {
       }
 
     } else
-      discardPageOfDroppedFile(page, null);
+      discardPageOfDroppedFile(page, null, null);
   }
 
   /**
@@ -1816,12 +1820,16 @@ public class PageManager extends LockContext {
    * for nothing (the close-time ack gate, #4928). {@code takeWALFile} makes the release exactly-once against the
    * racing dropped-file batch purge.
    *
-   * @param file the file the page was addressed to, or {@code null} when it has already left the file manager
+   * @param file  the file the page was addressed to, or {@code null} when it has already left the file manager
+   * @param cause  what the write failed with, when the drop was observed by a failed write rather than up front;
+   *               reported so the FINE line still names it and this can never hide an unexpected failure silently
    */
-  private void discardPageOfDroppedFile(final MutablePage page, final PaginatedComponentFile file) {
+  private void discardPageOfDroppedFile(final MutablePage page, final PaginatedComponentFile file,
+      final Exception cause) {
     LogManager.instance()
-        .log(this, Level.FINE, "Cannot flush page %s because the file %shas been dropped (threadId=%d)...", null, page,
-            file != null ? "'" + file.getFileName() + "' " : "", Thread.currentThread().threadId());
+        .log(this, Level.FINE, "Cannot flush page %s because the file %shas been dropped (threadId=%d)%s", null, page,
+            file != null ? "'" + file.getFileName() + "' " : "", Thread.currentThread().threadId(),
+            cause != null ? ": " + cause.getClass().getSimpleName() + " - " + cause.getMessage() : "...");
 
     final WALFile walFile = page.takeWALFile();
     if (walFile != null)
