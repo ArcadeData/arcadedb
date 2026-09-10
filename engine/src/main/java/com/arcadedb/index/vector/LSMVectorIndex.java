@@ -1765,8 +1765,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Rebuild ordinalToVectorId from vectorIndex
       // IMPORTANT: Must match the validation logic used during graph building
       final String vectorProp =
-          metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
-              metadata.propertyNames.getFirst() : "vector";
+          vectorPropertyName();
 
       // One read of the location index for the whole walk, both because a per-element accessor call would
       // re-check the materialisation flag on every live vector and because a compaction swaps the instance
@@ -2704,8 +2703,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Scan all documents in the associated bucket to find vectors missing from the page-parsed set
           final String vectorProp =
-              metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() :
-                  "vector";
+              vectorPropertyName();
           database.scanBucket(bucket.getName(), record -> {
             final Document doc = (Document) record;
             final RID rid = doc.getIdentity();
@@ -2819,8 +2817,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     {
       // Create a SNAPSHOT of vectorIndex for JVector to use safely
       final String vectorProp =
-          metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) :
-              "vector";
+          vectorPropertyName();
 
       // CRITICAL FIX: Validate vectors before building graph to filter out deleted documents
       // When a document is deleted, getVector() returns null which breaks JVector index building
@@ -3927,9 +3924,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return;
 
     try {
-      final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
-          metadata.propertyNames.getFirst() : "vector";
-
       // Create GrowableVectorValues with lazy disk fallback — vectors are loaded from
       // ArcadeDB pages/documents on first access and cached in the ConcurrentHashMap.
       // This avoids the O(n) pre-loading that was the bottleneck at 1M+ scale.
@@ -5073,6 +5067,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * The name of the property these vectors are indexed on.
+   * <p>
+   * Six places resolved this inline with the same expression, and the seventh - {@link #readPersistedVectorArray}
+   * as first written - defaulted to {@code null} instead of {@code "vector"} and so gave up on the document lookup
+   * for an index whose metadata carries no property names (PR #7360 review). That is not a hypothetical state:
+   * indexes migrated from older metadata reach here with an empty list, and for those the new shared read-back
+   * would have dropped from search results a vector every other path in this class still finds. One expression,
+   * one default.
+   *
+   * @return the property name, never {@code null}
+   */
+  private String vectorPropertyName() {
+    return metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
+        metadata.propertyNames.getFirst() : "vector";
+  }
+
+  /**
    * Reads a live vector back from where it was persisted, by vector id rather than by file offset.
    * <p>
    * The vector of every indexed record is on disk before anything on the heap is allowed to forget it: an
@@ -5106,10 +5117,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           VectorLocationIndex.isCompactedOf(offsetAndFlag));
 
       if (vector == null) {
-        final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
-            metadata.propertyNames.getFirst() : null;
-        if (vectorProp == null)
-          return null;
+        final String vectorProp = vectorPropertyName();
         final RID rid = locations.getRid(vectorId);
         if (rid == null)
           return null;
@@ -5332,7 +5340,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return liveVectorValues;
 
     final String vectorProp =
-        metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() : "vector";
+        vectorPropertyName();
     return ArcadePageVectorValues.forSearch(getDatabase(), metadata.dimensions, vectorProp, vectorIndex(), ordinalMap,
         this, getSearchVectorCache());
   }
@@ -8791,8 +8799,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Create vector values accessor for graph serialization
       final String vectorProp =
-          metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() :
-              "vector";
+          vectorPropertyName();
       // Serialization walks every ordinal exactly once, so feed the shared search cache while doing it: the
       // index comes out of a rebuild with its working set already resident instead of cold (issue #5412).
       final RandomAccessVectorValues vectors = ArcadePageVectorValues.forSearch(getDatabase(), metadata.dimensions,
