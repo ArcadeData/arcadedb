@@ -32,8 +32,11 @@ public final class ScalarTimeSeriesVectorOps implements TimeSeriesVectorOps {
     // NaN policy (issue #7089): the fold IS the policy - see TimeSeriesNaN. Skips NaN, and an empty or all-NaN
     // range comes back as the absent marker rather than as a zero that reads as a measurement.
     double s = TimeSeriesNaN.ABSENT;
-    for (int i = offset; i < offset + length; i++)
-      s = TimeSeriesNaN.sum(s, data[i]);
+    long present = 0;
+    for (int i = offset; i < offset + length; i++) {
+      s = TimeSeriesNaN.sum(s, present, data[i]);
+      present = TimeSeriesNaN.countIfPresent(present, data[i]);
+    }
     return s;
   }
 

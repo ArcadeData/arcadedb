@@ -764,6 +764,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     final double[] rowValues = new double[reqCount];
     final long[] rowCounts = new long[reqCount];
+    // Per schema column, the count of real samples in the segment the vectorized path is on (-1 = not yet counted).
+    final long[] presentBySchemaCol = new long[columns.size()];
 
     // Pre-allocate decode buffers reused across all blocks in this call
     final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
@@ -922,25 +924,27 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
               final int segLen = segEnd - segStart;
 
-              // Accumulate each request using vectorized ops on the segment
+              // Accumulate each request using vectorized ops on the segment. The count recorded with each value
+              // is of the samples that CONTRIBUTED to it, which under the NaN policy are the real ones (issue
+              // #7089) - the same count the per-row and the block-statistics paths record, so a result does not
+              // depend on how blocks happen to align with buckets. Two requests over the same column share one
+              // pass to count them.
+              Arrays.fill(presentBySchemaCol, -1);
               for (int r = 0; r < reqCount; r++) {
                 if (isCount[r]) {
                   result.accumulateSingleStat(bucketTs, r, segLen, segLen);
                 } else {
-                  final double[] colData = decompressedCols[schemaColIndices[r]];
+                  final int sci = schemaColIndices[r];
+                  final double[] colData = decompressedCols[sci];
                   final double val = switch (requests.get(r).type()) {
                     case SUM, AVG -> ops.sum(colData, segStart, segLen);
                     case MIN -> ops.min(colData, segStart, segLen);
                     case MAX -> ops.max(colData, segStart, segLen);
                     case COUNT -> segLen;
                   };
-                  // The count is of the samples that CONTRIBUTED to val, which under the NaN policy are the real
-                  // ones (issue #7089): it is what AVG divides by. Only AVG reads it, so the pass over the segment
-                  // is paid once per AVG request rather than once per request.
-                  final long contributed = requests.get(r).type() == AggregationType.AVG
-                      ? ops.countPresent(colData, segStart, segLen)
-                      : segLen;
-                  result.accumulateSingleStat(bucketTs, r, val, contributed);
+                  if (presentBySchemaCol[sci] < 0)
+                    presentBySchemaCol[sci] = ops.countPresent(colData, segStart, segLen);
+                  result.accumulateSingleStat(bucketTs, r, val, presentBySchemaCol[sci]);
                 }
               }
 
@@ -2173,7 +2177,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     for (final double d : values) {
       min = TimeSeriesNaN.min(min, d);
       max = TimeSeriesNaN.max(max, d);
-      sum = TimeSeriesNaN.sum(sum, d);
+      sum = TimeSeriesNaN.sum(sum, count, d);
       count = TimeSeriesNaN.countIfPresent(count, d);
     }
     return new double[] { min, max, sum, count };
@@ -3138,7 +3142,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // NaN policy (issue #7089): SUM/AVG skip an absent sample the way MIN/MAX below do, and the count kept
       // alongside is of the samples that contributed - what the AVG is divided by once the scan is over.
       final double merged = switch (type) {
-        case SUM, AVG -> TimeSeriesNaN.sum(existing, value);
+        case SUM, AVG -> TimeSeriesNaN.sum(existing, count, value);
         case COUNT -> existing + 1;
         // NaN policy (issue #4596): NaN is treated as absent and skipped, so a real value always
         // wins over a NaN running value (consistent with the row-iter, merge and SIMD paths).

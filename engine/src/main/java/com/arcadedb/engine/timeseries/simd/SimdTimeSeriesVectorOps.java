@@ -64,7 +64,8 @@ public final class SimdTimeSeriesVectorOps implements TimeSeriesVectorOps {
       s += v;
     }
     // An empty or all-NaN range answers the absent marker, not the zero the identity leaves behind - which is
-    // what the scalar sibling's fold gives directly.
+    // what the scalar sibling's fold gives directly. A NaN that the ADD itself produced over real lanes (+Inf and
+    // -Inf in the range) is kept: `found` is true, and the scalar fold keeps it the same way.
     return found ? s : TimeSeriesNaN.ABSENT;
   }
 

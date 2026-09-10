@@ -1000,7 +1000,7 @@ public class TimeSeriesEngine implements AutoCloseable {
       // NaN policy (issue #7089): SUM/AVG skip an absent sample the way MIN/MAX below do, and the count kept
       // alongside is of the samples that contributed - what the AVG is divided by once the scan is over.
       final double merged = switch (type) {
-        case SUM, AVG -> TimeSeriesNaN.sum(existing, value);
+        case SUM, AVG -> TimeSeriesNaN.sum(existing, count, value);
         case COUNT -> existing + 1;
         // NaN policy (issue #4596): NaN is treated as absent and skipped, so a real value always
         // wins over a NaN running value (e.g. when the bucket was seeded with a NaN first sample).
