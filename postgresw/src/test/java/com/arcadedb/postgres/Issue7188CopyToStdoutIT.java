@@ -29,6 +29,7 @@ import org.postgresql.PGConnection;
 import org.postgresql.copy.CopyManager;
 import org.postgresql.util.PSQLException;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -90,7 +91,21 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
       database.newDocument(TYPE).set("id", 4, "name", null, "price", null, "flag", null).save();
       database.newDocument(TYPE).set("id", 5, "name", "", "price", 0.0, "flag", false).save();
     });
+    // A type whose one property is a list, which has no binary encoding on this wire.
+    final DocumentType listed = database.getSchema().createDocumentType(LIST_TYPE);
+    listed.createProperty("id", Type.INTEGER);
+    listed.createProperty("tags", Type.LIST, "STRING");
+    // A vertex type for a COPY whose query is in another language, whose columns only its rows can name.
+    database.getSchema().createVertexType(VERTEX_TYPE).createProperty("id", Type.INTEGER);
+    database.transaction(() -> {
+      database.newDocument(LIST_TYPE).set("id", 1, "tags", List.of("a", "b")).save();
+      for (int i = 1; i <= 5; i++)
+        database.newVertex(VERTEX_TYPE).set("id", i).save();
+    });
   }
+
+  private static final String LIST_TYPE   = "copylist7188";
+  private static final String VERTEX_TYPE = "copyvertex7188";
 
   private static final String ORDERED = "SELECT id, name, price, flag FROM " + TYPE + " ORDER BY id";
 
@@ -170,7 +185,7 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
   @Test
   void whatIsDeclinedIsDeclinedWithFeatureNotSupportedAndTheConnectionStaysUsable() throws Exception {
     try (final Connection connection = openJdbcConnection()) {
-      assertThatThrownBy(() -> copyManager(connection).copyIn("COPY " + TYPE + " FROM STDIN", new java.io.ByteArrayInputStream(new byte[0])))
+      assertThatThrownBy(() -> copyManager(connection).copyIn("COPY " + TYPE + " FROM STDIN", new ByteArrayInputStream(new byte[0])))
           .isInstanceOf(PSQLException.class)
           .hasMessageContaining("COPY ... FROM STDIN is not supported")
           .extracting(e -> ((PSQLException) e).getSQLState()).isEqualTo("0A000");
@@ -191,6 +206,68 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
 
       // After every refusal the session answers the next statement.
       assertThat(copyOut(connection, "COPY (SELECT count(*) AS n FROM " + TYPE + ") TO STDOUT")).isEqualTo("5\n");
+    }
+  }
+
+  @Test
+  void aBinaryCopyOfAColumnWithNoBinaryEncodingIsRefusedAndTheSessionStaysUsable() throws Exception {
+    try (final Connection connection = openJdbcConnection()) {
+      assertThatThrownBy(() -> copyOut(connection, "COPY (SELECT id, tags FROM " + LIST_TYPE + ") TO STDOUT (FORMAT binary)"))
+          .isInstanceOf(PSQLException.class)
+          .hasMessageContaining("\"tags\"")
+          .extracting(e -> ((PSQLException) e).getSQLState()).isEqualTo("0A000");
+      // The same column travels in text format.
+      assertThat(copyOut(connection, "COPY (SELECT id, tags FROM " + LIST_TYPE + ") TO STDOUT")).isEqualTo("1\t{\"a\",\"b\"}\n");
+      // The refused statement's result set was closed, not leaked: the type can be dropped, which a still-open
+      // cursor over it would hold up, and the session goes on.
+      getServerDatabase(0, getDatabaseName()).getSchema().dropType(LIST_TYPE);
+      assertThat(copyOut(connection, "COPY (SELECT count(*) AS n FROM " + TYPE + ") TO STDOUT")).isEqualTo("5\n");
+    }
+  }
+
+  @Test
+  void aQueryThatFailsInsideACopyLeavesTheSessionUsable() throws Exception {
+    try (final Connection connection = openJdbcConnection()) {
+      // The projection divides by zero on the third row - after the rows before it may already have gone out as
+      // CopyData, which the protocol ends with the ErrorResponse.
+      assertThatThrownBy(() -> copyOut(connection, "COPY (SELECT id, 1 / (id - 3) AS x FROM " + TYPE + " ORDER BY id) TO STDOUT"))
+          .isInstanceOf(PSQLException.class);
+      assertThat(copyOut(connection, "COPY (SELECT count(*) AS n FROM " + TYPE + ") TO STDOUT")).isEqualTo("5\n");
+    }
+  }
+
+  /**
+   * CopyData is buffered and written in 64 KB batches, and a row is never split across messages: a row larger than
+   * the batch travels whole, and a result several batches long arrives intact.
+   */
+  @Test
+  void rowsLargerThanTheFlushBatchAndResultsLongerThanItArriveIntact() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    final String big = "x".repeat(200_000) + "\ty";
+    database.getSchema().createDocumentType("copybig7188").createProperty("id", Type.INTEGER);
+    database.transaction(() -> {
+      for (int i = 1; i <= 3; i++)
+        database.newDocument("copybig7188").set("id", i, "name", big).save();
+    });
+    try (final Connection connection = openJdbcConnection()) {
+      final String text = copyOut(connection, "COPY (SELECT id, name FROM copybig7188 ORDER BY id) TO STDOUT");
+      final String expectedRow = "x".repeat(200_000) + "\\ty";
+      assertThat(text).isEqualTo("1\t" + expectedRow + "\n2\t" + expectedRow + "\n3\t" + expectedRow + "\n");
+    }
+  }
+
+  /**
+   * A COPY whose columns only its rows can name - here a Cypher query, which no schema resolution describes - is
+   * materialized the way a plain query is, within the same row cap, and named from the rows it produced.
+   */
+  @Test
+  void aCopyTheSchemaCannotDescribeIsMaterializedWithinTheRowCap() throws Exception {
+    try (final Connection connection = openJdbcConnection()) {
+      assertThatThrownBy(() -> copyOut(connection, "{cypher} COPY (MATCH (v:" + VERTEX_TYPE + ") RETURN v.id AS id ORDER BY id) TO STDOUT"))
+          .isInstanceOf(PSQLException.class)
+          .hasMessageContaining("exceeds the configured limit of " + ROW_CAP);
+      assertThat(copyOut(connection, "{cypher} COPY (MATCH (v:" + VERTEX_TYPE + ") RETURN v.id AS id ORDER BY id LIMIT 2) TO STDOUT"))
+          .isEqualTo("1\n2\n");
     }
   }
 
@@ -263,7 +340,16 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
       assertThat(tuples.get(1)).containsExactly(2, "tab\there");
       assertThat(tuples.get(3)).containsExactly(4, null);
 
-      // 4. The session is intact: a plain statement after the COPY is answered as usual.
+      // 4. A completed COPY portal cannot be run again, as in PostgreSQL: an error, and the session goes on after
+      // the Sync.
+      sendExecute(out);
+      sendSync(out);
+      final WireMessage refused = readWireMessage(in);
+      assertThat(refused.type()).isEqualTo('E');
+      assertThat(new String(refused.body(), StandardCharsets.UTF_8)).contains("34000");
+      assertThat(readWireMessage(in).type()).isEqualTo('Z');
+
+      // 5. The session is intact: a plain statement after the COPY is answered as usual.
       sendParse(out, "SELECT count(*) AS n FROM " + TYPE);
       sendBind(out);
       sendExecute(out);

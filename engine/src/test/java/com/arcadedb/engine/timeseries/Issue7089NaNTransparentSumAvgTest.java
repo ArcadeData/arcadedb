@@ -424,6 +424,45 @@ class Issue7089NaNTransparentSumAvgTest extends TestHelper {
     }
   }
 
+  /**
+   * A legacy block whose column summed over a NaN has no count of real samples either, and the count recorded next
+   * to a MIN or a MAX is of the samples that contributed. Answering those from the header would record the
+   * "unknown" marker as a count; the block is decoded for them too, and only COUNT reads the header.
+   */
+  @Test
+  void aMinOrMaxOverALegacyPoisonedBlockIsAnsweredFromTheValuesSoItsCountIsReal() throws Exception {
+    final String path = TEST_DIR + "/legacy-minmax";
+    writeLegacyFile(path, new long[][] { { 1_000L, 2_000L, 3_000L } }, new double[][] { { 1.0, Double.NaN, 3.0 } });
+
+    final List<MultiColumnAggregationRequest> requests = List.of(
+        new MultiColumnAggregationRequest(1, AggregationType.MIN, "min"),
+        new MultiColumnAggregationRequest(1, AggregationType.MAX, "max"),
+        new MultiColumnAggregationRequest(1, AggregationType.COUNT, "count"));
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(path, columns)) {
+      final AggregationMetrics metrics = new AggregationMetrics();
+      final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
+      store.aggregateMultiBlocks(Long.MIN_VALUE, Long.MAX_VALUE, requests, HOUR, result, metrics, null);
+
+      assertThat(metrics.getSlowPathBlocks()).isEqualTo(1);
+      assertThat(result.getValue(0L, 0)).isEqualTo(1.0);
+      assertThat(result.getValue(0L, 1)).isEqualTo(3.0);
+      assertThat(result.getCount(0L, 0)).as("real samples, never the unknown marker").isEqualTo(2);
+      assertThat(result.getCount(0L, 1)).isEqualTo(2);
+      assertThat(result.getValue(0L, 2)).isEqualTo(3.0);
+      assertThat(result.getCount(0L, 2)).isEqualTo(3);
+    }
+
+    // A COUNT alone still reads the header: the block's row count was never in doubt.
+    final List<MultiColumnAggregationRequest> countOnly = List.of(new MultiColumnAggregationRequest(1, AggregationType.COUNT, "count"));
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(path, columns)) {
+      final AggregationMetrics metrics = new AggregationMetrics();
+      final MultiColumnAggregationResult result = new MultiColumnAggregationResult(countOnly);
+      store.aggregateMultiBlocks(Long.MIN_VALUE, Long.MAX_VALUE, countOnly, HOUR, result, metrics, null);
+      assertThat(metrics.getFastPathBlocks()).isEqualTo(1);
+      assertThat(result.getValue(0L, 0)).isEqualTo(3.0);
+    }
+  }
+
   @Test
   void aVersionZeroFileWithoutLegacyNaNIsStampedCurrentOnItsNextAppend() throws Exception {
     final String path = TEST_DIR + "/stamped";

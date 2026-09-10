@@ -374,9 +374,14 @@ public final class PostgresCopyStatement {
     if (i >= tokens.size())
       throw new CopyException("syntax error in COPY: expected a name", SQLSTATE_SYNTAX_ERROR);
     final PostgresCatalogToken token = tokens.get(i);
-    if (token.type == PostgresCatalogToken.Type.IDENTIFIER || token.type == PostgresCatalogToken.Type.QUOTED_IDENTIFIER)
-      return token.text;
-    throw new CopyException("syntax error in COPY at '" + token.text + "': expected a name", SQLSTATE_SYNTAX_ERROR);
+    if (token.type != PostgresCatalogToken.Type.IDENTIFIER && token.type != PostgresCatalogToken.Type.QUOTED_IDENTIFIER)
+      throw new CopyException("syntax error in COPY at '" + token.text + "': expected a name", SQLSTATE_SYNTAX_ERROR);
+    // The table form splices its names into a SELECT between back-ticks, which ArcadeDB's SQL cannot escape inside
+    // an identifier: a name holding one would end the identifier early and read the rest as SQL. No type or
+    // property can be named that way, so there is nothing to lose by refusing it.
+    if (token.text.indexOf('`') >= 0)
+      throw new CopyException("syntax error in COPY: the name \"" + token.text + "\" cannot contain a back-tick", SQLSTATE_SYNTAX_ERROR);
+    return token.text;
   }
 
   private static List<PostgresCatalogToken> tokenize(final String text) {

@@ -84,6 +84,11 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CoderResult;
+import java.nio.charset.CodingErrorAction;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
@@ -1969,17 +1974,35 @@ public class PostgresNetworkExecutor extends Thread {
     } else
       resultSet = database.command(language, queryText, server.getConfiguration(), parameters);
 
-    List<Result> buffered = null;
-    if (columns == null || columns.isEmpty()) {
-      buffered = browseAndCacheBoundedResultSet(resultSet);
-      columns = getColumns(buffered, resolveQueryTargetType(parsed), resolveAliasToSourceProperty(parsed));
-      if (columns.isEmpty() && buffered.isEmpty()) {
-        final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(queryText, language, parameters, parsed);
-        if (schemaColumns != null)
-          columns = schemaColumns;
+    // From here to the end the result set is owned by this method and closed on every exit - a refusal below, a
+    // failure while streaming - and NOT closed twice: browseAndCacheBoundedResultSet closes what it materializes.
+    boolean resultSetOpen = true;
+    try {
+      List<Result> buffered = null;
+      if (columns == null || columns.isEmpty()) {
+        resultSetOpen = false;
+        buffered = browseAndCacheBoundedResultSet(resultSet);
+        columns = getColumns(buffered, resolveQueryTargetType(parsed), resolveAliasToSourceProperty(parsed));
+        if (columns.isEmpty() && buffered.isEmpty()) {
+          final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(queryText, language, parameters, parsed);
+          if (schemaColumns != null)
+            columns = schemaColumns;
+        }
       }
+      profile.addEngineNanos(System.nanoTime() - engineStart);
+      return copyOut(copy, columns, buffered != null ? buffered.iterator() : resultSet, profile);
+    } finally {
+      if (resultSetOpen)
+        resultSet.close();
     }
-    profile.addEngineNanos(System.nanoTime() - engineStart);
+  }
+
+  /**
+   * The wire half of {@link #copyOut(PostgresCopyStatement, String, Object[], Statement, QueryProfile)}: frames the
+   * rows {@code rows} yields, under the columns already fixed for them.
+   */
+  private int copyOut(final PostgresCopyStatement copy, final Map<String, PostgresType> columns, final Iterator<Result> rows,
+      final QueryProfile profile) throws IOException {
 
     final long serStart = System.nanoTime();
     final String[] names = columns.keySet().toArray(new String[0]);
@@ -2009,6 +2032,11 @@ public class PostgresNetworkExecutor extends Thread {
     final Binary payload = new Binary();
     final StringBuilder line = new StringBuilder();
     final String[] texts = new String[names.length];
+    // One encoder and one byte buffer for every text row: encoding the line straight from the StringBuilder
+    // skips the String and the byte[] a toString().getBytes() would allocate per row, on the bulk path.
+    final CharsetEncoder encoder = binary ? null : DatabaseFactory.getDefaultCharset().newEncoder()
+        .onMalformedInput(CodingErrorAction.REPLACE).onUnmappableCharacter(CodingErrorAction.REPLACE);
+    ByteBuffer encoded = binary ? null : ByteBuffer.allocate(4 * 1024);
 
     if (binary) {
       payload.putByteArray(COPY_BINARY_SIGNATURE);
@@ -2017,33 +2045,30 @@ public class PostgresNetworkExecutor extends Thread {
       appendCopyData(out, payload);
     } else if (copy.isHeader()) {
       copy.appendHeader(line, columns.keySet());
-      appendCopyData(out, line);
+      encoded = appendCopyData(out, line, encoder, encoded);
     }
 
-    int rows = 0;
-    try (resultSet) {
-      final Iterator<Result> iterator = buffered != null ? buffered.iterator() : resultSet;
-      while (iterator.hasNext()) {
-        final Result row = iterator.next();
-        if (row == null)
-          continue;
+    int count = 0;
+    while (rows.hasNext()) {
+      final Result row = rows.next();
+      if (row == null)
+        continue;
 
-        if (binary) {
-          payload.putShort((short) names.length);
-          for (int i = 0; i < names.length; i++)
-            types[i].serializeAsBinary(types[i], payload, columnValue(row, names[i]));
-          appendCopyData(out, payload);
-        } else {
-          for (int i = 0; i < names.length; i++)
-            texts[i] = types[i].toText(types[i], columnValue(row, names[i]));
-          copy.appendRow(line, texts, names);
-          appendCopyData(out, line);
-        }
-        rows++;
-
-        if (out.position() >= COPY_FLUSH_THRESHOLD)
-          flushCopyData(out);
+      if (binary) {
+        payload.putShort((short) names.length);
+        for (int i = 0; i < names.length; i++)
+          types[i].serializeAsBinary(types[i], payload, columnValue(row, names[i]));
+        appendCopyData(out, payload);
+      } else {
+        for (int i = 0; i < names.length; i++)
+          texts[i] = types[i].toText(types[i], columnValue(row, names[i]));
+        copy.appendRow(line, texts, names);
+        encoded = appendCopyData(out, line, encoder, encoded);
       }
+      count++;
+
+      if (out.position() >= COPY_FLUSH_THRESHOLD)
+        flushCopyData(out);
     }
 
     if (binary) {
@@ -2056,8 +2081,8 @@ public class PostgresNetworkExecutor extends Thread {
     profile.addSerializationNanos(System.nanoTime() - serStart);
 
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) copied out (thread=%s)", rows, Thread.currentThread().threadId());
-    return rows;
+      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) copied out (thread=%s)", count, Thread.currentThread().threadId());
+    return count;
   }
 
   /**
@@ -2072,12 +2097,31 @@ public class PostgresNetworkExecutor extends Thread {
     payload.clear();
   }
 
-  private static void appendCopyData(final Binary out, final StringBuilder line) {
-    final byte[] bytes = line.toString().getBytes(DatabaseFactory.getDefaultCharset());
+  /**
+   * Frames the text in {@code line} as one {@code CopyData} message into {@code out}, encoded through
+   * {@code encoder} into {@code encoded}, and resets the line. Returns the byte buffer to use next time: the one
+   * given, or a larger one when a row did not fit - a row is never split across messages, and a single oversized
+   * value grows the buffer once rather than failing.
+   */
+  private static ByteBuffer appendCopyData(final Binary out, final StringBuilder line, final CharsetEncoder encoder,
+      ByteBuffer encoded) {
+    final CharBuffer chars = CharBuffer.wrap(line);
+    while (true) {
+      encoded.clear();
+      encoder.reset();
+      final CoderResult result = encoder.encode(chars, encoded, true);
+      if (result.isUnderflow() && encoder.flush(encoded).isUnderflow())
+        break;
+      // Did not fit: size for the worst case of what is left and start the row over.
+      encoded = ByteBuffer.allocate(Math.max(encoded.capacity() * 2, (int) Math.ceil(line.length() * encoder.maxBytesPerChar()) + 16));
+      chars.rewind();
+    }
+    encoded.flip();
     out.putByte((byte) 'd');
-    out.putInt(4 + bytes.length);
-    out.putByteArray(bytes);
+    out.putInt(4 + encoded.remaining());
+    out.putBuffer(encoded);
     line.setLength(0);
+    return encoded;
   }
 
   private void flushCopyData(final Binary out) throws IOException {

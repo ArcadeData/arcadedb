@@ -78,8 +78,8 @@ import java.util.zip.CRC32;
  * before issue #7089 carries the magic "TSBL" and a statistics TRIPLET, {@code [min, max, sum]}, whose sum was
  * accumulated by a plain {@code +=} - so it is NaN whenever ANY sample was NaN, and exact otherwise. The reader
  * derives the missing count from that: a finite sum proves the column held no NaN, so its count is the block's
- * sample count; a NaN sum leaves the count {@link BlockEntry#COUNT_UNKNOWN}, which routes SUM/AVG over that block
- * through decompression instead of the header. Every path that WRITES a block emits the current layout, so a
+ * sample count; a NaN sum leaves the count {@link BlockEntry#COUNT_UNKNOWN}, which routes every request but COUNT
+ * over that block through decompression instead of the header. Every path that WRITES a block emits the current layout, so a
  * legacy block is upgraded by whichever rewrite touches it next (compaction, downsampling, truncation).
  * <p>
  * The file header's version byte is what refuses a file to a build that predates a layout: version 1 (issue #7089)
@@ -164,10 +164,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     /**
      * The count a legacy ("TSBL") block declares for a column whose sum it accumulated over a NaN sample (issue
      * #7089): the block predates the count, and its sum is the NaN the old {@code +=} produced rather than the sum
-     * of the real samples, so neither statistic can answer a SUM or an AVG. The aggregation push-down decompresses
-     * such a block for those two requests and answers MIN/MAX/COUNT from the header as usual; the next rewrite of
-     * the block (compaction, downsampling, truncation) recomputes both from the values and writes the current
-     * layout, which never carries this marker.
+     * of the real samples, so neither statistic can answer a SUM or an AVG - and the count recorded next to a MIN
+     * or a MAX, which the result contract says is of the samples that contributed, is unknown as well. The
+     * aggregation push-down decompresses such a block for every request but COUNT, so this marker never reaches an
+     * accumulator; the next rewrite of the block (compaction, downsampling, truncation) recomputes both statistics
+     * from the values and writes the current layout, which never carries the marker.
      */
     static final long COUNT_UNKNOWN = -1;
     // Where this block begins in the file, and the CRC32 the writer stored immediately after its data. Both are
@@ -802,9 +803,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final long blockMaxBucket = Math.floorDiv(entry.maxTimestamp, bucketIntervalMs) * bucketIntervalMs;
 
           // A legacy block (written before issue #7089) whose column summed over a NaN sample declares neither a
-          // usable sum nor a count of its real samples, so a SUM or an AVG over it has to come from the values.
-          // MIN/MAX/COUNT are still answered from its header, which never lied about those.
-          if (blockMinBucket == blockMaxBucket && !needsValuesForSum(entry, requests, schemaColIndices)) {
+          // usable sum nor a count of its real samples, so every request over that column but COUNT has to come
+          // from the values: SUM/AVG for the value itself, MIN/MAX for the count recorded next to it.
+          if (blockMinBucket == blockMaxBucket && !needsValues(entry, requests, schemaColIndices)) {
             // FAST PATH: use block-level stats directly — no decompression needed
             if (metrics != null)
               metrics.addFastPathBlock();
@@ -2213,19 +2214,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Whether one of the requests is a SUM or an AVG over a column whose header cannot answer it - a legacy block
-   * that summed over a NaN sample, see {@link BlockEntry#COUNT_UNKNOWN}. Such a block takes the decompressing path
-   * for the whole request list; MIN/MAX/COUNT could have been read from the header, but the block has to be decoded
-   * anyway and one pass over it is cheaper than two.
+   * Whether one of the requests reads a column whose header cannot answer it - a legacy block that summed over a
+   * NaN sample, see {@link BlockEntry#COUNT_UNKNOWN}. SUM and AVG need its sum, and MIN and MAX need the count
+   * recorded next to their value, which the header does not have either; only COUNT, which reads the block's row
+   * count, is unaffected. Such a block takes the decompressing path for the whole request list: one pass over it
+   * is cheaper than two.
    */
-  private static boolean needsValuesForSum(final BlockEntry entry, final List<MultiColumnAggregationRequest> requests,
+  private static boolean needsValues(final BlockEntry entry, final List<MultiColumnAggregationRequest> requests,
       final int[] schemaColIndices) {
-    for (int r = 0; r < requests.size(); r++) {
-      final AggregationType type = requests.get(r).type();
-      if ((type == AggregationType.SUM || type == AggregationType.AVG)
+    for (int r = 0; r < requests.size(); r++)
+      if (requests.get(r).type() != AggregationType.COUNT
           && entry.columnCounts[schemaColIndices[r]] == BlockEntry.COUNT_UNKNOWN)
         return true;
-    }
     return false;
   }
 
@@ -2294,7 +2294,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final double declaredSum = entry.columnSums[colIdx];
     final long declaredCount = entry.columnCounts[colIdx];
     // A legacy block that summed over a NaN sample declares no usable sum and no count (issue #7089), and says so
-    // with COUNT_UNKNOWN: nothing is answered from that header for SUM/AVG, so there is nothing to verify, and the
+    // with COUNT_UNKNOWN: nothing but COUNT is answered from that header, so there is nothing to verify, and the
     // next rewrite of the block replaces both. It is not a problem of the block - it is a block of its time.
     if (declaredCount == BlockEntry.COUNT_UNKNOWN)
       return;
@@ -2764,8 +2764,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           if (legacyStats)
             // The legacy sum was a plain += over every sample, so it is finite only if no sample was NaN - in
             // which case every sample was real and the count is the block's. A NaN sum could be an all-NaN column
-            // (count 0) or a poisoned real total, and the header cannot tell which: COUNT_UNKNOWN sends SUM/AVG
-            // to the values (issue #7089).
+            // (count 0) or a poisoned real total, and the header cannot tell which: COUNT_UNKNOWN sends every
+            // request but COUNT to the values (issue #7089).
             counts[c] = Double.isNaN(sums[c]) ? BlockEntry.COUNT_UNKNOWN : sampleCount;
           else
             counts[c] = statsBuf.getLong();

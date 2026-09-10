@@ -123,6 +123,9 @@ class PostgresCopyStatementTest {
     assertCopyException("COPY (SELECT 1) STDOUT", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR, "expected TO");
     assertCopyException("COPY (SELECT 1) TO STDOUT garbage", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR, "'garbage'");
     assertCopyException("COPY t (a, b TO STDOUT", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR, "column list");
+    // The table form splices its names between back-ticks in a SELECT: a name holding one is refused, not spliced.
+    assertCopyException("COPY \"t` WHERE 1=1 --\" TO STDOUT", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR, "back-tick");
+    assertCopyException("COPY t (\"a`, b\") TO STDOUT", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR, "back-tick");
   }
 
   private static void assertCopyException(final String statement, final String sqlState, final String messagePart) {
