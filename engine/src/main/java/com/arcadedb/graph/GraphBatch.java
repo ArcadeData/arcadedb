@@ -554,6 +554,8 @@ public class GraphBatch implements AutoCloseable {
     int count = 0;
     for (final Index idx : all) {
       try {
+        // Every index type in the tree implements IndexInternal, so this cast does not fail today: the catch is
+        // future-proofing for an implementation that does not, not cover for one that exists (PR #7360 review).
         final IndexInternal index = (IndexInternal) idx;
         index.suspendBackgroundMaintenance();
         suspended[count++] = index;
