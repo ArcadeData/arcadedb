@@ -283,6 +283,68 @@ class Issue7357DeltaBufferHeapBoundTest {
     }
   }
 
+  /**
+   * The auto-sized branch, which is what every installation that never touches either new setting gets, and the
+   * only one of the three whose answer a test cannot otherwise predict (PR #7360 review).
+   * <p>
+   * The heap figures are pinned rather than read off the live JVM - the same seam
+   * {@code VectorHeapBudget.buildCacheBudgetBytes(percent, maxHeap, availableHeap)} already provides for the
+   * graph-build cache - because a budget derived from whatever a CI runner happens to have free is not an
+   * assertion about anything. Three readings, one per arm of the arithmetic:
+   * <ul>
+   *   <li>a roomy heap, where the ceiling percentage is what binds;</li>
+   *   <li>a heap an online rebuild has nearly filled, where the 90%-of-available cap binds instead and the buffer
+   *       is told to stop growing - which is exactly when it must be (issue #6503's lesson applied here);</li>
+   *   <li>the reporter's own shape, where the answer has to be far below the corpus or the bound does nothing.</li>
+   * </ul>
+   */
+  @Test
+  void theAutoSizedBudgetIsAShareOfTheCeilingCappedByWhatIsFree() {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        createSchema(db, 0); // 0 = auto-size, the default
+        final LSMVectorIndex index = vectorIndex(db);
+
+        final long bytesPerVector = VectorHeapBudget.bytesPerCachedVector(DIMENSIONS);
+        assertThat(bytesPerVector)
+            .as("precondition: the per-entry cost the budget divides by")
+            .isEqualTo((long) DIMENSIONS * Float.BYTES + 64);
+
+        final long maxHeap = 16L * 1024 * 1024 * 1024;
+
+        // 1. Roomy heap: 10% of the 16 GB ceiling, since 90% of 12 GB free is far more than that.
+        final long roomy = index.computeDeltaPayloadCapacity(maxHeap, 12L * 1024 * 1024 * 1024);
+        assertThat(roomy)
+            .as("the ceiling share binds while there is headroom")
+            .isEqualTo((int) (maxHeap / 100 * 10 / bytesPerVector));
+
+        // 2. A rebuild holding the old graph has left 512 MB. The available cap has to bind now, or the buffer
+        // would keep growing into heap the rebuild is about to need.
+        final long tight = index.computeDeltaPayloadCapacity(maxHeap, 512L * 1024 * 1024);
+        assertThat(tight)
+            .as("90%% of what is actually free binds when the heap is tight, not the ceiling share")
+            .isEqualTo((int) (512L * 1024 * 1024 / 100 * 90 / bytesPerVector));
+        assertThat(tight)
+            .as("and it is a real reduction, not a formality")
+            .isLessThan(roomy);
+
+        // 3. The reporter's shape. At 768 dimensions the whole 4.2M-record buffer is 12.9 GB, so an auto-sized
+        // budget on a 16 GB heap has to come out far below that or the bound accomplishes nothing.
+        final long reporterBytesPerVector = VectorHeapBudget.bytesPerCachedVector(768);
+        final long reporterCapacity = maxHeap / 100 * 10 / reporterBytesPerVector;
+        assertThat(reporterCapacity * reporterBytesPerVector)
+            .as("the default budget on the reported heap is a fraction of the 12.9 GB the buffer used to hold")
+            .isLessThan(2L * 1024 * 1024 * 1024);
+        assertThat(reporterCapacity)
+            .as("and it still keeps a useful number of payloads resident")
+            .isGreaterThan(100_000L);
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
   private static void createSchema(final Database db, final int deltaCacheSize) {
     db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_SIZE, deltaCacheSize);
     // No rebuild may drain the buffer while the assertions look at it: the inactivity timer is off and the
