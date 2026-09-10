@@ -1360,10 +1360,16 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     final String contentType = response.headers().firstValue("Content-Type").orElse("");
     if (!contentType.toLowerCase(Locale.ROOT).contains(NDJSON_CONTENT_TYPE)) {
+      // Compatibility only: reachable against a server that predates issue #7311 and ignored the Accept header.
+      // Deliberately not routed through manageException, which wants an HttpResponse<String> this path does not
+      // have - and building one to reuse it would add a conversion to a branch whose only job is to surface a
+      // server too old to stream, on its way to being unreachable.
       try (final InputStream in = response.body()) {
         final String body = new String(in.readAllBytes(), DatabaseFactory.getDefaultCharset());
         if (response.statusCode() != 200)
-          throw new DatabaseOperationException("Error on batch import: " + body);
+          throw new DatabaseOperationException(
+              "Error on batch import (server did not honour the streaming encoding, HTTP " + response.statusCode()
+                  + "): " + body);
         return new JSONObject(body);
       }
     }

@@ -1391,10 +1391,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   /**
    * Whether this handler can answer in the {@code application/x-ndjson} streaming encoding when the caller
-   * negotiates it. False for every route that always writes the same buffered body; overridden by the three
-   * that stream - the query handlers of issue #7306 and {@link PostBatchHandler} of issue #7311.
+   * negotiates it. False for every route that always writes the same buffered body.
    * <p>
-   * It exists for the idempotency gate above: whether a streamed answer can be replayed from the cache is a
+   * Overridden by {@code PostCommandHandler} (issue #7306) and {@link PostBatchHandler} (issue #7311) - and by
+   * those two only, verified with
+   * {@code grep -rn 'protected boolean supportsNdJsonEncoding' server/src/main}. {@code GetQueryHandler}
+   * streams as well but does not override it, and does not need to: the only caller is the idempotency gate,
+   * which applies to POST requests alone.
+   * <p>
+   * That gate is the whole reason this exists: whether a streamed answer can be replayed from the cache is a
    * property of the handler, and reading it off the request header alone would change the behaviour of routes
    * that do not stream at all.
    */

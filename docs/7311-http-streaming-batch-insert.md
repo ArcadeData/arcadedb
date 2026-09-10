@@ -30,6 +30,14 @@ Split out of #7306. gRPC exposes `InsertStream`, `InsertBidirectional` and `Grap
 > by exactly one `summary` or `error` line carrying the same object the unary encoding would have sent; a
 > request that does not negotiate that encoding receives the same status and the same bytes it did before.
 
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7386
+
+Follow-ups filed while working on it: **#7381** (the buffered `/batch` idempotency key does not cover the
+payload), **#7382** (the `Start`/`Commit` control frames belong on `/ws`), **#7388** (a streamed response is
+unbounded), **#7396** (extract the error classifier so an in-band status can be exact).
+
 ## Completeness
 
 ### Every path that produces a `/batch` response
@@ -336,3 +344,34 @@ both it and the three `Issue7031RemoteClientIT` tests were confirmed to fail aga
 This is the "dual-path trap" shape: a new overload beside an existing overridable method is a second path, and
 the callers have to be moved deliberately rather than by whichever signature is most convenient at the call
 site.
+
+### Cycle 4 review - `59bf4a9659`
+
+The reviewer traced all four branches of the lazy-open state machine, confirmed the `sendBatch` delegation
+direction against what `Issue7031RemoteClientIT` needs, and closed with "nothing above blocks merging as far as
+I can tell". Three non-blocking notes, two of which were claims **this branch had written and got wrong**, so
+they were fixed rather than deferred:
+
+1. **`supportsNdJsonEncoding()`'s javadoc said "overridden by the three that stream"; only two override it.**
+   `grep -rn 'protected boolean supportsNdJsonEncoding' server/src/main` returns `PostCommandHandler`,
+   `PostBatchHandler` and the base declaration - `GetQueryHandler` streams but does not override, and does not
+   need to, because the only caller is the POST-only idempotency gate. The javadoc now says that, with the
+   command that establishes it.
+2. **`readStreamedBatch`'s buffered fallback is a second error-formatting path** next to `manageException`.
+   Kept, and now says why in the code: it is compat-only, `manageException` wants an `HttpResponse<String>`
+   this path does not have, and building one would add a conversion to a branch whose only job is to surface a
+   server too old to stream. Its message now names the HTTP status and the reason as well as the body.
+3. **No test for the #7388 backpressure scenario** (a client that never reads while uploading a large
+   payload). Correct, and deliberate: #7388 carries that scenario in its own Verification section, because the
+   test only becomes writable once a bound is chosen - every candidate bound implies a different assertion.
+
+The reviewer also asked that the Codacy dashboard be checked before merging, which the PR description already
+flags as the one review surface this branch could not read.
+
+## Final state
+
+`max-cycles-reached` - four review cycles ran, and the fourth came back non-blocking. Not `clean-approval` only
+because that fourth review still produced the two comment corrections above, which were applied without a fifth
+review. Nothing is deferred and nothing was disagreed with.
+
+**Merging is the developer's decision. This branch does not merge PRs.**
