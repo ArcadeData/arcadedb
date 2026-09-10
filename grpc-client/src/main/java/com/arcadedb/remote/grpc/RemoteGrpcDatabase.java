@@ -2185,8 +2185,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * answers 400 with, so a client can distinguish "I asked for something illegal" from "the server broke".
    */
   public VectorSearchResponse vectorSearch(final VectorSearchRequest request) {
-    return searchCall("VectorSearch", request.toBuilder()
-            .setDatabase(getName()).setCredentials(buildCredentials()).build(),
+    final VectorSearchRequest.Builder builder = request.toBuilder()
+        .setDatabase(getName()).setCredentials(buildCredentials());
+    if (transactionId != null)
+      builder.setTransaction(openTransaction());
+
+    return searchCall("VectorSearch", builder.build(),
         req -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).vectorSearch(req));
   }
 
@@ -2195,8 +2199,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * {@link #vectorSearch(VectorSearchRequest)}.
    */
   public HybridSearchResponse hybridSearch(final HybridSearchRequest request) {
-    return searchCall("HybridSearch", request.toBuilder()
-            .setDatabase(getName()).setCredentials(buildCredentials()).build(),
+    final HybridSearchRequest.Builder builder = request.toBuilder()
+        .setDatabase(getName()).setCredentials(buildCredentials());
+    if (transactionId != null)
+      builder.setTransaction(openTransaction());
+
+    return searchCall("HybridSearch", builder.build(),
         req -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).hybridSearch(req));
   }
 
@@ -2205,15 +2213,30 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * {@link #vectorSearch(VectorSearchRequest)}.
    */
   public FullTextSearchResponse fullTextSearch(final FullTextSearchRequest request) {
-    return searchCall("FullTextSearch", request.toBuilder()
-            .setDatabase(getName()).setCredentials(buildCredentials()).build(),
+    final FullTextSearchRequest.Builder builder = request.toBuilder()
+        .setDatabase(getName()).setCredentials(buildCredentials());
+    if (transactionId != null)
+      builder.setTransaction(openTransaction());
+
+    return searchCall("FullTextSearch", builder.build(),
         req -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).fullTextSearch(req));
   }
 
   /**
-   * Runs one of the three search RPCs. The database name and the credentials are stamped on by the caller rather
-   * than left to the application, so a request built by hand cannot address a database other than the one this
-   * connection is open on.
+   * The {@code TransactionContext} naming this connection's open transaction, in the shape every other
+   * transaction-scoped RPC on this class already sends. Callers guard on {@code transactionId != null} first;
+   * this only assembles the message.
+   */
+  private TransactionContext openTransaction() {
+    return TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build();
+  }
+
+  /**
+   * Runs one of the three search RPCs. The database name, the credentials and this connection's open
+   * transaction are stamped on by the caller rather than left to the application, so a request built by hand
+   * cannot address a database other than the one this connection is open on, and a search issued inside a
+   * transaction reads inside it (issue #7326) the way the HTTP routes always have through the
+   * {@code arcadedb-session-id} header.
    */
   private <Req, Resp> Resp searchCall(final String operation, final Req request, final SearchRpc<Req, Resp> rpc) {
     checkDatabaseIsOpen();

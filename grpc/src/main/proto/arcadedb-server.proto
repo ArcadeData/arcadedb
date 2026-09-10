@@ -227,6 +227,12 @@ message VectorSearchRequest {
 
   // Search an LSM_SPARSE_VECTOR index instead of a dense one.
   bool sparse = 9;
+
+  // Optional externally-managed transaction (issue #7326). When it names a live transaction the search runs on
+  // that transaction's own thread, so it reads exactly what the transaction reads - matching the HTTP routes,
+  // which run inside the session's transaction whenever the request carries `arcadedb-session-id`. A non-blank
+  // id the server no longer knows is refused with FAILED_PRECONDITION rather than silently read outside it.
+  TransactionContext transaction = 15;
 }
 
 // One hit of any of the three searches. `distance` and `score` rank in opposite directions, so which of them is
@@ -302,6 +308,12 @@ message HybridSearchRequest {
 
   // Optional graph expansion leg, seeded from the union of the retrieval legs.
   HybridExpand expand = 14;
+
+  // Optional externally-managed transaction (issue #7326). When it names a live transaction the search runs on
+  // that transaction's own thread, so it reads exactly what the transaction reads - matching the HTTP routes,
+  // which run inside the session's transaction whenever the request carries `arcadedb-session-id`. A non-blank
+  // id the server no longer knows is refused with FAILED_PRECONDITION rather than silently read outside it.
+  TransactionContext transaction = 15;
 }
 
 message HybridSearchResponse {
@@ -342,6 +354,12 @@ message FullTextSearchRequest {
 
   // Maximum number of results. Bounded server-side; 0 means "use the server default".
   int32 limit = 7;
+
+  // Optional externally-managed transaction (issue #7326). When it names a live transaction the search runs on
+  // that transaction's own thread, so it reads exactly what the transaction reads - matching the HTTP routes,
+  // which run inside the session's transaction whenever the request carries `arcadedb-session-id`. A non-blank
+  // id the server no longer knows is refused with FAILED_PRECONDITION rather than silently read outside it.
+  TransactionContext transaction = 8;
 }
 
 message FullTextSearchResponse {
