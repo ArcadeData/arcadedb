@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.ws.insert.WebSocketInsertProtocol;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.AbstractReceiveListener;
 import io.undertow.websockets.core.BufferedTextMessage;
@@ -39,14 +40,16 @@ import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public class WebSocketReceiveListener extends AbstractReceiveListener {
-  private final HttpServer        httpServer;
-  private final WebSocketEventBus webSocketEventBus;
+  private final HttpServer              httpServer;
+  private final WebSocketEventBus       webSocketEventBus;
+  private final WebSocketInsertProtocol insertProtocol;
 
   public enum ACTION {UNKNOWN, SUBSCRIBE, UNSUBSCRIBE}
 
   public WebSocketReceiveListener(final HttpServer httpServer, final WebSocketEventBus webSocketEventBus) {
     this.httpServer = httpServer;
     this.webSocketEventBus = webSocketEventBus;
+    this.insertProtocol = httpServer.getInsertProtocol();
   }
 
   @Override
@@ -54,6 +57,15 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
     try {
       final var message = new JSONObject(textMessage.getData());
       final var rawAction = message.getString("action", "");
+
+      // The duplex insert-session frames (issue #7382) run off this I/O thread: they touch the database, and a
+      // commit taken here would stall every other connection this thread serves.
+      final var insertAction = rawAction.toLowerCase(Locale.ENGLISH);
+      if (WebSocketInsertProtocol.handles(insertAction)) {
+        insertProtocol.dispatch(channel, insertAction, message);
+        return;
+      }
+
       var action = ACTION.UNKNOWN;
       try {
         action = ACTION.valueOf(rawAction.toUpperCase(Locale.ENGLISH));
@@ -101,6 +113,8 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   protected void onClose(final WebSocketChannel channel, final StreamSourceFrameChannel frameChannel) throws IOException {
     final var channelId = (UUID) channel.getAttribute(WebSocketEventBus.CHANNEL_ID);
     this.webSocketEventBus.unsubscribeAll(channelId);
+    // An insert session the client walked away from without committing is rolled back, never left open.
+    this.insertProtocol.onChannelClosed(channel, channelId);
   }
 
   private void sendAck(final WebSocketChannel channel, final ACTION action) {

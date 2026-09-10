@@ -107,7 +107,12 @@ public class OpenApiSpecGenerator {
     //   generated client no capability it does not already have by construction.
     // GET /api/v1/docs serves the Swagger UI page. It is HTML for a human, not an API operation.
     // /ws is a WebSocket upgrade. OpenAPI 3.0 cannot express a bidirectional stream under any
-    //   encoding; AsyncAPI is the IDL that would, and adopting it is not in scope here.
+    //   encoding; AsyncAPI is the IDL that would, and adopting it is not in scope here. That is also
+    //   why the duplex insert session of issue #7382 (start / chunk / commit / rollback) lives there
+    //   rather than behind an HTTP route: its control frames need the client to react to what the
+    //   server said and change what it sends next INSIDE the same session, which is the half of the
+    //   gRPC InsertBidirectional shape a request/response exchange cannot carry. See
+    //   com.arcadedb.server.http.ws.insert.WebSocketInsertProtocol for the frame reference.
     // / is the Studio static-content fallback, registered only outside production mode or when
     //   STUDIO_ENABLED is set. Assets, not an API.
     //

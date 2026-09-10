@@ -75,6 +75,8 @@ import com.arcadedb.server.http.ssl.SslUtils;
 import com.arcadedb.server.http.ssl.TlsProtocol;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
+import com.arcadedb.server.http.ws.insert.WebSocketInsertProtocol;
+import com.arcadedb.server.http.ws.insert.WebSocketInsertSessionManager;
 import com.arcadedb.server.ai.AiActivateHandler;
 import com.arcadedb.server.ai.AiAnalyzeProfilerHandler;
 import com.arcadedb.server.ai.AiChatHandler;
@@ -123,6 +125,8 @@ public class HttpServer implements ServerPlugin {
   private final    HttpSessionManager     sessionManager;
   private final    HttpAuthSessionManager authSessionManager;
   private final    WebSocketEventBus      webSocketEventBus;
+  private final    WebSocketInsertSessionManager  insertSessionManager;
+  private final    WebSocketInsertProtocol        insertProtocol;
   private final    IdempotencyCache       idempotencyCache;
   private          ScheduledExecutorService idempotencyCleanupExecutor;
   private          Undertow               undertow;
@@ -141,6 +145,12 @@ public class HttpServer implements ServerPlugin {
         server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX),
         server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER));
     this.webSocketEventBus = new WebSocketEventBus(this.server);
+    // A /ws insert session holds a transaction between frames, so an abandoned one has to expire the way an
+    // 'arcadedb-session-id' transaction does - on its own budget, because a bulk loader pauses between chunks
+    // for reasons an HTTP command never does (issue #7382).
+    this.insertSessionManager = new WebSocketInsertSessionManager(this.server,
+        server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_WS_INSERT_SESSION_EXPIRE_TIMEOUT) * 1_000L);
+    this.insertProtocol = new WebSocketInsertProtocol(this.insertSessionManager);
     final long ttlMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_TTL_MS);
     final int maxEntries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_ENTRIES);
     final long maxBytes = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_BYTES);
@@ -154,6 +164,7 @@ public class HttpServer implements ServerPlugin {
   @Override
   public void stopService() {
     webSocketEventBus.stop();
+    insertSessionManager.close();
 
     if (idempotencyCleanupExecutor != null) {
       idempotencyCleanupExecutor.shutdown();
@@ -450,6 +461,14 @@ public class HttpServer implements ServerPlugin {
    */
   public int getHttpsPort() {
     return httpsPortListening;
+  }
+
+  public WebSocketInsertSessionManager getInsertSessionManager() {
+    return insertSessionManager;
+  }
+
+  public WebSocketInsertProtocol getInsertProtocol() {
+    return insertProtocol;
   }
 
   public WebSocketEventBus getWebSocketEventBus() {
