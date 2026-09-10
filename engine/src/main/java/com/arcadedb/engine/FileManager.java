@@ -348,7 +348,7 @@ public class FileManager {
         // Raised here as well as inside drop() so the deferred branch - where the physical delete is postponed but
         // the file has still left this manager - reads as dropped to a writer racing it (issue #7363). Before the
         // drop, so no window exists in which the file is being removed and does not say so.
-        file.dropped = true;
+        file.markDropped();
         if (handler == null || !handler.deferDrop(file))
           file.drop();
 
