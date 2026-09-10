@@ -42,7 +42,13 @@ public class ComponentFile {
   protected       int     version = 0;      // STARTING FROM 21.10.2 COMPONENTS HAVE VERSION IN THE FILE NAME
   protected       String  componentName;
   protected       String  fileExtension;
-  protected       boolean open;
+  /**
+   * Volatile because it is read without any of this file's locks by the async flush thread while {@code close()}
+   * writes it under the channel write lock. That was already a race before issue #7363; what makes the ordering
+   * matter now is that a reader which observes the close of a dropped file has to observe the drop as well - see
+   * {@code dropped} below, written first, so the pair reads consistently in that direction.
+   */
+  protected volatile boolean open;
   /**
    * Set by {@link #drop()} <b>before</b> the file is closed, and never cleared: this file has been deliberately
    * removed (an index compaction replacing a sub-index, a bucket or index drop), so anything still addressed to it
@@ -56,7 +62,9 @@ public class ComponentFile {
    * whichever side of the window it observes.
    * <p>
    * Volatile rather than guarded: it is read by the flush thread without any of this file's locks, precisely
-   * because the lock it would need is the one {@code close()} is holding.
+   * because the lock it would need is the one {@code close()} is holding. Written BEFORE {@code open} is cleared
+   * and both being volatile, a reader that sees {@code open == false} is guaranteed to see this {@code true} as
+   * well, which is what lets a writer decide "dropped" and "closed" from one consistent pair of reads.
    */
   protected volatile boolean dropped;
 

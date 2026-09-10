@@ -1735,15 +1735,25 @@ public class PageManager extends LockContext {
 
     if (fileManager.existsFile(fileId)) {
       final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFileIfExists(fileId);
-      if (file == null || file.isDropped()) {
-        // The file left the manager, or is on its way out, between existsFile() above and now - the same
-        // superseded page the else branch below handles, observed one instant earlier (issue #7363).
-        discardPageOfDroppedFile(page, file, null);
+      if (file == null) {
+        // The file left the manager between existsFile() above and now - the same superseded page the else
+        // branch below handles, observed one instant earlier (issue #7363).
+        discardPageOfDroppedFile(page, null, null);
         return;
       }
 
-      if (!file.isOpen())
+      if (file.isDropped() || !file.isOpen()) {
+        // ONE decision point for both facts, and isDropped() is what it turns on. Asking them separately - "is it
+        // dropped?" then, a few lines later, "is it closed?" - leaves a window in which a drop landing between the
+        // two reports a superseded page as a live file's failed write, which is the WARNI half of issue #7363.
+        // There is no such window here: drop() raises `dropped` BEFORE close() clears `open`, and both are
+        // volatile, so whichever of the two this thread observes first it sees a consistent pair.
+        if (file.isDropped()) {
+          discardPageOfDroppedFile(page, file, null);
+          return;
+        }
         throw new DatabaseMetadataException("Cannot flush pages on disk because file '" + file.getFileName() + "' is closed");
+      }
 
       LogManager.instance()
           .log(this, Level.FINE, "Flushing page %s to disk (threadId=%d)...", null, page, Thread.currentThread().threadId());
@@ -1769,7 +1779,10 @@ public class PageManager extends LockContext {
         // deleted, so there is nowhere for it to go and nothing to lose. Re-checking isDropped() - raised BEFORE
         // the close, see ComponentFile - is what separates that from a live file whose write genuinely failed,
         // which still propagates with its own reporting intact.
-        if (!file.isDropped())
+        // getPageNumber() >= 0 as well as isDropped(): write() raises IllegalArgumentException for an invalid
+        // page number too, which says nothing about the file and must not be absorbed just because the file
+        // happens to have been dropped at that instant.
+        if (!file.isDropped() || page.pageId.getPageNumber() < 0)
           throw e;
         discardPageOfDroppedFile(page, file, e);
         return;
