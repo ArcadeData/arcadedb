@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7308: {@link GrpcProgressStream} claims in its javadoc that its {@code synchronized} methods
@@ -138,6 +139,36 @@ class GrpcProgressStreamConcurrencyTest {
     assertThat(observer.received.getFirst().getCompleted()).isFalse();
     assertThat(observer.completions.get()).isZero();
     assertThat(observer.error.get()).hasMessageContaining("restore blew up");
+  }
+
+  /**
+   * An {@link Error} - an {@code OutOfMemoryError} part-way through a large restore is the realistic
+   * one - must still end the call, and must still propagate.
+   * <p>
+   * Ending the call is not tidiness: these RPCs carry no deadline by design, because a restore runs
+   * for as long as the data takes, so a client blocked reading this stream has nothing else that
+   * would ever wake it. An Error that left the stream open would be a permanent hang rather than a
+   * bounded failure. Propagating it afterwards is the other half: an Error is not
+   * {@code GrpcProgressStream}'s to absorb.
+   */
+  @Test
+  void anErrorFromTheBodyEndsTheStreamAndStillPropagates() {
+    final ConcurrencyCheckingObserver observer = new ConcurrencyCheckingObserver();
+
+    assertThatThrownBy(() -> GrpcProgressStream.stream(observer,
+        message -> RestoreProgress.newBuilder().setMessage(message).build(), null,
+        report -> RestoreProgress.newBuilder().setCompleted(true).build(),
+        listener -> {
+          listener.onProgress("started");
+          throw new OutOfMemoryError("restore ran out of heap");
+        },
+        e -> Status.INTERNAL.withDescription(e.getMessage()).asException()))
+        .isInstanceOf(OutOfMemoryError.class)
+        .hasMessage("restore ran out of heap");
+
+    assertThat(observer.error.get()).as("the call must have been ended, or a client would wait forever")
+        .isNotNull();
+    assertThat(observer.completions.get()).as("an Error is not a completion").isZero();
   }
 
   /** A restore reports no counters, so a stream built without a counter mapper simply drops them. */

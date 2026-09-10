@@ -946,23 +946,38 @@ public class ServerControlPlane {
     }
   }
 
+  /**
+   * Samples the importer's counters once a second for as long as the import runs.
+   * <p>
+   * The three {@code AtomicLong}s are resolved <b>once</b>, here, rather than on every tick: neither
+   * the context nor its class changes for the life of the import, so a reflective lookup per field
+   * per second is work with no answer that could differ. A build whose {@code ImporterContext} does
+   * not carry all three schedules nothing at all, rather than failing quietly every second.
+   */
   private static void scheduleImportCounters(final Timer timer, final Object context, final ProgressListener listener) {
     if (context == null)
       return;
 
+    final AtomicLong parsedCounter;
+    final AtomicLong vertexCounter;
+    final AtomicLong edgeCounter;
+    try {
+      final Class<?> ctxClass = context.getClass();
+      parsedCounter = (AtomicLong) ctxClass.getField("parsed").get(context);
+      vertexCounter = (AtomicLong) ctxClass.getField("createdVertices").get(context);
+      edgeCounter = (AtomicLong) ctxClass.getField("createdEdges").get(context);
+    } catch (final Exception ignored) {
+      // A counter this importer build does not carry. Report nothing rather than fail the import:
+      // progress is a convenience, and the import itself is what the caller asked for.
+      return;
+    }
+
     timer.schedule(new TimerTask() {
       @Override
       public void run() {
-        try {
-          final Class<?> ctxClass = context.getClass();
-          final long vertices = ((AtomicLong) ctxClass.getField("createdVertices").get(context)).get();
-          final long edges = ((AtomicLong) ctxClass.getField("createdEdges").get(context)).get();
-          final long parsed = ((AtomicLong) ctxClass.getField("parsed").get(context)).get();
-          if (parsed > 0)
-            listener.onImportCounters(parsed, vertices, edges);
-        } catch (final Exception ignored) {
-          // a counter this importer build does not carry: report nothing rather than fail the import
-        }
+        final long parsed = parsedCounter.get();
+        if (parsed > 0)
+          listener.onImportCounters(parsed, vertexCounter.get(), edgeCounter.get());
       }
     }, 1000, 1000);
   }

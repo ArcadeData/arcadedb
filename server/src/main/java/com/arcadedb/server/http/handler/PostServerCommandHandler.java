@@ -519,7 +519,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   @FunctionalInterface
   private interface ProgressingOperation {
     /** @return the operation's final report, merged into the completion event, or null when it has none. */
-    JSONObject run(ServerControlPlane.ProgressListener listener) throws Exception;
+    JSONObject run(ServerControlPlane.ProgressListener listener);
   }
 
   /**
@@ -539,13 +539,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private ExecutionResponse streamOrRun(final HttpServerExchange exchange, final String completionMessage,
       final ProgressingOperation operation) {
     if (!isSSERequested(exchange)) {
-      try {
-        operation.run(ServerControlPlane.ProgressListener.NOOP);
-      } catch (final RuntimeException e) {
-        throw e;
-      } catch (final Exception e) {
-        throw new CommandExecutionException(e.getMessage(), e);
-      }
+      // Nothing to catch: a failure propagates to AbstractServerHttpHandler, which is what maps it
+      // onto a status code, and every control-plane failure is unchecked.
+      operation.run(ServerControlPlane.ProgressListener.NOOP);
       return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
     }
 
@@ -558,13 +554,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         for (final String key : report.keySet())
           completed.put(key, report.get(key));
       sink.send(completed);
-    } catch (final Exception e) {
-      if (!sink.started()) {
-        // Nothing has been written yet, so the request can still be answered with a status code.
-        if (e instanceof RuntimeException runtime)
-          throw runtime;
-        throw new CommandExecutionException(e.getMessage(), e);
-      }
+    } catch (final RuntimeException e) {
+      // Nothing has been written yet, so the request can still be answered with a status code.
+      if (!sink.started())
+        throw e;
       sink.send(new JSONObject().put("status", "error").put("message", failureMessage(e)));
     } finally {
       sink.close();
@@ -578,7 +571,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * that names what actually went wrong - the same message the pre-#7308 handler read straight off
    * the {@code InvocationTargetException}.
    */
-  private static String failureMessage(final Exception e) {
+  private static String failureMessage(final RuntimeException e) {
     final Throwable cause = e.getCause();
     return cause != null && cause.getMessage() != null ? cause.getMessage() : e.getMessage();
   }

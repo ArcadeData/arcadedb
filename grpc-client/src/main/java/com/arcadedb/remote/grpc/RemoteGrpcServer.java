@@ -631,10 +631,16 @@ public class RemoteGrpcServer implements AutoCloseable {
    * Cancels a stream that will not be read to its end. Never throws: it runs from a {@code finally}
    * while another failure is already on its way out, and masking that failure with a cancellation
    * problem would hide the reason the stream was abandoned in the first place.
+   * <p>
+   * The reason it gives is deliberately neutral about <i>who</i> ended it. This runs both when the
+   * caller's progress consumer threw and when the read itself threw because the server had already
+   * ended the call with an error status; in the second case the cancel is a no-op, and a message
+   * blaming the client would be read by whoever is debugging a failed restore as evidence of
+   * something that did not happen.
    */
   private static void cancelQuietly(final BlockingClientCall<?, ?> stream, final String operation) {
     try {
-      stream.cancel("'" + operation + "' abandoned by the client", null);
+      stream.cancel("'" + operation + "' stream was not read to its end", null);
     } catch (final Exception e) {
       LogManager.instance().log(RemoteGrpcServer.class, Level.FINE,
           "Exception while cancelling the '%s' progress stream: %s", operation, e.getMessage());

@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ServerControlPlane;
+import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
@@ -92,6 +93,15 @@ final class GrpcProgressStream<T> implements ServerControlPlane.ProgressListener
       stream.complete(completion.apply(report));
     } catch (final Exception e) {
       stream.fail(errorMapper.apply(e));
+    } catch (final Throwable t) {
+      // An Error, of which an OutOfMemoryError part-way through a large restore is the realistic one.
+      // It is caught for one reason: to end the call. These RPCs carry no deadline by design - the
+      // operation's own end is what ends them - so a client blocked reading this stream has nothing
+      // else that would ever wake it, and letting an Error through untold would turn a rare failure
+      // into a permanent hang. Rethrown immediately after, because an Error is not this method's to
+      // absorb: the JVM's own handling of it must still happen.
+      stream.fail(Status.INTERNAL.withDescription("The operation failed with " + t).asException());
+      throw t;
     }
   }
 
