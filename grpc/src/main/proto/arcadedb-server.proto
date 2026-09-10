@@ -965,7 +965,8 @@ message TimeSeriesLatestResponse {
 //   - every other RPC needs the server-admin (root) principal, the gate POST /api/v1/server and the
 //     /api/v1/server/* routes apply through checkRootUser.
 //
-// Leader routing: CreateDatabase, DropDatabase, CreateUser and DeleteUser are refused on a follower
+// Leader routing: CreateDatabase, DropDatabase, CreateUser, DeleteUser, RestoreBackup,
+// RestoreDatabase and ImportDatabase are refused on a follower
 // with FAILED_PRECONDITION and the leader's address on the arcadedb-leader-* trailers. That is this
 // transport's equivalent of the HTTP handler forwarding those four commands to the leader; gRPC has
 // no request proxy, so the caller redirects itself.
@@ -1018,6 +1019,11 @@ service ArcadeDbAdminService {
   rpc ProfilerResults (ProfilerResultsRequest) returns (ProfilerDocumentResponse);
   rpc ProfilerList    (ProfilerListRequest)    returns (ProfilerListResponse);
   rpc ProfilerLoad    (ProfilerLoadRequest)    returns (ProfilerDocumentResponse);
+
+  // restore and import - server-streaming, see the RestoreProgress section below
+  rpc RestoreBackup   (RestoreBackupRequest)   returns (stream RestoreProgress);
+  rpc RestoreDatabase (RestoreDatabaseRequest) returns (stream RestoreProgress);
+  rpc ImportDatabase  (ImportDatabaseRequest)  returns (stream ImportProgress);
 
   // server lifecycle and cluster
   rpc GetServerEvents   (GetServerEventsRequest)   returns (GetServerEventsResponse);
@@ -1438,6 +1444,82 @@ message ProfilerRunInfo {
 message ProfilerListResponse {
   // Newest first, the order the profiler lists them in.
   repeated ProfilerRunInfo runs = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Control plane: restore and import
+// -----------------------------------------------------------------------------
+
+// These three are the only control-plane operations that report progress while they run, which is
+// why they are server-streaming rather than unary (issue #7308): a unary RestoreDatabase would hold
+// the call open for the length of the restore with nothing to show for it. They are the gRPC
+// counterpart of POST /api/v1/server answering 'restore backup', 'restore database' and 'import
+// database' as Server-Sent Events, and both transports run one implementation -
+// com.arcadedb.server.ServerControlPlane - with the progress sink supplied by the transport.
+//
+// Every one of them is root-only and leader-only, matching the HTTP commands, which checkRootUser
+// gates and forwardToLeaderIfReplica sends to the leader. A follower answers FAILED_PRECONDITION
+// with the leader's address on the arcadedb-leader-* trailers.
+//
+// The stream carries progress messages while the operation runs and one final message with
+// completed = true. A failure terminates the stream with an error status instead: there is no error
+// message on the stream, so a client that read a completed message has a result that succeeded.
+// Cancelling the call stops the progress; it does not stop the restore, which has no interruption
+// point - the same as an HTTP client dropping its SSE connection.
+
+message RestoreBackupRequest {
+  DatabaseCredentials credentials = 1;
+  // The database the archive was taken from.
+  string database = 2;
+  // A plain archive file name inside that database's backup directory, resolved server-side. Path
+  // separators and traversal sequences are refused.
+  string file_name = 3;
+  // The database to restore into. May differ from 'database'.
+  string target_database = 4;
+  // Replace target_database when it already exists. Without it an existing target fails the call
+  // with INVALID_ARGUMENT. The existing database is dropped only once the restore into a temporary
+  // directory has succeeded, so a failed restore leaves it intact.
+  bool overwrite = 5;
+}
+
+message RestoreDatabaseRequest {
+  DatabaseCredentials credentials = 1;
+  // The database to create from the archive. Must not already exist.
+  string database = 2;
+  // Where the server fetches the archive from. Unless
+  // 'arcadedb.server.restoreImportAllowLocalUrls' is enabled, only http/https URLs to non-private
+  // hosts are accepted.
+  string url = 3;
+}
+
+message ImportDatabaseRequest {
+  DatabaseCredentials credentials = 1;
+  // The database to create and import into. Must not already exist.
+  string database = 2;
+  // Where the server fetches the source from, under the same URL rules as RestoreDatabaseRequest.
+  string url = 3;
+}
+
+// One progress event of a running restore.
+message RestoreProgress {
+  // Set on the last message of the stream and on no other.
+  bool   completed = 1;
+  string message   = 2;
+}
+
+// One progress event of a running import.
+message ImportProgress {
+  // Set on the last message of the stream and on no other.
+  bool   completed   = 1;
+  // A progress line from the importer. Empty on a message that carries only counters.
+  string message     = 2;
+  // Importer counters, sampled once a second. All zero on a message that carries only a line.
+  int64  parsed      = 3;
+  int64  vertices    = 4;
+  int64  edges       = 5;
+  // The importer's own final report as a JSON document, set only on the completed message. It
+  // travels as JSON because its keys are the importer's and change with it.
+  string result_json = 6;
 }
 
 // -----------------------------------------------------------------------------
