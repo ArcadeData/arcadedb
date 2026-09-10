@@ -73,8 +73,10 @@ public class RemoteGraphBatch implements AutoCloseable {
   private final   Map<String, String> queryParams;
   private final   int                 flushEvery;
   /**
-   * Notified once per server-side chunk acknowledgement while a flush is still uploading, or {@code null} when
-   * the caller did not ask for progress and the flush uses the buffered request it always used (issue #7311).
+   * The caller's own progress listener, notified once per server-side chunk acknowledgement while a flush is
+   * still uploading (issue #7311), or {@code null} when it asked for none. It no longer decides the encoding:
+   * every flush negotiates the streaming one, because that is how the temporary-id mapping comes back a chunk
+   * at a time instead of as one object per flush (issue #7353).
    */
   private final   Consumer<JSONObject> progressListener;
   private final   StringBuilder       buffer;
@@ -244,7 +246,13 @@ public class RemoteGraphBatch implements AutoCloseable {
 
     queryParams.put("ordinalBase", Integer.toString(bufferOrdinalBase));
 
-    final JSONObject response = database.sendBatch(buffer.toString(), queryParams, progressListener);
+    // Always the streaming encoding, whether or not the caller asked for progress (issue #7353). It is the
+    // mapping that makes it non-optional: with the buffered one the server has to build the temporary-id map of
+    // the entire flush as a single JSON object, and this client has to read that object back in one piece -
+    // 50,000 entries per flush by default, and every vertex of the load when flushEvery is 0. Streamed, the
+    // mapping arrives one committed chunk at a time and neither end ever holds more than one chunk of it. The
+    // caller's own listener, when it set one, is notified from inside this one.
+    final JSONObject response = database.sendBatch(buffer.toString(), queryParams, this::onFlushProgress);
 
     totalVerticesCreated += response.getLong("verticesCreated");
     totalEdgesCreated += response.getLong("edgesCreated");
@@ -252,33 +260,70 @@ public class RemoteGraphBatch implements AutoCloseable {
 
     if (response.getBoolean("idMappingOmitted", false))
       // Never resolve edges against a mapping that is not there: it would silently drop every cross-flush edge.
+      // Only reachable against a server that predates issue #7311 and answered the buffered object: one that
+      // streams says 'idMappingStreamed' instead, and has no size at which it stops sending.
       throw new IllegalStateException(
           "The server did not return the temporary-id mapping of the last flush (" + response.getInt("idMappingSize", 0)
-              + " ids). Lower flushEvery so each request stays within what the server echoes back");
+              + " ids). Lower flushEvery so each request stays within what the server echoes back, or upgrade the "
+              + "server to one that streams the mapping back as it resolves it");
 
-    // Store resolved temp ID → RID mapping for cross-flush edge references
-    if (response.has("idMapping")) {
-      final JSONObject idMapping = response.getJSONObject("idMapping");
-      for (final String key : idMapping.keySet()) {
-        // "123" in ordinal mode, "v123" when the server resolves by temporary id.
-        final int idx = Integer.parseInt(key.charAt(0) == 'v' ? key.substring(1) : key);
-        final String ridStr = idMapping.getString(key);      // "#3:456"
-        final int colonPos = ridStr.indexOf(':');
-        final int bucketId = Integer.parseInt(ridStr.substring(1, colonPos));
-        final long position = Long.parseLong(ridStr.substring(colonPos + 1));
+    // The residual mapping of the last chunk, when the server streamed it, or the whole mapping of the flush
+    // when it answered the buffered object - which a server predating issue #7353 still does.
+    applyIdMapping(response);
 
-        ensureMappingCapacity(idx + 1);
-        resolvedBucketIds[idx] = bucketId;
-        resolvedPositions[idx] = position;
-        if (idx >= resolvedCount)
-          resolvedCount = idx + 1;
-      }
-    }
+    if (response.getBoolean("idMappingStreamed", false) && resolvedCount < vertexCounter)
+      // The count the terminal line reports is what makes an incomplete stream detectable at all: a mapping
+      // that arrives in pieces can lose a piece to a truncated response without any single piece looking wrong,
+      // and an edge resolved against the gap would silently point at the wrong vertex.
+      throw new IllegalStateException("The server resolved " + response.getInt("idMappingSize", 0)
+          + " temporary ids for the last flush but only " + (resolvedCount - bufferOrdinalBase)
+          + " of them arrived, so the mapping this batch resolves its cross-flush edges against is incomplete");
 
     buffer.setLength(0);
     itemsInBuffer = 0;
     bufferOrdinalBase = vertexCounter;
     failed = false;
+  }
+
+  /**
+   * Handed every {@code progress} line of a flush. It applies the temporary ids that line reports as resolved -
+   * which is why this client negotiates the streaming encoding at all (issue #7353) - and then passes the line
+   * on to the caller's own listener, if it set one.
+   * <p>
+   * Applying a mapping before the flush that produced it has returned is safe here for the same reason the
+   * counters on the same line are: a batch is not atomic, so the chunks acknowledged before a failure are
+   * durable, and a flush that does not complete leaves this batch permanently {@code failed} and unusable
+   * (issue #7031) - so a partially applied mapping is never resolved against.
+   */
+  private void onFlushProgress(final JSONObject progress) {
+    applyIdMapping(progress);
+    if (progressListener != null)
+      progressListener.accept(progress);
+  }
+
+  /**
+   * Folds one {@code idMapping} object - a whole flush's worth from the buffered encoding, or one committed
+   * chunk's worth from a streamed line - into the flat arrays that resolve cross-flush edge references.
+   */
+  private void applyIdMapping(final JSONObject event) {
+    if (!event.has("idMapping"))
+      return;
+
+    final JSONObject idMapping = event.getJSONObject("idMapping");
+    for (final String key : idMapping.keySet()) {
+      // "123" in ordinal mode, "v123" when the server resolves by temporary id.
+      final int idx = Integer.parseInt(key.charAt(0) == 'v' ? key.substring(1) : key);
+      final String ridStr = idMapping.getString(key);      // "#3:456"
+      final int colonPos = ridStr.indexOf(':');
+      final int bucketId = Integer.parseInt(ridStr.substring(1, colonPos));
+      final long position = Long.parseLong(ridStr.substring(colonPos + 1));
+
+      ensureMappingCapacity(idx + 1);
+      resolvedBucketIds[idx] = bucketId;
+      resolvedPositions[idx] = position;
+      if (idx >= resolvedCount)
+        resolvedCount = idx + 1;
+    }
   }
 
   /**

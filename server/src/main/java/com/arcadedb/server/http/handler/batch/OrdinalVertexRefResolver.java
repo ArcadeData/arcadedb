@@ -138,6 +138,15 @@ public class OrdinalVertexRefResolver implements VertexRefResolver {
   }
 
   /**
+   * The absolute position of the vertex in the load, which is what {@link #forEach} keys by. Never {@code null}:
+   * the position IS the key here, so every vertex this resolver stores can be named.
+   */
+  @Override
+  public String refOf(final String tempId, final long ordinal) {
+    return Long.toString(ordinalBase + ordinal);
+  }
+
+  /**
    * Parses a vertex position, accepting both the bare number and the {@code v<number>} form that
    * {@code RemoteGraphBatch} generates.
    */

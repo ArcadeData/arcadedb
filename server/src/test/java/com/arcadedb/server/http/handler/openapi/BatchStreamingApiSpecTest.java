@@ -27,6 +27,8 @@ import io.swagger.v3.oas.models.parameters.Parameter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -84,6 +86,30 @@ class BatchStreamingApiSpecTest {
     assertThat(((Schema<?>) event.getProperties().get("summary")).getProperties())
         .as("so does the read-your-writes bookmark, which can no longer be a response header")
         .containsKey("commitIndex");
+  }
+
+  /**
+   * Issue #7353: the temporary-id mapping is a property of the progress lines on this encoding, not of the
+   * terminal object. A client generated from a document that still put it only on the summary would read
+   * 'idMappingStreamed' and have nowhere to look for what was streamed.
+   */
+  @Test
+  void theStreamedMappingIsDeclaredOnTheAcknowledgementsAndAccountedForOnTheSummary() {
+    final Schema<?> event = openAPI.getComponents().getSchemas().get("NdJsonBatchEvent");
+
+    assertThat(((Schema<?>) event.getProperties().get("progress")).getProperties())
+        .as("the mapping travels one committed chunk at a time, on the acknowledgements")
+        .containsKey("idMapping");
+    assertThat(((Schema<?>) ((Schema<?>) event.getProperties().get("progress")).getProperties().get("idMapping"))
+        .getDescription())
+        .as("and the document has to say it is a CHUNK, or a client will treat the first one as the whole thing")
+        .contains("this chunk resolved");
+
+    final Map<String, Schema> summary = ((Schema<?>) event.getProperties().get("summary")).getProperties();
+    assertThat(summary)
+        .as("the summary says where the mapping went and how much of it there was, so an incomplete stream is "
+            + "detectable")
+        .containsKeys("idMappingStreamed", "idMappingSize");
   }
 
   @Test

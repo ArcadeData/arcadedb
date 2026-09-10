@@ -104,4 +104,13 @@ public class TempIdVertexRefResolver implements VertexRefResolver {
   public void forEach(final EntryConsumer consumer) {
     map.forEach(consumer::accept);
   }
+
+  /**
+   * The temporary id itself, which is what {@link #forEach} keys by. {@code null} for a vertex that declared
+   * none: nothing was stored for it, so there is nothing to hand back.
+   */
+  @Override
+  public String refOf(final String tempId, final long ordinal) {
+    return tempId;
+  }
 }

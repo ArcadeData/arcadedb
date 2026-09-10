@@ -844,6 +844,13 @@ public class CoreApiSpec implements OpenApiContributor {
     progress.addProperty("phase", SpecBuilders.string("'vertices' or 'edges'"));
     progress.addProperty("verticesCreated", SpecBuilders.integer("Vertices attempted so far"));
     progress.addProperty("edgesCreated", SpecBuilders.integer("Edges attempted so far"));
+    progress.addProperty("idMapping", SpecBuilders.object("""
+        Temporary id to RID mapping of the vertices this chunk resolved, and only of those: the mapping is \
+        handed back one committed chunk at a time so neither end ever holds the whole load's worth of it \
+        (issue #7353). Concatenate the 'idMapping' of every line, in order, to obtain what the buffered \
+        encoding returns in one object, and check the total against 'idMappingSize' on the terminal line. \
+        Absent on an edge-phase acknowledgement, on a chunk whose vertices declared no @id under \
+        refMode=tempId, and when the request sent idMapping=false."""));
     addLoadAccounting(progress);
     schema.addProperty("progress", progress);
 
@@ -853,6 +860,16 @@ public class CoreApiSpec implements OpenApiContributor {
         header here because the response has already started when its value becomes known.""");
     summary.addProperty("commitIndex", SpecBuilders.integer(
         "Last applied Raft index, the value the X-ArcadeDB-Commit-Index header carries on the buffered encoding"));
+    summary.addProperty("idMappingStreamed", SpecBuilders.bool("""
+        Always true on this encoding when the load resolved any temporary id: the mapping travelled in the \
+        'idMapping' of the progress lines rather than in this object, so 'idMapping' here is only whatever the \
+        last chunk resolved after the final acknowledgement - usually nothing. 'idMappingOmitted' is never sent \
+        on this encoding: the size cap it reports exists because the buffered encoding has to build the whole \
+        mapping before it can send anything, which streaming removes (issue #7353)."""));
+    summary.addProperty("idMappingSize", SpecBuilders.integer("""
+        Total number of temporary ids the load resolved. Check the number of mapping entries received across \
+        all the lines against it: a mapping that arrives in pieces can lose one to a truncated response \
+        without any single piece looking wrong."""));
     schema.addProperty("summary", summary);
 
     final Schema<Object> error = SpecBuilders.object("""
