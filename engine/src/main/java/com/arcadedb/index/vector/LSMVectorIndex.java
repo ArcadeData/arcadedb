@@ -3418,10 +3418,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // is reused across begin()/commit() cycles (nothing to pop), with one it is a fresh object every time.
         final long chunkSizeMB = getTxChunkSize();
 
+        // Every commit below - the per-chunk ones and the final one - waits for the vecgraph file lock on the
+        // bulk budget rather than on the interactive one (issue #7361). It has to: an ordinary insert commit takes
+        // that file's lock too, because LSMVectorIndex.getFileIds() puts the companion graph file in every one of
+        // its lock sets (#4937), so under a live ingest this persist queues behind the loader routinely. On the
+        // 5s interactive default one such wait discarded a graph build that had cost 27 minutes, to spare a wait
+        // of about seven seconds.
+        final long commitLockTimeout = getGraphPersistCommitLockTimeout();
+
         final TransactionContext[] persistTransaction = new TransactionContext[1];
         database.begin();
         persistTransaction[0] = database.getTransaction();
         persistTransaction[0].setUseWAL(false);
+        persistTransaction[0].setCommitLockTimeout(commitLockTimeout);
 
         final ChunkCommitCallback chunkCallback = bytesWritten -> {
           LogManager.instance().log(this, Level.INFO,
@@ -3434,6 +3443,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           database.begin();
           persistTransaction[0] = database.getTransaction();
           persistTransaction[0].setUseWAL(false);
+          persistTransaction[0].setCommitLockTimeout(commitLockTimeout);
         };
 
         // Flipped the moment the manifest certifies the committed pages. Everything after that point - the
@@ -3684,9 +3694,42 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // the answer: the connectivity walk runs over the graph object, not over anything on disk.
     final int[] unreachable = graphUnreachableOrdinals;
 
+    // The length the write ended on, so the next session measures the JVector footer from what was actually
+    // written instead of re-deriving it from a page count that the async flush thread is still catching up to
+    // (issue #7362).
     persistedTo.getManifest().write(graphOrdinalToVectorId.length,
         LSMVectorIndexGraphManifest.fingerprintOf(graphOrdinalToVectorId, vectorIndex()::getRid),
-        unreachable != null ? unreachable : EMPTY_ORDINALS);
+        unreachable != null ? unreachable : EMPTY_ORDINALS,
+        persistedTo.getLastWrittenGraphBytes());
+  }
+
+  /**
+   * How long one commit of a bulk graph persist waits for its file locks (issue #7361).
+   * <p>
+   * {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT} is sized for an interactive transaction, where giving up fast
+   * is right because the caller retries cheaply. Nothing about a graph persist fits that: it commits once per
+   * {@link GlobalConfiguration#INDEX_BUILD_CHUNK_SIZE_MB}, each of those commits is a step of a build that already
+   * cost minutes, and losing any one of them discards the build and marks the pages unusable. Falls back to the
+   * commit default only if the bulk budget is configured smaller, so this can never make the persist give up
+   * sooner than it does today.
+   */
+  private long getGraphPersistCommitLockTimeout() {
+    final ContextConfiguration configuration = getDatabase().getConfiguration();
+    final long bulkTimeout = configuration.getValueAsLong(GlobalConfiguration.INDEX_BUILD_COMMIT_LOCK_TIMEOUT);
+    if (bulkTimeout <= 0)
+      // Wait indefinitely, as the LockManager reads it.
+      return bulkTimeout;
+
+    final long commitTimeout = configuration.getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
+    return commitTimeout <= 0 ? commitTimeout : Math.max(bulkTimeout, commitTimeout);
+  }
+
+  /**
+   * @return the component this index's persisted graph lives on, or {@code null} when it has none yet. Package
+   * private: for tests that have to inspect the persisted graph directly, nothing else.
+   */
+  LSMVectorIndexGraphFile getGraphFile() {
+    return graphFile;
   }
 
   private long getTxChunkSize() {
@@ -8473,9 +8516,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // Track if we started the transaction (for graph building)
     final boolean startedTransaction = db.getTransaction().getStatus() != TransactionContext.STATUS.BEGUN;
+    final long commitLockTimeout = getGraphPersistCommitLockTimeout();
     if (startedTransaction) {
       db.begin();
       db.getTransaction().setUseWAL(false);
+      // Same reasoning as the rebuild path: a chunk of a bulk persist waits on the bulk budget (issue #7361).
+      db.getTransaction().setCommitLockTimeout(commitLockTimeout);
     }
 
     try {
@@ -8494,6 +8540,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Start new transaction and disable WAL
         db.begin();
         db.getTransaction().setUseWAL(false);
+        db.getTransaction().setCommitLockTimeout(commitLockTimeout);
       };
 
       // Create vector values accessor for graph serialization

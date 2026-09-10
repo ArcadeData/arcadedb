@@ -935,6 +935,19 @@ public enum GlobalConfiguration {
       Recommended: 50MB for typical workloads, 100MB for high-memory systems, 25MB for constrained environments.""",
       Long.class, 50L),
 
+  INDEX_BUILD_COMMIT_LOCK_TIMEOUT("arcadedb.index.buildCommitLockTimeout", SCOPE.DATABASE,
+      """
+      Timeout in ms a bulk index build waits for the file locks of ONE of its chunk commits, replacing \
+      arcadedb.commitLockTimeout for those commits only. \
+      The default there is sized for an interactive transaction, where giving up quickly is right because the \
+      caller can retry cheaply. A vector graph persist is the opposite case: it follows a build that can cost tens \
+      of minutes, it commits every arcadedb.index.buildChunkSizeMB, and a single chunk that cannot take the lock \
+      discards the whole build (issue #7361) - while the contender it waits behind is an ordinary commit that will \
+      be done in milliseconds. Waiting is nearly free here; giving up is not. \
+      This bounds only how long the build WAITS, never how long it HOLDS, so raising it cannot make any other \
+      transaction slower. 0 or less waits indefinitely.""",
+      Long.class, 60_000L),
+
   INDEX_COMPACTION_RAM_MB("arcadedb.indexCompactionRAM", SCOPE.DATABASE, "Maximum amount of RAM to use for index compaction, in MB",
       Long.class, 300),
 
