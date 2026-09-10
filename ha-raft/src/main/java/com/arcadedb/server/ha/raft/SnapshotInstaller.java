@@ -94,7 +94,7 @@ public final class SnapshotInstaller {
 
   static final String SNAPSHOT_NEW_DIR       = ".snapshot-new";
   static final String SNAPSHOT_BACKUP_DIR    = ".snapshot-backup";
-  static final String SNAPSHOT_PENDING_FILE  = ".snapshot-pending";
+  static final String SNAPSHOT_PENDING_FILE  = ArcadeDBServer.SNAPSHOT_PENDING_FILE;
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
 
   // Reserved staging directory prefix for acquiring a database the node has NEVER seen (issue #4727).
