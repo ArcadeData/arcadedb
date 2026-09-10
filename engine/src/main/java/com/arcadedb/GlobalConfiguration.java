@@ -945,7 +945,9 @@ public enum GlobalConfiguration {
       discards the whole build (issue #7361) - while the contender it waits behind is an ordinary commit that will \
       be done in milliseconds. Waiting is nearly free here; giving up is not. \
       This bounds only how long the build WAITS, never how long it HOLDS, so raising it cannot make any other \
-      transaction slower. 0 or less waits indefinitely.""",
+      transaction slower. 0 or less waits indefinitely. \
+      The effective value is clamped to be at least arcadedb.commitLockTimeout, so this can never make a build \
+      give up sooner than it already would: setting it BELOW that one has no effect.""",
       Long.class, 60_000L),
 
   INDEX_COMPACTION_RAM_MB("arcadedb.indexCompactionRAM", SCOPE.DATABASE, "Maximum amount of RAM to use for index compaction, in MB",
