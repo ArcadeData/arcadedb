@@ -18,19 +18,27 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.Set;
-
+/**
+ * {@code POST /server/api-tokens}: mints a token and returns it, plaintext, exactly once. Minting and
+ * the validation of the permission document live in {@link ServerControlPlane#createApiToken} so the
+ * gRPC {@code CreateApiToken} RPC applies the same rules (issue #7309).
+ * <p>
+ * This route applies no transport check: it mints over whichever listener the request arrived on. The
+ * gRPC RPC does apply one, because it was added with the gate rather than inheriting years of
+ * behaviour. Bringing the two into line is issue #7372.
+ */
 public class PostApiTokenHandler extends AbstractServerHttpHandler {
+  private final ServerControlPlane controlPlane;
 
   public PostApiTokenHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.controlPlane = new ServerControlPlane(httpServer.getServer());
   }
 
   @Override
@@ -41,25 +49,17 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
     if (payload == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
 
-    final String name = payload.getString("name", "");
-    if (name.isBlank())
-      return new ExecutionResponse(400, new JSONObject().put("error", "Token name is required").toString());
-
-    final String database = payload.getString("database", "*");
-    final long expiresAt = payload.getLong("expiresAt", 0);
-    final JSONObject permissions = payload.getJSONObject("permissions", new JSONObject());
-
-    // Validate permissions structure
-    final String validationError = validatePermissions(permissions);
-    if (validationError != null)
-      return new ExecutionResponse(400, new JSONObject().put("error", validationError).toString());
-
-    final ApiTokenConfiguration tokenConfig = httpServer.getServer().getSecurity().getApiTokenConfiguration();
     final JSONObject tokenJson;
     try {
-      tokenJson = tokenConfig.createToken(name, database, expiresAt, permissions);
-    } catch (final IllegalArgumentException e) {
+      tokenJson = controlPlane.createApiToken(
+          payload.getString("name", ""),
+          payload.getString("database", "*"),
+          payload.getLong("expiresAt", 0),
+          payload.getJSONObject("permissions", new JSONObject()));
+    } catch (final ServerControlPlane.AlreadyExistsException e) {
       return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
     }
 
     final JSONObject response = new JSONObject();
@@ -70,46 +70,5 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
   @Override
   protected boolean mustExecuteOnWorkerThread() {
     return true;
-  }
-
-  private static final Set<String> VALID_ACCESS_VALUES = Set.of(
-      "createRecord", "readRecord", "updateRecord", "deleteRecord");
-
-  private static String validatePermissions(final JSONObject permissions) {
-    if (permissions.has("types")) {
-      final Object typesObj = permissions.get("types");
-      if (!(typesObj instanceof JSONObject))
-        return "'permissions.types' must be a JSON object";
-
-      final JSONObject types = (JSONObject) typesObj;
-      for (final String typeName : types.keySet()) {
-        final Object typeDef = types.get(typeName);
-        if (!(typeDef instanceof JSONObject))
-          return "'permissions.types." + typeName + "' must be a JSON object";
-
-        final JSONObject typeObj = (JSONObject) typeDef;
-        if (typeObj.has("access")) {
-          final Object accessObj = typeObj.get("access");
-          if (!(accessObj instanceof JSONArray))
-            return "'permissions.types." + typeName + ".access' must be a JSON array";
-
-          final JSONArray access = (JSONArray) accessObj;
-          for (int i = 0; i < access.length(); i++) {
-            final String value = access.getString(i);
-            if (!VALID_ACCESS_VALUES.contains(value))
-              return "Invalid access value '" + value + "' in permissions.types." + typeName
-                  + ". Valid values: " + VALID_ACCESS_VALUES;
-          }
-        }
-      }
-    }
-
-    if (permissions.has("database")) {
-      final Object dbObj = permissions.get("database");
-      if (!(dbObj instanceof JSONArray))
-        return "'permissions.database' must be a JSON array";
-    }
-
-    return null;
   }
 }

@@ -305,6 +305,11 @@ public class GrpcServerPlugin implements ServerPlugin {
 
     // Add interceptors for logging, metrics, auth, etc.
     serverBuilder.intercept(new GrpcLoggingInterceptor());
+    // Records whether each call's transport can carry secret material back to the caller. Registered
+    // unconditionally, and on this shared path so both the standard and the xDS builder get it:
+    // CreateApiToken refuses to mint when its context key is absent, so dropping this line disables
+    // the minting of API tokens rather than silently disabling the check (issue #7309).
+    serverBuilder.intercept(new GrpcTransportSecurityInterceptor());
     // Publish gRPC metrics into the server's shared JVM-wide registry so the same exporters that
     // scrape the rest of the server (Prometheus, OTLP, JMX, Studio) also see gRPC telemetry.
     serverBuilder.intercept(new GrpcMetricsInterceptor(Metrics.globalRegistry));

@@ -21,14 +21,19 @@ package com.arcadedb.remote.grpc;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.grpc.AlignDatabaseRequest;
+import com.arcadedb.server.grpc.ApiTokenInfo;
 import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.BackupInfo;
 import com.arcadedb.server.grpc.CloseDatabaseRequest;
+import com.arcadedb.server.grpc.CreateApiTokenRequest;
+import com.arcadedb.server.grpc.CreateApiTokenResponse;
 import com.arcadedb.server.grpc.CreateDatabaseRequest;
 import com.arcadedb.server.grpc.CreateUserRequest;
 import com.arcadedb.server.grpc.DatabaseCredentials;
+import com.arcadedb.server.grpc.DeleteApiTokenRequest;
 import com.arcadedb.server.grpc.DeleteBackupRequest;
+import com.arcadedb.server.grpc.DeleteGroupRequest;
 import com.arcadedb.server.grpc.DeleteUserRequest;
 import com.arcadedb.server.grpc.DisconnectClusterRequest;
 import com.arcadedb.server.grpc.DropDatabaseRequest;
@@ -37,27 +42,31 @@ import com.arcadedb.server.grpc.GetBackupConfigResponse;
 import com.arcadedb.server.grpc.GetServerEventsRequest;
 import com.arcadedb.server.grpc.GetServerEventsResponse;
 import com.arcadedb.server.grpc.HealthRequest;
+import com.arcadedb.server.grpc.ListApiTokensRequest;
 import com.arcadedb.server.grpc.ListBackupsRequest;
-import com.arcadedb.server.grpc.ListBackupsResponse;
 import com.arcadedb.server.grpc.ListDatabasesRequest;
 import com.arcadedb.server.grpc.ListDatabasesResponse;
+import com.arcadedb.server.grpc.ListGroupsRequest;
 import com.arcadedb.server.grpc.ListUsersRequest;
 import com.arcadedb.server.grpc.OpenDatabaseRequest;
 import com.arcadedb.server.grpc.ProfilerDocumentResponse;
 import com.arcadedb.server.grpc.ProfilerListRequest;
 import com.arcadedb.server.grpc.ProfilerLoadRequest;
 import com.arcadedb.server.grpc.ProfilerResetRequest;
-import com.arcadedb.server.grpc.ProfilerRunInfo;
 import com.arcadedb.server.grpc.ProfilerResultsRequest;
+import com.arcadedb.server.grpc.ProfilerRunInfo;
 import com.arcadedb.server.grpc.ProfilerStartRequest;
 import com.arcadedb.server.grpc.ProfilerStopRequest;
 import com.arcadedb.server.grpc.ReadyRequest;
 import com.arcadedb.server.grpc.ReadyResponse;
+import com.arcadedb.server.grpc.SaveGroupRequest;
 import com.arcadedb.server.grpc.SetBackupConfigRequest;
 import com.arcadedb.server.grpc.SetDatabaseSettingRequest;
 import com.arcadedb.server.grpc.SetServerSettingRequest;
 import com.arcadedb.server.grpc.ShutdownRequest;
 import com.arcadedb.server.grpc.TriggerBackupRequest;
+import com.arcadedb.server.grpc.UpdateUserRequest;
+import com.arcadedb.server.grpc.UserDatabases;
 import com.arcadedb.server.grpc.UserGroups;
 import com.arcadedb.server.grpc.UserInfo;
 import io.grpc.CallCredentials;
@@ -457,6 +466,107 @@ public class RemoteGrpcServer implements AutoCloseable {
   public List<UserInfo> listUsers() {
     return call("list users", stub -> stub.listUsers(
         ListUsersRequest.newBuilder().setCredentials(buildCredentials()).build())).getUsersList();
+  }
+
+  /**
+   * Updates an existing user. Both arguments are independently optional: a null leaves that part of
+   * the user alone, so changing a password does not clear the user's grants and vice versa. Passing
+   * an empty (non-null) map DOES clear them - that is the caller saying so.
+   */
+  public void updateUser(final String user, final String password, final Map<String, List<String>> databases) {
+    final UpdateUserRequest.Builder request = UpdateUserRequest.newBuilder().setCredentials(buildCredentials())
+        .setUser(user);
+    if (password != null)
+      request.setPassword(password);
+    if (databases != null) {
+      final UserDatabases.Builder grants = UserDatabases.newBuilder();
+      databases.forEach((database, groups) -> grants.putDatabases(database,
+          UserGroups.newBuilder().addAllGroups(groups).build()));
+      request.setDatabases(grants.build());
+    }
+
+    call("update user", stub -> stub.updateUser(request.build()));
+  }
+
+  /**
+   * Changes only a user's password, leaving its per-database grants as they are.
+   */
+  public void updateUserPassword(final String user, final String password) {
+    updateUser(user, password, null);
+  }
+
+  /**
+   * Replaces only a user's per-database grants, leaving its password as it is.
+   */
+  public void updateUserGrants(final String user, final Map<String, List<String>> databases) {
+    updateUser(user, null, Objects.requireNonNull(databases, "databases"));
+  }
+
+  /**
+   * The whole group/permission document, as {@code GET /server/groups} returns it.
+   */
+  public JSONObject listGroups() {
+    return new JSONObject(call("list groups", stub -> stub.listGroups(
+        ListGroupsRequest.newBuilder().setCredentials(buildCredentials()).build())).getGroupsJson());
+  }
+
+  /**
+   * Creates or replaces one group on {@code database} ({@code "*"} for every database), and refreshes
+   * the permissions of the open databases it applies to. Replaces: the definition becomes exactly
+   * {@code groupConfig}, it is not merged into an existing group of the same name.
+   */
+  public void saveGroup(final String database, final String name, final JSONObject groupConfig) {
+    call("save group", stub -> stub.saveGroup(SaveGroupRequest.newBuilder().setCredentials(buildCredentials())
+        .setDatabase(database).setName(name).setGroupJson(groupConfig.toString()).build()));
+  }
+
+  public void deleteGroup(final String database, final String name) {
+    call("delete group", stub -> stub.deleteGroup(DeleteGroupRequest.newBuilder().setCredentials(buildCredentials())
+        .setDatabase(database).setName(name).build()));
+  }
+
+  /**
+   * The issued API tokens: metadata plus each token's hash, which is the handle
+   * {@link #deleteApiToken(String)} takes. Never the token material - the server does not keep it.
+   */
+  public List<ApiTokenInfo> listApiTokens() {
+    return call("list api tokens", stub -> stub.listApiTokens(
+        ListApiTokensRequest.newBuilder().setCredentials(buildCredentials()).build())).getTokensList();
+  }
+
+  /**
+   * Mints an API token. <b>The returned {@code token} field is the only copy of the token that will
+   * ever exist</b>: the server keeps its SHA-256 and cannot produce the plaintext again.
+   * <p>
+   * Two refusals guard it, and they are independent. Client-side, this call cannot even be attempted
+   * over a plaintext channel to a non-loopback host, because every admin RPC attaches call credentials
+   * and {@code createCallCredentials} refuses that combination. Server-side, the mint is refused with
+   * {@code FAILED_PRECONDITION} unless the connection is TLS or loopback - which is the one that also
+   * holds for a caller that opted out with {@code allowInsecureCredentials}, or that is not this
+   * client at all.
+   *
+   * @param expiresAt   epoch millis at which the token stops working; 0 for a token that does not expire
+   * @param permissions the permission document, or null for none
+   */
+  public CreateApiTokenResponse createApiToken(final String name, final String database, final long expiresAt,
+      final JSONObject permissions) {
+    final CreateApiTokenRequest.Builder request = CreateApiTokenRequest.newBuilder()
+        .setCredentials(buildCredentials()).setName(name).setDatabase(database == null ? "" : database)
+        .setExpiresAt(expiresAt);
+    if (permissions != null)
+      request.setPermissionsJson(permissions.toString());
+
+    return call("create api token", stub -> stub.createApiToken(request.build()));
+  }
+
+  /**
+   * Revokes a token by its hash - the {@code tokenHash} of a {@link #listApiTokens()} entry, or of a
+   * {@link #createApiToken} response's {@code info}. The plaintext token is deliberately not accepted
+   * by the server.
+   */
+  public void deleteApiToken(final String tokenHash) {
+    call("delete api token", stub -> stub.deleteApiToken(DeleteApiTokenRequest.newBuilder()
+        .setCredentials(buildCredentials()).setTokenHash(tokenHash).build()));
   }
 
   public GetBackupConfigResponse getBackupConfig() {

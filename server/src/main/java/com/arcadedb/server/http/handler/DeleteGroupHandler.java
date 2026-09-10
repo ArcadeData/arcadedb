@@ -18,20 +18,24 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 /**
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * {@code DELETE /server/groups?database=<db>&name=<group>}: drops one group. Delegates to
+ * {@link ServerControlPlane#deleteGroup}, which also refuses to drop the {@code admin} group of the
+ * default database and refreshes the permissions of every open database the group applied to, so the
+ * gRPC {@code DeleteGroup} RPC gets both (issue #7309).
  */
 public class DeleteGroupHandler extends AbstractServerHttpHandler {
+  private final ServerControlPlane controlPlane;
 
   public DeleteGroupHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.controlPlane = new ServerControlPlane(httpServer.getServer());
   }
 
   @Override
@@ -40,32 +44,14 @@ public class DeleteGroupHandler extends AbstractServerHttpHandler {
     checkRootUser(user);
 
     final String database = getQueryParameter(exchange, "database");
-    if (database == null || database.isBlank())
-      return new ExecutionResponse(400, new JSONObject().put("error", "Database parameter is required").toString());
-
     final String name = getQueryParameter(exchange, "name");
-    if (name == null || name.isBlank())
-      return new ExecutionResponse(400, new JSONObject().put("error", "Group name parameter is required").toString());
 
-    if ("admin".equals(name) && "*".equals(database))
-      return new ExecutionResponse(400,
-          new JSONObject().put("error", "Cannot delete the admin group from the default (*) database").toString());
-
-    final ServerSecurity security = httpServer.getServer().getSecurity();
-    final boolean deleted = security.deleteGroup(database, name);
-
-    if (!deleted) {
-      final JSONObject response = new JSONObject();
-      response.put("error", "Group '" + name + "' not found in database '" + database + "'");
-      return new ExecutionResponse(404, response.toString());
-    }
-
-    // Refresh permissions on affected open databases
-    for (final String dbName : httpServer.getServer().getDatabaseNames()) {
-      if ("*".equals(database) || dbName.equals(database)) {
-        final DatabaseInternal db = (DatabaseInternal) httpServer.getServer().getDatabase(dbName);
-        security.updateSchema(db);
-      }
+    try {
+      controlPlane.deleteGroup(database, name);
+    } catch (final ServerControlPlane.NotFoundException e) {
+      return new ExecutionResponse(404, new JSONObject().put("error", e.getMessage()).toString());
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
     }
 
     final JSONObject response = new JSONObject();

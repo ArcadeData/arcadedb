@@ -19,18 +19,23 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 /**
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * {@code PUT /server/users?name=<user>}: updates an existing user's password, per-database groups, or
+ * both. The operation itself lives in {@link ServerControlPlane#updateUser} so the gRPC
+ * {@code UpdateUser} RPC runs this exact code rather than a second copy of it (issue #7309); what is
+ * left here is reading the request and choosing the status code.
  */
 public class PutUserHandler extends AbstractServerHttpHandler {
+  private final ServerControlPlane controlPlane;
 
   public PutUserHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.controlPlane = new ServerControlPlane(httpServer.getServer());
   }
 
   @Override
@@ -45,31 +50,18 @@ public class PutUserHandler extends AbstractServerHttpHandler {
     if (name == null || name.isBlank())
       return new ExecutionResponse(400, new JSONObject().put("error", "Query parameter 'name' is required").toString());
 
-    final ServerSecurity security = httpServer.getServer().getSecurity();
+    // Absent means "leave this part of the user alone", which is why both are read as nullable rather
+    // than defaulted: a PUT carrying only a password must not clear the user's grants.
+    final String password = payload.has("password") ? payload.getString("password") : null;
+    final JSONObject databases = payload.has("databases") ? payload.getJSONObject("databases") : null;
 
-    final ServerSecurityUser existingUser = security.getUser(name);
-    if (existingUser == null)
-      return new ExecutionResponse(404, new JSONObject().put("error", "User '" + name + "' not found").toString());
-
-    // Build updated config from a copy to avoid mutating the live user object
-    final JSONObject updatedConfig = existingUser.toJSON().copy();
-
-    if (payload.has("password")) {
-      final String password = payload.getString("password");
-      if (password.length() < 8)
-        return new ExecutionResponse(400, new JSONObject().put("error", "User password must be at least 8 characters").toString());
-      if (password.length() > 256)
-        return new ExecutionResponse(400, new JSONObject().put("error", "User password cannot be longer than 256 characters").toString());
-      updatedConfig.put("password", security.encodePassword(password));
+    try {
+      controlPlane.updateUser(name, password, databases);
+    } catch (final ServerControlPlane.NotFoundException e) {
+      return new ExecutionResponse(404, new JSONObject().put("error", e.getMessage()).toString());
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
     }
-
-    if (payload.has("databases"))
-      updatedConfig.put("databases", payload.getJSONObject("databases"));
-
-    // Cluster-aware: on an HA cluster this replicates as a Raft entry so every peer applies the change.
-    // Calling security.updateUser() directly applied it only on the node that served the request, silently
-    // diverging the cluster's security state (issue #6808).
-    security.updateUserClusterWide(updatedConfig);
 
     final JSONObject response = new JSONObject();
     response.put("result", "User '" + name + "' updated");

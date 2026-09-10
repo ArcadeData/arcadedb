@@ -19,17 +19,22 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 /**
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * {@code GET /server/groups}: the whole group/permission document. Reads through
+ * {@link ServerControlPlane#listGroups} so the gRPC {@code ListGroups} RPC returns the same document
+ * (issue #7309).
  */
 public class GetGroupsHandler extends AbstractServerHttpHandler {
+  private final ServerControlPlane controlPlane;
 
   public GetGroupsHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.controlPlane = new ServerControlPlane(httpServer.getServer());
   }
 
   @Override
@@ -37,10 +42,8 @@ public class GetGroupsHandler extends AbstractServerHttpHandler {
       final JSONObject payload) {
     checkRootUser(user);
 
-    final JSONObject groups = httpServer.getServer().getSecurity().groupsToJSON();
-
     final JSONObject response = new JSONObject();
-    response.put("result", groups);
+    response.put("result", controlPlane.listGroups());
     return new ExecutionResponse(200, response.toString());
   }
 }

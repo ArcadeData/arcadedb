@@ -964,8 +964,20 @@ service ArcadeDbAdminService {
   rpc GetDatabaseInfo (GetDatabaseInfoRequest) returns (GetDatabaseInfoResponse);
 
   rpc CreateUser     (CreateUserRequest)     returns (CreateUserResponse);
+  rpc UpdateUser     (UpdateUserRequest)     returns (UpdateUserResponse);
   rpc DeleteUser     (DeleteUserRequest)     returns (DeleteUserResponse);
   rpc ListUsers      (ListUsersRequest)      returns (ListUsersResponse);
+
+  // groups - the per-database permission documents users hold through the 'databases' map above
+  rpc ListGroups  (ListGroupsRequest)  returns (ListGroupsResponse);
+  rpc SaveGroup   (SaveGroupRequest)   returns (SaveGroupResponse);
+  rpc DeleteGroup (DeleteGroupRequest) returns (DeleteGroupResponse);
+
+  // API tokens. CreateApiToken returns secret material and is gated on transport security; see the
+  // comment on CreateApiTokenResponse.
+  rpc ListApiTokens  (ListApiTokensRequest)  returns (ListApiTokensResponse);
+  rpc CreateApiToken (CreateApiTokenRequest) returns (CreateApiTokenResponse);
+  rpc DeleteApiToken (DeleteApiTokenRequest) returns (DeleteApiTokenResponse);
 
   // settings
   rpc SetServerSetting   (SetServerSettingRequest)   returns (SetServerSettingResponse);
@@ -1154,6 +1166,141 @@ message ListUsersRequest {
 }
 message ListUsersResponse {
   repeated UserInfo users = 1;
+}
+
+// The per-database grants of one user, wrapped in a message so the field can carry PRESENCE. A bare
+// map field cannot: proto3 gives no way to tell "the caller said nothing about grants" from "the
+// caller cleared every grant", and PUT /server/users draws exactly that distinction - a body without
+// a "databases" key leaves the existing grants alone.
+message UserDatabases {
+  map<string, UserGroups> databases = 1;
+}
+
+// Updates an existing user, as PUT /server/users?name=<user> does. Both mutable fields are optional
+// and independent: an absent one leaves that part of the user untouched, so changing a password does
+// not silently drop the user's grants. A request that sets neither is a no-op, not an error - the
+// same answer the HTTP route gives an empty body.
+message UpdateUserRequest {
+  DatabaseCredentials credentials = 1;
+  string user = 2;
+  // The new plaintext password, hashed server-side. Subject to the same length policy as every other
+  // password the server accepts.
+  optional string password = 3;
+  // The complete new grants map, replacing whatever the user held. Present-and-empty clears them.
+  optional UserDatabases databases = 4;
+}
+message UpdateUserResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Control plane: groups
+// -----------------------------------------------------------------------------
+
+message ListGroupsRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ListGroupsResponse {
+  // The whole group document, as GET /server/groups returns it under "result". Carried as JSON for
+  // the reason GetBackupConfigResponse.config_json is: it is a free-form document with a version
+  // field and per-database group maps, and declaring its shape a second time here would be one more
+  // thing to keep in step with the file on disk.
+  string groups_json = 1;
+}
+
+// Creates or replaces one group, as POST /server/groups does. Replaces: the named group's definition
+// becomes exactly what this request carries, it is not merged into the existing one.
+message SaveGroupRequest {
+  DatabaseCredentials credentials = 1;
+  // The database the group applies to, or "*" for every database.
+  string database = 2;
+  string name     = 3;
+  // The group definition: resultSetLimit, readTimeout, access and types, as the HTTP body carries
+  // them. An absent key takes the same default the HTTP handler applies (-1 for the two limits, empty
+  // for the two collections).
+  string group_json = 4;
+}
+message SaveGroupResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message DeleteGroupRequest {
+  DatabaseCredentials credentials = 1;
+  string database = 2;
+  string name     = 3;
+}
+message DeleteGroupResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Control plane: API tokens
+// -----------------------------------------------------------------------------
+
+// One issued token as the control plane REPORTS it: the hash that identifies it for revocation and
+// the last four characters of the token, never the token itself. This is the projection
+// GET /server/api-tokens returns.
+message ApiTokenInfo {
+  string name         = 1;
+  string database     = 2;
+  int64  expires_at   = 3; // epoch millis; 0 means no expiry
+  int64  created_at   = 4; // epoch millis
+  // The permission document, as JSON - the same free-form shape SaveGroupRequest.group_json carries.
+  string permissions_json = 5;
+  // SHA-256 of the token. This is the handle DeleteApiToken takes.
+  string token_hash   = 6;
+  // The token's last four characters, so an operator can tell two tokens apart in a list.
+  string token_suffix = 7;
+}
+
+message ListApiTokensRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ListApiTokensResponse {
+  repeated ApiTokenInfo tokens = 1;
+}
+
+message CreateApiTokenRequest {
+  DatabaseCredentials credentials = 1;
+  // Must be unique across issued tokens; a duplicate is refused with ALREADY_EXISTS.
+  string name     = 2;
+  // The database the token is scoped to. Empty means "*", every database, as the HTTP default does.
+  string database = 3;
+  int64  expires_at = 4; // epoch millis; 0 or absent means the token does not expire
+  string permissions_json = 5;
+}
+
+// THE ONLY MESSAGE IN THIS FILE THAT CARRIES SECRET MATERIAL.
+//
+// 'token' is the plaintext token, returned exactly once - the server keeps only its SHA-256 and can
+// never produce it again. Two consequences the rest of the control plane does not have:
+//
+//   1. The server refuses this RPC unless the call's transport protects the response: TLS, or a
+//      loopback peer. Over a cleartext channel to a remote host the mint is refused with
+//      FAILED_PRECONDITION rather than answered, because RemoteGrpcServer's refusal to SEND
+//      credentials over such a channel has no counterpart on the receive direction and a non-Java
+//      client never runs it at all.
+//   2. Nothing on the server's own paths may copy this field anywhere durable. The two interceptors
+//      that see every message read only the method name, the status and, for one specific response
+//      type, a boolean - never the payload.
+message CreateApiTokenResponse {
+  string token = 1;
+  // Everything about the token that is safe to keep, including the hash needed to revoke it.
+  ApiTokenInfo info = 2;
+}
+
+// Revokes a token by its HASH. The plaintext token is deliberately not accepted: it would then
+// appear in whatever logged the request, which is the exposure revoking it is meant to end.
+message DeleteApiTokenRequest {
+  DatabaseCredentials credentials = 1;
+  string token_hash = 2;
+}
+message DeleteApiTokenResponse {
+  bool success = 1;
+  string message = 2;
 }
 
 // -----------------------------------------------------------------------------
