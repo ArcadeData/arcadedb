@@ -114,7 +114,12 @@ public class WebSocketInsertSession {
     }
   }
 
-  public void setChannel(final WebSocketChannel channel) {
+  /**
+   * Attaches the connection the session belongs to. Called by {@link WebSocketInsertSessionManager#start} BEFORE
+   * the session is registered, so the idle sweep can never find a registered session with no channel to dispatch
+   * its expiry to - and therefore never has to run a rollback on the one sweep thread for the whole server.
+   */
+  void setChannel(final WebSocketChannel channel) {
     this.channel = channel;
   }
 
@@ -138,6 +143,14 @@ public class WebSocketInsertSession {
    * rest of the chunk still goes in, because a duplex session exists so the client can decide what to do about a
    * partial chunk rather than have the server decide by aborting.
    * <p>
+   * What "applied" means differs by transaction mode, and the difference is visible to a client that replays.
+   * Under {@code PER_STREAM} and {@code PER_BATCH} the chunk is all-or-nothing, so a chunk whose transaction failed
+   * leaves the watermark where it was and replaying that sequence applies it. Under {@code PER_ROW} every row
+   * commits on its own, so no chunk is all-or-nothing and the watermark advances on any chunk that was tried -
+   * including one whose rows ALL failed. Resending that sequence is answered as a replay rather than retried; a
+   * client that wants a failed row in resends it under a new sequence, reading which rows off {@code errors[]}.
+   * Retrying the whole chunk instead would double-apply the rows of it that had succeeded.
+   * <p>
    * Anything else - a sequence that skips ahead of the next one due - is REFUSED. A watermark that simply
    * follows whatever arrives would jump to 5 when a client sent chunk 5 before chunk 2, and chunk 2 would then
    * be acknowledged as a replay of something that never happened: every row it carried silently dropped, with a
@@ -148,6 +161,9 @@ public class WebSocketInsertSession {
     lock.lock();
     try {
       requireOpen();
+      // Stamped on entry as well as on the way out: a frame that throws - a skipped sequence, a malformed record -
+      // never reaches the closing stamp, and a client whose chunks are being refused is still a client using the
+      // session. Without this, a run of refusals would let the idle sweep roll the session back underneath it.
       lastUsed = System.currentTimeMillis();
 
       final JSONObject ack = new JSONObject();
@@ -212,6 +228,8 @@ public class WebSocketInsertSession {
       failed += counts.failed;
       // The watermark advances only on a chunk that was applied without a whole-chunk failure, so a client that
       // replays a chunk whose transaction never committed gets it applied rather than acknowledged as a duplicate.
+      // Only PER_STREAM and PER_BATCH can report a whole-chunk failure: PER_ROW commits row by row, so it advances
+      // even when every row failed, and the client resends those rows under a new sequence. See the javadoc.
       if (!counts.wholeChunkFailed)
         watermark = chunkSeq;
 

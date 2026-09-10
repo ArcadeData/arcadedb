@@ -94,14 +94,16 @@ public class WebSocketInsertSessionManager {
   /**
    * Opens a session and begins its transaction.
    *
+   * @param channel     the connection the session belongs to, attached before the session is registered so the
+   *                    idle sweep always has a worker to dispatch an expiry to
    * @param requestedId the id the client asked for, or {@code null}/blank to have the server generate one
    *
    * @throws IllegalStateException    when the channel already has a session, or the requested id is taken
    * @throws SecurityException        when the principal cannot access the database
    * @throws IllegalArgumentException when the options are not ones this server implements
    */
-  public WebSocketInsertSession start(final ServerSecurityUser user, final UUID channelId, final String databaseName,
-      final String requestedId, final JSONObject rawOptions) {
+  public WebSocketInsertSession start(final ServerSecurityUser user, final WebSocketChannel channel,
+      final UUID channelId, final String databaseName, final String requestedId, final JSONObject rawOptions) {
     if (closed)
       throw new IllegalStateException("The server is shutting down and is not opening new insert sessions");
 
@@ -127,6 +129,9 @@ public class WebSocketInsertSessionManager {
     try {
       database = server.getDatabase(databaseName, false, false);
       session = new WebSocketInsertSession(id, database, user, channelId, options);
+      // Before it is registered, not after: a session the sweep can see must already know where to send its
+      // expiry, or the sweep would have nothing to dispatch to and would roll it back on its own thread.
+      session.setChannel(channel);
 
       if (sessions.putIfAbsent(id, session) != null)
         throw new IllegalStateException("Insert session '" + id + "' already exists");
@@ -218,14 +223,19 @@ public class WebSocketInsertSessionManager {
 
   private void dispatchExpiry(final WebSocketInsertSession session) {
     final WebSocketChannel channel = session.getChannel();
-    if (channel != null)
-      try {
-        channel.getWorker().execute(() -> expire(session));
-        return;
-      } catch (final RejectedExecutionException e) {
-        // The worker is going away: expire here rather than not at all.
-      }
-    expire(session);
+    if (channel == null)
+      // Not reachable: start() attaches the channel before registering the session. Left as a skip rather than a
+      // fallback because the fallback would be to expire on the sweep thread, which is the one thing this class
+      // promises not to do; a session somehow without a channel is left for the next tick instead.
+      return;
+
+    try {
+      channel.getWorker().execute(() -> expire(session));
+    } catch (final RejectedExecutionException e) {
+      // The worker is going away with the connection: expire here rather than not at all. Bounded by that
+      // connection dying, unlike the missing-channel case above, which would repeat every tick.
+      expire(session);
+    }
   }
 
   /**
