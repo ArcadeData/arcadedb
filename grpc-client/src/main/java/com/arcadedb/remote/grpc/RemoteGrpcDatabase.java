@@ -62,6 +62,7 @@ import com.arcadedb.remote.grpc.utils.ProtoUtils;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.BatchAck;
 import com.arcadedb.server.grpc.BeginTransactionRequest;
@@ -81,6 +82,8 @@ import com.arcadedb.server.grpc.ExecuteQueryRequest;
 import com.arcadedb.server.grpc.ExecuteQueryResponse;
 import com.arcadedb.server.grpc.FullTextSearchRequest;
 import com.arcadedb.server.grpc.FullTextSearchResponse;
+import com.arcadedb.server.grpc.GetProgressRequest;
+import com.arcadedb.server.grpc.GetProgressResponse;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcValue;
 import com.arcadedb.server.grpc.HybridSearchRequest;
@@ -92,6 +95,7 @@ import com.arcadedb.server.grpc.InsertResponse;
 import com.arcadedb.server.grpc.InsertSummary;
 import com.arcadedb.server.grpc.LookupByRidRequest;
 import com.arcadedb.server.grpc.LookupByRidResponse;
+import com.arcadedb.server.grpc.OperationProgressInfo;
 import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
 import com.arcadedb.server.grpc.ProjectionSettings;
 import com.arcadedb.server.grpc.PropertiesUpdate;
@@ -184,14 +188,22 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   /**
-   * Override this method to customize blocking stub creation
+   * Override this method to customize blocking stub creation.
+   * <p>
+   * The stub names this database on every call, so the server's auth interceptor authenticates the
+   * caller against the database the calls actually target. Before #7320 no database travelled with the
+   * call and the server fell back to the literal name {@code "default"}, which refused every principal
+   * whose grants named real databases.
    */
   protected ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub createBlockingStub() {
-    return this.remoteGrpcServer.newBlockingStub(getTimeout());
+    return this.remoteGrpcServer.newBlockingStub(getTimeout(), databaseName);
   }
 
+  /**
+   * @see #createBlockingStub()
+   */
   protected ArcadeDbServiceGrpc.ArcadeDbServiceStub createAsyncStub() {
-    return this.remoteGrpcServer.newAsyncStub(getTimeout());
+    return this.remoteGrpcServer.newAsyncStub(getTimeout(), databaseName);
   }
 
   @Override
@@ -202,6 +214,65 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   @Override
   public RemoteSchema getSchema() {
     return schema;
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Overridden to poll over gRPC. The inherited {@code RemoteDatabase.getProgress()} issues
+   * {@code GET /api/v1/progress/{database}} against the HTTP port - the port a gRPC-only deployment does
+   * not open - so on such a server the inherited method could only fail to connect (issue #7310). Nothing
+   * about it said so: it compiled, it existed, and it asked for a listener that was not there.
+   * <p>
+   * The returned documents carry the same keys the HTTP route emits, so a caller already reading
+   * {@code RemoteDatabase.getProgress()} needs no change to run over gRPC.
+   * <p>
+   * The request carries THIS database's credentials, not the {@link RemoteGrpcServer}'s: the two are
+   * constructed separately and a database opened by a scoped user may share a channel with a server built
+   * for another account.
+   */
+  @Override
+  public List<JSONObject> getProgress() {
+    checkDatabaseIsOpen();
+
+    final GetProgressRequest request = GetProgressRequest.newBuilder().setCredentials(buildCredentials())
+        .setDatabase(getName()).build();
+
+    try {
+      // The stub is built per call, not cached: withDeadlineAfter fixes an ABSOLUTE deadline the moment it
+      // is applied, so a stub held across calls would carry a deadline that has already passed by the second
+      // poll. Building it also re-resolves the channel, so a server restarted through start() is honoured.
+      // The cost is a few field copies on a shared channel, which is nothing next to the round trip.
+      final GetProgressResponse response = callUnary("GetProgress",
+          () -> remoteGrpcServer.newAdminBlockingStub(getTimeout()).getProgress(request));
+
+      final List<JSONObject> operations = new ArrayList<>(response.getOperationsCount());
+      for (final OperationProgressInfo info : response.getOperationsList())
+        operations.add(toProgressJson(info));
+      return operations;
+    } catch (final StatusRuntimeException | StatusException e) {
+      handleGrpcException(e); // rethrows mapped domain exception
+      throw new IllegalStateException("unreachable");
+    }
+  }
+
+  /**
+   * One progress entry as the JSON document {@code RemoteDatabase.getProgress()} contracts to return -
+   * the same keys, in the same units, that {@code OperationProgress.toJSON()} writes on the HTTP route.
+   */
+  private static JSONObject toProgressJson(final OperationProgressInfo info) {
+    return new JSONObject()
+        .put("id", info.getId())
+        .put("database", info.getDatabase())
+        .put("operation", info.getOperation())
+        .put("stepName", info.getStepName())
+        .put("stepIndex", info.getStepIndex())
+        .put("totalSteps", info.getTotalSteps())
+        .put("done", info.getDone())
+        .put("total", info.getTotal())
+        .put("percentage", info.getPercentage())
+        .put("startedOn", info.getStartedOn())
+        .put("elapsedMs", info.getElapsedMs());
   }
 
   @Override
@@ -2177,8 +2248,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * answers 400 with, so a client can distinguish "I asked for something illegal" from "the server broke".
    */
   public VectorSearchResponse vectorSearch(final VectorSearchRequest request) {
-    return searchCall("VectorSearch", request.toBuilder()
-            .setDatabase(getName()).setCredentials(buildCredentials()).build(),
+    final VectorSearchRequest.Builder builder = request.toBuilder()
+        .setDatabase(getName()).setCredentials(buildCredentials());
+    if (transactionId != null)
+      builder.setTransaction(openTransaction());
+
+    return searchCall("VectorSearch", builder.build(),
         req -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).vectorSearch(req));
   }
 
@@ -2187,8 +2262,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * {@link #vectorSearch(VectorSearchRequest)}.
    */
   public HybridSearchResponse hybridSearch(final HybridSearchRequest request) {
-    return searchCall("HybridSearch", request.toBuilder()
-            .setDatabase(getName()).setCredentials(buildCredentials()).build(),
+    final HybridSearchRequest.Builder builder = request.toBuilder()
+        .setDatabase(getName()).setCredentials(buildCredentials());
+    if (transactionId != null)
+      builder.setTransaction(openTransaction());
+
+    return searchCall("HybridSearch", builder.build(),
         req -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).hybridSearch(req));
   }
 
@@ -2197,15 +2276,30 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * {@link #vectorSearch(VectorSearchRequest)}.
    */
   public FullTextSearchResponse fullTextSearch(final FullTextSearchRequest request) {
-    return searchCall("FullTextSearch", request.toBuilder()
-            .setDatabase(getName()).setCredentials(buildCredentials()).build(),
+    final FullTextSearchRequest.Builder builder = request.toBuilder()
+        .setDatabase(getName()).setCredentials(buildCredentials());
+    if (transactionId != null)
+      builder.setTransaction(openTransaction());
+
+    return searchCall("FullTextSearch", builder.build(),
         req -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).fullTextSearch(req));
   }
 
   /**
-   * Runs one of the three search RPCs. The database name and the credentials are stamped on by the caller rather
-   * than left to the application, so a request built by hand cannot address a database other than the one this
-   * connection is open on.
+   * The {@code TransactionContext} naming this connection's open transaction, in the shape every other
+   * transaction-scoped RPC on this class already sends. Callers guard on {@code transactionId != null} first;
+   * this only assembles the message.
+   */
+  private TransactionContext openTransaction() {
+    return TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build();
+  }
+
+  /**
+   * Runs one of the three search RPCs. The database name, the credentials and this connection's open
+   * transaction are stamped on by the caller rather than left to the application, so a request built by hand
+   * cannot address a database other than the one this connection is open on, and a search issued inside a
+   * transaction reads inside it (issue #7326) the way the HTTP routes always have through the
+   * {@code arcadedb-session-id} header.
    */
   private <Req, Resp> Resp searchCall(final String operation, final Req request, final SearchRpc<Req, Resp> rpc) {
     checkDatabaseIsOpen();

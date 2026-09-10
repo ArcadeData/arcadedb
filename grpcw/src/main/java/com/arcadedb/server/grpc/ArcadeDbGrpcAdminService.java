@@ -21,18 +21,21 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -44,6 +47,7 @@ import io.grpc.stub.StreamObserver;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -253,6 +257,59 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   }
 
   /**
+   * The long-running maintenance operations this server is running for one database, the RPC equivalent
+   * of {@code GET /api/v1/progress/{database}} (issue #7310). Answered from the lock-free progress
+   * registry, so a client may poll it as often as it likes without touching the database or the operation
+   * it is watching.
+   * <p>
+   * Gated like its HTTP counterpart and not like the rest of this service: {@code GetProgressHandler} runs
+   * {@code checkAuthorizationOnDatabase}, so any authenticated account may poll a database it is granted.
+   * Making it root-only would be a stricter gate than HTTP applies and would put the progress of an
+   * operation out of reach of the very user who started it.
+   * <p>
+   * An unauthorized caller is refused rather than answered empty. Unlike {@link #getDatabaseInfo}, which
+   * hides existence behind NOT_FOUND, the progress registry discloses nothing about a database that is
+   * not running an operation - the empty answer is the same for a database that does not exist - so the
+   * refusal costs no secrecy and matches the 403 the HTTP route returns.
+   */
+  @Override
+  public void getProgress(final GetProgressRequest req, final StreamObserver<GetProgressResponse> resp) {
+    respond(resp, "getProgress", () -> {
+      final ServerSecurityUser user = authenticate(req.getCredentials());
+
+      final String database = req.getDatabase();
+
+      // ORDER MATTERS, and it is the order checkAuthorizationOnDatabase applies: a missing name is
+      // rejected BEFORE authorization is evaluated. Reversed, an empty name would be answered by
+      // whatever canAccessToDatabase("") happens to return - PERMISSION_DENIED for a scoped account,
+      // and for a wildcard-granted one a fall-through to the registry - instead of the INVALID_ARGUMENT
+      // that says what the caller actually got wrong.
+      if (database.isEmpty())
+        throw new IllegalArgumentException("Database parameter is null");
+
+      // This reproduces the ACCESS-CONTROL half of checkAuthorizationOnDatabase and not its other half,
+      // which binds the authenticated principal onto the database's DatabaseContext so the engine's
+      // per-type ACL layer enforces (GHSA-c23x-pqcj-7hfm). Safe here, and only here, because progress is
+      // answered from the OperationProgressRegistry: no database is opened, no record or type is read, so
+      // there is no per-type decision for a bound principal to inform. DO NOT copy this shape into a gRPC
+      // handler that touches data - that handler needs the binding too, or it reopens that advisory.
+      //
+      // The null arm is unreachable today - authenticate() either returns a user or throws - and is kept
+      // deliberately, as the same guard in getDatabaseInfo is: it is the shape checkAuthorizationOnDatabase
+      // has on the HTTP side, where a null user means an unauthenticated handler, and it keeps this check
+      // fail-safe rather than fail-open if authenticate() ever grows a permissive mode.
+      if (user != null && !user.canAccessToDatabase(database))
+        throw new ServerSecurityException(
+            "User '" + user.getName() + "' is not allowed to access database '" + database + "'");
+
+      final GetProgressResponse.Builder builder = GetProgressResponse.newBuilder();
+      for (final OperationProgress operation : controlPlane.getProgress(database))
+        builder.addOperations(toProgressInfo(operation));
+      return builder.build();
+    });
+  }
+
+  /**
    * Creates a server user with the per-database groups the request carries, which is the same document
    * the HTTP {@code create user} command takes. The deprecated {@code role} field is ignored: the
    * security model has no server-wide role, only groups held per database.
@@ -315,6 +372,184 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       }
       return builder.build();
     });
+  }
+
+  /**
+   * Updates an existing user, as {@code PUT /server/users} does. Both mutable fields carry explicit
+   * presence in the proto, so "change the password and leave the grants alone" is expressible - which
+   * is the whole reason this is a separate RPC rather than a re-run of {@code CreateUser}.
+   * <p>
+   * Leader-gated for the same reason {@code CreateUser} is: the update goes through
+   * {@code updateUserClusterWide}, which on an HA cluster submits a Raft entry.
+   */
+  @Override
+  public void updateUser(final UpdateUserRequest req, final StreamObserver<UpdateUserResponse> resp) {
+    respond(resp, "updateUser", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+      requireLeader("UpdateUser");
+
+      JSONObject databases = null;
+      if (req.hasDatabases()) {
+        databases = new JSONObject();
+        for (final var entry : req.getDatabases().getDatabasesMap().entrySet())
+          databases.put(entry.getKey(), new JSONArray(entry.getValue().getGroupsList()));
+      }
+
+      controlPlane.updateUser(req.getUser(), req.hasPassword() ? req.getPassword() : null, databases);
+
+      return UpdateUserResponse.newBuilder().setSuccess(true)
+          .setMessage("User '" + req.getUser() + "' updated").build();
+    });
+  }
+
+  // ------------------------------------------------------------------------------------
+  // Groups
+  // ------------------------------------------------------------------------------------
+
+  /**
+   * The group document. Not leader-gated: {@code ServerSecurity} writes groups to a node-local file
+   * and submits no Raft entry, so there is no leader for this state to have - a divergence from the
+   * user document that is tracked as issue #7373, not compensated for here.
+   */
+  @Override
+  public void listGroups(final ListGroupsRequest req, final StreamObserver<ListGroupsResponse> resp) {
+    respond(resp, "listGroups", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      return ListGroupsResponse.newBuilder().setGroupsJson(controlPlane.listGroups().toString()).build();
+    });
+  }
+
+  @Override
+  public void saveGroup(final SaveGroupRequest req, final StreamObserver<SaveGroupResponse> resp) {
+    respond(resp, "saveGroup", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.saveGroup(req.getDatabase(), req.getName(), parseDocument(req.getGroupJson(), "group_json"));
+
+      return SaveGroupResponse.newBuilder().setSuccess(true)
+          .setMessage("Group '" + req.getName() + "' saved for database '" + req.getDatabase() + "'").build();
+    });
+  }
+
+  @Override
+  public void deleteGroup(final DeleteGroupRequest req, final StreamObserver<DeleteGroupResponse> resp) {
+    respond(resp, "deleteGroup", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.deleteGroup(req.getDatabase(), req.getName());
+
+      return DeleteGroupResponse.newBuilder().setSuccess(true)
+          .setMessage("Group '" + req.getName() + "' deleted from database '" + req.getDatabase() + "'").build();
+    });
+  }
+
+  // ------------------------------------------------------------------------------------
+  // API tokens
+  // ------------------------------------------------------------------------------------
+
+  @Override
+  public void listApiTokens(final ListApiTokensRequest req, final StreamObserver<ListApiTokensResponse> resp) {
+    respond(resp, "listApiTokens", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      final ListApiTokensResponse.Builder builder = ListApiTokensResponse.newBuilder();
+      final JSONArray tokens = controlPlane.listApiTokens();
+      for (int i = 0; i < tokens.length(); i++)
+        builder.addTokens(toApiTokenInfo(tokens.getJSONObject(i)));
+
+      return builder.build();
+    });
+  }
+
+  /**
+   * Mints an API token. The one RPC on this service whose response carries secret material, and the
+   * only one with a transport precondition on top of the usual authentication and authorization: the
+   * plaintext token is written back only over TLS or to a loopback peer.
+   * <p>
+   * The refusal is {@code FAILED_PRECONDITION} rather than {@code PERMISSION_DENIED} because the
+   * caller is not the problem - a root credential is exactly right, and the same call over a TLS
+   * channel succeeds. What is wrong is the connection it arrived on, which is the caller's to fix by
+   * reconnecting, not an authorization decision to appeal.
+   */
+  @Override
+  public void createApiToken(final CreateApiTokenRequest req, final StreamObserver<CreateApiTokenResponse> resp) {
+    respond(resp, "createApiToken", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+      requireTransportSafeForSecrets();
+
+      final JSONObject token = controlPlane.createApiToken(req.getName(), req.getDatabase(), req.getExpiresAt(),
+          parseDocument(req.getPermissionsJson(), "permissions_json"));
+
+      // getString with no default would raise on an absent key; the plaintext token is the one field
+      // createToken always sets, and reading it defensively would hide its absence rather than report
+      // it, so it is read strictly.
+      return CreateApiTokenResponse.newBuilder()
+          .setToken(token.getString("token"))
+          .setInfo(toApiTokenInfo(token))
+          .build();
+    });
+  }
+
+  @Override
+  public void deleteApiToken(final DeleteApiTokenRequest req, final StreamObserver<DeleteApiTokenResponse> resp) {
+    respond(resp, "deleteApiToken", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.deleteApiToken(req.getTokenHash());
+
+      return DeleteApiTokenResponse.newBuilder().setSuccess(true).setMessage("Token deleted").build();
+    });
+  }
+
+  /**
+   * Projects one stored token document onto the wire message. It names every field it copies, so a
+   * field later added to the stored document - the plaintext token is already one such field on the
+   * document {@code createApiToken} returns - is not carried out here by accident.
+   */
+  private static ApiTokenInfo toApiTokenInfo(final JSONObject token) {
+    return ApiTokenInfo.newBuilder()
+        .setName(token.getString("name", ""))
+        .setDatabase(token.getString("database", ""))
+        .setExpiresAt(token.getLong("expiresAt", 0L))
+        .setCreatedAt(token.getLong("createdAt", 0L))
+        .setPermissionsJson(token.getJSONObject("permissions", new JSONObject()).toString())
+        .setTokenHash(token.getString("tokenHash", ""))
+        .setTokenSuffix(token.getString("tokenSuffix", ""))
+        .build();
+  }
+
+  /**
+   * Reads a free-form JSON field of a request. An absent field is an empty document, which is what an
+   * unset proto string looks like and what the HTTP body means by omitting the key; a present but
+   * unparseable one is the caller's error and must not surface as an INTERNAL fault.
+   */
+  private static JSONObject parseDocument(final String json, final String fieldName) {
+    if (json == null || json.isBlank())
+      return new JSONObject();
+    try {
+      return new JSONObject(json);
+    } catch (final JSONException e) {
+      // Narrow deliberately: JSONObject(String) wraps a parse failure in exactly this type, and a
+      // broader catch here would also turn a bug in this method into a 'your JSON is malformed'
+      // answer, sending the caller after a document that is fine.
+      throw new IllegalArgumentException("'" + fieldName + "' is not a valid JSON document: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Refuses to write secret material back over a transport that does not protect it.
+   * <p>
+   * Fails closed when {@link GrpcTransportSecurityInterceptor} did not run: an absent key is not
+   * "unknown, carry on" but "nothing vouched for this connection". That way removing the interceptor
+   * stops tokens being minted rather than stopping them being protected.
+   */
+  private void requireTransportSafeForSecrets() throws StatusException {
+    if (!Boolean.TRUE.equals(GrpcTransportSecurityInterceptor.SECRET_SAFE_TRANSPORT_KEY.get()))
+      throw Status.FAILED_PRECONDITION.withDescription(
+              "Refusing to return API token material over an unprotected transport. Enable gRPC TLS "
+                  + "(arcadedb.grpc.tls.enabled), or issue the token from a client on the loopback interface.")
+          .asException();
   }
 
   // ------------------------------------------------------------------------------------
@@ -655,6 +890,34 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     });
   }
 
+  /**
+   * The server's open HTTP authentication sessions, the RPC equivalent of {@code GET /api/v1/sessions}
+   * (issue #7310), root-only as {@code GetSessionsHandler}'s {@code checkRootUser} makes it.
+   * <p>
+   * This is not a session API. gRPC has no session of its own - every admin RPC authenticates from the
+   * credentials on the request body - so there is no {@code Login}/{@code Logout} to go with it. What it
+   * is, is an administrative read of server state like any other, and without it an operator driving the
+   * server over gRPC alone cannot see who is logged in over HTTP.
+   * <p>
+   * The token is returned because {@code GET /api/v1/sessions} returns it, to the same root principal.
+   * Redacting it here alone would make the two administrative views disagree while leaving the HTTP
+   * disclosure exactly as it was.
+   */
+  @Override
+  public void listSessions(final ListSessionsRequest req, final StreamObserver<ListSessionsResponse> resp) {
+    respond(resp, "listSessions", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      // Empty on a server running without the HTTP listener: no HTTP listener, no HTTP sessions.
+      final List<HttpAuthSession> sessions = controlPlane.listHttpSessions();
+
+      final ListSessionsResponse.Builder builder = ListSessionsResponse.newBuilder();
+      for (final HttpAuthSession session : sessions)
+        builder.addSessions(toSessionInfo(session));
+      return builder.setCount(sessions.size()).build();
+    });
+  }
+
   // ------------------------------------------------------------------------------------
   // Probes
   // ------------------------------------------------------------------------------------
@@ -687,6 +950,60 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   // ------------------------------------------------------------------------------------
   // Helpers
   // ------------------------------------------------------------------------------------
+
+  /**
+   * One progress entry as the wire message, field for field the document {@code OperationProgress.toJSON()}
+   * emits over HTTP.
+   * <p>
+   * Each volatile is read ONCE, and {@code percentage} is computed from the values already read rather than
+   * through {@code getPercentage()}, which would re-read {@code done} and {@code total}: that is what keeps
+   * the three mutually consistent inside one message, the same rule {@code toJSON()} follows. The snapshot
+   * stays weakly consistent across fields - the producer takes no lock - which is the documented contract
+   * and harmless for a progress display.
+   */
+  private static OperationProgressInfo toProgressInfo(final OperationProgress operation) {
+    final long done = operation.getDone();
+    final long total = operation.getTotal();
+    final long startedOn = operation.getStartedOn();
+
+    return OperationProgressInfo.newBuilder()
+        .setId(operation.getId())
+        .setDatabase(nullToEmpty(operation.getDatabaseName()))
+        .setOperation(nullToEmpty(operation.getOperation()))
+        .setStepName(nullToEmpty(operation.getStepName()))
+        .setStepIndex(operation.getStepIndex())
+        .setTotalSteps(operation.getTotalSteps())
+        .setDone(done)
+        .setTotal(total)
+        .setPercentage(total <= 0 ? -1 : (int) Math.min(100L, done * 100L / total))
+        .setStartedOn(startedOn)
+        .setElapsedMs(System.currentTimeMillis() - startedOn)
+        .build();
+  }
+
+  /**
+   * One session as the wire message, field for field the document {@code GetSessionsHandler} emits.
+   * {@code sourceIp}, {@code userAgent}, {@code country} and {@code city} are null on a session logged in
+   * without those client headers, and proto3 has no null, so they travel as empty strings.
+   */
+  private static SessionInfo toSessionInfo(final HttpAuthSession session) {
+    return SessionInfo.newBuilder()
+        .setToken(nullToEmpty(session.getToken()))
+        .setUser(session.getUser() == null ? "" : nullToEmpty(session.getUser().getName()))
+        .setCreatedAt(session.getCreatedAt())
+        .setLastUpdate(session.getLastUpdate())
+        .setElapsedMs(session.elapsedFromLastUpdate())
+        .setSourceIp(nullToEmpty(session.getSourceIp()))
+        .setUserAgent(nullToEmpty(session.getUserAgent()))
+        .setCountry(nullToEmpty(session.getCountry()))
+        .setCity(nullToEmpty(session.getCity()))
+        .build();
+  }
+
+  /** proto3 string fields reject null; an absent value is the empty string on this wire. */
+  private static String nullToEmpty(final String value) {
+    return value == null ? "" : value;
+  }
 
   /**
    * Every unary handler of this service goes through here so the call is terminated exactly once (issue #7035):
@@ -732,6 +1049,14 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // exception types alike), and PERMISSION_DENIED is the status that says the same thing.
     if (e instanceof ServerSecurityException)
       return Status.PERMISSION_DENIED.withDescription(e.getMessage()).asException();
+    // The operation named a user, group or token that does not exist. HTTP answers these 404, and
+    // NOT_FOUND is the status that says the same thing (issue #7309).
+    if (e instanceof ServerControlPlane.NotFoundException)
+      return Status.NOT_FOUND.withDescription(e.getMessage()).asException();
+    // A token name already issued: HTTP's 409 on this transport, and distinct from INVALID_ARGUMENT
+    // because the request is well formed - it is the identity that is taken.
+    if (e instanceof ServerControlPlane.AlreadyExistsException)
+      return Status.ALREADY_EXISTS.withDescription(e.getMessage()).asException();
     // A backup already running for the same database is HTTP's 409 on the other transport: the request
     // is well formed and authorized, and retrying once the other run finishes is the fix.
     if (e instanceof ServerControlPlane.BackupInProgressException)

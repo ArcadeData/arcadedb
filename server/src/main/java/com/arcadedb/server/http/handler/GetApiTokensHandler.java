@@ -20,17 +20,23 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.List;
-
+/**
+ * {@code GET /server/api-tokens}: the issued tokens, as metadata plus the hash needed to revoke each
+ * one. The projection - which never includes token material - lives in
+ * {@link ServerControlPlane#listApiTokens} so the gRPC {@code ListApiTokens} RPC returns exactly the
+ * same fields (issue #7309).
+ */
 public class GetApiTokensHandler extends AbstractServerHttpHandler {
+  private final ServerControlPlane controlPlane;
 
   public GetApiTokensHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.controlPlane = new ServerControlPlane(httpServer.getServer());
   }
 
   @Override
@@ -38,25 +44,11 @@ public class GetApiTokensHandler extends AbstractServerHttpHandler {
       final JSONObject payload) {
     checkRootUser(user);
 
-    final ApiTokenConfiguration tokenConfig = httpServer.getServer().getSecurity().getApiTokenConfiguration();
-    final List<JSONObject> tokens = tokenConfig.listTokens();
-
-    final JSONArray result = new JSONArray();
-    for (final JSONObject token : tokens) {
-      final JSONObject entry = new JSONObject();
-      entry.put("name", token.getString("name"));
-      entry.put("database", token.getString("database"));
-      entry.put("expiresAt", token.getLong("expiresAt", 0));
-      entry.put("createdAt", token.getLong("createdAt", 0));
-      entry.put("permissions", token.getJSONObject("permissions"));
-      entry.put("tokenHash", token.getString("tokenHash"));
-      entry.put("tokenSuffix", token.getString("tokenSuffix", ""));
-      result.put(entry);
-    }
+    final JSONArray tokens = controlPlane.listApiTokens();
 
     final JSONObject response = new JSONObject();
-    response.put("result", result);
-    response.put("count", tokens.size());
+    response.put("result", tokens);
+    response.put("count", tokens.length());
     return new ExecutionResponse(200, response.toString());
   }
 }

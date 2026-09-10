@@ -22,36 +22,45 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.grpc.AlignDatabaseRequest;
+import com.arcadedb.server.grpc.ApiTokenInfo;
 import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.BackupInfo;
 import com.arcadedb.server.grpc.CloseDatabaseRequest;
+import com.arcadedb.server.grpc.CreateApiTokenRequest;
+import com.arcadedb.server.grpc.CreateApiTokenResponse;
 import com.arcadedb.server.grpc.CreateDatabaseRequest;
 import com.arcadedb.server.grpc.CreateUserRequest;
 import com.arcadedb.server.grpc.DatabaseCredentials;
+import com.arcadedb.server.grpc.DeleteApiTokenRequest;
 import com.arcadedb.server.grpc.DeleteBackupRequest;
+import com.arcadedb.server.grpc.DeleteGroupRequest;
 import com.arcadedb.server.grpc.DeleteUserRequest;
 import com.arcadedb.server.grpc.DisconnectClusterRequest;
 import com.arcadedb.server.grpc.DropDatabaseRequest;
 import com.arcadedb.server.grpc.GetBackupConfigRequest;
 import com.arcadedb.server.grpc.GetBackupConfigResponse;
+import com.arcadedb.server.grpc.GetProgressRequest;
 import com.arcadedb.server.grpc.GetServerEventsRequest;
 import com.arcadedb.server.grpc.GetServerEventsResponse;
 import com.arcadedb.server.grpc.HealthRequest;
 import com.arcadedb.server.grpc.ImportDatabaseRequest;
 import com.arcadedb.server.grpc.ImportProgress;
+import com.arcadedb.server.grpc.ListApiTokensRequest;
 import com.arcadedb.server.grpc.ListBackupsRequest;
-import com.arcadedb.server.grpc.ListBackupsResponse;
 import com.arcadedb.server.grpc.ListDatabasesRequest;
 import com.arcadedb.server.grpc.ListDatabasesResponse;
+import com.arcadedb.server.grpc.ListGroupsRequest;
+import com.arcadedb.server.grpc.ListSessionsRequest;
 import com.arcadedb.server.grpc.ListUsersRequest;
 import com.arcadedb.server.grpc.OpenDatabaseRequest;
+import com.arcadedb.server.grpc.OperationProgressInfo;
 import com.arcadedb.server.grpc.ProfilerDocumentResponse;
 import com.arcadedb.server.grpc.ProfilerListRequest;
 import com.arcadedb.server.grpc.ProfilerLoadRequest;
 import com.arcadedb.server.grpc.ProfilerResetRequest;
-import com.arcadedb.server.grpc.ProfilerRunInfo;
 import com.arcadedb.server.grpc.ProfilerResultsRequest;
+import com.arcadedb.server.grpc.ProfilerRunInfo;
 import com.arcadedb.server.grpc.ProfilerStartRequest;
 import com.arcadedb.server.grpc.ProfilerStopRequest;
 import com.arcadedb.server.grpc.ReadyRequest;
@@ -59,11 +68,15 @@ import com.arcadedb.server.grpc.ReadyResponse;
 import com.arcadedb.server.grpc.RestoreBackupRequest;
 import com.arcadedb.server.grpc.RestoreDatabaseRequest;
 import com.arcadedb.server.grpc.RestoreProgress;
+import com.arcadedb.server.grpc.SaveGroupRequest;
+import com.arcadedb.server.grpc.SessionInfo;
 import com.arcadedb.server.grpc.SetBackupConfigRequest;
 import com.arcadedb.server.grpc.SetDatabaseSettingRequest;
 import com.arcadedb.server.grpc.SetServerSettingRequest;
 import com.arcadedb.server.grpc.ShutdownRequest;
 import com.arcadedb.server.grpc.TriggerBackupRequest;
+import com.arcadedb.server.grpc.UpdateUserRequest;
+import com.arcadedb.server.grpc.UserDatabases;
 import com.arcadedb.server.grpc.UserGroups;
 import com.arcadedb.server.grpc.UserInfo;
 import io.grpc.CallCredentials;
@@ -99,10 +112,10 @@ import java.util.logging.Level;
  * <p>
  * It covers the discovery and database-lifecycle RPCs, and, since issue #7304, the rest of the
  * control plane: settings, backup, users, the query profiler, server events, shutdown, cluster
- * disconnect, and the two container probes. What it does not cover is what the proto does not carry
- * either - groups and API tokens (#7309), progress and sessions (#7310). Restore and import came
- * with #7308 and are the only methods here that stream: they block until the operation finishes,
- * handing each progress message to a callback on the way.
+ * disconnect, and the two container probes. Issue #7310 added the last two discovery reads,
+ * {@link #getProgress(String)} and {@link #listSessions()}; #7309 added groups and API tokens;
+ * and #7308 added restore and import, the only methods here that stream: they block until the
+ * operation finishes, handing each progress message to a callback on the way.
  * <p>
  * Every method carries the credentials this instance was built with in the request body, except
  * {@link #health()} and {@link #ready()}: their requests have no credentials field, and the server
@@ -111,6 +124,22 @@ import java.util.logging.Level;
  * headers on every call, probes included; the server does not read them for the admin service.)
  */
 public class RemoteGrpcServer implements AutoCloseable {
+
+  // Hoisted out of the credential-attach path: Metadata.Key.of() validates and lower-cases the name on every
+  // call, and these four (five, with a database) are attached to EVERY RPC.
+  private static final Metadata.Key<String> USERNAME_KEY         =
+      Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> PASSWORD_KEY         =
+      Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ARCADE_USER_KEY      =
+      Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ARCADE_PASSWORD_KEY  =
+      Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
+  /**
+   * The key {@code GrpcAuthInterceptor} reads to decide which database to authenticate the call against.
+   */
+  private static final Metadata.Key<String> ARCADE_DATABASE_KEY  =
+      Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
 
   private final String host;
   private final int    port;
@@ -229,20 +258,64 @@ public class RemoteGrpcServer implements AutoCloseable {
     return interceptors.isEmpty() ? current : ClientInterceptors.intercept(current, interceptors);
   }
 
-  public ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub newBlockingStub(int timeout) {
+  /**
+   * A data-plane stub that names no database. The server then authenticates the credentials at server
+   * level; per-database authorization still happens against the database named in each request body.
+   * Prefer {@link #newBlockingStub(int, String)} when the target database is known.
+   */
+  public ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub newBlockingStub(final int timeout) {
+    return newBlockingStub(timeout, null);
+  }
+
+  /**
+   * A data-plane stub whose every call carries {@code database} on the {@code x-arcade-database}
+   * metadata the server's auth interceptor reads.
+   * <p>
+   * Issue #7320: without that key the interceptor fell back to the literal name {@code "default"} and
+   * authenticated the caller against a database it had never named, so any principal not granted
+   * {@code "*"} was refused on its first RPC.
+   *
+   * @param database the database the calls target, or {@code null}/blank to send no database at all
+   */
+  public ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub newBlockingStub(final int timeout, final String database) {
 
     return ArcadeDbServiceGrpc.newBlockingV2Stub(channel())
-        .withCallCredentials(createCredentials())
+        .withCallCredentials(createCredentials(database))
         .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
         .withCompression("gzip");
   }
 
-  public ArcadeDbServiceGrpc.ArcadeDbServiceStub newAsyncStub(int timeout) {
+  /**
+   * @see #newBlockingStub(int)
+   */
+  public ArcadeDbServiceGrpc.ArcadeDbServiceStub newAsyncStub(final int timeout) {
+    return newAsyncStub(timeout, null);
+  }
+
+  /**
+   * @see #newBlockingStub(int, String)
+   */
+  public ArcadeDbServiceGrpc.ArcadeDbServiceStub newAsyncStub(final int timeout, final String database) {
 
     return ArcadeDbServiceGrpc.newStub(channel())
-        .withCallCredentials(createCredentials())
+        .withCallCredentials(createCredentials(database))
         .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
         .withCompression("gzip");
+  }
+
+  /**
+   * A fresh admin stub on this instance's channel, under {@code timeout} milliseconds of deadline.
+   * <p>
+   * Exists for {@link RemoteGrpcDatabase}, which shares this server's channel but not necessarily its
+   * account - the two are constructed with separate credentials and a scoped database user against a root
+   * server is a supported combination - so it must put its OWN credentials in the request body rather than
+   * borrow {@link #getProgress(String)}'s (issue #7310). The cached {@link #adminServiceBlockingV2Stub()}
+   * is this instance's own and is not shared for that reason.
+   */
+  public ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub newAdminBlockingStub(final int timeout) {
+    return ArcadeDbAdminServiceGrpc.newBlockingV2Stub(channel())
+        .withCallCredentials(createCredentials())
+        .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS);
   }
 
   private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub adminServiceBlockingV2Stub() {
@@ -424,6 +497,107 @@ public class RemoteGrpcServer implements AutoCloseable {
         ListUsersRequest.newBuilder().setCredentials(buildCredentials()).build())).getUsersList();
   }
 
+  /**
+   * Updates an existing user. Both arguments are independently optional: a null leaves that part of
+   * the user alone, so changing a password does not clear the user's grants and vice versa. Passing
+   * an empty (non-null) map DOES clear them - that is the caller saying so.
+   */
+  public void updateUser(final String user, final String password, final Map<String, List<String>> databases) {
+    final UpdateUserRequest.Builder request = UpdateUserRequest.newBuilder().setCredentials(buildCredentials())
+        .setUser(user);
+    if (password != null)
+      request.setPassword(password);
+    if (databases != null) {
+      final UserDatabases.Builder grants = UserDatabases.newBuilder();
+      databases.forEach((database, groups) -> grants.putDatabases(database,
+          UserGroups.newBuilder().addAllGroups(groups).build()));
+      request.setDatabases(grants.build());
+    }
+
+    call("update user", stub -> stub.updateUser(request.build()));
+  }
+
+  /**
+   * Changes only a user's password, leaving its per-database grants as they are.
+   */
+  public void updateUserPassword(final String user, final String password) {
+    updateUser(user, password, null);
+  }
+
+  /**
+   * Replaces only a user's per-database grants, leaving its password as it is.
+   */
+  public void updateUserGrants(final String user, final Map<String, List<String>> databases) {
+    updateUser(user, null, Objects.requireNonNull(databases, "databases"));
+  }
+
+  /**
+   * The whole group/permission document, as {@code GET /server/groups} returns it.
+   */
+  public JSONObject listGroups() {
+    return new JSONObject(call("list groups", stub -> stub.listGroups(
+        ListGroupsRequest.newBuilder().setCredentials(buildCredentials()).build())).getGroupsJson());
+  }
+
+  /**
+   * Creates or replaces one group on {@code database} ({@code "*"} for every database), and refreshes
+   * the permissions of the open databases it applies to. Replaces: the definition becomes exactly
+   * {@code groupConfig}, it is not merged into an existing group of the same name.
+   */
+  public void saveGroup(final String database, final String name, final JSONObject groupConfig) {
+    call("save group", stub -> stub.saveGroup(SaveGroupRequest.newBuilder().setCredentials(buildCredentials())
+        .setDatabase(database).setName(name).setGroupJson(groupConfig.toString()).build()));
+  }
+
+  public void deleteGroup(final String database, final String name) {
+    call("delete group", stub -> stub.deleteGroup(DeleteGroupRequest.newBuilder().setCredentials(buildCredentials())
+        .setDatabase(database).setName(name).build()));
+  }
+
+  /**
+   * The issued API tokens: metadata plus each token's hash, which is the handle
+   * {@link #deleteApiToken(String)} takes. Never the token material - the server does not keep it.
+   */
+  public List<ApiTokenInfo> listApiTokens() {
+    return call("list api tokens", stub -> stub.listApiTokens(
+        ListApiTokensRequest.newBuilder().setCredentials(buildCredentials()).build())).getTokensList();
+  }
+
+  /**
+   * Mints an API token. <b>The returned {@code token} field is the only copy of the token that will
+   * ever exist</b>: the server keeps its SHA-256 and cannot produce the plaintext again.
+   * <p>
+   * Two refusals guard it, and they are independent. Client-side, this call cannot even be attempted
+   * over a plaintext channel to a non-loopback host, because every admin RPC attaches call credentials
+   * and {@code createCallCredentials} refuses that combination. Server-side, the mint is refused with
+   * {@code FAILED_PRECONDITION} unless the connection is TLS or loopback - which is the one that also
+   * holds for a caller that opted out with {@code allowInsecureCredentials}, or that is not this
+   * client at all.
+   *
+   * @param expiresAt   epoch millis at which the token stops working; 0 for a token that does not expire
+   * @param permissions the permission document, or null for none
+   */
+  public CreateApiTokenResponse createApiToken(final String name, final String database, final long expiresAt,
+      final JSONObject permissions) {
+    final CreateApiTokenRequest.Builder request = CreateApiTokenRequest.newBuilder()
+        .setCredentials(buildCredentials()).setName(name).setDatabase(database == null ? "" : database)
+        .setExpiresAt(expiresAt);
+    if (permissions != null)
+      request.setPermissionsJson(permissions.toString());
+
+    return call("create api token", stub -> stub.createApiToken(request.build()));
+  }
+
+  /**
+   * Revokes a token by its hash - the {@code tokenHash} of a {@link #listApiTokens()} entry, or of a
+   * {@link #createApiToken} response's {@code info}. The plaintext token is deliberately not accepted
+   * by the server.
+   */
+  public void deleteApiToken(final String tokenHash) {
+    call("delete api token", stub -> stub.deleteApiToken(DeleteApiTokenRequest.newBuilder()
+        .setCredentials(buildCredentials()).setTokenHash(tokenHash).build()));
+  }
+
   public GetBackupConfigResponse getBackupConfig() {
     return call("get backup config", stub -> stub.getBackupConfig(
         GetBackupConfigRequest.newBuilder().setCredentials(buildCredentials()).build()));
@@ -507,6 +681,36 @@ public class RemoteGrpcServer implements AutoCloseable {
   public void disconnectCluster() {
     call("disconnect cluster", stub -> stub.disconnectCluster(
         DisconnectClusterRequest.newBuilder().setCredentials(buildCredentials()).build()));
+  }
+
+  /**
+   * The long-running maintenance operations the server is running for {@code database}, oldest first, or
+   * an empty list when it is running none. Safe to poll: the server answers from a lock-free in-memory
+   * snapshot without touching the database.
+   * <p>
+   * Authorized per database rather than root-only, as {@code GET /api/v1/progress/{database}} is, so the
+   * account that started an operation can watch it. Reports what THIS node is doing: the registry behind
+   * it is process-local, so in a cluster each node is polled for its own work.
+   * <p>
+   * {@link RemoteGrpcDatabase#getProgress()} is the database-scoped form of this call, and returns the
+   * same operations as JSON documents.
+   */
+  public List<OperationProgressInfo> getProgress(final String database) {
+    return call("get progress", stub -> stub.getProgress(
+        GetProgressRequest.newBuilder().setCredentials(buildCredentials()).setDatabase(database).build()))
+        .getOperationsList();
+  }
+
+  /**
+   * The server's open HTTP authentication sessions - root only, as {@code GET /api/v1/sessions} is.
+   * <p>
+   * A read of server state, not a session API: gRPC authenticates every call from the credentials on the
+   * request body and has no session of its own, so there is no login or logout to pair with this. Empty
+   * on a server running without the HTTP listener, which has no HTTP sessions to report.
+   */
+  public List<SessionInfo> listSessions() {
+    return call("list sessions", stub -> stub.listSessions(
+        ListSessionsRequest.newBuilder().setCredentials(buildCredentials()).build())).getSessionsList();
   }
 
   /**
@@ -720,43 +924,49 @@ public class RemoteGrpcServer implements AutoCloseable {
   }
 
   /**
-   * Creates call credentials for authentication
+   * Creates call credentials for authentication, naming no database. Used by the admin plane, whose
+   * RPCs authenticate from the request body and never read the database metadata.
    */
-  protected CallCredentials createCallCredentials(String userName, String userPassword) {
-    ensureCredentialsAllowedOverChannel();
-    return new CallCredentials() {
-      @Override
-      public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
-        Metadata headers = new Metadata();
-        headers.put(Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER), userName);
-        headers.put(Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
-        headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), userName);
-        headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
-        applier.apply(headers);
-      }
-
-      @Override
-      public void thisUsesUnstableApi() {
-        // Required by the interface
-      }
-    };
+  protected CallCredentials createCallCredentials(final String userName, final String userPassword) {
+    return credentials(userName, userPassword, null);
   }
 
+  /**
+   * @see #createCredentials(String)
+   */
   protected CallCredentials createCredentials() {
+    return createCredentials(null);
+  }
+
+  /**
+   * Credentials for this server's user, naming the database the calls target so the server's auth
+   * interceptor authenticates against that database rather than against a name nobody sent (#7320).
+   *
+   * @param database the target database, or {@code null}/blank to omit the key entirely
+   */
+  protected CallCredentials createCredentials(final String database) {
+    return credentials(userName, userPassword, database);
+  }
+
+  private CallCredentials credentials(final String user, final String password, final String database) {
     ensureCredentialsAllowedOverChannel();
+    // Blank is the same as absent: an empty header would only make the server special-case it.
+    final String targetDatabase = database == null || database.isBlank() ? null : database;
+
     return new CallCredentials() {
       @Override
-      public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
-        Metadata headers = new Metadata();
-        headers.put(Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER), userName);
-        headers.put(Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
-        headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), userName);
-        headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
+      public void applyRequestMetadata(final RequestInfo requestInfo, final Executor appExecutor,
+          final MetadataApplier applier) {
+        final Metadata headers = new Metadata();
+        headers.put(USERNAME_KEY, user);
+        headers.put(PASSWORD_KEY, password);
+        headers.put(ARCADE_USER_KEY, user);
+        headers.put(ARCADE_PASSWORD_KEY, password);
+        if (targetDatabase != null)
+          headers.put(ARCADE_DATABASE_KEY, targetDatabase);
         applier.apply(headers);
       }
 
-      // x-arcade-user: root" -H "x-arcade-password: oY9uU2uJ8nD8iY7t" -H
-      // "x-arcade-database: local_shakeiq_curonix_poc-app"
       @Override
       public void thisUsesUnstableApi() {
         // Required by the interface

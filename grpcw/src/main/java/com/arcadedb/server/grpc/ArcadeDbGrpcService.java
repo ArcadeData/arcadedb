@@ -132,6 +132,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -5084,7 +5085,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   @Override
   public void vectorSearch(final VectorSearchRequest request, final StreamObserver<VectorSearchResponse> resp) {
     GrpcUnaryCall.respond(resp,
-        () -> GrpcVectorSearch.search(getDatabase(request.getDatabase(), request.getCredentials()), request),
+        () -> searchInTransaction(request.hasTransaction() ? request.getTransaction().getTransactionId() : null,
+            request.getDatabase(), request.getCredentials(), db -> GrpcVectorSearch.search(db, request)),
         e -> toSearchStatus("VectorSearch", e));
   }
 
@@ -5094,7 +5096,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   @Override
   public void hybridSearch(final HybridSearchRequest request, final StreamObserver<HybridSearchResponse> resp) {
     GrpcUnaryCall.respond(resp,
-        () -> GrpcVectorSearch.hybridSearch(getDatabase(request.getDatabase(), request.getCredentials()), request),
+        () -> searchInTransaction(request.hasTransaction() ? request.getTransaction().getTransactionId() : null,
+            request.getDatabase(), request.getCredentials(), db -> GrpcVectorSearch.hybridSearch(db, request)),
         e -> toSearchStatus("HybridSearch", e));
   }
 
@@ -5104,8 +5107,55 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   @Override
   public void fullTextSearch(final FullTextSearchRequest request, final StreamObserver<FullTextSearchResponse> resp) {
     GrpcUnaryCall.respond(resp,
-        () -> GrpcVectorSearch.fullTextSearch(getDatabase(request.getDatabase(), request.getCredentials()), request),
+        () -> searchInTransaction(request.hasTransaction() ? request.getTransaction().getTransactionId() : null,
+            request.getDatabase(), request.getCredentials(), db -> GrpcVectorSearch.fullTextSearch(db, request)),
         e -> toSearchStatus("FullTextSearch", e));
+  }
+
+  /**
+   * Runs a search body against the database it must actually read (issue #7326).
+   * <p>
+   * A search is a read, and an ArcadeDB transaction is thread-bound: its uncommitted changes are visible only
+   * on the thread that owns it. So when the request names a live transaction the body runs on that
+   * transaction's own executor thread through {@link #submitToActiveTransaction}, against the transaction's own
+   * database handle - never against a handle re-resolved from the request's database name, which
+   * {@link #authorizeTransactionAccess} also refuses to trust. Without a transaction id the body runs inline on
+   * the calling gRPC worker against a freshly authorized handle, exactly as before.
+   * <p>
+   * A non-blank transaction id the server no longer knows (reaped, committed, or invented) is refused with
+   * FAILED_PRECONDITION instead of quietly falling through to a read outside the transaction the caller
+   * believes it is inside - the same contract {@code lookupByRid} and {@code updateRecord} carry. A blank id is
+   * not a supplied one and legitimately means "no external transaction".
+   *
+   * @param incomingTxId the request's transaction id, or null when the request carried no TransactionContext
+   * @param body         the search, which must not retain the database handle beyond the call
+   */
+  private <T> T searchInTransaction(final String incomingTxId, final String databaseName,
+      final DatabaseCredentials credentials, final Function<Database, T> body) throws Exception {
+    final TransactionContext txCtx = resolveAuthorizedTransaction(incomingTxId, credentials);
+
+    if (isUnknownSuppliedTransaction(incomingTxId, txCtx))
+      throw unknownTransactionStatus(incomingTxId).asRuntimeException();
+
+    if (txCtx == null)
+      return body.apply(getDatabase(databaseName, credentials));
+
+    try {
+      return submitToActiveTransaction(txCtx, () -> body.apply(txCtx.db)).get();
+    } catch (final ExecutionException e) {
+      // Unwrap so toSearchStatus() sees the real failure - an explicit gRPC status raised by
+      // requireTransactionStillActive, or the IllegalArgumentException the shared implementation reports a
+      // crossed bound with - rather than mapping every in-transaction search fault to INTERNAL.
+      final Throwable cause = e.getCause();
+      if (cause instanceof final Error error)
+        throw error;
+      if (cause instanceof final Exception exception)
+        throw exception;
+      throw e;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw e;
+    }
   }
 
   /**
