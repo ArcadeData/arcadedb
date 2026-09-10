@@ -202,7 +202,8 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
       // An option PostgreSQL itself refuses.
       assertThatThrownBy(() -> copyOut(connection, "COPY (" + ORDERED + ") TO STDOUT (FORMAT binary, HEADER)"))
           .isInstanceOf(PSQLException.class)
-          .hasMessageContaining("HEADER in BINARY");
+          .hasMessageContaining("HEADER in BINARY")
+          .extracting(e -> ((PSQLException) e).getSQLState()).isEqualTo("42601");
 
       // After every refusal the session answers the next statement.
       assertThat(copyOut(connection, "COPY (SELECT count(*) AS n FROM " + TYPE + ") TO STDOUT")).isEqualTo("5\n");
@@ -451,6 +452,8 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
   private void withConnection(final Exchange exchange) throws Exception {
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      // A hang detector on the handshake reads too, which run before the timed exchange below.
+      socket.setSoTimeout(30_000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
 
