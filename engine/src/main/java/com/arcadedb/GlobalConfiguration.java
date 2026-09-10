@@ -1489,6 +1489,14 @@ public enum GlobalConfiguration {
       "Timeout in seconds for a HTTP session (managing a transaction) to expire. This timeout is computed from the latest command against the session",
       Long.class, 5), // 5 SECONDS DEFAULT
 
+  SERVER_WS_INSERT_SESSION_EXPIRE_TIMEOUT("arcadedb.server.wsInsertSessionExpireTimeout", SCOPE.SERVER,
+      """
+      Timeout in seconds for a /ws duplex insert session (issue #7382) to expire, computed from the latest frame \
+      received on it. An expired session is rolled back and its client told so with an unsolicited error frame. \
+      Deliberately longer than 'httpSessionExpireTimeout': a bulk loader legitimately pauses between chunks while \
+      it reads its source, and losing the session there costs it every chunk it has not been able to commit.""",
+      Long.class, 60), // 1 MINUTE DEFAULT
+
   SERVER_HTTP_AUTH_SESSION_EXPIRE_TIMEOUT("arcadedb.server.httpAuthSessionExpireTimeout", SCOPE.SERVER,
       "Timeout in seconds for a HTTP authentication session to expire. This timeout is computed from the latest request using the auth token. Default is 30 minutes",
       Long.class, 1800), // 30 MINUTES DEFAULT

@@ -144,7 +144,9 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       final ServerSecurityUser user = authenticate(req.getCredentials());
 
       final String name = req.getName(); // proto should define 'name' for the DB
-      final boolean exists = containsDatabaseIgnoreCase(name) && (user == null || user.canAccessToDatabase(name));
+      // Exact name, like createDatabase / dropDatabase (issue #7413): what this reports as existing is what a
+      // create of the same name would refuse.
+      final boolean exists = server.existsDatabase(name) && (user == null || user.canAccessToDatabase(name));
 
       return ExistsDatabaseResponse.newBuilder().setExists(exists).build();
     });
@@ -159,8 +161,15 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       final String name = req.getName(); // DB name in proto
       final String type = req.getType(); // "graph" or "document" (logical)
 
-      if (containsDatabaseIgnoreCase(name))
-        return CreateDatabaseResponse.newBuilder().build();
+      // Exact name, the registry's and the HTTP command's notion of "the same database": the case-folded guard
+      // this used to be let CreateDatabase("MyDb") answer OK for an existing "mydb" and then DropDatabase("MyDb")
+      // fail inside the drop (issue #7413). An empty OK told a provisioning tool nothing either way; now the
+      // strict default refuses a taken name as HTTP does, and the idempotent form says which happened.
+      if (server.existsDatabase(name)) {
+        if (req.getIfNotExists())
+          return CreateDatabaseResponse.newBuilder().setCreated(false).build();
+        throw new ServerControlPlane.AlreadyExistsException("Database '" + name + "' already exists");
+      }
 
       // Physical creation (READ_WRITE is the common default)
       createDatabasePhysical(name);
@@ -177,7 +186,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
             s.createEdgeType("E");
         });
       }
-      return CreateDatabaseResponse.newBuilder().build();
+      return CreateDatabaseResponse.newBuilder().setCreated(true).build();
     });
   }
 
@@ -189,10 +198,16 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
       final String name = req.getName();
 
-      if (containsDatabaseIgnoreCase(name))
-        dropDatabasePhysical(name);
+      // See createDatabase: exact name, strict by default, explicit outcome either way (issue #7413).
+      if (!server.existsDatabase(name)) {
+        if (req.getIfExists())
+          return DropDatabaseResponse.newBuilder().setDropped(false).build();
+        throw new ServerControlPlane.NotFoundException("Database '" + name + "' does not exist");
+      }
 
-      return DropDatabaseResponse.newBuilder().build();
+      dropDatabasePhysical(name);
+
+      return DropDatabaseResponse.newBuilder().setDropped(true).build();
     });
   }
 
@@ -210,7 +225,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       if (user != null && !user.canAccessToDatabase(name))
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
-      if (!containsDatabaseIgnoreCase(name))
+      if (!server.existsDatabase(name))
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
       // Use getDatabase which returns a shared ServerDatabase - don't close it
@@ -1154,14 +1169,6 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    */
   private Collection<String> getDatabaseNames() {
     return server.getDatabaseNames();
-  }
-
-  private boolean containsDatabaseIgnoreCase(String name) {
-    for (String n : getDatabaseNames()) {
-      if (n.equalsIgnoreCase(name))
-        return true;
-    }
-    return false;
   }
 
   /**
