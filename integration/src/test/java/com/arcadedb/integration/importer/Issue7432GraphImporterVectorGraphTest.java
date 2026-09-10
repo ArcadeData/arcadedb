@@ -163,14 +163,15 @@ class Issue7432GraphImporterVectorGraphTest {
   }
 
   /**
-   * The per-index loop: a second vector index on a type the import never touched keeps its own pending vectors
-   * and is not built (it is not this import's business), and an index declared on a PARENT type is built when the
+   * The per-index loop: a second vector index on a type the import CONFIGURED a source for but wrote nothing to
+   * (the source is filtered down to no rows) keeps its own pending vectors and is not built - the import never
+   * touched it, and the pending work is somebody else's - and an index declared on a PARENT type is built when the
    * import writes only to a subtype. The importer matches on the type each bucket index names, and the subtype's
    * bucket index names the subtype - pinned here because it is what makes the match correct without a walk of the
    * hierarchy (PR #7433 review).
    */
   @Test
-  void aParentTypeIndexIsBuiltAndAnUntouchedTypeIndexIsLeftAlone() throws Exception {
+  void aParentTypeIndexIsBuiltAndAnIndexNothingWasWrittenToIsLeftAlone() throws Exception {
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 600_000);
     database.command("sqlscript", """
         CREATE VERTEX TYPE PAPER EXTENDS WORK;
@@ -192,9 +193,15 @@ class Issue7432GraphImporterVectorGraphTest {
           v.longProperty("id", "id");
           v.floatArrayProperty("embedding", "embedding");
         })
+        // Configured, so NOTE is a type this import knows about, but the filter admits no row: nothing is written.
+        .vertex("NOTE", new JsonlRowSource(DATA_DIR + "/vertices.jsonl"), v -> {
+          v.id("id");
+          v.filter("id", "no such id");
+          v.floatArrayProperty("embedding", "embedding");
+        })
         .build()) {
       importer.run();
-      assertThat(importer.getVertexCount()).isEqualTo(VERTICES);
+      assertThat(importer.getVertexCount()).as("PAPER's rows only; NOTE's source admitted none").isEqualTo(VERTICES);
     }
 
     // The index on WORK covers PAPER's bucket through its own bucket index, which names PAPER as its type.
@@ -210,7 +217,8 @@ class Issue7432GraphImporterVectorGraphTest {
     assertThat(paperIndex.getStats().get("mutationsSinceRebuild")).isZero();
 
     assertThat(noteIndex.getStats().get("graphRebuildCount"))
-        .as("an index on a type the import never touched is left to its own rebuild").isZero();
+        .as("an index on a type the import wrote nothing to is left to its own rebuild, configured source or not")
+        .isZero();
     assertThat(noteIndex.getStats().get("mutationsSinceRebuild")).isEqualTo(5L);
   }
 

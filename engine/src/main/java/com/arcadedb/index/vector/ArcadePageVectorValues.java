@@ -350,7 +350,11 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * Both signals are checked because neither alone is reliable: the flag is what {@code PageManager} leaves behind,
    * but a layer in between may have cleared it while wrapping the exception; the cause chain carries the
    * {@link InterruptedIOException} in that case, but not when the read was refused by a check of the flag alone.
-   * Either way the flag is set when this throws, so the cancellation is observable both ways.
+   * Either way the flag is set when this throws, so the cancellation is observable both ways. The flag also makes
+   * the trigger deliberately broad: on an interrupted thread ANY read failure is reported as the cancellation,
+   * including one that would have been a bad page on an uninterrupted thread. That is the right reading for the
+   * only thread that is interrupted today (a build worker being shut down), and it stays right for a query thread
+   * cancelled mid-search: whatever else went wrong, the caller asked for the work to stop.
    *
    * @param failure the exception the read failed with
    * @param ordinal the ordinal being read, for the message; -1 when the caller reads by offset rather than ordinal

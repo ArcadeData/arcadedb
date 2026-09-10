@@ -102,13 +102,6 @@ public final class IndexMaintenanceSuspension implements AutoCloseable {
   }
 
   /**
-   * @return how many indexes this suspension holds
-   */
-  public int size() {
-    return suspended.length;
-  }
-
-  /**
    * Lifts the suspensions {@link #suspend(Database, String)} took, once. Idempotent because a loader's abandon and
    * close paths can both reach it, and a second lift would decrement a count this suspension no longer holds -
    * handing another loader's suspension away with it.
