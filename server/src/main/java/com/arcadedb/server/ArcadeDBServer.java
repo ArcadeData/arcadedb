@@ -107,6 +107,9 @@ public class ArcadeDBServer {
    */
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
 
+  /** Marks a database whose interrupted HA snapshot install must be recovered before startup opens it. */
+  public static final String                                SNAPSHOT_PENDING_FILE                = ".snapshot-pending";
+
   /**
    * How long the shutdown hook waits for the lifecycle lock when the server is still {@code STARTING} and has not
    * opened any database yet (issues #5418, #7025). Short on purpose: with no database open there is nothing worth
@@ -1336,8 +1339,17 @@ public class ArcadeDBServer {
         for (final File f : databaseDirectories)
           // Skip reserved internal databases (e.g. the Raft control directory '.raft'): they are not
           // user databases and must not be registered nor leak into the server/cluster status APIs.
-          if (!isReservedDatabaseName(f.getName()))
+          if (!isReservedDatabaseName(f.getName())) {
+            // HA recovery runs after the first boot scan. Never open a half-swapped directory or leave
+            // open handles on files that recovery is about to replace. The second scan picks it up once
+            // recovery removes the marker; a failed recovery is still skipped on the second scan.
+            if (new File(f, SNAPSHOT_PENDING_FILE).exists()) {
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Skipping database directory '%s': pending snapshot recovery must complete before it can be opened", f);
+              continue;
+            }
             getDatabase(f.getName());
+          }
       }
     }
   }
