@@ -32,6 +32,8 @@ import io.swagger.v3.oas.models.responses.ApiResponse;
 import io.swagger.v3.oas.models.responses.ApiResponses;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Documents the endpoints every deployment exposes: server information and administration, the
@@ -43,6 +45,11 @@ public class CoreApiSpec implements OpenApiContributor {
   private static final String NDJSON = "application/x-ndjson";
   private static final String SESSION_HEADER = HttpSessionManager.ARCADEDB_SESSION_ID;
   private static final String COMMIT_INDEX_HEADER = "X-ArcadeDB-Commit-Index";
+  /**
+   * The statuses of the query and command operations that are decided BEFORE the read-your-writes bookmark
+   * exists, so they can never carry it. See {@link #addCommitIndexBookmarkHeader}.
+   */
+  private static final Set<String> BOOKMARKLESS_STATUSES = Set.of("401", "404");
 
   private static final String SESSION_REQUEST_DESCRIPTION = """
       Session id returned by 'beginTransaction'. Present it on every call that must run inside that \
@@ -705,23 +712,44 @@ public class CoreApiSpec implements OpenApiContributor {
   }
 
   /**
-   * Declares the read-your-writes bookmark on EVERY response of an operation, not only its 200. It is emitted on
-   * both encodings - on the streamed one before the first row, since a header cannot be set once the body has
-   * started (issue #7351) - so it is a property of the response rather than of either media type; and it is
-   * emitted whatever the outcome, because the value means the same thing on a refused request as on a
-   * successful one. A document that declared it only on the 200 would send a generated client looking for it in
-   * the one place it is guaranteed and nowhere else.
+   * Declares the read-your-writes bookmark on the responses that can actually carry it, which is more than the
+   * 200 and less than all of them.
+   * <p>
+   * It is emitted on both encodings - on the streamed one before the first row, since a header cannot be set
+   * once the body has started (issue #7351) - so it is a property of the response rather than of either media
+   * type. And it is emitted whatever the outcome, because the value means the same thing on a refused request:
+   * what this server had applied when it answered is a valid barrier for the client's next read either way.
+   * <p>
+   * The boundary is <b>where the bookmark starts existing</b>, not the status code.
+   * {@link AbstractServerHttpHandler#emitCommitIndexBookmarkOnResponseCommit} is registered partway through
+   * {@link DatabaseAbstractHandler#execute}, once the request has been authenticated and its database
+   * resolved - deliberately, since registering it earlier would hand a Raft index to a caller who has not
+   * authenticated. So a failure raised before that point carries no bookmark and never can:
+   * <ul>
+   * <li>{@code 401} is produced by {@code handleRequest} before the request is dispatched at all;</li>
+   * <li>{@code 404} on these operations means "database not found" or a stale session id, both of which are
+   *     resolved before the registration.</li>
+   * </ul>
+   * Those two are therefore left undeclared rather than promised and not delivered - the same mismatch, only
+   * pointing the other way (#7425 review). The rest - {@code 200}, {@code 413}, {@code 500}, and the
+   * {@code 400} raised by the bookmark-header parsing itself - are answered from inside the request, so the
+   * header rides along.
    */
   private static void addCommitIndexBookmarkHeader(final ApiResponses responses) {
-    final Header bookmark = SpecBuilders.stringHeader("""
-        On a replicated (HA) database, the last Raft index this server had applied when it answered. Feed it \
-        back as 'X-ArcadeDB-Read-After' on the next request to get read-your-writes consistency from a \
-        follower. Present on error responses too - it bookmarks what the server had applied when it refused, \
-        which is still a valid barrier for the next read. Absent on a standalone database, and on a replicated \
-        one that has applied nothing yet.\
-        """);
-    for (final ApiResponse response : responses.values())
-      response.addHeaderObject(COMMIT_INDEX_HEADER, bookmark);
+    for (final Map.Entry<String, ApiResponse> entry : responses.entrySet()) {
+      if (BOOKMARKLESS_STATUSES.contains(entry.getKey()))
+        continue;
+      // A new Header per response rather than one shared instance: aliasing them would make a later per-status
+      // tweak to one silently rewrite the others (#7425 review).
+      entry.getValue().addHeaderObject(COMMIT_INDEX_HEADER, SpecBuilders.stringHeader("""
+          On a replicated (HA) database, the last Raft index this server had applied when it answered. Feed it \
+          back as 'X-ArcadeDB-Read-After' on the next request to get read-your-writes consistency from a \
+          follower. Sent on an error response too, once the request reached the database: it bookmarks what the \
+          server had applied when it refused, which is still a valid barrier for the next read. Absent on a \
+          standalone database, on a replicated one that has applied nothing yet, and on a failure that happens \
+          before the request reaches the database at all.\
+          """));
+    }
   }
 
   /**
