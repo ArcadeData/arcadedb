@@ -103,7 +103,11 @@ import java.util.logging.Level;
  * <li>{@code {"error": {...}}} - the last line of a failed one: the object the buffered encoding would have sent,
  *     plus the {@code status} it would have sent it under. A 200 is already on the wire by then and cannot be
  *     taken back, so the status travels in band and the line is the only terminator a consumer gets - a stream
- *     that ends with neither {@code summary} nor {@code error} did not arrive whole.</li>
+ *     that ends with neither {@code summary} nor {@code error} did not arrive whole. An engine failure raised
+ *     after the stream started adds {@code statusMapped: false}, because the fine-grained status the buffered
+ *     encoding would have chosen is decided by a classifier this path cannot reach without copying it
+ *     (issue #7396); the {@code exception} class is the discriminator there, and the counters and the bookmark
+ *     travel as they do on every other failure.</li>
  * </ul>
  * A progress line is an upper bound on what is durable, exactly like the partial-commit counters below: vertices
  * are committed at each flush, but {@code GraphBatch} buffers edges and writes them at close, so an edge-phase
@@ -569,7 +573,6 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     return new ExecutionResponse(200, result.toString());
   }
 
-
   /**
    * Notified at every commit boundary of a load, so a response encoding that can say something before the end
    * of the request has something to say (issue #7311). {@link #NONE} on the buffered encoding, which is how the
@@ -603,11 +606,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * object is produced once, by the same code, and only the envelope around it differs.
    * <p>
    * <b>Why the response is started lazily.</b> Nothing is written until the first progress line, so a load that
-   * fails before it commits anything - an engine error on the very first flush, a security failure, a
-   * {@code DuplicatedKeyException} - still travels to {@link AbstractServerHttpHandler}'s error mapping and is
-   * answered with the status that mapping chose. Only once a line is on the wire is the status unrecoverable,
-   * and only then is a failure reported in band. That is the difference between a client seeing 409 "do not
-   * retry" and seeing a 200 whose body it has to parse to discover the same thing.
+   * fails before it commits anything is still answered with a real status code. That covers both shapes of
+   * failure, which is the part that is easy to get wrong: an exception that PROPAGATES - a security failure, a
+   * {@code DuplicatedKeyException} on the very first flush - is rethrown here and travels to
+   * {@link AbstractServerHttpHandler}'s error mapping, and a failure {@link #streamRecords} REPORTS BY
+   * RETURNING - a malformed record, an unknown temporary id, a body that ended early - is returned unchanged so
+   * the pipeline sends it under the 400 or 408 it always carried. Only once a line is on the wire is the status
+   * unrecoverable, and only then is a failure reported in band. That is the difference between a client seeing
+   * 409 "do not retry" and seeing a 200 whose body it has to parse to discover the same thing.
    * <p>
    * <b>Full duplex on one socket.</b> This writes the response while {@link #streamRecords} reads the request.
    * HTTP/1.1 permits it and Undertow's blocking exchange supports it, but it does mean a client that never
@@ -625,6 +631,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final HAReplicatedDatabase haDb) throws Exception {
 
     final NdJsonBatchResponse response = new NdJsonBatchResponse(exchange);
+    // Counters as of the last acknowledgement, so a failure that cannot reach streamRecords' own counters -
+    // an engine exception raised after the stream started - still has something honest to report.
+    final long[] lastProgress = new long[2];
     try {
       final ExecutionResponse unary = streamRecords(exchange, databaseName, isCsv, builder, inputStream, vertexRefs,
           System.currentTimeMillis(), vertexBatchSize, expectedRecords,
@@ -634,6 +643,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
             event.put("verticesCreated", verticesCreated);
             event.put("edgesCreated", edgesCreated);
             addLineAccounting(event, stream, refs, in);
+            lastProgress[0] = verticesCreated;
+            lastProgress[1] = edgesCreated;
             try {
               // Forced, unlike a query row: a progress line exists to be read now, and there are few enough of
               // them that the syscall the size/interval policy is there to save does not matter here.
@@ -645,6 +656,18 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
               throw new BatchResponseWriteException(e);
             }
           });
+
+      if (unary.getCode() != 200 && !response.hasStarted()) {
+        // A failure streamRecords REPORTS BY RETURNING - a malformed record, an unknown temporary id, a
+        // truncated body - reaches this branch rather than the catch below, and when it happens before a single
+        // acknowledgement has been written the status line is still ours to choose. Choosing 200 there would
+        // contradict this method's own promise, the 400 and 408 the OpenAPI document declares for this
+        // endpoint, and every client that keys on the status rather than parsing the body. So the buffered
+        // answer is sent as-is, which also makes it byte-identical, and the bookmark goes back to being the
+        // header it can still be (issue #7311, cycle 3 review).
+        emitCommitIndexBookmark(exchange, haDb);
+        return unary;
+      }
 
       final JSONObject terminal = new JSONObject(unary.getResponse());
       // The bookmark of issue #5862 cannot be a header on this encoding: by the time the commit index is known
@@ -675,10 +698,31 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           "Streaming batch load on database '%s' failed after the response had already started", reported,
           databaseName);
       try {
-        response.open().writeEvent("error", new JSONObject()
+        final JSONObject error = new JSONObject()
             .put("error", reported.getMessage() != null ? reported.getMessage() : reported.toString())
             .put("exception", reported.getClass().getName())
-            .put("status", 500), true);
+            // 500 is the unclassified fallback, NOT a classification. The fine-grained mapping - 409 for a
+            // duplicated key, 503 for a retryable conflict, 403, 404 - lives in
+            // AbstractServerHttpHandler.sendMappedErrorResponse, whose javadoc records that hand-written
+            // mirrors of it produced six separate bugs, so a second copy is not made here. The flag says so
+            // outright and the exception class is the discriminator a client keys on instead. Making the
+            // in-band status exact means extracting that classifier so there is still exactly one: issue #7396.
+            .put("status", 500)
+            .put("statusMapped", false);
+        // What a client reconciles with, and what the buffered encoding still delivers for this same failure:
+        // its counters travel in the error body, and its bookmark is emitted by the finally in execute(). Both
+        // were dropped here, which is the one place this encoding was worse than the one it extends
+        // (cycle 3 review). The counters are as of the last acknowledgement, which is the same upper bound on
+        // what is durable that every other count on this endpoint carries.
+        error.put("verticesCreated", lastProgress[0]);
+        error.put("edgesCreated", lastProgress[1]);
+        error.put("partialCommit", lastProgress[0] > 0 || lastProgress[1] > 0);
+        if (haDb != null) {
+          final long lastApplied = haDb.getLastAppliedIndex();
+          if (lastApplied >= 0)
+            error.put("commitIndex", lastApplied);
+        }
+        response.open().writeEvent("error", error, true);
       } catch (final IOException writeFailed) {
         // The connection that could not carry the load cannot carry the explanation either. Nothing is left to
         // tell the client with; the stream simply ends without a terminal line, which is exactly how a consumer

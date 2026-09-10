@@ -335,7 +335,12 @@ public class CoreApiSpec implements OpenApiContributor {
             object this endpoint would otherwise have returned. That is the HTTP counterpart of the \
             per-chunk acknowledgement of the gRPC InsertBidirectional RPC. A progress line counts \
             records attempted, the same upper bound the partial-commit counters carry. Anything else \
-            in Accept, including an absent header, returns the buffered object unchanged.""");
+            in Accept, including an absent header, returns the buffered object unchanged.
+
+            A load that fails before it has acknowledged anything still answers with its real status \
+            code and the buffered error body, because the status line has not been sent yet: the 400 \
+            and 408 below apply to a streaming request too. Only a failure raised after the first \
+            progress line is reported in band under a 200.""");
 
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     post.addParametersItem(batchNdJsonAcceptParam());
@@ -805,6 +810,10 @@ public class CoreApiSpec implements OpenApiContributor {
         status travels in band.""");
     error.addProperty("status", SpecBuilders.integer(
         "HTTP status the buffered encoding would have used: 400, 408 or 500"));
+    error.addProperty("statusMapped", SpecBuilders.bool("""
+        Present and false when 'status' is the unclassified 500 fallback rather than the status the buffered \
+        encoding would have chosen - the case of an engine failure raised after the stream had already \
+        started. Key on 'exception' there, not on 'status'. Absent whenever 'status' is exact."""));
     // Carried on a FAILED load too, and not by accident: a batch is not atomic, so a load that failed
     // mid-stream still committed the chunks before the failure, and a READ_YOUR_WRITES client has to be able
     // to read them back. That is the same rule the buffered encoding follows by emitting the header on its

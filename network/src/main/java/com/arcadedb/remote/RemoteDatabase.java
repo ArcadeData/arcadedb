@@ -1370,7 +1370,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           throw new DatabaseOperationException("Error on batch import (status " + error.getInt("status", 0) + "): "
               + error.getString("error", "no message") + ". The load is not atomic: "
               + error.getLong("verticesCreated", 0) + " vertices and " + error.getLong("edgesCreated", 0)
-              + " were attempted before it failed");
+              + " edges were attempted before it failed, and the chunks before the failure are durable - "
+              + "re-sending the whole payload would duplicate them");
         }
       }
     }

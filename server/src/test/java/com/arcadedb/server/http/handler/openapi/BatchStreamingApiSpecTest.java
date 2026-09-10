@@ -80,7 +80,7 @@ class BatchStreamingApiSpecTest {
         .as("the status the buffered encoding would have used travels in band, since 200 is already sent, and "
             + "the bookmark is on the FAILED line too - a batch is not atomic, so a failed load still committed "
             + "the chunks a READ_YOUR_WRITES client has to read back")
-        .containsKeys("status", "commitIndex");
+        .containsKeys("status", "commitIndex", "statusMapped");
     assertThat(((Schema<?>) event.getProperties().get("summary")).getProperties())
         .as("so does the read-your-writes bookmark, which can no longer be a response header")
         .containsKey("commitIndex");
@@ -94,5 +94,18 @@ class BatchStreamingApiSpecTest {
         .contains("progress")
         .as("a progress counter is an upper bound, exactly like the partial-commit counters")
         .contains("records attempted");
+  }
+
+  /**
+   * The 400 and 408 this operation declares are not made unreachable by negotiating the stream: a load that
+   * fails before it has acknowledged anything still carries them, because the status line has not been sent
+   * yet. A document that implied otherwise would send a generated client looking for those failures only in
+   * the body.
+   */
+  @Test
+  void theDescriptionSaysAPreStreamFailureKeepsItsStatusCode() {
+    final Operation post = openAPI.getPaths().get("/api/v1/batch/{database}").getPost();
+    assertThat(post.getDescription()).contains("before it has acknowledged anything");
+    assertThat(post.getResponses().keySet()).contains("400", "408");
   }
 }

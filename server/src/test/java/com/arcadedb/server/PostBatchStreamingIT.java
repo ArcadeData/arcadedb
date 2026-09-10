@@ -250,6 +250,98 @@ class PostBatchStreamingIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * The other half of the same rule, and the one the first version of this branch got wrong: a failure
+   * {@code streamRecords} REPORTS BY RETURNING - a malformed record, an unknown temporary id, a truncated body -
+   * is not a thrown exception, and it reaches the terminal-line branch rather than the catch. When it happens
+   * before a single acknowledgement has been written the status is still ours to choose, so it has to be the
+   * real one: a client that keys on the status code, and the OpenAPI document that still declares 400 and 408
+   * for this endpoint, would otherwise read a rejected payload as a successful load.
+   */
+  @Test
+  @Timeout(60)
+  void aMalformedFirstRecordKeepsItsRealStatusCode() throws Exception {
+    final HttpURLConnection conn = open("", NDJSON, NDJSON);
+    writeBody(conn, "this is not json at all\n".getBytes(StandardCharsets.UTF_8));
+    try {
+      assertThat(conn.getResponseCode())
+          .as("nothing had been written, so the buffered encoding's 400 was still available and must be used")
+          .isEqualTo(400);
+      assertThat(conn.getContentType()).contains("application/json");
+      final JSONObject error = new JSONObject(readAll(conn.getErrorStream()));
+      assertThat(error.getBoolean("partialCommit")).isFalse();
+      assertThat(error.getLong("verticesCreated")).isZero();
+    } finally {
+      conn.disconnect();
+    }
+  }
+
+  /**
+   * Same rule for a body that stops before the first flush: at the default {@code vertexBatchSize} nothing has
+   * been acknowledged yet, so the truncation keeps the 408 the buffered encoding gives it rather than becoming a
+   * 200 whose body has to be parsed to discover the load failed.
+   */
+  @Test
+  @Timeout(60)
+  void aTruncatedUploadBeforeTheFirstFlushKeepsItsRealStatusCode() throws Exception {
+    final byte[] sent = ndjsonVertices(1_000_000, 3);
+
+    try (final Socket socket = new Socket("127.0.0.1", httpPort())) {
+      socket.setSoTimeout(30_000);
+      final OutputStream out = socket.getOutputStream();
+      // No vertexBatchSize: the default is 10,000, so three vertices never reach a flush and never acknowledge.
+      out.write(requestHead("", NDJSON, 1_000_000));
+      out.write(sent);
+      out.flush();
+      socket.shutdownOutput();
+
+      final BufferedReader raw = new BufferedReader(
+          new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+      assertThat(readStatusLine(raw))
+          .as("a truncation nothing has been acknowledged before keeps its real status")
+          .contains("408");
+    }
+  }
+
+  /**
+   * A failure the engine raises AFTER the first acknowledgement cannot have its status back - a 200 is on the
+   * wire - so everything a client needs to reconcile has to be in the line instead. It must not be answered
+   * with a bare message: the counters, the partial-commit flag and, on a replicated database, the bookmark are
+   * exactly what the buffered encoding still delivers for the same failure.
+   */
+  @Test
+  @Timeout(60)
+  void anEngineFailureAfterTheFirstAcknowledgementCarriesTheCountersInBand() throws Exception {
+    // V1.id is unique, so this id is already taken when the payload below reaches its second batch.
+    postStreamed(ndjsonVertices(1_100_010, 1), "?vertexBatchSize=1", NDJSON);
+
+    final StringBuilder body = new StringBuilder();
+    for (int i = 0; i < 2; i++)
+      body.append("{\"@type\":\"vertex\",\"@class\":\"V1\",\"@id\":\"d").append(i).append("\",\"id\":")
+          .append(1_100_000 + i).append("}\n");
+    // Second batch, and a duplicate: the load fails with the first two vertices acknowledged and committed.
+    body.append("{\"@type\":\"vertex\",\"@class\":\"V1\",\"@id\":\"d9\",\"id\":1100010}\n");
+
+    final List<JSONObject> events = postStreamed(body.toString().getBytes(StandardCharsets.UTF_8),
+        "?vertexBatchSize=2", NDJSON);
+
+    assertThat(countEvents(events, "progress"))
+        .as("the failure has to come after an acknowledgement, or this test proves nothing")
+        .isGreaterThan(0);
+
+    final JSONObject error = terminal(events, "error");
+    assertThat(error.getString("exception"))
+        .as("the exception class is the discriminator once the status line can no longer carry one")
+        .contains("DuplicatedKeyException");
+    assertThat(error.getBoolean("statusMapped"))
+        .as("the in-band status is not the fine-grained one the buffered encoding would have mapped")
+        .isFalse();
+    assertThat(error.getLong("verticesCreated"))
+        .as("the counters a client reconciles with must survive a failure of this shape too")
+        .isEqualTo(2);
+    assertThat(error.getBoolean("partialCommit")).isTrue();
+  }
+
   /** The edge phase is acknowledged too, on the {@code commitEvery} boundary GraphBatch writes edges at. */
   @Test
   @Timeout(60)

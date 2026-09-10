@@ -76,7 +76,9 @@ the old signature delegates to it. No existing test is touched.
 | Same, terminal `summary` line == the unary 200 body | yes | yes - `theSummaryLineCarriesTheSameObjectTheUnaryEncodingWouldHaveSent` |
 | Same, client-input failure after the stream started (400 body) | yes | yes - `aClientInputFailureAfterTheStreamStartedIsReportedInBand` |
 | Same, truncated upload after the stream started (408 body) | yes | yes - `aTruncatedUploadAfterTheStreamStartedIsReportedInBand` |
-| Same, failure **before** the stream started | yes (rethrown, standard status mapping) | yes - `aFailureBeforeTheStreamStartedKeepsItsRealStatusCode` |
+| Same, failure **before** the stream started, THROWN out of `streamRecords` | yes (rethrown, standard status mapping) | yes - `aFailureBeforeTheStreamStartedKeepsItsRealStatusCode` |
+| Same, failure **before** the stream started, RETURNED by `streamRecords` (400 / 408) | yes (the buffered answer is returned unchanged) | yes - `aMalformedFirstRecordKeepsItsRealStatusCode`, `aTruncatedUploadBeforeTheFirstFlushKeepsItsRealStatusCode` |
+| Engine failure raised **after** the first acknowledgement | yes - counters, `partialCommit` and `commitIndex` in band; `statusMapped:false` says the status is not the mapped one (#7396) | yes - `anEngineFailureAfterTheFirstAcknowledgementCarriesTheCountersInBand` |
 | `POST /batch` with no `Accept`, or any other type | unchanged | yes - `theUnaryEncodingIsByteIdenticalWhenTheStreamIsNotNegotiated` |
 | `Accept: application/x-ndjson;q=0` | unchanged (the q=0 rule) | yes - `PostBatchStreamingNegotiationTest` |
 | `X-ArcadeDB-Commit-Index` read-your-writes bookmark (#5862) | yes - moved in band | yes - `theCommitIndexBookmarkTravelsInTheTerminalLine` (HA), unit-covered by `commitIndexIsOmittedOnAStandaloneDatabase` |
@@ -87,6 +89,7 @@ the old signature delegates to it. No existing test is touched.
 | `RemoteDatabase` / `RemoteGraphBatch` (Java driver) | yes - `sendBatch(..., onProgress)` + `withProgressListener` | yes - `RemoteGraphBatchProgressIT` |
 | Idempotency key of the BUFFERED `/batch` encoding not covering the payload | **no** - filed as #7381 (pre-existing, found by this sweep) | n/a |
 | A streamed response has no bound, so a very large load can block the worker mid-write | **no** - filed as #7388 (raised in review) | n/a |
+| The in-band status of a post-start engine failure is the unclassified 500, not the mapped one | **no** - filed as #7396 (needs the classifier extracted from `sendMappedErrorResponse`; a second copy of that chain is the mistake its own javadoc records six bugs for) | n/a |
 | `commitIndex` on a FAILED load, relayed by a follower | yes | yes - `RaftBatchStreamingForwardIT.aRelayedStreamThatFailsMidLoadStillCarriesTheBookmark` |
 | gRPC `InsertBidirectional` control frames (`Start` / `Commit`) over HTTP | **no** - argued: needs a duplex channel, belongs to `/ws` (#7382) | n/a |
 | `/ws` streaming batch surface (`Start`/`Commit` control frames) | **no** - filed as #7382 | n/a |
@@ -231,13 +234,59 @@ could tell anyone at that point.
 Deferred: none. Disagreed: none.
 
 Other reviewers on this PR: CodeRabbit reached its free-tier review limit and produced no findings. Codacy
-reported "4 new issues (1 high ErrorProne, 3 minor CodeStyle)" against the first commit; the three CodeStyle
-ones are the fully-qualified names item 1 fixed, and the individual findings are not retrievable through the
-GitHub API or the check-run summary, only through the Codacy dashboard. The one plausible ErrorProne-high in
-this diff is `catch (final Throwable t)` in `streamRecordsAsNdJson`, which is deliberate and is the same thing
-`AbstractServerHttpHandler.handleRequest` does one class away: once bytes are on the wire nothing may escape
-without the client being told, so narrowing it would reintroduce the `UT000002` this design exists to avoid.
+reported "4 new issues (1 high ErrorProne, 3 minor CodeStyle)" and **its findings are not retrievable from
+here** - neither `gh pr view --json comments` nor the check-run summary carries them, only the Codacy
+dashboard, which the developer can open and this agent cannot.
+
+Two things are known about them rather than guessed. `.codacy.yml` excludes `**/src/test/**`, `**/*Test.java`
+and `**/*IT.java`, so all four are in the production sources of this branch, and none of them is the
+fully-qualified-name item the reviewer raised - that was in a test file. The one construct in the changed
+production code that a PMD "ErrorProne" ruleset would most plausibly rank high is `catch (final Throwable t)`
+in `streamRecordsAsNdJson`, or `NdJsonBatchResponse` being an `AutoCloseable` created outside a
+try-with-resources. Both are deliberate: catching `Throwable` is what
+`AbstractServerHttpHandler.handleRequest` does one class away, and once bytes are on the wire nothing may
+escape without the client being told; and the response cannot be a try-with-resources precisely because it must
+still be open in the `catch` that writes the in-band failure. That is a hypothesis about what the tool said,
+not a reading of it. **The developer should open the Codacy dashboard before merging** - it is the one review
+surface this branch could not read.
 
 While re-running, `RaftBatchStreamingForwardIT` failed once with a 403 because it addressed nodes by the
 `248n` literal the older HA ITs use, and the follower index happened to land on the node whose port a foreign
 server was holding. It now reads `getServer(i).getHttpServer().getPort()`, like the other new ITs.
+
+### Cycle 2 - `599ee35fd8`
+
+The reviewer's run for this commit completed without posting a comment. Nothing to act on. A close-guard
+found while re-reading `streamRecordsAsNdJson` was pushed as `229fa3df0c`.
+
+### Cycle 3 - `229fa3df0c`
+
+Two findings, and the first is the kind this branch was supposed to be proof against - the "lazy start"
+promise held for one shape of failure and not the other.
+
+1. **The promise did not cover a failure `streamRecords` REPORTS BY RETURNING.** A malformed first record, an
+   unknown temporary id, a body that ends before the first flush - all of those are caught inside
+   `streamRecords` and returned as a `400`/`408` `ExecutionResponse`, so they reach the terminal-line branch
+   rather than the `catch`. That branch called `response.open()` unconditionally, which sets 200. So the most
+   ordinary failure of all - bad input on line 1 - was answered `200` with the real status buried in the body,
+   contradicting the method's own javadoc, the coverage-table row, and the `400`/`408` the OpenAPI document
+   declares for this endpoint. Verified and fixed: when nothing has been acknowledged, the buffered answer is
+   returned unchanged and the bookmark goes back to being a header. Two tests, both confirmed to fail against
+   the unfixed branch.
+   The existing `aFailureBeforeTheStreamStartedKeepsItsRealStatusCode` did not catch it because both cases it
+   drives - a duplicated key on the first flush, an invalid `refMode` - THROW, and the throw path already
+   checked `hasStarted()`. That is the test-writing mistake, not just the code one: one shape of the failure
+   was tested and the sibling shape was assumed.
+2. **A post-start engine failure lost the counters and the bookmark.** The in-band error line was built from
+   scratch with only a message, a class and a hardcoded 500. The buffered encoding still delivers the bookmark
+   for that same failure (the `finally` in `execute` emits it even when the exception propagates), so dropping
+   it was a genuine regression against the encoding this one extends. Fixed: the counters as of the last
+   acknowledgement, `partialCommit`, and `commitIndex` now travel.
+   The hardcoded 500 is **not** fixed here, and the reason is on the record: the fine-grained mapping lives in
+   `sendMappedErrorResponse`, whose javadoc documents that hand-written mirrors of its chain produced six
+   separate bugs. A seventh mirror is worse than an honest 500, so the line now carries `statusMapped: false`
+   and names the exception class as the discriminator, and **#7396** is filed to extract the classifier so
+   there is still exactly one.
+3. **Cosmetic:** the double blank lines introduced around the new blocks are collapsed.
+
+Deferred: none. Disagreed: none.
