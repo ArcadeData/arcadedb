@@ -86,6 +86,8 @@ the old signature delegates to it. No existing test is touched.
 | OpenAPI document | yes | yes - `PostBatchStreamingOpenApiTest` |
 | `RemoteDatabase` / `RemoteGraphBatch` (Java driver) | yes - `sendBatch(..., onProgress)` + `withProgressListener` | yes - `RemoteGraphBatchProgressIT` |
 | Idempotency key of the BUFFERED `/batch` encoding not covering the payload | **no** - filed as #7381 (pre-existing, found by this sweep) | n/a |
+| A streamed response has no bound, so a very large load can block the worker mid-write | **no** - filed as #7388 (raised in review) | n/a |
+| `commitIndex` on a FAILED load, relayed by a follower | yes | yes - `RaftBatchStreamingForwardIT.aRelayedStreamThatFailsMidLoadStillCarriesTheBookmark` |
 | gRPC `InsertBidirectional` control frames (`Start` / `Commit`) over HTTP | **no** - argued: needs a duplex channel, belongs to `/ws` (#7382) | n/a |
 | `/ws` streaming batch surface (`Start`/`Commit` control frames) | **no** - filed as #7382 | n/a |
 
@@ -96,10 +98,15 @@ the old signature delegates to it. No existing test is touched.
   edges are buffered by `GraphBatch` and written at `close()`, so an edge-phase progress line reports records
   *accepted*, not records committed. This is stated in the javadoc, in the OpenAPI description and in the
   handler.
-- Writing the response while reading the request is full duplex over one socket. A client that never reads
-  its response and whose socket buffers fill would deadlock, in principle. The response is orders of magnitude
-  smaller than the request it describes (one ~200-byte line per `vertexBatchSize` records, default 10,000), so
-  the response cannot fill a socket buffer before the request drains it. No timeout was added for it.
+- Writing the response while reading the request is full duplex over one socket, and the cost of that is NOT
+  flat, which the first version of this section got wrong by comparing one progress line to the whole upload.
+  The lines accumulate with the size of the load - roughly one ~200-byte line per `vertexBatchSize` records,
+  10,000 by default - so a load of millions of records writes hundreds of KB of response. A client that reads
+  nothing until its upload has finished (a plain `HttpURLConnection` that writes its whole body and only then
+  calls `getResponseCode()` is exactly that shape) can fill the socket buffers, at which point the server
+  blocks inside a response `write()` and stops reading the request too. The read side is watched
+  (`httpStreamingReadTimeout`); the write side is not. An ordinary client that reads while it writes never
+  meets it, and a small load cannot reach it at all. Bounding it is **#7388**.
 - Once a 200 is on the wire the status code cannot be taken back, so a failure raised after the first line is
   reported in band with its intended status in the `error` object's `status` field. The distinction a client
   keys on (400 client input vs 408 truncation vs 500) survives; the HTTP status line does not.
@@ -186,3 +193,38 @@ Considered and left alone, with the reason:
 - Writing the response while reading the request can deadlock in principle if a client never reads. See
   **Residual risk**: the response is smaller than the request by orders of magnitude, so it cannot fill a
   socket buffer before the request drains it.
+
+## Review cycles
+
+### Cycle 1 - `11f9393113`
+
+The `claude` reviewer raised five items and blocked on none of them. All five were acted on:
+
+1. **Fully-qualified names in `PostBatchStreamingIT`** (`java.util.Map`, `java.util.ArrayDeque`,
+   `java.io.InputStream`), against CLAUDE.md's "always import the class and just use the name". Fixed:
+   imported.
+2. **The OpenAPI document declared `commitIndex` only on the `summary` line**, while the handler puts it on
+   `terminal` before the `summary`/`error` branch - so it is on both - and `RemoteDatabase.readStreamedBatch`
+   already reads it off `error`. Verified, and the reviewer is right that this matters most on a failure: a
+   batch is not atomic, so a load that failed mid-stream still committed the chunks a READ_YOUR_WRITES client
+   has to read back. `commitIndex` added to the `error` schema, and `BatchStreamingApiSpecTest` now asserts
+   both keys.
+3. **No test pinned `commitIndex` on an in-band `error` line.** Real gap, and it pinned behaviour the driver
+   depends on. `RaftBatchStreamingForwardIT.aRelayedStreamThatFailsMidLoadStillCarriesTheBookmark` fails a
+   relayed load on an unknown edge endpoint and asserts `status`, `partialCommit` and `commitIndex`.
+4. **The residual-risk write-up undersold the full-duplex hazard.** Accepted: comparing ONE progress line to
+   the whole upload was the wrong comparison, because the lines accumulate with the size of the load. The
+   javadoc, this document and the OpenAPI description now say the risk scales with load size, and **#7388** is
+   filed for bounding it. Not fixed in this PR because every candidate bound - a rate floor, a line cap, a
+   write-side watchdog - changes what a client observes and needs its own decision; the issue lays the three
+   out, including which existing tests each one would invalidate.
+5. **`BatchProgressSink#chunk` still declared `throws IOException`,** which the only implementation already
+   catches. Dropped - and the javadoc now says why it must stay dropped: not being able to throw an
+   `IOException` is what stops the next implementation from having one caught by `streamRecords` and answered
+   as a truncated request body.
+
+Deferred: none. Disagreed: none.
+
+While re-running, `RaftBatchStreamingForwardIT` failed once with a 403 because it addressed nodes by the
+`248n` literal the older HA ITs use, and the follower index happened to land on the node whose port a foreign
+server was holding. It now reads `getServer(i).getHttpServer().getPort()`, like the other new ITs.

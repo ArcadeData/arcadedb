@@ -805,6 +805,14 @@ public class CoreApiSpec implements OpenApiContributor {
         status travels in band.""");
     error.addProperty("status", SpecBuilders.integer(
         "HTTP status the buffered encoding would have used: 400, 408 or 500"));
+    // Carried on a FAILED load too, and not by accident: a batch is not atomic, so a load that failed
+    // mid-stream still committed the chunks before the failure, and a READ_YOUR_WRITES client has to be able
+    // to read them back. That is the same rule the buffered encoding follows by emitting the header on its
+    // 400/408 answers (issue #5862), and a client generated from a document that declared the bookmark only
+    // on 'summary' would not know to look for it where it matters most.
+    error.addProperty("commitIndex", SpecBuilders.integer(
+        "Last applied Raft index, present on a replicated database. On a failed load it bookmarks the chunks "
+            + "that were committed before the failure"));
     schema.addProperty("error", error);
     return schema;
   }

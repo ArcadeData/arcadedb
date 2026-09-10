@@ -77,8 +77,10 @@ class BatchStreamingApiSpecTest {
         .contains("phase", "verticesCreated", "edgesCreated", "linesRead", "linesSkipped", "bytesRead");
 
     assertThat(((Schema<?>) event.getProperties().get("error")).getProperties())
-        .as("the status the buffered encoding would have used travels in band, since 200 is already sent")
-        .containsKey("status");
+        .as("the status the buffered encoding would have used travels in band, since 200 is already sent, and "
+            + "the bookmark is on the FAILED line too - a batch is not atomic, so a failed load still committed "
+            + "the chunks a READ_YOUR_WRITES client has to read back")
+        .containsKeys("status", "commitIndex");
     assertThat(((Schema<?>) event.getProperties().get("summary")).getProperties())
         .as("so does the read-your-writes bookmark, which can no longer be a response header")
         .containsKey("commitIndex");

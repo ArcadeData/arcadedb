@@ -107,7 +107,14 @@ import java.util.logging.Level;
  * </ul>
  * A progress line is an upper bound on what is durable, exactly like the partial-commit counters below: vertices
  * are committed at each flush, but {@code GraphBatch} buffers edges and writes them at close, so an edge-phase
- * line counts records ACCEPTED. A request that does not negotiate the encoding - no {@code Accept}, another type,
+ * line counts records ACCEPTED. Writing the response while the request is still being read is full duplex over
+ * one connection, and the cost of that is not flat: the lines accumulate with the size of the load - roughly one
+ * ~200-byte line per {@code vertexBatchSize} records - so a client that uploads millions of records without
+ * reading anything until it has finished can eventually fill the response socket buffer and block the worker
+ * thread mid-write, which stops it reading the upload too. An ordinary client that reads while it writes never
+ * meets this, and a small load cannot reach it at all; bounding it for the large ones is issue #7388.
+ * <p>
+ * A request that does not negotiate the encoding - no {@code Accept}, another type,
  * or {@code application/x-ndjson;q=0} - receives the same bytes under the same status as before. The
  * {@code X-ArcadeDB-Commit-Index} bookmark (issue #5862) cannot be a header on this encoding because the response
  * has already started when the value becomes known, so it is carried inside the terminal line instead.
@@ -575,8 +582,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     BatchProgressSink NONE = (phase, verticesCreated, edgesCreated, stream, vertexRefs, inputStream) -> {
     };
 
+    /**
+     * Deliberately declares no checked exception. {@link #streamRecords} answers an {@link IOException} as a
+     * truncated REQUEST body, with the counts a client resumes from, so an implementation that let one escape
+     * from writing the RESPONSE would produce a precise and completely wrong diagnosis. Not being able to throw
+     * one is what stops the next implementation from reintroducing that.
+     */
     void chunk(String phase, long verticesCreated, long edgesCreated, BatchRecordStream stream,
-        VertexRefResolver vertexRefs, CountingInputStream inputStream) throws IOException;
+        VertexRefResolver vertexRefs, CountingInputStream inputStream);
   }
 
   /**

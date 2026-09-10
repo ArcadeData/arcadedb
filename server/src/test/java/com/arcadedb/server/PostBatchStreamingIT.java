@@ -24,15 +24,19 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.BufferedReader;
 import java.io.DataOutputStream;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.Socket;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -75,7 +79,7 @@ class PostBatchStreamingIT extends BaseGraphServerTest {
       final BufferedReader raw = new BufferedReader(
           new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
       assertThat(readStatusLine(raw)).as("the streaming encoding always answers 200").contains("200");
-      final java.util.Map<String, String> headers = readHeaders(raw);
+      final Map<String, String> headers = readHeaders(raw);
       assertThat(headers).containsEntry("content-type", NDJSON);
       final NdJsonBodyReader in = new NdJsonBodyReader(raw, headers);
 
@@ -403,7 +407,7 @@ class PostBatchStreamingIT extends BaseGraphServerTest {
     }
   }
 
-  private static String readAll(final java.io.InputStream in) throws Exception {
+  private static String readAll(final InputStream in) throws Exception {
     try (in) {
       return new String(in.readAllBytes(), StandardCharsets.UTF_8);
     }
@@ -446,8 +450,8 @@ class PostBatchStreamingIT extends BaseGraphServerTest {
     return in.readLine();
   }
 
-  private static java.util.Map<String, String> readHeaders(final BufferedReader in) throws Exception {
-    final java.util.Map<String, String> headers = new java.util.HashMap<>();
+  private static Map<String, String> readHeaders(final BufferedReader in) throws Exception {
+    final Map<String, String> headers = new HashMap<>();
     for (String line = in.readLine(); line != null && !line.isEmpty(); line = in.readLine()) {
       final int colon = line.indexOf(':');
       if (colon > 0)
@@ -467,9 +471,9 @@ class PostBatchStreamingIT extends BaseGraphServerTest {
   private static final class NdJsonBodyReader {
     private final BufferedReader        in;
     private final boolean               chunked;
-    private final java.util.ArrayDeque<String> pending = new java.util.ArrayDeque<>();
+    private final ArrayDeque<String>     pending = new ArrayDeque<>();
 
-    private NdJsonBodyReader(final BufferedReader in, final java.util.Map<String, String> headers) {
+    private NdJsonBodyReader(final BufferedReader in, final Map<String, String> headers) {
       this.in = in;
       this.chunked = "chunked".equalsIgnoreCase(headers.getOrDefault("transfer-encoding", ""));
     }
