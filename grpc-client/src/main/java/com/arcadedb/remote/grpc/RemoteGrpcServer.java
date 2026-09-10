@@ -102,6 +102,22 @@ import java.util.concurrent.TimeUnit;
  */
 public class RemoteGrpcServer implements AutoCloseable {
 
+  // Hoisted out of the credential-attach path: Metadata.Key.of() validates and lower-cases the name on every
+  // call, and these four (five, with a database) are attached to EVERY RPC.
+  private static final Metadata.Key<String> USERNAME_KEY         =
+      Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> PASSWORD_KEY         =
+      Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ARCADE_USER_KEY      =
+      Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ARCADE_PASSWORD_KEY  =
+      Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
+  /**
+   * The key {@code GrpcAuthInterceptor} reads to decide which database to authenticate the call against.
+   */
+  private static final Metadata.Key<String> ARCADE_DATABASE_KEY  =
+      Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
+
   private final String host;
   private final int    port;
   private final String userName;
@@ -219,18 +235,47 @@ public class RemoteGrpcServer implements AutoCloseable {
     return interceptors.isEmpty() ? current : ClientInterceptors.intercept(current, interceptors);
   }
 
-  public ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub newBlockingStub(int timeout) {
+  /**
+   * A data-plane stub that names no database. The server then authenticates the credentials at server
+   * level; per-database authorization still happens against the database named in each request body.
+   * Prefer {@link #newBlockingStub(int, String)} when the target database is known.
+   */
+  public ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub newBlockingStub(final int timeout) {
+    return newBlockingStub(timeout, null);
+  }
+
+  /**
+   * A data-plane stub whose every call carries {@code database} on the {@code x-arcade-database}
+   * metadata the server's auth interceptor reads.
+   * <p>
+   * Issue #7320: without that key the interceptor fell back to the literal name {@code "default"} and
+   * authenticated the caller against a database it had never named, so any principal not granted
+   * {@code "*"} was refused on its first RPC.
+   *
+   * @param database the database the calls target, or {@code null}/blank to send no database at all
+   */
+  public ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub newBlockingStub(final int timeout, final String database) {
 
     return ArcadeDbServiceGrpc.newBlockingV2Stub(channel())
-        .withCallCredentials(createCredentials())
+        .withCallCredentials(createCredentials(database))
         .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
         .withCompression("gzip");
   }
 
-  public ArcadeDbServiceGrpc.ArcadeDbServiceStub newAsyncStub(int timeout) {
+  /**
+   * @see #newBlockingStub(int)
+   */
+  public ArcadeDbServiceGrpc.ArcadeDbServiceStub newAsyncStub(final int timeout) {
+    return newAsyncStub(timeout, null);
+  }
+
+  /**
+   * @see #newBlockingStub(int, String)
+   */
+  public ArcadeDbServiceGrpc.ArcadeDbServiceStub newAsyncStub(final int timeout, final String database) {
 
     return ArcadeDbServiceGrpc.newStub(channel())
-        .withCallCredentials(createCredentials())
+        .withCallCredentials(createCredentials(database))
         .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
         .withCompression("gzip");
   }
@@ -582,43 +627,49 @@ public class RemoteGrpcServer implements AutoCloseable {
   }
 
   /**
-   * Creates call credentials for authentication
+   * Creates call credentials for authentication, naming no database. Used by the admin plane, whose
+   * RPCs authenticate from the request body and never read the database metadata.
    */
-  protected CallCredentials createCallCredentials(String userName, String userPassword) {
-    ensureCredentialsAllowedOverChannel();
-    return new CallCredentials() {
-      @Override
-      public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
-        Metadata headers = new Metadata();
-        headers.put(Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER), userName);
-        headers.put(Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
-        headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), userName);
-        headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
-        applier.apply(headers);
-      }
-
-      @Override
-      public void thisUsesUnstableApi() {
-        // Required by the interface
-      }
-    };
+  protected CallCredentials createCallCredentials(final String userName, final String userPassword) {
+    return credentials(userName, userPassword, null);
   }
 
+  /**
+   * @see #createCredentials(String)
+   */
   protected CallCredentials createCredentials() {
+    return createCredentials(null);
+  }
+
+  /**
+   * Credentials for this server's user, naming the database the calls target so the server's auth
+   * interceptor authenticates against that database rather than against a name nobody sent (#7320).
+   *
+   * @param database the target database, or {@code null}/blank to omit the key entirely
+   */
+  protected CallCredentials createCredentials(final String database) {
+    return credentials(userName, userPassword, database);
+  }
+
+  private CallCredentials credentials(final String user, final String password, final String database) {
     ensureCredentialsAllowedOverChannel();
+    // Blank is the same as absent: an empty header would only make the server special-case it.
+    final String targetDatabase = database == null || database.isBlank() ? null : database;
+
     return new CallCredentials() {
       @Override
-      public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
-        Metadata headers = new Metadata();
-        headers.put(Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER), userName);
-        headers.put(Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
-        headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), userName);
-        headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
+      public void applyRequestMetadata(final RequestInfo requestInfo, final Executor appExecutor,
+          final MetadataApplier applier) {
+        final Metadata headers = new Metadata();
+        headers.put(USERNAME_KEY, user);
+        headers.put(PASSWORD_KEY, password);
+        headers.put(ARCADE_USER_KEY, user);
+        headers.put(ARCADE_PASSWORD_KEY, password);
+        if (targetDatabase != null)
+          headers.put(ARCADE_DATABASE_KEY, targetDatabase);
         applier.apply(headers);
       }
 
-      // x-arcade-user: root" -H "x-arcade-password: oY9uU2uJ8nD8iY7t" -H
-      // "x-arcade-database: local_shakeiq_curonix_poc-app"
       @Override
       public void thisUsesUnstableApi() {
         // Required by the interface
