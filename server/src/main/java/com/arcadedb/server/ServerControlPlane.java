@@ -270,8 +270,9 @@ public class ServerControlPlane {
    * {@code CreateDatabase} called {@code server.createDatabase} alone until issue #7389, so the same
    * operation replicated over HTTP and did not over gRPC.
    *
-   * @return the created database, so a caller that has more to do with it (the {@code graph} variant
-   * of the gRPC RPC, the import command) does not have to look it up again
+   * @return the created database, so a caller that has more to do with it - the {@code graph} variant
+   * of the gRPC RPC, which initialises the default {@code V} and {@code E} types - does not have to
+   * look it up again
    */
   public ServerDatabase createDatabase(final String databaseName) {
     requireDatabaseName(databaseName);

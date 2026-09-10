@@ -161,12 +161,11 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
         return CreateDatabaseResponse.newBuilder().build();
 
       // Physical creation (READ_WRITE is the common default)
-      createDatabasePhysical(name);
+      final Database db = createDatabasePhysical(name);
 
       // Optional: if requested 'graph', initialize default graph types
       if ("graph".equalsIgnoreCase(type)) {
-        // Use getDatabase which returns a shared ServerDatabase - don't close it
-        final Database db = openDatabase(name);
+        // The shared ServerDatabase the create returned - don't close it
         db.transaction(() -> {
           final Schema s = db.getSchema();
           if (!existsVertexType(s, "V"))
@@ -1168,9 +1167,12 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * install-database entry, so the peers install it too. This RPC created the database locally only
    * until issue #7389, and the {@link #requireLeader} gate above meant the divergence it produced
    * always landed on the node the followers treat as authoritative.
+   *
+   * @return the created database, so the {@code graph} branch of {@link #createDatabase} initialises
+   * its default types on the instance the create already resolved rather than looking it up again
    */
-  private void createDatabasePhysical(final String name) {
-    controlPlane.createDatabase(name);
+  private Database createDatabasePhysical(final String name) {
+    return controlPlane.createDatabase(name);
   }
 
   /**
