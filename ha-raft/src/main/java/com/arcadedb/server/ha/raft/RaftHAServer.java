@@ -957,10 +957,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Returns a human-readable display name for a peer, e.g. "arcadedb-0 (localhost:2480)".
-   * Falls back to the raw peer ID string if the peer is unknown.
-   */
-  /**
    * The peer whose {@code arcadedb.server.name} is {@code serverName}, or {@code null} when no peer of the
    * configured server list answers to it (issue #7424). Applies the rules a node uses to find ITSELF in the list
    * ({@link RaftPeerAddressResolver#findLocalPeerId}) to another node's name: a configured {@code name@host}
@@ -985,6 +981,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return capabilityHttpsClients;
   }
 
+  /**
+   * Returns a human-readable display name for a peer, e.g. "arcadedb-0 (localhost:2480)".
+   * Falls back to the raw peer ID string if the peer is unknown.
+   */
   public String getPeerDisplayName(final RaftPeerId peerId) {
     final String name = peerDisplayNames.get(peerId);
     return name != null ? name : peerId.toString();
