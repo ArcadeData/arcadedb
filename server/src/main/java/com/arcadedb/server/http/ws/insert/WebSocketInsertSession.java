@@ -36,6 +36,7 @@ import io.undertow.websockets.core.WebSocketChannel;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 
 /**
  * One duplex insert session opened on {@code /ws} by a {@code start} frame (issue #7382). Mirrors the state the
@@ -170,10 +171,10 @@ public class WebSocketInsertSession {
         case PER_STREAM -> applyRows(records, rows, counts);
         case PER_BATCH -> {
           try {
-            database.transaction(() -> applyRows(records, rows, counts));
+            counts.absorb(inOwnTransaction(attempt -> applyRows(records, rows, attempt)));
           } catch (final Exception e) {
             // The chunk's own transaction failed to commit, so nothing in it is durable. Report the whole chunk
-            // as failed - the per-row tallies applyRows produced describe a transaction that no longer exists.
+            // as failed - the per-row tallies the attempts produced describe transactions that no longer exist.
             counts.resetToWholeChunkFailure(rows, e);
           }
         }
@@ -181,7 +182,7 @@ public class WebSocketInsertSession {
           for (int i = 0; i < rows; i++) {
             final int row = i;
             try {
-              database.transaction(() -> applyRow(records.getJSONObject(row), row, counts));
+              counts.absorb(inOwnTransaction(attempt -> applyRow(records.getJSONObject(row), row, attempt)));
             } catch (final Exception e) {
               counts.fail(row, e);
             }
@@ -338,6 +339,28 @@ public class WebSocketInsertSession {
       throw new IllegalStateException("Insert session '" + id + "' is closed");
   }
 
+  /**
+   * Runs {@code work} inside a transaction of its own and returns the tallies of the attempt that COMMITTED.
+   * <p>
+   * {@link com.arcadedb.database.Database#transaction(com.arcadedb.database.Database.TransactionScope)} re-runs
+   * its block up to {@code arcadedb.txRetries} times when the commit hits a transient conflict, and this engine
+   * conflicts at page granularity, so under concurrent load that is an ordinary outcome rather than an exotic
+   * one. Every attempt therefore gets a FRESH {@link ChunkCounts}: a single accumulator shared across attempts
+   * counts every row of every attempt, so a chunk that landed once, correctly, on the second try would be
+   * acknowledged with twice its true {@code inserted} and a duplicate entry per {@code errors} row - and a
+   * bulk-load protocol whose whole value is a trustworthy acknowledgement cannot afford that. The tallies of the
+   * abandoned attempts are dropped with the transaction that produced them.
+   */
+  private ChunkCounts inOwnTransaction(final Consumer<ChunkCounts> work) {
+    final ChunkCounts[] committed = new ChunkCounts[1];
+    database.transaction(() -> {
+      final ChunkCounts attempt = new ChunkCounts();
+      committed[0] = attempt;
+      work.accept(attempt);
+    });
+    return committed[0];
+  }
+
   private void applyRows(final JSONArray records, final int rows, final ChunkCounts counts) {
     for (int i = 0; i < rows; i++)
       try {
@@ -399,6 +422,16 @@ public class WebSocketInsertSession {
     private       long      ignored;
     private       long      failed;
     private       boolean   wholeChunkFailed;
+
+    /** Adds the tallies of a committed attempt to the chunk's running totals. */
+    private void absorb(final ChunkCounts other) {
+      inserted += other.inserted;
+      updated += other.updated;
+      ignored += other.ignored;
+      failed += other.failed;
+      for (final Object error : other.errors)
+        errors.put(error);
+    }
 
     private void fail(final int rowIndex, final Exception e) {
       failed++;
