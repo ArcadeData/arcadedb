@@ -76,8 +76,9 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
     // Build tag filter from query param
     final TagFilter tagFilter = buildTagFilter(exchange, columns);
 
-    // Query full range and take last element, through the same helper the gRPC TimeSeriesLatest RPC calls
-    // (issue #7305) so the two protocols cannot answer different rows.
+    // A bounded newest-first scan for a single row (issue #7322), through the same helper the gRPC
+    // TimeSeriesLatest RPC calls (issue #7305) so the two protocols cannot answer different rows. The helper
+    // owns the tie-break for samples sharing the newest timestamp; see its javadoc.
     final Object[] lastRow = TimeSeriesGateway.latest(engine, tagFilter);
 
     // Build column names
