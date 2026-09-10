@@ -33,6 +33,7 @@ import io.github.jbellis.jvector.disk.IndexWriter;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.logging.Level;
 
 import static java.util.logging.Level.FINE;
 
@@ -372,9 +373,11 @@ public class ContiguousPageWriter implements IndexWriter {
 
       return pages;
     } catch (final Exception e) {
-      LogManager.instance().log(ContiguousPageWriter.class, FINE,
-          "Could not establish the page count of file %d (%s): every page will be acquired as an existing one", fileId,
-          e.getMessage());
+      // WARNING and not FINE: this fallback puts the file back on the pre-issue-#7362 behaviour wholesale, so an
+      // exception here silently defeats the fix rather than degrading it. It has to be visible to an operator.
+      LogManager.instance().log(ContiguousPageWriter.class, Level.WARNING,
+          "Could not establish the page count of file %d (%s): every page will be acquired as an existing one, so the "
+              + "component's page count will not account for the pages this write appends", fileId, e.getMessage());
       return Integer.MAX_VALUE;
     }
   }

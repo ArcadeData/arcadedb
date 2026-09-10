@@ -120,11 +120,20 @@ public class ComponentFile {
   }
 
   public void drop() throws IOException {
-    // BEFORE close(), not after: see the field's note (issue #7363).
-    dropped = true;
+    markDropped();
     close();
     LogManager.instance().log(this, Level.FINE, "Deleting file %s (id=%d)...", null, filePath, fileId);
     Files.delete(Path.of(getFilePath()));
+  }
+
+  /**
+   * Says this file is being removed. The one place the "before the close" half of the {@code dropped} invariant
+   * lives, so that {@link FileManager#dropFile(int)} - which has to raise it before a DEFERRED drop that never
+   * calls {@link #drop()} - states the same thing by calling this rather than by writing the field itself.
+   */
+  void markDropped() {
+    // BEFORE close(), never after: see the field's note (issue #7363).
+    dropped = true;
   }
 
   /**
