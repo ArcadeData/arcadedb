@@ -306,6 +306,44 @@ class WebSocketInsertSessionIT extends BaseGraphServerTest {
     assertThat(database.countType("Person", false)).isEqualTo(2);
   }
 
+  /**
+   * PER_ROW advances the watermark even when every row of the chunk failed, so resending that chunk is answered as
+   * a replay rather than retried. That is the mode's contract and not an oversight: each row commits on its own, so
+   * a chunk is never all-or-nothing, and replaying one whose rows partly succeeded would double-apply the rows that
+   * did. A client that wants a failed row retried resends it under a NEW sequence, reading which rows to resend off
+   * the ack's {@code errors[]}. Pinned here because the guarantee PER_BATCH gets - a chunk whose transaction failed
+   * is applied on replay rather than acknowledged - deliberately does not hold in this mode.
+   */
+  @Test
+  void perRowAdvancesTheWatermarkEvenWhenEveryRowFailed() throws Throwable {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    try (final var client = newClient()) {
+      final String sessionId = new JSONObject(client.send(start(null, "Person", "per_row"))).getString("sessionId");
+
+      final JSONArray records = new JSONArray();
+      records.put(new JSONObject().put("@class", "NoSuchTypeAnywhere").put("name", "bad-1"));
+      records.put(new JSONObject().put("@class", "NoSuchTypeAnywhere").put("name", "bad-2"));
+
+      final JSONObject ack = new JSONObject(client.send(chunkOf(sessionId, 1, records)));
+      assertThat(ack.getLong("failed", -1)).isEqualTo(2);
+      assertThat(ack.getLong("inserted", -1)).isZero();
+      assertThat(ack.getBoolean("replay", false)).isFalse();
+
+      // The same sequence again: acknowledged as already seen, NOT retried, even though nothing of it was durable.
+      final JSONObject replay = new JSONObject(client.send(chunkOf(sessionId, 1, records)));
+      assertThat(replay.getBoolean("replay", false)).isTrue();
+      assertThat(replay.getLong("failed", -1)).isZero();
+
+      // The way to get those rows in is a new sequence, which the session accepts as the next one due.
+      assertThat(new JSONObject(client.send(chunk(sessionId, 2, "good"))).getLong("inserted", -1)).isEqualTo(1);
+
+      new JSONObject(client.send(control("commit", sessionId)));
+    }
+
+    assertThat(database.countType("Person", false)).isEqualTo(1);
+  }
+
   /** A chunk sequence at or below the watermark is acknowledged as a replay, not applied a second time. */
   @Test
   void aReplayedChunkIsAcknowledgedWithoutBeingAppliedAgain() throws Throwable {
