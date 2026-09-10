@@ -50,7 +50,7 @@ class LSMVectorIndexGraphManifestTest {
     final long fingerprint = LSMVectorIndexGraphManifest.fingerprintOf(new int[] { 0, 1, 2 },
         id -> new RID(3, id * 10L));
 
-    manifest.write(3, fingerprint, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
+    manifest.write(3, fingerprint, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS, 0L);
 
     assertThat(manifest.exists()).isTrue();
     final LSMVectorIndexGraphManifest.Content content = manifest.read();
@@ -69,7 +69,7 @@ class LSMVectorIndexGraphManifestTest {
     final LSMVectorIndexGraphManifest manifest = manifest();
     final long awkward = -6_148_914_691_236_517_206L; // 0xAAAA...AAAA
 
-    manifest.write(7, awkward, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
+    manifest.write(7, awkward, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS, 0L);
 
     assertThat(manifest.read().fingerprint()).isEqualTo(awkward);
   }
@@ -78,7 +78,7 @@ class LSMVectorIndexGraphManifestTest {
   @Test
   void anUnusableManifestCannotBeMatchedByAnyLiveSet() {
     final LSMVectorIndexGraphManifest manifest = manifest();
-    manifest.write(12, 1234L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
+    manifest.write(12, 1234L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS, 0L);
 
     manifest.markUnusable("simulated persist failure");
 
@@ -91,7 +91,7 @@ class LSMVectorIndexGraphManifestTest {
   @Test
   void aTruncatedOrCorruptedManifestReadsAsAbsent() throws Exception {
     final LSMVectorIndexGraphManifest manifest = manifest();
-    manifest.write(5, 99L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
+    manifest.write(5, 99L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS, 0L);
 
     Files.writeString(manifestPath(), "{\"formatVersion\": 1, \"vectorCou", StandardCharsets.UTF_8);
 
@@ -122,7 +122,7 @@ class LSMVectorIndexGraphManifestTest {
   @Test
   void invalidateRemovesTheManifestSoNothingVouchesForThePages() {
     final LSMVectorIndexGraphManifest manifest = manifest();
-    manifest.write(4, 7L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
+    manifest.write(4, 7L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS, 0L);
 
     manifest.invalidate();
 
@@ -141,7 +141,7 @@ class LSMVectorIndexGraphManifestTest {
     Files.writeString(leftover, "half written", StandardCharsets.UTF_8);
     Files.writeString(unrelated, "the graph itself", StandardCharsets.UTF_8);
 
-    manifest().write(1, 1L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
+    manifest().write(1, 1L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS, 0L);
 
     assertThat(leftover).as("the sweep must remove an abandoned temporary of this manifest").doesNotExist();
     assertThat(unrelated).as("and must match by name, so it cannot reach anything else").exists();
@@ -160,7 +160,7 @@ class LSMVectorIndexGraphManifestTest {
   void unreachableOrdinalsSurviveTheRoundTrip() {
     final LSMVectorIndexGraphManifest manifest = manifest();
 
-    manifest.write(50_000, 42L, new int[] { 7, 39_896, 49_999 });
+    manifest.write(50_000, 42L, new int[] { 7, 39_896, 49_999 }, 0L);
 
     assertThat(manifest.read().unreachableOrdinals()).containsExactly(7, 39_896, 49_999);
   }
@@ -169,7 +169,7 @@ class LSMVectorIndexGraphManifestTest {
   void aManifestWithoutUnreachableOrdinalsReadsAsNoneRatherThanNull() {
     final LSMVectorIndexGraphManifest manifest = manifest();
 
-    manifest.write(10, 5L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS);
+    manifest.write(10, 5L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS, 0L);
 
     assertThat(manifest.read().unreachableOrdinals())
         .as("callers walk this array; an absent entry must read as empty, never as null").isEmpty();
@@ -222,7 +222,7 @@ class LSMVectorIndexGraphManifestTest {
   @Test
   void markingACloseAsDeferredKeepsTheUnreachableOrdinals() {
     final LSMVectorIndexGraphManifest manifest = manifest();
-    manifest.write(1_000, 11L, new int[] { 3, 4 });
+    manifest.write(1_000, 11L, new int[] { 3, 4 }, 3_148_792_924L);
 
     manifest.markCloseDeferred();
 
@@ -230,15 +230,17 @@ class LSMVectorIndexGraphManifestTest {
     assertThat(content.closeDeferredRebuild()).isTrue();
     assertThat(content.vectorCount()).isEqualTo(1_000);
     assertThat(content.unreachableOrdinals()).containsExactly(3, 4);
+    assertThat(content.graphBytes())
+        .as("the pages have not changed, so neither has their length (issue #7362)").isEqualTo(3_148_792_924L);
   }
 
   /** A completed build supersedes whatever the previous one orphaned - a Vamana build orphans a fresh set. */
   @Test
   void aLaterWriteReplacesThePreviousUnreachableOrdinals() {
     final LSMVectorIndexGraphManifest manifest = manifest();
-    manifest.write(1_000, 11L, new int[] { 3, 4 });
+    manifest.write(1_000, 11L, new int[] { 3, 4 }, 0L);
 
-    manifest.write(1_000, 12L, new int[] { 9 });
+    manifest.write(1_000, 12L, new int[] { 9 }, 0L);
 
     assertThat(manifest.read().unreachableOrdinals()).containsExactly(9);
   }

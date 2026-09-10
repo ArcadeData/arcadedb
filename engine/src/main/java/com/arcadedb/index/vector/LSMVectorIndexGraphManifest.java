@@ -95,7 +95,7 @@ public class LSMVectorIndexGraphManifest {
    * @param closeDeferredRebuild {@code true} when the pages this manifest describes are known stale because the
    *                             most recent {@code close()} chose to defer the rebuild that would otherwise have
    *                             brought them up to date (issue #6657), rather than run it synchronously. Always
-   *                             {@code false} again once a build actually completes - {@link #write(int, long, int[])}
+   *                             {@code false} again once a build actually completes - {@link #write(int, long, int[], long)}
    *                             and {@link #markUnusable(String)} both clear it - so it answers specifically "did the
    *                             last close skip a rebuild", not the broader "is a rebuild owed" that
    *                             {@code vectorCount}/{@code fingerprint} against the live index already answers.
@@ -106,9 +106,18 @@ public class LSMVectorIndexGraphManifest {
    *                             heap of the session that built the graph. Recording the set here is what lets a
    *                             reopened session make the same one, instead of leaving those vectors unreachable by
    *                             any search while {@code totalVectors} still counts them.
+   * @param graphBytes          exact length, in the graph file's gap-free logical address space, of the JVector
+   *                             payload the pages next to this manifest hold - the writer position the persist
+   *                             ended on - or {@code 0} when this manifest records none: every manifest written
+   *                             before issue #7362, and every {@link #markUnusable} one. That length is what
+   *                             {@code OnDiskGraphIndex.load()} measures its footer back from, and recording it
+   *                             here makes it a fact about the write rather than a quantity re-derived from the
+   *                             component's page count - a count that lags the async flush thread by an unbounded
+   *                             margin during a persist, and that can only ever grow, so a generation smaller than
+   *                             the one it replaced would be measured with its predecessor's size.
    */
   public record Content(int formatVersion, int vectorCount, long fingerprint, boolean closeDeferredRebuild,
-                        int[] unreachableOrdinals) {
+                        int[] unreachableOrdinals, long graphBytes) {
   }
 
   private final Path path;
@@ -195,7 +204,7 @@ public class LSMVectorIndexGraphManifest {
    * @param reason human-readable note stored in the file; nothing reads it back
    */
   public void markUnusable(final String reason) {
-    write(UNUSABLE_VECTOR_COUNT, 0L, reason, false, NO_UNREACHABLE_ORDINALS);
+    write(UNUSABLE_VECTOR_COUNT, 0L, reason, false, NO_UNREACHABLE_ORDINALS, 0L);
   }
 
   /**
@@ -205,9 +214,11 @@ public class LSMVectorIndexGraphManifest {
    * this call completed, so whatever a previous {@code close()} deferred has now been paid for.
    *
    * @param unreachableOrdinals see {@link Content#unreachableOrdinals()}; {@code null} is read as none
+   * @param graphBytes          see {@link Content#graphBytes()}; {@code 0} records none
    */
-  public void write(final int vectorCount, final long fingerprint, final int[] unreachableOrdinals) {
-    write(vectorCount, fingerprint, null, false, unreachableOrdinals);
+  public void write(final int vectorCount, final long fingerprint, final int[] unreachableOrdinals,
+      final long graphBytes) {
+    write(vectorCount, fingerprint, null, false, unreachableOrdinals, graphBytes);
   }
 
   /**
@@ -217,7 +228,7 @@ public class LSMVectorIndexGraphManifest {
    * or falls back to {@link #UNUSABLE_VECTOR_COUNT} when nothing has ever been persisted here, so a first-ever
    * build that a large index's close deferred is recorded too.
    * <p>
-   * Cleared automatically the next time {@link #write(int, long, int[])} or {@link #markUnusable(String)} runs,
+   * Cleared automatically the next time {@link #write(int, long, int[], long)} or {@link #markUnusable(String)} runs,
    * which is exactly when a rebuild - deferred or not - actually completes.
    * <p>
    * {@code read() == null} is treated as "nothing persisted yet" and takes the {@link #UNUSABLE_VECTOR_COUNT}
@@ -240,7 +251,9 @@ public class LSMVectorIndexGraphManifest {
     // Carried over with the count and the fingerprint, for the same reason they are: this is a note about pages
     // that have not changed, so what those pages leave unreachable has not changed either (issue #7190).
     write(vectorCount, fingerprint, null, true,
-        existing != null ? existing.unreachableOrdinals() : NO_UNREACHABLE_ORDINALS);
+        existing != null ? existing.unreachableOrdinals() : NO_UNREACHABLE_ORDINALS,
+        // Carried over for the same reason: the pages have not changed, so neither has their length (issue #7362).
+        existing != null ? existing.graphBytes() : 0L);
   }
 
   /**
@@ -251,7 +264,7 @@ public class LSMVectorIndexGraphManifest {
    * manifest. A unique name costs nothing and removes the assumption.
    */
   private void write(final int vectorCount, final long fingerprint, final String reason,
-      final boolean closeDeferredRebuild, final int[] unreachableOrdinals) {
+      final boolean closeDeferredRebuild, final int[] unreachableOrdinals, final long graphBytes) {
     final Path temporary = path.resolveSibling(
         path.getFileName() + "." + Long.toHexString(System.nanoTime()) + ".tmp");
     try {
@@ -272,6 +285,12 @@ public class LSMVectorIndexGraphManifest {
       // As a string: a 64-bit fingerprint is not representable in the double a JSON number decodes to.
       json.put("fingerprint", Long.toString(fingerprint));
       json.put("closeDeferredRebuild", closeDeferredRebuild);
+      // As a string, for the same reason the fingerprint is one: a length past 2^53 is not representable in the
+      // double a JSON number decodes to, and this value is exactly the one a multi-GB graph makes large.
+      // Written only when there is one, and without a FORMAT_VERSION bump, so an older build simply ignores the
+      // key and keeps deriving the length from the page count, as it always did (issue #7362).
+      if (graphBytes > 0)
+        json.put("graphBytes", Long.toString(graphBytes));
       // Written only when there is something to say, and as a bare int array rather than as a new formatVersion:
       // an older build reads the keys it knows and ignores this one, which leaves it exactly at its own
       // pre-issue-#7190 behaviour instead of forcing every existing index to rebuild on the first open after an
@@ -343,7 +362,8 @@ public class LSMVectorIndexGraphManifest {
       return new Content(formatVersion, json.getInt("vectorCount", -1),
           Long.parseLong(json.getString("fingerprint", "0")),
           json.getBoolean("closeDeferredRebuild", false),
-          unreachableOrdinalsOf(json));
+          unreachableOrdinalsOf(json),
+          Long.parseLong(json.getString("graphBytes", "0")));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Could not read the vector graph manifest '%s': %s", path,
           e.getMessage());
