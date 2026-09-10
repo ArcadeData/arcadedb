@@ -180,18 +180,19 @@ class Issue7305TimeSeriesGrpcAclIT extends BaseGraphServerTest {
     if (security.existsUser(SCOPED_USER))
       security.dropUser(SCOPED_USER);
 
-    // The user is granted the group on EVERY database ("*") rather than only on this one, which the HTTP
-    // equivalent of this test can afford to do. GrpcAuthInterceptor authenticates each call against the
-    // database named in the 'arcadedb-database' metadata header, and RemoteGrpcServer sends only username and
-    // password - so the interceptor falls back to the literal name "default" and a user scoped to one real
-    // database cannot authenticate over gRPC at all. That is a pre-existing gRPC authentication gap, filed
-    // separately; widening the DATABASE grant here keeps this test about the per-TYPE ACL, which is what the
-    // new RPCs are responsible for and which is unaffected by it - the group's 'types' map still denies
-    // RESTRICTED_TYPE on this database.
+    // The group is granted on this database alone, which also makes the class a second guard on issue #7320:
+    // RemoteGrpcServer names the target database on the 'x-arcade-database' metadata key and
+    // GrpcAuthInterceptor authenticates each call against that name, so a principal holding one real
+    // database is accepted. Specifically, this narrowed grant fails the moment the interceptor authenticates
+    // against a SUBSTITUTED database name - the literal "default" it used before #7320 - because this user
+    // holds no grant there; verified by restoring that fallback, which turns the first RPC below into
+    // "User has not access to database 'default'". It does NOT catch the header merely going missing:
+    // normalizeDatabase maps a blank header to null and the interceptor then authenticates at server level,
+    // which this user passes. Issue7320ScopedUserGrpcIT remains the primary guard (#7375).
     final JSONObject payload = new JSONObject()
         .put("name", SCOPED_USER)
         .put("password", SCOPED_PWD)
-        .put("databases", new JSONObject().put("*", new JSONArray().put("tsGrpcScoped")));
+        .put("databases", new JSONObject().put(getDatabaseName(), new JSONArray().put("tsGrpcScoped")));
 
     final HttpURLConnection connection = (HttpURLConnection) URI.create(
         "http://127.0.0.1:" + getServer(0).getHttpServer().getPort() + "/api/v1/server/users").toURL()
