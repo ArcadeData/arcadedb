@@ -7,7 +7,7 @@
 is absent:
 
 ```java
-// grpcw/src/main/java/com/arcadedb/server/grpc/GrpcAuthInterceptor.java:154
+// grpcw/src/main/java/com/arcadedb/server/grpc/GrpcAuthInterceptor.java (pre-fix)
 String database = headers.get(DATABASE_HEADER);
 if (database == null || database.isEmpty())
   database = "default";
@@ -62,7 +62,7 @@ Two halves:
 ```
 $ grep -rn "DATABASE_HEADER" --include="*.java" grpcw/src/main grpc-client/src/main server/src/main
 grpcw/src/main/java/com/arcadedb/server/grpc/GrpcAuthInterceptor.java:51:  private static final Metadata.Key<String> DATABASE_HEADER      =
-grpcw/src/main/java/com/arcadedb/server/grpc/GrpcAuthInterceptor.java:154:      String database = headers.get(DATABASE_HEADER);
+grpcw/src/main/java/com/arcadedb/server/grpc/GrpcAuthInterceptor.java:163:      final String database = normalizeDatabase(headers.get(DATABASE_HEADER));
 ```
 
 One reader, one use site.
@@ -74,8 +74,8 @@ $ grep -rn "Metadata.Key.of" --include="*.java" grpc-client/src/main
 grpc-client/.../GrpcClientErrorMapper.java:48:  static final Metadata.Key<String> EXCEPTION_CLASS_KEY = ...
 grpc-client/.../GrpcClientErrorMapper.java:50:  static final Metadata.Key<String> DUP_INDEX_KEY        = ...
 grpc-client/.../GrpcClientErrorMapper.java:52:  static final Metadata.Key<String> DUP_KEYS_KEY         = ...
-grpc-client/.../RemoteGrpcServer.java:593-596:  (createCallCredentials: username/password/x-arcade-user/x-arcade-password)
-grpc-client/.../RemoteGrpcServer.java:613-616:  (createCredentials:     username/password/x-arcade-user/x-arcade-password)
+grpc-client/.../RemoteGrpcServer.java (createCallCredentials -> credentials(): username/password/x-arcade-user/x-arcade-password)
+grpc-client/.../RemoteGrpcServer.java (createCredentials     -> credentials(): the same four, plus x-arcade-database)
 ```
 
 `GrpcClientErrorMapper`'s three keys are *trailer* keys read off a failed response, not request
@@ -86,19 +86,19 @@ request-metadata writers.
 
 ```
 $ grep -rn "ArcadeDbServiceGrpc.new\|ArcadeDbAdminServiceGrpc.new" --include="*.java" grpc-client/src/main grpcw/src/main
-grpc-client/.../RemoteGrpcServer.java:224:    return ArcadeDbServiceGrpc.newBlockingV2Stub(channel())        -> createCredentials()
-grpc-client/.../RemoteGrpcServer.java:232:    return ArcadeDbServiceGrpc.newStub(channel())                  -> createCredentials()
-grpc-client/.../RemoteGrpcServer.java:242:    ... = ArcadeDbAdminServiceGrpc.newBlockingV2Stub(channel())    -> createCallCredentials()
+grpc-client/.../RemoteGrpcServer.java:259:    return ArcadeDbServiceGrpc.newBlockingV2Stub(channel())        -> createCredentials(database)
+grpc-client/.../RemoteGrpcServer.java:277:    return ArcadeDbServiceGrpc.newStub(channel())                  -> createCredentials(database)
+grpc-client/.../RemoteGrpcServer.java:287:    ... = ArcadeDbAdminServiceGrpc.newBlockingV2Stub(channel())    -> createCallCredentials()
 ```
 
 ### Callers of the data-plane stub factories
 
 ```
 $ grep -rn "createBlockingStub\|createAsyncStub" --include="*.java" . | grep -v target
-grpc-client/.../RemoteGrpcDatabase.java:156:    this.blockingStub = createBlockingStub();
-grpc-client/.../RemoteGrpcDatabase.java:157:    this.asyncStub = createAsyncStub();
-grpc-client/.../RemoteGrpcDatabase.java:164:  protected ... createBlockingStub() {
-grpc-client/.../RemoteGrpcDatabase.java:168:  protected ... createAsyncStub() {
+grpc-client/.../RemoteGrpcDatabase.java:181:    this.blockingStub = createBlockingStub();
+grpc-client/.../RemoteGrpcDatabase.java:182:    this.asyncStub = createAsyncStub();
+grpc-client/.../RemoteGrpcDatabase.java:194:  protected ... createBlockingStub() {
+grpc-client/.../RemoteGrpcDatabase.java:201:  protected ... createAsyncStub() {
 ```
 
 `RemoteGrpcDatabase` is the only in-tree caller, and the only in-tree subclass
@@ -117,27 +117,62 @@ Third-party clients that send no header are covered by the server half instead.
 
 ### Does dropping the `"default"` check widen access?
 
-No. The check it removes was never the authorization gate, and the callers it now lets past the
-interceptor are authorized per-RPC one layer down.
+No. The check it removes was never the authorization gate, and every caller it now lets past the
+interceptor is authorized per-RPC one layer down, against the database the request body names.
 
-Every data-plane RPC resolves its target database through one of two gates, both of which call
-`ArcadeDbGrpcService.validateCredentials(credentials, databaseName)`:
+The gate itself, read in full:
 
 ```
-$ grep -n "^  public void \|^  public StreamObserver" grpcw/src/main/java/com/arcadedb/server/grpc/ArcadeDbGrpcService.java
-665 executeCommand   985 createRecord    1125 lookupByRid     1197 updateRecord   1388 deleteRecord
-1492 executeQuery    1723 beginTransaction  1863 commitTransaction  1949 rollbackTransaction
-2026 streamQuery     2610 bulkInsert      2685 insertStream    3036 graphBatchLoad
-3404 insertBidirectional
+$ sed -n '/private .*void validateCredentials(/,/^  }/p' grpcw/.../ArcadeDbGrpcService.java
+private void validateCredentials(final DatabaseCredentials credentials, final String databaseName) {
+  final String authenticatedUser = resolvedUsername(credentials);
+  if (authenticatedUser == null)
+    throw Status.UNAUTHENTICATED...
+  ...
+    final Set<String> allowedDatabases = user.getAuthorizedDatabases();
+    if (!allowedDatabases.contains(SecurityManager.ANY) && !allowedDatabases.contains(databaseName))
+      throw Status.PERMISSION_DENIED.withDescription("User has not access to database '" + databaseName + "'")
+  ...
+    } else {  // no interceptor context: authenticate AND authorize from the body credentials
+      security.authenticate(authenticatedUser, password, databaseName);
 ```
 
-- `getDatabase(databaseName, credentials)` (line 4637) - `validateDatabaseName` then
-  `validateCredentials(credentials, databaseName)` at line 4644, before `arcadeServer.getDatabase`.
-- `authorizeTransactionAccess(txCtx, credentials)` (line 466) - `validateCredentials(credentials,
-  txCtx.db.getName())` at line 468, against the transaction's REAL database.
+Both of its branches enforce the per-database grant. What had to be checked is that every RPC
+reaches it. There are 22 data-plane RPCs on this service - eight more than when this branch was cut,
+because #7305 and #7306 landed in between - so the audit was scripted rather than eyeballed:
 
-The streaming RPCs reach the first gate through `InsertContext`, which is easy to miss because the
-constructor is 1000 lines away from the RPC:
+```
+$ python3 - <<'EOF'   # every "public void|StreamObserver" member of ArcadeDbGrpcService, and its gate
+...
+EOF
+executeCommand           line   677  getDatabase
+createRecord             line   997  getDatabase
+lookupByRid              line  1137  getDatabase
+updateRecord             line  1209  getDatabase
+deleteRecord             line  1400  getDatabase
+executeQuery             line  1504  getDatabase
+beginTransaction         line  1735  getDatabase
+commitTransaction        line  1875  authorizeTransactionAccess
+rollbackTransaction      line  1961  authorizeTransactionAccess
+streamQuery              line  2038  getDatabase
+bulkInsert               line  2622  InsertContext->getDatabase
+insertStream             line  2697  getDatabase+InsertContext->getDatabase
+graphBatchLoad           line  3048  getDatabase
+timeSeriesWrite          line  3272  getDatabase
+timeSeriesWriteStream    line  3299  getDatabase
+timeSeriesQuery          line  3400  getDatabase
+timeSeriesLatest         line  3631  getDatabase
+insertBidirectional      line  3841  getDatabase+InsertContext->getDatabase
+vectorSearch             line  5085  getDatabase
+hybridSearch             line  5095  getDatabase
+fullTextSearch           line  5105  getDatabase+validateCredentials
+```
+
+No row is ungated. `getDatabase(databaseName, credentials)` calls `validateDatabaseName` and then
+`validateCredentials(credentials, databaseName)` before it touches the server;
+`authorizeTransactionAccess(txCtx, credentials)` calls it against the transaction's REAL database.
+The streaming RPCs reach the first through `InsertContext`, whose constructor is a thousand lines
+from the RPC:
 
 ```
 $ grep -n "InsertContext(InsertOptions opts)" -A 5 grpcw/.../ArcadeDbGrpcService.java
@@ -148,6 +183,7 @@ $ grep -n "InsertContext(InsertOptions opts)" -A 5 grpcw/.../ArcadeDbGrpcService
 Before the fix the interceptor authorized `"default"` - never the RPC's actual target - so the only
 principals it ever admitted were those granted `"*"`, who are authorized everywhere anyway. Removing
 it therefore grants no principal access to any database the layer below would not already grant.
+`Issue4794GrpcPerDbAuthorizationIT` pins that layer and stays green (4/4, run below).
 
 ### Entry-point coverage table
 
@@ -155,21 +191,66 @@ it therefore grants no principal access to any database the layer below would no
 |---|---|---|
 | `RemoteGrpcServer.newBlockingStub` -> `createCredentials` (data-plane blocking stub) | yes | yes - `Issue7320GrpcDatabaseHeaderTest.blockingStubCredentialsCarryTheTargetDatabase`, `Issue7320ScopedUserGrpcIT.scopedUserCanQueryOverGrpc` |
 | `RemoteGrpcServer.newAsyncStub` -> `createCredentials` (data-plane async/streaming stub) | yes | yes - `Issue7320GrpcDatabaseHeaderTest.asyncStubCredentialsCarryTheTargetDatabase`, `Issue7320ScopedUserGrpcIT.scopedUserCanIngestOverTheAsyncStub` |
-| `RemoteGrpcServer.adminServiceBlockingV2Stub` -> `createCallCredentials` (admin plane) | **argued** - admin RPCs take the `com.arcadedb.grpc.ArcadeDbAdminService/` branch of `interceptCall`, which returns before line 154 and never reads `DATABASE_HEADER`; it authenticates from the request body via `authenticateAdminRequest` -> `validateCredentials(user, pass, null)`, already database-less | n/a |
-| `GrpcAuthInterceptor` basic-auth branch with **no** database header (any third-party client) | yes - authenticates at server level instead of against `"default"` | yes - `Issue7320GrpcAuthInterceptorDatabaseHeaderTest.absentHeaderAuthenticatesAtServerLevel` |
-| `GrpcAuthInterceptor` basic-auth branch **with** a database header | yes - unchanged behaviour, plus the refusal now names the database | yes - `Issue7320GrpcAuthInterceptorDatabaseHeaderTest.presentHeaderStillAuthenticatesAgainstThatDatabase` / `...refusalNamesTheDatabaseThatWasChecked` |
-| `GrpcAuthInterceptor` bearer-token branch | **argued** - `getValidSession(token, database)` uses `database` only in two `Level.FINE` log messages; no grant check ever ran there, so the fallback value was never load-bearing on this path | n/a (existing `GrpcAuthInterceptorTest` token cases stay green) |
+| `RemoteGrpcServer.adminServiceBlockingV2Stub` -> `createCallCredentials` (admin plane) | **argued** - admin RPCs take the `com.arcadedb.grpc.ArcadeDbAdminService/` branch of `interceptCall`, which returns before the `DATABASE_HEADER` read and authenticates from the request body via `authenticateAdminRequest` -> `validateCredentials(user, pass, null)`, already database-less | n/a - `Issue7304GrpcControlPlaneAuthorizationIT` (49/49) and `Issue5039GrpcAdminAuthorizationIT` (3/3) stay green |
+| `GrpcAuthInterceptor` basic-auth branch with **no** database header (any third-party client) | yes - authenticates at server level instead of against `"default"` | yes - `Issue7320GrpcAuthInterceptorDatabaseHeaderTest.absentHeaderAuthenticatesAtServerLevel` / `.emptyHeaderAuthenticatesAtServerLevel` |
+| `GrpcAuthInterceptor` basic-auth branch **with** a database header | yes - unchanged behaviour, plus the refusal now names the database | yes - `...presentHeaderStillAuthenticatesAgainstThatDatabase`, `...refusalNamesTheDatabaseThatWasChecked`, `...wrongPasswordIsStillRefused`, and end-to-end `Issue7320ScopedUserGrpcIT.userGrantedAnotherDatabaseIsRefusedAndTheRefusalNamesIt` |
+| `GrpcAuthInterceptor` bearer-token branch | **argued** - verified by reading `getValidSession(token, database)` in full: `database` appears in exactly three `Level.FINE` log messages and nowhere else, so no grant check ever ran on this path and the fallback value was never load-bearing | n/a - the existing `GrpcAuthInterceptorTest` token cases stay green (9/9) |
 
-No blank rows, so no follow-up issue was filed from this sweep.
+No blank rows.
 
 ### Reachability
 
 - `RemoteGrpcServer.newBlockingStub` / `newAsyncStub` are called from `RemoteGrpcDatabase`'s
-  constructor (lines 156-157), which every gRPC client path goes through - not behind a flag.
+  constructor (lines 181-182), which every gRPC client path goes through - not behind a flag. Both
+  stub fields are `final` and every one of the class's RPC call sites uses one of them.
+- The only in-tree subclass, `RemoteGrpcDatabaseWithCompression`, overrides neither factory. Both
+  stay `protected`, so an out-of-tree subclass that does override them keeps compiling.
 - `GrpcAuthInterceptor` is installed by `GrpcServerPlugin` on the live server; the changed line is on
   the basic-auth path every data-plane RPC takes when security is enabled.
-- Both halves are exercised against a real server by `Issue7320ScopedUserGrpcIT`, which fails on the
-  pre-fix tree.
+- Both halves are exercised against a real server by `Issue7320ScopedUserGrpcIT`.
+
+### Proof the tests fail without the fix
+
+The three production files were restored to their pre-fix content (`git show HEAD~1:<path>`) and the
+suites re-run:
+
+```
+grpcw unit tests, pre-fix:
+[ERROR] Issue7320GrpcAuthInterceptorDatabaseHeaderTest.absentHeaderAuthenticatesAtServerLevel:108
+[ERROR] Issue7320GrpcAuthInterceptorDatabaseHeaderTest.emptyHeaderAuthenticatesAtServerLevel:123
+[ERROR] Issue7320GrpcAuthInterceptorDatabaseHeaderTest.refusalNamesTheDatabaseThatWasChecked:159
+[ERROR] Issue7320GrpcAuthInterceptorDatabaseHeaderTest.wrongPasswordIsStillRefused:177
+[ERROR] Tests run: 221, Failures: 4, Errors: 0, Skipped: 0
+
+Issue7320ScopedUserGrpcIT, pre-fix:
+[ERROR] Tests run: 3, Failures: 1, Errors: 2
+com.arcadedb.remote.RemoteException: gRPC error: Invalid credentials
+Caused by: io.grpc.StatusRuntimeException: UNAUTHENTICATED: Invalid credentials
+```
+
+The IT fails with the exact symptom the issue reports. The fifth interceptor case,
+`presentHeaderStillAuthenticatesAgainstThatDatabase`, passes before and after by design: it is the
+unchanged-behaviour guard, and a test that changed colour there would mean the fix had moved
+something it should not.
+
+### Test results (with the fix)
+
+```
+grpcw  unit:   Tests run: 221, Failures: 0, Errors: 0, Skipped: 0
+grpc-client unit: Tests run: 154, Failures: 0, Errors: 0, Skipped: 0
+Issue7320ScopedUserGrpcIT:  Tests run: 3, Failures: 0, Errors: 0
+Authorization regression ITs (Issue4794GrpcPerDbAuthorizationIT, Issue5039GrpcAdminAuthorizationIT,
+  Issue5040GrpcTransactionHijackIT, Issue7304GrpcControlPlaneAuthorizationIT,
+  GrpcTransactionScriptingAuthorizationIT, Issue4793GrpcGetDatabaseSecurityIT):
+  Tests run: 70, Failures: 0, Errors: 0
+```
+
+One caveat on how that last line was reached: the gRPC server port is a fixed 50051 with no range,
+so two agents running gRPC ITs on this machine collide, and the collision reads as
+`ServerException: Error starting plugin: GrpcServerPlugin` / `IOException: Failed to bind to address
+0.0.0.0/0.0.0.0:50051`, not as a port message in the summary. Thirteen errors in the first run were
+all that, confirmed with `lsof -nP -iTCP:50051` (another JVM held it) and cleared by re-running once
+the port was free. Nothing was loosened to get there.
 
 ## Residual risk
 
@@ -177,30 +258,52 @@ No blank rows, so no follow-up issue was filed from this sweep.
   that obtains a stub from `RemoteGrpcServer.newBlockingStub(timeout)` directly (the no-database
   overload, kept for source compatibility) still sends no header - and is then authenticated at
   server level by the server half rather than refused. That is the intended pairing, not a gap.
+  `RemoteDatabase.databaseName` is assigned once in the constructor and has no setter, so a stub
+  cannot go stale against a re-pointed database.
 - Per-database authorization is unchanged: it is enforced in
   `ArcadeDbGrpcService.validateCredentials(credentials, databaseName)` against the **request-body**
-  database (`getDatabase` chokepoint, line 4644), which is what `Issue4794GrpcPerDbAuthorizationIT`
-  pins. Dropping the `"default"` fallback removes a check that was never the authorization gate.
+  database, which is what `Issue4794GrpcPerDbAuthorizationIT` pins.
+- The refusal now repeats the message `ServerSecurity` produced. Reading `ServerSecurity.authenticate`,
+  the three it can produce are `"User/Password not valid"` (one message for both a missing user and a
+  wrong password, so no user enumeration), `"User has not access to database 'X'"` (X is the name the
+  caller itself sent) and the lockout message. HTTP already reports the same strings, so this is
+  parity, not new disclosure.
+- **#7374** - a `RemoteGrpcDatabase` built with a different user than its `RemoteGrpcServer` sends the
+  server's user on the metadata and its own in the request body. Pre-existing and independent: wrong
+  the same way before and after this fix. Filed, not fixed here.
+- **#7375** - `Issue7305TimeSeriesGrpcAclIT` still grants its scoped user `"*"` databases, with a
+  comment pointing at this issue. The workaround is now unnecessary, but narrowing it means editing
+  an existing test, which this workflow does not do. Filed, not fixed here.
 
 ## Adversarial pass
 
-The orchestrator's Phase 1.5 spawns an isolated subagent to write the follow-up issue it would file
-against this patch. No `Task` tool was available in this session, so the pass was run by the author
-against the diff instead - weaker, because it was already convinced. Recorded here so the gap is
-visible rather than silently skipped.
+Phase 1.5 asks for an isolated subagent that has not been convinced by the author's reasoning. **No
+`Task` tool was available in this session**, so no such subagent could be spawned, and the pass was
+run by the author against the diff instead. That is weaker, and is recorded here rather than
+silently skipped. Each objection below was checked with a command, not from memory.
 
 | Objection | Verdict | Evidence |
 |---|---|---|
-| "Dropping the `"default"` grant check widens who reaches the service layer." | Real but not a defect - see *Does dropping the `"default"` check widen access?* above. Every one of the 14 data-plane RPCs authorizes the request-body database via `getDatabase` or `authorizeTransactionAccess`, and the removed check only ever admitted `"*"` principals. | audit above |
-| "`insertBidirectional` never calls the authorization gate." | Not real. It reaches it through `new InsertContext(opts)` -> `getDatabase(opts.getDatabase(), opts.getCredentials())` (line 4410), 1000 lines from the RPC. | `grep -n "InsertContext(InsertOptions opts)" -A 5` |
-| "The header is captured once at stub construction, so a `RemoteGrpcDatabase` re-pointed at another database would send a stale name." | Not real. `RemoteDatabase.databaseName` is assigned once in the constructor (`network/.../RemoteDatabase.java:100`) and there is no setter; `RemoteGrpcDatabase.databaseName` is `final`. | `grep -rn "setDatabase\b\|databaseName =" network/.../RemoteDatabase.java` |
-| "`e.getMessage()` can be null, and a null failure reads as success." | Real, and fixed in this branch before the PR opened: `authenticationFailure` falls back to `"Invalid credentials"` on a null or blank message rather than returning null. | `GrpcAuthInterceptor.authenticationFailure` |
-| "The end-to-end IT passes with only the server half applied, so it does not prove the client sends anything." | Real, and answered by construction: `Issue7320GrpcDatabaseHeaderTest` reads the metadata back off the very stub `RemoteGrpcDatabase` builds, so the client half has its own assertion independent of the IT. | `Issue7320GrpcDatabaseHeaderTest` |
-
-Nothing survived as an out-of-scope defect, so no follow-up issue was filed.
+| "Dropping the `"default"` grant check widens who reaches the service layer." | Real question, not a defect. All 22 data-plane RPCs reach `validateCredentials(credentials, databaseName)`, whose both branches enforce the grant; the removed check only ever admitted `"*"` principals. | scripted RPC-gate audit + `validateCredentials` body, above; `Issue4794GrpcPerDbAuthorizationIT` 4/4 |
+| "The audit was written before #7305/#7306 landed, so the eight RPCs they added are unaudited." | Real, and fixed: the branch was rebased onto current `main` and the audit re-run over all 22 RPCs, including `timeSeries*`, `vectorSearch`, `hybridSearch`, `fullTextSearch`. | table above |
+| "The bearer-token branch loses a grant check when `database` becomes null." | Not real. `getValidSession(token, database)` uses `database` in three `Level.FINE` log messages and nowhere else - read in full, not grepped. | `sed -n '/getValidSession/,/^  }/p'` |
+| "The end-to-end IT passes with only the server half applied, so it does not prove the client sends anything." | Real, and answered by construction: `Issue7320GrpcDatabaseHeaderTest` reads the metadata back off the very stub `RemoteGrpcDatabase` builds, so the client half has an assertion that does not depend on the IT. | `Issue7320GrpcDatabaseHeaderTest` |
+| "`e.getMessage()` can be null, and a null failure reads as success." | Real, fixed in this branch: `authenticationFailure` falls back to `"Invalid credentials"` on a null or blank message rather than returning null. | `GrpcAuthInterceptor.authenticationFailure` |
+| "Echoing the security message to an unauthenticated caller leaks whether a user exists." | Not real. `ServerSecurity.authenticate` answers a missing user and a wrong password with the same `"User/Password not valid"`. | `ServerSecurity.authenticate` lines 226-231 |
+| "The IT hardcodes port 2480, so whatever already listens there answers it." | Real, fixed before the PR: the IT now derives the HTTP port from `getServer(0).getHttpServer().getPort()` and creates its users through `POST /api/v1/server/users`, the way `Issue7305TimeSeriesGrpcAclIT` does. gRPC's own port stays 50051 because the plugin has no range. | rewritten `Issue7320ScopedUserGrpcIT` |
+| "The user the caller passes to `RemoteGrpcDatabase` is never the one on the wire." | Real, out of scope. Filed as **#7374**. | `RemoteGrpcDatabase.buildCredentials` vs `RemoteGrpcServer.createCredentials` |
+| "A test that works around this bug still carries the workaround and a comment saying the bug is open." | Real, out of scope (editing an existing test). Filed as **#7375**. | `Issue7305TimeSeriesGrpcAclIT:182-194` |
 
 ## Drive-by
 
 `RemoteGrpcServer.createCredentials()` carried a commented-out `curl`-style example containing a
 password-shaped literal (`x-arcade-password: oY9uU2uJ8nD8iY7t`). The comment described the very header
 this issue is about, and the replacement code names the key explicitly, so the comment went with it.
+
+## Note on provenance
+
+An earlier session left this worktree with the fix and its tests uncommitted, unrebased (cut before
+#7305/#7306 merged) and unverified - no commit, no branch on `origin`, no PR. This run adopted that
+work rather than discarding it, then rebased it onto `main`, re-ran the completeness sweep over the
+grown RPC surface, rewrote the IT off the hardcoded port, proved the tests fail without the fix, and
+filed the two follow-ups. Nothing here is inherited on trust.
