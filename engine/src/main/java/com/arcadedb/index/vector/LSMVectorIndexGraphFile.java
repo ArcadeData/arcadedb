@@ -183,8 +183,8 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * - Caller is responsible for committing the transaction
    * - Graph data starts at page 0 (no metadata page needed - JVector format is self-describing)
    */
-  public long writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors) {
-    return writeGraph(graph, vectors, 0, null, null, null);
+  public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors) {
+    writeGraph(graph, vectors, 0, null, null, null);
   }
 
   /**
@@ -204,9 +204,9 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * @param chunkSizeMB    Chunk size in MB (0 = no chunking)
    * @param chunkCallback  Callback to invoke when chunk is complete (can be null if chunkSizeMB=0)
    */
-  public long writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors,
+  public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors,
                          final long chunkSizeMB, final ChunkCommitCallback chunkCallback) {
-    return writeGraph(graph, vectors, chunkSizeMB, chunkCallback, null, null);
+    writeGraph(graph, vectors, chunkSizeMB, chunkCallback, null, null);
   }
 
   /**
@@ -214,7 +214,7 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * When PQ data is provided, PQ codes are stored inline with graph nodes so that during
    * search traversal, approximate distances are computed without separate I/O.
    */
-  public long writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors,
+  public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors,
                          final long chunkSizeMB, final ChunkCommitCallback chunkCallback,
                          final ProductQuantization pq, final PQVectors pqVectors) {
 
@@ -333,8 +333,6 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
                 graph.getIdUpperBound(), totalBytes, getTotalPages());
       }
 
-      return totalBytes;
-
     } catch (final Exception e) {
       // Dropped with the manifest and for the same reason: past a failure the manifest is the sole authority on
       // these pages, and recordedGraphBytes() prefers this field over it. A failure landing after the position
@@ -395,6 +393,17 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    */
   public long getLastWrittenGraphBytes() {
     return lastWrittenGraphBytes;
+  }
+
+  /**
+   * Drops the in-memory record of the last write's length, for a persist failure {@link #writeGraph} cannot
+   * observe: the FINAL commit is the caller's, and it happens after that method has returned. A failure there
+   * leaves this object as the one the next search loads from - a rebuild in place reuses the same instance - with
+   * a length {@link #recordedGraphBytes()} would prefer over the manifest the caller has just marked unusable.
+   * Pairs with {@code markUnusable()} at every call site that has to refuse these pages (issue #7362).
+   */
+  public void discardRecordedGraphBytes() {
+    lastWrittenGraphBytes = -1L;
   }
 
   /**

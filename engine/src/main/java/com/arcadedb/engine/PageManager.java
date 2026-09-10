@@ -1733,15 +1733,10 @@ public class PageManager extends LockContext {
     final FileManager fileManager = database.getFileManager();
     final int fileId = page.pageId.getFileId();
 
-    if (fileManager.existsFile(fileId)) {
-      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFileIfExists(fileId);
-      if (file == null) {
-        // The file left the manager between existsFile() above and now - the same superseded page the else
-        // branch below handles, observed one instant earlier (issue #7363).
-        discardPageOfDroppedFile(page, null, null);
-        return;
-      }
-
+    // ONE lookup, not an existsFile() followed by a get: they hit the same map, and the second answering null is
+    // the same "the file is gone" the first one used to report - now handled here rather than twice.
+    final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFileIfExists(fileId);
+    if (file != null) {
       if (file.isDropped() || !file.isOpen()) {
         // ONE decision point for both facts, and isDropped() is what it turns on. Asking them separately - "is it
         // dropped?" then, a few lines later, "is it closed?" - leaves a window in which a drop landing between the

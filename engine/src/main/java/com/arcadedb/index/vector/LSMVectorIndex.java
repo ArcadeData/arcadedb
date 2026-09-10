@@ -3550,6 +3550,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // write when the failure came from in there. Cheap, and on a path already logged as SEVERE.
           if (!graphCertified) {
             gf.getManifest().markUnusable("graph persist failed: " + e);
+            // And the in-memory length with it. The failure may be the commit above, which writeGraph() has
+            // already returned from, so it is the only one able to drop what that write recorded (issue #7362).
+            gf.discardRecordedGraphBytes();
             // The replacement never got certified, so it was never dropped above either: restore the stale
             // file as the active graph rather than leaving the index with no usable persisted graph at all.
             // gf itself is now unreachable from any field - drop it here (outside any lock, same reasoning as
@@ -3668,8 +3671,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void markGraphManifestUnusable(final Exception cause) {
     final LSMVectorIndexGraphFile gf = graphFile;
-    if (gf != null)
+    if (gf != null) {
       gf.getManifest().markUnusable("index build failed: " + cause);
+      gf.discardRecordedGraphBytes();
+    }
   }
 
   /**
