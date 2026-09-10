@@ -99,6 +99,7 @@ public class CoreApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("BatchResponse", createBatchResponseSchema());
     openAPI.getComponents().addSchemas("BatchError", createBatchErrorSchema());
     openAPI.getComponents().addSchemas("ProgressResponse", createProgressResponseSchema());
+    openAPI.getComponents().addSchemas("NdJsonBatchEvent", createNdJsonBatchEventSchema());
   }
 
   private PathItem createServerPath() {
@@ -326,9 +327,18 @@ public class CoreApiSpec implements OpenApiContributor {
 
             A body that ends before its announced length answers 408 with the same partial-commit \
             counts, never a 200 with a truncated count. Compare the returned 'bytesRead' against the \
-            bytes sent to verify a chunked upload arrived whole.""");
+            bytes sent to verify a chunked upload arrived whole.
+
+            Send 'Accept: application/x-ndjson' to be acknowledged while you are still uploading. The \
+            answer is then a newline-delimited stream: a 'progress' line at every vertex commit and \
+            every 'commitEvery' edges, then exactly one 'summary' or 'error' line carrying the same \
+            object this endpoint would otherwise have returned. That is the HTTP counterpart of the \
+            per-chunk acknowledgement of the gRPC InsertBidirectional RPC. A progress line counts \
+            records attempted, the same upper bound the partial-commit counters carry. Anything else \
+            in Accept, including an absent header, returns the buffered object unchanged.""");
 
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    post.addParametersItem(batchNdJsonAcceptParam());
     post.addParametersItem(SpecBuilders.queryParam("batchSize",
         "Records buffered per GraphBatch flush. Default 100000.", false, "integer"));
     post.addParametersItem(SpecBuilders.queryParam("lightEdges",
@@ -419,6 +429,11 @@ public class CoreApiSpec implements OpenApiContributor {
     // retrying. Every other failure keeps the base handler's standard error shape.
     final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("200", SpecBuilders.jsonResponse("Load completed", "BatchResponse"));
+    // The streaming encoding answers 200 for a FAILED load too: by the time the verdict is reached the status
+    // line is already sent, so the failure is the terminal 'error' line and its 'status' field instead.
+    final MediaType ndjsonBatch = new MediaType();
+    ndjsonBatch.setSchema(SpecBuilders.ref("NdJsonBatchEvent"));
+    responses.get("200").getContent().addMediaType(NDJSON, ndjsonBatch);
     responses.addApiResponse("400", SpecBuilders.jsonResponse(
         "Client-input failure, with the counts attempted before it", "BatchError"));
     responses.addApiResponse("408", SpecBuilders.jsonResponse(
@@ -740,6 +755,57 @@ public class CoreApiSpec implements OpenApiContributor {
         "True when the mapping was too large to return"));
     schema.addProperty("idMappingSize", SpecBuilders.integer(
         "Number of entries in the omitted mapping"));
+    return schema;
+  }
+
+  /**
+   * The {@code Accept} header that selects the streaming batch encoding (issue #7311). Declared as an explicit
+   * parameter as well as a response content type because a generated client otherwise has no way to ask for it.
+   */
+  private static Parameter batchNdJsonAcceptParam() {
+    final Parameter accept = SpecBuilders.headerParam("Accept", """
+        Send 'application/x-ndjson' to receive per-chunk acknowledgements while the request body is still being \
+        uploaded, instead of one object after the whole load. Anything else - including an absent header - \
+        returns the buffered application/json body unchanged.""", false);
+    accept.getSchema().setEnum(List.of(SpecBuilders.JSON, NDJSON));
+    return accept;
+  }
+
+  /**
+   * One line of the streaming batch encoding (issue #7311). Same self-delimiting discipline as the streaming
+   * query: exactly one key per line naming the event, and a stream that ends with neither {@code summary} nor
+   * {@code error} is one that did not arrive whole.
+   */
+  private Schema<?> createNdJsonBatchEventSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        One line of a streamed bulk load. Exactly one of 'progress', 'summary' or 'error' is present.""");
+
+    final Schema<Object> progress = SpecBuilders.object("""
+        A chunk acknowledgement, written while the request body is still being read. Emitted at every vertex \
+        commit and every 'commitEvery' edges. The counters are records ATTEMPTED, the same upper bound on what \
+        is durable that the partial-commit counters carry: vertices are committed at each flush, while edges are \
+        buffered and written when the load ends.""");
+    progress.addProperty("phase", SpecBuilders.string("'vertices' or 'edges'"));
+    progress.addProperty("verticesCreated", SpecBuilders.integer("Vertices attempted so far"));
+    progress.addProperty("edgesCreated", SpecBuilders.integer("Edges attempted so far"));
+    addLoadAccounting(progress);
+    schema.addProperty("progress", progress);
+
+    final Schema<Object> summary = SpecBuilders.object("""
+        Terminal line of a successful load: the same object the buffered application/json response carries, \
+        plus 'commitIndex' on a replicated database - the read-your-writes bookmark, which cannot be a response \
+        header here because the response has already started when its value becomes known.""");
+    summary.addProperty("commitIndex", SpecBuilders.integer(
+        "Last applied Raft index, the value the X-ArcadeDB-Commit-Index header carries on the buffered encoding"));
+    schema.addProperty("summary", summary);
+
+    final Schema<Object> error = SpecBuilders.object("""
+        Terminal line of a failed load: the same object the buffered encoding carries, plus the 'status' it \
+        would have been sent under. The status line cannot be taken back once the stream has started, so the \
+        status travels in band.""");
+    error.addProperty("status", SpecBuilders.integer(
+        "HTTP status the buffered encoding would have used: 400, 408 or 500"));
+    schema.addProperty("error", error);
     return schema;
   }
 

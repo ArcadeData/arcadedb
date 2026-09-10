@@ -40,19 +40,25 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.ServerConnection;
 import io.undertow.util.HeaderValues;
+import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
 import org.xnio.Options;
 
+import java.io.BufferedReader;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -83,6 +89,28 @@ import java.util.logging.Level;
  * Response: {@code verticesCreated}, {@code edgesCreated}, {@code elapsedMs}, {@code bytesRead} and, when temporary
  * ids were used, {@code idMapping} - replaced by {@code idMappingOmitted} / {@code idMappingSize} past
  * {@link #MAX_ID_MAPPING_IN_RESPONSE} entries, unless {@code idMapping=true} demands it.
+ * <p>
+ * Streaming response ({@code Accept: application/x-ndjson}): the answer above is a single object written after the
+ * whole body has been consumed, so a caller learns nothing about chunk <i>n</i> until chunk <i>n+1</i> and every
+ * chunk after it has been sent. That is the one half of the gRPC {@code InsertBidirectional} shape HTTP had no
+ * counterpart for (issue #7311). A caller that sends {@code Accept: application/x-ndjson} instead receives a
+ * newline-delimited stream, written while its own upload is still being read:
+ * <ul>
+ * <li>{@code {"progress": {...}}} - emitted at every vertex commit and every {@code commitEvery} edges, carrying
+ *     the same counters the final answer carries, plus {@code phase} ({@code vertices} or {@code edges});</li>
+ * <li>{@code {"summary": {...}}} - the last line of a successful load. Byte-for-byte the object the buffered
+ *     encoding would have sent, produced by the same code, plus {@code commitIndex} on a replicated database;</li>
+ * <li>{@code {"error": {...}}} - the last line of a failed one: the object the buffered encoding would have sent,
+ *     plus the {@code status} it would have sent it under. A 200 is already on the wire by then and cannot be
+ *     taken back, so the status travels in band and the line is the only terminator a consumer gets - a stream
+ *     that ends with neither {@code summary} nor {@code error} did not arrive whole.</li>
+ * </ul>
+ * A progress line is an upper bound on what is durable, exactly like the partial-commit counters below: vertices
+ * are committed at each flush, but {@code GraphBatch} buffers edges and writes them at close, so an edge-phase
+ * line counts records ACCEPTED. A request that does not negotiate the encoding - no {@code Accept}, another type,
+ * or {@code application/x-ndjson;q=0} - receives the same bytes under the same status as before. The
+ * {@code X-ArcadeDB-Commit-Index} bookmark (issue #5862) cannot be a header on this encoding because the response
+ * has already started when the value becomes known, so it is carried inside the terminal line instead.
  * <p>
  * Line accounting: every answer, successful or not, also carries {@code linesRead} and {@code linesSkipped} (blank
  * lines, plus CSV headers and {@code ---} separators), so {@code linesRead - linesSkipped} is the number of records
@@ -162,6 +190,10 @@ import java.util.logging.Level;
 public class PostBatchHandler extends AbstractServerHttpHandler {
 
   private static final int        VERTEX_BATCH_SIZE     = 10_000;
+  /** Value of the {@code phase} field of a progress line while vertices are being committed. */
+  private static final String     VERTEX_PHASE          = "vertices";
+  /** Value of the {@code phase} field of a progress line while edges are being accepted. */
+  private static final String     EDGE_PHASE            = "edges";
   /**
    * Above this many temporary ids the mapping is not echoed back. The response would otherwise hold a second full
    * copy of the map, as JSON, in one string: a bulk load of millions of vertices turns the last step of a successful
@@ -204,6 +236,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  protected boolean supportsNdJsonEncoding() {
+    return true;
+  }
+
+  @Override
   protected String parseRequestPayload(final HttpServerExchange e) {
     // Do NOT load full body. We'll stream from the InputStream in execute().
     // Just ensure blocking mode is started.
@@ -233,6 +270,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         ? contentTypeHeader.getFirst().toLowerCase()
         : "application/x-ndjson";
 
+    // Response encoding, negotiated exactly the way #7306 negotiated the streaming query. Read before any work
+    // starts because it decides how EVERY answer below is written, the leader-forwarding one included.
+    final boolean streaming = isNdJsonRequested(exchange);
+
     // Start streaming input. The stream must be created BEFORE relaxing the connection watchdog below:
     // UndertowInputStream captures the read timeout in effect at construction time and uses it to bound
     // every blocking read, so a client that stops sending is still cut off after
@@ -253,7 +294,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // the user thread (issue #4122).
       final HAServerPlugin ha = httpServer.getServer().getHA();
       if (ha != null && !ha.isLeader())
-        return forwardBatchToLeader(exchange, ha, databaseName, user, contentType, inputStream);
+        return forwardBatchToLeader(exchange, ha, databaseName, user, contentType, inputStream, streaming);
 
       final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
       final boolean isCsv = contentType.contains("text/csv");
@@ -267,9 +308,21 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // (408/400): whatever chunk got through is already durable, and a client must be able to read it
       // back regardless of how the request itself was answered (issue #5862).
       final HAReplicatedDatabase haDb = resolveHAReplicatedDatabase(database);
+
+      // Every query parameter is parsed BEFORE the streaming encoding writes anything, so a request that names
+      // an invalid refMode or a negative vertexBatchSize is still refused with the 400 the buffered encoding
+      // gives it. Once a line is on the wire the status code can no longer be chosen (issue #7311).
+      final VertexRefResolver vertexRefs = newVertexRefResolver(exchange);
+      final int vertexBatchSize = parseVertexBatchSize(exchange);
+      final long expectedRecords = parseExpectedRecords(exchange);
+
+      if (streaming)
+        return streamRecordsAsNdJson(exchange, databaseName, isCsv, builder, inputStream, vertexRefs,
+            vertexBatchSize, expectedRecords, haDb);
+
       try {
-        return streamRecords(exchange, databaseName, isCsv, builder, inputStream, newVertexRefResolver(exchange),
-            System.currentTimeMillis(), parseVertexBatchSize(exchange), parseExpectedRecords(exchange));
+        return streamRecords(exchange, databaseName, isCsv, builder, inputStream, vertexRefs,
+            System.currentTimeMillis(), vertexBatchSize, expectedRecords, BatchProgressSink.NONE);
       } finally {
         emitCommitIndexBookmark(exchange, haDb);
       }
@@ -281,11 +334,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   /**
    * Consumes the streaming request body and feeds it to a {@link GraphBatch}. Extracted from
    * {@link #execute} so the caller can restore the connection read timeout in a {@code finally} block.
+   *
+   * @param progress notified at every commit boundary, so the NDJSON encoding can acknowledge a chunk while the
+   *                 client is still uploading the next one (issue #7311).
+   *                 {@link BatchProgressSink#NONE} on the buffered encoding, which is what keeps that answer
+   *                 byte-identical: the same code produces it, and nothing else in this method knows the
+   *                 difference
    */
   private ExecutionResponse streamRecords(final HttpServerExchange exchange, final String databaseName,
       final boolean isCsv, final GraphBatch.Builder builder, final CountingInputStream inputStream,
       final VertexRefResolver vertexRefs, final long startTime, final int vertexBatchSize,
-      final long expectedRecords) throws Exception {
+      final long expectedRecords, final BatchProgressSink progress) throws Exception {
 
     long verticesCreated = 0;
     long edgesCreated = 0;
@@ -327,6 +386,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           if (!vertexPropsBatch.isEmpty()) {
             verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, vertexRefs,
                 verticesCreated);
+            progress.chunk(VERTEX_PHASE, verticesCreated, edgesCreated, stream, vertexRefs, inputStream);
           }
 
           // Process this first edge record
@@ -343,6 +403,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         if (currentTypeName != null && !currentTypeName.equals(rec.typeName)) {
           verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, vertexRefs,
               verticesCreated);
+          progress.chunk(VERTEX_PHASE, verticesCreated, edgesCreated, stream, vertexRefs, inputStream);
         }
         currentTypeName = rec.typeName;
         vertexPropsBatch.add(rec.copyProperties());
@@ -351,13 +412,25 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         if (vertexPropsBatch.size() >= vertexBatchSize) {
           verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, vertexRefs,
               verticesCreated);
+          progress.chunk(VERTEX_PHASE, verticesCreated, edgesCreated, stream, vertexRefs, inputStream);
         }
       }
 
       // Flush remaining vertices (e.g., vertex-only import or last batch before EOF)
-      if (!vertexPropsBatch.isEmpty())
+      if (!vertexPropsBatch.isEmpty()) {
         verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, vertexRefs,
             verticesCreated);
+        progress.chunk(VERTEX_PHASE, verticesCreated, edgesCreated, stream, vertexRefs, inputStream);
+      }
+
+      // Edge-phase cadence for the progress stream. commitEvery is what GraphBatch writes per transaction during
+      // an edge flush, so it is the closest thing the edge phase has to the vertex phase's commit boundary; when
+      // it is 0 the whole flush commits at once and there is no boundary at all, so the vertex cadence is reused
+      // rather than emitting nothing for the entire edge phase (issue #7311).
+      final int progressEveryEdges = batch.getCommitEvery() > 0 ? batch.getCommitEvery() : vertexBatchSize;
+      // Seeded with the edge the vertex loop already consumed on its way out, so the first cadence window is a
+      // full one rather than one record short.
+      long edgesSinceProgress = edgesCreated;
 
       // Phase 2: Remaining edges
       while (stream.hasNext()) {
@@ -367,6 +440,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
               + ". All vertices must appear before edges");
         processEdge(batch, rec, vertexRefs, stream.getLineNumber());
         edgesCreated++;
+        if (++edgesSinceProgress >= progressEveryEdges) {
+          progress.chunk(EDGE_PHASE, verticesCreated, edgesCreated, stream, vertexRefs, inputStream);
+          edgesSinceProgress = 0;
+        }
       }
 
       // batch.close() is called by try-with-resources: flushes edges, connects incoming edges
@@ -483,6 +560,183 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     }
 
     return new ExecutionResponse(200, result.toString());
+  }
+
+
+  /**
+   * Notified at every commit boundary of a load, so a response encoding that can say something before the end
+   * of the request has something to say (issue #7311). {@link #NONE} on the buffered encoding, which is how the
+   * answer that encoding produces stays byte-identical: one code path, one set of counters, and the only
+   * difference is whether anybody is listening.
+   */
+  @FunctionalInterface
+  interface BatchProgressSink {
+    /** Ignores every boundary. The buffered encoding, and every path that predates the streaming one. */
+    BatchProgressSink NONE = (phase, verticesCreated, edgesCreated, stream, vertexRefs, inputStream) -> {
+    };
+
+    void chunk(String phase, long verticesCreated, long edgesCreated, BatchRecordStream stream,
+        VertexRefResolver vertexRefs, CountingInputStream inputStream) throws IOException;
+  }
+
+  /**
+   * Runs a load and answers it as newline-delimited JSON, writing progress lines to the client while its upload
+   * is still being read - the acknowledgement half of the gRPC {@code InsertBidirectional} shape, which HTTP had
+   * no counterpart for (issue #7311).
+   * <p>
+   * The load itself is {@link #streamRecords}, unchanged and shared with the buffered encoding: it still returns
+   * the one {@link ExecutionResponse} it always returned, and this method turns that into the terminal line
+   * rather than into a status line and a body. So the two encodings cannot disagree about what a load did - the
+   * object is produced once, by the same code, and only the envelope around it differs.
+   * <p>
+   * <b>Why the response is started lazily.</b> Nothing is written until the first progress line, so a load that
+   * fails before it commits anything - an engine error on the very first flush, a security failure, a
+   * {@code DuplicatedKeyException} - still travels to {@link AbstractServerHttpHandler}'s error mapping and is
+   * answered with the status that mapping chose. Only once a line is on the wire is the status unrecoverable,
+   * and only then is a failure reported in band. That is the difference between a client seeing 409 "do not
+   * retry" and seeing a 200 whose body it has to parse to discover the same thing.
+   * <p>
+   * <b>Full duplex on one socket.</b> This writes the response while {@link #streamRecords} reads the request.
+   * HTTP/1.1 permits it and Undertow's blocking exchange supports it, but it does mean a client that never
+   * reads could in principle fill its receive buffer and deadlock against a server that is not reading either.
+   * It cannot happen at these volumes: one ~200-byte line per {@code vertexBatchSize} records (10,000 by
+   * default) against a request body measured in megabytes, so the response drains many orders of magnitude
+   * faster than it is produced.
+   *
+   * @return always {@code null} - the response is written here, which {@link AbstractServerHttpHandler#handleRequest}
+   *         reads as "the handler sent it itself", the same contract the SSE paths use
+   */
+  private ExecutionResponse streamRecordsAsNdJson(final HttpServerExchange exchange, final String databaseName,
+      final boolean isCsv, final GraphBatch.Builder builder, final CountingInputStream inputStream,
+      final VertexRefResolver vertexRefs, final int vertexBatchSize, final long expectedRecords,
+      final HAReplicatedDatabase haDb) throws Exception {
+
+    final NdJsonBatchResponse response = new NdJsonBatchResponse(exchange);
+    try {
+      final ExecutionResponse unary = streamRecords(exchange, databaseName, isCsv, builder, inputStream, vertexRefs,
+          System.currentTimeMillis(), vertexBatchSize, expectedRecords,
+          (phase, verticesCreated, edgesCreated, stream, refs, in) -> {
+            final JSONObject event = new JSONObject();
+            event.put("phase", phase);
+            event.put("verticesCreated", verticesCreated);
+            event.put("edgesCreated", edgesCreated);
+            addLineAccounting(event, stream, refs, in);
+            try {
+              // Forced, unlike a query row: a progress line exists to be read now, and there are few enough of
+              // them that the syscall the size/interval policy is there to save does not matter here.
+              response.open().writeEvent("progress", event, true);
+            } catch (final IOException e) {
+              // NOT allowed to surface as an IOException. streamRecords catches that and answers "the request
+              // body was truncated" with the counts to resume from, which would be a precise, machine-parsable
+              // and completely wrong diagnosis: the body arrived, it is the RESPONSE that could not be written.
+              throw new BatchResponseWriteException(e);
+            }
+          });
+
+      final JSONObject terminal = new JSONObject(unary.getResponse());
+      // The bookmark of issue #5862 cannot be a header on this encoding: by the time the commit index is known
+      // the response has usually started, and a header set then is dropped without a word. It carries the same
+      // meaning in band, on the same line as the counters a READ_YOUR_WRITES client is reconciling against.
+      if (haDb != null) {
+        final long lastApplied = haDb.getLastAppliedIndex();
+        if (lastApplied >= 0)
+          terminal.put("commitIndex", lastApplied);
+      }
+
+      if (unary.getCode() == 200)
+        response.open().writeEvent("summary", terminal, true);
+      else
+        // The status the buffered encoding would have sent, in band because a 200 is already on the wire. Every
+        // other field is what that encoding would have carried, so a client applies one piece of logic to both.
+        response.open().writeEvent("error", terminal.put("status", unary.getCode()), true);
+    } catch (final Throwable t) {
+      if (!response.hasStarted())
+        // Nothing has been sent: the exception can still be answered with a real status code, so let the
+        // standard mapping in AbstractServerHttpHandler do exactly what it does for the buffered encoding.
+        // response.close() below is a no-op in that state, deliberately - closing the output stream would
+        // commit the very 200 this branch exists to avoid sending.
+        throw t;
+
+      final Throwable reported = t instanceof BatchResponseWriteException ? t.getCause() : t;
+      LogManager.instance().log(this, Level.WARNING,
+          "Streaming batch load on database '%s' failed after the response had already started", reported,
+          databaseName);
+      try {
+        response.open().writeEvent("error", new JSONObject()
+            .put("error", reported.getMessage() != null ? reported.getMessage() : reported.toString())
+            .put("exception", reported.getClass().getName())
+            .put("status", 500), true);
+      } catch (final IOException writeFailed) {
+        // The connection that could not carry the load cannot carry the explanation either. Nothing is left to
+        // tell the client with; the stream simply ends without a terminal line, which is exactly how a consumer
+        // recognises an answer that did not arrive whole.
+        LogManager.instance().log(this, Level.FINE,
+            "Could not write the in-band failure of a streaming batch load on database '%s': %s", null, databaseName,
+            writeFailed.getMessage());
+      }
+    } finally {
+      response.close();
+    }
+    return null;
+  }
+
+  /**
+   * A failure writing the streamed RESPONSE, kept distinct from a failure reading the request body. Unchecked and
+   * of its own type on purpose: {@link #streamRecords} catches {@link IOException} and answers it as a truncated
+   * upload, with the counts a client needs to resume from - a diagnosis that would be precise, machine-parsable
+   * and about the wrong end of the connection.
+   */
+  private static final class BatchResponseWriteException extends RuntimeException {
+    private BatchResponseWriteException(final IOException cause) {
+      super(cause);
+    }
+  }
+
+  /**
+   * The NDJSON response of a batch load, which does not exist until it has something to say.
+   * <p>
+   * Undertow commits the status line and headers on the first flushed byte, so deferring the whole set-up until
+   * the first line is what keeps the standard error mapping available to a load that fails before it produces
+   * one. {@link #close()} is a no-op on a response that never opened, for the same reason: closing the output
+   * stream would send the 200 this class exists to avoid sending prematurely.
+   */
+  private static final class NdJsonBatchResponse implements AutoCloseable {
+    private final HttpServerExchange   exchange;
+    private       NdJsonResultStream   stream;
+
+    private NdJsonBatchResponse(final HttpServerExchange exchange) {
+      this.exchange = exchange;
+    }
+
+    private NdJsonResultStream open() {
+      if (stream == null) {
+        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, NdJsonResultStream.CONTENT_TYPE);
+        // A buffering reverse proxy would accumulate the stream and defeat the encoding without saying so. Same
+        // pair of headers the streaming query and the SSE endpoints set.
+        exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "no-cache");
+        exchange.getResponseHeaders().put(X_ACCEL_BUFFERING, "no");
+        exchange.setStatusCode(200);
+        if (!exchange.isBlocking())
+          exchange.startBlocking();
+        stream = new NdJsonResultStream(exchange.getOutputStream());
+      }
+      return stream;
+    }
+
+    private boolean hasStarted() {
+      return stream != null && stream.hasStarted();
+    }
+
+    /**
+     * Ends the response, and only a response that exists. Closing the output stream of a load that opened this
+     * and then failed before writing anything would commit an empty 200 and take away the status code that
+     * failure was still entitled to.
+     */
+    @Override
+    public void close() throws IOException {
+      if (hasStarted())
+        stream.close();
+    }
   }
 
   /**
@@ -1114,10 +1368,19 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * a follower: the bulk-load path mutates shared state (schema dictionary, type metadata)
    * that only the leader can safely serialize. Mirrors the engine-level forwarding already used
    * by {@code RaftReplicatedDatabase.command()} for SQL writes.
+   * <p>
+   * The negotiated encoding travels with the payload (issue #7311). Without it a client that asked a follower
+   * for the streaming answer would be handed the leader's buffered one under an {@code application/json}
+   * content type - a silent downgrade of the very thing it negotiated, and a body its NDJSON reader cannot
+   * parse. With it the leader streams, and {@link #relayNdJsonFromLeader} passes those lines straight through
+   * as they arrive, so the acknowledgements keep reaching the client while the follower is still relaying the
+   * upload.
+   *
+   * @param streaming whether the client negotiated {@code Accept: application/x-ndjson}
    */
   private ExecutionResponse forwardBatchToLeader(final HttpServerExchange exchange, final HAServerPlugin ha,
       final String databaseName, final ServerSecurityUser user, final String contentType,
-      final CountingInputStream body) throws Exception {
+      final CountingInputStream body, final boolean streaming) throws Exception {
 
     // A peer already relayed this load to what it believed was the leader and it landed here, on a node that
     // is not the leader either. Relaying it on would send it round the cycle that wrong address created, one
@@ -1173,9 +1436,16 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // The body travels through the same guarded stream the leader-side load would use, so a cut upload cannot
     // relay a replay of its own bytes on to the leader either (issue #6180).
     final HttpRequest request = buildForwardRequest(url, contentType, clusterToken, user.getName(),
-        exchange.getRequestContentLength(), body);
+        exchange.getRequestContentLength(), body, streaming ? NdJsonResultStream.CONTENT_TYPE : null);
 
     try {
+      if (streaming)
+        // send() returns as soon as the leader's response HEADERS arrive, which on the streaming encoding is at
+        // the leader's first progress line - while the JDK client's own executor thread is still publishing the
+        // relayed upload. That is what keeps the acknowledgements incremental across the hop.
+        return relayNdJsonFromLeader(exchange, databaseName,
+            HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofInputStream()));
+
       final HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
 
       // ExecutionResponse carries only status + body, so the leader's X-ArcadeDB-Commit-Index bookmark
@@ -1221,6 +1491,18 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   static HttpRequest buildForwardRequest(final String url, final String contentType, final String clusterToken,
       final String userName, final long contentLength, final InputStream body) {
+    return buildForwardRequest(url, contentType, clusterToken, userName, contentLength, body, null);
+  }
+
+  /**
+   * As above, and additionally relays the response encoding the client negotiated (issue #7311). A {@code null}
+   * {@code accept} sends no header at all, which is what makes the leader answer a forwarded request exactly as
+   * it did before this parameter existed.
+   *
+   * @param accept the {@code Accept} header to relay, or {@code null} for none
+   */
+  static HttpRequest buildForwardRequest(final String url, final String contentType, final String clusterToken,
+      final String userName, final long contentLength, final InputStream body, final String accept) {
 
     final AtomicBoolean bodyTaken = new AtomicBoolean(false);
     final Supplier<InputStream> oneShotBody = () -> {
@@ -1235,7 +1517,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     if (contentLength >= 0)
       publisher = HttpRequest.BodyPublishers.fromPublisher(publisher, contentLength);
 
-    return HttpRequest.newBuilder()
+    final HttpRequest.Builder forward = HttpRequest.newBuilder()
         .uri(URI.create(url))
         .version(HttpClient.Version.HTTP_1_1)
         .header("Content-Type", contentType)
@@ -1244,7 +1526,64 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // One hop only: a node that receives this and is not the leader refuses it rather than resolving the
         // same leader address - which may name nobody - and relaying it again (issue #6191).
         .header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true")
-        .POST(publisher)
-        .build();
+        .POST(publisher);
+
+    if (accept != null)
+      forward.header("Accept", accept);
+
+    return forward.build();
+  }
+
+  /**
+   * Passes the leader's NDJSON answer through to the client, line by line, as it arrives (issue #7311).
+   * <p>
+   * Copied rather than parsed: a line the leader emitted is already the line this client asked for, so relaying
+   * the bytes is both the cheapest thing to do and the only one that cannot make the two nodes disagree about
+   * the wire format. Each line is flushed on its own, because a relay that batched them would reintroduce
+   * exactly the latency the encoding exists to remove.
+   * <p>
+   * A leader that answered with anything other than the streaming encoding - an older node, or a refusal issued
+   * before the load started, which is a normal status-carrying error response - is relayed as the buffered
+   * answer it is, so the follower never invents a stream the leader did not send.
+   */
+  private ExecutionResponse relayNdJsonFromLeader(final HttpServerExchange exchange, final String databaseName,
+      final HttpResponse<InputStream> response) throws IOException {
+
+    final String leaderContentType = response.headers().firstValue("Content-Type").orElse("");
+    if (response.statusCode() != 200
+        || !leaderContentType.toLowerCase(Locale.ROOT).contains(NdJsonResultStream.CONTENT_TYPE)) {
+      // Not a stream: read it whole and answer it the way every other forwarded response is answered.
+      try (final InputStream in = response.body()) {
+        response.headers().firstValue("X-ArcadeDB-Commit-Index")
+            .ifPresent(val -> exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), val));
+        return new ExecutionResponse(response.statusCode(),
+            new String(in.readAllBytes(), StandardCharsets.UTF_8));
+      }
+    }
+
+    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, NdJsonResultStream.CONTENT_TYPE);
+    exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "no-cache");
+    exchange.getResponseHeaders().put(X_ACCEL_BUFFERING, "no");
+    exchange.setStatusCode(200);
+    if (!exchange.isBlocking())
+      exchange.startBlocking();
+
+    try (final BufferedReader in = new BufferedReader(
+        new InputStreamReader(response.body(), StandardCharsets.UTF_8));
+        final OutputStream out = exchange.getOutputStream()) {
+      for (String line = in.readLine(); line != null; line = in.readLine()) {
+        out.write(line.getBytes(StandardCharsets.UTF_8));
+        out.write('\n');
+        out.flush();
+      }
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error relaying the streamed batch answer of database '%s' from the leader: %s", null, databaseName,
+          e.getMessage());
+      // The 200 and part of the stream are already on the wire, so there is no status left to change and no
+      // terminal line to trust: a consumer that saw neither 'summary' nor 'error' knows it did not get
+      // everything, which is the contract the encoding is built on.
+    }
+    return null;
   }
 }
