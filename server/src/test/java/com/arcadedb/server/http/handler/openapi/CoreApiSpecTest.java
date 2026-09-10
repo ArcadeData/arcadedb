@@ -22,6 +22,7 @@ import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.Paths;
+import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.parameters.Parameter;
 import org.junit.jupiter.api.BeforeEach;
@@ -344,6 +345,30 @@ class CoreApiSpecTest {
           .as(path + " has no requiresTransaction() override, so its 404 must still cover the "
               + "stale-session case")
           .contains("Remote transaction session not found or expired");
+    }
+  }
+
+  /**
+   * Issue #7351: the read-your-writes bookmark is emitted on the streamed encoding as well as the buffered one,
+   * so it belongs on the response rather than on either media type - and a generated client has no way to know
+   * it exists unless the document says so.
+   */
+  @Test
+  void everyQueryOperationDeclaresTheReadYourWritesBookmarkHeader() {
+    final List<Operation> operations = List.of(
+        openAPI.getPaths().get("/api/v1/query/{database}/{language}/{command}").getGet(),
+        openAPI.getPaths().get("/api/v1/query/{database}").getPost(),
+        openAPI.getPaths().get("/api/v1/command/{database}").getPost());
+
+    for (final Operation operation : operations) {
+      final Header bookmark = operation.getResponses().get("200").getHeaders().get("X-ArcadeDB-Commit-Index");
+      assertThat(bookmark)
+          .as("%s must declare the read-your-writes bookmark on its 200", operation.getOperationId())
+          .isNotNull();
+      assertThat(bookmark.getDescription())
+          .as("the description has to name the request-side header the value is fed back as, or a client "
+              + "cannot act on it")
+          .contains("X-ArcadeDB-Read-After");
     }
   }
 }
