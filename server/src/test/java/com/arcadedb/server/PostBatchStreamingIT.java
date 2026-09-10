@@ -182,6 +182,52 @@ class PostBatchStreamingIT extends BaseGraphServerTest {
   }
 
   /**
+   * The tripwire for an invariant that is currently held by adjacency alone (PR #7429 review).
+   * <p>
+   * When a load fails after the response has started, the error line reports its counters as of the LAST
+   * acknowledgement, and {@code streamRecordsAsNdJson} deliberately does not drain whatever the mapping sink
+   * may still hold onto that line - those entries were resolved after that acknowledgement, so sending them
+   * would hand back ids for vertices the same line says were never reached. Today nothing can accumulate there
+   * at all, because every vertex flush is followed immediately by its own acknowledgement.
+   * <p>
+   * What that adds up to, and what is asserted here rather than left to a comment, is one property a client can
+   * rely on: <b>the mapping it received is exactly the mapping for the vertices the failure reports as
+   * attempted</b> - no more, no less. A refactor that opened a window between the flush and its acknowledgement
+   * would break this loudly instead of silently changing what a failed load hands back.
+   */
+  @Test
+  @Timeout(60)
+  void aFailedLoadsMappingMatchesTheCountersItReports() throws Exception {
+    // V1.id is unique, so this id is already taken when the payload below reaches its second batch.
+    postStreamed(ndjsonVertices(1_200_010, 1), "?vertexBatchSize=1", NDJSON);
+
+    final StringBuilder body = new StringBuilder();
+    for (int i = 0; i < 2; i++)
+      body.append("{\"@type\":\"vertex\",\"@class\":\"V1\",\"@id\":\"m").append(i).append("\",\"id\":")
+          .append(1_200_000 + i).append("}\n");
+    body.append("{\"@type\":\"vertex\",\"@class\":\"V1\",\"@id\":\"m9\",\"id\":1200010}\n");
+
+    final List<JSONObject> events = postStreamed(body.toString().getBytes(StandardCharsets.UTF_8),
+        "?vertexBatchSize=2", NDJSON);
+
+    assertThat(countEvents(events, "progress"))
+        .as("the failure has to come after an acknowledgement, or this test proves nothing")
+        .isGreaterThan(0);
+
+    final JSONObject error = terminal(events, "error");
+    final JSONObject received = collectStreamedMapping(events);
+
+    assertThat((long) received.length())
+        .as("a client must be handed the mapping of exactly the vertices the failure reports as attempted: "
+            + "fewer would leave it unable to reference records that are durable, more would name records "
+            + "this same line says were never reached")
+        .isEqualTo(error.getLong("verticesCreated"));
+    assertThat(received.keySet())
+        .as("and those entries are the ids the payload actually declared before it failed")
+        .containsExactlyInAnyOrder("m0", "m1");
+  }
+
+  /**
    * The memory property, which is the reason the mapping is streamed at all. Past
    * {@code MAX_ID_MAPPING_IN_RESPONSE} (10,000) the buffered encoding stops sending the mapping altogether,
    * because building it as one object and one string is what turns the last step of an otherwise successful
