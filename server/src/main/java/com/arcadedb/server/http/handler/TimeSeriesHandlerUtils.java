@@ -21,6 +21,8 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway.TypeResolution;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -31,7 +33,10 @@ import java.util.Locale;
 import java.util.StringJoiner;
 
 /**
- * Shared utilities for TimeSeries HTTP handlers.
+ * Adapts the JSON request shapes of the TimeSeries HTTP handlers onto {@link TimeSeriesGateway}, which holds the
+ * protocol-neutral semantics shared with the gRPC {@code TimeSeries*} RPCs (issue #7305). Nothing here decides
+ * anything: it only turns {@code JSONObject}/{@code JSONArray} into the plain Java shapes the gateway takes, so
+ * a change to how a tag filter or a projection is resolved lands on both protocols at once.
  */
 final class TimeSeriesHandlerUtils {
 
@@ -110,7 +115,7 @@ final class TimeSeriesHandlerUtils {
 
     TagFilter filter = null;
     for (final String tagName : tagsJson.keySet())
-      filter = andTag(filter, tagName, tagsJson.get(tagName), columns);
+      filter = TimeSeriesGateway.andTag(filter, tagName, tagsJson.get(tagName), columns);
 
     return filter;
   }
@@ -149,34 +154,10 @@ final class TimeSeriesHandlerUtils {
         // the 'tags' object path above - reporting either is issue #7334.
         continue;
 
-      filter = andTag(filter, tagParam.substring(0, colonIdx), tagParam.substring(colonIdx + 1), columns);
+      filter = TimeSeriesGateway.andTag(filter, tagParam.substring(0, colonIdx),
+          tagParam.substring(colonIdx + 1), columns);
     }
 
-    return filter;
-  }
-
-  /**
-   * ANDs one tag condition onto {@code filter}, resolving {@code tagName} to its position among the
-   * non-timestamp columns. Shared by both builders above so the two endpoints cannot drift apart on how a
-   * tag is resolved, which is how they came to disagree in the first place (issue #7321).
-   *
-   * @return {@code filter} unchanged when no TAG column carries that name, a new filter otherwise -
-   * {@link TagFilter} is immutable, so the return value must be used
-   */
-  private static TagFilter andTag(final TagFilter filter, final String tagName, final Object tagValue,
-      final List<ColumnDefinition> columns) {
-    int nonTsIdx = 0;
-    for (final ColumnDefinition col : columns) {
-      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-        continue;
-      if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(tagName)) {
-        // Coerce the value to the column's declared type so it matches what both storage layers hand
-        // back (issue #5475).
-        final Object coerced = col.coerceValue(tagValue);
-        return filter == null ? TagFilter.eq(nonTsIdx, coerced) : filter.and(nonTsIdx, coerced);
-      }
-      nonTsIdx++;
-    }
     return filter;
   }
 
@@ -184,35 +165,36 @@ final class TimeSeriesHandlerUtils {
     if (fieldsJson == null || fieldsJson.length() == 0)
       return null;
 
-    final List<Integer> indices = new ArrayList<>();
+    final List<String> fields = new ArrayList<>(fieldsJson.length());
+    for (int f = 0; f < fieldsJson.length(); f++)
+      fields.add(fieldsJson.getString(f));
 
-    // Always include timestamp
-    for (int i = 0; i < columns.size(); i++) {
-      if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
-        indices.add(i);
-        break;
-      }
-    }
-
-    for (int f = 0; f < fieldsJson.length(); f++) {
-      final String fieldName = fieldsJson.getString(f);
-      for (int i = 0; i < columns.size(); i++) {
-        if (columns.get(i).getName().equals(fieldName) &&
-            columns.get(i).getRole() != ColumnDefinition.ColumnRole.TIMESTAMP) {
-          indices.add(i);
-          break;
-        }
-      }
-    }
-
-    return indices.stream().mapToInt(Integer::intValue).toArray();
+    return TimeSeriesGateway.resolveColumnIndices(fields, columns);
   }
 
   static int findColumnIndex(final String fieldName, final List<ColumnDefinition> columns) {
-    for (int i = 0; i < columns.size(); i++) {
-      if (columns.get(i).getName().equals(fieldName))
-        return i;
-    }
-    return -1;
+    return TimeSeriesGateway.findColumnIndex(fieldName, columns);
+  }
+
+  /**
+   * Renders a failed {@link TimeSeriesGateway#resolveForRead} as the 400 the TimeSeries read endpoints answer
+   * with. The three cases stay distinct: a type that IS a TimeSeries type whose storage failed to load used to
+   * share the "is not a TimeSeries type" message, which sent an operator chasing the wrong cause (issue #6356
+   * follow-up, claude-review on PR #6779).
+   * <p>
+   * The engine-unavailable body is built with {@link JSONObject} rather than string concatenation because the
+   * reason embeds a file path that could contain a double quote or a backslash, which raw concatenation would
+   * turn into invalid JSON.
+   */
+  static ExecutionResponse resolutionError(final String typeName, final TypeResolution resolved) {
+    return switch (resolved.failure()) {
+      case NOT_FOUND -> new ExecutionResponse(400,
+          "{ \"error\" : \"Type '" + typeName + "' does not exist\"}");
+      case NOT_TIME_SERIES -> new ExecutionResponse(400,
+          "{ \"error\" : \"Type '" + typeName + "' is not a TimeSeries type\"}");
+      case ENGINE_UNAVAILABLE -> new ExecutionResponse(400, new JSONObject().put("error",
+          "TimeSeries type '" + typeName + "' has no storage engine available: " + resolved.unavailableReason())
+          .toString());
+    };
   }
 }

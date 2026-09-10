@@ -20,15 +20,12 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.LineProtocolParser;
 import com.arcadedb.engine.timeseries.LineProtocolParser.Precision;
 import com.arcadedb.engine.timeseries.LineProtocolParser.Sample;
-import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway.WriteReport;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalTimeSeriesType;
-import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAReplicatedDatabase;
@@ -40,32 +37,25 @@ import io.undertow.util.StatusCodes;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Deque;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.zip.GZIPInputStream;
 
 /**
  * HTTP handler for InfluxDB Line Protocol ingestion.
- * Endpoint: POST /api/v1/ts/{database}/write?precision=<ns|us|ms|s>
+ * Endpoint: POST /api/v1/ts/{database}/write?precision=&lt;ns|us|ms|s&gt;
  * Body: InfluxDB Line Protocol text (one or more lines)
+ * <p>
+ * The ingest semantics themselves - grouping by measurement, the per-type ACL, the batch append and the drop
+ * sets - live in {@link TimeSeriesGateway}, shared with the gRPC {@code TimeSeriesWrite} RPCs (issue #7305).
+ * What is left here is the HTTP shape: the body, the precision parameter, the status codes and the
+ * partial-write report.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
-
-  /**
-   * The samples of one measurement in a single request, paired with the type they resolved to so the
-   * schema lookup and the {@code instanceof} narrowing happen once per measurement, not per sample.
-   */
-  private record MeasurementBatch(LocalTimeSeriesType type, List<Sample> samples) {
-  }
 
   private String rawPayload;
 
@@ -149,145 +139,47 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
       if (samples.isEmpty())
         return new ExecutionResponse(204, "");
 
-      // Group by measurement, then append each group as ONE batch. Appending sample-by-sample would open a
-      // shard transaction per sample; on a Raft HA leader every one of those is a replicated quorum round
-      // trip, serialized behind the per-shard append lock, so ingest rate collapses to one sample per
-      // round trip. Grouping first keeps the cost proportional to the number of measurements, not samples.
-      // LinkedHashMap/LinkedHashSet preserve first-occurrence order, so the drop sets and their reported
-      // order stay identical to a straight pass over the samples.
-      final Set<String> unknownTypes = new LinkedHashSet<>();
-      final Set<String> nonTimeSeriesTypes = new LinkedHashSet<>();
-      // Distinct from nonTimeSeriesTypes (issue #6356 follow-up, claude-review on PR #6779): a type in here IS a
-      // TimeSeries type, its storage just failed to load - lumping it in with "wrong type" sent an operator
-      // chasing the wrong cause.
-      final Set<String> unavailableTypes = new LinkedHashSet<>();
-      final Map<String, MeasurementBatch> byMeasurement = new LinkedHashMap<>();
+      // NOTE: this call does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
+      // begin/commit, so every measurement the gateway appends has already committed its shard writes by the
+      // time it returns. If a later measurement throws, nothing can undo the measurements already written -
+      // the same partial-write shape the 400 response below reports, now at measurement granularity.
+      final WriteReport report = TimeSeriesGateway.write(database, samples);
 
-      for (final Sample sample : samples) {
-        final String measurement = sample.getMeasurement();
-
-        if (unknownTypes.contains(measurement) || nonTimeSeriesTypes.contains(measurement)
-            || unavailableTypes.contains(measurement))
-          continue;
-
-        final MeasurementBatch batch = byMeasurement.get(measurement);
-        if (batch != null) {
-          batch.samples().add(sample);
-          continue;
-        }
-
-        if (!database.getSchema().existsType(measurement)) {
-          unknownTypes.add(measurement);
-          continue;
-        }
-
-        final DocumentType docType = database.getSchema().getType(measurement);
-        if (!(docType instanceof LocalTimeSeriesType tsType)) {
-          nonTimeSeriesTypes.add(measurement);
-          continue;
-        }
-        // Per-type ACL, checked HERE rather than only at the append below: TimeSeriesShard.appendSamples commits
-        // its own shard transaction, so a denial discovered mid-write would return 403 with the measurements
-        // before it already durable. Grouping runs entirely before the first append, so refusing here is the only
-        // placement that keeps a rejected request from writing anything. Also before the isEngineAvailable() check
-        // so a denied caller cannot learn from the drop report that the type exists.
-        tsType.checkAccess(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
-        if (!tsType.isEngineAvailable()) {
-          unavailableTypes.add(measurement);
-          continue;
-        }
-
-        final MeasurementBatch created = new MeasurementBatch(tsType, new ArrayList<>());
-        created.samples().add(sample);
-        byMeasurement.put(measurement, created);
-      }
-
-      int inserted = 0;
-      // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
-      // begin/commit on getWrappedDatabaseInstance(), so every appendBatch below has already committed its
-      // shard writes by the time it returns. If a later measurement throws, the rollback here cannot undo
-      // the measurements already written - the same partial-write shape the 400 response below reports,
-      // now at measurement rather than sample granularity.
-      database.begin();
-      try {
-        for (final MeasurementBatch batch : byMeasurement.values()) {
-          // requireEngine() for symmetry with the other call sites this PR touched (issue #6356 follow-up,
-          // claude-review on PR #6779): every batch here was already filtered by isEngineAvailable() above, so
-          // this can never actually throw, but getEngine() alone would silently reintroduce the "no engine"
-          // possibility at the type level if that filtering were ever changed.
-          final TimeSeriesEngine engine = batch.type().requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
-          final List<ColumnDefinition> columns = batch.type().getTsColumns();
-          final List<Sample> group = batch.samples();
-          final int count = group.size();
-
-          final long[] timestamps = new long[count];
-          final Object[][] columnValues = new Object[columns.size() - 1][count]; // exclude timestamp
-
-          for (int s = 0; s < count; s++) {
-            final Sample sample = group.get(s);
-            timestamps[s] = sample.getTimestampMs();
-
-            int colIdx = 0;
-            for (int i = 0; i < columns.size(); i++) {
-              final ColumnDefinition col = columns.get(i);
-              if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-                continue;
-
-              Object value;
-              if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
-                value = sample.getTags().get(col.getName());
-              else
-                value = sample.getFields().get(col.getName());
-
-              columnValues[colIdx][s] = value;
-              colIdx++;
-            }
-          }
-
-          engine.appendBatch(timestamps, columnValues);
-          inserted += count;
-        }
-        database.commit();
-      } catch (final Exception e) {
-        database.rollback();
-        throw e;
-      }
-
-      if (!unknownTypes.isEmpty())
+      if (!report.unknownTypes().isEmpty())
         LogManager.instance().log(this, Level.WARNING,
-            "Skipped line protocol samples for unknown timeseries type(s): %s", null, unknownTypes);
+            "Skipped line protocol samples for unknown timeseries type(s): %s", null, report.unknownTypes());
 
-      if (!nonTimeSeriesTypes.isEmpty())
+      if (!report.nonTimeSeriesTypes().isEmpty())
         LogManager.instance().log(this, Level.WARNING,
-            "Skipped line protocol samples for non-timeseries type(s): %s", null, nonTimeSeriesTypes);
+            "Skipped line protocol samples for non-timeseries type(s): %s", null, report.nonTimeSeriesTypes());
 
-      if (!unavailableTypes.isEmpty())
+      if (!report.unavailableTypes().isEmpty())
         LogManager.instance().log(this, Level.WARNING,
             "Skipped line protocol samples for TimeSeries type(s) with no storage engine available: %s", null,
-            unavailableTypes);
+            report.unavailableTypes());
 
       // Any dropped sample is a partial write: matching InfluxDB, return 400 naming the dropped
       // measurements (with written/dropped counts) even when some samples were inserted, so the client
       // is not told 204 "all good" while data was silently discarded (issue #5036). The samples that did
-      // insert are already committed above - this is a partial-write signal, not a full rollback.
-      // `dropped` counts individual samples (samples.size() - inserted), consistent with `written`
-      // (inserted samples); every parsed sample is either inserted or skipped into one of the drop sets.
-      final int dropped = samples.size() - inserted;
-      if (dropped > 0) {
+      // insert are already committed - this is a partial-write signal, not a full rollback.
+      // `dropped` counts individual samples, consistent with `written`; every parsed sample is either
+      // inserted or skipped into one of the drop sets.
+      if (!report.isComplete()) {
         final StringBuilder msg = new StringBuilder("partial write: ");
-        if (!unknownTypes.isEmpty())
-          msg.append("unknown timeseries type(s): ").append(String.join(", ", unknownTypes))
+        if (!report.unknownTypes().isEmpty())
+          msg.append("unknown timeseries type(s): ").append(String.join(", ", report.unknownTypes()))
               .append(" (create the type first with CREATE TIMESERIES TYPE).");
-        if (!nonTimeSeriesTypes.isEmpty()) {
-          if (!unknownTypes.isEmpty())
+        if (!report.nonTimeSeriesTypes().isEmpty()) {
+          if (!report.unknownTypes().isEmpty())
             msg.append(" ");
-          msg.append("non-timeseries type(s): ").append(String.join(", ", nonTimeSeriesTypes))
+          msg.append("non-timeseries type(s): ").append(String.join(", ", report.nonTimeSeriesTypes()))
               .append(" (only TIMESERIES types can receive line protocol data).");
         }
-        if (!unavailableTypes.isEmpty()) {
-          if (!unknownTypes.isEmpty() || !nonTimeSeriesTypes.isEmpty())
+        if (!report.unavailableTypes().isEmpty()) {
+          if (!report.unknownTypes().isEmpty() || !report.nonTimeSeriesTypes().isEmpty())
             msg.append(" ");
-          msg.append("TimeSeries type(s) with no storage engine available: ").append(String.join(", ", unavailableTypes))
+          msg.append("TimeSeries type(s) with no storage engine available: ")
+              .append(String.join(", ", report.unavailableTypes()))
               .append(" (see the server log for why each failed to load).");
         }
 
@@ -296,14 +188,14 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
         final String correlationId = getCorrelationId(exchange);
         if (correlationId != null && !correlationId.isEmpty())
           error.put("requestId", correlationId);
-        error.put("written", inserted);
-        error.put("dropped", dropped);
-        if (!unknownTypes.isEmpty())
-          error.put("unknownTypes", new JSONArray(unknownTypes));
-        if (!nonTimeSeriesTypes.isEmpty())
-          error.put("nonTimeSeriesTypes", new JSONArray(nonTimeSeriesTypes));
-        if (!unavailableTypes.isEmpty())
-          error.put("unavailableTypes", new JSONArray(unavailableTypes));
+        error.put("written", report.written());
+        error.put("dropped", report.dropped());
+        if (!report.unknownTypes().isEmpty())
+          error.put("unknownTypes", new JSONArray(report.unknownTypes()));
+        if (!report.nonTimeSeriesTypes().isEmpty())
+          error.put("nonTimeSeriesTypes", new JSONArray(report.nonTimeSeriesTypes()));
+        if (!report.unavailableTypes().isEmpty())
+          error.put("unavailableTypes", new JSONArray(report.unavailableTypes()));
         return new ExecutionResponse(400, error.toString());
       }
 
