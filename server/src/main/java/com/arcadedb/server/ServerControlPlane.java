@@ -156,12 +156,19 @@ public class ServerControlPlane {
    * so it tells an operator which of several join attempts failed - and it is the only thing that
    * makes the argument observable from outside while the operation itself does nothing with it, so
    * a transport that dropped the parameter on the way here cannot do so unnoticed.
+   * <p>
+   * Not null-guarded. Both callers found by
+   * {@code grep -rn --include='*.java' "\.connectCluster(" --exclude-dir=target .} on the main
+   * sources pass a value that cannot be null: {@code PostServerCommandHandler} passes
+   * {@code extractTarget}'s result, which is {@code ""} or a substring, and
+   * {@code ArcadeDbGrpcAdminService} passes a protobuf string field, which defaults to {@code ""}.
+   * A null from some future caller renders as {@code 'null'} in the message rather than throwing,
+   * so the guard would buy nothing.
    */
   public void connectCluster(final String serverAddress) {
 
-    throw new OperationNotAvailableException(
-        "Connect cluster to '" + (serverAddress == null ? "" : serverAddress)
-            + "' is not supported by the current HA implementation. Use the cluster configuration to join nodes.");
+    throw new OperationNotAvailableException("Connect cluster to '" + serverAddress
+        + "' is not supported by the current HA implementation. Use the cluster configuration to join nodes.");
   }
 
   // ---------------------------------------------------------------------------------------------
