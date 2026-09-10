@@ -84,17 +84,111 @@ class Issue7089NaNTransparentSumAvgTest extends TestHelper {
     double sum = TimeSeriesNaN.ABSENT;
     long count = 0;
     for (final double d : new double[] { Double.NaN, 1.0, Double.NaN, 3.0 }) {
-      sum = TimeSeriesNaN.sum(sum, d);
+      sum = TimeSeriesNaN.sum(sum, count, d);
       count = TimeSeriesNaN.countIfPresent(count, d);
     }
     assertThat(sum).isEqualTo(4.0);
     assertThat(count).isEqualTo(2);
 
-    assertThat(TimeSeriesNaN.sum(TimeSeriesNaN.ABSENT, Double.NaN)).isNaN();
+    assertThat(TimeSeriesNaN.sum(TimeSeriesNaN.ABSENT, 0, Double.NaN)).isNaN();
     assertThat(TimeSeriesNaN.countIfPresent(0, Double.NaN)).isZero();
-    // Merging partials is the same fold: an absent partial cannot poison a real one, whichever side it is on.
-    assertThat(TimeSeriesNaN.sum(5.0, TimeSeriesNaN.ABSENT)).isEqualTo(5.0);
-    assertThat(TimeSeriesNaN.sum(TimeSeriesNaN.ABSENT, 5.0)).isEqualTo(5.0);
+    // Merging partials is the same rule: an absent partial cannot poison a real one, whichever side it is on.
+    assertThat(TimeSeriesNaN.mergeSum(5.0, 1, TimeSeriesNaN.ABSENT, 0)).isEqualTo(5.0);
+    assertThat(TimeSeriesNaN.mergeSum(TimeSeriesNaN.ABSENT, 0, 5.0, 1)).isEqualTo(5.0);
+  }
+
+  /**
+   * The fold is keyed on the count of real samples seen, not on the accumulator being NaN: a total that turned
+   * NaN by arithmetic ({@code +Infinity + -Infinity}) after real samples is an undefined total, not an absence,
+   * and the next real sample must not overwrite it - the vectorized reduction keeps it, so must every other path.
+   */
+  @Test
+  void anArithmeticNaNOverRealSamplesIsKeptNotReplaced() {
+    final double[] data = { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 5.0 };
+
+    double sum = TimeSeriesNaN.ABSENT;
+    long count = 0;
+    for (final double d : data) {
+      sum = TimeSeriesNaN.sum(sum, count, d);
+      count = TimeSeriesNaN.countIfPresent(count, d);
+    }
+    assertThat(sum).isNaN();
+    assertThat(count).isEqualTo(3);
+
+    final double[] stats = TimeSeriesSealedStore.reduceNumericStats(data);
+    assertThat(stats[2]).isNaN();
+    assertThat(stats[3]).isEqualTo(3.0);
+
+    assertThat(new ScalarTimeSeriesVectorOps().sum(data, 0, 3)).isNaN();
+    assertThat(new SimdTimeSeriesVectorOps().sum(data, 0, 3)).isNaN();
+    final double[] wide = new double[70];
+    java.util.Arrays.fill(wide, 1.0);
+    wide[3] = Double.POSITIVE_INFINITY;
+    wide[4] = Double.NEGATIVE_INFINITY;
+    assertThat(new SimdTimeSeriesVectorOps().sum(wide, 0, wide.length)).isNaN();
+    assertThat(new ScalarTimeSeriesVectorOps().sum(wide, 0, wide.length)).isNaN();
+
+    // Merging partials: an undefined partial over real samples stays undefined; an absent partial is skipped.
+    assertThat(TimeSeriesNaN.mergeSum(Double.NaN, 2, 5.0, 1)).isNaN();
+    assertThat(TimeSeriesNaN.mergeSum(5.0, 1, Double.NaN, 2)).isNaN();
+    assertThat(TimeSeriesNaN.mergeSum(5.0, 1, TimeSeriesNaN.ABSENT, 0)).isEqualTo(5.0);
+    assertThat(TimeSeriesNaN.mergeSum(TimeSeriesNaN.ABSENT, 0, 5.0, 1)).isEqualTo(5.0);
+
+    final List<MultiColumnAggregationRequest> requests = List.of(new MultiColumnAggregationRequest(1, AggregationType.SUM, "s"));
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests, 0L, HOUR, 1);
+    for (final double d : data)
+      result.accumulateRow(0L, new double[] { d });
+    assertThat(result.getValue(0L, 0)).isNaN();
+    assertThat(result.getCount(0L, 0)).isEqualTo(3);
+
+    final AggregationResult left = new AggregationResult();
+    left.addBucket(0L, Double.NaN, 2);
+    final AggregationResult right = new AggregationResult();
+    right.addBucket(0L, 5.0, 1);
+    left.merge(right, AggregationType.SUM);
+    assertThat(left.getValue(0)).isNaN();
+  }
+
+  /**
+   * The count recorded next to a value is of the samples that contributed to it, on every path and for every
+   * request - not only where AVG happens to read it. A block that straddles two buckets takes the vectorized
+   * segment path; its counts must be what the block-aligned path and the per-row path record for the same data.
+   */
+  @Test
+  void theVectorizedPathCountsTheRealSamplesForEveryRequest() throws Exception {
+    final String path = TEST_DIR + "/segments";
+    final List<MultiColumnAggregationRequest> requests = List.of(
+        new MultiColumnAggregationRequest(1, AggregationType.SUM, "sum"),
+        new MultiColumnAggregationRequest(1, AggregationType.MIN, "min"),
+        new MultiColumnAggregationRequest(1, AggregationType.MAX, "max"),
+        new MultiColumnAggregationRequest(1, AggregationType.AVG, "avg"),
+        new MultiColumnAggregationRequest(1, AggregationType.COUNT, "count"));
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(path, columns)) {
+      // One block over two hourly buckets: [NaN, 2] in the first, [NaN, NaN, 3] in the second.
+      store.appendBlock(5, 1_000L, HOUR + 3_000L, new byte[][] {
+          DeltaOfDeltaCodec.encode(new long[] { 1_000L, 2_000L, HOUR + 1_000L, HOUR + 2_000L, HOUR + 3_000L }),
+          GorillaXORCodec.encode(new double[] { Double.NaN, 2.0, Double.NaN, Double.NaN, 3.0 })
+      }, new double[] { Double.NaN, 2.0 }, new double[] { Double.NaN, 3.0 }, new double[] { Double.NaN, 5.0 },
+          new long[] { 0, 2 }, null);
+      store.flushHeader();
+
+      final AggregationMetrics metrics = new AggregationMetrics();
+      final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests, 0L, HOUR, 2);
+      store.aggregateMultiBlocks(Long.MIN_VALUE, Long.MAX_VALUE, requests, HOUR, result, metrics, null);
+      result.finalizeAvg();
+      assertThat(metrics.getSlowPathBlocks()).as("the block straddles two buckets").isEqualTo(1);
+
+      for (int r = 0; r < 4; r++) {
+        assertThat(result.getCount(0L, r)).as("bucket 0, request " + r + ": one real sample").isEqualTo(1);
+        assertThat(result.getCount(HOUR, r)).as("bucket 1, request " + r + ": one real sample").isEqualTo(1);
+      }
+      assertThat(result.getCount(0L, 4)).as("COUNT counts rows").isEqualTo(2);
+      assertThat(result.getCount(HOUR, 4)).isEqualTo(3);
+      assertThat(result.getValue(0L, 0)).isEqualTo(2.0);
+      assertThat(result.getValue(0L, 3)).isEqualTo(2.0);
+      assertThat(result.getValue(HOUR, 0)).isEqualTo(3.0);
+      assertThat(result.getValue(HOUR, 3)).isEqualTo(3.0);
+    }
   }
 
   @Test

@@ -400,7 +400,7 @@ public final class MultiColumnAggregationResult {
             break;
           case SUM:
           case AVG:
-            tVals[i] = TimeSeriesNaN.sum(tVals[i], oVals[i]);
+            tVals[i] = TimeSeriesNaN.mergeSum(tVals[i], tCounts[i], oVals[i], oCounts[i]);
             break;
           case COUNT:
             tVals[i] += oVals[i];
@@ -518,7 +518,7 @@ public final class MultiColumnAggregationResult {
     switch (types[idx]) {
     case SUM:
     case AVG:
-      vals[idx] = TimeSeriesNaN.sum(vals[idx], value);
+      vals[idx] = TimeSeriesNaN.sum(vals[idx], counts[idx], value);
       break;
     case COUNT:
       vals[idx] += 1;
@@ -555,7 +555,7 @@ public final class MultiColumnAggregationResult {
       break;
     case SUM:
     case AVG:
-      vals[requestIndex] = TimeSeriesNaN.sum(vals[requestIndex], value);
+      vals[requestIndex] = TimeSeriesNaN.mergeSum(vals[requestIndex], counts[requestIndex], value, count);
       break;
     case COUNT:
       vals[requestIndex] += value;

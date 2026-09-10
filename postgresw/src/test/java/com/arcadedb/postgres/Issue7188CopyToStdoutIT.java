@@ -313,7 +313,7 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
     final ByteBuffer buffer = ByteBuffer.wrap(bytes);
     final byte[] signature = new byte[11];
     buffer.get(signature);
-    assertThat(signature).isEqualTo(new byte[] { 'P', 'G', 'C', 'O', 'P', 'Y', '\n', (byte) 0377, '\r', '\n', 0 });
+    assertThat(signature).isEqualTo(new byte[] { 'P', 'G', 'C', 'O', 'P', 'Y', '\n', (byte) 0xFF, '\r', '\n', 0 });
     assertThat(buffer.getInt()).as("flags").isZero();
     final int extensionLength = buffer.getInt();
     buffer.position(buffer.position() + extensionLength); // header extension

@@ -1925,7 +1925,7 @@ public class PostgresNetworkExecutor extends Thread {
    * The signature that opens a binary COPY stream ({@code PGCOPY\n\377\r\n\0}), followed on the wire by the
    * int32 flags and the int32 header-extension length, both zero.
    */
-  private static final byte[] COPY_BINARY_SIGNATURE = { 'P', 'G', 'C', 'O', 'P', 'Y', '\n', (byte) 0377, '\r', '\n', 0 };
+  private static final byte[] COPY_BINARY_SIGNATURE = { 'P', 'G', 'C', 'O', 'P', 'Y', '\n', (byte) 0xFF, '\r', '\n', 0 };
   /**
    * How much CopyData is buffered before it is written to the socket: one write per row would cost a system call
    * per row on a statement whose whole point is to move rows in bulk, and one write for the whole result would
