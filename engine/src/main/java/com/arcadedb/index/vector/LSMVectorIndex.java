@@ -8342,6 +8342,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Save original WAL setting and disable for bulk load
           final boolean originalWAL = db.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
           db.getTransaction().setUseWAL(false);
+          // Every commit of this build - the vector-data chunks, the graph persist chunks, and the final one -
+          // waits on the bulk budget rather than the interactive default (issue #7361). Set here rather than
+          // only where the graph is persisted: it is one build, and the transaction is this one throughout.
+          db.getTransaction().setCommitLockTimeout(getGraphPersistCommitLockTimeout());
 
           LogManager.instance().log(this, Level.INFO,
               "Building vector index '%s' with WAL disabled and transaction chunking...", indexName);
@@ -8474,6 +8478,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         db.getWrappedDatabaseInstance().commit();
         db.getWrappedDatabaseInstance().begin();
         db.getTransaction().setUseWAL(false); // Re-disable WAL for new transaction
+        db.getTransaction().setCommitLockTimeout(getGraphPersistCommitLockTimeout()); // and re-apply the bulk lock budget
 
         bytesInCurrentChunk.set(0);
       }
@@ -8520,9 +8525,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (startedTransaction) {
       db.begin();
       db.getTransaction().setUseWAL(false);
-      // Same reasoning as the rebuild path: a chunk of a bulk persist waits on the bulk budget (issue #7361).
-      db.getTransaction().setCommitLockTimeout(commitLockTimeout);
     }
+    // OUTSIDE the branch above, deliberately. The only caller is build(), whose PHASE 1 has already begun the
+    // transaction this runs in, so startedTransaction is false on the real path - gating the budget on it left
+    // the first chunk commit, and a whole single-chunk persist, back on the interactive 5s default (issue #7361).
+    // Applying it to whichever transaction is current is right either way: this method is a bulk persist, and the
+    // budget is a property of what the commit is FOR, not of who opened it.
+    db.getTransaction().setCommitLockTimeout(commitLockTimeout);
 
     try {
       // Build graph from scratch (already reads from pages)
