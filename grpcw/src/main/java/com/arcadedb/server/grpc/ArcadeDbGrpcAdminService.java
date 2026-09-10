@@ -286,6 +286,13 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       if (database.isEmpty())
         throw new IllegalArgumentException("Database parameter is null");
 
+      // This reproduces the ACCESS-CONTROL half of checkAuthorizationOnDatabase and not its other half,
+      // which binds the authenticated principal onto the database's DatabaseContext so the engine's
+      // per-type ACL layer enforces (GHSA-c23x-pqcj-7hfm). Safe here, and only here, because progress is
+      // answered from the OperationProgressRegistry: no database is opened, no record or type is read, so
+      // there is no per-type decision for a bound principal to inform. DO NOT copy this shape into a gRPC
+      // handler that touches data - that handler needs the binding too, or it reopens that advisory.
+      //
       // The null arm is unreachable today - authenticate() either returns a user or throws - and is kept
       // deliberately, as the same guard in getDatabaseInfo is: it is the shape checkAuthorizationOnDatabase
       // has on the HTTP side, where a null user means an unauthenticated handler, and it keeps this check
