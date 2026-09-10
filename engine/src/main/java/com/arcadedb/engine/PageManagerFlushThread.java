@@ -897,6 +897,19 @@ public class PageManagerFlushThread extends Thread {
                   // once the read cache evicts it, readers see the stale on-disk version.
                   LogManager.instance().log(this, Level.SEVERE,
                       "Error on flushing page '%s' to disk, the page will be recovered from the WAL on restart", e, page);
+                } catch (final RuntimeException e) {
+                  // Same containment as the IOException above, for an UNCHECKED failure (issue #7363). Without it
+                  // an IllegalArgumentException out of PaginatedComponentFile.write() - what a file closed under
+                  // this thread by an index compaction used to raise - unwound past the whole batch, so every page
+                  // after it kept its pageIndex entry and its WAL ack forever and
+                  // waitAllPagesOfDatabaseAreFlushed burned its full budget on close.
+                  // RuntimeException and NOT Throwable: an Error is not something to keep flushing through, and
+                  // containing one here would swallow it for the life of the thread. Those keep going to the
+                  // top-level handler in run(), which is also the last resort for anything raised OUTSIDE this
+                  // loop, exactly as before.
+                  LogManager.instance().log(this, Level.SEVERE,
+                      "Unexpected error on flushing page '%s' to disk, the page will be recovered from the WAL on restart", e,
+                      page);
                 } finally {
                   // Remove from index AFTER flushing: the page is now on disk and will be
                   // found in the read cache (putPageInReadCache was called at commit time).

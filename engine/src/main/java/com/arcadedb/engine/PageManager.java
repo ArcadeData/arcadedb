@@ -37,6 +37,7 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.nio.ByteBuffer;
@@ -1732,19 +1733,55 @@ public class PageManager extends LockContext {
     final FileManager fileManager = database.getFileManager();
     final int fileId = page.pageId.getFileId();
 
-    if (fileManager.existsFile(fileId)) {
-      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFile(fileId);
-      if (!file.isOpen())
+    // ONE lookup, not an existsFile() followed by a get: they hit the same map, and the second answering null is
+    // the same "the file is gone" the first one used to report - now handled here rather than twice.
+    final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFileIfExists(fileId);
+    if (file != null) {
+      if (file.isDropped() || !file.isOpen()) {
+        // ONE decision point for both facts, and isDropped() is what it turns on. Asking them separately - "is it
+        // dropped?" then, a few lines later, "is it closed?" - leaves a window in which a drop landing between the
+        // two reports a superseded page as a live file's failed write, which is the WARNI half of issue #7363.
+        // There is no such window here: drop() raises `dropped` BEFORE close() clears `open`, and both are
+        // volatile, so whichever of the two this thread observes first it sees a consistent pair.
+        if (file.isDropped()) {
+          discardPageOfDroppedFile(page, file, null);
+          return;
+        }
         throw new DatabaseMetadataException("Cannot flush pages on disk because file '" + file.getFileName() + "' is closed");
+      }
 
       LogManager.instance()
           .log(this, Level.FINE, "Flushing page %s to disk (threadId=%d)...", null, page, Thread.currentThread().threadId());
 
-      // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
-      concurrentPageAccess(page.pageId, true, () -> {
-        final int written = file.write(page);
-        totalPagesWrittenSize.addAndGet(written);
-      });
+      try {
+        // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
+        concurrentPageAccess(page.pageId, true, () -> {
+          final int written = file.write(page);
+          totalPagesWrittenSize.addAndGet(written);
+        });
+      } catch (final IllegalArgumentException | FileNotFoundException e) {
+        // The two - and only two - ways PaginatedComponentFile.write() reports "the file went away under me",
+        // caught by type rather than by catching everything and letting isDropped() decide: a coincidentally
+        // dropped file must not turn some unrelated failure into a FINE line and a released WAL ack.
+        //   IllegalArgumentException: an index compaction drops the sub-index file it replaced while this thread
+        // is between the isOpen() check above and the write, so close() has nulled the channel under its own
+        // write lock. Unchecked, so it used to escape every catch in PageManagerFlushThread and land on its
+        // top-level handler as "Error on processing page flush requests" at SEVERE (issue #7363).
+        //   FileNotFoundException: the same event a moment later. A write already inside the channel gets
+        // ClosedChannelException, and the reopen that correctly handles an ACCIDENTAL close refuses to re-create
+        // a file that was closed on purpose or already deleted, reporting it as this.
+        // Loud either way, and about a page that is superseded by construction - the file it belongs to has been
+        // deleted, so there is nowhere for it to go and nothing to lose. Re-checking isDropped() - raised BEFORE
+        // the close, see ComponentFile - is what separates that from a live file whose write genuinely failed,
+        // which still propagates with its own reporting intact.
+        // getPageNumber() >= 0 as well as isDropped(): write() raises IllegalArgumentException for an invalid
+        // page number too, which says nothing about the file and must not be absorbed just because the file
+        // happens to have been dropped at that instant.
+        if (!file.isDropped() || page.pageId.getPageNumber() < 0)
+          throw e;
+        discardPageOfDroppedFile(page, file, e);
+        return;
+      }
 
       try {
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
@@ -1777,18 +1814,34 @@ public class PageManager extends LockContext {
           walFile.notifyPageFlushed();
       }
 
-    } else {
-      LogManager.instance()
-          .log(this, Level.FINE, "Cannot flush page %s because the file has been dropped (threadId=%d)...", null, page,
-              Thread.currentThread().threadId());
-      // The page will never be flushed and its content is irrelevant (the file is gone): release its WAL
-      // ack, or the stale pending count would make every later clean close preserve the WAL for nothing
-      // (the close-time ack gate, #4928). takeWALFile makes the release exactly-once against the racing
-      // dropped-file batch purge.
-      final WALFile walFile = page.takeWALFile();
-      if (walFile != null)
-        walFile.notifyPageFlushed();
-    }
+    } else
+      discardPageOfDroppedFile(page, null, null);
+  }
+
+  /**
+   * Quietly retires a page queued against a file that has been dropped - an index compaction replacing a
+   * sub-index, a bucket or index drop. The page will never be flushed and its content is irrelevant (the file is
+   * gone), so this is FINE and not a failure: the alternative, logging at SEVERE/WARNI on a path an operator
+   * watches for real corruption, is exactly what issue #7363 is about.
+   * <p>
+   * Its WAL ack is still released, or the stale pending count would make every later clean close preserve the WAL
+   * for nothing (the close-time ack gate, #4928). {@code takeWALFile} makes the release exactly-once against the
+   * racing dropped-file batch purge.
+   *
+   * @param file  the file the page was addressed to, or {@code null} when it has already left the file manager
+   * @param cause  what the write failed with, when the drop was observed by a failed write rather than up front;
+   *               reported so the FINE line still names it and this can never hide an unexpected failure silently
+   */
+  private void discardPageOfDroppedFile(final MutablePage page, final PaginatedComponentFile file,
+      final Exception cause) {
+    LogManager.instance()
+        .log(this, Level.FINE, "Cannot flush page %s because the file %shas been dropped (threadId=%d)%s", null, page,
+            file != null ? "'" + file.getFileName() + "' " : "", Thread.currentThread().threadId(),
+            cause != null ? ": " + cause.getClass().getSimpleName() + " - " + cause.getMessage() : "...");
+
+    final WALFile walFile = page.takeWALFile();
+    if (walFile != null)
+      walFile.notifyPageFlushed();
   }
 
   private CachedPage loadPage(final PageId pageId, final int size, final boolean createIfNotExists, final boolean cache)

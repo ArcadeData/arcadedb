@@ -186,6 +186,21 @@ public class TransactionContext implements Transaction {
   private       long                                 slotMergeMaxBytes;
   private       long                                 slotRebaseTrackedBytes;
   private       boolean                              useWAL;
+  /**
+   * Milliseconds this transaction's commit waits for its file locks, overriding
+   * {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT} when set; {@code null} to use the configured value.
+   * <p>
+   * Exists for work whose cost profile makes the interactive default the wrong answer (issue #7361): a bulk index
+   * or vector-graph persist follows a build that can cost tens of minutes and commits in chunks, so one chunk that
+   * gives up after the interactive 5s throws that whole build away, while the ordinary commit it queued behind
+   * would have released the file in milliseconds. It bounds only the WAIT, never how long the locks are HELD, so
+   * a longer budget here cannot make any other transaction slower.
+   * <p>
+   * Cleared by {@link #reset()} along with the rest of the per-transaction state, so a
+   * {@code TransactionContext} reused across begin()/commit() cycles does not carry one caller's budget into the
+   * next caller's commit.
+   */
+  private       Long                                 commitLockTimeout;
   // #5064: set by the HA layer AFTER the replication quorum durably committed this transaction and BEFORE
   // the local phase-2 apply. Shifts the durability boundary for the failure regimes in commit2ndPhase's
   // finally: a local failure past this point must never roll back user-held record identities (the cluster
@@ -403,6 +418,24 @@ public class TransactionContext implements Transaction {
   @Override
   public void setUseWAL(final boolean useWAL) {
     this.useWAL = useWAL;
+  }
+
+  /**
+   * Overrides, for THIS transaction only, how long its commit waits for the file locks it needs. See the
+   * {@code commitLockTimeout} field.
+   *
+   * @param timeoutMs milliseconds to wait, {@code 0} or less to wait indefinitely, {@code null} to go back to
+   *                  {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT}
+   */
+  public void setCommitLockTimeout(final Long timeoutMs) {
+    this.commitLockTimeout = timeoutMs;
+  }
+
+  /**
+   * @return the per-transaction commit lock budget in ms, or {@code null} when the configured one applies
+   */
+  public Long getCommitLockTimeout() {
+    return commitLockTimeout;
   }
 
   @Override
@@ -1536,6 +1569,7 @@ public class TransactionContext implements Transaction {
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
     immutablePages.clear();
+    commitLockTimeout = null;
   }
 
   /**
@@ -2172,6 +2206,7 @@ public class TransactionContext implements Transaction {
     newRecords.clear();
     afterCommitCallbacks = null;
     registeredCallbackKeys = null;
+    commitLockTimeout = null;
     txId = -1;
   }
 
@@ -2275,7 +2310,9 @@ public class TransactionContext implements Transaction {
   }
 
   private List<Integer> lockFilesInOrder(final IntHashSet files) {
-    return lockFilesInOrder(files, GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
+    return lockFilesInOrder(files,
+        commitLockTimeout != null ? commitLockTimeout : database.getConfiguration()
+            .getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT));
   }
 
   /**
@@ -2284,7 +2321,13 @@ public class TransactionContext implements Transaction {
    *                       {@link GlobalConfiguration#EXPLICIT_LOCK_TIMEOUT} for a lock the application asked for.
    */
   private List<Integer> lockFilesInOrder(final IntHashSet files, final GlobalConfiguration timeoutSetting) {
-    final long timeout = database.getConfiguration().getValueAsLong(timeoutSetting);
+    return lockFilesInOrder(files, database.getConfiguration().getValueAsLong(timeoutSetting));
+  }
+
+  /**
+   * @param timeout milliseconds to wait for each file lock; {@code 0} or less waits indefinitely
+   */
+  private List<Integer> lockFilesInOrder(final IntHashSet files, final long timeout) {
     final LocalSchema schema = database.getSchema().getEmbedded();
 
     // Work on a private copy so the caller's set is never mutated by the migration re-resolution below
