@@ -36,6 +36,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -265,7 +266,7 @@ class Issue7389GrpcCreateDropDatabaseReplicationIT extends BaseRaftHATest {
    * between a replicated operation and a purely local one, not a latency bound: a local-only
    * create or drop never satisfies the condition however long the poll waits.
    */
-  private boolean await(final java.util.function.BooleanSupplier condition) throws InterruptedException {
+  private boolean await(final BooleanSupplier condition) throws InterruptedException {
     final long deadline = System.currentTimeMillis() + PROPAGATION_WAIT;
     while (System.currentTimeMillis() < deadline) {
       if (condition.getAsBoolean())
