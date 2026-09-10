@@ -484,8 +484,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * (issue #5845). The server emits this header on every begin/commit/rollback response once the database
    * has an applied index, so all three call sites can carry the just-committed bookmark forward for the next
    * {@link ReadConsistency#READ_YOUR_WRITES} read.
+   * <p>
+   * Also used by {@link #streamingCommand}, whose response body is an {@link java.io.InputStream} rather than a
+   * {@code String} - hence the wildcard: the bookmark lives entirely in the headers, and a streamed read has to
+   * advance it exactly as the buffered one does (issue #7351).
    */
-  void captureCommitIndexHeader(final HttpResponse<String> response) {
+  void captureCommitIndexHeader(final HttpResponse<?> response) {
     response.headers().firstValue("X-ArcadeDB-Commit-Index").ifPresent(val -> {
       try {
         updateLastCommitIndex(Long.parseLong(val));
@@ -858,6 +862,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
       final HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
       body = response.body();
+
+      // Before the status check, and deliberately: on an HA cluster the bookmark is meaningful on a refused
+      // request too - whatever the server had applied when it answered is still a valid barrier for the next
+      // read (issue #7351). Same capture the buffered path makes in RemoteHttpComponent.httpCommand.
+      captureCommitIndexHeader(response);
 
       if (response.statusCode() != 200) {
         // The failure body is small and already complete: read it so the standard error mapping can name the
