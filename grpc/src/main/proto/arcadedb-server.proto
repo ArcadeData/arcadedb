@@ -1404,7 +1404,10 @@ message DeleteBackupResponse {}
 
 message ProfilerStartRequest {
   DatabaseCredentials credentials = 1;
-  // Seconds after which recording stops on its own. 0 records until ProfilerStop.
+  // Seconds after which recording stops on its own. 0 (or negative) applies the server's own default rather
+  // than recording indefinitely - there is no way to ask for an unbounded recording, because while one runs
+  // every server query is wrapped for profiling. The bound that actually applied comes back in
+  // ProfilerStateResponse.timeout_seconds (issue #7394).
   int32 timeout_seconds = 2;
 }
 message ProfilerStopRequest {
@@ -1426,6 +1429,10 @@ message ProfilerLoadRequest {
 
 message ProfilerStateResponse {
   bool recording = 1;
+  // For ProfilerStart, the timeout the recording is actually running under, in seconds: the requested value,
+  // the server default when none was requested, or - when a recording was already in flight, which makes a
+  // second start a no-op - that recording's own. Unset for ProfilerReset.
+  int32 timeout_seconds = 2;
 }
 
 // A profiler run. The document's shape is the profiler's own and changes with it, so it travels as

@@ -133,6 +133,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -3262,12 +3263,42 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   // ---------------------------------------------------------------------------------------------------------
 
   /** Rows (or buckets) per streamed TimeSeriesQueryResult when the client states no batch size. */
-  private static final int TS_DEFAULT_BATCH_SIZE = 1_000;
+  private static final int TS_DEFAULT_BATCH_SIZE  = 1_000;
   /**
-   * Ceiling on a client-stated batch size. A message holds this many rows, so an unbounded batch size is an
-   * unbounded message: the cap keeps one answer under maxInboundMessageSize regardless of what was asked for.
+   * Ceiling on a client-stated batch size, so an unbounded batch size cannot ask for an unbounded message.
+   * <p>
+   * This is a row count, and a row count is only a HEURISTIC for message size - it used to be documented as if
+   * it kept a message under {@code maxInboundMessageSize}, which it cannot: a series with many tags or long
+   * string values crosses 4 MiB at a row count well inside this cap, and the failure lands on the client as a
+   * rejected frame rather than as a status it can act on (issue #7394). {@link #TS_MAX_BATCH_BYTES} is the
+   * bound that actually holds; this one keeps the per-message row count sane and bounds the accumulator.
    */
-  private static final int TS_MAX_BATCH_SIZE     = 10_000;
+  private static final int TS_MAX_BATCH_SIZE      = 10_000;
+  /**
+   * Byte budget for one streamed {@code TimeSeriesQueryResult}, measured on the serialized rows or buckets it
+   * carries. A batch is emitted as soon as either this or the row count is reached.
+   * <p>
+   * Half of gRPC's 4 MiB default inbound limit, which is what a client that has not raised
+   * {@code maxInboundMessageSize} will accept. The margin covers the parts of the message not counted here -
+   * the type name, the column or aggregation names, and the protobuf framing - without needing to model them.
+   * <p>
+   * This bounds a BATCH, not a row: one row larger than the budget is still emitted on its own, because a row
+   * cannot be split. That is the residual the byte budget cannot remove.
+   */
+  private static final int TS_MAX_BATCH_BYTES     = 2 * 1024 * 1024;
+
+  /**
+   * Whether an accumulating batch should be emitted now: it has reached the client's (capped) row count, or it
+   * has reached the byte budget. Package-private so the two bounds can be exercised without streaming a
+   * multi-megabyte answer through a real server.
+   *
+   * @param rows      rows or buckets accumulated so far
+   * @param bytes     sum of their serialized sizes
+   * @param batchSize the effective row bound for this request
+   */
+  static boolean timeSeriesBatchIsFull(final int rows, final int bytes, final int batchSize) {
+    return rows >= batchSize || bytes >= TS_MAX_BATCH_BYTES;
+  }
 
   @Override
   public void timeSeriesWrite(final TimeSeriesWriteRequest req, final StreamObserver<TimeSeriesWriteSummary> resp) {
@@ -3475,6 +3506,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final Iterator<Object[]> rows = engine.iterateQuery(fromTs, toTs, columnIndices, tagFilter);
 
     final List<TimeSeriesRow> batch = new ArrayList<>(Math.min(batchSize, 1024));
+    // Serialized size of what is in `batch`, so the message can be bounded by bytes and not only by rows.
+    // TimeSeriesRow memoizes its own size, so accumulating it here costs one field read per row.
+    int batchBytes = 0;
     long emitted = 0;
     boolean truncated = false;
 
@@ -3493,10 +3527,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 + " rows (arcadedb.server.grpcQueryMaxResultRows); narrow the time range, add a tag filter, or set a limit")
             .asRuntimeException();
 
-      batch.add(GrpcTimeSeriesSupport.toRow(rows.next()));
+      final TimeSeriesRow row = GrpcTimeSeriesSupport.toRow(rows.next());
+      batch.add(row);
+      batchBytes += row.getSerializedSize();
       emitted++;
 
-      if (batch.size() >= batchSize) {
+      if (timeSeriesBatchIsFull(batch.size(), batchBytes, batchSize)) {
         emitTimeSeriesBatch(call, cancelled, serverTimedOut, TimeSeriesQueryResult.newBuilder()
             .setType(req.getType())
             .addAllColumns(columnNames)
@@ -3506,6 +3542,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (cancelled.get())
           return;
         batch.clear();
+        batchBytes = 0;
       }
     }
 
@@ -3571,6 +3608,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           .asRuntimeException();
 
     final List<TimeSeriesBucket> batch = new ArrayList<>(Math.min(batchSize, 1024));
+    int batchBytes = 0;
     long emitted = 0;
 
     for (final long timestamp : timestamps) {
@@ -3581,10 +3619,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       for (int r = 0; r < requests.size(); r++)
         // NOT setDoubleValue: an absent MIN/MAX answers NaN, which a client would otherwise read as a number.
         bucket.addValues(GrpcTimeSeriesSupport.toSampleValue(result.getValue(timestamp, r)));
-      batch.add(bucket.build());
+      final TimeSeriesBucket built = bucket.build();
+      batch.add(built);
+      batchBytes += built.getSerializedSize();
       emitted++;
 
-      if (batch.size() >= batchSize) {
+      if (timeSeriesBatchIsFull(batch.size(), batchBytes, batchSize)) {
         emitTimeSeriesBatch(call, cancelled, serverTimedOut, TimeSeriesQueryResult.newBuilder()
             .setType(req.getType())
             .addAllAggregations(aliases)
@@ -3594,6 +3634,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (cancelled.get())
           return;
         batch.clear();
+        batchBytes = 0;
       }
     }
 
@@ -5126,6 +5167,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * FAILED_PRECONDITION instead of quietly falling through to a read outside the transaction the caller
    * believes it is inside - the same contract {@code lookupByRid} and {@code updateRecord} carry. A blank id is
    * not a supplied one and legitimately means "no external transaction".
+   * <p>
+   * The {@link ProtocolContext} pair wraps the BODY rather than the RPC method, and that placement is the
+   * point: the context is a thread-local, the vector and hybrid legs execute SQL through
+   * {@code Database.query}, and {@code QueryMetricsRecorder}/{@code QueryTracer} read the protocol off
+   * whichever thread that SQL runs on. In-transaction searches run on the transaction's own executor thread,
+   * not on the calling gRPC worker, so tagging the worker would have left exactly the path #7326 added still
+   * reporting {@code protocol="internal"} (issue #7394). {@code executeCommandInternal} places it the same way
+   * and for the same reason.
    *
    * @param incomingTxId the request's transaction id, or null when the request carried no TransactionContext
    * @param body         the search, which must not retain the database handle beyond the call
@@ -5138,10 +5187,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       throw unknownTransactionStatus(incomingTxId).asRuntimeException();
 
     if (txCtx == null)
-      return body.apply(getDatabase(databaseName, credentials));
+      return asGrpcProtocol(() -> body.apply(getDatabase(databaseName, credentials)));
 
     try {
-      return submitToActiveTransaction(txCtx, () -> body.apply(txCtx.db)).get();
+      return submitToActiveTransaction(txCtx, () -> asGrpcProtocol(() -> body.apply(txCtx.db))).get();
     } catch (final ExecutionException e) {
       // Unwrap so toSearchStatus() sees the real failure - an explicit gRPC status raised by
       // requireTransactionStillActive, or the IllegalArgumentException the shared implementation reports a
@@ -5155,6 +5204,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw e;
+    }
+  }
+
+  /**
+   * Runs {@code body} with the calling thread tagged as the gRPC protocol, and untags it afterwards.
+   * <p>
+   * The clear is unconditional because both threads this runs on are pooled and reused - the gRPC worker
+   * across unrelated RPCs, a transaction executor across the RPCs of its transaction - and a tag left behind
+   * would attribute the next piece of work on that thread to gRPC whatever it actually was.
+   */
+  private static <T> T asGrpcProtocol(final Supplier<T> body) {
+    ProtocolContext.set("grpc");
+    try {
+      return body.get();
+    } finally {
+      ProtocolContext.clear();
     }
   }
 

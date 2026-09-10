@@ -628,11 +628,20 @@ public class RemoteGrpcServer implements AutoCloseable {
   }
 
   /**
-   * Starts the query profiler. {@code timeoutSeconds} of 0 records until {@link #profilerStop()}.
+   * Starts the query profiler.
+   * <p>
+   * A {@code timeoutSeconds} of 0 does <b>not</b> record until {@link #profilerStop()} - it applies the
+   * server's own default (60 seconds at the time of writing), and so does any negative value. There is no way
+   * to ask for an unbounded recording: while one runs, every query on the server is wrapped for profiling.
+   * This javadoc claimed otherwise until issue #7394.
+   *
+   * @return the timeout the recording is actually running under, in seconds, as the server reports it - which
+   * is the live recording's own bound, not this call's argument, if a recording was already in flight
    */
-  public void profilerStart(final int timeoutSeconds) {
-    call("profiler start", stub -> stub.profilerStart(
-        ProfilerStartRequest.newBuilder().setCredentials(buildCredentials()).setTimeoutSeconds(timeoutSeconds).build()));
+  public int profilerStart(final int timeoutSeconds) {
+    return call("profiler start", stub -> stub.profilerStart(
+        ProfilerStartRequest.newBuilder().setCredentials(buildCredentials()).setTimeoutSeconds(timeoutSeconds).build()))
+        .getTimeoutSeconds();
   }
 
   public JSONObject profilerStop() {

@@ -698,8 +698,14 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     respond(resp, "profilerStart", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
 
-      controlPlane.profilerStart(req.getTimeoutSeconds());
-      return ProfilerStateResponse.newBuilder().setRecording(true).build();
+      // The effective timeout, not the requested one: a non-positive request gets the server default and a
+      // start against an already-recording profiler keeps the live recording's bound, so echoing the request
+      // would tell the client a time its recording does not end at (issue #7394).
+      final JSONObject state = controlPlane.profilerStart(req.getTimeoutSeconds());
+      return ProfilerStateResponse.newBuilder()
+          .setRecording(state.getBoolean("recording", true))
+          .setTimeoutSeconds(state.getInt("timeoutSeconds", 0))
+          .build();
     });
   }
 

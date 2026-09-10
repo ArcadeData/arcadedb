@@ -1053,8 +1053,17 @@ public class ServerControlPlane {
   // ---------------------------------------------------------------------------------------------
 
   /**
-   * Starts recording. A {@code timeoutSec} of zero or less starts an open-ended recording, which is
-   * what the HTTP {@code profiler start} command does when it carries no timeout.
+   * Starts recording, for {@code timeoutSec} seconds or - when that is not positive, which is what the HTTP
+   * {@code profiler start} command sends when it carries no timeout - for the profiler's own default.
+   * <p>
+   * That default is <b>not</b> "until stopped": {@link ServerQueryProfiler#start(int)} substitutes 60 seconds
+   * and arms an auto-stop timer, and this javadoc used to claim the opposite (issue #7394). Rather than remove
+   * the bound - a recording nobody stops keeps every server query on the {@code ProfilingResultSet} wrapping
+   * path - the response reports the timeout that will actually apply, so neither transport has to know the
+   * default to tell a caller when its recording ends.
+   *
+   * @return {@code result}, {@code recording}, and {@code timeoutSeconds}: the effective bound, which is the
+   * live recording's own when a recording was already running (a second start is a no-op)
    */
   public JSONObject profilerStart(final int timeoutSec) {
     final ServerQueryProfiler profiler = server.getQueryProfiler();
@@ -1063,7 +1072,8 @@ public class ServerControlPlane {
     else
       profiler.start();
 
-    return new JSONObject().put("result", "ok").put("recording", true);
+    return new JSONObject().put("result", "ok").put("recording", true)
+        .put("timeoutSeconds", profiler.getTimeoutSeconds());
   }
 
   public JSONObject profilerStop() {
