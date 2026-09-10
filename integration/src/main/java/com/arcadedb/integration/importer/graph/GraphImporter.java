@@ -25,6 +25,9 @@ import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexMaintenanceSuspension;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -60,7 +63,14 @@ import java.util.logging.Level;
  *       collect graph topology as compressed int arrays (~300 MB for 8M vertices / 15M edges).</li>
  *   <li><b>Pass 2</b> — Create all edges from the in-memory topology, one batch per edge type
  *       with bidirectional=true for full IN+OUT traversal.</li>
+ *   <li><b>Vector graphs</b> — Build the graph of every LSM vector index on a type the import wrote to,
+ *       synchronously, so the index is queryable at index speed when {@link #run()} returns. Opt out with
+ *       {@link Builder#withVectorGraphBuild(boolean)} to leave it to the index's own background rebuild.</li>
  * </ol>
+ * <p>
+ * The speculative background maintenance of the database's indexes (the vector index's inactivity rebuild) is
+ * suspended for the whole of {@link #run()}, not only while one of its batches is open: the gap between the two
+ * passes is where it used to fire and then run alongside the whole edge pass (issue #7432).
  * <p>
  * Usage:
  * <pre>
@@ -107,6 +117,7 @@ public class GraphImporter implements AutoCloseable {
   private final List<VertexSourceDef>               vertexSources;
   private final List<EdgeSourceDef>                 edgeSources;
   private final long                                limit;
+  private final boolean                             vectorGraphBuild;
   private final Map<String, TypeState>              typeStates     = new LinkedHashMap<>();
   private final Map<String, EdgeCollector>          edgeCollectors = new LinkedHashMap<>();
 
@@ -115,11 +126,12 @@ public class GraphImporter implements AutoCloseable {
   private long unresolvedEdges;
 
   private GraphImporter(final Database database, final List<VertexSourceDef> vertexSources,
-                        final List<EdgeSourceDef> edgeSources, final long limit) {
+                        final List<EdgeSourceDef> edgeSources, final long limit, final boolean vectorGraphBuild) {
     this.database = database;
     this.vertexSources = vertexSources;
     this.edgeSources = edgeSources;
     this.limit = limit;
+    this.vectorGraphBuild = vectorGraphBuild;
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -293,6 +305,8 @@ public class GraphImporter implements AutoCloseable {
 
     if (config.has("limit"))
       b.limit(config.getLong("limit"));
+    if (config.has("vectorGraphBuild"))
+      b.withVectorGraphBuild(config.getBoolean("vectorGraphBuild"));
 
     // Vertex sources
     if (config.has("vertices")) {
@@ -563,6 +577,7 @@ public class GraphImporter implements AutoCloseable {
     private final List<VertexSourceDef> vertexSources = new ArrayList<>();
     private final List<EdgeSourceDef>   edgeSources   = new ArrayList<>();
     private       long                  limit;
+    private       boolean               vectorGraphBuild = true;
 
     Builder(final Database database) {
       this.database = database;
@@ -598,8 +613,21 @@ public class GraphImporter implements AutoCloseable {
       return this;
     }
 
+    /**
+     * Whether {@link #run()} ends by building the graph of every LSM vector index on a type the import wrote to
+     * (the default), so the index answers at graph speed the moment the import returns and a database close that
+     * follows finds nothing left to do. {@code false} leaves the build to the index's own background rebuild, which
+     * starts once the index has been quiet for its inactivity window - only useful when the database stays open
+     * long enough for that build to complete, since a close cancels it (issue #7432). JSON key:
+     * {@code "vectorGraphBuild"}.
+     */
+    public Builder withVectorGraphBuild(final boolean enabled) {
+      this.vectorGraphBuild = enabled;
+      return this;
+    }
+
     public GraphImporter build() {
-      return new GraphImporter(database, vertexSources, edgeSources, limit);
+      return new GraphImporter(database, vertexSources, edgeSources, limit, vectorGraphBuild);
     }
   }
 
@@ -953,38 +981,52 @@ public class GraphImporter implements AutoCloseable {
 
     validateEdgeTargets();
 
-    // ── Pass 1: Create vertices + collect topology ──
-    LogManager.instance().log(this, Level.INFO, "Pass 1: Vertices + Topology");
+    // Held around the WHOLE import, not only while one of the batches below is open. Each GraphBatch suspends the
+    // indexes' speculative maintenance for its own lifetime (issue #7357), but this importer is not one batch: the
+    // vertex batch closes, the edge sources are read for their topology with no batch open at all, then one edge
+    // batch per edge type opens. The first close used to lift the only suspension and arm the vector index's
+    // inactivity timer, which fired in that gap and started a full graph build that then ran alongside the whole
+    // edge pass (issue #7432). The counts compose, so the batches' own suspensions nest inside this one.
+    try (final IndexMaintenanceSuspension maintenance = IndexMaintenanceSuspension.suspend(database, "GraphImporter")) {
+      // ── Pass 1: Create vertices + collect topology ──
+      LogManager.instance().log(this, Level.INFO, "Pass 1: Vertices + Topology");
 
-    try (final GraphBatch batch = database.batch()
-        .withBidirectional(false)
-        .withWAL(false)
-        .withPreAllocateEdgeChunks(true)
-        .withCommitEvery(0)
-        .build()) {
+      try (final GraphBatch batch = database.batch()
+          .withBidirectional(false)
+          .withWAL(false)
+          .withPreAllocateEdgeChunks(true)
+          .withCommitEvery(0)
+          .build()) {
 
-      for (final VertexSourceDef vsd : vertexSources)
-        processVertexSource(batch, vsd);
+        for (final VertexSourceDef vsd : vertexSources)
+          processVertexSource(batch, vsd);
+      }
+
+      // Process edge-only sources
+      for (int i = 0; i < edgeSources.size(); i++)
+        processEdgeSource(edgeSources.get(i), i);
+
+      // Free ID maps (edges now use internal indices)
+      for (final TypeState ts : typeStates.values()) {
+        ts.idToIdx = null;
+        ts.nameToIdx = null;
+      }
+
+      LogManager.instance().log(this, Level.INFO, "  Topology: %,d vertices, %,d edge refs", totalVertices,
+          countEdgeRefs());
+
+      // ── Pass 2: Create edges from topology ──
+      LogManager.instance().log(this, Level.INFO, "Pass 2: Edges (bidirectional)");
+
+      for (final EdgeCollector ec : edgeCollectors.values())
+        flushEdgeType(ec);
+
+      // ── Vector graphs: the part of the index state the load leaves deferred, built before this returns ──
+      // Still under the suspension: a build that ran here with the timer live could race an inactivity rebuild
+      // for the same corpus. Once this has drained the pending count, lifting the suspension arms nothing.
+      if (vectorGraphBuild)
+        buildVectorGraphs();
     }
-
-    // Process edge-only sources
-    for (int i = 0; i < edgeSources.size(); i++)
-      processEdgeSource(edgeSources.get(i), i);
-
-    // Free ID maps (edges now use internal indices)
-    for (final TypeState ts : typeStates.values()) {
-      ts.idToIdx = null;
-      ts.nameToIdx = null;
-    }
-
-    LogManager.instance().log(this, Level.INFO, "  Topology: %,d vertices, %,d edge refs", totalVertices,
-        countEdgeRefs());
-
-    // ── Pass 2: Create edges from topology ──
-    LogManager.instance().log(this, Level.INFO, "Pass 2: Edges (bidirectional)");
-
-    for (final EdgeCollector ec : edgeCollectors.values())
-      flushEdgeType(ec);
 
     final long elapsed = System.currentTimeMillis() - start;
     LogManager.instance().log(this, Level.INFO, "Import complete: %,d vertices, %,d edges in %d.%ds",
@@ -993,6 +1035,40 @@ public class GraphImporter implements AutoCloseable {
       LogManager.instance().log(this, Level.WARNING,
           "%,d edges named an identity no vertex carries and were skipped: check that the referenced rows "
               + "are not filtered out and that both files spell the identity the same way", unresolvedEdges);
+  }
+
+  /**
+   * Builds, synchronously, the graph of every LSM vector index on a type this import wrote to that has vectors its
+   * graph does not cover yet. Indexes on other types are not this import's business, and one whose graph is
+   * already current is skipped by the index itself.
+   * <p>
+   * Synchronous by design: the alternative is the index's own inactivity rebuild, which starts a window after the
+   * load on a background thread, and the database close that follows every completed load cancels it - the
+   * reporter of issue #7432 lost a 20-minute build over 4.2M vectors five seconds after "Import complete". A load
+   * whose index would need another half hour of background work the caller cannot see is not complete.
+   * <p>
+   * A build that fails propagates: the data is on disk, but "Import complete" must not be logged over an index
+   * that is not.
+   */
+  private void buildVectorGraphs() {
+    final Set<String> touchedTypes = new HashSet<>(typeStates.keySet());
+    for (final EdgeCollector ec : edgeCollectors.values())
+      touchedTypes.add(ec.edgeTypeName);
+
+    for (final Index index : database.getSchema().getIndexes()) {
+      if (!(index instanceof LSMVectorIndex vectorIndex) || !touchedTypes.contains(vectorIndex.getTypeName()))
+        continue;
+
+      final long t = System.currentTimeMillis();
+      LogManager.instance().log(this, Level.INFO, "Building vector graph for index '%s' on type '%s'...",
+          vectorIndex.getName(), vectorIndex.getTypeName());
+      if (vectorIndex.buildVectorGraphIfPending(null))
+        LogManager.instance().log(this, Level.INFO, "  Vector graph for index '%s' built in %,d ms",
+            vectorIndex.getName(), System.currentTimeMillis() - t);
+      else
+        LogManager.instance().log(this, Level.INFO, "  Vector graph for index '%s' already current, nothing to build",
+            vectorIndex.getName());
+    }
   }
 
   /**
