@@ -369,6 +369,9 @@ public class ContiguousPageWriter implements IndexWriter {
 
       final ComponentFile file = database.getFileManager().getFileIfExists(fileId);
       if (file instanceof final PaginatedComponentFile paginatedFile)
+        // The narrowing cast is the engine's existing ceiling, not a new one: PaginatedComponent tracks its page
+        // count in an AtomicInteger and PageId addresses pages by int, so a component cannot hold more than 2^31
+        // pages whatever this returns. Should that ever change, this and every other int page count change with it.
         pages = Math.max(pages, (int) paginatedFile.getTotalPages());
 
       return pages;
