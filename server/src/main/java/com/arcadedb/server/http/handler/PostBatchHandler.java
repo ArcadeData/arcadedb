@@ -688,7 +688,16 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
             writeFailed.getMessage());
       }
     } finally {
-      response.close();
+      try {
+        response.close();
+      } catch (final IOException e) {
+        // Nothing is left that this could tell anyone. The terminal line is either on the wire or it is not,
+        // and letting a close failure out here would replace the answer just written - or, on the rethrow
+        // branch above, the exception that still had a status code to be answered with.
+        LogManager.instance().log(this, Level.FINE,
+            "Could not close the streamed answer of a batch load on database '%s': %s", null, databaseName,
+            e.getMessage());
+      }
     }
     return null;
   }

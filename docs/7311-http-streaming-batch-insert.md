@@ -223,7 +223,20 @@ The `claude` reviewer raised five items and blocked on none of them. All five we
    `IOException` is what stops the next implementation from having one caught by `streamRecords` and answered
    as a truncated request body.
 
+Also hardened while re-reading the method: `response.close()` in the `finally` could itself throw on a broken
+connection, which would have replaced the answer just written - or, on the rethrow branch, the exception that
+still had a status code to be answered with. It is logged and swallowed now; there is nothing a close failure
+could tell anyone at that point.
+
 Deferred: none. Disagreed: none.
+
+Other reviewers on this PR: CodeRabbit reached its free-tier review limit and produced no findings. Codacy
+reported "4 new issues (1 high ErrorProne, 3 minor CodeStyle)" against the first commit; the three CodeStyle
+ones are the fully-qualified names item 1 fixed, and the individual findings are not retrievable through the
+GitHub API or the check-run summary, only through the Codacy dashboard. The one plausible ErrorProne-high in
+this diff is `catch (final Throwable t)` in `streamRecordsAsNdJson`, which is deliberate and is the same thing
+`AbstractServerHttpHandler.handleRequest` does one class away: once bytes are on the wire nothing may escape
+without the client being told, so narrowing it would reintroduce the `UT000002` this design exists to avoid.
 
 While re-running, `RaftBatchStreamingForwardIT` failed once with a 403 because it addressed nodes by the
 `248n` literal the older HA ITs use, and the follower index happened to land on the node whose port a foreign
