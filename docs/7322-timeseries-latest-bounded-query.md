@@ -210,3 +210,22 @@ values through the same codec as the ascending one, so the rendered row is uncha
 - PromQL label/series discovery still materialises whole series - filed as #7371.
 - `TimeSeriesQueryHandlerIT` and `Issue7305TimeSeriesGrpcIT` were not run locally (ports held). CI
   runs them.
+
+## Review cycle 1 - `bf280e89`
+
+`claude` reviewed on the PR issue-comment surface. No blocking findings; the review traced the
+stable-sort tie-break, the round-robin routing the tie test depends on, and the `lowerBound`
+inclusivity end-to-end rather than taking the write-up at face value, and confirmed both protocols
+call the gateway method and nothing else.
+
+| Comment | Disposition |
+|---|---|
+| The `boundedNewest` test helper duplicates the expression under test, so those assertions are "closer to A equals A than an independent check" | **Applied.** Real, and worth fixing even though the review called it non-blocking: an assertion that cannot fail is not coverage. Replaced with `exhaustiveNewest`, the pre-#7322 ascending scan, which is a genuinely independent implementation of the same question. The helper now also asserts the newest timestamp is unique in the selection, so a fixture later edited into a tie fails loudly instead of silently comparing against the wrong row. Removed from the tie test entirely - the tie is the one case where the two implementations disagree by design, so the expected row is spelled out there. |
+| Confirm the two port-blocked ITs are green in CI before merge | **Handed to the developer**, with the check names, in the PR. Nothing to change in the branch; CI runs them on free ports. |
+| The new javadoc is long, if the team prefers terser | **Skipped, with reason.** The review itself judged the length appropriate for a previously-unspecified tie-break contract, and this is the only place that contract is written down. Trimming it would delete the answer to the question the next reader will have. |
+
+Re-verified after the change: `Issue7322LatestBoundedTest` 6/6 green on the fixed tree, and still
+**red on the unfixed one** - reverting `TimeSeriesGateway.latest` to `engine.query(...)` fails
+`aTieAtTheNewestTimestampGoesToTheRowTheNewestFirstScanYieldsFirst` with
+`expected: "in_shard_0" but was: "in_shard_1"`. The oracle swap did not weaken the pin.
+Full suite re-run: 278 tests, 0 failures.

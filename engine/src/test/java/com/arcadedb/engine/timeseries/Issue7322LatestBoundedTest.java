@@ -81,11 +81,24 @@ class Issue7322LatestBoundedTest extends TestHelper {
   }
 
   /**
-   * The answer the bounded scan gives, which is what {@code latest} must now be.
+   * An INDEPENDENT oracle: the exhaustive ascending scan, which is the implementation {@code latest} used
+   * before #7322. Deliberately not {@code queryDescending(..., 1, ...)} - that is the expression under test,
+   * and comparing the two would assert that A equals A (claude-review on PR #7376). The two implementations
+   * agree on every selection whose newest timestamp is unique, which is what the callers below construct, so
+   * this is a real cross-check between two different ways of finding the same row.
+   * <p>
+   * Uniqueness is asserted rather than assumed: a fixture edited into a tie would otherwise start comparing
+   * against the wrong row in silence, since the two implementations part company on exactly that case.
    */
-  private Object[] boundedNewest(final TimeSeriesEngine engine, final TagFilter tagFilter) throws IOException {
-    final List<Object[]> rows = engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, tagFilter, 1, null);
-    return rows.isEmpty() ? null : rows.getFirst();
+  private Object[] exhaustiveNewest(final TimeSeriesEngine engine, final TagFilter tagFilter) throws IOException {
+    final List<Object[]> all = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, tagFilter);
+    if (all.isEmpty())
+      return null;
+
+    final Object[] newest = all.getLast();
+    assertThat(all).as("this oracle is only valid where the newest timestamp is unique")
+        .filteredOn(row -> (long) row[0] == (long) newest[0]).hasSize(1);
+    return newest;
   }
 
   @Test
@@ -97,7 +110,7 @@ class Issue7322LatestBoundedTest extends TestHelper {
 
     assertThat(latest).isNotNull();
     assertThat((long) latest[0]).isEqualTo(BASE_TS + 499 * STEP_MS);
-    assertThat(content(latest)).isEqualTo(content(boundedNewest(engine, null)));
+    assertThat(content(latest)).isEqualTo(content(exhaustiveNewest(engine, null)));
   }
 
   /**
@@ -119,7 +132,7 @@ class Issue7322LatestBoundedTest extends TestHelper {
     assertThat(latest).isNotNull();
     // Ticks restart at 0 on the second append, so the newest timestamp is the older, now-sealed run's last tick.
     assertThat((long) latest[0]).isEqualTo(BASE_TS + 399 * STEP_MS);
-    assertThat(content(latest)).isEqualTo(content(boundedNewest(engine, null)));
+    assertThat(content(latest)).isEqualTo(content(exhaustiveNewest(engine, null)));
   }
 
   @Test
@@ -135,7 +148,7 @@ class Issue7322LatestBoundedTest extends TestHelper {
     assertThat(latest).isNotNull();
     assertThat(latest[1]).isEqualTo("host_2");
     assertThat((long) latest[0]).isEqualTo(BASE_TS + 99 * STEP_MS);
-    assertThat(content(latest)).isEqualTo(content(boundedNewest(engine, onlyHost2)));
+    assertThat(content(latest)).isEqualTo(content(exhaustiveNewest(engine, onlyHost2)));
   }
 
   @Test
@@ -180,9 +193,9 @@ class Issue7322LatestBoundedTest extends TestHelper {
 
     assertThat(latest).isNotNull();
     assertThat((long) latest[0]).isEqualTo(tiedTs);
-    assertThat(content(latest)).isEqualTo(content(boundedNewest(engine, null)));
 
-    // What the bounded scan yields first, spelled out rather than left to the helper.
+    // No oracle here: the tie is the one case where the two implementations disagree by design, so the
+    // expected row is spelled out instead.
     assertThat(latest[1]).isEqualTo("in_shard_0");
 
     // And it is NOT what the whole-series ascending scan used to answer. This assertion is the regression
