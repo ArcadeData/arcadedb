@@ -3443,12 +3443,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // Surface the real failure - the resolution status, the RESOURCE_EXHAUSTED ceiling,
           // requireTransactionStillActive's FAILED_PRECONDITION - instead of letting the catch below map every
           // in-transaction stream fault to one opaque status.
-          final Throwable cause = e.getCause();
-          if (cause instanceof final Error error)
-            throw error;
-          if (cause instanceof final Exception exception)
-            throw exception;
-          throw e;
+          throw rethrowCauseOf(e);
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           if (!cancelled.get())
@@ -5235,16 +5230,30 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // failure - an explicit gRPC status raised by requireTransactionStillActive, or the
       // IllegalArgumentException a shared implementation reports a crossed bound with - rather than mapping
       // every in-transaction read fault to INTERNAL.
-      final Throwable cause = e.getCause();
-      if (cause instanceof final Error error)
-        throw error;
-      if (cause instanceof final Exception exception)
-        throw exception;
-      throw e;
+      throw rethrowCauseOf(e);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw e;
     }
+  }
+
+  /**
+   * Rethrows the real failure a transaction executor wrapped in an {@link ExecutionException}, so the RPC's own
+   * error mapper sees the status that was actually raised instead of flattening every in-transaction fault to
+   * INTERNAL. Shared by {@link #readInTransaction} and {@code timeSeriesQuery}'s streaming dispatch, which
+   * cannot use it - a server-streaming RPC hands back no value - but needs the identical unwrapping. The two
+   * differ only in what they do with an {@link InterruptedException}, which is why that is not folded in here.
+   * <p>
+   * Declared as returning what it never returns so a caller can write {@code throw rethrowCauseOf(e)} and keep
+   * definite-assignment analysis happy without a dead {@code return} after it.
+   */
+  private static RuntimeException rethrowCauseOf(final ExecutionException e) throws Exception {
+    final Throwable cause = e.getCause();
+    if (cause instanceof final Error error)
+      throw error;
+    if (cause instanceof final Exception exception)
+      throw exception;
+    throw e;
   }
 
   /**
