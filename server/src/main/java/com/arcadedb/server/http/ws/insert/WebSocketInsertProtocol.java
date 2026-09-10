@@ -48,11 +48,16 @@ import java.util.logging.Level;
  * <ul>
  * <li>{@code start} - {@code database} (required), {@code sessionId} (optional; the server generates one when it
  *     is absent) and {@code options} ({@code targetType}, {@code transactionMode}). Answered with
- *     {@code started}.</li>
- * <li>{@code chunk} - {@code sessionId}, {@code chunkSeq} and {@code records}, an array of JSON objects. A record
- *     takes its type from its own {@code @class} or from the session's {@code targetType}; an edge record names
- *     its endpoints with {@code @from} / {@code @to} (gRPC's {@code out} / {@code in} are accepted too). Answered
- *     with {@code batchAck}.</li>
+ *     {@code started}. A client-chosen id lives in ONE server-wide namespace, not one per user or per database -
+ *     that is what makes "the same session id is refused to a second concurrent {@code start}" true whichever
+ *     connection the second one arrives on. Two unrelated clients that both pick a house convention like
+ *     {@code batch-1} will therefore collide; a client that does not need to name its own session should leave
+ *     the field out and use the id the server generates.</li>
+ * <li>{@code chunk} - {@code sessionId}, {@code chunkSeq} and {@code records}, an array of JSON objects. The
+ *     sequence starts at 1 and is contiguous: re-sending one already applied is acknowledged as a replay,
+ *     skipping ahead of the next one due is refused. A record takes its type from its own {@code @class} or from
+ *     the session's {@code targetType}; an edge record names its endpoints with {@code @from} / {@code @to}
+ *     (gRPC's {@code out} / {@code in} are accepted too). Answered with {@code batchAck}.</li>
  * <li>{@code commit} / {@code rollback} - {@code sessionId}. Answered with {@code committed}, whose
  *     {@code outcome} says which of the two it was and whose {@code summary} carries the full-session totals.</li>
  * </ul>
@@ -177,6 +182,9 @@ public class WebSocketInsertProtocol {
             message.getString("sessionId", null));
         send(channel, sessionManager.finish(session, "commit".equals(action)));
       }
+      // Unreachable through dispatch(), which only ever passes an action handles() claimed. It is here for the
+      // next action added to handles() without a case of its own: answering an error frame is a great deal
+      // easier to diagnose than falling through and silently acknowledging nothing.
       default -> send(channel, error("Unknown action", "%s is not a valid action.".formatted(action), null, null));
       }
     } catch (final SecurityException e) {
@@ -198,8 +206,11 @@ public class WebSocketInsertProtocol {
     json.put("result", "error");
     json.put("action", "error");
     json.put("error", error);
+    // Flattened to one line so an error stays greppable next to the log entry that describes it. Only the line
+    // breaks: the sibling encodeError() in WebSocketReceiveListener also collapses a literal double backslash,
+    // which JSONObject.toString() already escapes on its own, so there is nothing left for that to fix here.
     if (detail != null)
-      json.put("detail", detail.replace("\\\\", " ").replace("\n", " "));
+      json.put("detail", detail.replace("\r", " ").replace("\n", " "));
     if (sessionId != null)
       json.put("sessionId", sessionId);
     if (e != null)
