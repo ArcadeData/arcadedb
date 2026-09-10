@@ -486,6 +486,7 @@ public final class PostgresCopyStatement {
       }
       // Accepted and ignored: FREEZE has no meaning for COPY TO and ENCODING is always UTF-8 on this wire.
       case "freeze" -> {
+        // Validated only, for the same refusal PostgreSQL gives a non-Boolean value; the result is not kept.
         if (value != null)
           bool(name, value.text);
       }
