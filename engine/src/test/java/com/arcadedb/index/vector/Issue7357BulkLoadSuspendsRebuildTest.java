@@ -21,7 +21,10 @@ package com.arcadedb.index.vector;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.graph.GraphBatch;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.StallAwareStopwatch;
@@ -38,6 +41,7 @@ import java.time.Duration;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #7357: an inactivity graph rebuild fired in the middle of a bulk load.
@@ -271,6 +275,91 @@ class Issue7357BulkLoadSuspendsRebuildTest {
   }
 
   /**
+   * The invariant a stranded suspension would break, asserted on every way out of a batch (PR #7360 review).
+   * <p>
+   * This is the one failure in the whole mechanism that is completely silent: an index whose suspension is never
+   * lifted simply stops rebuilding - no exception, no log line, no gauge moving - until the database is reopened.
+   * Pinned on all three exits a caller can actually reach: a clean close, a close whose {@code flush()} throws (a
+   * duplicate on a unique edge index, the issue #4113 shape), and an {@link GraphBatch#abandon()} followed by a
+   * {@code close()} that must not double-lift.
+   * <p>
+   * The fourth exit - an {@code Error} out of {@code flush()}, which used to escape the {@code catch
+   * (RuntimeException)} and skip the restore entirely - is closed by construction rather than by this test:
+   * {@code flush()} now sits inside the try whose {@code finally} restores. Injecting an {@code Error} there would
+   * mean a production test hook for a path a code shape already forecloses, which is a worse trade than saying so
+   * here.
+   */
+  @Test
+  void everyWayOutOfABatchLiftsTheSuspension() {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        createSchema(db);
+        final LSMVectorIndex index = vectorIndex(db);
+
+        assertThat(index.getStats().get("backgroundMaintenanceSuspensions"))
+            .as("precondition: nothing is suspended before the first batch")
+            .isZero();
+
+        // 1. The ordinary exit.
+        try (final GraphBatch batch = GraphBatch.builder(db).build()) {
+          insert(db, 0, 10);
+          assertThat(index.getStats().get("backgroundMaintenanceSuspensions"))
+              .as("an open batch holds exactly one suspension")
+              .isEqualTo(1L);
+          batch.close();
+        }
+        assertThat(index.getStats().get("backgroundMaintenanceSuspensions"))
+            .as("a clean close lifts it").isZero();
+
+        // 2. The exit that throws. flush() fails on the duplicate, and the restore has to run anyway.
+        final RID[] rids = new RID[2];
+        db.transaction(() -> {
+          rids[0] = db.newVertex("Doc").set("id", 900).set("vector", embedding(900)).save().getIdentity();
+          rids[1] = db.newVertex("Doc").set("id", 901).set("vector", embedding(901)).save().getIdentity();
+        });
+
+        assertThatThrownBy(() -> {
+          try (final GraphBatch batch = GraphBatch.builder(db).withLightEdges(false).build()) {
+            batch.newEdge(rids[0], "Link", rids[1], "from_id", "a", "to_id", "b");
+            batch.newEdge(rids[0], "Link", rids[1], "from_id", "a", "to_id", "b");
+          }
+        }).isInstanceOf(DuplicatedKeyException.class);
+
+        assertThat(index.getStats().get("backgroundMaintenanceSuspensions"))
+            .as("a batch that fails on the way out still lifts it - otherwise this index stops rebuilding "
+                + "silently until the database is reopened")
+            .isZero();
+
+        // 3. abandon() lifts it, and the close() that follows must not lift it a second time and hand away a
+        // suspension this batch no longer holds.
+        final GraphBatch abandoned = GraphBatch.builder(db).build();
+        assertThat(index.getStats().get("backgroundMaintenanceSuspensions")).isEqualTo(1L);
+        abandoned.abandon();
+        assertThat(index.getStats().get("backgroundMaintenanceSuspensions"))
+            .as("abandon() lifts it").isZero();
+        abandoned.close();
+        assertThat(index.getStats().get("backgroundMaintenanceSuspensions"))
+            .as("and the close() after it is idempotent, not a second decrement")
+            .isZero();
+
+        // A suspension count of zero is only meaningful if the index still rebuilds, so end on that.
+        Awaitility.await("the index is genuinely unsuspended, not merely reading zero")
+            .atMost(REBUILD_SETTLE_TIMEOUT)
+            .pollInterval(Duration.ofMillis(50))
+            .untilAsserted(() -> assertThat(index.getStats().get("graphRebuildCount")).isPositive());
+
+        Awaitility.await("the rebuild settles before the drop")
+            .atMost(REBUILD_SETTLE_TIMEOUT)
+            .pollInterval(Duration.ofMillis(50))
+            .untilAsserted(() -> assertThat(index.getStats().get("asyncRebuildInProgress")).isZero());
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  /**
    * Idles for {@code effectiveMs} of RUNNING time.
    * <p>
    * Measured with {@link StallAwareStopwatch} rather than slept through, because the assertions that follow are
@@ -302,6 +391,13 @@ class Issue7357BulkLoadSuspendsRebuildTest {
       type.createProperty("vector", Type.ARRAY_OF_FLOATS);
       db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
           + ", \"similarity\": \"EUCLIDEAN\" }");
+
+      // An edge type carrying a unique index, so a batch can be made to fail on its way out (issue #4113 shape).
+      final var edge = db.getSchema().createEdgeType("Link");
+      edge.createProperty("from_id", Type.STRING);
+      edge.createProperty("to_id", Type.STRING);
+      db.getSchema().buildTypeIndex("Link", new String[] { "from_id", "to_id" })
+          .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).create();
     });
   }
 

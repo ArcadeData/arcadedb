@@ -8446,6 +8446,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // outruns the rebuilds and the payload budget starts declining vectors (issue #7357).
     stats.put("deltaResidentVectors", (long) deltaResidentPayloads.get());
     stats.put("deltaResidentVectorsCapacity", (long) deltaPayloadCapacity());
+    // Bulk loads currently holding this index's speculative rebuild off (issue #7357). Exposed because a
+    // suspension that is never lifted is otherwise invisible: the index simply stops rebuilding, with nothing in
+    // the logs and no gauge moving, until the database is reopened.
+    stats.put("backgroundMaintenanceSuspensions", (long) backgroundMaintenanceSuspensions.get());
 
     // Nodes the build that produced the current graph could not link, which no beam search can return at any
     // efSearch and which the delta scan therefore has to serve (issues #5615, #7190). Answered from the field
