@@ -355,3 +355,35 @@ one had been.
 | Is the terminal TimeSeries message bounded? | Yes - it carries whatever was left after the last flush, which is by construction under the budget. |
 | Does `asGrpcProtocol` clearing unconditionally strand a thread? | No. On the gRPC worker the context was previously unset, so clearing restores exactly that. The transaction executor is dedicated to one transaction, and `executeCommandInternal` already sets/clears on it the same way. |
 | Does the issue's own claim for item 1 hold? | Half of it. See the item 1 correction above - #7418. |
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7420
+
+## Review cycles
+
+### Cycle 1 - `4d7b14a1` - clean approval, no changes applied
+
+The `claude` reviewer read the diff and the eight test files and reported **no blocking issues**. It
+independently re-derived the three placement decisions this PR turns on, which is the useful part of the
+review: that `asGrpcProtocol` belongs on `searchInTransaction`'s body rather than the RPC method because the
+in-transaction search runs on the transaction's executor thread; that the `expand` reordering correctly
+leaves the no-full-text-leg early return alone rather than false-triggering the type check on it; and that
+`batch`/`batchBytes` are reset together at every flush point with the terminal message bounded by
+construction.
+
+Three notes, none asking for a change:
+
+| Note | Disposition |
+|---|---|
+| `TimeSeriesPoint` is a public client-facing record, so widening the tag check to `Iterable` is a public-API behaviour change for any external caller passing a custom Iterable-but-not-Collection tag value | Agreed, and verified rather than taken on trust: `requireStorableTagValue` has exactly three production callers (`TimeSeriesPoint`'s compact constructor, `LineProtocolWriter`, `GrpcTimeSeriesSupport.toSamples`), all of which take a caller-supplied `Map<String, Object>`. A custom `Iterable` there was previously stored as the text of an object identity - the exact corruption the check exists to prevent - so refusing it is the fix, not a casualty of it. No change. |
+| `RemoteGrpcServer.profilerStart` going from `void` to `int` is a public API surface change on the gRPC client | Correct, and deliberate: without a return value the Java client is the one caller that cannot see the effective timeout the rest of item 4 exists to report. It is source-compatible (a discarded return value compiles), the method is new in the unreleased 26.10.1 window, and its only in-tree caller (`Issue7304RemoteGrpcServerControlPlaneIT:128`) uses it as a statement. No change. |
+| The reviewer could not run Maven in its environment and read the changed files and call sites manually instead; asks for a green CI run before merge | Not a code note. The verification this branch did run is in the Test results section above; CI is the developer's gate at merge time. No change. |
+
+Working tree empty after the cycle, no deferred items, no actionable comments - the loop's early-exit
+condition, so no second cycle was run. (`docs/review-deferred-47afd7da.md` in this directory predates this
+branch: it came in with PR #7210.)
+
+## Final state
+
+**clean-approval** after 1 review cycle. Merge is the developer's.
