@@ -97,7 +97,7 @@ public class ClusterAuthSessionResolver {
       peerSession = ha.lookupAuthSession(issuer, token);
     } catch (final IOException e) {
       count("unreachable");
-      recordRefusal(token, now);
+      recordRefusal(token);
       LogManager.instance().log(this, Level.FINE, "Cannot ask node '%s' about an authentication token: %s", issuer,
           e.getMessage());
       return null;
@@ -107,7 +107,7 @@ public class ClusterAuthSessionResolver {
 
     if (peerSession == null) {
       count("refused");
-      recordRefusal(token, now);
+      recordRefusal(token);
       return null;
     }
     // Re-resolved from the live users map, like the bearer branch does for a local session: the issuer vouches
@@ -115,7 +115,7 @@ public class ClusterAuthSessionResolver {
     final ServerSecurityUser user = server.getSecurity().getUser(peerSession.userName());
     if (user == null) {
       count("refused");
-      recordRefusal(token, now);
+      recordRefusal(token);
       return null;
     }
     count("resolved");
@@ -172,12 +172,16 @@ public class ClusterAuthSessionResolver {
       ha.revokeAuthSession(token);
   }
 
-  private void recordRefusal(final String token, final long now) {
+  /**
+   * Stamped when the refusal is recorded, not when the lookup began: a lookup that ran to its timeout would
+   * otherwise insert an entry that is already expired, and the next request would dial the peer again.
+   */
+  private void recordRefusal(final String token) {
     if (refused.size() >= REFUSAL_CACHE_MAX)
       // Flooded with distinct made-up tokens: forget them all rather than grow. The in-flight cap, not this
       // cache, is what bounds the cost of a flood; the cache only makes a REPEATED token free.
       refused.clear();
-    refused.put(token, now + REFUSAL_CACHE_TTL_MS);
+    refused.put(token, System.currentTimeMillis() + REFUSAL_CACHE_TTL_MS);
   }
 
   private static void count(final String result) {
