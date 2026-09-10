@@ -48,6 +48,14 @@ import java.util.concurrent.atomic.AtomicReference;
  * A reader thread pumps frames continuously and acknowledges SETTINGS and PING - gRPC's graceful shutdown waits on
  * its own PING before closing the socket, so answering it turns an eleven-second wait into a prompt one. Headers are
  * HPACK literals without indexing, so the dynamic table stays empty on both sides and neither has to track state.
+ * <p>
+ * <b>What it is not.</b> The flow control here is connection-level only: it replenishes the stream 0 window and
+ * never a per-stream one. That is sound for what it does - a HEADERS-only request whose answer is a trailers-only
+ * refusal or UNIMPLEMENTED, which carries no DATA at all - and it is a trap for anything else. Pointed at an
+ * endpoint that streams a response larger than the 64 KiB initial stream window, this probe would stall on a
+ * per-stream window it never updates, and the stall would read as "the server went quiet". Replenishing per stream
+ * is deliberately not done rather than left undone: RFC 9113 lets a peer treat a WINDOW_UPDATE on a closed stream
+ * as a connection error, and every stream this probe opens is closed by the server almost immediately.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */

@@ -206,6 +206,49 @@ not bounded. What stands instead is that the IT's probe assertion is the same as
 under sabotage. The IT's own vacuity was caught and fixed by the adversarial pass, which is the
 failure mode a sabotage run would have been looking for.
 
+## Review cycle 1 - PR #7419
+
+Two points from the `claude` review on `14f2b71b`, both checked rather than accepted.
+
+**"the new `arcadedb-engine` test-jar dependency will not resolve under `-am test`."** The reasoning
+was the gremlin/graphql trap `CLAUDE.md` documents: `maven-jar-plugin`'s `test-jar` goal binds to
+`package`, which a `test`-phase reactor run never reaches. Measured instead of argued, with the
+engine test-jar deleted from the local repository AND `engine/target` removed entirely:
+
+```
+$ ls .m2repo/com/arcadedb/arcadedb-engine/26.10.1-SNAPSHOT/
+_remote.repositories  arcadedb-engine-26.10.1-SNAPSHOT-sources.jar
+arcadedb-engine-26.10.1-SNAPSHOT.jar  arcadedb-engine-26.10.1-SNAPSHOT.pom
+maven-metadata-local.xml                       <- no -tests.jar
+
+$ mvn -o -pl engine clean
+[INFO] Deleting .../engine/target
+
+$ mvn -o -pl ha-raft -am test -Dtest=Issue7339BoundsBusyRaftConnectionTest \
+      -Dsurefire.failIfNoSpecifiedTests=false
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+
+$ ls engine/target/*.jar
+no matches                                     <- nothing was packaged, and nothing needed to be
+```
+
+Maven substitutes the reactor module's `target/test-classes` for the `tests`-classified dependency,
+which the gremlin case cannot do because its dependency is on the `shaded` uber-jar - an artifact
+with no directory equivalent. So the trap does not reach this module pair.
+
+The review did land on a real defect in that command, just not the predicted one: with `-am`,
+`-Dtest=` is applied to every module in the reactor, so surefire fails the *upstream* module with
+`No tests matching pattern "Issue7339BoundsBusyRaftConnectionTest" were executed!` before ha-raft
+runs at all. `-Dsurefire.failIfNoSpecifiedTests=false` is what makes it work, and the PR's test plan
+now says so.
+
+**"`Http2ConnectionProbe` replenishes only the connection-level flow-control window."** Correct, and
+it is now stated in the class javadoc together with why per-stream replenishment is deliberately
+absent rather than merely missing: RFC 9113 lets a peer treat a WINDOW_UPDATE on a closed stream as a
+connection error, and every stream this probe opens is closed by the server almost at once. The
+behaviour is unchanged; a future reuser now sees the constraint before hitting it.
+
 ## Residual risk
 
 - The age bound is per connection and unconditional, so it recycles healthy Raft connections too.
