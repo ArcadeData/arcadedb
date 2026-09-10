@@ -129,6 +129,23 @@ public class Issue7400GrpcConnectClusterIT extends BaseGraphServerTest {
   }
 
   /**
+   * The address the caller sent is the address the shared implementation received.
+   * <p>
+   * Without this the parameter is invisible from outside: every other assertion in this class passes
+   * just as well against a handler that dropped {@code req.getServerAddress()} and called
+   * {@code connectCluster("")}, because the refusal would be identical. The shared implementation
+   * echoes the address into its message - as it names the user or backup file every other command
+   * could not act on - which is what makes the wiring observable end to end while the operation
+   * itself still does nothing with the value.
+   */
+  @Test
+  void theAddressReachesTheSharedImplementationUnmodified() {
+    assertThatThrownBy(() -> connect(root(), PEER_ADDRESS))
+        .isInstanceOf(StatusRuntimeException.class)
+        .hasMessageContaining(PEER_ADDRESS);
+  }
+
+  /**
    * HTTP's {@code extractTarget} yields {@code ""} for a bare {@code connect cluster}, and the shared
    * implementation refuses before it looks at the argument. The RPC must not invent an
    * {@code INVALID_ARGUMENT} gate the HTTP verb does not have, or the two transports disagree on the
