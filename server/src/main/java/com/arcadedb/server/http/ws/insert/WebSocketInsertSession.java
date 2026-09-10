@@ -501,9 +501,10 @@ public class WebSocketInsertSession {
       case ERROR, ABORT -> {
         // With key columns the conflict is found on the row that caused it rather than left to the engine,
         // which reports it only where the transaction commits.
+        // The "index" the exception names is the session's key, which reads as such: "Keyed on [name]".
         final RID taken = findByKey(typeName, properties);
         if (taken != null)
-          throw new DuplicatedKeyException(typeName + options.keyColumns, keyValues(properties), taken);
+          throw new DuplicatedKeyException(typeName + " on " + options.keyColumns, keyValues(properties), taken);
       }
       }
 
