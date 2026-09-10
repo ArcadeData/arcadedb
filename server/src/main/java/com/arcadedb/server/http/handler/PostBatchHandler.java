@@ -751,6 +751,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         error.put("verticesCreated", lastProgress[0]);
         error.put("edgesCreated", lastProgress[1]);
         error.put("partialCommit", lastProgress[0] > 0 || lastProgress[1] > 0);
+        // pendingMapping is deliberately NOT drained onto this line (issue #7353, PR #7429 review). Anything it
+        // could still hold was resolved AFTER the last acknowledgement, while the counters just above are as OF
+        // that acknowledgement - so emitting it here would hand back ids for vertices this very line says were
+        // never reached. The client already holds every entry up to those counters, which is exactly the prefix
+        // it can reconcile against; the rest belongs to a chunk whose fate this response cannot state. The
+        // window is empty in practice anyway: every vertex flush is followed immediately by its own
+        // acknowledgement, so nothing accumulates between the two.
         if (haDb != null) {
           final long lastApplied = haDb.getLastAppliedIndex();
           if (lastApplied >= 0)
