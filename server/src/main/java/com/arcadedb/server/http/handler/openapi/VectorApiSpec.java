@@ -144,7 +144,8 @@ public class VectorApiSpec implements OpenApiContributor {
         expanded neighbor row, where record properties are flattened and @rid, @type, record, plus distance \
         (dense) or score (sparse) are available. At most """ + VectorLeg.MAX_FILTER_EXPRESSION + " characters."));
     schema.addProperty("sparse", SpecBuilders.bool("Search an LSM_SPARSE_VECTOR index instead of a dense one"));
-    schema.setRequired(List.of("indexName", "queryVector", "k"));
+    // k is optional: VectorSearch.validateArguments defaults an absent one to VectorLeg.DEFAULT_K.
+    schema.setRequired(List.of("indexName", "queryVector"));
     return schema;
   }
 
@@ -197,7 +198,8 @@ public class VectorApiSpec implements OpenApiContributor {
     expand.addProperty("maxDepth", boundedInteger("Hops to walk from a seed", 1, HybridSearch.MAX_DEPTH, 1));
     schema.addProperty("expand", expand);
 
-    schema.setRequired(List.of("vectorIndexName", "queryVector", "k"));
+    // k is optional here too, defaulted by HybridSearch.validateArguments to VectorLeg.DEFAULT_K.
+    schema.setRequired(List.of("vectorIndexName", "queryVector"));
     return schema;
   }
 

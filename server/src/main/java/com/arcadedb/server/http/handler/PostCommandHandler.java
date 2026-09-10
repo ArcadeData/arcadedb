@@ -22,6 +22,8 @@ import com.arcadedb.utility.StringUtils;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.OperationType;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.QueryStatistics;
@@ -485,7 +487,18 @@ public class PostCommandHandler extends AbstractQueryHandler {
       final String command) {
     boolean idempotent;
     try {
-      idempotent = database.getQueryEngine(language).analyze(command).isIdempotent();
+      final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine(language).analyze(command);
+      // isIdempotent() is not quite "read-only". BACKUP DATABASE answers true - it mutates no record and takes no
+      // lock - while writing a whole archive to the server filesystem, and it is the only writer among the eight
+      // SQL statements that answer true. Streaming it would hit both hazards above for real: a NeedRetryException
+      // on the wrapper's commit re-runs the backup from the start and streams into an exchange whose 200, rows and
+      // trailer are already written. So the declared operation types have to agree that nothing is written, which
+      // is a property of the parsed statement rather than of the command text - 'backup database' in any casing or
+      // spacing is caught (issue #7306, claude-review).
+      final Set<OperationType> operations = analyzed.getOperationTypes();
+      idempotent = analyzed.isIdempotent() && !analyzed.isDDL() && !operations.contains(OperationType.CREATE)
+          && !operations.contains(OperationType.UPDATE) && !operations.contains(OperationType.DELETE)
+          && !operations.contains(OperationType.SCHEMA);
     } catch (final Exception e) {
       LogManager.instance().log(PostCommandHandler.class, Level.FINE,
           "Could not analyze a streamed statement in language '%s'; refusing to stream it", e, language);

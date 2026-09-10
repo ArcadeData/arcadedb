@@ -408,6 +408,44 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
    * whatever the half-executed statement had already written. Refused up front, while a refusal can still be a
    * status code.
    */
+  /**
+   * BACKUP DATABASE is the one statement that answers {@code isIdempotent()} true while writing: it mutates no
+   * record, so it conflicts with nothing, but it writes a whole archive to the server filesystem. Gating streaming
+   * on idempotency alone let it through, where a retry of the auto-commit wrapper would re-run the whole backup
+   * and stream into an exchange already closed. The gate reads the statement's declared operation types instead,
+   * so this is refused for the same reason an UPDATE is (issue #7306, claude-review).
+   */
+  @Test
+  void backupDatabaseIsRefusedOnTheStreamingEncodingThoughItIsIdempotent() throws Exception {
+    final HttpResponse<String> response = send(postRequest("BACKUP DATABASE", "command", NDJSON));
+
+    assertThat(response.statusCode()).isEqualTo(400);
+    assertThat(response.body()).contains("read-only statement");
+  }
+
+  /**
+   * The buffered encoding reports the cap the caller stated, refusing outright only when the ceiling actually cut
+   * the result. The stream used to report the post-ceiling value instead, so the same untruncated query described
+   * itself differently depending on how it was asked for (claude-review).
+   */
+  @Test
+  void theTrailerReportsTheStatedLimitAsTheBufferedEncodingDoes() throws Exception {
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, 50);
+    try {
+      final String command = "SELECT FROM " + TYPE_NAME + " LIMIT 1000000";
+
+      final JSONObject buffered = postBuffered(command);
+      final JSONObject trailer = readAllEvents(postStream(command, "query")).getLast().getJSONObject("stats");
+
+      // Neither was truncated - the type holds far fewer rows than the ceiling - so the two encodings must agree.
+      assertThat(buffered.getBoolean("truncated")).isFalse();
+      assertThat(trailer.getBoolean("truncated")).isFalse();
+      assertThat(trailer.getInt("limit")).isEqualTo(buffered.getInt("limit"));
+    } finally {
+      resetCeiling();
+    }
+  }
+
   @Test
   void aStatementThatWritesIsRefusedOnTheStreamingEncoding() throws Exception {
     final HttpResponse<String> response = send(postRequest(

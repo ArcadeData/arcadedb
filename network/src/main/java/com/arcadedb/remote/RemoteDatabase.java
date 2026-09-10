@@ -796,7 +796,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new RemoteException("Request interrupted", e);
-    } catch (final RemoteException | ArcadeDBException e) {
+    } catch (final RuntimeException e) {
+      // Unchanged, for the reason RemoteHttpComponent.httpCommand gives at its own generic clause: manageException
+      // reconstructs the server's exception type, and SecurityException and NoSuchElementException are neither
+      // RemoteException nor ArcadeDBException. Catching only those two supertypes buried a denied vector search as
+      // a generic RemoteException, so a caller could not tell authorization from transport (claude-review).
       throw e;
     } catch (final Exception e) {
       throw new RemoteException("Error on executing vector " + operation, e);
