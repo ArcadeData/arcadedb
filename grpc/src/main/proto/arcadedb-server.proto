@@ -1330,12 +1330,23 @@ message GetProgressRequest {
 message GetProgressResponse {
   // Oldest first, the order the registry snapshots them in. Empty when nothing is running - which is
   // the normal answer, not an error.
+  //
+  // No 'count' field, deliberately, even though ListSessionsResponse below has one: each response
+  // mirrors the shape of the HTTP route it answers, and GET /api/v1/progress/{database} returns only
+  // 'result' while GET /api/v1/sessions returns 'result' and 'count'. Adding one here to make the two
+  // messages look alike would make each of them look less like the document it mirrors.
   repeated OperationProgressInfo operations = 1;
 }
 
 // One open HTTP authentication session, field for field the document GET /api/v1/sessions emits.
 // The token is included for the same reason the HTTP route includes it and to the same principal
 // (root only): the two views would otherwise disagree about what an administrator can see.
+//
+// OPERATORS: that token is a live bearer credential for the HTTP surface, and one belonging to
+// ANOTHER user, not to the caller. This transport does not enable TLS by default (grpc.tls.enabled),
+// so a plaintext admin channel carrying ListSessions puts every open session's token on the wire
+// where anything between the client and the server can take it. Turn TLS on before reaching any admin
+// RPC across a network you do not control; this one raises the cost of not having done so.
 message SessionInfo {
   string token       = 1;
   string user        = 2;
