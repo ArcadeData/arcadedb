@@ -4937,33 +4937,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Wraps a vector about to be queued into the delta buffer, returning it when the buffer can afford to keep it on
-   * the heap and {@code null} when it cannot (issue #7357).
-   * <p>
+   * Appends one entry to the delta buffer, dropping its payload when the buffer's heap budget cannot afford to
+   * keep it (issue #7357), and charging the accounting for what it actually kept.
    * <b>The caller must hold {@link #lock}'s write lock</b>, which is what makes the read-then-increment below
    * safe: every path that queues an entry already holds it, and every path that drains the buffer takes it too.
    * <p>
-   * Declining is always safe and never loses a vector: {@code persistVectorWithLocation()} has already written it,
-   * so {@link #deltaVectorOf} can read it back. The cost of declining is a page read per scored entry per query,
-   * which is why the budget is heap-relative rather than a flat count - an index whose whole buffer fits keeps
-   * behaving exactly as it did before this existed.
-   *
-   * @param vector the vector to queue, never {@code null}
-   *
-   * @return {@code vector} to keep it resident, or {@code null} to queue an id-only entry
-   */
-  private VectorFloat<?> retainDeltaPayload(final VectorFloat<?> vector) {
-    assert lock.isWriteLockedByCurrentThread() : "retainDeltaPayload() without the write lock";
-    return deltaResidentPayloads.get() >= deltaPayloadCapacity() ? null : vector;
-  }
-
-  /**
-   * Appends one entry to the delta buffer and charges the heap accounting for it.
-   * <b>The caller must hold {@link #lock}'s write lock.</b>
+   * The single door in, and the single place the budget is applied. It was briefly two - a {@code
+   * retainDeltaPayload()} consulted by {@code put()}/{@code putBatch()} before constructing the entry, plus this
+   * counting the result - and the split had a hole in it (PR #7360 review): {@link #readDeltaEntriesFor} builds
+   * entries with full payloads for the two paths that RE-QUEUE vectors rather than write them, the stale prefix's
+   * gap ({@link #reuseStalePrefixGraph}) and the unreachable-ordinal re-queue, and neither went past the gate. The
+   * gap is "everything written since the persisted graph was built", which on a session reopened after an
+   * interrupted load is the whole load - so the one arrival that most needed the bound was the one exempt from it.
+   * A budget enforced at the door cannot be walked around by a producer added later.
    * <p>
-   * The single door in, so that {@link #deltaResidentPayloads} cannot drift from what the buffer actually holds:
-   * the accounting is what decides whether the next write keeps its payload, and a path that appended around it
-   * would leave that decision reading a number nobody maintains.
+   * Declining is always safe and never loses a vector: every entry reaching here has its vector on disk already -
+   * {@code put()} persists before it queues, and a re-queued entry was read off the pages to begin with - so
+   * {@link #deltaVectorOf} can read it again. The cost of declining is a page read per scored entry per query,
+   * which is why the budget is heap-relative rather than a flat count: an index whose whole buffer fits keeps
+   * behaving exactly as it did before this existed.
    *
    * @param entry the entry to append
    */
@@ -4978,8 +4970,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // production JVM without -ea would not, which is the accepted trade - the alternative is a lock-state read on
     // the hot path of every insert, to guard against a mistake that only a code change can introduce.
     assert lock.isWriteLockedByCurrentThread() : "queueDeltaEntry() without the write lock";
-    deltaVectors.add(entry);
-    if (entry.vector != null)
+
+    DeltaVectorEntry queued = entry;
+    if (entry.vector != null && deltaResidentPayloads.get() >= deltaPayloadCapacity())
+      // Re-wrapped rather than mutated, so the entry stays immutable and safe to publish to the lock-free readers
+      // of the buffer. Allocated only on the over-budget path, where it replaces a `dimensions * 4` byte retention
+      // with a 32-byte object - the trade is decisively in its favour exactly when it is made.
+      queued = new DeltaVectorEntry(entry.vectorId, entry.rid, null);
+
+    deltaVectors.add(queued);
+    if (queued.vector != null)
       deltaResidentPayloads.incrementAndGet();
   }
 
@@ -7263,7 +7263,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Skipping expensive O(log n) HNSW graph inserts during commit replay (issue #3864):
           // the inactivity rebuild timer will incorporate delta vectors into the graph.
           // The already-converted VectorFloat is reused so the search path never re-converts (issue #5391).
-          queueDeltaEntry(new DeltaVectorEntry(id, rid, retainDeltaPayload(vf)));
+          queueDeltaEntry(new DeltaVectorEntry(id, rid, vf));
 
           if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING)
             this.graphState = GraphState.MUTABLE;
@@ -7385,7 +7385,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // Add to delta buffer for search visibility via mergeWithDeltaScan, reusing the already-converted
         // VectorFloat so the search path never re-converts the whole buffer per query (issue #5391).
-        queueDeltaEntry(new DeltaVectorEntry(id, rid, retainDeltaPayload(vf)));
+        queueDeltaEntry(new DeltaVectorEntry(id, rid, vf));
 
         mutationsSinceSerialize.incrementAndGet();
       }

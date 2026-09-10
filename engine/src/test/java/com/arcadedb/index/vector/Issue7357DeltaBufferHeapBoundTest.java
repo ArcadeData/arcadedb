@@ -21,6 +21,7 @@ package com.arcadedb.index.vector;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
@@ -28,6 +29,7 @@ import com.arcadedb.utility.Pair;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
@@ -69,6 +71,14 @@ class Issue7357DeltaBufferHeapBoundTest {
   /** Kept under {@code ASYNC_REBUILD_MIN_GRAPH_SIZE} so no rebuild drains the buffer behind the assertions. */
   private static final int    RECORDS    = 400;
   private static final int    BUDGET     = 50;
+
+  /**
+   * Fixture for the re-queue path: above {@code ASYNC_REBUILD_MIN_GRAPH_SIZE} so the persisted graph is treated as
+   * a large one and the stale-prefix reuse is reachable at all.
+   */
+  private static final int PERSISTED_VECTORS = 1_200;
+  /** Records written after the persisted graph, i.e. the gap the reuse re-queues. Must exceed {@link #BUDGET}. */
+  private static final int GAP_VECTORS       = 200;
 
   private String dbPath;
 
@@ -177,6 +187,102 @@ class Issue7357DeltaBufferHeapBoundTest {
     }
   }
 
+  /**
+   * The re-queue path, which is where the bound was first walked around (PR #7360 review).
+   * <p>
+   * {@code readDeltaEntriesFor()} builds delta entries carrying full payloads for the vectors a stale persisted
+   * prefix does not cover, and hands them to the buffer. Those entries never write anything - they are read back
+   * off the pages - so they did not pass through the write path's gate, and the budget did not apply to them. The
+   * quantity involved is the worst possible one to exempt: the gap is "everything written since the persisted
+   * graph was built", which for a session reopened after an interrupted load is the entire load. That is precisely
+   * run 1 of the report, the one that OOM'd and left the database fenced for recovery.
+   * <p>
+   * The fix moves the budget to the door every entry goes through, so this pins the outcome rather than the
+   * mechanism: after a reuse re-queues a gap four times the budget, the buffer holds all of it and the heap holds
+   * only what the budget allows.
+   */
+  @Test
+  @Tag("vector")
+  void aReQueuedGapHonoursTheSameBudgetAsAWrite() {
+    buildStalePersistedGraphFixture();
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_SIZE, BUDGET);
+        // The reuse only folds its gap into a rebuild once the gap crosses the ratio-scaled threshold; disabling
+        // the scaling leaves the absolute floor, which is what this fixture is sized against (issue #7183).
+        db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO, 0f);
+
+        final LSMVectorIndex index = vectorIndex(db);
+        assertThat(index.getStats().get("deltaVectorsCount"))
+            .as("precondition: this session has buffered nothing of its own")
+            .isZero();
+
+        // The rebuild the reuse dispatches would drain the buffer out from under the assertions, so the sole
+        // JVM-wide rebuild permit is held for the observation window. No search path takes a permit, so the query
+        // below still runs.
+        LSMVectorIndex.acquireAllRebuildPermitsForTest();
+        try {
+          // The search is what triggers the reuse, and with it the gap re-queue this test is about.
+          index.findNeighborsFromVector(embedding(0), 5);
+
+          assertThat(index.getStats().get("stalePrefixGraphReuses"))
+              .as("precondition: the reuse must actually have run, or nothing re-queued a gap and this test "
+                  + "asserts nothing")
+              .isEqualTo(1L);
+          assertThat(index.getStats().get("deltaVectorsCount"))
+              .as("precondition: the whole gap is buffered - the bound drops payloads, never entries")
+              .isEqualTo((long) GAP_VECTORS);
+
+          assertThat(index.getStats().get("deltaResidentVectors"))
+              .as("a re-queued gap is charged the same heap budget as a write: %d entries, at most %d payloads",
+                  GAP_VECTORS, BUDGET)
+              .isLessThanOrEqualTo((long) BUDGET);
+        } finally {
+          LSMVectorIndex.releaseAllRebuildPermitsForTest();
+        }
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  /**
+   * Session 1 builds and persists a graph over {@value #PERSISTED_VECTORS} records and closes cleanly; session 2
+   * writes {@value #GAP_VECTORS} more and is killed rather than closed, so the persisted graph and its manifest
+   * still describe only the first batch while the live vector set has moved on. The same fixture shape
+   * {@code Issue6772WriteBeforeSearchPrefixReuseTest} uses, at a size that keeps this test cheap.
+   */
+  private void buildStalePersistedGraphFixture() {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        createSchema(db, -1);
+        insert(db, 0, PERSISTED_VECTORS);
+        vectorIndex(db).buildVectorGraphNow();
+        assertThat(vectorIndex(db).getStats().get("graphState"))
+            .as("precondition: the graph must be built and IMMUTABLE before the close that persists it")
+            .isEqualTo(1L); // GraphState.IMMUTABLE
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        insert(db, PERSISTED_VECTORS, PERSISTED_VECTORS + GAP_VECTORS);
+        ((DatabaseInternal) db).kill();
+        db.close();
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+  }
+
   private static void createSchema(final Database db, final int deltaCacheSize) {
     db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_SIZE, deltaCacheSize);
     // No rebuild may drain the buffer while the assertions look at it: the inactivity timer is off and the
@@ -185,6 +291,8 @@ class Issue7357DeltaBufferHeapBoundTest {
     db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, Integer.MAX_VALUE);
 
     db.transaction(() -> {
+      if (db.getSchema().existsType("Doc"))
+        return;
       final var type = db.getSchema().createDocumentType("Doc");
       type.createProperty("id", Type.INTEGER);
       type.createProperty("vector", Type.ARRAY_OF_FLOATS);
