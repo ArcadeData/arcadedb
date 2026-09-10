@@ -195,15 +195,18 @@ public final class MultiColumnAggregationResult {
 
   /**
    * Accumulates block-level statistics for all requests in a single call.
+   *
+   * @param sampleCounts per request, the number of samples that contributed to {@code values[i]}: the block's
+   *                     rows for a COUNT request, its real (non-NaN) samples for every other one
    */
-  public void accumulateBlockStats(final long bucketTs, final double[] values, final int sampleCount) {
+  public void accumulateBlockStats(final long bucketTs, final double[] values, final long[] sampleCounts) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
       if (!ensureFlatBucket(idx)) {
-        accumulateBlockStatsInPlace(overflowValuesFor(bucketTs), overflowCounts.get(bucketTs), values, sampleCount);
+        accumulateBlockStatsInPlace(overflowValuesFor(bucketTs), overflowCounts.get(bucketTs), values, sampleCounts);
         return;
       }
-      accumulateBlockStatsInPlace(flatValues[idx], flatCounts[idx], values, sampleCount);
+      accumulateBlockStatsInPlace(flatValues[idx], flatCounts[idx], values, sampleCounts);
     } else {
       double[] vals = valuesByBucket.get(bucketTs);
       long[] counts;
@@ -216,7 +219,7 @@ public final class MultiColumnAggregationResult {
       } else {
         counts = countsByBucket.get(bucketTs);
       }
-      accumulateBlockStatsInPlace(vals, counts, values, sampleCount);
+      accumulateBlockStatsInPlace(vals, counts, values, sampleCounts);
     }
   }
 
@@ -258,7 +261,9 @@ public final class MultiColumnAggregationResult {
   // ---- Finalize & query ----
 
   /**
-   * Finalizes AVG accumulators by dividing accumulated sums by their counts.
+   * Finalizes AVG accumulators by dividing accumulated sums by their counts - the counts of REAL samples, so a
+   * bucket whose every sample was NaN keeps the {@link TimeSeriesNaN#ABSENT} its sum already is rather than
+   * dividing by zero (issue #7089).
    */
   public void finalizeAvg() {
     if (flatMode) {
@@ -336,12 +341,12 @@ public final class MultiColumnAggregationResult {
   }
 
   /**
-   * The number of samples that REACHED this request in this bucket, NaN ones included.
+   * The number of samples that CONTRIBUTED to this request in this bucket: the rows for a COUNT request, and the
+   * REAL (non-NaN) samples for every other one - what AVG divides by (issue #7089).
    * <p>
-   * It is deliberately not a "has this request any real data" test, and must not be used as one: that a NaN
-   * sample increments this counter is precisely what made the old {@code counts[i] == 0} guard miss an all-NaN
-   * bucket and leak the MIN/MAX sentinel (issue #7043). For MIN/MAX, ask the value:
-   * {@code TimeSeriesNaN.isAbsent(getValue(bucketTs, requestIndex))}.
+   * It used to count NaN samples too, which is precisely what made the old {@code counts[i] == 0} guard miss an
+   * all-NaN bucket and leak the MIN/MAX sentinel (issue #7043). The value still carries its own "no data" answer:
+   * {@code TimeSeriesNaN.isAbsent(getValue(bucketTs, requestIndex))} is the test for MIN/MAX/SUM/AVG alike.
    */
   public long getCount(final long bucketTs, final int requestIndex) {
     if (flatMode) {
@@ -395,6 +400,8 @@ public final class MultiColumnAggregationResult {
             break;
           case SUM:
           case AVG:
+            tVals[i] = TimeSeriesNaN.mergeSum(tVals[i], tCounts[i], oVals[i], oCounts[i]);
+            break;
           case COUNT:
             tVals[i] += oVals[i];
             break;
@@ -489,28 +496,21 @@ public final class MultiColumnAggregationResult {
   }
 
   /**
-   * MIN/MAX accumulators start at {@link TimeSeriesNaN#ABSENT}, not at a {@code ±Double.MAX_VALUE} sentinel.
+   * MIN/MAX/SUM/AVG accumulators start at {@link TimeSeriesNaN#ABSENT}, not at a {@code ±Double.MAX_VALUE}
+   * sentinel or at zero.
    * <p>
    * The sentinel was the whole defect of issue #7043: it is a finite double, so nothing downstream could tell an
    * untouched accumulator from a real extreme, and the guard that tried to (a {@code counts[i] == 0} test) keyed
    * off the raw sample count - which a NaN sample increments. An all-NaN bucket therefore looked touched and
    * handed {@code Double.MAX_VALUE} back as data. With the absent marker as the seed and
    * {@link TimeSeriesNaN#min}/{@link TimeSeriesNaN#max} as the fold, "nothing real arrived" IS the value, and no
-   * side-channel is needed to recover it.
+   * side-channel is needed to recover it. SUM/AVG follow since issue #7089: a zero seed cannot tell "nothing real
+   * arrived" from "it all added up to zero", and the {@code +=} it fed turned one NaN sample into a NaN total.
    */
   private double[] newInitializedValues() {
     final double[] vals = new double[requestCount];
-    for (int i = 0; i < requestCount; i++) {
-      switch (types[i]) {
-      case MIN:
-      case MAX:
-        vals[i] = TimeSeriesNaN.ABSENT;
-        break;
-      default:
-        vals[i] = 0.0;
-        break;
-      }
-    }
+    for (int i = 0; i < requestCount; i++)
+      vals[i] = types[i] == AggregationType.COUNT ? 0.0 : TimeSeriesNaN.ABSENT;
     return vals;
   }
 
@@ -518,11 +518,12 @@ public final class MultiColumnAggregationResult {
     switch (types[idx]) {
     case SUM:
     case AVG:
-      vals[idx] += value;
+      vals[idx] = TimeSeriesNaN.sum(vals[idx], counts[idx], value);
       break;
     case COUNT:
       vals[idx] += 1;
-      break;
+      counts[idx]++;
+      return;
     case MIN:
       vals[idx] = TimeSeriesNaN.min(vals[idx], value);
       break;
@@ -530,29 +531,17 @@ public final class MultiColumnAggregationResult {
       vals[idx] = TimeSeriesNaN.max(vals[idx], value);
       break;
     }
-    counts[idx]++;
+    counts[idx] = TimeSeriesNaN.countIfPresent(counts[idx], value);
   }
 
+  /**
+   * @param sampleCounts per request, the number of samples that contributed to {@code values[i]}: the block's
+   *                     rows for a COUNT request, its real samples for every other one (issue #7089)
+   */
   private void accumulateBlockStatsInPlace(final double[] vals, final long[] counts,
-      final double[] values, final int sampleCount) {
-    for (int i = 0; i < requestCount; i++) {
-      switch (types[i]) {
-      case MIN:
-        vals[i] = TimeSeriesNaN.min(vals[i], values[i]);
-        break;
-      case MAX:
-        vals[i] = TimeSeriesNaN.max(vals[i], values[i]);
-        break;
-      case SUM:
-      case AVG:
-        vals[i] += values[i];
-        break;
-      case COUNT:
-        vals[i] += values[i];
-        break;
-      }
-      counts[i] += sampleCount;
-    }
+      final double[] values, final long[] sampleCounts) {
+    for (int i = 0; i < requestCount; i++)
+      accumulateStatInPlace(vals, counts, i, values[i], sampleCounts[i]);
   }
 
   private void accumulateStatInPlace(final double[] vals, final long[] counts,
@@ -566,7 +555,7 @@ public final class MultiColumnAggregationResult {
       break;
     case SUM:
     case AVG:
-      vals[requestIndex] += value;
+      vals[requestIndex] = TimeSeriesNaN.mergeSum(vals[requestIndex], counts[requestIndex], value, count);
       break;
     case COUNT:
       vals[requestIndex] += value;

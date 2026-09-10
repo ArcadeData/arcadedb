@@ -68,11 +68,23 @@ import java.util.zip.CRC32;
  * - [27..]   block entries (inline metadata + compressed column data)
  * <p>
  * Block entry layout:
- * - magic "TSBL" (4), minTs (8), maxTs (8), sampleCount (4), colSizes (4*colCount)
- * - numericColCount (4), [min (8) + max (8) + sum (8)] * numericColCount (schema order, no colIdx)
+ * - magic "TSB2" (4), minTs (8), maxTs (8), sampleCount (4), colSizes (4*colCount)
+ * - numericColCount (4), [min (8) + max (8) + sum (8) + count (8)] * numericColCount (schema order, no colIdx)
  * - tag metadata: tagColCount (2), per TAG column: distinctCount (2), per value: len (2) + UTF-8 bytes
  * - compressed column data bytes
  * - blockCRC32 (4) — CRC32 of everything from blockMagic to end of compressed data
+ * <p>
+ * Each block declares its own layout through its magic, so one file may hold both generations. A block written
+ * before issue #7089 carries the magic "TSBL" and a statistics TRIPLET, {@code [min, max, sum]}, whose sum was
+ * accumulated by a plain {@code +=} - so it is NaN whenever ANY sample was NaN, and exact otherwise. The reader
+ * derives the missing count from that: a finite sum proves the column held no NaN, so its count is the block's
+ * sample count; a NaN sum leaves the count {@link BlockEntry#COUNT_UNKNOWN}, which routes every request but COUNT
+ * over that block through decompression instead of the header. Every path that WRITES a block emits the current layout, so a
+ * legacy block is upgraded by whichever rewrite touches it next (compaction, downsampling, truncation).
+ * <p>
+ * The file header's version byte is what refuses a file to a build that predates a layout: version 1 (issue #7089)
+ * says "blocks are self-describing, TSBL or TSB2", and a version-0 file, which can only hold TSBL blocks, is read
+ * as it stands and stamped 1 the next time its header is rewritten.
  * <p>
  * <b>High-Availability / Replication note:</b>
  * Sealed store files ({@code .ts.sealed}) are written via {@link RandomAccessFile} and
@@ -91,9 +103,15 @@ import java.util.zip.CRC32;
  */
 public class TimeSeriesSealedStore implements AutoCloseable {
 
-  public static final  int CURRENT_VERSION  = 0;
+  public static final  int CURRENT_VERSION  = 1;
   private static final int MAGIC_VALUE       = 0x54534958; // "TSIX"
-  private static final int BLOCK_MAGIC_VALUE = 0x5453424C; // "TSBL"
+  // "TSBL": the layout every block had before issue #7089, whose statistics section is a [min, max, sum] triplet.
+  private static final int BLOCK_MAGIC_VALUE    = 0x5453424C;
+  // "TSB2": the current layout, whose statistics section is a [min, max, sum, count] quadruple (issue #7089).
+  private static final int BLOCK_MAGIC_VALUE_V2 = 0x54534232;
+  // Bytes one column's statistics take in each layout.
+  private static final int LEGACY_STATS_BYTES   = 8 + 8 + 8;
+  private static final int STATS_BYTES          = 8 + 8 + 8 + 8;
   private static final int HEADER_SIZE       = 27;
   // Shared with DeltaOfDeltaCodec and GorillaXORCodec: all three validate/use the same limit
   private static final int MAX_BLOCK_SIZE    = DeltaOfDeltaCodec.MAX_BLOCK_SIZE;
@@ -139,8 +157,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int[]    columnSizes;
     final double[] columnMins;   // per-column min (NaN for non-numeric)
     final double[] columnMaxs;   // per-column max
-    final double[] columnSums;   // per-column sum
+    final double[] columnSums;   // per-column sum of the REAL (non-NaN) samples, NaN when there is none
+    final long[]   columnCounts; // per-column count of the REAL (non-NaN) samples, or COUNT_UNKNOWN (see below)
     String[][]     tagDistinctValues; // indexed by schema column index, null for non-TAG columns
+
+    /**
+     * The count a legacy ("TSBL") block declares for a column whose sum it accumulated over a NaN sample (issue
+     * #7089): the block predates the count, and its sum is the NaN the old {@code +=} produced rather than the sum
+     * of the real samples, so neither statistic can answer a SUM or an AVG - and the count recorded next to a MIN
+     * or a MAX, which the result contract says is of the samples that contributed, is unknown as well. The
+     * aggregation push-down decompresses such a block for every request but COUNT, so this marker never reaches an
+     * accumulator; the next rewrite of the block (compaction, downsampling, truncation) recomputes both statistics
+     * from the values and writes the current layout, which never carries the marker.
+     */
+    static final long COUNT_UNKNOWN = -1;
     // Where this block begins in the file, and the CRC32 the writer stored immediately after its data. Both are
     // set by EVERY path that produces an entry - appendBlock, writeNewBlockToFile and loadDirectory - so they
     // describe the block whether this process wrote it or found it on disk (issue #6360 item 3). They used to be
@@ -167,7 +197,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
      * record one cannot silently inherit the other.
      */
     BlockEntry(final long minTs, final long maxTs, final int sampleCount, final int columnCount,
-        final double[] mins, final double[] maxs, final double[] sums, final long blockStartOffset) {
+        final double[] mins, final double[] maxs, final double[] sums, final long[] counts, final long blockStartOffset) {
       this.minTimestamp = minTs;
       this.maxTimestamp = maxTs;
       this.sampleCount = sampleCount;
@@ -176,6 +206,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       this.columnMins = mins;
       this.columnMaxs = maxs;
       this.columnSums = sums;
+      this.columnCounts = counts;
       this.blockStartOffset = blockStartOffset;
       this.crcValidated = false;
     }
@@ -237,11 +268,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * @param compressedColumns compressed byte arrays, one per column
    * @param columnMins        per-column min (NaN for non-numeric columns)
    * @param columnMaxs        per-column max (NaN for non-numeric columns)
-   * @param columnSums        per-column sum (NaN for non-numeric columns)
+   * @param columnSums        per-column sum of the real samples (NaN for non-numeric columns, or when there is none)
+   * @param columnCounts      per-column count of the real (non-NaN) samples, as {@link #reduceNumericStats} computes it
    */
   public void appendBlock(final int sampleCount, final long minTs, final long maxTs,
       final byte[][] compressedColumns,
-      final double[] columnMins, final double[] columnMaxs, final double[] columnSums,
+      final double[] columnMins, final double[] columnMaxs, final double[] columnSums, final long[] columnCounts,
       final String[][] tagDistinctValues) throws IOException {
     directoryLock.writeLock().lock();
     try {
@@ -260,12 +292,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final byte[] tagMeta = buildTagMetadata(tagDistinctValues, colCount);
 
       // Block header: magic(4) + minTs(8) + maxTs(8) + sampleCount(4) + colSizes(4*colCount)
-      //              + numericColCount(4) + [min(8) + max(8) + sum(8)] * numericColCount
+      //              + numericColCount(4) + [min(8) + max(8) + sum(8) + count(8)] * numericColCount
       //              + tag metadata
-      final int statsSize = 4 + (8 + 8 + 8) * numericColCount;
+      final int statsSize = 4 + STATS_BYTES * numericColCount;
       final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize + tagMeta.length;
       final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
-      metaBuf.putInt(BLOCK_MAGIC_VALUE);
+      metaBuf.putInt(BLOCK_MAGIC_VALUE_V2);
       metaBuf.putLong(minTs);
       metaBuf.putLong(maxTs);
       metaBuf.putInt(sampleCount);
@@ -279,6 +311,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           metaBuf.putDouble(columnMins[c]);
           metaBuf.putDouble(columnMaxs[c]);
           metaBuf.putDouble(columnSums[c]);
+          metaBuf.putLong(columnCounts[c]);
         }
       }
 
@@ -300,7 +333,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // #6360 item 3: the offset is given to the entry rather than patched onto it afterwards, so the entry
       // describes where its block is no matter which side of a restart wrote it.
       final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums,
-          blockStart);
+          columnCounts, blockStart);
       entry.tagDistinctValues = tagDistinctValues;
       // Write compressed column data
       for (int c = 0; c < colCount; c++) {
@@ -768,6 +801,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
 
     final double[] rowValues = new double[reqCount];
+    final long[] rowCounts = new long[reqCount];
+    // Per schema column, the count of real samples in the segment the vectorized path is on (-1 = not yet counted).
+    final long[] presentBySchemaCol = new long[columns.size()];
 
     // Pre-allocate decode buffers reused across all blocks in this call
     final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
@@ -803,14 +839,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final long blockMinBucket = Math.floorDiv(entry.minTimestamp, bucketIntervalMs) * bucketIntervalMs;
           final long blockMaxBucket = Math.floorDiv(entry.maxTimestamp, bucketIntervalMs) * bucketIntervalMs;
 
-          if (blockMinBucket == blockMaxBucket) {
+          // A legacy block (written before issue #7089) whose column summed over a NaN sample declares neither a
+          // usable sum nor a count of its real samples, so every request over that column but COUNT has to come
+          // from the values: SUM/AVG for the value itself, MIN/MAX for the count recorded next to it.
+          if (blockMinBucket == blockMaxBucket && !needsValues(entry, requests, schemaColIndices)) {
             // FAST PATH: use block-level stats directly — no decompression needed
             if (metrics != null)
               metrics.addFastPathBlock();
             for (int r = 0; r < reqCount; r++) {
-              if (isCount[r])
+              if (isCount[r]) {
                 rowValues[r] = entry.sampleCount;
-              else {
+                rowCounts[r] = entry.sampleCount;
+              } else {
                 final int sci = schemaColIndices[r];
                 rowValues[r] = switch (requests.get(r).type()) {
                   case MIN -> entry.columnMins[sci];
@@ -818,9 +858,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
                   case SUM, AVG -> entry.columnSums[sci];
                   case COUNT -> entry.sampleCount;
                 };
+                // The samples that CONTRIBUTED: the real ones, which is what AVG divides by (issue #7089).
+                rowCounts[r] = entry.columnCounts[sci];
               }
             }
-            result.accumulateBlockStats(blockMinBucket, rowValues, entry.sampleCount);
+            result.accumulateBlockStats(blockMinBucket, rowValues, rowCounts);
             continue;
           }
         }
@@ -898,8 +940,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
               for (int r = 0; r < reqCount; r++) {
                 if (isCount[r])
                   result.accumulateSingleStat(bucketTs, r, 1.0, 1);
-                else
-                  result.accumulateSingleStat(bucketTs, r, decompressedCols[schemaColIndices[r]][i], 1);
+                else {
+                  final double v = decompressedCols[schemaColIndices[r]][i];
+                  result.accumulateSingleStat(bucketTs, r, v, TimeSeriesNaN.countIfPresent(0, v));
+                }
               }
             }
           } else {
@@ -918,19 +962,27 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
               final int segLen = segEnd - segStart;
 
-              // Accumulate each request using vectorized ops on the segment
+              // Accumulate each request using vectorized ops on the segment. The count recorded with each value
+              // is of the samples that CONTRIBUTED to it, which under the NaN policy are the real ones (issue
+              // #7089) - the same count the per-row and the block-statistics paths record, so a result does not
+              // depend on how blocks happen to align with buckets. Two requests over the same column share one
+              // pass to count them.
+              Arrays.fill(presentBySchemaCol, -1);
               for (int r = 0; r < reqCount; r++) {
                 if (isCount[r]) {
                   result.accumulateSingleStat(bucketTs, r, segLen, segLen);
                 } else {
-                  final double[] colData = decompressedCols[schemaColIndices[r]];
+                  final int sci = schemaColIndices[r];
+                  final double[] colData = decompressedCols[sci];
                   final double val = switch (requests.get(r).type()) {
                     case SUM, AVG -> ops.sum(colData, segStart, segLen);
                     case MIN -> ops.min(colData, segStart, segLen);
                     case MAX -> ops.max(colData, segStart, segLen);
                     case COUNT -> segLen;
                   };
-                  result.accumulateSingleStat(bucketTs, r, val, segLen);
+                  if (presentBySchemaCol[sci] < 0)
+                    presentBySchemaCol[sci] = ops.countPresent(colData, segStart, segLen);
+                  result.accumulateSingleStat(bucketTs, r, val, presentBySchemaCol[sci]);
                 }
               }
 
@@ -1118,8 +1170,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         final Map<Long, double[]> buckets = groupedData.computeIfAbsent(tagKey, k -> new HashMap<>());
         final double[] acc = buckets.computeIfAbsent(bucketTs, k -> new double[accSize]);
+        // The downsampled value is the mean of the REAL samples (issue #7089): a NaN sample neither poisons the
+        // sum nor counts toward the denominator, the same policy the aggregation push-down applies.
         for (int n = 0; n < numFields; n++) {
-          acc[n * 2] += numData[n][i];       // sum
+          final double v = numData[n][i];
+          if (Double.isNaN(v))
+            continue;
+          acc[n * 2] += v;                   // sum
           acc[n * 2 + 1] += 1.0;             // count
         }
       }
@@ -1141,7 +1198,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           row[tagColIndices.get(t)] = t < tagParts.size() ? tagParts.get(t) : "";
         for (int n = 0; n < numFields; n++) {
           final double count = acc[n * 2 + 1];
-          row[numericColIndices.get(n)] = count > 0 ? acc[n * 2] / count : 0.0;
+          // A bucket that held no real sample is downsampled to the absent marker, not to a zero that would read
+          // as a measurement.
+          row[numericColIndices.get(n)] = count > 0 ? acc[n * 2] / count : TimeSeriesNaN.ABSENT;
         }
         newSamples.add(row);
       }
@@ -1154,9 +1213,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int colCount = columns.size();
     final List<byte[][]> newBlocksCompressed = new ArrayList<>();
     final List<long[]> newBlocksMeta = new ArrayList<>(); // [minTs, maxTs, sampleCount]
-    final List<double[]> newBlocksMins = new ArrayList<>();
-    final List<double[]> newBlocksMaxs = new ArrayList<>();
-    final List<double[]> newBlocksSums = new ArrayList<>();
+    final List<BlockStats> newBlocksStats = new ArrayList<>();
     final List<String[][]> newBlocksTagDV = new ArrayList<>();
 
     int chunkStart = 0;
@@ -1173,8 +1230,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final double[] mins = new double[colCount];
       final double[] maxs = new double[colCount];
       final double[] sums = new double[colCount];
+      final long[] counts = new long[colCount];
       Arrays.fill(mins, Double.NaN);
       Arrays.fill(maxs, Double.NaN);
+      Arrays.fill(sums, Double.NaN);
 
       final byte[][] compressedCols = new byte[colCount][];
       for (int c = 0; c < colCount; c++) {
@@ -1187,12 +1246,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           compressedCols[c] = compressColumn(columns.get(c), chunkValues);
 
           // Compute stats for numeric columns
-          final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
-          if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
+          if (hasNumericStats(c)) {
             final double[] stats = reduceNumericStats(chunkValues);
             mins[c] = stats[0];
             maxs[c] = stats[1];
             sums[c] = stats[2];
+            counts[c] = (long) stats[3];
           }
         }
       }
@@ -1212,17 +1271,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       newBlocksCompressed.add(compressedCols);
       newBlocksMeta.add(new long[] { chunkTs[0], chunkTs[chunkLen - 1], chunkLen });
-      newBlocksMins.add(mins);
-      newBlocksMaxs.add(maxs);
-      newBlocksSums.add(sums);
+      newBlocksStats.add(new BlockStats(mins, maxs, sums, counts));
       newBlocksTagDV.add(chunkTagDV);
       chunkStart = chunkEnd;
     }
 
     // Rewrite sealed file: toKeep blocks (raw copy) + new downsampled blocks
     downsampleRewriteCount++;
-    rewriteWithBlocks(toKeep, newBlocksCompressed, newBlocksMeta, newBlocksMins, newBlocksMaxs, newBlocksSums,
-        newBlocksTagDV, granularityMs);
+    rewriteWithBlocks(toKeep, newBlocksCompressed, newBlocksMeta, newBlocksStats, newBlocksTagDV, granularityMs);
     } finally {
       directoryLock.writeLock().unlock();
     }
@@ -1235,8 +1291,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Uses atomic tmp-file rename.
    */
   private void rewriteWithBlocks(final List<BlockEntry> retained,
-      final List<byte[][]> newCompressed, final List<long[]> newMeta,
-      final List<double[]> newMins, final List<double[]> newMaxs, final List<double[]> newSums,
+      final List<byte[][]> newCompressed, final List<long[]> newMeta, final List<BlockStats> newStats,
       final List<String[][]> newTagDistinctValues, final long newBlocksGranularityMs) throws IOException {
 
     final int colCount = columns.size();
@@ -1277,7 +1332,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final int b = spec.idx();
           final long[] meta = newMeta.get(b);
           final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
-              newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount,
+              newCompressed.get(b), newStats.get(b), colCount,
               newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
           // Mark the freshly downsampled block so future cycles at the same (or finer) granularity skip it.
           entry.downsampledGranularityMs = newBlocksGranularityMs;
@@ -1329,8 +1384,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       compressedCols[c] = readBytes(oldEntry.columnOffsets[c], oldEntry.columnSizes[c]);
 
     final BlockEntry newEntry = writeNewBlockToFile(tempFile, oldEntry.sampleCount, oldEntry.minTimestamp,
-        oldEntry.maxTimestamp, compressedCols, oldEntry.columnMins, oldEntry.columnMaxs, oldEntry.columnSums,
-        colCount, oldEntry.tagDistinctValues);
+        oldEntry.maxTimestamp, compressedCols, blockStatsOf(oldEntry, compressedCols), colCount,
+        oldEntry.tagDistinctValues);
     // Preserve the in-memory downsampling marker across the file rewrite so idempotency survives compaction.
     newEntry.downsampledGranularityMs = oldEntry.downsampledGranularityMs;
     target.add(newEntry);
@@ -1342,8 +1397,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * callers are responsible for those updates.
    */
   private BlockEntry writeNewBlockToFile(final RandomAccessFile tempFile, final int sampleCount,
-      final long minTs, final long maxTs, final byte[][] compressedCols,
-      final double[] columnMins, final double[] columnMaxs, final double[] columnSums,
+      final long minTs, final long maxTs, final byte[][] compressedCols, final BlockStats stats,
       final int colCount, final String[][] tagDistinctValues) throws IOException {
 
     // Same codec-keyed rule as writeBlock() - see the comment there.
@@ -1354,10 +1408,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     final byte[] tagMeta = buildTagMetadata(tagDistinctValues, colCount);
 
-    final int statsSize = 4 + (8 + 8 + 8) * numericColCount;
+    final int statsSize = 4 + STATS_BYTES * numericColCount;
     final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize + tagMeta.length;
     final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
-    metaBuf.putInt(BLOCK_MAGIC_VALUE);
+    metaBuf.putInt(BLOCK_MAGIC_VALUE_V2);
     metaBuf.putLong(minTs);
     metaBuf.putLong(maxTs);
     metaBuf.putInt(sampleCount);
@@ -1366,9 +1420,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     metaBuf.putInt(numericColCount);
     for (int c = 0; c < colCount; c++) {
       if (hasNumericStats(c)) {
-        metaBuf.putDouble(columnMins[c]);
-        metaBuf.putDouble(columnMaxs[c]);
-        metaBuf.putDouble(columnSums[c]);
+        metaBuf.putDouble(stats.mins()[c]);
+        metaBuf.putDouble(stats.maxs()[c]);
+        metaBuf.putDouble(stats.sums()[c]);
+        metaBuf.putLong(stats.counts()[c]);
       }
     }
     metaBuf.put(tagMeta);
@@ -1386,8 +1441,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     // #6360 item 3: the temp file becomes the live file by an atomic move, so an offset into it is the offset the
     // block will have - exactly as the column offsets set below already are.
-    final BlockEntry newEntry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums,
-        blockStart);
+    final BlockEntry newEntry = new BlockEntry(minTs, maxTs, sampleCount, colCount, stats.mins(), stats.maxs(),
+        stats.sums(), stats.counts(), blockStart);
     newEntry.tagDistinctValues = tagDistinctValues;
     for (int c = 0; c < colCount; c++) {
       newEntry.columnOffsets[c] = dataOffset;
@@ -1416,16 +1471,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    *
    * @param newCompressed      compressed column bytes for each new block
    * @param newMeta            {@code [minTs, maxTs, sampleCount]} for each new block
-   * @param newMins            per-column min stats for each new block
-   * @param newMaxs            per-column max stats for each new block
-   * @param newSums            per-column sum stats for each new block
+   * @param newStats           per-column statistics for each new block
    * @param newTagDistinctValues tag metadata for each new block (may be null)
    *
    * @return the new {@link BlockEntry} list to pass to {@link #commitTempCompactionFile(List)}
    */
   List<BlockEntry> writeTempCompactionFile(
-      final List<byte[][]> newCompressed, final List<long[]> newMeta,
-      final List<double[]> newMins, final List<double[]> newMaxs, final List<double[]> newSums,
+      final List<byte[][]> newCompressed, final List<long[]> newMeta, final List<BlockStats> newStats,
       final List<String[][]> newTagDistinctValues) throws IOException {
 
     final int colCount = columns.size();
@@ -1480,14 +1532,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final int i = spec.idx();
           final BlockEntry old = retained.get(i);
           entry = writeNewBlockToFile(tempFile, old.sampleCount, old.minTimestamp, old.maxTimestamp,
-              retainedBytes.get(i), old.columnMins, old.columnMaxs, old.columnSums, colCount, old.tagDistinctValues);
+              retainedBytes.get(i), blockStatsOf(old, retainedBytes.get(i)), colCount, old.tagDistinctValues);
           // Preserve the in-memory downsampling marker across compaction's file rewrite.
           entry.downsampledGranularityMs = old.downsampledGranularityMs;
         } else {
           final int b = spec.idx();
           final long[] meta = newMeta.get(b);
           entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
-              newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount,
+              newCompressed.get(b), newStats.get(b), colCount,
               newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
         }
         newDirectory.add(entry);
@@ -1563,16 +1615,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    *
    * @param newCompressed   compressed column bytes for each additional block
    * @param newMeta         {@code [minTs, maxTs, sampleCount]} for each additional block
-   * @param newMins         per-column min stats for each block
-   * @param newMaxs         per-column max stats for each block
-   * @param newSums         per-column sum stats for each block
+   * @param newStats        per-column statistics for each block
    * @param newTagDV        tag metadata for each block (may be null)
    * @param directory       block directory from {@link #writeTempCompactionFile}; new
    *                        entries are appended in-place
    */
   void appendBlocksToTempFile(
-      final List<byte[][]> newCompressed, final List<long[]> newMeta,
-      final List<double[]> newMins, final List<double[]> newMaxs, final List<double[]> newSums,
+      final List<byte[][]> newCompressed, final List<long[]> newMeta, final List<BlockStats> newStats,
       final List<String[][]> newTagDV,
       final List<BlockEntry> directory) throws IOException {
     if (newCompressed.isEmpty())
@@ -1596,7 +1645,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       for (int b = 0; b < newCompressed.size(); b++) {
         final long[] meta = newMeta.get(b);
         final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
-            newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount,
+            newCompressed.get(b), newStats.get(b), colCount,
             newTagDV != null ? newTagDV.get(b) : null);
         directory.add(entry);
         if (meta[0] < curGlobalMin)
@@ -1826,8 +1875,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
 
       final int version = headerBuf.get() & 0xFF;
-      if (version != CURRENT_VERSION)
-        problems.add("the header declares format version " + version + ", but this build writes and reads version "
+      if (version > CURRENT_VERSION)
+        problems.add("the header declares format version " + version + ", but this build writes and reads up to version "
             + CURRENT_VERSION);
 
       final int colCount = headerBuf.getShort() & 0xFFFF;
@@ -1967,7 +2016,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // magic took a bit flip, and the second is a block a hex editor could still recover. FIX drops only the
       // first, which is the whole difference between reclaiming a partial write and destroying the last block.
       final boolean tailIsUnfinishedBlock = orphanTailBytes >= 4
-          && ByteBuffer.wrap(readBytes(blockStart, 4)).getInt() == BLOCK_MAGIC_VALUE;
+          && isBlockMagic(ByteBuffer.wrap(readBytes(blockStart, 4)).getInt());
 
       if (orphanTailBytes > 0)
         // A partial block left by an interrupted append is invisible to every other reader: it is neither used
@@ -2140,7 +2189,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Reduces one numeric column to the {@code {min, max, sum}} triple a block declares for it.
+   * Reduces one numeric column to the {@code {min, max, sum, count}} statistics a block declares for it: the
+   * extremes and the sum of its REAL samples, and how many of those there were - {@code count} is returned as a
+   * double purely so the four travel in one primitive array, and is exact (it never exceeds a block's sample count).
    * <p>
    * ONE definition, shared by the two write paths that produce the triple ({@link #downsampleBlocks} and
    * {@code TimeSeriesShard}'s compaction) and by the DEEP check that verifies it. It used to be three copies of the
@@ -2149,20 +2200,74 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * never do.
    */
   static double[] reduceNumericStats(final double[] values) {
-    // MIN/MAX follow the one NaN policy of the subsystem (issue #7043): NaN is absent, and a column with no real
-    // value declares NaN statistics - which is already how the format says "this column carries no statistics",
-    // the marker writeBlock() and the DEEP checker both read. The previous +/-Double.MAX_VALUE seed was a finite
-    // double that survived into the block header, and the aggregation push-down answers MIN/MAX straight out of
-    // that header, so an all-NaN column made the fast path return Double.MAX_VALUE as if it were a measurement.
+    // All four follow the one NaN policy of the subsystem (issues #7043, #7089): NaN is absent, and a column with
+    // no real value declares NaN statistics - which is already how the format says "this column carries no
+    // statistics", the marker writeBlock() and the DEEP checker both read. The previous +/-Double.MAX_VALUE seed
+    // was a finite double that survived into the block header, and the aggregation push-down answers MIN/MAX
+    // straight out of that header, so an all-NaN column made the fast path return Double.MAX_VALUE as if it were a
+    // measurement. The sum used to be a plain +=, which one NaN sample turned into NaN for the whole block, and
+    // the push-down answered SUM/AVG out of that as well: a Grafana panel lost the entire bucket to one absent
+    // sample. The count of real samples is what AVG divides by, and what lets that fast path stay exact.
     double min = TimeSeriesNaN.ABSENT;
     double max = TimeSeriesNaN.ABSENT;
-    double sum = 0;
+    double sum = TimeSeriesNaN.ABSENT;
+    long count = 0;
     for (final double d : values) {
       min = TimeSeriesNaN.min(min, d);
       max = TimeSeriesNaN.max(max, d);
-      sum += d;
+      sum = TimeSeriesNaN.sum(sum, count, d);
+      count = TimeSeriesNaN.countIfPresent(count, d);
     }
-    return new double[] { min, max, sum };
+    return new double[] { min, max, sum, count };
+  }
+
+  /**
+   * The statistics a block declares for every column, in schema order; non-numeric columns hold NaN and zero.
+   */
+  record BlockStats(double[] mins, double[] maxs, double[] sums, long[] counts) {
+  }
+
+  /**
+   * The statistics a rewrite declares for a block it copies. They are the block's own, except where a legacy block
+   * left a column's count {@link BlockEntry#COUNT_UNKNOWN} (issue #7089): the current layout never carries that
+   * marker, so the column is decoded once, here, and its sum and count computed under the policy - which is exactly
+   * how the rewrite upgrades such a block, and why the marker cannot outlive the next compaction.
+   */
+  private BlockStats blockStatsOf(final BlockEntry entry, final byte[][] compressedCols) throws IOException {
+    double[] sums = entry.columnSums;
+    long[] counts = entry.columnCounts;
+    for (int c = 0; c < columns.size(); c++) {
+      if (counts[c] != BlockEntry.COUNT_UNKNOWN)
+        continue;
+      if (sums == entry.columnSums) {
+        sums = sums.clone();
+        counts = counts.clone();
+      }
+      final double[] stats = reduceNumericStats(decompressDoubleColumnFromBytes(compressedCols[c], c));
+      sums[c] = stats[2];
+      counts[c] = (long) stats[3];
+    }
+    return new BlockStats(entry.columnMins, entry.columnMaxs, sums, counts);
+  }
+
+  /**
+   * Whether one of the requests reads a column whose header cannot answer it - a legacy block that summed over a
+   * NaN sample, see {@link BlockEntry#COUNT_UNKNOWN}. SUM and AVG need its sum, and MIN and MAX need the count
+   * recorded next to their value, which the header does not have either; only COUNT, which reads the block's row
+   * count, is unaffected. Such a block takes the decompressing path for the whole request list: one pass over it
+   * is cheaper than two.
+   */
+  private static boolean needsValues(final BlockEntry entry, final List<MultiColumnAggregationRequest> requests,
+      final int[] schemaColIndices) {
+    for (int r = 0; r < requests.size(); r++)
+      if (requests.get(r).type() != AggregationType.COUNT
+          && entry.columnCounts[schemaColIndices[r]] == BlockEntry.COUNT_UNKNOWN)
+        return true;
+    return false;
+  }
+
+  private static boolean isBlockMagic(final int magic) {
+    return magic == BLOCK_MAGIC_VALUE || magic == BLOCK_MAGIC_VALUE_V2;
   }
 
   /**
@@ -2195,6 +2300,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final double min = stats[0];
     final double max = stats[1];
     final double sum = stats[2];
+    final long count = (long) stats[3];
 
     // A block written before issue #7043 declares the OLD +/-Double.MAX_VALUE seed for a column whose samples
     // are all NaN, and the aggregation push-down answers MIN/MAX straight out of that header - so it hands the
@@ -2223,6 +2329,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // itself - an absolute bound would fire on a healthy block of large values and pass on a damaged block of
     // small ones.
     final double declaredSum = entry.columnSums[colIdx];
+    final long declaredCount = entry.columnCounts[colIdx];
+    // A legacy block that summed over a NaN sample declares no usable sum and no count (issue #7089), and says so
+    // with COUNT_UNKNOWN: nothing but COUNT is answered from that header, so there is nothing to verify, and the
+    // next rewrite of the block replaces both. It is not a problem of the block - it is a block of its time.
+    if (declaredCount == BlockEntry.COUNT_UNKNOWN)
+      return;
+    if (declaredCount != count)
+      problems.add(where + " declares " + declaredCount + " real sample(s) for column '" + column.getName()
+          + "' but its values hold " + count + ": an average answered from this block would be wrong");
     if (Double.isNaN(sum) != Double.isNaN(declaredSum))
       problems.add(where + " declares sum " + declaredSum + " for column '" + column.getName()
           + "' but its values add up to " + sum + ": an aggregation answered from this block would be wrong");
@@ -2604,11 +2719,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       throw new IOException(
           "Invalid sealed store magic in '" + basePath + ".ts.sealed': " + Integer.toHexString(magic));
 
+    // Older versions are read as they stand - a version-0 file is a version-1 file that happens to hold only
+    // legacy blocks (see the class comment) - and only a NEWER one is refused, since this build cannot know what
+    // it would be misreading.
     final int version = headerBuf.get() & 0xFF;
-    if (version != CURRENT_VERSION)
+    if (version > CURRENT_VERSION)
       throw new IOException(
-          "Unsupported sealed store format version " + version + " (expected: " + CURRENT_VERSION + ") in '"
-              + basePath + ".ts.sealed'");
+          "Unsupported sealed store format version " + version + " (this build reads up to version " + CURRENT_VERSION
+              + ") in '" + basePath + ".ts.sealed'");
 
     final int colCount = headerBuf.getShort() & 0xFFFF;
     if (colCount != columns.size())
@@ -2632,8 +2750,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       metaBuf.flip();
 
       final int blockMagic = metaBuf.getInt();
-      if (blockMagic != BLOCK_MAGIC_VALUE)
+      if (!isBlockMagic(blockMagic))
         break; // not a valid block header — stop scanning
+      // The magic says which statistics layout follows: the pre-#7089 triplet, or the current quadruple.
+      final boolean legacyStats = blockMagic == BLOCK_MAGIC_VALUE;
+      final int statsBytes = legacyStats ? LEGACY_STATS_BYTES : STATS_BYTES;
 
       final long minTs = metaBuf.getLong();
       final long maxTs = metaBuf.getLong();
@@ -2655,18 +2776,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final double[] mins = new double[colCount];
       final double[] maxs = new double[colCount];
       final double[] sums = new double[colCount];
+      final long[] counts = new long[colCount];
       Arrays.fill(mins, Double.NaN);
       Arrays.fill(maxs, Double.NaN);
+      Arrays.fill(sums, Double.NaN);
 
       if (numericColCount > 0) {
-        final int tripletSize = (8 + 8 + 8) * numericColCount;
-        final ByteBuffer statsBuf = ByteBuffer.allocate(tripletSize);
-        if (indexChannel.read(statsBuf, statsPos) < tripletSize)
+        final int statsSize = statsBytes * numericColCount;
+        final ByteBuffer statsBuf = ByteBuffer.allocate(statsSize);
+        if (indexChannel.read(statsBuf, statsPos) < statsSize)
           break;
         statsBuf.flip();
-        // Stats are in schema order — iterate columns, consuming one triplet per column the WRITER emitted one
+        // Stats are in schema order — iterate columns, consuming one entry per column the WRITER emitted one
         // for. The test has to be the writer's own (hasNumericStats), not "is this column a TIMESTAMP or a TAG":
-        // a FIELD whose codec is DICTIONARY (a STRING measurement) is neither, yet has no triplet, and reading
+        // a FIELD whose codec is DICTIONARY (a STRING measurement) is neither, yet has no entry, and reading
         // one for it consumed the next column's statistics and left the last numeric column with none.
         int numericIdx = 0;
         for (int c = 0; c < colCount && numericIdx < numericColCount; c++) {
@@ -2675,9 +2798,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           mins[c] = statsBuf.getDouble();
           maxs[c] = statsBuf.getDouble();
           sums[c] = statsBuf.getDouble();
+          if (legacyStats)
+            // The legacy sum was a plain += over every sample, so it is finite only if no sample was NaN - in
+            // which case every sample was real and the count is the block's. A NaN sum could be an all-NaN column
+            // (count 0) or a poisoned real total, and the header cannot tell which: COUNT_UNKNOWN sends every
+            // request but COUNT to the values (issue #7089).
+            counts[c] = Double.isNaN(sums[c]) ? BlockEntry.COUNT_UNKNOWN : sampleCount;
+          else
+            counts[c] = statsBuf.getLong();
           numericIdx++;
         }
-        statsPos += tripletSize;
+        statsPos += statsSize;
       }
 
       // Read tag metadata section
@@ -2723,7 +2854,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         }
       }
 
-      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, mins, maxs, sums, pos);
+      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, mins, maxs, sums, counts, pos);
       entry.tagDistinctValues = blockTagDistinctValues;
       long dataPos = tagEndPos;
       for (int c = 0; c < colCount; c++) {
@@ -3045,19 +3176,21 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     if (idx >= 0) {
       final double existing = result.getValue(idx);
       final long count = result.getCount(idx);
+      // NaN policy (issue #7089): SUM/AVG skip an absent sample the way MIN/MAX below do, and the count kept
+      // alongside is of the samples that contributed - what the AVG is divided by once the scan is over.
       final double merged = switch (type) {
-        case SUM -> existing + value;
+        case SUM, AVG -> TimeSeriesNaN.sum(existing, count, value);
         case COUNT -> existing + 1;
-        case AVG -> existing + value; // accumulate sum, divide by count later
         // NaN policy (issue #4596): NaN is treated as absent and skipped, so a real value always
         // wins over a NaN running value (consistent with the row-iter, merge and SIMD paths).
         case MIN -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.min(existing, value);
         case MAX -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.max(existing, value);
       };
       result.updateValue(idx, merged);
-      result.updateCount(idx, count + 1);
+      result.updateCount(idx, type == AggregationType.COUNT ? count + 1 : TimeSeriesNaN.countIfPresent(count, value));
     } else {
-      result.addBucket(bucketTs, type == AggregationType.COUNT ? 1 : value, 1);
+      result.addBucket(bucketTs, type == AggregationType.COUNT ? 1 : value,
+          type == AggregationType.COUNT ? 1 : TimeSeriesNaN.countIfPresent(0, value));
     }
   }
 

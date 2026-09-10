@@ -768,8 +768,17 @@ public enum PostgresType {
    * @param typeBuffer The buffer to write to
    * @param value      The value to serialize
    */
-  @SuppressWarnings("unchecked")
   public void serializeAsText(final PostgresType pgType, final Binary typeBuffer, final Object value) {
+    writeString(typeBuffer, toText(pgType, value));
+  }
+
+  /**
+   * The text-format representation of a value under a Postgres type - what a {@code DataRow} carries for the
+   * column in text format, and what {@code COPY ... TO STDOUT} in text or CSV format escapes and delimits
+   * (issue #7188). Null for a SQL NULL.
+   */
+  @SuppressWarnings("unchecked")
+  public String toText(final PostgresType pgType, final Object value) {
     String serializedValue = null;
     final byte[] byteaValue = pgType == BYTEA ? byteaValueOf(value) : null;
     if (pgType == JSON && value != null && (value instanceof Collection<?> || value.getClass().isArray())) {
@@ -818,7 +827,7 @@ public enum PostgresType {
     } else if (value != null) {
       serializedValue = value.toString();
     }
-    writeString(typeBuffer, serializedValue);
+    return serializedValue;
   }
 
   /**
