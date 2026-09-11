@@ -51,7 +51,7 @@ public class SQLMethodRemoveAll extends AbstractSQLMethod {
         return iArgument;
       });
       // Work on a copy so the source value (e.g. a record property) is not mutated in place. Without it,
-      // `UPDATE ... SET x = x.remove(...)` would return the same already-mutated instance as the current value,
+      // `UPDATE ... SET x = x.removeAll(...)` would return the same already-mutated instance as the current value,
       // making UPDATE skip the write and leave the change unpersisted (issue #4730). A Collection or a Map keeps its own
       // kind (a Set stays a Set); any other collection receiver - an array-valued parameter or property, an iterable - is
       // materialised through the shared helper, which MultiValue.remove() could not take as an array (issue #7114).

@@ -175,6 +175,28 @@ class Issue7434MatchedAliasPropertyTest extends TestHelper {
     assertThat(out).containsExactlyInAnyOrder("s1|a.ts", "s3|b.ts");
   }
 
+  @Test
+  void correlatedLegWithSeveralMatchesForALaterOuterTupleKeepsThemAll() {
+    // TWO OUTER TUPLES, TWO MATCHES EACH. THE PRODUCT PREPARES THE NEXT ROW BEFORE HANDING OUT THE CURRENT ONE, AND THE
+    // BIND STEP DOWNSTREAM REBINDS $matched TO EVERY ROW IT HANDS OUT: THE SECOND MATCH FOR s2 IS PULLED FROM THE STILL
+    // OPEN LEG AFTER THAT REBINDING, SO ITS FILTER MUST NOT SEE THE PREVIOUS ROW'S s
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO F SET path = 'a.ts'");
+      database.command("sql", "INSERT INTO S SET id = 's2', filePath = 'b.ts'");
+      database.command("sql", "INSERT INTO F SET path = 'b.ts'");
+    });
+    final List<String> out = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", """
+        MATCH {type: S, as: s}, {type: F, as: f, where: (path = $matched.s.filePath)}
+        RETURN s.id AS id, f.path AS p""")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        out.add(row.getProperty("id") + "|" + row.getProperty("p"));
+      }
+    }
+    assertThat(out).containsExactlyInAnyOrder("s1|a.ts", "s1|a.ts", "s2|b.ts", "s2|b.ts");
+  }
+
   private static List<String> rows(final ResultSet rs) {
     final List<String> out = new ArrayList<>();
     while (rs.hasNext()) {

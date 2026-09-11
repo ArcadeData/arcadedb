@@ -53,6 +53,8 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
   private final List<ResultSet> resultSets   = new ArrayList<>();
   private       List<Result>    currentTuple = new ArrayList<>();
+  // THE OUTER TUPLE A CORRELATED LEVEL IS OPEN FOR, REBOUND TO $matched BEFORE EVERY PULL FROM IT
+  private final List<Result>    outerTuples  = new ArrayList<>();
 
   ResultInternal nextRecord;
 
@@ -100,6 +102,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
     preFetches.clear();
     firstPass.clear();
     resultSets.clear();
+    outerTuples.clear();
     currentTuple = new ArrayList<>();
     nextRecord = null;
     // THE FIRST PASS OF AN INDEPENDENT LEVEL PULLS FROM THE SUB-PLAN ITSELF: ONE LEFT EXHAUSTED WOULD ANSWER NO ROW
@@ -121,6 +124,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
       preFetches.add(new InternalResultSet());
       firstPass.add(true);
       currentTuple.add(null);
+      outerTuples.add(null);
     }
 
     for (int level = 0; level < subPlans.size(); level++) {
@@ -152,6 +156,11 @@ public class CartesianProductStep extends AbstractExecutionStep {
   private boolean advance(final int level) {
     while (true) {
       final ResultSet rs = resultSets.get(level);
+      // A CORRELATED LEG EVALUATES ITS FILTER LAZILY, ONE CANDIDATE PER PULL, AND THE PRODUCT PREPARES THE NEXT ROW BEFORE IT
+      // HANDS OUT THE CURRENT ONE: BY THEN MatchBindMatchedStep DOWNSTREAM HAS REBOUND $matched TO A ROW OF ANOTHER OUTER
+      // TUPLE, SO THE LEG'S OWN OUTER TUPLE IS BOUND AGAIN BEFORE EVERY PULL
+      if (factories.get(level) != null)
+        context.setVariable("matched", outerTuples.get(level));
       if (rs.hasNext()) {
         final Result item = rs.next();
         currentTuple.set(level, item);
@@ -174,10 +183,13 @@ public class CartesianProductStep extends AbstractExecutionStep {
   private void open(final int level) {
     final Supplier<InternalExecutionPlan> factory = factories.get(level);
     if (factory != null) {
-      // BOUND FOR AS LONG AS THE LEVEL IS PULLED, NOT JUST FOR THIS CALL: THE SUB-PLAN READS IT LAZILY, ROW BY ROW, SO THERE
-      // IS NOTHING TO RESTORE HERE. MatchBindMatchedStep REBINDS IT TO EVERY ROW THE PRODUCT EMITS BEFORE ANYTHING ELSE READS
-      // IT, AND A LEVEL IS ONE CONNECTED SUB-PATTERN, NEVER A PRODUCT OF ITS OWN, SO THE BINDINGS DO NOT NEST
-      context.setVariable("matched", partialTuple(level));
+      // THE ROOT OF THE LEG READS $matched AS ITS SEED WHEN IT IS FIRST PULLED, WHICH LocalResultSet DOES RIGHT HERE. THE
+      // BINDING IS NOT RESTORED: advance() BINDS IT AGAIN BEFORE EVERY LATER PULL, AND MatchBindMatchedStep BINDS EVERY ROW
+      // THE PRODUCT EMITS BEFORE THE RETURN CLAUSE READS IT. A LEVEL IS ONE CONNECTED SUB-PATTERN, NEVER A PRODUCT OF ITS
+      // OWN, SO THE BINDINGS DO NOT NEST
+      final ResultInternal outerTuple = partialTuple(level);
+      outerTuples.set(level, outerTuple);
+      context.setVariable("matched", outerTuple);
       final InternalExecutionPlan plan = factory.get();
       resultSets.set(level, new LocalResultSet(plan));
     } else if (firstPass.get(level))
