@@ -24,22 +24,26 @@ import com.arcadedb.query.sql.parser.LocalResultSet;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.function.Supplier;
 
 /**
  * Combines the rows of the disjoint sub-patterns of a MATCH into their cartesian product, as a nested loop over the sub-plans.
  * <p>
  * The first pass of an independent sub-plan is buffered and replayed for every tuple of the levels before it. A
  * <b>correlated</b> sub-plan - one whose {@code where:} reads, through {@code $matched}, an alias bound by an earlier
- * sub-plan (issue #7434) - cannot be replayed: it is reset and executed again for every tuple of the outer levels, with the
- * {@code matched} context variable bound to that partial tuple so the predicate sees the aliases it reads. The planner
- * orders the sub-plans so that every alias a level reads is bound by a level before it.
+ * sub-plan (issue #7434) - cannot be replayed: it is planned and executed again for every tuple of the outer levels, with
+ * the {@code matched} context variable bound to that partial tuple so the predicate sees the aliases it reads. A fresh
+ * plan per tuple, rather than a reset of the same one, because the fetch and filter steps of a SELECT do not restart on
+ * reset (the same reason {@link LetQueryStep} plans a correlated subquery again per row). The planner orders the
+ * sub-plans so that every alias a level reads is bound by a level before it.
  * <p>
  * Created by luigidellaquila on 11/10/16.
  */
 public class CartesianProductStep extends AbstractExecutionStep {
 
-  private final List<InternalExecutionPlan> subPlans   = new ArrayList<>();
-  private final List<Boolean>               correlated = new ArrayList<>();
+  private final List<InternalExecutionPlan>           subPlans  = new ArrayList<>();
+  // NON-NULL FOR A CORRELATED LEVEL: PLANS THE SUB-PATTERN AGAIN FOR EVERY OUTER TUPLE
+  private final List<Supplier<InternalExecutionPlan>> factories = new ArrayList<>();
 
   private boolean inited = false;
   // THE ROWS OF AN INDEPENDENT LEVEL'S FIRST PASS, REPLAYED THROUGH reset() FOR EVERY LATER OUTER TUPLE
@@ -84,6 +88,11 @@ public class CartesianProductStep extends AbstractExecutionStep {
     };
   }
 
+  /**
+   * Best effort, like the reset of the other MATCH steps: the fetch and filter steps of a SELECT do not restart, so a
+   * sub-plan that was pulled to exhaustion answers nothing again. Nothing reaches it today, since a MATCH plan is never
+   * cached and a correlated subquery plans its statement again per row.
+   */
   @Override
   public void reset() {
     inited = false;
@@ -92,6 +101,10 @@ public class CartesianProductStep extends AbstractExecutionStep {
     resultSets.clear();
     currentTuple = new ArrayList<>();
     nextRecord = null;
+    // THE FIRST PASS OF AN INDEPENDENT LEVEL PULLS FROM THE SUB-PLAN ITSELF: ONE LEFT EXHAUSTED WOULD ANSWER NO ROW
+    for (int level = 0; level < subPlans.size(); level++)
+      if (factories.get(level) == null)
+        subPlans.get(level).reset(context);
   }
 
   private void init() {
@@ -141,7 +154,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
       if (rs.hasNext()) {
         final Result item = rs.next();
         currentTuple.set(level, item);
-        if (firstPass.get(level) && !correlated.get(level))
+        if (firstPass.get(level) && factories.get(level) == null)
           preFetches.get(level).add(item);
         return true;
       }
@@ -158,10 +171,11 @@ public class CartesianProductStep extends AbstractExecutionStep {
    * the buffered first pass afterwards, or a fresh execution when the level is correlated with the outer tuple.
    */
   private void open(final int level) {
-    if (correlated.get(level)) {
+    final Supplier<InternalExecutionPlan> factory = factories.get(level);
+    if (factory != null) {
       context.setVariable("matched", partialTuple(level));
-      final InternalExecutionPlan plan = subPlans.get(level);
-      plan.reset(context);
+      final InternalExecutionPlan plan = factory.get();
+      subPlans.set(level, plan);
       resultSets.set(level, new LocalResultSet(plan));
     } else if (firstPass.get(level))
       resultSets.set(level, new LocalResultSet(subPlans.get(level)));
@@ -194,16 +208,17 @@ public class CartesianProductStep extends AbstractExecutionStep {
   }
 
   public void addSubPlan(final InternalExecutionPlan subPlan) {
-    addSubPlan(subPlan, false);
+    addSubPlan(subPlan, null);
   }
 
   /**
-   * @param correlated true when the sub-plan reads, through {@code $matched}, an alias bound by a sub-plan added before it,
-   *                   so it must be executed again for every tuple of those instead of being buffered and replayed
+   * @param factory non-null when the sub-plan reads, through {@code $matched}, an alias bound by a sub-plan added before
+   *                it: it is then planned again through the factory and executed for every tuple of those, instead of
+   *                being buffered and replayed. The sub-plan given is the one EXPLAIN prints
    */
-  public void addSubPlan(final InternalExecutionPlan subPlan, final boolean correlated) {
+  public void addSubPlan(final InternalExecutionPlan subPlan, final Supplier<InternalExecutionPlan> factory) {
     this.subPlans.add(subPlan);
-    this.correlated.add(correlated);
+    this.factories.add(factory);
   }
 
   @Override

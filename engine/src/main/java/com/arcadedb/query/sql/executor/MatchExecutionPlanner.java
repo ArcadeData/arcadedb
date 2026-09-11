@@ -133,9 +133,13 @@ public class MatchExecutionPlanner {
       final CartesianProductStep step = new CartesianProductStep(context);
       final List<Set<Integer>> subPatternDependencies = orderSubPatternsByDependencies();
       for (int i = 0; i < subPatterns.size(); i++) {
+        final Pattern subPattern = subPatterns.get(i);
         final boolean correlated = !subPatternDependencies.get(i).isEmpty();
-        step.addSubPlan(createPlanForPattern(subPatterns.get(i), context, estimatedRootEntries, aliasesToPrefetch, correlated),
+        final InternalExecutionPlan subPlan = createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch,
             correlated);
+        // A CORRELATED LEG IS PLANNED AGAIN FOR EVERY OUTER TUPLE: THE FETCH AND FILTER STEPS OF ITS ROOT SELECT DO NOT RESTART
+        step.addSubPlan(subPlan,
+            correlated ? () -> createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch, true) : null);
       }
       result.chain(step);
     } else {

@@ -51,8 +51,14 @@ public class MatchBindMatchedStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final Result row = upstream.next();
-        context.setVariable("matched", row);
-        return row;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
+        try {
+          context.setVariable("matched", row);
+          return row;
+        } finally {
+          if (context.isProfiling())
+            cost += System.nanoTime() - begin;
+        }
       }
 
       @Override
@@ -64,6 +70,9 @@ public class MatchBindMatchedStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
-    return ExecutionStepInternal.getIndent(depth, indent) + "+ BIND $matched";
+    String result = ExecutionStepInternal.getIndent(depth, indent) + "+ BIND $matched";
+    if (context.isProfiling())
+      result += " (" + getCostFormatted() + ")";
+    return result;
   }
 }
