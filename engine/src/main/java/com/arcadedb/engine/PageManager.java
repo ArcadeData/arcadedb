@@ -1067,7 +1067,8 @@ public class PageManager extends LockContext {
    */
   void snapshotReleased(final PageSnapshot snapshot) {
     synchronized (snapshotRegistryLock) {
-      if (releasingSnapshots.remove(snapshot) && !closingDatabases.isEmpty())
+      // ONLY A CLOSE OF THIS WINDOW'S DATABASE CAN BE WAITING FOR IT: A RELEASE ON ANOTHER DATABASE WAKES NOBODY
+      if (releasingSnapshots.remove(snapshot) && closingDatabases.contains(snapshot.getDatabase()))
         snapshotRegistryLock.notifyAll();
     }
   }
