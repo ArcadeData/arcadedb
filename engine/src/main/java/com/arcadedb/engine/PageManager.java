@@ -156,6 +156,13 @@ public class PageManager extends LockContext {
    * instance it wraps mark the same database.
    */
   private final    Set<Database>  closingDatabases     = new HashSet<>();
+  /**
+   * Windows that have left {@link #activeSnapshots} but whose {@code close()} has not finished releasing them: the
+   * shadow may still be open and the files whose deletion they deferred may still be on disk. {@link #beginDatabaseClose}
+   * counts these with the active ones, so a close never proceeds under a release still in progress - the registry
+   * array alone would read zero from the first step of the window's close on. Guarded by {@link #snapshotRegistryLock}.
+   */
+  private final    Set<PageSnapshot> releasingSnapshots = new HashSet<>();
   /** How long {@link #beginDatabaseClose} waits between re-checks of the open windows; also its logging cadence. */
   private static final long CLOSE_WAIT_POLL_MILLIS = 10_000L;
   /** Serializes the t0 barrier per database (NOT the windows themselves, which may overlap freely). */
@@ -1047,20 +1054,27 @@ public class PageManager extends LockContext {
     }
   }
 
-  /** Wakes a {@link #beginDatabaseClose} waiting for this window. Called by {@code PageSnapshot.close()} once released. */
-  void snapshotReleased() {
+  /**
+   * The window's {@code close()} is done: the shadow is closed and the files it retained are released. Wakes a
+   * {@link #beginDatabaseClose} waiting for it. A window that was never registered (refused) is not being tracked and
+   * this is a no-op for it.
+   */
+  void snapshotReleased(final PageSnapshot snapshot) {
     synchronized (snapshotRegistryLock) {
-      if (!closingDatabases.isEmpty())
+      if (releasingSnapshots.remove(snapshot) && !closingDatabases.isEmpty())
         snapshotRegistryLock.notifyAll();
     }
   }
 
+  /** Windows still open on the database, plus the ones whose release is in progress. Under the registry lock. */
   private int countSnapshotWindows(final Database database) {
-    final PageSnapshot[] snapshots = activeSnapshots;
-    if (snapshots == null)
-      return 0;
     int count = 0;
-    for (final PageSnapshot snapshot : snapshots)
+    final PageSnapshot[] snapshots = activeSnapshots;
+    if (snapshots != null)
+      for (final PageSnapshot snapshot : snapshots)
+        if (snapshot.isFor(database))
+          ++count;
+    for (final PageSnapshot snapshot : releasingSnapshots)
       if (snapshot.isFor(database))
         ++count;
     return count;
@@ -1079,6 +1093,8 @@ public class PageManager extends LockContext {
         }
       if (found < 0)
         return;
+      // FROM HERE UNTIL snapshotReleased THE WINDOW IS RELEASING: STILL COUNTED BY A WAITING CLOSE (#7458)
+      releasingSnapshots.add(snapshot);
       if (current.length == 1) {
         activeSnapshots = null;
         return;
