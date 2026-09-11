@@ -732,9 +732,12 @@ public class ServerControlPlane {
           response.put("enabled", false); // Plugin not running, but config exists
           response.put("config", configJson);
           response.put("message", "Configuration saved but requires server restart to take effect");
-        } catch (final IOException e) {
+        } catch (final IOException | JSONException e) {
+          // Unreadable or malformed: this is the command the operator uses to find out, so answer with the reason
+          // rather than an internal error.
           response.put("enabled", false);
           response.put("config", JSONObject.NULL);
+          response.put("message", "Cannot read " + configPath + ": " + e.getMessage());
         }
       } else {
         response.put("enabled", false);

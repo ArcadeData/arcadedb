@@ -165,6 +165,13 @@ class Issue7392OnDemandBackupWithoutAutoBackupIT extends BaseGraphServerTest {
     try (final FileWriter writer = new FileWriter(backupConfigFile)) {
       writer.write("{ not json");
     }
+    final HttpResponse<String> configWithBrokenFile = postCommand("get backup config");
+    assertThat(configWithBrokenFile.statusCode()).as(configWithBrokenFile.body()).isEqualTo(200);
+    final JSONObject brokenConfig = new JSONObject(configWithBrokenFile.body());
+    assertThat(brokenConfig.getBoolean("enabled")).isFalse();
+    assertThat(brokenConfig.getString("message", "")).contains("Cannot read");
+    assertThat(brokenConfig.getString("backupDirectory", "")).isEqualTo(serverBackupDir.getAbsoluteFile().toPath().normalize().toString());
+
     final String fileWithBrokenConfig = triggerAndExpectVisible(databaseName, new File(serverBackupDir, databaseName));
     deleteAndExpectGone(databaseName, fileWithBrokenConfig, new File(serverBackupDir, databaseName));
     assertThat(backupConfigFile.delete()).isTrue();
