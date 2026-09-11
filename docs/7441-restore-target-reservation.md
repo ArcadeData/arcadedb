@@ -115,6 +115,35 @@ so it is not the window this issue describes.
 | 7 | `ArcadeDBServer.registerDatabase` | n/a | **argued**: no `src/main` caller - the grep above finds only test classes in `ha-raft` |
 | 8 | a database appearing out of band: an embedded `DatabaseFactory` in the same JVM, an operator's `mkdir`, a half-finished operation | yes, and not reservable | **fixed here** by the second clause: the swap's own lock section re-checks and turns the silent destruction into a failed restore. Tests `aDatabaseDirectoryThatAppearsDuringARestoreFailsTheSwapInsteadOfBeingDestroyed` (directory) and `aDatabaseRegisteredDuringARestoreIsNotDroppedByTheSwap` (registered database) |
 | 9 | another server process sharing the same database directory | yes | **not covered** - see Residual risk. Nothing in this JVM can see it, the same limit `BackupCoordinator` documents for backups |
+| 10 | `ArcadeDbGrpcService.getDatabase(String, DatabaseCredentials)` -> its own `DatabaseFactory.create()` and private `databasePool`, bypassing `ArcadeDBServer` entirely | no | **argued** - see below. Raised in review on PR #7452; the sweep above missed it because it greps `ArcadeDBServer`'s creators and this path has its own factory |
+
+### Row 10: the gRPC service's own factory
+
+`ArcadeDbGrpcService` keeps a `databasePool` of its own and, on a miss, opens or creates through a bare
+`DatabaseFactory`. That call is unreachable on a server:
+
+```
+$ grep -rn "new ArcadeDbGrpcService(" --include='*.java' . | grep -v /target/ | grep -v /src/test/
+grpcw/.../GrpcServerPlugin.java:262:      this.grpcService = new ArcadeDbGrpcService(databasePath, arcadeServer, ...)
+```
+
+The single production construction site passes the `ArcadeDBServer` the plugin was configured with, so
+`arcadeServer` is non-null, and the branch that runs first is:
+
+```java
+if (arcadeServer != null) {
+  Database db = arcadeServer.getDatabase(databaseName);   // (name, createIfNotExists=false, allowLoad=true)
+  ...
+  if (db != null) { ...; return db; }
+}
+```
+
+`ArcadeDBServer.getDatabase` has no `return null` for a missing database - it opens from disk, and
+`LocalDatabase.open()` raises `DatabaseOperationException("Database '...' does not exist")`
+(`engine/.../LocalDatabase.java:291`). So `db != null` never falls through on a server, and the raw
+`DatabaseFactory.create()` below it runs only when `arcadeServer == null`, which is a standalone or
+embedded use of the class with no server registry to reserve a name in. A comment at that line now says
+so, so the next person auditing creators does not have to re-derive it.
 
 ### Reachability
 
@@ -251,3 +280,21 @@ uncontaminated reviewer. That is a weaker pass than the skill asks for and is re
 
 No follow-up issue was filed: every row of the coverage table is fixed here or argued, and the one
 uncovered row (9, a second process) is the limit `BackupCoordinator` already documents for backups.
+
+## Review cycles
+
+### Cycle 1 - 8c1203a
+
+`claude` reviewed and found no bugs: it independently re-traced the reservation's atomicity, the
+release-in-finally on both restore entry points, the HA leader-only argument for row 4, the
+409/`ABORTED` mapping and the `replaceExisting` gating, and confirmed each.
+
+One non-blocking observation, and it was a real hole in the *sweep* even though it is not a hole in
+the fix: `ArcadeDbGrpcService.getDatabase(String, DatabaseCredentials)` creates through a
+`DatabaseFactory` of its own, which the "every creator" grep did not reach because that grep is
+scoped to `ArcadeDBServer`. Verified rather than taken on trust - `GrpcServerPlugin` is the only
+production construction site and always passes a non-null server, and `ArcadeDBServer.getDatabase`
+throws rather than returning null for a missing database - and recorded as row 10 with the
+evidence, plus a comment at the call site itself.
+
+Nothing else in the review asked for a change; the style and test notes were confirmations.
