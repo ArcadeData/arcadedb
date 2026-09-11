@@ -28,11 +28,11 @@ import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupCoordinator;
-import com.arcadedb.server.backup.BackupRetentionManager;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.http.HttpServer;
@@ -709,6 +709,14 @@ public class ServerControlPlane {
     final AutoBackupSchedulerPlugin plugin = getBackupPlugin();
 
     final JSONObject response = new JSONObject();
+    // The directory every backup command reads and writes, whichever source it came from (issue #7392). A directory
+    // that fails validation is reported rather than thrown: this is the command an operator uses to see what is
+    // wrong before fixing it with 'set backup config'.
+    try {
+      response.put("backupDirectory", resolveBackupDirectory().toString());
+    } catch (final IllegalArgumentException e) {
+      response.put("backupDirectoryError", e.getMessage());
+    }
 
     if (plugin != null && plugin.isEnabled()) {
       response.put("enabled", true);
@@ -724,9 +732,12 @@ public class ServerControlPlane {
           response.put("enabled", false); // Plugin not running, but config exists
           response.put("config", configJson);
           response.put("message", "Configuration saved but requires server restart to take effect");
-        } catch (final IOException e) {
+        } catch (final IOException | JSONException e) {
+          // Unreadable or malformed: this is the command the operator uses to find out, so answer with the reason
+          // rather than an internal error.
           response.put("enabled", false);
           response.put("config", JSONObject.NULL);
+          response.put("message", "Cannot read " + configPath + ": " + e.getMessage());
         }
       } else {
         response.put("enabled", false);
@@ -758,64 +769,66 @@ public class ServerControlPlane {
     return new JSONObject().put("result", "ok");
   }
 
+  /**
+   * The archives of {@code databaseName} under {@link #resolveBackupDirectory() the backup directory}, newest
+   * first, with the count and the total size of the same files. Both were previously read off the scheduler's
+   * retention manager and left out when the plugin was off, so the listing carried a count only when the
+   * scheduler was running (issue #7392).
+   */
   public JSONObject listBackups(final String databaseName) {
-    requireDatabaseName(databaseName);
-
-
-    final AutoBackupSchedulerPlugin plugin = getBackupPlugin();
+    requireBackupDatabaseName(databaseName);
 
     final JSONArray backups = new JSONArray();
+    long totalSize = 0;
 
-    if (plugin != null && plugin.isEnabled()) {
-      final AutoBackupConfig config = plugin.getBackupConfig();
-      if (config != null) {
-        // Resolve backup directory
-        String backupDirectory = config.getBackupDirectory();
-        final Path backupPath = Paths.get(backupDirectory);
-        if (!backupPath.isAbsolute())
-          backupDirectory = Paths.get(server.getRootPath(), backupDirectory).toString();
-
-        final Path dbBackupDir = Paths.get(backupDirectory, databaseName);
-        if (Files.exists(dbBackupDir) && Files.isDirectory(dbBackupDir)) {
-          try (var stream = Files.list(dbBackupDir)) {
-            stream.filter(p -> p.toString().endsWith(".zip") && p.getFileName().toString().contains("-backup-"))
-                .sorted(Comparator.reverseOrder())
-                .forEach(p -> {
-                  final JSONObject backup = new JSONObject();
-                  backup.put("fileName", p.getFileName().toString());
-                  try {
-                    backup.put("size", Files.size(p));
-                    backup.put("lastModified", Files.getLastModifiedTime(p).toMillis());
-                  } catch (final IOException e) {
-                    backup.put("size", 0);
-                    backup.put("lastModified", 0);
-                  }
-
-                  // Parse timestamp from filename, through the same convention that wrote it (issue #6753)
-                  final LocalDateTime timestamp = BackupCoordinator.parseArchiveTimestamp(p.getFileName().toString());
-                  backup.put("timestamp", timestamp != null ? timestamp.toString() : JSONObject.NULL);
-
-                  backups.put(backup);
-                });
+    final Path dbBackupDir = resolveBackupDirectory().resolve(databaseName);
+    if (Files.isDirectory(dbBackupDir)) {
+      try (final var stream = Files.list(dbBackupDir)) {
+        for (final Path p : stream.filter(ServerControlPlane::isBackupArchive).sorted(Comparator.reverseOrder()).toList()) {
+          final JSONObject backup = new JSONObject();
+          backup.put("fileName", p.getFileName().toString());
+          try {
+            final long size = Files.size(p);
+            totalSize += size;
+            backup.put("size", size);
+            backup.put("lastModified", Files.getLastModifiedTime(p).toMillis());
           } catch (final IOException e) {
-            throw new RuntimeException("Error listing backups for database '" + databaseName + "'", e);
+            backup.put("size", 0);
+            backup.put("lastModified", 0);
           }
+
+          // Parse timestamp from filename, through the same convention that wrote it (issue #6753)
+          final LocalDateTime timestamp = BackupCoordinator.parseArchiveTimestamp(p.getFileName().toString());
+          backup.put("timestamp", timestamp != null ? timestamp.toString() : JSONObject.NULL);
+
+          backups.put(backup);
         }
+      } catch (final IOException e) {
+        throw new RuntimeException("Error listing backups for database '" + databaseName + "'", e);
       }
     }
 
     final JSONObject response = new JSONObject();
     response.put("database", databaseName);
     response.put("backups", backups);
-
-    // Get retention manager stats if available
-    if (plugin != null && plugin.getRetentionManager() != null) {
-      final BackupRetentionManager retentionManager = plugin.getRetentionManager();
-      response.put("totalSize", retentionManager.getBackupSizeBytes(databaseName));
-      response.put("totalCount", retentionManager.getBackupCount(databaseName));
-    }
-
+    response.put("totalSize", totalSize);
+    response.put("totalCount", backups.length());
     return response;
+  }
+
+  /**
+   * The database name is a path segment under the backup directory for every backup command, and {@code trigger}
+   * creates that directory, so a name with a separator or a {@code ..} must be refused before any path is built
+   * rather than caught by the file-level {@code startsWith} check that only guards the archive name.
+   */
+  private void requireBackupDatabaseName(final String databaseName) {
+    requireDatabaseName(databaseName);
+    server.checkDatabaseNameIsValid(databaseName);
+  }
+
+  private static boolean isBackupArchive(final Path p) {
+    final String name = p.getFileName().toString();
+    return name.endsWith(".zip") && name.contains("-backup-");
   }
 
   /**
@@ -831,7 +844,7 @@ public class ServerControlPlane {
    *                                   handed the other run's archive (issue #6753).
    */
   public JSONObject triggerBackup(final String databaseName) {
-    requireDatabaseName(databaseName);
+    requireBackupDatabaseName(databaseName);
 
 
     final BackupCoordinator coordinator = server.getBackupCoordinator();
@@ -868,27 +881,20 @@ public class ServerControlPlane {
   }
 
   /**
-   * Resolves a backup file name to an absolute path inside the configured auto-backup directory for
-   * the given database, rejecting any name that contains path separators or traversal sequences.
+   * Resolves a backup file name to an absolute path inside {@link #resolveBackupDirectory() the backup directory}
+   * for the given database, rejecting any name that contains path separators or traversal sequences. Used by
+   * {@code delete backup} and {@code restore backup}, so both can address exactly what {@code trigger backup}
+   * wrote (issue #7392).
    */
   public Path resolveBackupFile(final String databaseName, final String fileName) {
-    requireDatabaseName(databaseName);
+    requireBackupDatabaseName(databaseName);
 
     // Reject anything that is not a plain backup file name.
     if (fileName.contains("/") || fileName.contains("\\") || fileName.contains("..") || fileName.isBlank()
         || !fileName.endsWith(".zip") || !fileName.contains("-backup-"))
       throw new IllegalArgumentException("Invalid backup file name: " + fileName);
 
-    final AutoBackupSchedulerPlugin plugin = getBackupPlugin();
-    if (plugin == null || !plugin.isEnabled() || plugin.getBackupConfig() == null)
-      throw new IllegalArgumentException("Auto-backup is not configured");
-
-    String backupDirectory = plugin.getBackupConfig().getBackupDirectory();
-    final Path backupPath = Paths.get(backupDirectory);
-    if (!backupPath.isAbsolute())
-      backupDirectory = Paths.get(server.getRootPath(), backupDirectory).toString();
-
-    final Path dbBackupDir = Paths.get(backupDirectory, databaseName).normalize();
+    final Path dbBackupDir = resolveBackupDirectory().resolve(databaseName).normalize();
     final Path resolved = dbBackupDir.resolve(fileName).normalize();
 
     // Defence in depth: the resolved file must still live inside the database backup directory.
@@ -902,98 +908,89 @@ public class ServerControlPlane {
   }
 
   private JSONObject executeImmediateBackup(final String databaseName) {
-    final AutoBackupSchedulerPlugin plugin = getBackupPlugin();
-
-    // Try to get backup directory from config (plugin or file)
-    String backupDirectory = null;
-
-    if (plugin != null && plugin.isEnabled()) {
-      final AutoBackupConfig config = plugin.getBackupConfig();
-      backupDirectory = config != null ? config.getBackupDirectory() : null;
-    }
-
-    // If plugin not enabled, try to read from config file directly
-    if (backupDirectory == null) {
-      final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
-      if (Files.exists(configPath)) {
-        try {
-          final String content = Files.readString(configPath);
-          final JSONObject configJson = new JSONObject(content);
-          if (configJson.has("backupDirectory"))
-            backupDirectory = configJson.getString("backupDirectory");
-        } catch (final IOException ignored) {
-        }
-      }
-    }
-
-    // Use config directory if available
-    if (backupDirectory != null) {
-      try {
-        // Validate the directory
-        validateBackupDirectory(backupDirectory);
-
-        // Resolve relative path
-        final Path backupPath = Paths.get(backupDirectory);
-        if (!backupPath.isAbsolute())
-          backupDirectory = Paths.get(server.getRootPath(), backupDirectory).toString();
-
-        // Perform backup using reflection (same as BackupTask)
-        final Database database = server.getDatabase(databaseName);
-        final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
-
-        final String backupFileName = server.getBackupCoordinator().newArchiveName(databaseName);
-
-        final Path dbBackupPath = Paths.get(backupDirectory, databaseName);
-        // Use Files.createDirectories to avoid TOCTOU race condition
-        Files.createDirectories(dbBackupPath);
-        final String dbBackupDir = dbBackupPath.toString();
-
-        final Object backup = clazz.getConstructor(Database.class, String.class)
-            .newInstance(database, backupFileName);
-        clazz.getMethod("setDirectory", String.class).invoke(backup, dbBackupDir);
-        clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 1);
-
-        final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
-
-        final JSONObject response = new JSONObject();
-        response.put("result", "ok");
-        response.put("backupFile", backupFile);
-        return response;
-
-      } catch (final ClassNotFoundException e) {
-        throw new RuntimeException("Backup libs not found in classpath. Make sure arcadedb-integration module is included.", e);
-      } catch (final Exception e) {
-        final Throwable cause = e.getCause() != null ? e.getCause() : e;
-        throw new RuntimeException("Error triggering backup for database '" + databaseName + "': " + cause.getMessage(), cause);
-      }
-    }
-
-    // Fallback: use SQL command (uses GlobalConfiguration.SERVER_BACKUP_DIRECTORY). This one does not name the
-    // archive through the coordinator: with no target the SQL statement lets BackupSettings apply its own default,
-    // which is the same convention down to the milliseconds - the coordinator is where that convention was copied
-    // from in the first place.
+    final Path dbBackupPath = resolveBackupDirectory().resolve(databaseName);
     try {
+      // Perform backup using reflection (same as BackupTask)
       final Database database = server.getDatabase(databaseName);
-      try (final var result = database.command("sql", "backup database")) {
+      final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
 
-        final JSONObject response = new JSONObject();
-        response.put("result", "ok");
-        // The SQL "backup database" command sets backupFile as a property on a Result row
-        // (see BackupDatabaseStatement). Read it via Result.getProperty rather than the
-        // pre-existing dead instanceof Map check, which never matched.
-        while (result.hasNext()) {
-          final var row = result.next();
-          final Object backupFile = row.getProperty("backupFile");
-          if (backupFile != null) {
-            response.put("backupFile", backupFile.toString());
-            break;
-          }
-        }
-        return response;
-      }
+      final String backupFileName = server.getBackupCoordinator().newArchiveName(databaseName);
+
+      // Use Files.createDirectories to avoid TOCTOU race condition
+      Files.createDirectories(dbBackupPath);
+
+      final Object backup = clazz.getConstructor(Database.class, String.class)
+          .newInstance(database, backupFileName);
+      clazz.getMethod("setDirectory", String.class).invoke(backup, dbBackupPath.toString());
+      clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 1);
+
+      final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
+
+      final JSONObject response = new JSONObject();
+      response.put("result", "ok");
+      response.put("backupFile", backupFile);
+      return response;
+
+    } catch (final ClassNotFoundException e) {
+      throw new RuntimeException("Backup libs not found in classpath. Make sure arcadedb-integration module is included.", e);
     } catch (final Exception e) {
-      throw new RuntimeException("Error triggering backup for database '" + databaseName + "': " + e.getMessage(), e);
+      final Throwable cause = e.getCause() != null ? e.getCause() : e;
+      throw new RuntimeException("Error triggering backup for database '" + databaseName + "': " + cause.getMessage(), cause);
     }
+  }
+
+  /**
+   * Where this server keeps its backups: the one definition every backup command - {@code trigger}, {@code list},
+   * {@code delete}, {@code restore} and {@code get backup config} - resolves through, so an archive one of them
+   * writes the others can see. Before this, only {@code trigger backup} fell back past the live scheduler, so an
+   * on-demand archive taken with auto-backup off was invisible to {@code list}, refused by {@code delete} and
+   * {@code restore}, and left on disk for good (issue #7392).
+   * <p>
+   * The chain, first hit wins:
+   * <ol>
+   *   <li>the running auto-backup plugin's configuration;</li>
+   *   <li>{@code config/backup.json} on disk, whether or not it enables the scheduler - an operator who set a
+   *       directory there and turned the schedule off still means that directory;</li>
+   *   <li>{@link GlobalConfiguration#SERVER_BACKUP_DIRECTORY}, the server-wide setting the SQL
+   *       {@code BACKUP DATABASE} statement writes to.</li>
+   * </ol>
+   * The first two are caller-supplied through {@code set backup config} and are re-validated here as relative
+   * paths inside the server root, exactly as the scheduler validates them at start-up. The third is a server
+   * setting, not client input, and is taken as configured. Every archive lives under {@code <directory>/<database>}.
+   * A configured directory that fails validation is an {@link IllegalArgumentException} out of every command that
+   * needs it, deliberately: listing nothing for a directory the server refuses to use is what hid the archives in
+   * the first place, and {@link #getBackupConfig()} reports the same failure as {@code backupDirectoryError} so the
+   * operator can see it without triggering anything.
+   * <p>
+   * Retention pruning is the scheduler's job and runs only while it is enabled; with the scheduler off an
+   * on-demand archive stays until {@code delete backup} removes it, which is now possible.
+   */
+  public Path resolveBackupDirectory() {
+    final Path serverRoot = Paths.get(server.getRootPath()).toAbsolutePath().normalize();
+
+    final AutoBackupSchedulerPlugin plugin = getBackupPlugin();
+    if (plugin != null && plugin.isEnabled() && plugin.getBackupConfig() != null) {
+      final String configured = plugin.getBackupConfig().getBackupDirectory();
+      if (configured != null && !configured.isBlank())
+        return AutoBackupSchedulerPlugin.validateAndResolveBackupPath(configured, serverRoot);
+    }
+
+    final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
+    if (Files.exists(configPath)) {
+      try {
+        final String configured = new JSONObject(Files.readString(configPath)).getString("backupDirectory", null);
+        if (configured != null && !configured.isBlank())
+          return AutoBackupSchedulerPlugin.validateAndResolveBackupPath(configured, serverRoot);
+      } catch (final IOException | JSONException e) {
+        // Unreadable or malformed: the scheduler ignores such a file at start-up too, so fall through to the server
+        // setting with a warning rather than answer every backup command with an internal error.
+        LogManager.instance().log(this, Level.WARNING, "Cannot read '%s', falling back to the server backup directory: %s",
+            configPath, e.getMessage());
+      }
+    }
+
+    return Paths.get(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY))
+        .toAbsolutePath().normalize();
   }
 
   private AutoBackupSchedulerPlugin getBackupPlugin() {

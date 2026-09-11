@@ -24,7 +24,6 @@ import com.arcadedb.function.text.TextLevenshteinDistance;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
-import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.FullTextIndexMetadata;
@@ -239,7 +238,7 @@ public class FullTextQueryExecutor {
       // QueryParser is not thread-safe, so create one per invocation.
       return createQueryParser().parse(queryString);
     } catch (final ParseException e) {
-      throw new IndexException("Invalid search query: " + queryString, e);
+      throw new FullTextQueryParseException("Invalid search query: " + queryString, e);
     }
   }
 
