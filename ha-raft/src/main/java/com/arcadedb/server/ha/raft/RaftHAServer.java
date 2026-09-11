@@ -4341,12 +4341,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Installs the one {@code GrpcServices.Customizer} the Raft listener gets: the peer allowlist's transport filter
-   * and call interceptor (issues #7132, #7225, #7250) and the connection-idle window (issue #7316).
+   * and call interceptor (issues #7132, #7225, #7250), the connection-idle window (issue #7316) and the
+   * connection-age window (issue #7339).
    * <p>
-   * The two are configured independently, so this method is not gated on either of them: gating it on
+   * All three are configured independently, so this method is not gated on any of them: gating it on
    * {@code arcadedb.ha.peerAllowlist.enabled}, which is where the allowlist install used to live, would have made
    * {@code arcadedb.ha.grpcMaxConnectionIdleMs} a setting that silently does nothing on exactly the clusters that
-   * turned the allowlist off. When neither is configured no customizer is installed at all, which leaves Ratis's
+   * turned the allowlist off. When none is configured no customizer is installed at all, which leaves Ratis's
    * builder exactly as it was.
    */
   private void installGrpcServerCustomizations(final ContextConfiguration configuration, final Parameters parameters) {
@@ -4360,13 +4361,20 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     // Neither surface can close the connection itself, so the socket of a revoked peer outlived its reach (#7316).
     final long maxConnectionIdleMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_IDLE_MS);
-    if (filter == null && maxConnectionIdleMs <= 0)
+    // ...and the idle window only reaps a peer that goes quiet: gRPC restarts it from the last moment the
+    // connection's active-stream count hit zero, so a peer that keeps starting RPCs - a removed peer still
+    // campaigning, or a squatter - pushes it forward forever, refused RPCs included (#7339). The age window is the
+    // unconditional bound for that case, off by default because it recycles healthy connections on the same period.
+    final long maxConnectionAgeMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_MS);
+    final long maxConnectionAgeGraceMs = configuration.getValueAsLong(
+        GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_GRACE_MS);
+    if (filter == null && maxConnectionIdleMs <= 0 && maxConnectionAgeMs <= 0)
       return;
 
     GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(
         filter == null ? new ServerTransportFilter[0] : new ServerTransportFilter[] { filter },
         interceptor == null ? new ServerInterceptor[0] : new ServerInterceptor[] { interceptor },
-        maxConnectionIdleMs));
+        maxConnectionIdleMs, maxConnectionAgeMs, maxConnectionAgeGraceMs));
   }
 
   /** The inbound peer allowlist filter, or {@code null} when it is disabled or has no host to admit. */
