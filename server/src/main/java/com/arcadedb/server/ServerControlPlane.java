@@ -943,6 +943,10 @@ public class ServerControlPlane {
    * The first two are caller-supplied through {@code set backup config} and are re-validated here as relative
    * paths inside the server root, exactly as the scheduler validates them at start-up. The third is a server
    * setting, not client input, and is taken as configured. Every archive lives under {@code <directory>/<database>}.
+   * A configured directory that fails validation is an {@link IllegalArgumentException} out of every command that
+   * needs it, deliberately: listing nothing for a directory the server refuses to use is what hid the archives in
+   * the first place, and {@link #getBackupConfig()} reports the same failure as {@code backupDirectoryError} so the
+   * operator can see it without triggering anything.
    * <p>
    * Retention pruning is the scheduler's job and runs only while it is enabled; with the scheduler off an
    * on-demand archive stays until {@code delete backup} removes it, which is now possible.

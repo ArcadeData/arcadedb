@@ -25,6 +25,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.serializer.JsonSerializer;
@@ -104,11 +105,10 @@ public final class FullTextQuery {
     final Map<RID, Float> hits;
     try {
       hits = FullTextSearch.search(typeIndex, queryText, limit);
-    } catch (final SecurityException e) {
-      throw e;
-    } catch (final RuntimeException e) {
+    } catch (final IndexException e) {
       // Lucene syntax the parser rejects is the caller's mistake and must be answered as one - HTTP 400, gRPC
       // INVALID_ARGUMENT - rather than as an internal error with a stack trace in the server log (issue #7393).
+      // Only the parser's IndexException is re-typed: any other failure on this path is a server fault.
       final String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
       throw new IllegalArgumentException("Invalid full-text query: " + detail, e);
     }

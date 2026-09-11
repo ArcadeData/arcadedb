@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.QueryEngine;
@@ -543,13 +544,12 @@ public final class HybridSearch {
 
     // The parser's complaint about the caller's own query text is a client error, like every other stage's bad
     // input; left unwrapped it reached the protocol surfaces as an internal error with a logged stack trace
-    // (issue #7393). A SecurityException stays what it is: the request was well-formed and refused.
+    // (issue #7393). Only IndexException is the parser's: this call runs no generated SQL, so anything else thrown
+    // here is a server fault and must stay a 500 with its stack trace rather than be misfiled as a bad request.
     final Map<RID, Float> hits;
     try {
       hits = FullTextSearch.search(typeIndex, queryText, limit);
-    } catch (final SecurityException e) {
-      throw e;
-    } catch (final RuntimeException e) {
+    } catch (final IndexException e) {
       throw invalidExpression("full-text leg", e);
     }
     final List<Map.Entry<RID, Float>> ranked = new ArrayList<>(hits.entrySet());
