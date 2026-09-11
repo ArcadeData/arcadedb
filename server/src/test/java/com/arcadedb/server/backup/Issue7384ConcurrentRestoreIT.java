@@ -253,8 +253,9 @@ class Issue7384ConcurrentRestoreIT extends BaseGraphServerTest {
           true, "a restore of it is already in progress");
       assertRefusedWith409("import database " + target + " " + archiveUrl(archive),
           false, "a restore of it is already in progress");
+      // AND THE VERB IS THE ONE A HUMAN WOULD WRITE: "back up", NOT "backup", WHICH IS THE NOUN
       assertRefusedWith409("trigger backup " + target,
-          false, "a restore of it is already in progress");
+          false, "Cannot back up database '" + target + "': a restore of it is already in progress");
     } finally {
       coordinator.end(target, Operation.RESTORE);
     }

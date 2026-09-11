@@ -90,19 +90,22 @@ public class BackupCoordinator {
    * an import creates the database it loads into, so the second one could not have created it anyway.
    */
   public enum Operation {
-    BACKUP("backup", "a backup"), RESTORE("restore", "a restore"), IMPORT("import", "an import");
+    BACKUP("back up", "a backup"), RESTORE("restore", "a restore"), IMPORT("import", "an import");
 
-    private final String label;
+    private final String verb;
     private final String phrase;
 
-    Operation(final String label, final String phrase) {
-      this.label = label;
+    Operation(final String verb, final String phrase) {
+      this.verb = verb;
       this.phrase = phrase;
     }
 
-    /** The operation's name as a verb, for "Cannot restore database 'x'". */
-    public String label() {
-      return label;
+    /**
+     * The operation as a verb, for "Cannot back up database 'x'". Carried rather than derived from the enum
+     * constant, because the verb for a backup is two words.
+     */
+    public String verb() {
+      return verb;
     }
 
     /**
@@ -148,6 +151,10 @@ public class BackupCoordinator {
 
   /**
    * Reserves this database for {@code operation}.
+   * <p>
+   * When more than one operation is running - which only {@link Operation#BACKUP} and {@link Operation#IMPORT}
+   * together can be - the one named is whichever the iteration reaches first, not a ranking: both refuse the caller
+   * equally, and the message is true of either.
    *
    * @return {@code null} when the reservation was taken - the caller must then release it with
    * {@link #end(String, Operation)} from a {@code finally} - or the operation already running that refuses this one.

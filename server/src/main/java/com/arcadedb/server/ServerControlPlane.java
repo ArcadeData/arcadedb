@@ -953,7 +953,7 @@ public class ServerControlPlane {
   }
 
   private static String refusal(final Operation refused, final String databaseName, final Operation running) {
-    return "Cannot " + refused.label() + " database '" + databaseName + "': " + running.phrase()
+    return "Cannot " + refused.verb() + " database '" + databaseName + "': " + running.phrase()
         + " of it is already in progress";
   }
 
