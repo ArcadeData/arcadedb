@@ -541,7 +541,17 @@ public final class HybridSearch {
           + "indexes in '" + database.getName() + "': " + FullTextSearch.listFullTextIndexes(database), e);
     }
 
-    final Map<RID, Float> hits = FullTextSearch.search(typeIndex, queryText, limit);
+    // The parser's complaint about the caller's own query text is a client error, like every other stage's bad
+    // input; left unwrapped it reached the protocol surfaces as an internal error with a logged stack trace
+    // (issue #7393). A SecurityException stays what it is: the request was well-formed and refused.
+    final Map<RID, Float> hits;
+    try {
+      hits = FullTextSearch.search(typeIndex, queryText, limit);
+    } catch (final SecurityException e) {
+      throw e;
+    } catch (final RuntimeException e) {
+      throw invalidExpression("full-text leg", e);
+    }
     final List<Map.Entry<RID, Float>> ranked = new ArrayList<>(hits.entrySet());
     // Score descending, tie-broken by RID so tied hits rank deterministically rather than by hash order.
     ranked.sort(Map.Entry.<RID, Float>comparingByValue().reversed().thenComparing(Map.Entry::getKey));

@@ -57,8 +57,6 @@ public class TypeBuilder<T> {
   }
 
   public T create() {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
-
     if (typeName == null || typeName.isEmpty())
       throw new IllegalArgumentException("Missing type");
 
@@ -71,6 +69,11 @@ public class TypeBuilder<T> {
     // thread - which publishes itself into schema.types BEFORE its buckets are added - is never observed
     // half-populated; anything that mutates re-checks under the exclusive lock. The fast path can also throw,
     // for the type-already-exists and wrong-type cases, exactly as the locked path does.
+    //
+    // UPDATE_SCHEMA is demanded by createInternal(), at the point the builder is about to change the schema, and
+    // not here: a getOrCreate on a type that already exists as requested changes nothing, so a user holding only
+    // record grants can run a Cypher CREATE (whose label resolution is a getOrCreateVertexType) on a declared type
+    // exactly as they can run the equivalent SQL INSERT (issue #7368).
     final T alreadyComplete = database.executeInReadLock(() -> {
       final LocalDocumentType existing = schema.types.get(typeName);
       return existing != null && isComplete(existing) ? (T) checkExistingIsCompatible(existing) : null;
@@ -121,6 +124,13 @@ public class TypeBuilder<T> {
     if (t != null) {
       checkExistingIsCompatible(t);
 
+      // Re-checked under the exclusive lock: another thread may have completed the type since the shared-lock
+      // fast path looked, and a type that needs nothing added is not a schema change.
+      if (isComplete(t))
+        return (T) t;
+
+      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
       if (t.buckets.size() < buckets) {
         // CREATE MISSING BUCKETS
         for (int i = t.buckets.size(); i < buckets; ++i) {
@@ -150,6 +160,8 @@ public class TypeBuilder<T> {
 
       return (T) t;
     }
+
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (buckets > 32)
       throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");

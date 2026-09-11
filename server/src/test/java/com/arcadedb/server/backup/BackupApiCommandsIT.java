@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.backup;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
@@ -99,6 +100,13 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
 
   @Test
   void listBackupsEmptyDatabase() throws Exception {
+    // With no backup.json the listing reads the server-wide backup directory, the same place 'trigger backup' and
+    // the SQL BACKUP DATABASE write to (issue #7392), so clear what other tests left there for this database.
+    final File serverBackups = new File(
+        getServer(0).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY), getDatabaseName());
+    if (serverBackups.exists())
+      deleteDirectory(serverBackups);
+
     final HttpClient client = HttpClient.newHttpClient();
 
     final JSONObject payload = new JSONObject();
@@ -119,8 +127,9 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
     assertThat(result.has("database")).isTrue();
     assertThat(result.getString("database")).isEqualTo(getDatabaseName());
     assertThat(result.has("backups")).isTrue();
-    // No backups should exist (backup not configured)
     assertThat(result.getJSONArray("backups").length()).isZero();
+    assertThat(result.getInt("totalCount")).isZero();
+    assertThat(result.getLong("totalSize")).isZero();
   }
 
   @Test
