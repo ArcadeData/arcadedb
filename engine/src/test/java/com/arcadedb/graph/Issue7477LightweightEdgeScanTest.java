@@ -227,6 +227,28 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     assertThat(query("select count(*) as c from Follows").getFirst().<Long>getProperty("c")).isEqualTo(3L);
   }
 
+  /**
+   * Documents what TRAVERSE does TODAY on a lightweight edge type, which is nothing - issue #7480, deliberately not
+   * fixed here. Pinned rather than left unstated for two reasons: a reader who sees SELECT working could otherwise
+   * assume TRAVERSE does too, and whoever fixes #7480 has to route the planner AND replace the dedup that keys on
+   * {@code (bucketId, position)} - a pair every lightweight edge of a type shares. Routing alone makes this test go
+   * from 0 rows to 1 of 3, not to 3, so it fails either way and says which half is missing.
+   */
+  @Test
+  void traverseOnALightweightEdgeTypeIsStillEmpty() {
+    final RID[] works = newWorks(3);
+    connect("Cite", works[0], works[1]);
+    connect("Cite", works[0], works[2]);
+    connect("Cite", works[1], works[2]);
+
+    assertThat(query("select from Cite")).as("precondition: the SELECT side is fixed").hasSize(3);
+
+    assertThat(query("traverse in, out from Cite while $depth < 1"))
+        .as("issue #7480: TRAVERSE still roots on the empty bucket. When this goes green with 3 rows, delete the "
+            + "test; with 1, the planner was routed without replacing AbstractTraverseStep's dedup")
+        .isEmpty();
+  }
+
   /** The walk is the plan, so EXPLAIN has to name it: it is O(V + E) where a bucket scan reads O(E). */
   @Test
   void explainNamesTheVertexWalk() {
