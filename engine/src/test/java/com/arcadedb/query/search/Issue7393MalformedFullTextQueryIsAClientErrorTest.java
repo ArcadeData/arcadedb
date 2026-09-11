@@ -20,6 +20,8 @@ package com.arcadedb.query.search;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
@@ -74,6 +76,14 @@ class Issue7393MalformedFullTextQueryIsAClientErrorTest extends TestHelper {
           .hasMessageContaining("full-text leg")
           .hasMessageContaining(malformed);
     }
+  }
+
+  @Test
+  void anExecutionTimeIndexFaultIsNotFiledAsAClientError() {
+    // The parser's exception is the only one re-typed: a plain IndexException from the same call is a server fault.
+    assertThat(new FullTextQueryParseException("x", null)).isInstanceOf(IndexException.class);
+    assertThat(IndexException.class.isAssignableFrom(FullTextQueryParseException.class)).isTrue();
+    assertThat(new IndexException("Error on tokenizer")).isNotInstanceOf(FullTextQueryParseException.class);
   }
 
   @Test
