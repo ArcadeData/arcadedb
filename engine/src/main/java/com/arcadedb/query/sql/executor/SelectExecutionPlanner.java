@@ -1911,6 +1911,11 @@ public class SelectExecutionPlanner {
       if (handleEdgeTypeWithVertexRidFilter(plan, docType, info, context))
         return;
 
+      // Returning here also skips the index paths below, and that is required rather than incidental: an index over
+      // a mixed hierarchy's record half cannot see the lightweight edges, so an index-only plan would be incomplete
+      // in exactly the way this issue is about. The cost is that such a supertype loses a useful index on its
+      // record half - a real cliff, and the honest price of answering the whole type.
+      //
       // effectiveClusters is deliberately not passed on, unlike every other branch below. It narrows the EDGE
       // type's own buckets, and the edges this step returns are not in them - they are in the vertices. For a
       // purely lightweight type the narrowing is vacuous twice over: the buckets are empty, and partition pruning

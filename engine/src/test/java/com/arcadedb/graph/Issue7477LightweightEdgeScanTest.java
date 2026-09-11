@@ -171,6 +171,32 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     assertThat(query("select from Cite where @in = " + works[2])).hasSize(2);
   }
 
+  /**
+   * The whole design rests on the outgoing entry always being written while the incoming one is the optional half,
+   * so walking OUT alone is complete and yields each edge exactly once. A non-bidirectional LIGHTWEIGHT type is the
+   * combination that would break if that ever stopped being true, and it is the one no other test constructs
+   * (PR #7478 review).
+   */
+  @Test
+  void aNonBidirectionalLightweightTypeIsWalkedCompletelyAndOnce() {
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Follows").withLightweight(true)
+        .withBidirectional(false).create());
+
+    final RID[] works = newWorks(3);
+    connect("Follows", works[0], works[1]);
+    connect("Follows", works[0], works[2]);
+    connect("Follows", works[1], works[2]);
+
+    database.transaction(() -> assertThat(database.lookupByRID(works[2], true).asVertex()
+        .countEdges(Vertex.DIRECTION.IN, "Follows"))
+        .as("precondition: nothing was written to the incoming side, so only the OUT walk can find these")
+        .isZero());
+
+    assertThat(pairs("select from Follows")).containsExactlyInAnyOrder(
+        works[0] + "->" + works[1], works[0] + "->" + works[2], works[1] + "->" + works[2]);
+    assertThat(query("select count(*) as c from Follows").getFirst().<Long>getProperty("c")).isEqualTo(3L);
+  }
+
   /** The walk is the plan, so EXPLAIN has to name it: it is O(V + E) where a bucket scan reads O(E). */
   @Test
   void explainNamesTheVertexWalk() {

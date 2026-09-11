@@ -42,6 +42,14 @@ public final class CommandWarnings {
   }
 
   /**
+   * Whether command warnings are switched on at all, for a caller that has to compute something solely to decide
+   * what to put in one - it should not pay for that when nothing will read it.
+   */
+  public static boolean isEnabled() {
+    return GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger() > 0;
+  }
+
+  /**
    * Records one occurrence of the situation {@code key} names and answers how many times it has now happened when
    * this one is due to be reported, or 0 when it is not - so the caller both decides and has the number to print:
    * <pre>

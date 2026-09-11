@@ -127,18 +127,15 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
 
     // getFileIfExists, not getFile: the latter throws when the id is not registered, and a bucket can be dropped
     // between the schema snapshot above and this lookup. The total only decides whether to log a warning, so every
-    // way of not knowing a bucket's size counts it as 0 rather than failing the query (PR #7478 review).
+    // way of not knowing a bucket's size counts it as 0 rather than failing the query - and it is not computed at
+    // all when warnings are off. Page count rather than getSize(): same number, but a field read instead of the
+    // channel lock and the channel.size() syscall (#6132, PR #7478 review).
     long typeFileSize = 0;
-    for (final int fileId : bucketIds) {
-      if (fileId > -1
-          && context.getDatabase().getFileManager().getFileIfExists(fileId) instanceof PaginatedComponentFile f) {
-        try {
-          typeFileSize += f.getSize();
-        } catch (final IOException e) {
-          // IGNORE IT
-        }
-      }
-    }
+    if (CommandWarnings.isEnabled())
+      for (final int fileId : bucketIds)
+        if (fileId > -1
+            && context.getDatabase().getFileManager().getFileIfExists(fileId) instanceof PaginatedComponentFile f)
+          typeFileSize += f.getTotalPages() * (long) f.getPageSize();
 
     if (typeFileSize > LARGE_TYPE_BYTES) {
       final int counter = CommandWarnings.occurrencesWhenDue(typeName + ".scan");
