@@ -59,6 +59,21 @@ class RatisRefusedEntryErrorFilterTest {
     assertThat(filter.isLoggable(new LogRecord(Level.SEVERE, "Failed to send request"))).as("no throwable at all").isTrue();
   }
 
+  /** A cyclic cause chain must neither hang the walk nor hide a refusal buried in it. */
+  @Test
+  void aCyclicCauseChainIsWalkedToTheBound() {
+    final RuntimeException a = new RuntimeException("a");
+    final RuntimeException b = new RuntimeException("b", a);
+    a.initCause(b);
+    assertThat(RatisRefusedEntryErrorFilter.refusedBeforeAppend(a)).isNull();
+
+    final ConcurrentModificationException conflict = new ConcurrentModificationException("Concurrent modification on page 3/0");
+    final StateMachineException refusal = new StateMachineException("conflict", conflict, false);
+    final RuntimeException c = new RuntimeException("c", refusal);
+    conflict.initCause(c);
+    assertThat(RatisRefusedEntryErrorFilter.refusedBeforeAppend(c)).isSameAs(conflict);
+  }
+
   @Test
   void chainsToTheFilterTheLoggerAlreadyCarried() {
     final Filter rejectAll = record -> false;
