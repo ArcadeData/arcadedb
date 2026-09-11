@@ -144,7 +144,7 @@ class Issue6965LocalCommitHandshakeTest {
     verify(proxied).rollback();
     verify(tx, never()).completeCommit();
     assertThat(stateMachine.pendingLocalCommits()).as("the withdrawal removed the registration").isZero();
-    assertThat(stateMachine.claimLocalCommit(DB_NAME, WAL_TX_ID)).as("a late apply finds nothing to claim").isNull();
+    assertThat(stateMachine.claimLocalCommit(DB_NAME, WAL_TX_ID, payload.walData())).as("a late apply finds nothing to claim").isNull();
   }
 
   /**
@@ -188,7 +188,7 @@ class Issue6965LocalCommitHandshakeTest {
   void aFailedPublicationIsSurfacedAsCommittedRemotely() {
     final ConcurrentModificationException cause = new ConcurrentModificationException("simulated phase-2 failure");
     when(broker.replicateTransaction(anyString(), any(), any())).thenAnswer(inv -> {
-      final LocalCommit claimed = stateMachine.claimLocalCommit(DB_NAME, WAL_TX_ID);
+      final LocalCommit claimed = stateMachine.claimLocalCommit(DB_NAME, WAL_TX_ID, payload.walData());
       assertThat(claimed).isNotNull();
       claimed.failed(cause, true);
       return 7L;
@@ -254,6 +254,30 @@ class Issue6965LocalCommitHandshakeTest {
     assertThat(stateMachine.pendingLocalCommits()).isZero();
   }
 
+  /**
+   * A publication that failed during MAJORITY-commit recovery stays silent to the caller - who is told about the ALL
+   * watch failure - but still releases the transaction and steps this leader down (the rule the retired
+   * applyLocallyAfterMajorityCommit pinned).
+   */
+  @Test
+  void aFailedPublicationDuringMajorityRecoveryStaysSilentButStepsDown() {
+    final ConcurrentModificationException cause = new ConcurrentModificationException("simulated phase-2 failure");
+    when(broker.replicateTransaction(anyString(), any(), any())).thenAnswer(inv -> {
+      final LocalCommit claimed = stateMachine.claimLocalCommit(DB_NAME, WAL_TX_ID, payload.walData());
+      assertThat(claimed).isNotNull();
+      claimed.failed(cause, true);
+      throw new MajorityCommittedAllFailedException("ALL quorum not reached");
+    });
+
+    assertThatThrownBy(() -> database.replicateAndCommitLocally(payload, true, stateMachine))
+        .isInstanceOf(MajorityCommittedAllFailedException.class);
+
+    verify(tx).concludeFailedPhase2(cause);
+    verify(tx, never()).completeCommit();
+    verify(proxied, never()).rollback();
+    verify(raftServer).stepDown();
+  }
+
   /** Without a state machine nobody can publish at the log position, so the committing thread does, as before. */
   @Test
   void withoutAStateMachineTheCommittingThreadPublishes() {
@@ -279,7 +303,7 @@ class Issue6965LocalCommitHandshakeTest {
   }
 
   private void applyThreadPublishes() {
-    final LocalCommit claimed = stateMachine.claimLocalCommit(DB_NAME, WAL_TX_ID);
+    final LocalCommit claimed = stateMachine.claimLocalCommit(DB_NAME, WAL_TX_ID, payload.walData());
     assertThat(claimed).as("the transaction must be registered before the entry is dispatched").isNotNull();
     claimed.published();
   }

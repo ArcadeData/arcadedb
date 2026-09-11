@@ -50,7 +50,10 @@ The registration is a compare-and-set handshake (`LocalCommit`). If replication 
 committing thread *withdraws*: it rolls back, and should the entry commit anyway the apply thread finds no claim and
 applies it from its own WAL bytes, as a follower would. If the apply thread *claimed* first, a timeout learned
 afterwards is not an unknown outcome any more: the entry committed, its pages are published, and `commit()`
-completes. This retires the origin-skip, the abandoned marks of #4790/#6848 and the phase-2 tickets of #5407/#5410
+completes. The apply thread recognises its own transaction by the bytes: the registration carries the WAL the
+transaction shipped, and an entry is claimed only when it carries the same. No origin marker, client id or Ratis
+context is involved, so the match holds across a step-down, a Raft client rebuild or an in-place Ratis restart, and
+a colliding transaction id from another node cannot be mistaken for it. This retires the origin-skip, the abandoned marks of #4790/#6848 and the phase-2 tickets of #5407/#5410
 in one go - the applied index is the durable position on the leader exactly as it is on a follower, so
 `takeSnapshot` no longer clamps. The `arcadedb.ha.phase2.*` gauges keep their names and now count registered
 transactions the apply thread has not reached; the replay floor is always `-1`.
@@ -58,13 +61,19 @@ transactions the apply thread has not reached; the replay floor is always `-1`.
 **Local validation sees the ledger too.** `PageManager.checkPageVersion` consults
 `LocalDatabase.getPageVersionReservations()`, which the state machine installs on the leader: a transaction on the
 leader that touches a page reserved by an in-flight entry fails its own phase 1 with the same retryable error, one
-round trip earlier. A standalone database and every replica pay one volatile read.
+round trip earlier. A standalone database and every replica pay one volatile read. The hook resolves the ledger
+through the Raft server on every call rather than binding one state machine instance, because an in-place Ratis
+restart replaces the state machine without closing the databases. Only phase 1 consults it: the phase-2 bump
+(`updatePageVersion`) runs at the entry's own log position, where the only reservation it could find is the entry's,
+and the direct writers that reach it (compaction, bloom filters, vector graphs) are the #7438 window.
 
-**A refused replica waits for the page to catch up.** A replica whose apply trails the leader by a couple of entries
+**A refused node waits for the page to catch up.** A replica whose apply trails the leader by a couple of entries
 would otherwise re-read the same stale page and be refused every time while the leader keeps writing it - the
-reproducer showed thousands of refusals per increment. The refusal carries the page and the version the cluster is
-at, and `RaftReplicatedDatabase` waits (bounded) for the local copy to reach it before returning the conflict, which
-turns a starvation into a fair race.
+reproducer showed thousands of refusals per increment - and the leader itself is refused when a replica's entry
+reserved the page between its phase 1 and its submission. The refusal carries the page and the version the cluster is
+at in a machine-readable header ahead of the prose (Ratis carries a refusal by class name and message only), and
+`RaftReplicatedDatabase` waits (bounded) for the local copy to reach it before returning the conflict, which turns a
+starvation into a fair race.
 
 ### What the committing thread waits for
 
@@ -94,8 +103,16 @@ permit; that is where the validation lives, and pre-append only confirms.
 
 Two consequences of validating before the append are handled in the ledger: Ratis retries a request it could not
 append with the same client id and call id, so a reservation remembers the entry that made it and the retry is
-accepted as the same entry; and a request dropped between the reservation and the append leaves a reservation
-nothing will confirm, which is discarded once it is 30 seconds old and unconfirmed.
+accepted as the same entry (refreshing it); and a request dropped between the reservation and the append leaves a
+reservation nothing will confirm, which is discarded once it is unconfirmed for three client request timeouts. Should
+a delayed request reach its append after its page was taken over, the append-time ownership check refuses it - the
+one refusal that does cost a permit, reserved for a window only a wedged leader opens.
+
+The ledger's check-then-act runs under a per-database monitor. The local copy of a page is read outside it (a disk
+read on a cache miss) and trusted under it only if no entry was applied in between, which a per-database release
+counter tells; otherwise the page is re-read under the monitor, where it is a cache hit unless the apply that
+invalidated the read also evicted it - in which case that one read is needed anyway. Under sustained load the counter
+moves often, and what that costs is a cache lookup per page under the lock, not a disk read.
 
 The Ratis client logs each refusal as a SEVERE with a stack trace (`OrderedAsync`); `RatisRefusedEntryErrorFilter`
 drops that one record, the same way `RatisSnapshotDigestWarningFilter` drops the snapshot-digest warning. The client

@@ -235,6 +235,20 @@ class PageVersionLedgerTest {
     assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(-1);
   }
 
+  /** The header walk and the full deserialization read the same layout: they must agree, page by page. */
+  @Test
+  void theHeaderWalkAgreesWithTheFullDeserialization() {
+    final byte[] entry = wal(9, new Page(3, 0, 4), new Page(3, 0, 4), new Page(7, 12, 1));
+    final PageVersionLedger.Pages pages = PageVersionLedger.parse(entry);
+    final com.arcadedb.engine.WALFile.WALTransaction full = ArcadeStateMachine.deserializeWalTransaction(entry);
+    assertThat(pages.count()).isEqualTo(full.pages.length);
+    for (int i = 0; i < pages.count(); i++) {
+      assertThat(pages.fileIds()[i]).isEqualTo(full.pages[i].fileId);
+      assertThat(pages.pageNumbers()[i]).isEqualTo(full.pages[i].pageNumber);
+      assertThat(pages.versions()[i]).isEqualTo(full.pages[i].currentPageVersion);
+    }
+  }
+
   @Test
   void refusesACorruptedEntry() {
     assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(new byte[3]), entry(1), localVersions))

@@ -23,7 +23,6 @@ import org.apache.ratis.protocol.exceptions.StateMachineException;
 
 import java.util.logging.Filter;
 import java.util.logging.LogRecord;
-import java.util.logging.Logger;
 
 /**
  * Suppresses the SEVERE record, complete with stack trace, that the Apache Ratis client logs through
@@ -42,47 +41,30 @@ import java.util.logging.Logger;
  * record is noise that would bury the genuine send failures the same logger reports.
  *
  * <p>Only a record whose attached throwable carries a {@link StateMachineException} caused by a
- * {@link NeedRetryException} is dropped; every other failure of that logger stays visible. Like
- * {@link RatisSnapshotDigestWarningFilter}, this relies on Ratis logging through SLF4J bound to
- * {@code java.util.logging}, and fails open otherwise.
+ * {@link NeedRetryException} is dropped; every other failure of that logger stays visible. See
+ * {@link RatisLogRecordFilter} for what the muting relies on.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public final class RatisRefusedEntryErrorFilter implements Filter {
+public final class RatisRefusedEntryErrorFilter extends RatisLogRecordFilter {
   /** The Ratis logger that emits the record. Matches the class name Ratis logs under. */
   public static final String RATIS_ORDERED_ASYNC_LOGGER = "org.apache.ratis.client.impl.OrderedAsync";
 
   /** How deep a cause chain is walked; deeper than any real chain, and a guard against a cyclic one. */
   private static final int MAX_CAUSE_DEPTH = 32;
 
-  private static final Object INSTALL_LOCK = new Object();
-
-  /** A strong reference to the configured logger: {@code java.util.logging.LogManager} keeps only a weak one. */
-  @SuppressWarnings("unused")
-  private static Logger pinnedLogger;
-
-  private final Filter delegate;
-
   RatisRefusedEntryErrorFilter(final Filter delegate) {
-    this.delegate = delegate;
+    super(delegate);
   }
 
   /** Installs the filter on the Ratis logger, chaining to whatever filter it already carried. Idempotent. */
   public static void install() {
-    synchronized (INSTALL_LOCK) {
-      final Logger logger = Logger.getLogger(RATIS_ORDERED_ASYNC_LOGGER);
-      pinnedLogger = logger;
-      if (logger.getFilter() instanceof RatisRefusedEntryErrorFilter)
-        return;
-      logger.setFilter(new RatisRefusedEntryErrorFilter(logger.getFilter()));
-    }
+    install(RATIS_ORDERED_ASYNC_LOGGER, RatisRefusedEntryErrorFilter.class, RatisRefusedEntryErrorFilter::new);
   }
 
   @Override
-  public boolean isLoggable(final LogRecord record) {
-    if (refusedBeforeAppend(record.getThrown()) != null)
-      return false;
-    return delegate == null || delegate.isLoggable(record);
+  protected boolean drops(final LogRecord record) {
+    return refusedBeforeAppend(record.getThrown()) != null;
   }
 
   /**
@@ -97,9 +79,5 @@ public final class RatisRefusedEntryErrorFilter implements Filter {
       if (t instanceof StateMachineException refusal && refusal.getCause() instanceof NeedRetryException conflict)
         return conflict;
     return null;
-  }
-
-  Filter getDelegate() {
-    return delegate;
   }
 }

@@ -84,8 +84,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
@@ -158,6 +156,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile ArcadeStateMachine      stateMachine;
   private final    ClusterMonitor          clusterMonitor;
   private final    Quorum                  quorum;
+  /**
+   * The RPC timeout of this node's own Raft client: a request unanswered for this long is retried with the same call
+   * id. {@link PageVersionLedger#STALE_RESERVATION_MS} is derived from it, since a retry refreshes the reservation.
+   */
+  public static final long CLIENT_REQUEST_TIMEOUT_MS = 10_000L;
+
   private final    long                    quorumTimeout;
   private final    RaftGroup               raftGroup;
   private final    RaftPeerId              localPeerId;
@@ -206,13 +210,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // still copies it to a local before use so a concurrent reassignment cannot null it mid-method.
   private volatile RaftServer                raftServer;
   private          RaftClient                raftClient;
-  // The client ids this node used to submit entries, most recent last: the state machine recognises an entry this node
-  // originated by it even when the entry is applied with a fresh context, e.g. after a step-down (issue #6965). A
-  // client is rebuilt on leader changes and transport recovery, so the set is bounded to the last few ids - an entry
-  // outlives its client only for the round trip it is in flight for.
-  private final    Set<ByteString>           ownClientIds          = ConcurrentHashMap.newKeySet();
-  private final    Deque<ByteString>         ownClientIdOrder      = new ArrayDeque<>();
-  private static final int                   OWN_CLIENT_IDS_KEPT   = 16;
   private volatile RaftProperties            raftProperties;
   private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
@@ -1023,7 +1020,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     this.raftProperties = properties;
 
-    raftClient = adoptClient(buildRaftClient(raftGroup, properties, parameters));
+    raftClient = buildRaftClient(raftGroup, properties, parameters);
 
     LogManager.instance()
         .log(this, Level.INFO, "Raft cluster joined: %d nodes %s", peerDisplayNames.size(), peerDisplayNames.values());
@@ -1553,7 +1550,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             .build();
         this.raftServer.start();
         this.raftProperties = properties;
-        this.raftClient = adoptClient(buildRaftClient(raftGroup, properties, recoveryParameters));
+        this.raftClient = buildRaftClient(raftGroup, properties, recoveryParameters);
 
         final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
         final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
@@ -1763,24 +1760,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return raftClient;
   }
 
-  /** Whether a Raft client id (as carried by a log entry) belongs to a client this node created in its lifetime. */
-  public boolean isOwnClientId(final ByteString clientId) {
-    return clientId != null && ownClientIds.contains(clientId);
-  }
-
-  private RaftClient adoptClient(final RaftClient client) {
-    if (client == null)
-      return null;
-    final ByteString id = client.getId().toByteString();
-    synchronized (ownClientIdOrder) {
-      if (ownClientIds.add(id)) {
-        ownClientIdOrder.addLast(id);
-        while (ownClientIdOrder.size() > OWN_CLIENT_IDS_KEPT)
-          ownClientIds.remove(ownClientIdOrder.removeFirst());
-      }
-    }
-    return client;
-  }
 
   public RaftTransactionBroker getTransactionBroker() {
     return transactionBroker;
@@ -1815,7 +1794,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // no broker is available to concurrent callers (the field is volatile).
     final RaftClient oldClient = raftClient;
 
-    raftClient = adoptClient(buildRaftClient(raftGroup, raftProperties, raftParameters, knownLeaderId));
+    raftClient = buildRaftClient(raftGroup, raftProperties, raftParameters, knownLeaderId);
 
     if (transactionBroker != null) {
       final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
@@ -2806,7 +2785,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final Parameters parameters, final RaftPeerId knownLeaderId) {
     // Set the client-side RPC timeout to match the quorum timeout so a slow leader response
     // does not trigger a premature TimeoutIOException before the commit completes.
-    RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
+    RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(CLIENT_REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS));
     final RaftClient.Builder builder = RaftClient.newBuilder()
         .setRaftGroup(group)
         .setProperties(properties)

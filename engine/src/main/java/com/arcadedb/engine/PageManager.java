@@ -1391,12 +1391,13 @@ public class PageManager extends LockContext {
   }
 
   /**
-   * The phase-2 half of the version check: validates against the local copy only, deliberately. On a replicated leader
-   * this runs on the Raft apply thread at the entry's own log position, so the reservation
-   * {@link #checkPageVersion} consults (#6965) would be this very entry's; the direct writers that also come through
-   * here (index compaction, bloom filters, vector graphs) run under the database write lock or on files no replicated
-   * entry can target while they run, and the leader-side DDL exclusion for the pages they rewrite is tracked as a
-   * follow-up of #6965.
+   * The phase-2 half of the version check: validates against the local copy only, by design. On a replicated leader
+   * this runs on the Raft apply thread at the entry's own log position, where the only reservation
+   * {@link #checkPageVersion} could find for the page (#6965) is this very entry's, so consulting the reservations
+   * here would refuse every replicated commit. The direct writers that also come through here (index compaction,
+   * bloom filters, vector graphs) are therefore NOT checked against in-flight replicated entries: they run under the
+   * database write lock, which excludes local committers but not replica entries, and closing that window is the
+   * cluster-wide DDL exclusion tracked as #7438.
    */
   public MutablePage updatePageVersion(final MutablePage page, final boolean isNew) throws IOException, InterruptedException {
     final PageId pageId = page.getPageId();

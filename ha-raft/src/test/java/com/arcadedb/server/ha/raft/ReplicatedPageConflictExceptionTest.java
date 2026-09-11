@@ -36,8 +36,8 @@ class ReplicatedPageConflictExceptionTest {
   void theFieldsSurviveTheMessageRoundTrip() {
     final ReplicatedPageConflictException original = new ReplicatedPageConflictException("graph", 28, 3, 1136, 1137);
     assertThat(original).isInstanceOf(ConcurrentModificationException.class).isInstanceOf(NeedRetryException.class);
-    assertThat(original.getMessage()).contains("28/3").contains("'graph'").contains("version 1136").contains("version 1137")
-        .contains("retry");
+    assertThat(original.getMessage()).startsWith("[6965 db='graph' page=28/3 base=1136 cluster=1137] ")
+        .contains("version 1136").contains("version 1137").contains("retry");
 
     // What the Ratis client rebuilds on the originating node.
     final ReplicatedPageConflictException rebuilt = new ReplicatedPageConflictException(original.getMessage());
@@ -55,5 +55,14 @@ class ReplicatedPageConflictExceptionTest {
     assertThat(rebuilt.getDatabaseName()).isNull();
 
     assertThat(new ReplicatedPageConflictException((String) null).getClusterVersion()).isEqualTo(-1);
+  }
+
+  /** Only the header is parsed: the prose after it can be reworded without touching the reconstruction. */
+  @Test
+  void theProseCanChangeWithoutBreakingTheReconstruction() {
+    final ReplicatedPageConflictException rebuilt = new ReplicatedPageConflictException(
+        "[6965 db='graph' page=28/3 base=1136 cluster=1137] whatever the humans read next");
+    assertThat(rebuilt.getClusterVersion()).isEqualTo(1137);
+    assertThat(rebuilt.getFileId()).isEqualTo(28);
   }
 }
