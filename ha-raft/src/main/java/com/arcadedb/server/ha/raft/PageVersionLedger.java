@@ -64,12 +64,14 @@ final class PageVersionLedger {
   /**
    * How long an unconfirmed reservation is trusted. The confirmation follows the reservation on the same request
    * thread, straight into the log append (permit acquisition and the append itself, nothing that waits on the
-   * network), so anything older than this is a request Ratis dropped in between. The bound is a trade-off: too short
-   * and a leader whose append pipeline stalls for that long could accept a second entry on a page the first one still
-   * holds unconfirmed; too long and a dropped request fences its pages for that long. Thirty seconds is an order of
-   * magnitude above any append that is not itself a symptom of a wedged leader.
+   * network), so anything older than this is a request Ratis dropped in between. A request still alive is retried by
+   * the client with the same call id after {@link RaftHAServer#CLIENT_REQUEST_TIMEOUT_MS}, and a retry refreshes the
+   * reservation, which is why the bound is a multiple of that timeout rather than a number of its own. The trade-off
+   * behind the multiple: too short and a leader whose append pipeline stalls for that long could accept a second entry
+   * on a page the first one still holds unconfirmed (which the append-time ownership check then refuses, at the cost
+   * of a Ratis permit); too long and a dropped request fences its pages for that long.
    */
-  static final long STALE_RESERVATION_MS = 30_000L;
+  static final long STALE_RESERVATION_MS = 3 * RaftHAServer.CLIENT_REQUEST_TIMEOUT_MS;
 
   private static final int WAL_TX_HEADER_SIZE   = 2 * Long.BYTES + 2 * Integer.BYTES;
   private static final int WAL_PAGE_HEADER_SIZE = 6 * Integer.BYTES;

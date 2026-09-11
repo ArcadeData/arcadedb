@@ -61,6 +61,7 @@ final class LocalCommit {
   private final long                              walTxId;
   private final TransactionContext                tx;
   private final TransactionContext.TransactionPhase1 phase1;
+  private final byte[]                            walData;
   private final long                              registeredAtMs = System.currentTimeMillis();
   private final AtomicReference<State>            state          = new AtomicReference<>(State.REGISTERED);
   private final CountDownLatch                    concluded      = new CountDownLatch(1);
@@ -68,11 +69,12 @@ final class LocalCommit {
   private volatile boolean                        reconciled;
 
   LocalCommit(final String databaseName, final long walTxId, final TransactionContext tx,
-      final TransactionContext.TransactionPhase1 phase1) {
+      final TransactionContext.TransactionPhase1 phase1, final byte[] walData) {
     this.databaseName = databaseName;
     this.walTxId = walTxId;
     this.tx = tx;
     this.phase1 = phase1;
+    this.walData = walData;
   }
 
   String databaseName() {
@@ -89,6 +91,11 @@ final class LocalCommit {
 
   TransactionContext.TransactionPhase1 phase1() {
     return phase1;
+  }
+
+  /** The WAL bytes the transaction shipped: what identifies its entry when the apply thread reaches it. */
+  byte[] walData() {
+    return walData;
   }
 
   long registeredAtMs() {

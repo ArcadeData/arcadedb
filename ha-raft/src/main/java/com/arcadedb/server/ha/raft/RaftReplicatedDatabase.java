@@ -592,9 +592,28 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   // @VisibleForTesting
   void replicateAndCommitLocally(final ReplicationPayload payload, final boolean leader, final ArcadeStateMachine stateMachine) {
     final LocalCommit local = leader && stateMachine != null ?
-        stateMachine.registerLocalCommit(new LocalCommit(getName(), localWalTxId(payload), payload.tx(), payload.phase1())) :
+        new LocalCommit(getName(), localWalTxId(payload), payload.tx(), payload.phase1(), payload.walData()) :
         null;
+    if (local != null && !stateMachine.registerLocalCommit(local)) {
+      // The WAL transaction id is a per-database counter: a second registration under the same id is a bug, and
+      // proceeding on a slot another commit owns would let the apply thread publish the wrong pages.
+      rollback();
+      throw new TransactionException("Transaction id " + local.walTxId() + " on database '" + getName()
+          + "' is already being replicated; this indicates a WAL transaction id collision");
+    }
 
+    try {
+      replicateAndConclude(payload, leader, stateMachine, local);
+    } finally {
+      // Whatever exit was taken above, nothing may stay registered: a claim consumed it, a withdrawal removed it, and an
+      // Error that skipped both is withdrawn here (a no-op on anything already claimed or withdrawn).
+      if (local != null)
+        stateMachine.withdrawLocalCommit(local);
+    }
+  }
+
+  private void replicateAndConclude(final ReplicationPayload payload, final boolean leader, final ArcadeStateMachine stateMachine,
+      final LocalCommit local) {
     // --- REPLICATION (no lock held): send WAL to Raft and wait for quorum ---
     long committedLogIndex = -1;
     try {
@@ -631,10 +650,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // issue #6965). The entry never reached the log, unless the apply thread proves otherwise by holding a claim.
       if (local == null || stateMachine.withdrawLocalCommit(local)) {
         rollback();
-        if (!leader && e instanceof ReplicatedPageConflictException conflict)
-          // The page this replica validated against is behind the log: the retry only stands a chance once the entry
-          // that moved it on is applied here, and with the apply trailing the leader by a couple of entries a retry
-          // that does not wait is refused every time. Cheaper than a refused round trip.
+        if (e instanceof ReplicatedPageConflictException conflict)
+          // The page this node validated against is behind the log: the retry only stands a chance once the entry
+          // that moved it on is applied here. On a replica the apply trails the leader by a couple of entries and a
+          // retry that does not wait is refused every time; on the leader the entry that took the page over is still
+          // in flight for a few milliseconds. Either way, waiting is cheaper than a refused round trip.
           awaitPageVersion(conflict);
         throw e;
       }
@@ -713,6 +733,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   /** Upper bound on the wait for a refused page to catch up locally: a committed entry is a heartbeat away, not more. */
   private static final long CONFLICT_CATCH_UP_TIMEOUT_MS = 2_000L;
 
+  /** With the default 10 s quorum timeout, one warning per minute per stalled committer after the first. */
+  private static final int PUBLICATION_WAIT_WARN_EVERY_CYCLES = 6;
+
   /** Best effort: waits for the page the leader refused this replica on to reach, locally, the version the cluster is at. */
   private void awaitPageVersion(final ReplicatedPageConflictException conflict) {
     final RaftHAServer raft = raftHAServer;
@@ -772,18 +795,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         }
 
         final Throwable failure = local.failure();
-        LogManager.instance().log(this, Level.SEVERE, phase2CommitFailureMessage(failure), getName(), payload.tx(),
-            failure.getMessage());
         // Same failure regime commit2ndPhase applies inline: fence past the WAL append, release without touching the
         // record identities the cluster committed.
         payload.tx().concludeFailedPhase2(failure);
-        recoverLeadershipAfterPhase2Failure(payload.tx().toString());
-        // #5064: the user must be able to distinguish 'retry me' from 'already committed cluster-wide'.
-        final String reconcileOutcome = local.reconciled() ? " (local pages reconciled from the replicated payload)"
-            : " (local reconciliation ALSO failed - this node steps down and repairs on rejoin)";
-        throw new TransactionCommittedRemotelyException(
-            "Transaction " + payload.tx() + " is committed cluster-wide but the local apply failed"
-                + reconcileOutcome + ". Do NOT retry: reload the records and continue", failure);
+        throw committedRemotelyButNotApplied(payload, failure, local.reconciled());
       } finally {
         current.popIfNotLastTransaction();
       }
@@ -802,14 +817,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         server != null ? server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT) : 10_000L);
     boolean interrupted = false;
     try {
-      while (true) {
+      for (int cycles = 0; ; cycles++) {
         try {
           final LocalCommit.Outcome outcome = local.awaitOutcome(timeout);
           if (outcome != LocalCommit.Outcome.PENDING)
             return outcome;
-          LogManager.instance().log(this, Level.WARNING,
-              "Still waiting for the state machine to publish the pages of tx %d on database '%s' (registered %d ms ago)",
-              local.walTxId(), getName(), System.currentTimeMillis() - local.registeredAtMs());
+          // A stalled apply thread holds every committing thread of the node here: the first timeout is worth a line
+          // from each of them, the following ones one line per minute or so, not one per thread per timeout.
+          if (cycles == 0 || cycles % PUBLICATION_WAIT_WARN_EVERY_CYCLES == 0)
+            LogManager.instance().log(this, Level.WARNING,
+                "Still waiting for the state machine to publish the pages of tx %d on database '%s' (registered %d ms ago)",
+                local.walTxId(), getName(), System.currentTimeMillis() - local.registeredAtMs());
         } catch (final InterruptedException e) {
           interrupted = true;
         }
@@ -860,23 +878,31 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, phase2CommitFailureMessage(e), getName(), payload.tx(), e.getMessage());
         // NOTE (#5075 review): this catch also fires when commit2ndPhase SUCCEEDED and only the
         // saveConfiguration() after it threw. Reconciling then replays the payload WAL against pages the
         // commit already published - safe by the #4926 replay semantics: an equal-version entry re-applies
         // the same absolute bytes (idempotent), a lower-version one is skipped.
-        final boolean reconciled = reconcileLeaderPagesAfterPhase2Failure(payload);
-        recoverLeadershipAfterPhase2Failure(payload.tx().toString());
-        final String reconcileOutcome = reconciled ? " (local pages reconciled from the replicated payload)"
-            : " (local reconciliation ALSO failed - this node steps down and repairs on rejoin)";
-        throw new TransactionCommittedRemotelyException(
-            "Transaction " + payload.tx() + " is committed cluster-wide but the local apply failed"
-                + reconcileOutcome + ". Do NOT retry: reload the records and continue", e);
+        throw committedRemotelyButNotApplied(payload, e, reconcileLeaderPagesAfterPhase2Failure(payload));
       } finally {
         current.popIfNotLastTransaction();
       }
       return null;
     });
+  }
+
+  /**
+   * The one way a phase-2 failure after a cluster-wide commit is reported (issue #5064): logged at SEVERE, this leader
+   * steps down, and the caller learns that the transaction IS committed and must not be retried.
+   */
+  private TransactionCommittedRemotelyException committedRemotelyButNotApplied(final ReplicationPayload payload,
+      final Throwable failure, final boolean reconciled) {
+    LogManager.instance().log(this, Level.SEVERE, phase2CommitFailureMessage(failure), getName(), payload.tx(), failure.getMessage());
+    recoverLeadershipAfterPhase2Failure(payload.tx().toString());
+    final String reconcileOutcome = reconciled ? " (local pages reconciled from the replicated payload)"
+        : " (local reconciliation ALSO failed - this node steps down and repairs on rejoin)";
+    return new TransactionCommittedRemotelyException(
+        "Transaction " + payload.tx() + " is committed cluster-wide but the local apply failed" + reconcileOutcome
+            + ". Do NOT retry: reload the records and continue", failure);
   }
 
   /** The local state machine, or {@code null} when the Raft server is not wired yet (e.g. during startup). */

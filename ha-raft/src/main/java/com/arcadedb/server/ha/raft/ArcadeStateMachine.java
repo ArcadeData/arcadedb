@@ -27,6 +27,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
@@ -758,12 +759,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
         && newTI.getTerm() < oldTI.getTerm();
   }
 
-  /** Whether the entry was submitted by one of the Raft clients this node created in its lifetime. */
-  private boolean isOwnClientEntry(final LogEntryProto entry) {
-    final RaftHAServer raft = this.raftHAServer;
-    return raft != null && entry.hasStateMachineLogEntry() && raft.isOwnClientId(entry.getStateMachineLogEntry().getClientId());
-  }
-
   /**
    * Called by Ratis on the leader when a client request is received, before the entry is
    * replicated. Sets a marker in the {@link TransactionContext} so that {@link #applyTransaction}
@@ -917,11 +912,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
       applyWithRetry(index, decoded.databaseName(), () -> {
         switch (decoded.type()) {
-        // A transaction entry also counts as this node's own when its client id is one of this node's, whatever the
-        // context says: after a step-down, an entry this node appended is applied here with a fresh context, and the
-        // committing thread may still be waiting for it.
-        case TX_ENTRY -> applyTxEntry(decoded, index, originatedLocally || isOwnClientEntry(entry),
-            context instanceof AppendedEntry appended ? appended.pages() : null);
+        case TX_ENTRY -> applyTxEntry(decoded, index, context instanceof AppendedEntry appended ? appended.pages() : null);
         case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
         case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
         case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
@@ -1772,7 +1763,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Registers a transaction this node originated, right before its entry is dispatched to Raft: the apply thread will
    * claim it when the entry reaches its position in the log and publish the prepared pages there (issue #6965).
    */
-  LocalCommit registerLocalCommit(final LocalCommit commit) {
+  boolean registerLocalCommit(final LocalCommit commit) {
     return localCommits.register(commit);
   }
 
@@ -1792,8 +1783,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * machine, where no Ratis apply thread exists to claim the transaction.
    */
   // @VisibleForTesting
-  LocalCommit claimLocalCommit(final String databaseName, final long walTxId) {
-    return localCommits.claim(databaseName, walTxId);
+  LocalCommit claimLocalCommit(final String databaseName, final long walTxId, final byte[] walData) {
+    return localCommits.claim(databaseName, walTxId, walData);
   }
 
   /** Transactions this node originated whose entry the apply thread has not reached yet. */
@@ -1884,12 +1875,36 @@ public class ArcadeStateMachine extends BaseStateMachine {
     pageVersions.release(databaseName, null, walData);
   }
 
+  /**
+   * The reservations the engine's phase-1 check consults, resolved through the Raft server on every call: an in-place
+   * Ratis restart replaces the state machine, and with it the ledger, without closing the databases, so a hook bound
+   * to one state machine instance would keep consulting a ledger nothing writes to any more.
+   */
+  private static final class LedgerReservations implements PageVersionReservations {
+    private final String             databaseName;
+    private final RaftHAServer       raft;
+    private final ArcadeStateMachine fallback;
+
+    private LedgerReservations(final String databaseName, final RaftHAServer raft, final ArcadeStateMachine fallback) {
+      this.databaseName = databaseName;
+      this.raft = raft;
+      this.fallback = fallback;
+    }
+
+    @Override
+    public int reservedVersion(final PageId pageId) {
+      final ArcadeStateMachine current = raft != null ? raft.getStateMachine() : null;
+      return (current != null ? current : fallback).pageVersions.reservedVersion(databaseName, pageId.getFileId(),
+          pageId.getPageNumber());
+    }
+  }
+
   /** The database an entry targets, or {@code null} when it cannot be resolved here (the entry is then refused). */
   private DatabaseInternal databaseForValidation(final String databaseName) {
-    if (server == null || databaseName == null)
+    if (databaseName == null)
       return null;
     try {
-      return (DatabaseInternal) server.getDatabase(databaseName);
+      return databaseFor(databaseName);
     } catch (final RuntimeException e) {
       LogManager.instance().log(this, Level.FINE,
           "Cannot resolve database '%s' to validate a transaction entry before append: %s", databaseName, e.getMessage());
@@ -1903,9 +1918,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * without waiting for the round trip (see {@link com.arcadedb.engine.PageVersionReservations}).
    */
   private PageVersionLedger.LocalVersions localVersionsOf(final DatabaseInternal db) {
-    if (db.getEmbedded() instanceof LocalDatabase local && local.getPageVersionReservations() == null)
-      local.setPageVersionReservations(
-          pageId -> pageVersions.reservedVersion(local.getName(), pageId.getFileId(), pageId.getPageNumber()));
+    if (db.getEmbedded() instanceof LocalDatabase local && !(local.getPageVersionReservations() instanceof LedgerReservations))
+      local.setPageVersionReservations(new LedgerReservations(local.getName(), raftHAServer, this));
 
     final FileManager fileManager = db.getFileManager();
     final PageManager pageManager = db.getPageManager();
@@ -1947,12 +1961,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * leader's own commit can no longer race the apply of a neighbouring entry. Should the committing thread have
    * withdrawn the transaction in the meantime (it gave up on an unknown replication outcome and rolled back), or
    * should this be a replay after a restart, the entry is applied from its own WAL bytes like any follower does: the
-   * page-version guards in {@code applyChanges} make that idempotent.
+   * page-version guards in {@code applyChanges} make that idempotent. The context's origin marker plays no part
+   * here: the entry is matched to the registered transaction by its bytes.
    */
   private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
-      final boolean originatedLocally, final PageVersionLedger.Pages pages) {
+      final PageVersionLedger.Pages pages) {
     final String databaseName = decoded.databaseName();
-    final LocalCommit local = originatedLocally ? localCommits.claim(databaseName, peekWalTransactionId(decoded.walData())) : null;
+    // A transaction this node originated is recognised by its own bytes: the registered transaction carries the WAL
+    // it shipped, and an entry is claimed only when it carries the same. No origin marker, client id or context is
+    // needed for that, so it holds whatever happened to the leadership, the Raft client or the context in between.
+    final LocalCommit local = localCommits.claim(databaseName, peekWalTransactionId(decoded.walData()), decoded.walData());
     try {
       if (local != null)
         publishLocalCommit(local, decoded, entryIndex);
@@ -1963,6 +1981,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // reservation taken at append time has done its job. A no-op on a follower, whose ledger is empty.
       pageVersions.release(databaseName, pages, decoded.walData());
     }
+  }
+
+  /**
+   * The local database a transaction entry targets. The one seam the apply of a transaction entry resolves a database
+   * through, so a unit test can drive {@link #applyTransaction} against a database it opened itself.
+   */
+  // @VisibleForTesting
+  DatabaseInternal databaseFor(final String databaseName) {
+    return (DatabaseInternal) server.getDatabase(databaseName);
   }
 
   /**
@@ -1994,8 +2021,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
             "Publishing the pages of locally-originated tx %d on database '%s' failed at log index %d after the entry was "
                 + "committed cluster-wide; reconciling the local pages from the replicated payload: %s",
             local.walTxId(), decoded.databaseName(), entryIndex, t.getMessage());
-        final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
-        db.getTransactionManager().applyChanges(deserializeWalTransaction(decoded.walData()), decoded.bucketRecordDelta(), true);
+        databaseFor(decoded.databaseName()).getTransactionManager()
+            .applyChanges(deserializeWalTransaction(decoded.walData()), decoded.bucketRecordDelta(), true);
         reconciled = true;
       } catch (final Error reconcileError) {
         throw reconcileError;
@@ -2020,7 +2047,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * this node, which is state divergence: it triggers a snapshot resync instead of being skipped.
    */
   private void applyReplicatedTransaction(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
-    final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
+    final DatabaseInternal db = databaseFor(decoded.databaseName());
     final WALFile.WALTransaction walTx = deserializeWalTransaction(decoded.walData());
 
     HALog.log(this, HALog.DETAILED, "Applying tx %d to database '%s' (pages=%d)",

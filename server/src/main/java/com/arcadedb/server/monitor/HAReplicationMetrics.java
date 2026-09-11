@@ -109,27 +109,27 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
   }
 
   /**
-   * Registers the phase-2 hold gauges (issue #5410). A locally-originated entry that Raft committed
-   * but this node has not written yet holds the snapshot checkpoint back so it stays replayable
-   * (issue #5407). A hold that never clears pins Raft log purging until the node restarts, which
-   * surfaces to operators as a Raft log that stops shrinking (issue #5345). Without these gauges the
-   * only signal is a throttled WARNING emitted at most once per compaction interval.
+   * Registers the leader-side phase-2 gauges (issue #5410). Since #6965 the pages of a transaction this node
+   * originated are published by the Raft apply thread at the entry's log position, before the applied index moves
+   * past it, so nothing holds the snapshot checkpoint back any more: {@code pending} and {@code oldest_held_ms}
+   * now describe the transactions the apply thread has not reached yet, and {@code lowest_replay_floor} is kept at
+   * {@code -1} only so existing dashboards keep working.
    */
   private void bindPendingPhase2Gauges(final MeterRegistry registry) {
     Gauge.builder("arcadedb.ha.phase2.pending", () -> pendingPhase2().pending())
-        .description("Local phase-2 applies still holding the Raft snapshot checkpoint back. "
-            + "Sustained non-zero means log compaction is pinned until this node restarts.")
+        .description("Transactions this node originated whose pages the Raft apply thread has not published yet "
+            + "(the leader-side phase 2 in flight). Sustained growth means the apply thread is not keeping up.")
         .register(registry);
 
     Gauge.builder("arcadedb.ha.phase2.oldest_held_ms", () -> pendingPhase2().oldestHeldMs())
-        .description("Age (ms) of the oldest phase-2 hold; 0 when none. A value that keeps growing "
-            + "identifies a stuck hold rather than ordinary in-flight commits.")
+        .description("Age (ms) of the oldest such transaction; 0 when none. A value that keeps growing "
+            + "identifies a stalled apply rather than ordinary in-flight commits.")
         .baseUnit("milliseconds")
         .register(registry);
 
     Gauge.builder("arcadedb.ha.phase2.lowest_replay_floor", () -> pendingPhase2().lowestReplayFloor())
-        .description("Raft index past which the log cannot be purged while a phase-2 hold is "
-            + "outstanding; -1 when nothing is held.")
+        .description("Kept for dashboard stability: since #6965 the pages of a local transaction are published "
+            + "before the applied index moves past its entry, so no snapshot checkpoint is ever held back; always -1.")
         .register(registry);
   }
 

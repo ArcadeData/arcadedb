@@ -30,14 +30,18 @@ import java.util.regex.Pattern;
  * originating replica can wait for that version to be applied locally before letting the caller retry - otherwise a
  * replica whose apply trails the leader by a couple of entries keeps re-reading a stale page and is refused again.
  * <p>
- * Ratis carries the cause of a state machine refusal to the client by class name and message, and rebuilds it through
- * the {@code (String)} constructor: the fields therefore live in the message and are parsed back out of it.
+ * Ratis carries the cause of a state machine refusal to the client by class name and message only, and rebuilds it
+ * through the {@code (String)} constructor: the fields therefore travel in a fixed machine-readable header at the front
+ * of the message, ahead of the prose, and only that header is parsed back.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ReplicatedPageConflictException extends ConcurrentModificationException {
-  private static final Pattern MESSAGE = Pattern.compile(
-      "Concurrent modification on page (\\d+)/(\\d+) of database '([^']*)': the transaction was validated against version (\\d+) but the cluster is at version (\\d+)");
+  /**
+   * The machine-readable header the fields travel in, ahead of the prose: {@code [6965 db='x' page=f/p base=b cluster=c] }.
+   * Only the header is parsed back, so the prose after it can change freely.
+   */
+  private static final Pattern HEADER = Pattern.compile("^\\[6965 db='([^']*)' page=(\\d+)/(\\d+) base=(\\d+) cluster=(\\d+)] ");
 
   private final int    fileId;
   private final int    pageNumber;
@@ -46,7 +50,8 @@ public class ReplicatedPageConflictException extends ConcurrentModificationExcep
 
   public ReplicatedPageConflictException(final String databaseName, final int fileId, final int pageNumber, final int baseVersion,
       final int clusterVersion) {
-    super("Concurrent modification on page " + fileId + "/" + pageNumber + " of database '" + databaseName
+    super("[6965 db='" + databaseName + "' page=" + fileId + "/" + pageNumber + " base=" + baseVersion + " cluster=" + clusterVersion
+        + "] Concurrent modification on page " + fileId + "/" + pageNumber + " of database '" + databaseName
         + "': the transaction was validated against version " + baseVersion + " but the cluster is at version " + clusterVersion
         + ". Please retry the operation");
     this.databaseName = databaseName;
@@ -58,11 +63,11 @@ public class ReplicatedPageConflictException extends ConcurrentModificationExcep
   /** Rebuilds the exception from its own message, as the Ratis client does when it receives the refusal. */
   public ReplicatedPageConflictException(final String message) {
     super(message);
-    final Matcher matcher = message != null ? MESSAGE.matcher(message) : null;
+    final Matcher matcher = message != null ? HEADER.matcher(message) : null;
     if (matcher != null && matcher.find()) {
-      fileId = Integer.parseInt(matcher.group(1));
-      pageNumber = Integer.parseInt(matcher.group(2));
-      databaseName = matcher.group(3);
+      databaseName = matcher.group(1);
+      fileId = Integer.parseInt(matcher.group(2));
+      pageNumber = Integer.parseInt(matcher.group(3));
       clusterVersion = Integer.parseInt(matcher.group(5));
     } else {
       fileId = -1;
@@ -84,7 +89,7 @@ public class ReplicatedPageConflictException extends ConcurrentModificationExcep
     return pageNumber;
   }
 
-  /** The version the cluster is at for the page, or {@code -1} when the message could not be parsed. */
+  /** The version the cluster is at for the page, or {@code -1} when the message carried no header. */
   public int getClusterVersion() {
     return clusterVersion;
   }
