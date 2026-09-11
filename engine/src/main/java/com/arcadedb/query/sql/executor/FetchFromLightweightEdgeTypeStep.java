@@ -233,6 +233,8 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
    * that is 0 by construction (issue #7477).
    */
   static long countEdgesOf(final CommandContext context, final String edgeTypeName) {
+    // Reads its own instance's fields from a static method: the instance is created here and escapes nowhere, so
+    // nothing else can be mid-walk on it and there is nothing to synchronize.
     final FetchFromLightweightEdgeTypeStep walk = new FetchFromLightweightEdgeTypeStep(edgeTypeName, context);
     walk.init(context);
 
