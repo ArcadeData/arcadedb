@@ -143,14 +143,20 @@ public class ContinuousAggregateBuilder {
           database, name, query, name, sourceTypeName,
           bucketIntervalMs, finalBucketAlias, finalTsColumn);
       ca.setStatus(MaterializedViewStatus.BUILDING);
-      schema.continuousAggregates.put(name, ca);
+      // THE MONITOR GUARDS THE MAP AGAINST THE synchronized ACCESSORS, TAKEN UNDER THE WRITE LOCK THIS CALLBACK HOLDS -
+      // THE ORDER EVERY SCHEMA SAVE USES (#7457)
+      synchronized (schema) {
+        schema.continuousAggregates.put(name, ca);
+      }
       schema.saveConfiguration();
 
       // Perform initial full refresh (watermark=0 means all data)
       try {
         ContinuousAggregateRefresher.incrementalRefresh(database, ca);
       } catch (final Exception e) {
-        schema.continuousAggregates.remove(name);
+        synchronized (schema) {
+          schema.continuousAggregates.remove(name);
+        }
         try {
           schema.dropType(name);
         } catch (final Exception dropEx) {
