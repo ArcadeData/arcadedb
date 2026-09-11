@@ -25,6 +25,7 @@ import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationResult;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
@@ -139,14 +140,11 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
 
     final List<Object[]> rows = engine.query(fromTs, toTs, columnIndices, tagFilter);
 
-    // Build schema fields and columnar data
-    final List<ColumnDefinition> selectedColumns = new ArrayList<>();
-    if (columnIndices == null) {
-      selectedColumns.addAll(columns);
-    } else {
-      for (final int idx : columnIndices)
-        selectedColumns.add(columns.get(idx));
-    }
+    // Build schema fields and columnar data. The projection's indices count NON-timestamp columns and the
+    // engine always prepends the timestamp, so the selection is resolved by the same helper the /ts/query and
+    // gRPC paths use rather than by indexing the full schema with them - which named the neighbouring column
+    // and left a trailing null (issue #7305).
+    final List<ColumnDefinition> selectedColumns = TimeSeriesGateway.selectedColumns(columns, columnIndices);
 
     final JSONArray schemaFields = new JSONArray();
     for (final ColumnDefinition col : selectedColumns) {
@@ -196,7 +194,15 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
     for (int i = 0; i < requestsJson.length(); i++) {
       final JSONObject req = requestsJson.getJSONObject(i);
       final String fieldName = req.getString("field");
-      final AggregationType aggType = AggregationType.valueOf(req.getString("type"));
+      final AggregationType aggType;
+      try {
+        aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, i);
+      } catch (final IllegalArgumentException e) {
+        // An error frame, like every other per-target refusal here: this used to be the one that escaped the
+        // target loop, so a mistyped aggregation on one panel failed the whole request and blanked the panels
+        // that were fine (issue #7325).
+        return buildErrorFrame(e.getMessage());
+      }
       final String alias = req.getString("alias", fieldName + "_" + aggType.name().toLowerCase());
 
       final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);

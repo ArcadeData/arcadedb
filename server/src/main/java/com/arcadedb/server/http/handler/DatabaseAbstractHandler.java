@@ -118,6 +118,14 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     // Resolve HA database for read consistency (may be wrapped inside ServerDatabase).
     final HAReplicatedDatabase haDbForRead = resolveHAReplicatedDatabase(database);
 
+    // A handler that writes the response itself - the NDJSON streaming query encoding of issue #7306 - has
+    // already closed the output stream by the time the emitCommitIndexBookmark call below runs, so that call
+    // lands on a header map nothing will serialize again and the bookmark is silently dropped (issue #7351).
+    // Registered here rather than inside the streaming path, so it holds for any response however written and
+    // for whatever streams next. It defers to the eager call below wherever that one got there first, which is
+    // every buffered response.
+    emitCommitIndexBookmarkOnResponseCommit(exchange, haDbForRead);
+
     final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
     try {
       // Set read consistency context for HA follower reads.

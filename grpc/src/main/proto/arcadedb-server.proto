@@ -178,6 +178,195 @@ service ArcadeDbService {
 
   // Graph batch load (client-streaming)
   rpc GraphBatchLoad (stream GraphBatchChunk) returns (GraphBatchResult);
+
+  // Vector, hybrid and full-text retrieval (issue #7306). Every bound these enforce - k, ef_search, the filter
+  // length, the full-text limit, the expansion caps - is enforced by the same server-side implementation the
+  // HTTP /api/v1/vector/* routes and the MCP search tools call, so a request that is legal on one protocol is
+  // legal on all of them and rejected with the same message everywhere.
+  rpc VectorSearch   (VectorSearchRequest)   returns (VectorSearchResponse);
+  rpc HybridSearch   (HybridSearchRequest)   returns (HybridSearchResponse);
+  rpc FullTextSearch (FullTextSearchRequest) returns (FullTextSearchResponse);
+
+  // Time series (issue #7305). The streaming write is the one that matters most: time-series ingest is
+  // high-rate, small and uniformly shaped, which is the case gRPC is best suited to. The query streams its
+  // answer rather than buffering it, so a wide range is bounded by the client's consumption and not by the
+  // server's heap.
+  rpc TimeSeriesWrite       (TimeSeriesWriteRequest)      returns (TimeSeriesWriteSummary);
+  rpc TimeSeriesWriteStream (stream TimeSeriesWriteChunk) returns (TimeSeriesWriteSummary);
+  rpc TimeSeriesQuery       (TimeSeriesQueryRequest)      returns (stream TimeSeriesQueryResult);
+  rpc TimeSeriesLatest      (TimeSeriesLatestRequest)     returns (TimeSeriesLatestResponse);
+}
+
+// -----------------------------------------------------------------------------
+// Vector, hybrid and full-text retrieval (issue #7306)
+// -----------------------------------------------------------------------------
+
+message VectorSearchRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+
+  // Name of an LSM_VECTOR index, or of an LSM_SPARSE_VECTOR index when `sparse` is set.
+  string index_name = 3;
+
+  // Dense query vector, or the sparse weights matching `query_indices`. ArcadeDB does not generate embeddings.
+  repeated float query_vector = 4;
+
+  // Sparse dimension ids matching the `query_vector` weights; leave empty to use the vector's own positions.
+  // Only meaningful when `sparse` is set.
+  repeated int32 query_indices = 5;
+
+  // Maximum number of results. Bounded server-side; 0 means "use the server default".
+  int32 k = 6;
+
+  // Dense-index search beam width. Optional because 0 is a legal-looking value that is not a legal beam width,
+  // so "unset" has to be distinguishable from "zero". Rejected for a sparse index.
+  optional int32 ef_search = 7;
+
+  // Optional read-only SQL WHERE predicate applied to a bounded candidate window.
+  string filter = 8;
+
+  // Search an LSM_SPARSE_VECTOR index instead of a dense one.
+  bool sparse = 9;
+
+  // Optional externally-managed transaction (issue #7326). When it names a live transaction the search runs on
+  // that transaction's own thread, so it reads exactly what the transaction reads - matching the HTTP routes,
+  // which run inside the session's transaction whenever the request carries `arcadedb-session-id`. A non-blank
+  // id the server no longer knows is refused with FAILED_PRECONDITION rather than silently read outside it.
+  TransactionContext transaction = 15;
+}
+
+// One hit of any of the three searches. `distance` and `score` rank in opposite directions, so which of them is
+// populated is decided by the index that was searched and reported by the response's `scoring` field; a client
+// reads that rather than assuming. `sources`, `depth` and `path` are populated by HybridSearch only.
+message SearchHit {
+  string rid = 1;
+  GrpcRecord record = 2;
+
+  // Dense vector distance, lower is better. Unset (0 with has_distance false) on a scored hit.
+  optional double distance = 3;
+  // Sparse, full-text or fused score, higher is better. Unset on a distance hit.
+  optional double score = 4;
+
+  // Which retrieval legs contributed this hit: "vector", "fulltext", "expand".
+  repeated string sources = 5;
+  // Hops from the seed, for a hit the graph expansion leg contributed.
+  optional int32 depth = 6;
+  // Record ids from the seed to this hit, the seed included.
+  repeated string path = 7;
+}
+
+message VectorSearchResponse {
+  string index_name = 1;
+  bool sparse = 2;
+
+  // How the index ranks, e.g. "distance_lower_is_better:COSINE" or "score_higher_is_better:dot_product".
+  string scoring = 3;
+
+  // Size of the candidate window the search inspected, which a filtered search over-fetches into.
+  int32 candidate_limit = 4;
+
+  // True when the result window was filled, so further matches may exist: raise k to see them. False for a
+  // short result, which means the search already returned every match within `candidate_limit`.
+  bool truncated = 5;
+
+  int32 count = 6;
+  repeated SearchHit results = 7;
+}
+
+message HybridExpand {
+  repeated string edge_types = 1;
+  string direction = 2;  // "out", "in" or "both"
+  int32 max_depth = 3;
+}
+
+message HybridSearchRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+
+  string vector_index_name = 3;
+  repeated float query_vector = 4;
+  repeated int32 query_indices = 5;
+  int32 k = 6;
+  optional int32 ef_search = 7;
+  bool sparse = 8;
+
+  // Optional read-only SQL WHERE predicate applied to the vector leg's candidate window.
+  string filter = 9;
+
+  // Full-text leg. Both fields go together: half a leg is a mistake, and the server refuses it rather than
+  // silently returning a result that ignored what the caller asked for. Leave both empty to search without one.
+  string fulltext_query = 10;
+  string fulltext_index_name = 11;
+
+  // How the legs are combined. Only RRF can consume the graph expansion leg, which is ranked by traversal order
+  // and carries no score.
+  string fusion_strategy = 12;
+
+  // Per-leg weight applied to every rank contribution. The only accepted keys are "vector", "fulltext" and
+  // "expand", and a weight for a leg the request does not ask for is refused rather than ignored.
+  map<string, float> weights = 13;
+
+  // Optional graph expansion leg, seeded from the union of the retrieval legs.
+  HybridExpand expand = 14;
+
+  // Optional externally-managed transaction (issue #7326). When it names a live transaction the search runs on
+  // that transaction's own thread, so it reads exactly what the transaction reads - matching the HTTP routes,
+  // which run inside the session's transaction whenever the request carries `arcadedb-session-id`. A non-blank
+  // id the server no longer knows is refused with FAILED_PRECONDITION rather than silently read outside it.
+  TransactionContext transaction = 15;
+}
+
+message HybridSearchResponse {
+  string vector_index_name = 1;
+
+  // Present whenever the full-text leg ran, including when it matched nothing and so could not become a fusion
+  // source.
+  string fulltext_index_name = 2;
+
+  bool sparse = 3;
+  string scoring = 4;
+
+  // False when only one leg produced rows: fusion needs at least two sources, so the results carry that leg's
+  // native distance or score instead of a fabricated fused one.
+  bool fused = 5;
+  string fusion_strategy = 6;
+
+  bool truncated = 7;
+  int32 count = 8;
+  repeated SearchHit results = 9;
+
+  // Per-leg accounting, the same structure the HTTP response reports under "legs".
+  map<string, GrpcValue> legs = 10;
+}
+
+message FullTextSearchRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+
+  // Lucene-syntax query, e.g. "java" or "+java -python". Must not be blank.
+  string query_text = 3;
+
+  // Address the index either by `index_name`, or by `type_name` with optional `properties`. `index_name` wins
+  // when both are supplied.
+  string index_name = 4;
+  string type_name = 5;
+  repeated string properties = 6;
+
+  // Maximum number of results. Bounded server-side; 0 means "use the server default".
+  int32 limit = 7;
+
+  // Optional externally-managed transaction (issue #7326). When it names a live transaction the search runs on
+  // that transaction's own thread, so it reads exactly what the transaction reads - matching the HTTP routes,
+  // which run inside the session's transaction whenever the request carries `arcadedb-session-id`. A non-blank
+  // id the server no longer knows is refused with FAILED_PRECONDITION rather than silently read outside it.
+  TransactionContext transaction = 8;
+}
+
+message FullTextSearchResponse {
+  string index_name = 1;
+  string similarity = 2;  // similarity function the index scores with, e.g. BM25
+  int32 count = 3;
+  repeated SearchHit results = 4;
 }
 
 // -----------------------------------------------------------------------------
@@ -597,6 +786,172 @@ message GraphBatchResult {
 }
 
 // -----------------------------------------------------------------------------
+// Time series API (issue #7305)
+// -----------------------------------------------------------------------------
+
+// Unit of TimeSeriesPoint.timestamp. Unlike the HTTP /ts/{database}/write endpoint - which speaks InfluxDB
+// Line Protocol and therefore defaults to that protocol's nanoseconds - this API is typed and its zero value
+// is MILLISECONDS, the unit the engine actually stores. The common case needs no conversion and no field set.
+enum TimeSeriesPrecision {
+  TS_PRECISION_MILLISECONDS = 0;
+  TS_PRECISION_NANOSECONDS  = 1;
+  TS_PRECISION_MICROSECONDS = 2;
+  TS_PRECISION_SECONDS      = 3;
+}
+
+// One sample. Values reuse GrpcValue rather than a parallel scalar encoding, so the type-fidelity fixes made
+// there (#4149 temporal precision, #5046 byte/short widths, decimal) apply to time series too. A tag or field
+// the type does not declare is ignored, exactly as an unknown line-protocol tag is; a declared column with no
+// entry here is stored as absent, which reads back as null.
+message TimeSeriesPoint {
+  // The measurement, i.e. the TIMESERIES type name. Empty means the request- or chunk-level default, which is
+  // how a single-measurement stream avoids repeating the name on every point.
+  string type = 1;
+  int64  timestamp = 2;
+  map<string, GrpcValue> tags = 3;
+  map<string, GrpcValue> fields = 4;
+}
+
+message TimeSeriesWriteRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  // Default measurement for points that do not name one.
+  string type = 3;
+  TimeSeriesPrecision precision = 4;
+  repeated TimeSeriesPoint points = 5;
+}
+
+message TimeSeriesWriteChunk {
+  // REQUIRED on the first chunk; ignored on later ones (the server caches the first chunk's database).
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  // Default measurement for points in THIS chunk that do not name one, so a stream can switch measurement
+  // between chunks without naming it on every point.
+  string type = 3;
+  TimeSeriesPrecision precision = 4;
+  repeated TimeSeriesPoint points = 5;
+}
+
+// A write is NOT atomic: each measurement's batch commits its own shard transaction as it is appended, so a
+// failure part-way leaves the measurements before it durable. `dropped` is therefore a partial-write signal,
+// not a rollback - the same contract the HTTP endpoint reports with its 400. Every point is either written or
+// counted in exactly one of the three type lists, so written + dropped == received.
+message TimeSeriesWriteSummary {
+  int64 received = 1;
+  int64 written  = 2;
+  int64 dropped  = 3;
+  // No type with this name exists: create it first with CREATE TIMESERIES TYPE.
+  repeated string unknown_types = 4;
+  // The type exists but is not a TIMESERIES type.
+  repeated string non_time_series_types = 5;
+  // The type IS a TIMESERIES type; its storage engine failed to load (see the server log for why).
+  repeated string unavailable_types = 6;
+  int64 execution_time_ms = 7;
+}
+
+// Mirrors com.arcadedb.engine.timeseries.AggregationType. UNSPECIFIED is the proto3 zero value and is
+// rejected rather than silently defaulted, so a client that forgets the field is told so.
+enum TimeSeriesAggregationType {
+  TS_AGG_UNSPECIFIED = 0;
+  TS_AGG_SUM         = 1;
+  TS_AGG_AVG         = 2;
+  TS_AGG_MIN         = 3;
+  TS_AGG_MAX         = 4;
+  TS_AGG_COUNT       = 5;
+}
+
+// Conjunction of tag equality predicates. Values are coerced to the tag column's declared type, so a tag
+// declared INTEGER matches whether the client sent int32_value or string_value. A name that is not a TAG
+// column of the type contributes no predicate.
+message TimeSeriesTagFilter {
+  map<string, GrpcValue> equals = 1;
+}
+
+message TimeSeriesAggregationRequest {
+  string field = 1;
+  TimeSeriesAggregationType type = 2;
+  // Output name. Empty defaults to "<field>_<type>" lowercased, matching the HTTP endpoint.
+  string alias = 3;
+}
+
+message TimeSeriesAggregation {
+  int64 bucket_interval_ms = 1;
+  repeated TimeSeriesAggregationRequest requests = 2;
+}
+
+message TimeSeriesQueryRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  string type = 3;
+  // Inclusive bounds. Optional because 0 is a real epoch timestamp and not the same thing as "no bound":
+  // unset means unbounded in that direction.
+  optional int64 from_timestamp = 4;
+  optional int64 to_timestamp   = 5;
+  // Column projection; empty means every column. The timestamp column is always included and always first.
+  repeated string fields = 6;
+  TimeSeriesTagFilter tags = 7;
+  // Maximum rows returned across the whole stream. Non-positive means the server default; the server-side
+  // hard ceiling (arcadedb.server.httpQueryMaxResultRows) still applies and cannot be widened from here.
+  int32 limit = 8;
+  // Rows (or buckets) per streamed message. 0 lets the server choose.
+  int32 batch_size = 9;
+  // When set, the answer carries buckets instead of rows.
+  TimeSeriesAggregation aggregation = 10;
+  // The client's open transaction, when it has one (issue #7370). An ArcadeDB transaction is thread-bound, so
+  // a query that names one is streamed on that transaction's own thread and therefore observes its uncommitted
+  // points; without it the read runs on a gRPC worker and sees only committed data. A non-blank id the server
+  // no longer knows is refused rather than read outside the transaction the caller believes it is inside.
+  TransactionContext transaction = 11;
+}
+
+// A row of a raw query, or the values of one aggregation bucket. A value that stands for "no measurement" -
+// an absent MIN/MAX, a non-finite sample - is sent with no kind set, which decodes to null; it is NOT sent as
+// double_value NaN, which a client would read as a number.
+message TimeSeriesRow {
+  repeated GrpcValue values = 1;
+}
+
+message TimeSeriesBucket {
+  int64 timestamp = 1;
+  repeated GrpcValue values = 2;
+}
+
+// Streamed answer. `columns` and `aggregations` are carried on every message so a consumer that starts
+// reading mid-stream (or drops the first message on a retry) is never left without the header.
+message TimeSeriesQueryResult {
+  string type = 1;
+  // Names of the values in each `rows` entry, in order. Empty for an aggregated answer.
+  repeated string columns = 2;
+  // Aliases of the values in each `buckets` entry, in order. Empty for a raw answer.
+  repeated string aggregations = 3;
+  repeated TimeSeriesRow rows = 4;
+  repeated TimeSeriesBucket buckets = 5;
+  int64 running_total_emitted = 6;
+  bool  last = 7;
+  // The limit cut the answer short: what follows this stream is not the end of the data. Only meaningful on
+  // the message whose `last` is true.
+  bool  truncated = 8;
+}
+
+message TimeSeriesLatestRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  string type = 3;
+  TimeSeriesTagFilter tags = 4;
+  // The client's open transaction, when it has one (issue #7370). Same contract as
+  // TimeSeriesQueryRequest.transaction.
+  TransactionContext transaction = 5;
+}
+
+message TimeSeriesLatestResponse {
+  string type = 1;
+  repeated string columns = 2;
+  // False when the type (or the tag selection) holds no sample at all; `latest` is then unset.
+  bool  found = 3;
+  TimeSeriesRow latest = 4;
+}
+
+// -----------------------------------------------------------------------------
 // Admin service
 // -----------------------------------------------------------------------------
 
@@ -613,10 +968,13 @@ message GraphBatchResult {
 // requires:
 //   - Ping, GetServerInfo, ListDatabases, ExistsDatabase and GetDatabaseInfo need only a valid
 //     account, as GET /api/v1/databases and GET /api/v1/server do;
+//   - GetProgress needs a valid account that is also granted the database it names, the gate
+//     GET /api/v1/progress/{database} applies through checkAuthorizationOnDatabase;
 //   - every other RPC needs the server-admin (root) principal, the gate POST /api/v1/server and the
 //     /api/v1/server/* routes apply through checkRootUser.
 //
-// Leader routing: CreateDatabase, DropDatabase, CreateUser and DeleteUser are refused on a follower
+// Leader routing: CreateDatabase, DropDatabase, CreateUser, DeleteUser, RestoreBackup,
+// RestoreDatabase and ImportDatabase are refused on a follower
 // with FAILED_PRECONDITION and the leader's address on the arcadedb-leader-* trailers. That is this
 // transport's equivalent of the HTTP handler forwarding those four commands to the leader; gRPC has
 // no request proxy, so the caller redirects itself.
@@ -633,10 +991,23 @@ service ArcadeDbAdminService {
   rpc AlignDatabase  (AlignDatabaseRequest)  returns (AlignDatabaseResponse);
 
   rpc GetDatabaseInfo (GetDatabaseInfoRequest) returns (GetDatabaseInfoResponse);
+  rpc GetProgress     (GetProgressRequest)     returns (GetProgressResponse);
 
   rpc CreateUser     (CreateUserRequest)     returns (CreateUserResponse);
+  rpc UpdateUser     (UpdateUserRequest)     returns (UpdateUserResponse);
   rpc DeleteUser     (DeleteUserRequest)     returns (DeleteUserResponse);
   rpc ListUsers      (ListUsersRequest)      returns (ListUsersResponse);
+
+  // groups - the per-database permission documents users hold through the 'databases' map above
+  rpc ListGroups  (ListGroupsRequest)  returns (ListGroupsResponse);
+  rpc SaveGroup   (SaveGroupRequest)   returns (SaveGroupResponse);
+  rpc DeleteGroup (DeleteGroupRequest) returns (DeleteGroupResponse);
+
+  // API tokens. CreateApiToken returns secret material and is gated on transport security; see the
+  // comment on CreateApiTokenResponse.
+  rpc ListApiTokens  (ListApiTokensRequest)  returns (ListApiTokensResponse);
+  rpc CreateApiToken (CreateApiTokenRequest) returns (CreateApiTokenResponse);
+  rpc DeleteApiToken (DeleteApiTokenRequest) returns (DeleteApiTokenResponse);
 
   // settings
   rpc SetServerSetting   (SetServerSettingRequest)   returns (SetServerSettingResponse);
@@ -657,10 +1028,26 @@ service ArcadeDbAdminService {
   rpc ProfilerList    (ProfilerListRequest)    returns (ProfilerListResponse);
   rpc ProfilerLoad    (ProfilerLoadRequest)    returns (ProfilerDocumentResponse);
 
+  // restore and import - server-streaming, see the RestoreProgress section below
+  rpc RestoreBackup   (RestoreBackupRequest)   returns (stream RestoreProgress);
+  rpc RestoreDatabase (RestoreDatabaseRequest) returns (stream RestoreProgress);
+  rpc ImportDatabase  (ImportDatabaseRequest)  returns (stream ImportProgress);
+
   // server lifecycle and cluster
   rpc GetServerEvents   (GetServerEventsRequest)   returns (GetServerEventsResponse);
   rpc Shutdown          (ShutdownRequest)          returns (ShutdownResponse);
   rpc DisconnectCluster (DisconnectClusterRequest) returns (DisconnectClusterResponse);
+  // The other half of the cluster pair (issue #7400). A thin adapter over the same
+  // ServerControlPlane.connectCluster the HTTP `connect cluster` verb calls, so the two transports
+  // cannot answer the verb differently. The current HA stack does not implement a client-initiated
+  // join, so today the shared implementation refuses and this answers FAILED_PRECONDITION - see
+  // issue #7401.
+  rpc ConnectCluster    (ConnectClusterRequest)    returns (ConnectClusterResponse);
+
+  // Read-only administrative view of the server's open HTTP authentication sessions. gRPC has no
+  // session of its own - every admin RPC authenticates from the credentials on the request body - so
+  // there is no Login/Logout to go with it (issue #7310).
+  rpc ListSessions (ListSessionsRequest) returns (ListSessionsResponse);
 
   // probes - unauthenticated, see the service comment
   rpc Health (HealthRequest) returns (HealthResponse);
@@ -710,14 +1097,25 @@ message CreateDatabaseRequest {
   DatabaseCredentials credentials = 1;
   string name = 2; // database name
   string type = 3; // "graph" or "document" (logical)
+  // When false (the default) a name already taken is answered ALREADY_EXISTS, as the HTTP `create database`
+  // command answers it. When true the call is idempotent: an existing database of that name is left as it
+  // is and the response says so with created = false. Names are exact, never case-folded.
+  bool if_not_exists = 4;
 }
-message CreateDatabaseResponse {}
+message CreateDatabaseResponse {
+  bool created = 1; // true when this call created the database, false when if_not_exists found it already there
+}
 
 message DropDatabaseRequest {
   DatabaseCredentials credentials = 1;
   string name = 2; // database name
+  // When false (the default) a name that does not exist is answered NOT_FOUND, as the HTTP `drop database`
+  // command answers it. When true the call is idempotent and the response says which with dropped = false.
+  bool if_exists = 3;
 }
-message DropDatabaseResponse {}
+message DropDatabaseResponse {
+  bool dropped = 1; // true when this call dropped the database, false when if_exists found nothing to drop
+}
 
 message GetDatabaseInfoRequest {
   DatabaseCredentials credentials = 1;
@@ -827,6 +1225,141 @@ message ListUsersResponse {
   repeated UserInfo users = 1;
 }
 
+// The per-database grants of one user, wrapped in a message so the field can carry PRESENCE. A bare
+// map field cannot: proto3 gives no way to tell "the caller said nothing about grants" from "the
+// caller cleared every grant", and PUT /server/users draws exactly that distinction - a body without
+// a "databases" key leaves the existing grants alone.
+message UserDatabases {
+  map<string, UserGroups> databases = 1;
+}
+
+// Updates an existing user, as PUT /server/users?name=<user> does. Both mutable fields are optional
+// and independent: an absent one leaves that part of the user untouched, so changing a password does
+// not silently drop the user's grants. A request that sets neither is a no-op, not an error - the
+// same answer the HTTP route gives an empty body.
+message UpdateUserRequest {
+  DatabaseCredentials credentials = 1;
+  string user = 2;
+  // The new plaintext password, hashed server-side. Subject to the same length policy as every other
+  // password the server accepts.
+  optional string password = 3;
+  // The complete new grants map, replacing whatever the user held. Present-and-empty clears them.
+  optional UserDatabases databases = 4;
+}
+message UpdateUserResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Control plane: groups
+// -----------------------------------------------------------------------------
+
+message ListGroupsRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ListGroupsResponse {
+  // The whole group document, as GET /server/groups returns it under "result". Carried as JSON for
+  // the reason GetBackupConfigResponse.config_json is: it is a free-form document with a version
+  // field and per-database group maps, and declaring its shape a second time here would be one more
+  // thing to keep in step with the file on disk.
+  string groups_json = 1;
+}
+
+// Creates or replaces one group, as POST /server/groups does. Replaces: the named group's definition
+// becomes exactly what this request carries, it is not merged into the existing one.
+message SaveGroupRequest {
+  DatabaseCredentials credentials = 1;
+  // The database the group applies to, or "*" for every database.
+  string database = 2;
+  string name     = 3;
+  // The group definition: resultSetLimit, readTimeout, access and types, as the HTTP body carries
+  // them. An absent key takes the same default the HTTP handler applies (-1 for the two limits, empty
+  // for the two collections).
+  string group_json = 4;
+}
+message SaveGroupResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message DeleteGroupRequest {
+  DatabaseCredentials credentials = 1;
+  string database = 2;
+  string name     = 3;
+}
+message DeleteGroupResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Control plane: API tokens
+// -----------------------------------------------------------------------------
+
+// One issued token as the control plane REPORTS it: the hash that identifies it for revocation and
+// the last four characters of the token, never the token itself. This is the projection
+// GET /server/api-tokens returns.
+message ApiTokenInfo {
+  string name         = 1;
+  string database     = 2;
+  int64  expires_at   = 3; // epoch millis; 0 means no expiry
+  int64  created_at   = 4; // epoch millis
+  // The permission document, as JSON - the same free-form shape SaveGroupRequest.group_json carries.
+  string permissions_json = 5;
+  // SHA-256 of the token. This is the handle DeleteApiToken takes.
+  string token_hash   = 6;
+  // The token's last four characters, so an operator can tell two tokens apart in a list.
+  string token_suffix = 7;
+}
+
+message ListApiTokensRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ListApiTokensResponse {
+  repeated ApiTokenInfo tokens = 1;
+}
+
+message CreateApiTokenRequest {
+  DatabaseCredentials credentials = 1;
+  // Must be unique across issued tokens; a duplicate is refused with ALREADY_EXISTS.
+  string name     = 2;
+  // The database the token is scoped to. Empty means "*", every database, as the HTTP default does.
+  string database = 3;
+  int64  expires_at = 4; // epoch millis; 0 or absent means the token does not expire
+  string permissions_json = 5;
+}
+
+// THE ONLY MESSAGE IN THIS FILE THAT CARRIES SECRET MATERIAL.
+//
+// 'token' is the plaintext token, returned exactly once - the server keeps only its SHA-256 and can
+// never produce it again. Two consequences the rest of the control plane does not have:
+//
+//   1. The server refuses this RPC unless the call's transport protects the response: TLS, or a
+//      loopback peer. Over a cleartext channel to a remote host the mint is refused with
+//      FAILED_PRECONDITION rather than answered, because RemoteGrpcServer's refusal to SEND
+//      credentials over such a channel has no counterpart on the receive direction and a non-Java
+//      client never runs it at all.
+//   2. Nothing on the server's own paths may copy this field anywhere durable. The two interceptors
+//      that see every message read only the method name, the status and, for one specific response
+//      type, a boolean - never the payload.
+message CreateApiTokenResponse {
+  string token = 1;
+  // Everything about the token that is safe to keep, including the hash needed to revoke it.
+  ApiTokenInfo info = 2;
+}
+
+// Revokes a token by its HASH. The plaintext token is deliberately not accepted: it would then
+// appear in whatever logged the request, which is the exposure revoking it is meant to end.
+message DeleteApiTokenRequest {
+  DatabaseCredentials credentials = 1;
+  string token_hash = 2;
+}
+message DeleteApiTokenResponse {
+  bool success = 1;
+  string message = 2;
+}
+
 // -----------------------------------------------------------------------------
 // Control plane: backup
 // -----------------------------------------------------------------------------
@@ -896,7 +1429,10 @@ message DeleteBackupResponse {}
 
 message ProfilerStartRequest {
   DatabaseCredentials credentials = 1;
-  // Seconds after which recording stops on its own. 0 records until ProfilerStop.
+  // Seconds after which recording stops on its own. 0 (or negative) applies the server's own default rather
+  // than recording indefinitely - there is no way to ask for an unbounded recording, because while one runs
+  // every server query is wrapped for profiling. The bound that actually applied comes back in
+  // ProfilerStateResponse.timeout_seconds (issue #7394).
   int32 timeout_seconds = 2;
 }
 message ProfilerStopRequest {
@@ -918,6 +1454,10 @@ message ProfilerLoadRequest {
 
 message ProfilerStateResponse {
   bool recording = 1;
+  // For ProfilerStart, the timeout the recording is actually running under, in seconds: the requested value,
+  // the server default when none was requested, or - when a recording was already in flight, which makes a
+  // second start a no-op - that recording's own. Unset for ProfilerReset.
+  int32 timeout_seconds = 2;
 }
 
 // A profiler run. The document's shape is the profiler's own and changes with it, so it travels as
@@ -936,6 +1476,82 @@ message ProfilerRunInfo {
 message ProfilerListResponse {
   // Newest first, the order the profiler lists them in.
   repeated ProfilerRunInfo runs = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Control plane: restore and import
+// -----------------------------------------------------------------------------
+
+// These three are the only control-plane operations that report progress while they run, which is
+// why they are server-streaming rather than unary (issue #7308): a unary RestoreDatabase would hold
+// the call open for the length of the restore with nothing to show for it. They are the gRPC
+// counterpart of POST /api/v1/server answering 'restore backup', 'restore database' and 'import
+// database' as Server-Sent Events, and both transports run one implementation -
+// com.arcadedb.server.ServerControlPlane - with the progress sink supplied by the transport.
+//
+// Every one of them is root-only and leader-only, matching the HTTP commands, which checkRootUser
+// gates and forwardToLeaderIfReplica sends to the leader. A follower answers FAILED_PRECONDITION
+// with the leader's address on the arcadedb-leader-* trailers.
+//
+// The stream carries progress messages while the operation runs and one final message with
+// completed = true. A failure terminates the stream with an error status instead: there is no error
+// message on the stream, so a client that read a completed message has a result that succeeded.
+// Cancelling the call stops the progress; it does not stop the restore, which has no interruption
+// point - the same as an HTTP client dropping its SSE connection.
+
+message RestoreBackupRequest {
+  DatabaseCredentials credentials = 1;
+  // The database the archive was taken from.
+  string database = 2;
+  // A plain archive file name inside that database's backup directory, resolved server-side. Path
+  // separators and traversal sequences are refused.
+  string file_name = 3;
+  // The database to restore into. May differ from 'database'.
+  string target_database = 4;
+  // Replace target_database when it already exists. Without it an existing target fails the call
+  // with INVALID_ARGUMENT. The existing database is dropped only once the restore into a temporary
+  // directory has succeeded, so a failed restore leaves it intact.
+  bool overwrite = 5;
+}
+
+message RestoreDatabaseRequest {
+  DatabaseCredentials credentials = 1;
+  // The database to create from the archive. Must not already exist.
+  string database = 2;
+  // Where the server fetches the archive from. Unless
+  // 'arcadedb.server.restoreImportAllowLocalUrls' is enabled, only http/https URLs to non-private
+  // hosts are accepted.
+  string url = 3;
+}
+
+message ImportDatabaseRequest {
+  DatabaseCredentials credentials = 1;
+  // The database to create and import into. Must not already exist.
+  string database = 2;
+  // Where the server fetches the source from, under the same URL rules as RestoreDatabaseRequest.
+  string url = 3;
+}
+
+// One progress event of a running restore.
+message RestoreProgress {
+  // Set on the last message of the stream and on no other.
+  bool   completed = 1;
+  string message   = 2;
+}
+
+// One progress event of a running import.
+message ImportProgress {
+  // Set on the last message of the stream and on no other.
+  bool   completed   = 1;
+  // A progress line from the importer. Empty on a message that carries only counters.
+  string message     = 2;
+  // Importer counters, sampled once a second. All zero on a message that carries only a line.
+  int64  parsed      = 3;
+  int64  vertices    = 4;
+  int64  edges       = 5;
+  // The importer's own final report as a JSON document, set only on the completed message. It
+  // travels as JSON because its keys are the importer's and change with it.
+  string result_json = 6;
 }
 
 // -----------------------------------------------------------------------------
@@ -964,6 +1580,83 @@ message DisconnectClusterRequest {
   DatabaseCredentials credentials = 1;
 }
 message DisconnectClusterResponse {}
+
+message ConnectClusterRequest {
+  DatabaseCredentials credentials = 1;
+  // The `<host>:<port>` of the server to join, as the HTTP verb's `connect cluster <address>`
+  // argument. Not validated here: the HTTP verb accepts an empty argument too and the shared
+  // implementation refuses before reading it, so rejecting it on this transport alone would make
+  // the two disagree on the same input.
+  string server_address = 2;
+}
+message ConnectClusterResponse {}
+
+// -----------------------------------------------------------------------------
+// Control plane: discovery (issue #7310)
+// -----------------------------------------------------------------------------
+
+// One long-running maintenance operation (CHECK DATABASE, REBUILD INDEX, COMPACT INDEX, backup,
+// import) currently running on the server that answers the call. Field for field the document
+// OperationProgress.toJSON() emits on GET /api/v1/progress/{database}.
+message OperationProgressInfo {
+  int64  id          = 1;
+  string database    = 2;
+  string operation   = 3;
+  string step_name   = 4;
+  int32  step_index  = 5;
+  int32  total_steps = 6;
+  int64  done        = 7;
+  int64  total       = 8;  // -1 when the step total is unknown
+  int32  percentage  = 9;  // -1 when the step total is unknown
+  int64  started_on  = 10;
+  int64  elapsed_ms  = 11;
+}
+
+message GetProgressRequest {
+  DatabaseCredentials credentials = 1;
+  string database = 2; // required: the progress registry is keyed by database name
+}
+message GetProgressResponse {
+  // Oldest first, the order the registry snapshots them in. Empty when nothing is running - which is
+  // the normal answer, not an error.
+  //
+  // No 'count' field, deliberately, even though ListSessionsResponse below has one: each response
+  // mirrors the shape of the HTTP route it answers, and GET /api/v1/progress/{database} returns only
+  // 'result' while GET /api/v1/sessions returns 'result' and 'count'. Adding one here to make the two
+  // messages look alike would make each of them look less like the document it mirrors.
+  repeated OperationProgressInfo operations = 1;
+}
+
+// One open HTTP authentication session, field for field the document GET /api/v1/sessions emits.
+// The token is included for the same reason the HTTP route includes it and to the same principal
+// (root only): the two views would otherwise disagree about what an administrator can see.
+//
+// OPERATORS: that token is a live bearer credential for the HTTP surface, and one belonging to
+// ANOTHER user, not to the caller. This transport does not enable TLS by default (grpc.tls.enabled),
+// so a plaintext admin channel carrying ListSessions puts every open session's token on the wire
+// where anything between the client and the server can take it. Turn TLS on before reaching any admin
+// RPC across a network you do not control; this one raises the cost of not having done so.
+message SessionInfo {
+  string token       = 1;
+  string user        = 2;
+  int64  created_at  = 3;
+  int64  last_update = 4;
+  int64  elapsed_ms  = 5;
+  string source_ip   = 6;
+  string user_agent  = 7;
+  string country     = 8;
+  string city        = 9;
+}
+
+message ListSessionsRequest {
+  DatabaseCredentials credentials = 1;
+}
+message ListSessionsResponse {
+  // Empty on a server running without the HTTP listener: there are no HTTP sessions to report, which
+  // is an answer rather than a failure.
+  repeated SessionInfo sessions = 1;
+  int32                count    = 2;
+}
 
 // -----------------------------------------------------------------------------
 // Control plane: probes

@@ -36,6 +36,33 @@ import java.util.logging.Level;
 public class RDFImporterFormat extends CSVImporterFormat {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
 
+  /**
+   * No delimiter, so the inherited {@code createCSVParser}/{@code analyze} fall back to the generic
+   * {@code delimiter} option and then to a comma.
+   * <p>
+   * Nothing in production builds the format this way: {@link com.arcadedb.integration.importer.SourceDiscovery}
+   * is the only place one is constructed, and it always hands over the separator it took from between the first
+   * statement's terms through {@link #RDFImporterFormat(String)}. This form exists for a caller that drives
+   * {@code load()} directly with settings already carrying the delimiter - the format's own tests - and for parity
+   * with {@link CSVImporterFormat}'s own pair. A production caller reaching for it is a caller that has a detected
+   * separator to pass and is dropping it (issue #7315).
+   */
+  public RDFImporterFormat() {
+    super();
+  }
+
+  /**
+   * @param delimiter the delimiter this source is parsed with - the user's own when they set one, else the character
+   *                  content sniffing found repeating between the {@code <...>} terms, which is the very thing that
+   *                  identified the source as RDF. It is carried on the format rather than written into
+   *                  {@code settings.options}, which one import shares across its entities (issue #6946), and dropping
+   *                  it made the canonical space-delimited N-Triples form unimportable: the inherited fallback is a
+   *                  comma, so the whole line arrived as a single column (issue #7315).
+   */
+  public RDFImporterFormat(final String delimiter) {
+    super(delimiter);
+  }
+
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {

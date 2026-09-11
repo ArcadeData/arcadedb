@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -288,6 +289,13 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     return Float.NaN;
   }
 
+  /**
+   * Reads the {@code filter} option into the set of RIDs the search is allowed to answer. Besides a bare {@link RID},
+   * an {@link Identifiable} or a RID string, an element may be the row a subquery produced (issue #7125): a
+   * {@link Result} that wraps a record, or that projects exactly one RID-valued column such as {@code SELECT @rid}. One
+   * level of nesting is flattened, so {@code (SELECT list(@rid) AS l ...).l} is accepted as well. Anything else keeps
+   * throwing, so a typo in the subquery projection stays loud rather than silently filtering nothing.
+   */
   protected static Set<RID> parseRidFilter(final List<?> items, final String functionName, final CommandContext context) {
     if (items == null || items.isEmpty())
       return null;
@@ -297,17 +305,45 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     for (final Object item : items) {
       if (item == null)
         continue;
-      if (item instanceof RID rid)
-        out.add(rid);
-      else if (item instanceof Identifiable id)
-        out.add(id.getIdentity());
-      else if (item instanceof String s)
-        out.add(db.newRID(s));
-      else
-        throw new CommandSQLParsingException(
-            "Option 'filter' for function '" + functionName + "' must contain RIDs, got: "
-                + item.getClass().getSimpleName());
+
+      if (item instanceof Collection<?> nested) {
+        // ONE LEVEL OF NESTING: A LIST OF LISTS OF RIDS. A DEEPER LEVEL IS REJECTED BY ridOf() BELOW
+        for (final Object inner : nested)
+          if (inner != null)
+            out.add(ridOf(inner, functionName, db));
+      } else
+        out.add(ridOf(item, functionName, db));
     }
     return out;
+  }
+
+  private static RID ridOf(final Object item, final String functionName, final BasicDatabase db) {
+    if (item instanceof RID rid)
+      return rid;
+    if (item instanceof Identifiable id)
+      return id.getIdentity();
+    if (item instanceof String s) {
+      // VALIDATED UP FRONT: RID(String) THROWS A DIFFERENT EXCEPTION FOR EACH WAY A STRING CAN BE MALFORMED
+      if (!RID.is(s))
+        throw new CommandSQLParsingException(
+            "Option 'filter' for function '" + functionName + "' must contain RIDs, got: '" + s + "'");
+      return db.newRID(s);
+    }
+    if (item instanceof Result row) {
+      // THE ROW A SUBQUERY PRODUCED: EITHER A RECORD (SELECT FROM ...) OR A SINGLE RID-VALUED PROJECTION (SELECT @rid ...)
+      if (row.isElement())
+        return row.getElement().get().getIdentity();
+      final Set<String> columns = row.getPropertyNames();
+      if (columns.size() == 1) {
+        final Object value = row.getProperty(columns.iterator().next());
+        if (value instanceof RID || value instanceof Identifiable || value instanceof String)
+          return ridOf(value, functionName, db);
+      }
+      throw new CommandSQLParsingException(
+          "Option 'filter' for function '" + functionName + "' must contain RIDs, got a row with columns " + columns
+              + ": project the RID alone, e.g. (SELECT @rid FROM ...)");
+    }
+    throw new CommandSQLParsingException(
+        "Option 'filter' for function '" + functionName + "' must contain RIDs, got: " + item.getClass().getSimpleName());
   }
 }

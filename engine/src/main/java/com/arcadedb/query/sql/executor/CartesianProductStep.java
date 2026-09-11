@@ -24,20 +24,37 @@ import com.arcadedb.query.sql.parser.LocalResultSet;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.function.Supplier;
 
 /**
+ * Combines the rows of the disjoint sub-patterns of a MATCH into their cartesian product, as a nested loop over the sub-plans.
+ * <p>
+ * The first pass of an independent sub-plan is buffered and replayed for every tuple of the levels before it. A
+ * <b>correlated</b> sub-plan - one whose {@code where:} reads, through {@code $matched}, an alias bound by an earlier
+ * sub-plan (issue #7434) - cannot be replayed: it is planned and executed again for every tuple of the outer levels, with
+ * the {@code matched} context variable bound to that partial tuple so the predicate sees the aliases it reads. A fresh
+ * plan per tuple, rather than a reset of the same one, because the fetch and filter steps of a SELECT do not restart on
+ * reset (the same reason {@link LetQueryStep} plans a correlated subquery again per row). The planner orders the
+ * sub-plans so that every alias a level reads is bound by a level before it.
+ * <p>
  * Created by luigidellaquila on 11/10/16.
  */
 public class CartesianProductStep extends AbstractExecutionStep {
 
-  private final List<InternalExecutionPlan> subPlans = new ArrayList<>();
+  // THE PLANS AS BUILT BY THE PLANNER, WHAT EXPLAIN PRINTS; A CORRELATED LEVEL RUNS A FRESH ONE PER OUTER TUPLE INSTEAD
+  private final List<InternalExecutionPlan>           subPlans  = new ArrayList<>();
+  // NON-NULL FOR A CORRELATED LEVEL: PLANS THE SUB-PATTERN AGAIN FOR EVERY OUTER TUPLE
+  private final List<Supplier<InternalExecutionPlan>> factories = new ArrayList<>();
 
-  private       boolean                 inited            = false;
-  private final List<Boolean>           completedPrefetch = new ArrayList<>();
-  private final List<InternalResultSet> preFetches        = new ArrayList<>();//consider using resultset.reset() instead of buffering
+  private boolean inited = false;
+  // THE ROWS OF AN INDEPENDENT LEVEL'S FIRST PASS, REPLAYED THROUGH reset() FOR EVERY LATER OUTER TUPLE
+  private final List<InternalResultSet> preFetches = new ArrayList<>();
+  private final List<Boolean>           firstPass  = new ArrayList<>();
 
   private final List<ResultSet> resultSets   = new ArrayList<>();
   private       List<Result>    currentTuple = new ArrayList<>();
+  // THE OUTER TUPLE A CORRELATED LEVEL IS OPEN FOR, REBOUND TO $matched BEFORE EVERY PULL FROM IT
+  private final List<Result>    outerTuples  = new ArrayList<>();
 
   ResultInternal nextRecord;
 
@@ -50,7 +67,6 @@ public class CartesianProductStep extends AbstractExecutionStep {
     pullPrevious(context, nRecords);
 
     init();
-    //    return new OInternalResultSet();
     return new ResultSet() {
       int currentCount = 0;
 
@@ -73,8 +89,26 @@ public class CartesianProductStep extends AbstractExecutionStep {
         return result;
       }
     };
-    //    throw new UnsupportedOperationException("cartesian product is not yet implemented in MATCH statement");
-    //TODO
+  }
+
+  /**
+   * Best effort, like the reset of the other MATCH steps: the fetch and filter steps of a SELECT do not restart, so a
+   * sub-plan that was pulled to exhaustion answers nothing again. Nothing reaches it today, since a MATCH plan is never
+   * cached and a correlated subquery plans its statement again per row.
+   */
+  @Override
+  public void reset() {
+    inited = false;
+    preFetches.clear();
+    firstPass.clear();
+    resultSets.clear();
+    outerTuples.clear();
+    currentTuple = new ArrayList<>();
+    nextRecord = null;
+    // THE FIRST PASS OF AN INDEPENDENT LEVEL PULLS FROM THE SUB-PLAN ITSELF: ONE LEFT EXHAUSTED WOULD ANSWER NO ROW
+    for (int level = 0; level < subPlans.size(); level++)
+      if (factories.get(level) == null)
+        subPlans.get(level).reset(context);
   }
 
   private void init() {
@@ -83,93 +117,151 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
     if (inited)
       return;
-
-    for (final InternalExecutionPlan plan : subPlans) {
-      resultSets.add(new LocalResultSet(plan));
-      this.preFetches.add(new InternalResultSet());
-    }
-    fetchFirstRecord();
     inited = true;
-  }
 
-  private void fetchFirstRecord() {
-    for (int i = 0; i < resultSets.size(); i++) {
-      final ResultSet rs = resultSets.get(i);
-      if (!rs.hasNext()) {
+    for (int level = 0; level < subPlans.size(); level++) {
+      resultSets.add(null);
+      preFetches.add(new InternalResultSet());
+      firstPass.add(true);
+      currentTuple.add(null);
+      outerTuples.add(null);
+    }
+
+    for (int level = 0; level < subPlans.size(); level++) {
+      open(level);
+      if (!advance(level)) {
         nextRecord = null;
+        currentTuple = null;
         return;
       }
-      final Result item = rs.next();
-      currentTuple.add(item);
-      completedPrefetch.add(false);
-      bufferLiveValue(i, item);
     }
     buildNextRecord();
   }
 
   private void fetchNextRecord() {
-    fetchNextRecord(resultSets.size() - 1);
-  }
-
-  private void fetchNextRecord(final int level) {
-    ResultSet currentRs = resultSets.get(level);
-    if (!currentRs.hasNext()) {
-      if (level <= 0) {
-        nextRecord = null;
-        currentTuple = null;
-        return;
-      }
-      currentRs = preFetches.get(level);
-      currentRs.reset();
-      resultSets.set(level, currentRs);
-      currentTuple.set(level, currentRs.next());
-      fetchNextRecord(level - 1);
-    } else {
-      final Result item = currentRs.next();
-      currentTuple.set(level, item);
-      bufferLiveValue(level, item);
+    if (currentTuple != null && advance(resultSets.size() - 1))
+      buildNextRecord();
+    else {
+      nextRecord = null;
+      currentTuple = null;
     }
-    buildNextRecord();
   }
 
   /**
-   * Buffers a value read from the live result set of the given level so it can be replayed later via
-   * {@link InternalResultSet#reset()}. Only values seen during the first pass of a level are buffered, and each
-   * exactly once: while {@code completedPrefetch[level]} is false the level is still consuming its live source.
-   * This prevents the outer-level rows from being appended repeatedly while inner levels iterate (issue #4543).
+   * Moves the given level to its next row. When the level is exhausted, the level before it is advanced and this one is
+   * opened again for the new outer tuple. The four cases, in the order the loop meets them:
+   * <ol>
+   *   <li>the level has a next row: bind it (and buffer it, when this is the first pass of an independent level)</li>
+   *   <li>an independent level answered no row at all on its first pass: the product is empty, answer so at once</li>
+   *   <li>the outermost level is exhausted: the product is complete</li>
+   *   <li>otherwise advance the level before, open this one again for the new outer tuple and loop: a correlated level
+   *       may answer no row for that tuple, in which case the loop backtracks once more</li>
+   * </ol>
+   *
+   * @return false when the product is complete or empty
    */
-  private void bufferLiveValue(final int level, final Result value) {
-    if (completedPrefetch.get(level))
-      return;
-    preFetches.get(level).add(value);
-    if (!resultSets.get(level).hasNext())
-      completedPrefetch.set(level, true);
+  private boolean advance(final int level) {
+    while (true) {
+      final ResultSet rs = resultSets.get(level);
+      // A CORRELATED LEG EVALUATES ITS FILTER LAZILY, ONE CANDIDATE PER PULL, AND THE PRODUCT PREPARES THE NEXT ROW BEFORE IT
+      // HANDS OUT THE CURRENT ONE: BY THEN MatchBindMatchedStep DOWNSTREAM HAS REBOUND $matched TO A ROW OF ANOTHER OUTER
+      // TUPLE, SO THE LEG'S OWN OUTER TUPLE IS BOUND AGAIN BEFORE EVERY PULL
+      if (factories.get(level) != null)
+        context.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, outerTuples.get(level));
+      if (rs.hasNext()) {
+        final Result item = rs.next();
+        currentTuple.set(level, item);
+        if (firstPass.get(level) && factories.get(level) == null)
+          preFetches.get(level).add(item);
+        return true;
+      }
+
+      // AN INDEPENDENT LEVEL WITH NO ROW AT ALL EMPTIES THE WHOLE PRODUCT: ANSWER SO AT ONCE RATHER THAN WALKING EVERY ROW OF
+      // THE LEVELS BEFORE IT TO FIND OUT. A CORRELATED LEVEL ANSWERS PER OUTER TUPLE, SO IT GETS NO SUCH SHORTCUT
+      if (factories.get(level) == null && firstPass.get(level) && preFetches.get(level).countEntries() == 0)
+        return false;
+
+      firstPass.set(level, false);
+      if (level == 0 || !advance(level - 1))
+        return false;
+      open(level);
+    }
+  }
+
+  /**
+   * Opens the result set of a level for the current tuple of the levels before it: the live sub-plan on the first pass,
+   * the buffered first pass afterwards, or a fresh execution when the level is correlated with the outer tuple.
+   */
+  private void open(final int level) {
+    // THE RESULT SET BEING REPLACED IS THE LIVE ONE OF A SUB-PLAN, EXHAUSTED OR SUPERSEDED: RELEASE WHAT ITS STEPS HOLD
+    final ResultSet previous = resultSets.get(level);
+    if (previous instanceof LocalResultSet)
+      previous.close();
+
+    final Supplier<InternalExecutionPlan> factory = factories.get(level);
+    if (factory != null) {
+      // THE ROOT OF THE LEG READS $matched AS ITS SEED WHEN IT IS FIRST PULLED, WHICH LocalResultSet DOES RIGHT HERE. THE
+      // BINDING IS NOT RESTORED: advance() BINDS IT AGAIN BEFORE EVERY LATER PULL, AND MatchBindMatchedStep BINDS EVERY ROW
+      // THE PRODUCT EMITS BEFORE THE RETURN CLAUSE READS IT. A LEVEL IS ONE CONNECTED SUB-PATTERN, NEVER A PRODUCT OF ITS
+      // OWN, SO THE BINDINGS DO NOT NEST
+      final ResultInternal outerTuple = partialTuple(level);
+      outerTuples.set(level, outerTuple);
+      context.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, outerTuple);
+      final InternalExecutionPlan plan = factory.get();
+      resultSets.set(level, new LocalResultSet(plan));
+    } else if (firstPass.get(level))
+      resultSets.set(level, new LocalResultSet(subPlans.get(level)));
+    else {
+      final InternalResultSet buffered = preFetches.get(level);
+      buffered.reset();
+      resultSets.set(level, buffered);
+    }
+  }
+
+  @Override
+  public void close() {
+    for (final ResultSet rs : resultSets)
+      if (rs != null)
+        rs.close();
+    for (int level = 0; level < subPlans.size(); level++)
+      if (factories.get(level) == null)
+        subPlans.get(level).close();
+    super.close();
+  }
+
+  private ResultInternal partialTuple(final int levels) {
+    final ResultInternal partial = new ResultInternal(context.getDatabase());
+    for (int i = 0; i < levels; i++) {
+      final Result res = currentTuple.get(i);
+      for (final String s : res.getPropertyNames())
+        partial.setProperty(s, res.getProperty(s));
+    }
+    return partial;
   }
 
   private void buildNextRecord() {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
-      if (currentTuple == null) {
-        nextRecord = null;
-        return;
-      }
-      nextRecord = new ResultInternal(context.getDatabase());
-
-      for (int i = 0; i < this.currentTuple.size(); i++) {
-        final Result res = this.currentTuple.get(i);
-        for (final String s : res.getPropertyNames()) {
-          nextRecord.setProperty(s, res.getProperty(s));
-        }
-      }
+      nextRecord = partialTuple(currentTuple.size());
     } finally {
-      if( context.isProfiling() ) {
+      if (context.isProfiling()) {
         cost += System.nanoTime() - begin;
       }
     }
   }
 
   public void addSubPlan(final InternalExecutionPlan subPlan) {
+    addSubPlan(subPlan, null);
+  }
+
+  /**
+   * @param factory non-null when the sub-plan reads, through {@code $matched}, an alias bound by a sub-plan added before
+   *                it: it is then planned again through the factory and executed for every tuple of those, instead of
+   *                being buffered and replayed. The sub-plan given is the one EXPLAIN prints
+   */
+  public void addSubPlan(final InternalExecutionPlan subPlan, final Supplier<InternalExecutionPlan> factory) {
     this.subPlans.add(subPlan);
+    this.factories.add(factory);
   }
 
   @Override

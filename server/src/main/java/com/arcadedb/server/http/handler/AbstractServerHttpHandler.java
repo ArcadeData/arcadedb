@@ -32,6 +32,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.http.ClusterAuthSessionResolver;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
@@ -71,6 +72,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 import java.util.logging.Level;
 
 public abstract class AbstractServerHttpHandler implements HttpHandler {
@@ -92,6 +94,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // Response header set by session-establishing routes (e.g. /begin). Its presence means the response
   // is session-scoped and must not be replayed from the idempotency cache (the session id would be lost).
   private static final HttpString SESSION_ID_HEADER = HttpString.tryFromString(HttpSessionManager.ARCADEDB_SESSION_ID);
+  // The read-your-writes bookmark echo, cached for the same reason and because it is now looked up as well as
+  // written: the response-commit listener of issue #7351 has to ask whether the eager emission already set it.
+  private static final HttpString COMMIT_INDEX_HEADER = HttpString.tryFromString("X-ArcadeDB-Commit-Index");
   // Bounded wait for a concurrent identical retry to observe the in-flight winner's result before it
   // gives up and executes on its own. Caps worker-thread blocking so a slow request cannot pile up retries.
   private static final long       IN_FLIGHT_WAIT_MS = 5_000L;
@@ -260,7 +265,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   @Override
   public void handleRequest(final HttpServerExchange exchange) {
-    if (mustExecuteOnWorkerThread() && exchange.isInIoThread()) {
+    if (mustExecuteOnWorkerThread(exchange) && exchange.isInIoThread()) {
       exchange.dispatch(this);
       return;
     }
@@ -396,9 +401,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                   return;
                 }
               } else {
-                // Session token authentication (AU- prefix)
-                final HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
-                if (authSession == null) {
+                // Session token authentication (AU- prefix). A token this node has never seen may have been
+                // issued by another node of the cluster - the token names it - and a copy this node holds is
+                // a lease the issuer renews (issue #7424).
+                final ClusterAuthSessionResolver clusterResolver = httpServer.getClusterAuthSessionResolver();
+                HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
+                if (authSession == null)
+                  authSession = clusterResolver.resolve(token);
+                if (authSession == null || !clusterResolver.renew(authSession)) {
                   exchange.setStatusCode(401);
                   sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
                   return;
@@ -500,7 +510,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       final String rawRequestId = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID);
       final boolean idempotentPost = "POST".equalsIgnoreCase(exchange.getRequestMethod().toString())
           && rawRequestId != null && !rawRequestId.isBlank()
-          && exchange.getRequestHeaders().getFirst(SESSION_ID_HEADER) == null;
+          && exchange.getRequestHeaders().getFirst(SESSION_ID_HEADER) == null
+          // A request that negotiated the streaming encoding stays out of the replay cache entirely. The cache
+          // key is built from method, path, database and body - never from the Accept header - so a hit
+          // recorded by an earlier buffered request would be replayed to this caller as one application/json
+          // object, which is not the encoding it asked for and not a shape its NDJSON reader can parse. It
+          // could not populate the cache either: a streamed handler writes its own response and returns null,
+          // which aborts the reservation. Not reserving says that outright instead of leaving it implicit
+          // (issue #7311).
+          //
+          // Gated on the handler, not on the header alone: a route that cannot stream answers the same body
+          // whatever Accept says, so dropping ITS replay protection because a client sent a header it ignores
+          // would take away a guarantee and give nothing back.
+          && !(supportsNdJsonEncoding() && isNdJsonRequested(exchange));
 
       if (idempotentPost) {
         // Bind the key to method/path/database/body so a reused correlation id cannot replay a different
@@ -718,6 +740,23 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       logUserError(committedRemotely);
       sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry",
               committedRemotely, null);
+      return;
+    }
+
+    // 409 Conflict: a backup, restore or import of this database is already running, and the per-database slot
+    // BackupCoordinator hands out refused this one. The request is well formed and authorized, and retrying once
+    // the other operation finishes is the fix - so it is a conflict, not a 500. 'trigger backup' answered this in
+    // its own handler long before; the arm is here so 'restore database', 'restore backup' and 'import database'
+    // answer it too rather than falling through to the generic internal-error arm (issue #7384).
+    //
+    // It matches the ENGINE's type, which ServerControlPlane.OperationInProgressException extends, so a SQL
+    // 'BACKUP DATABASE' or 'IMPORT DATABASE' refused by the same slot gets the same 409 through
+    // /api/v1/command rather than a 500 - one arm rather than two (issue #7443).
+    final DatabaseOperationInProgressException inProgress = firstOf(e, cause,
+            DatabaseOperationInProgressException.class);
+    if (inProgress != null) {
+      logUserError(inProgress);
+      sendErrorResponse(exchange, 409, "Cannot execute command", inProgress, null);
       return;
     }
 
@@ -1240,6 +1279,69 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     return ServerControlPlane.filterAuthorizedDatabases(user, databaseNames);
   }
 
+
+  /**
+   * Tells a buffering reverse proxy to pass the streamed bytes through instead of accumulating them, which would
+   * silently undo the encoding. Same header the SSE endpoints already set.
+   */
+  protected static final HttpString X_ACCEL_BUFFERING = new HttpString("X-Accel-Buffering");
+
+  /** Precompiled rather than {@code String.split}, which recompiles the pattern on every request. */
+  private static final Pattern ACCEPT_ENTRY     = Pattern.compile(",");
+  private static final Pattern ACCEPT_PARAMETER = Pattern.compile(";");
+
+  /**
+   * True when the caller selected the streaming encoding by sending {@code Accept: application/x-ndjson}.
+   * <p>
+   * Negotiated rather than routed on purpose (issue #7306): the buffered {@code application/json} body is what
+   * every existing client - the Studio webapp included - parses, so streaming had to be reachable without
+   * changing what a request that does not ask for it receives. A caller that sends no {@code Accept}, or one
+   * that names any other type, gets exactly the response it got before.
+   * <p>
+   * Lives here rather than on {@code AbstractQueryHandler}, where #7306 first wrote it, because
+   * {@link PostBatchHandler} negotiates the same encoding for its streaming insert response (issue #7311) and
+   * does not extend that hierarchy. One parser, so the two surfaces cannot drift on what {@code q=0} means.
+   */
+  protected static boolean isNdJsonRequested(final HttpServerExchange exchange) {
+    final HeaderValues accept = exchange.getRequestHeaders().get(Headers.ACCEPT);
+    if (accept == null)
+      return false;
+    for (final String header : accept) {
+      if (header == null)
+        continue;
+      // One Accept header can list several types, each with its own parameters. Splitting them matters for
+      // 'q': 'application/json, application/x-ndjson;q=0' is the standard spelling of "anything but that one",
+      // and a bare contains() over the whole header would read it as a request for the stream.
+      for (final String entry : ACCEPT_ENTRY.split(header)) {
+        final String[] parts = ACCEPT_PARAMETER.split(entry.trim());
+        if (parts[0].trim().equalsIgnoreCase(NdJsonResultStream.CONTENT_TYPE))
+          return !isRejectedByQValue(parts);
+      }
+    }
+    return false;
+  }
+
+  /**
+   * True when an {@code Accept} entry carries {@code q=0}, which RFC 9110 defines as "not acceptable" rather
+   * than as a weak preference. An unparseable q is treated as absent, the same as any other malformed
+   * parameter: the type was still named.
+   */
+  private static boolean isRejectedByQValue(final String[] parts) {
+    for (int i = 1; i < parts.length; i++) {
+      final String parameter = parts[i].trim();
+      if (!parameter.regionMatches(true, 0, "q=", 0, 2))
+        continue;
+      try {
+        // Compared with a tolerance rather than against 0 exactly: q is a decimal with at most three digits,
+        // so anything this small is the "not acceptable" the sender meant, and an exact float comparison on a
+        // parsed decimal is the kind of thing that works until it does not.
+        return Double.parseDouble(parameter.substring(2).trim()) < 0.0001d;
+      } catch (final NumberFormatException ignored) {
+        return false;
+      }
+    }
+    return false;
+  }
   /**
    * Resolves the {@link HAReplicatedDatabase} backing {@code database}, either directly or through
    * {@link DatabaseInternal#getWrappedDatabaseInstance()}, or {@code null} on a standalone (non-HA)
@@ -1268,7 +1370,63 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     final long lastApplied = haDb.getLastAppliedIndex();
     if (lastApplied >= 0)
-      exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), String.valueOf(lastApplied));
+      exchange.getResponseHeaders().put(COMMIT_INDEX_HEADER, String.valueOf(lastApplied));
+  }
+
+  /**
+   * Guarantees the {@code X-ArcadeDB-Commit-Index} bookmark reaches the client even when the handler writes the
+   * response itself, which the eager {@link #emitCommitIndexBookmark} call in
+   * {@link DatabaseAbstractHandler#execute} cannot do (issue #7351).
+   * <p>
+   * That call runs <b>after</b> the handler body returns. For a buffered response that is before anything has
+   * been written, so the header is serialized with the rest. For a <b>streamed</b> response - the NDJSON query
+   * encoding of issue #7306 - the body has been written and the output stream closed by the time the handler
+   * returns, so the response headers went out long before: the {@code put} lands on a header map nothing will
+   * read again, and the header is dropped with no error and no log line.
+   * <p>
+   * Rather than repeating the emission inside every streaming path - which is a fix that has to be remembered
+   * again the next time one is added - this registers it on the exchange, where Undertow runs it at the one
+   * moment that is correct on both encodings: immediately before the response is committed, i.e. before the
+   * first byte of a streamed body and before the buffered body is written. A response that already carries the
+   * header keeps the value it was given, so the buffered encoding stays byte-identical to what it sent before
+   * and the eager call remains the one that decides its value.
+   * <p>
+   * On a read that value is a lower bound on the state the response reflects, which is exactly what the
+   * bookmark means: a client feeding it back as {@code X-ArcadeDB-Read-After} asks a follower to have applied
+   * at least that much. Emitting it before the rows can therefore only be conservative, never stale.
+   * <p>
+   * Not usable on the streamed <b>write</b> path: {@code PostBatchHandler}'s per-chunk encoding only learns its
+   * commit index after the load has run, by which time the response has started, so it carries the bookmark in
+   * band in its terminal line instead (issue #7311).
+   * <p>
+   * <b>It fires on a failed response too</b>, which the eager call did not: that one sits on the success path,
+   * so a request answered 400 or 500 carried no bookmark. That widening is deliberate and matches what the
+   * write endpoints already do - {@code PostBatchHandler} emits the header on its 400 and 408 answers precisely
+   * because a batch is not atomic and the chunks committed before the failure still have to be readable
+   * (issue #5862). The value means the same thing on either outcome: this server had applied at least that
+   * index when it answered, which is a valid barrier for the client's next read whether or not this request
+   * succeeded. It is registered after the per-database authorization check in
+   * {@link DatabaseAbstractHandler#execute}, so a caller refused access to the database never reaches it.
+   */
+  protected static void emitCommitIndexBookmarkOnResponseCommit(final HttpServerExchange exchange,
+      final HAReplicatedDatabase haDb) {
+    if (haDb == null)
+      return;
+    exchange.addResponseCommitListener(ex -> {
+      if (ex.getResponseHeaders().contains(COMMIT_INDEX_HEADER))
+        return;
+      try {
+        emitCommitIndexBookmark(ex, haDb);
+      } catch (final RuntimeException e) {
+        // This runs from inside Undertow's response-commit path, not from the handler, so it is outside the
+        // exception mapping in handleRequest: letting anything escape here would tear down a response that is
+        // otherwise complete and correct. A missing bookmark costs the client one stale follower read; a torn
+        // response costs it the answer.
+        LogManager.instance().log(AbstractServerHttpHandler.class, Level.FINE,
+            "Cannot read the last applied index while committing the response, the read-your-writes bookmark is "
+                + "not emitted for this request", e);
+      }
+    });
   }
 
   /**
@@ -1300,6 +1458,34 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Returns true if the handler is reading the payload in the request. In this case, the execution is delegated to the worker thread.
    */
   protected boolean mustExecuteOnWorkerThread() {
+    return false;
+  }
+
+  /**
+   * Whether <b>this</b> request must run on a worker thread rather than on the Undertow IO thread. Defaults to
+   * the handler-wide {@link #mustExecuteOnWorkerThread()}; a handler whose answer depends on the request
+   * overrides this one instead - {@code GetQueryHandler} does, because the NDJSON encoding it negotiates per
+   * request writes blocking output, and blocking an IO thread starves the server.
+   */
+  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
+    return mustExecuteOnWorkerThread();
+  }
+
+  /**
+   * Whether this handler can answer in the {@code application/x-ndjson} streaming encoding when the caller
+   * negotiates it. False for every route that always writes the same buffered body.
+   * <p>
+   * Overridden by {@code PostCommandHandler} (issue #7306) and {@link PostBatchHandler} (issue #7311) - and by
+   * those two only, verified with
+   * {@code grep -rn 'protected boolean supportsNdJsonEncoding' server/src/main}. {@code GetQueryHandler}
+   * streams as well but does not override it, and does not need to: the only caller is the idempotency gate,
+   * which applies to POST requests alone.
+   * <p>
+   * That gate is the whole reason this exists: whether a streamed answer can be replayed from the cache is a
+   * property of the handler, and reading it off the request header alone would change the behaviour of routes
+   * that do not stream at all.
+   */
+  protected boolean supportsNdJsonEncoding() {
     return false;
   }
 

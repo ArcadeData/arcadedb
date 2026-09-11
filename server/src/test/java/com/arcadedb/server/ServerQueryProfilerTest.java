@@ -35,6 +35,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -634,6 +636,75 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
     assertThat(noCost.getDouble("totalCostMs")).isEqualTo(0.0);
 
     assertThat(findStep(steps, "unknown")).as("a blank step name must be labelled, not left empty").isNotNull();
+  }
+
+  /**
+   * Issue #7332: a run saved by a build older than #7291 carries no {@code measuredCount}, so every step in it read
+   * as fully timed and the negative costs that build produced rendered as written. A saved run is exactly what
+   * somebody compares a later one against, so it says what it is on load instead.
+   */
+  @Test
+  void aRunSavedBeforeMeasuredCountIsMarkedAndItsNegativeCostsAreNeutralised() throws Exception {
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+
+    final File dir = new File("./target/profiler");
+    dir.mkdirs();
+    final String fileName = "profiler-run-19700101-000000.json";
+    Files.writeString(new File(dir, fileName).toPath(), new JSONObject()
+        .put("totalQueries", 1)
+        .put("queries", new JSONArray().put(new JSONObject()
+            .put("queryText", "SELECT FROM Person")
+            .put("steps", new JSONArray()
+                .put(legacyStep("PlausibleStep", 2, 4.0))
+                .put(legacyStep("SentinelSummedStep", 2, -0.000001)))))
+        .toString(), StandardCharsets.UTF_8);
+
+    final JSONObject loaded = profiler.loadSavedRun(fileName);
+
+    assertThat(loaded.getBoolean("stepTimingComplete"))
+        .as("nothing in the file says which occurrences were timed, and inventing a coverage would be worse")
+        .isFalse();
+
+    final JSONArray steps = loaded.getJSONArray("queries").getJSONObject(0).getJSONArray("steps");
+
+    final JSONObject sentinel = findStep(steps, "SentinelSummedStep");
+    assertThat(sentinel.getInt("measuredCount"))
+        .as("a negative cost can only be the -1 'not calculated' sentinel summed as a duration, so it is untimed")
+        .isZero();
+    assertThat(sentinel.getDouble("totalCostMs")).isZero();
+    assertThat(sentinel.getDouble("minCostMs")).isZero();
+    assertThat(sentinel.getDouble("p99CostMs")).isZero();
+
+    final JSONObject plausible = findStep(steps, "PlausibleStep");
+    assertThat(plausible.has("measuredCount"))
+        .as("a positive total may still be partly measured, and nothing in the file can tell - so it is left alone "
+            + "and the recording-level flag is what says so")
+        .isFalse();
+    assertThat(plausible.getDouble("totalCostMs")).isEqualTo(4.0);
+  }
+
+  /** A run this build saves says its step coverage is complete, and re-loading it changes nothing. */
+  @Test
+  void aRunSavedByThisBuildIsCompleteAndSurvivesARoundTrip() {
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+    profiler.start();
+    profiler.recordQuery("testdb", "sql", "SELECT 1", 1_000_000,
+        new JSONObject().put("steps", new JSONArray().put(new JSONObject().put("name", "S").put("cost", -1L))));
+
+    assertThat(profiler.stop().getBoolean("stepTimingComplete")).isTrue();
+
+    final String fileName = profiler.listSavedRuns().getJSONObject(0).getString("fileName");
+    final JSONObject loaded = profiler.loadSavedRun(fileName);
+
+    assertThat(loaded.getBoolean("stepTimingComplete")).isTrue();
+    assertThat(findStep(findQuery(loaded, "SELECT 1").getJSONArray("steps"), "S").getInt("measuredCount")).isZero();
+  }
+
+  /** One step of a recording written before {@code measuredCount} existed. */
+  private static JSONObject legacyStep(final String name, final int executionCount, final double costMs) {
+    return new JSONObject().put("name", name).put("executionCount", executionCount)
+        .put("totalCostMs", costMs).put("minCostMs", costMs).put("avgCostMs", costMs)
+        .put("maxCostMs", costMs).put("p99CostMs", costMs);
   }
 
   /**

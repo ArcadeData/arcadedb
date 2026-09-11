@@ -25,6 +25,9 @@ import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexMaintenanceSuspension;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -49,6 +52,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -60,7 +64,18 @@ import java.util.logging.Level;
  *       collect graph topology as compressed int arrays (~300 MB for 8M vertices / 15M edges).</li>
  *   <li><b>Pass 2</b> — Create all edges from the in-memory topology, one batch per edge type
  *       with bidirectional=true for full IN+OUT traversal.</li>
+ *   <li><b>Vector graphs</b> — Build the graph of every LSM vector index on a type the import wrote to,
+ *       synchronously, so the index is queryable at index speed when {@link #run()} returns. Opt out with
+ *       {@link Builder#withVectorGraphBuild(boolean)} to leave it to the index's own background rebuild.</li>
  * </ol>
+ * <p>
+ * The speculative background maintenance of the database's indexes (the vector index's inactivity rebuild) is
+ * suspended for the whole of {@link #run()}, not only while one of its batches is open: the gap between the two
+ * passes is where it used to fire and then run alongside the whole edge pass (issue #7432). The suspension covers
+ * EVERY index of the database, as a {@link GraphBatch}'s does, and lasts for the load plus the graph build at the
+ * end of it - half an hour at a few million vectors. An unrelated writer sharing the same open database has that
+ * index's automatic rebuild deferred for that long; its writes stay searchable through the delta scan meanwhile.
+ * The importer is meant for a database being loaded, not one serving other writers at the same time.
  * <p>
  * Usage:
  * <pre>
@@ -107,6 +122,7 @@ public class GraphImporter implements AutoCloseable {
   private final List<VertexSourceDef>               vertexSources;
   private final List<EdgeSourceDef>                 edgeSources;
   private final long                                limit;
+  private final boolean                             vectorGraphBuild;
   private final Map<String, TypeState>              typeStates     = new LinkedHashMap<>();
   private final Map<String, EdgeCollector>          edgeCollectors = new LinkedHashMap<>();
 
@@ -115,11 +131,12 @@ public class GraphImporter implements AutoCloseable {
   private long unresolvedEdges;
 
   private GraphImporter(final Database database, final List<VertexSourceDef> vertexSources,
-                        final List<EdgeSourceDef> edgeSources, final long limit) {
+                        final List<EdgeSourceDef> edgeSources, final long limit, final boolean vectorGraphBuild) {
     this.database = database;
     this.vertexSources = vertexSources;
     this.edgeSources = edgeSources;
     this.limit = limit;
+    this.vectorGraphBuild = vectorGraphBuild;
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -293,6 +310,8 @@ public class GraphImporter implements AutoCloseable {
 
     if (config.has("limit"))
       b.limit(config.getLong("limit"));
+    if (config.has("vectorGraphBuild"))
+      b.withVectorGraphBuild(config.getBoolean("vectorGraphBuild"));
 
     // Vertex sources
     if (config.has("vertices")) {
@@ -563,6 +582,7 @@ public class GraphImporter implements AutoCloseable {
     private final List<VertexSourceDef> vertexSources = new ArrayList<>();
     private final List<EdgeSourceDef>   edgeSources   = new ArrayList<>();
     private       long                  limit;
+    private       boolean               vectorGraphBuild = true;
 
     Builder(final Database database) {
       this.database = database;
@@ -598,8 +618,21 @@ public class GraphImporter implements AutoCloseable {
       return this;
     }
 
+    /**
+     * Whether {@link #run()} ends by building the graph of every LSM vector index on a type the import wrote to
+     * (the default), so the index answers at graph speed the moment the import returns and a database close that
+     * follows finds nothing left to do. {@code false} leaves the build to the index's own background rebuild, which
+     * starts once the index has been quiet for its inactivity window - only useful when the database stays open
+     * long enough for that build to complete, since a close cancels it (issue #7432). JSON key:
+     * {@code "vectorGraphBuild"}.
+     */
+    public Builder withVectorGraphBuild(final boolean enabled) {
+      this.vectorGraphBuild = enabled;
+      return this;
+    }
+
     public GraphImporter build() {
-      return new GraphImporter(database, vertexSources, edgeSources, limit);
+      return new GraphImporter(database, vertexSources, edgeSources, limit, vectorGraphBuild);
     }
   }
 
@@ -715,11 +748,12 @@ public class GraphImporter implements AutoCloseable {
      * Enables splitting one file into multiple vertex types (e.g. Posts.xml → Question + Answer).
      * Format: {@code filter("PostTypeId", "1")} or in JSON: {@code "filter": "PostTypeId=1"}.
      * <p>
-     * An EMPTY value is accepted and selects the rows whose attribute is empty - {@code "filter": "PostTypeId="}
-     * in JSON. Which rows those are depends on the source: {@link XmlRowSource} hands back the raw attribute value
-     * and {@link JsonlRowSource} an explicit empty string, so both can match, while {@link CsvRowSource} reads an
-     * empty cell as absent, where such a filter selects nothing. An empty ATTRIBUTE is refused, because there is
-     * no row it could ever test.
+     * An EMPTY value is accepted and selects the rows that do not set the attribute at all -
+     * {@code "filter": "PostTypeId="} in JSON - on every source alike, because every source reads an empty value
+     * as "not set" ({@link RecordReader#get}). It used to depend on the file format instead: XML and JSONL handed
+     * back the empty string and matched, CSV folded it to null and matched nothing, so one config split one file
+     * two ways depending on what it had been exported to (issue #7332). An empty ATTRIBUTE is still refused,
+     * because there is no row it could ever test.
      */
     public void filter(final String attribute, final String value) {
       this.filterAttribute = attribute;
@@ -852,7 +886,28 @@ public class GraphImporter implements AutoCloseable {
    * Read-only access to a record's attributes.
    */
   public interface RecordReader {
+    /**
+     * The attribute's textual value, or {@code null} when the row does not set it.
+     * <p>
+     * <b>Empty means not set, on every source.</b> An implementation must answer {@code null} for a value that is
+     * present but empty, exactly as the typed accessors below do with their {@code !v.isEmpty()} test, as
+     * {@code readProperty} does for a DATETIME (issue #7265) and as the JSONL typed accessors do (issue #7269).
+     * Otherwise the same blank column behaves differently by file format - nothing stored when the row came from
+     * CSV, an empty string stored when it came from JSONL or XML - and a downstream {@code IS NULL} filter or a
+     * mandatory-property check then answers differently for two files carrying the same data (issue #7332).
+     * <p>
+     * {@link #emptyAsNull} is the one-line way to satisfy it. {@code isEmpty()}, never {@code isBlank()}: a
+     * whitespace-only value is a data error rather than a blank cell, which is what every accessor below tests.
+     */
     String get(String attribute);
+
+    /**
+     * {@code value} unless it is empty, in which case {@code null} - the "empty means not set" rule {@link #get}
+     * states, in the one place every source can share it.
+     */
+    static String emptyAsNull(final String value) {
+      return value != null && !value.isEmpty() ? value : null;
+    }
 
     default int getInt(final String attribute) {
       final String v = get(attribute);
@@ -931,38 +986,52 @@ public class GraphImporter implements AutoCloseable {
 
     validateEdgeTargets();
 
-    // ── Pass 1: Create vertices + collect topology ──
-    LogManager.instance().log(this, Level.INFO, "Pass 1: Vertices + Topology");
+    // Held around the WHOLE import, not only while one of the batches below is open. Each GraphBatch suspends the
+    // indexes' speculative maintenance for its own lifetime (issue #7357), but this importer is not one batch: the
+    // vertex batch closes, the edge sources are read for their topology with no batch open at all, then one edge
+    // batch per edge type opens. The first close used to lift the only suspension and arm the vector index's
+    // inactivity timer, which fired in that gap and started a full graph build that then ran alongside the whole
+    // edge pass (issue #7432). The counts compose, so the batches' own suspensions nest inside this one.
+    try (final IndexMaintenanceSuspension maintenance = IndexMaintenanceSuspension.suspend(database, "GraphImporter")) {
+      // ── Pass 1: Create vertices + collect topology ──
+      LogManager.instance().log(this, Level.INFO, "Pass 1: Vertices + Topology");
 
-    try (final GraphBatch batch = database.batch()
-        .withBidirectional(false)
-        .withWAL(false)
-        .withPreAllocateEdgeChunks(true)
-        .withCommitEvery(0)
-        .build()) {
+      try (final GraphBatch batch = database.batch()
+          .withBidirectional(false)
+          .withWAL(false)
+          .withPreAllocateEdgeChunks(true)
+          .withCommitEvery(0)
+          .build()) {
 
-      for (final VertexSourceDef vsd : vertexSources)
-        processVertexSource(batch, vsd);
+        for (final VertexSourceDef vsd : vertexSources)
+          processVertexSource(batch, vsd);
+      }
+
+      // Process edge-only sources
+      for (int i = 0; i < edgeSources.size(); i++)
+        processEdgeSource(edgeSources.get(i), i);
+
+      // Free ID maps (edges now use internal indices)
+      for (final TypeState ts : typeStates.values()) {
+        ts.idToIdx = null;
+        ts.nameToIdx = null;
+      }
+
+      LogManager.instance().log(this, Level.INFO, "  Topology: %,d vertices, %,d edge refs", totalVertices,
+          countEdgeRefs());
+
+      // ── Pass 2: Create edges from topology ──
+      LogManager.instance().log(this, Level.INFO, "Pass 2: Edges (bidirectional)");
+
+      for (final EdgeCollector ec : edgeCollectors.values())
+        flushEdgeType(ec);
+
+      // ── Vector graphs: the part of the index state the load leaves deferred, built before this returns ──
+      // Still under the suspension: a build that ran here with the timer live could race an inactivity rebuild
+      // for the same corpus. Once this has drained the pending count, lifting the suspension arms nothing.
+      if (vectorGraphBuild)
+        buildVectorGraphs();
     }
-
-    // Process edge-only sources
-    for (int i = 0; i < edgeSources.size(); i++)
-      processEdgeSource(edgeSources.get(i), i);
-
-    // Free ID maps (edges now use internal indices)
-    for (final TypeState ts : typeStates.values()) {
-      ts.idToIdx = null;
-      ts.nameToIdx = null;
-    }
-
-    LogManager.instance().log(this, Level.INFO, "  Topology: %,d vertices, %,d edge refs", totalVertices,
-        countEdgeRefs());
-
-    // ── Pass 2: Create edges from topology ──
-    LogManager.instance().log(this, Level.INFO, "Pass 2: Edges (bidirectional)");
-
-    for (final EdgeCollector ec : edgeCollectors.values())
-      flushEdgeType(ec);
 
     final long elapsed = System.currentTimeMillis() - start;
     LogManager.instance().log(this, Level.INFO, "Import complete: %,d vertices, %,d edges in %d.%ds",
@@ -971,6 +1040,70 @@ public class GraphImporter implements AutoCloseable {
       LogManager.instance().log(this, Level.WARNING,
           "%,d edges named an identity no vertex carries and were skipped: check that the referenced rows "
               + "are not filtered out and that both files spell the identity the same way", unresolvedEdges);
+  }
+
+  /**
+   * Builds, synchronously, the graph of every LSM vector index on a type this import wrote to that has vectors its
+   * graph does not cover yet. Indexes on other types are not this import's business, and one whose graph is
+   * already current is skipped by the index itself.
+   * <p>
+   * Synchronous by design: the alternative is the index's own inactivity rebuild, which starts a window after the
+   * load on a background thread, and the database close that follows every completed load cancels it - the
+   * reporter of issue #7432 lost a 20-minute build over 4.2M vectors five seconds after "Import complete". A load
+   * whose index would need another half hour of background work the caller cannot see is not complete.
+   * <p>
+   * A build that fails propagates: the data is on disk, but "Import complete" must not be logged over an index
+   * that is not. It propagates AFTER the other indexes have had their builds (PR #7433 review): one index whose
+   * build fails must not leave the graphs of the others unbuilt as well, or the caller would have to rerun the
+   * whole import to get them. The first failure is what is thrown; the later ones are logged against it.
+   */
+  private void buildVectorGraphs() {
+    RuntimeException firstFailure = null;
+    // Matched on the type each bucket index names. A vector index declared on a parent type covers the buckets
+    // of every subtype through one bucket index per bucket, and each of those names the SUBTYPE that owns the
+    // bucket, so an import that writes only to a subtype matches its bucket index here without walking the
+    // hierarchy (PR #7433 review; pinned by Issue7432GraphImporterVectorGraphTest).
+    //
+    // "Wrote to" is counted, not configured (PR #7433 review): a type is in typeStates as soon as a source names
+    // it, or as soon as an edge points at it, and an edge collector exists for every edge mapping - a source that
+    // was filtered down to nothing, or one that turned out empty, must not have this import rebuild an index it
+    // never touched, over pending work that is somebody else's.
+    final Set<String> touchedTypes = new HashSet<>();
+    for (final Map.Entry<String, TypeState> entry : typeStates.entrySet())
+      if (entry.getValue().count > 0)
+        touchedTypes.add(entry.getKey());
+    for (final EdgeCollector ec : edgeCollectors.values())
+      if (ec.srcIdx.size > 0)
+        touchedTypes.add(ec.edgeTypeName);
+
+    for (final Index index : database.getSchema().getIndexes()) {
+      if (!(index instanceof LSMVectorIndex vectorIndex) || !touchedTypes.contains(vectorIndex.getTypeName()))
+        continue;
+
+      final long t = System.currentTimeMillis();
+      try {
+        if (vectorIndex.buildVectorGraphIfPending(null))
+          LogManager.instance().log(this, Level.INFO, "  Vector graph for index '%s' on type '%s' built in %,d ms",
+              vectorIndex.getName(), vectorIndex.getTypeName(), System.currentTimeMillis() - t);
+        else
+          LogManager.instance().log(this, Level.FINE, "  Vector graph for index '%s' already current, nothing to build",
+              vectorIndex.getName());
+      } catch (final CancellationException e) {
+        // The importer's own thread was interrupted: every later build would see the flag too and fail the same
+        // way, so this is the caller's cancellation to receive now, not a failure to log and carry on from.
+        throw e;
+      } catch (final RuntimeException e) {
+        if (firstFailure == null)
+          firstFailure = e;
+        else
+          firstFailure.addSuppressed(e);
+        LogManager.instance().log(this, Level.SEVERE, "  Vector graph for index '%s' on type '%s' could not be built: %s",
+            e, vectorIndex.getName(), vectorIndex.getTypeName(), e.getMessage());
+      }
+    }
+
+    if (firstFailure != null)
+      throw firstFailure;
   }
 
   /**
@@ -1175,7 +1308,11 @@ public class GraphImporter implements AutoCloseable {
         // Apply row filter (e.g. PostTypeId=1 for questions only)
         if (filterAttr != null) {
           final String v = record.get(filterAttr);
-          if (v == null || !v.equals(filterVal))
+          // An EMPTY filter value selects the rows that leave the attribute unset, which is the only reading left
+          // now that every source folds an empty value to null (issue #7332). Before that it worked on two sources
+          // of three - XML and JSONL handed back "" and matched, CSV folded to null and matched nothing - so the
+          // same config split one file two ways depending on the format it was exported to.
+          if ((filterVal == null || filterVal.isEmpty()) ? v != null : !filterVal.equals(v))
             return;
         }
 

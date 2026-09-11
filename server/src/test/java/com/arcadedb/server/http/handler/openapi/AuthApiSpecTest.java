@@ -73,7 +73,7 @@ class AuthApiSpecTest {
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder("result", "count");
     assertThat(schema.getProperties().get("result").getItems().getProperties().keySet())
         .containsExactlyInAnyOrder("token", "user", "createdAt", "lastUpdate", "elapsedMs",
-            "sourceIp", "userAgent", "country", "city");
+            "sourceIp", "userAgent", "country", "city", "issuer");
   }
 
   @Test

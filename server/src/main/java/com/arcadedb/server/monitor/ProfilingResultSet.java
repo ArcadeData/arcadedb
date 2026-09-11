@@ -39,12 +39,18 @@ public class ProfilingResultSet implements ResultSet {
   /**
    * @param startNanos the {@link System#nanoTime()} reading taken <b>before</b> the query was handed to the engine.
    *                   It cannot be taken here: by the time this wrapper is built the engine call has already
-   *                   returned, and everything a non-streaming plan does (every write statement, and every
-   *                   OpenCypher statement while the profiler is recording, because the profiler routes those
-   *                   through {@code CypherExecutionPlan.profile()} which drains the plan eagerly) has already
-   *                   happened. Starting the clock in this constructor therefore measured only the drain of an
+   *                   returned, and everything a non-streaming plan does - every write statement, and any
+   *                   statement whose plan is materialized rather than streamed - has already happened.
+   *                   Starting the clock in this constructor therefore measured only the drain of an
    *                   already-materialized iterator - a few microseconds - and Studio showed a query total far
    *                   below its own step timings (issue #7291).
+   *                   <p>
+   *                   This used to name OpenCypher as the second case, because the profiler rerouted every
+   *                   Cypher statement onto {@code CypherExecutionPlan.profile()} while recording. #7330
+   *                   removed that reroute - {@code $profileExecution} now times the ordinary streaming run,
+   *                   and only the explicit {@code PROFILE} keyword still drains eagerly - so the example no
+   *                   longer describes anything (issue #7394). The reason the reading has to be taken by the
+   *                   caller is unchanged.
    */
   public ProfilingResultSet(final ResultSet delegate, final ServerQueryProfiler profiler, final String database,
       final String language, final String queryText, final long startNanos) {

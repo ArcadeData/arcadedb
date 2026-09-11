@@ -287,9 +287,17 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
-   * Returns a lazy merge-sorted iterator across all shards.
-   * Uses a min-heap to merge shard iterators by timestamp.
-   * Memory usage: O(shardCount * max(blockSize, pageSize)) instead of O(totalRows).
+   * Returns a merge-sorted iterator across all shards, using a min-heap to merge the per-shard iterators by
+   * timestamp.
+   * <p>
+   * <b>It is not lazy end to end,</b> whatever the merge itself is: {@link TimeSeriesSealedStore#iterateRange}
+   * materialises every matching row of the sealed layer before it returns an iterator over them, because the
+   * directory read lock has to be released before the caller iterates. So the residency of this method is
+   * O(matching rows), the same as {@link #query} without the sort. What it saves against {@code query} is the
+   * second copy and the sort, not the series.
+   * <p>
+   * A reader that folds the rows into an answer - a set of label values, a set of label combinations, an
+   * aggregate - wants {@link #forEachRow} instead, which is bounded by one block (issue #7354).
    */
   public Iterator<Object[]> iterateQuery(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
@@ -319,6 +327,29 @@ public class TimeSeriesEngine implements AutoCloseable {
         return row;
       }
     };
+  }
+
+  /**
+   * Hands every row matching the range and filter to {@code visitor}, shard by shard, without ever collecting them
+   * (issue #7354). Returns {@code false} when the visitor asked to stop.
+   * <p>
+   * The read path for a question whose ANSWER is small even though the range is not: the distinct values of a TAG
+   * column, the label combinations a metric carries, any fold over the rows. {@link #query} answers those by
+   * merging every shard's full range into one {@code ArrayList} and sorting it by timestamp - a sort such a caller
+   * then does not use - so the call allocates the whole series to produce a set of five strings.
+   * <p>
+   * No merge and no sort, therefore: the rows arrive shard by shard and, within a shard, sealed layer before
+   * mutable. Residency is one block plus one mutable bucket rather than the series. A caller that needs the rows
+   * in timestamp order wants {@link #iterateQuery}; a caller that needs them all in hand wants {@link #query}.
+   *
+   * @param metrics optional block-level counters, may be {@code null}
+   */
+  public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
+      final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+    for (final TimeSeriesShard shard : shards)
+      if (!shard.forEachRow(fromTs, toTs, columnIndices, tagFilter, metrics, visitor))
+        return false;
+    return true;
   }
 
   /**
@@ -392,10 +423,12 @@ public class TimeSeriesEngine implements AutoCloseable {
       accumulateToBucket(result, bucketTs, value, aggType);
     }
 
-    // Finalize AVG: divide accumulated sums by counts
+    // Finalize AVG: divide accumulated sums by the counts of real samples. A bucket with none keeps the absent
+    // marker its sum already is (issue #7089).
     if (aggType == AggregationType.AVG) {
       for (int i = 0; i < result.size(); i++)
-        result.updateValue(i, result.getValue(i) / result.getCount(i));
+        if (result.getCount(i) > 0)
+          result.updateValue(i, result.getValue(i) / result.getCount(i));
     }
 
     return result;
@@ -995,19 +1028,21 @@ public class TimeSeriesEngine implements AutoCloseable {
     if (idx >= 0) {
       final double existing = result.getValue(idx);
       final long count = result.getCount(idx);
+      // NaN policy (issue #7089): SUM/AVG skip an absent sample the way MIN/MAX below do, and the count kept
+      // alongside is of the samples that contributed - what the AVG is divided by once the scan is over.
       final double merged = switch (type) {
-        case SUM -> existing + value;
+        case SUM, AVG -> TimeSeriesNaN.sum(existing, count, value);
         case COUNT -> existing + 1;
-        case AVG -> existing + value; // accumulate sum, divide by count later
         // NaN policy (issue #4596): NaN is treated as absent and skipped, so a real value always
         // wins over a NaN running value (e.g. when the bucket was seeded with a NaN first sample).
         case MIN -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.min(existing, value);
         case MAX -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.max(existing, value);
       };
       result.updateValue(idx, merged);
-      result.updateCount(idx, count + 1);
+      result.updateCount(idx, type == AggregationType.COUNT ? count + 1 : TimeSeriesNaN.countIfPresent(count, value));
     } else {
-      result.addBucket(bucketTs, type == AggregationType.COUNT ? 1.0 : value, 1);
+      result.addBucket(bucketTs, type == AggregationType.COUNT ? 1.0 : value,
+          type == AggregationType.COUNT ? 1 : TimeSeriesNaN.countIfPresent(0, value));
     }
   }
 }

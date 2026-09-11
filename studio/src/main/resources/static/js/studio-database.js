@@ -5634,7 +5634,11 @@ function renderFlameRow(steps, rootCost, depth) {
   var html = "<div class='flame-row'>";
   for (var i = 0; i < steps.length; i++) {
     var step = steps[i];
-    var cost = step.cost != null ? step.cost : -1;
+    // A bar spans its whole subtree: "cost" is the step's SELF time since #7329 (-1 for a container that only
+    // dispatches to its children), "totalCost" the roll-up. Sizing by self time drew a container at the minimum
+    // width with its timed children squeezed inside it (issue #7391).
+    var selfCost = step.cost != null ? step.cost : -1;
+    var cost = stepTotalCost(step);
     var pctOfRoot = rootCost > 0 && cost > 0 ? (cost / rootCost * 100) : 0;
     var widthPct = Math.max(pctOfRoot, 1.5); // minimum 1.5% for visibility
     var depthClass = "flame-depth-" + (depth % 5);
@@ -5645,6 +5649,8 @@ function renderFlameRow(steps, rootCost, depth) {
     // Wrapper holds the bar + its children (so children sit below, constrained to parent width)
     html += "<div class='flame-cell' style='width:" + widthPct + "%'>";
     var tipHtml = escapeHtml(name) + " &mdash; " + escapeHtml(costLabel) + " (" + pctOfRoot.toFixed(1) + "% of total)";
+    if (step.subSteps && step.subSteps.length > 0)
+      tipHtml += "<br>self: " + escapeHtml(formatCostNanos(selfCost));
     if (desc) tipHtml += "<br>" + escapeHtml(desc);
     html += "<div class='flame-bar " + depthClass + "'";
     html += flameTipAttr(tipHtml) + ">";
@@ -5687,13 +5693,32 @@ function stepsHaveCost(steps) {
   return false;
 }
 
+/**
+ * The subtree total of one step: the server's "totalCost" roll-up when present, otherwise the sum of the
+ * self costs of the step and everything under it (an older server, or a step serialized without the roll-up).
+ * Both give the same number, and a container's self cost of -1 contributes nothing either way.
+ */
+function stepTotalCost(step) {
+  if (step.totalCost != null && step.totalCost >= 0) return step.totalCost;
+  // The fallback walks the subtree, and renderFlameRow asks for every node on its way down; remember the answer on
+  // the node so a deep plan is summed once rather than once per ancestor.
+  if (step._subtreeCost != null) return step._subtreeCost;
+  var total = step.cost != null && step.cost > 0 ? step.cost : 0;
+  if (step.subSteps)
+    for (var i = 0; i < step.subSteps.length; i++) total += stepTotalCost(step.subSteps[i]);
+  step._subtreeCost = total;
+  return total;
+}
+
+/**
+ * The plan's total: the roll-up of each top-level step. Summing "cost" here read the self time of a container
+ * as the total, so a plain type scan - one container over timed bucket steps - came out as zero and the graph
+ * reported no measurable cost on a plan that had it (issue #7391).
+ */
 function computeTotalCost(steps) {
   var total = 0;
   if (!steps) return 0;
-  for (var i = 0; i < steps.length; i++) {
-    var cost = steps[i].cost;
-    if (cost != null && cost > 0) total += cost;
-  }
+  for (var i = 0; i < steps.length; i++) total += stepTotalCost(steps[i]);
   return total;
 }
 

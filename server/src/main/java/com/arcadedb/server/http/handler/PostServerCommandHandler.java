@@ -18,26 +18,18 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ServerControlPlane;
-import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
-import com.arcadedb.utility.FileUtils;
-import com.arcadedb.utility.IPAddressBlocklist;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
@@ -46,22 +38,13 @@ import io.undertow.util.HttpString;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.InetAddress;
 import java.net.URI;
-import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
@@ -96,8 +79,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String RESTORE_DATABASE     = "restore database";
   private static final String IMPORT_DATABASE      = "import database";
   private static final String PROFILER             = "profiler";
-
-  private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
 
   /**
    * The transport-independent implementation of these commands, shared with gRPC's
@@ -325,15 +306,16 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * {@code trigger backup <database>}. A backup already running for the same database is a 409 here
-   * and an {@code ABORTED} on gRPC; both carry the message the shared implementation raised.
+   * {@code trigger backup <database>}. A backup - or, since #7384, a restore - already running for the
+   * same database is a 409 here and an {@code ABORTED} on gRPC; both carry the message the shared
+   * implementation raised.
    */
   private ExecutionResponse triggerBackup(final String databaseName) {
     try {
       final JSONObject result = controlPlane.triggerBackup(databaseName);
       Metrics.counter("http.trigger-backup").increment();
       return new ExecutionResponse(200, result.toString());
-    } catch (final ServerControlPlane.BackupInProgressException e) {
+    } catch (final ServerControlPlane.OperationInProgressException e) {
       return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
     }
   }
@@ -405,19 +387,20 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     checkServerIsLeaderIfInHA();
 
-    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.create-database").increment();
 
-    final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
-
-    final DatabaseInternal wrappedDb = db.getWrappedDatabaseInstance();
-    if (wrappedDb instanceof HAReplicatedDatabase haDb)
-      haDb.createInReplicas();
+    // The cluster-wide create lives in the control plane so gRPC's CreateDatabase runs the same
+    // thing rather than a second implementation that forgot the replication half (issue #7389).
+    controlPlane.createDatabase(databaseName);
   }
 
   /**
    * Restores a database from a backup URL. Format: {@code restore database <name> <url>}.
-   * Supports SSE progress streaming when the client sends {@code Accept: text/event-stream}.
+   * Streams progress as SSE when the client sends {@code Accept: text/event-stream}.
+   * <p>
+   * The restore itself lives in {@link ServerControlPlane#restoreDatabase}, shared with the gRPC
+   * {@code RestoreDatabase} RPC (issue #7308); what is left here is the command grammar and the
+   * choice of progress sink.
    */
   private ExecutionResponse restoreDatabase(final String args, final HttpServerExchange exchange) {
     final int space = args.indexOf(' ');
@@ -430,23 +413,15 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (databaseName.isEmpty() || url.isEmpty())
       throw new IllegalArgumentException("Usage: restore database <name> <url>");
 
-    validateClientRestoreImportUrl(url);
-
+    // The leader gate now precedes the URL guard, which the shared implementation applies (it used to
+    // run here, first). Deliberate: a node that is going to refuse the command should not first
+    // resolve a hostname the caller chose, and the caller has to take the command to the leader
+    // either way, where the URL refusal is what they will get. Issue #7308.
     checkServerIsLeaderIfInHA();
-
-    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.restore-database").increment();
 
-    // Prevent path traversal via the caller-supplied database name (GHSA-qwgr-2c45-63xx).
-    server.checkDatabaseNameIsValid(databaseName);
-
-    final String dbPath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
-        + File.separator + databaseName;
-
-    if (new File(dbPath).exists())
-      throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
-
-    return performRestore(databaseName, dbPath, url, exchange);
+    return streamOrRun(exchange, databaseName + " restored successfully",
+        listener -> { controlPlane.restoreDatabase(databaseName, url, listener); return null; });
   }
 
   /**
@@ -455,6 +430,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * filesystem path. Format: {@code restore backup <database> <fileName> as <targetDatabase>}.
    * The optional payload flag {@code "overwrite": true} drops the target database first if it
    * already exists; without it the command fails when the target database exists.
+   * <p>
+   * Shared with the gRPC {@code RestoreBackup} RPC through {@link ServerControlPlane#restoreBackup}.
    */
   private ExecutionResponse restoreBackup(final String args, final JSONObject payload, final HttpServerExchange exchange) {
     final int asIdx = args.toLowerCase(Locale.ENGLISH).lastIndexOf(" as ");
@@ -475,25 +452,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final boolean overwrite = payload.getBoolean("overwrite", false);
 
     checkServerIsLeaderIfInHA();
-
-    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.restore-backup").increment();
 
-    final Path backupFile = controlPlane.resolveBackupFile(databaseName, fileName);
-
-    final String dbPath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
-        + File.separator + targetDatabase;
-
-    final boolean exists = server.existsDatabase(targetDatabase) || new File(dbPath).exists();
-    if (exists && !overwrite)
-      throw new IllegalArgumentException(
-          "Database '" + targetDatabase + "' already exists. Enable overwrite to replace it with the backup");
-
-    // Note: any existing target is dropped by performRestore only AFTER the restore into a temporary
-    // directory succeeds, so a failed restore leaves the original database intact (issue #5027).
-    // The backup file is resolved server-side, so this internal file:// URL bypasses the SSRF guard.
-    final String url = "file://" + backupFile.toAbsolutePath();
-    return performRestore(targetDatabase, dbPath, url, exchange);
+    return streamOrRun(exchange, targetDatabase + " restored successfully",
+        listener -> { controlPlane.restoreBackup(databaseName, fileName, targetDatabase, overwrite, listener); return null; });
   }
 
   /**
@@ -502,194 +464,23 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * {@code delete backup <database> <fileName>}.
    */
   /**
-   * Shared restore execution used by {@code restore database} and {@code restore backup}. Performs
-   * the actual restore from {@code url} into {@code dbPath}, streaming progress via SSE when
-   * requested and replicating the restored database in HA mode. The caller is responsible for any
-   * pre-restore existence/overwrite checks.
-   */
-  private ExecutionResponse performRestore(final String databaseName, final String dbPath, final String url,
-      final HttpServerExchange exchange) {
-    final ArcadeDBServer server = httpServer.getServer();
-
-    // Restore into a temporary sibling directory first, then atomically swap it into place only on
-    // success. This keeps an existing target database intact when the restore fails (issue #5027).
-    // The temp directory name is prefixed with the reserved-database marker ('.') so that, if the
-    // process dies mid-restore, loadDatabases() skips the orphan at next startup instead of trying
-    // to open it as a user database.
-    final File finalDir = new File(dbPath);
-    final File tempDir = new File(finalDir.getParentFile(),
-        ArcadeDBServer.RESERVED_DATABASE_PREFIX + "restore-tmp-" + databaseName + "-" + System.nanoTime());
-
-    if (isSSERequested(exchange)) {
-      startSSE(exchange);
-      final OutputStream out = exchange.getOutputStream();
-
-      try {
-        final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-        final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
-        // SAME BOOLEAN validateClientRestoreImportUrl ALREADY VALIDATED THIS URL AGAINST: THE FETCH INSIDE
-        // FullRestoreFormat MUST AGREE WITH THIS SERVER'S OWN CONFIGURATION RATHER THAN FALLING BACK TO THE STATIC
-        // DEFAULT, OR A PER-SERVER OVERRIDE THAT LET THE COMMAND THROUGH WOULD STILL HAVE THE FETCH REFUSE IT.
-        clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(restorer, isRestoreImportLocalUrlsAllowed());
-
-        // Set a logger with SSE callback for progress
-        final Class<?> loggerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger");
-        final Class<?> listenerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger$LogListener");
-        final Object listener = java.lang.reflect.Proxy.newProxyInstance(
-            listenerClass.getClassLoader(), new Class<?>[]{ listenerClass },
-            (proxy, method, methodArgs) -> {
-              if ("onLogLine".equals(method.getName()))
-                sendSSE(out, new JSONObject().put("status", "progress").put("message", (String) methodArgs[0]));
-              return null;
-            });
-        final Object logger = loggerClass.getConstructor(int.class, listenerClass).newInstance(2, listener);
-        clazz.getMethod("setLogger", loggerClass).invoke(restorer, logger);
-
-        sendSSE(out, new JSONObject().put("status", "progress").put("message", "Downloading and restoring " + databaseName + "..."));
-        clazz.getMethod("restoreDatabase").invoke(restorer);
-        swapRestoredDatabase(server, databaseName, finalDir, tempDir);
-        final ServerDatabase restoredSse = server.getDatabase(databaseName);
-        replicateRestoredDatabase(server, restoredSse, databaseName);
-        sendSSE(out, new JSONObject().put("status", "completed").put("message", databaseName + " restored successfully"));
-      } catch (final Exception e) {
-        FileUtils.deleteRecursively(tempDir);
-        final Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ? e.getCause() : e;
-        sendSSE(out, new JSONObject().put("status", "error").put("message", cause.getMessage()));
-      } finally {
-        closeSSE(out);
-      }
-      return null; // response already sent via SSE
-    }
-
-    // Synchronous fallback (no SSE)
-    try {
-      final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-      final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
-      clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(restorer, isRestoreImportLocalUrlsAllowed());
-      clazz.getMethod("restoreDatabase").invoke(restorer);
-    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException
-                   | InstantiationException e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw new CommandExecutionException("Restore libs not found in classpath", e);
-    } catch (final java.lang.reflect.InvocationTargetException e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw new CommandExecutionException("Error restoring database", e.getTargetException());
-    }
-
-    swapRestoredDatabase(server, databaseName, finalDir, tempDir);
-    final ServerDatabase restored = server.getDatabase(databaseName);
-    replicateRestoredDatabase(server, restored, databaseName);
-    return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
-  }
-
-  /**
-   * Swaps a freshly-restored temporary directory into the final database directory. The existing
-   * target database (if any) is dropped only now that the restore into {@code tempDir} has
-   * succeeded, so a failed restore never destroys the original data (issue #5027).
-   */
-  private void swapRestoredDatabase(final ArcadeDBServer server, final String databaseName, final File finalDir,
-      final File tempDir) {
-    try {
-      // Drop the previous target (HA-aware) BEFORE taking the registry lock and only after a
-      // successful restore into tempDir. In HA mode dropDatabase() round-trips through Raft and the
-      // apply thread itself acquires databasesLock, so holding that lock here would deadlock; only the
-      // pure-local file swap below runs under the lock, matching the snapshot-installer pattern (#4832).
-      if (server.existsDatabase(databaseName))
-        dropDatabase(databaseName);
-
-      // Serialise the on-disk swap against concurrent getDatabase / createDatabase so no concurrent
-      // open observes the transient half-swapped directory.
-      synchronized (server.getDatabasesLock()) {
-        if (finalDir.exists())
-          FileUtils.deleteRecursively(finalDir);
-
-        try {
-          Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.ATOMIC_MOVE);
-        } catch (final AtomicMoveNotSupportedException e) {
-          Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        }
-      }
-    } catch (final CommandExecutionException e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw e;
-    } catch (final Exception e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw new CommandExecutionException("Error activating restored database '" + databaseName + "'", e);
-    }
-  }
-
-  /**
-   * Validates a client-supplied restore/import URL to prevent SSRF and local-file reads. Unless the
-   * operator enables {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS}, only
-   * {@code http}/{@code https} URLs to non-private hosts are accepted; {@code file://} and any
-   * private, loopback, link-local, site-local, multicast, wildcard or unresolvable host is rejected.
-   */
-  private void validateClientRestoreImportUrl(final String url) {
-    if (isRestoreImportLocalUrlsAllowed())
-      return;
-
-    final URI uri;
-    try {
-      uri = URI.create(url.trim());
-    } catch (final IllegalArgumentException e) {
-      throw new SecurityException("Invalid restore/import URL");
-    }
-
-    final String scheme = uri.getScheme() == null ? null : uri.getScheme().toLowerCase(Locale.ENGLISH);
-    if (scheme == null)
-      throw new SecurityException("Restore/import URL must use the 'http' or 'https' scheme");
-
-    if (!"http".equals(scheme) && !"https".equals(scheme))
-      throw new SecurityException("Restore/import URL scheme '" + scheme + "' is not allowed. Enable '"
-          + GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getKey()
-          + "' to permit local-file and non-HTTP URLs");
-
-    final String host = uri.getHost();
-    if (host == null || host.isBlank())
-      throw new SecurityException("Restore/import URL host is missing");
-
-    if (isBlockedHost(host))
-      throw new SecurityException("Restore/import from private, loopback or link-local hosts is blocked. Enable '"
-          + GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getKey() + "' to override");
-  }
-
-  /**
-   * The single source of truth for {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS} on this server
-   * instance, read from the server's own (possibly per-instance-overridden) {@link
-   * com.arcadedb.ContextConfiguration} rather than the static default. {@link #validateClientRestoreImportUrl} and
-   * {@link #performRestore} must agree on this value: the pre-check here decides whether to accept the command at
-   * all, and the actual fetch inside {@code FullRestoreFormat} decides whether to follow it, and letting them read
-   * from two different configuration sources would let one permit what the other refuses on the very same server.
-   */
-  private boolean isRestoreImportLocalUrlsAllowed() {
-    return httpServer.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS);
-  }
-
-  /**
    * Returns true when {@code host} resolves to (or is) an address in a range that must not be reached
-   * from a client-supplied restore/import URL. Every resolved address is checked so a hostname that
-   * resolves to a mix of public and private addresses is still rejected. An unresolvable host is
-   * treated as blocked.
+   * from a client-supplied restore/import URL.
    * <p>
-   * Delegates to {@link IPAddressBlocklist#defaultReservedRanges()}, the single shared implementation also used
-   * by {@code ImportSecurityValidator.isBlockedAddress} in the integration module and by {@code LOAD CSV}. A
-   * previous version duplicated this logic ad-hoc; see {@code ImportSecurityValidator.isBlockedAddress} for why
-   * that was the root cause of GHSA-67m7-7w7g-mpmh. Package-private for direct unit testing.
+   * Delegates to {@link ServerControlPlane#isBlockedRestoreImportHost}, which is where the guard moved
+   * when restore and import became transport-independent (issue #7308). Kept here, package-private, so
+   * the SSRF unit test keeps naming the class whose command surface the guard protects.
    */
   static boolean isBlockedHost(final String host) {
-    try {
-      for (final InetAddress addr : InetAddress.getAllByName(host))
-        if (RESERVED_ADDRESSES.isBlocked(addr))
-          return true;
-      return false;
-    } catch (final UnknownHostException e) {
-      return true;
-    }
+    return ServerControlPlane.isBlockedRestoreImportHost(host);
   }
 
   /**
    * Creates and imports a database in one step. Format: {@code import database <name> <url>}.
-   * Supports SSE progress streaming when the client sends {@code Accept: text/event-stream}.
+   * Streams progress as SSE when the client sends {@code Accept: text/event-stream}.
+   * <p>
+   * The import itself lives in {@link ServerControlPlane#importDatabase}, shared with the gRPC
+   * {@code ImportDatabase} RPC (issue #7308).
    */
   private ExecutionResponse importDatabase(final String args, final HttpServerExchange exchange) {
     final int space = args.indexOf(' ');
@@ -702,159 +493,147 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (databaseName.isEmpty() || url.isEmpty())
       throw new IllegalArgumentException("Usage: import database <name> <url>");
 
-    // Validate BEFORE creating the database so a rejected URL leaves no empty database behind.
-    validateClientRestoreImportUrl(url);
-
+    // The leader gate now precedes the URL guard, which the shared implementation applies (it used to
+    // run here, first). Deliberate: a node that is going to refuse the command should not first
+    // resolve a hostname the caller chose, and the caller has to take the command to the leader
+    // either way, where the URL refusal is what they will get. Issue #7308.
     checkServerIsLeaderIfInHA();
-
-    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.import-database").increment();
 
-    // Create the database cluster-wide. In HA mode this submits an INSTALL_DATABASE_ENTRY
-    // via Raft so every replica creates the database locally before we start importing.
-    // The importer's subsequent transactions then replicate as normal TX_ENTRY stream.
-    final ServerDatabase createdDb = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
-    final DatabaseInternal wrapped = createdDb.getWrappedDatabaseInstance();
-    if (wrapped instanceof HAReplicatedDatabase haDb) {
-      try {
-        haDb.createInReplicas();
-      } catch (final RuntimeException e) {
-        // Compensate: drop the just-created local database so the operator can retry cleanly.
-        try {
-          createdDb.getEmbedded().drop();
-          server.removeDatabase(databaseName);
-        } catch (final Exception ignored) {
-          // best-effort
-        }
-        throw e;
-      }
-    }
-    final Database database = createdDb;
-
-    if (isSSERequested(exchange)) {
-      startSSE(exchange);
-      final OutputStream out = exchange.getOutputStream();
-
-      try {
-        final Class<?> clazz = Class.forName("com.arcadedb.integration.importer.Importer");
-        final Object importer = clazz.getConstructor(Database.class, String.class).newInstance(database, url);
-        // SAME BOOLEAN validateClientRestoreImportUrl ALREADY VALIDATED THIS URL AGAINST: THE FETCH INSIDE
-        // SourceDiscovery MUST AGREE WITH THIS SERVER'S OWN CONFIGURATION RATHER THAN FALLING BACK TO THE STATIC
-        // DEFAULT, OR A PER-SERVER OVERRIDE THAT LET THE COMMAND THROUGH WOULD STILL HAVE THE FETCH REFUSE IT (#6474).
-        clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(importer, isRestoreImportLocalUrlsAllowed());
-
-        // Set a logger with SSE callback
-        final Class<?> loggerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger");
-        final Class<?> listenerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger$LogListener");
-        final Object listener = java.lang.reflect.Proxy.newProxyInstance(
-            listenerClass.getClassLoader(), new Class<?>[]{ listenerClass },
-            (proxy, method, methodArgs) -> {
-              if ("onLogLine".equals(method.getName()))
-                sendSSE(out, new JSONObject().put("status", "progress").put("message", (String) methodArgs[0]));
-              return null;
-            });
-        final Object logger = loggerClass.getConstructor(int.class, listenerClass).newInstance(2, listener);
-        clazz.getMethod("setLogger", loggerClass).invoke(importer, logger);
-
-        sendSSE(out, new JSONObject().put("status", "progress").put("message", "Importing " + databaseName + "..."));
-
-        // Start import in current thread (we're already on a worker thread)
-        // Poll ImporterContext for structured progress every second in a separate thread
-        final AtomicReference<Object> contextRef = new AtomicReference<>();
-        try { contextRef.set(clazz.getMethod("getContext").invoke(importer)); } catch (final Exception ignored) {}
-
-        final Timer progressTimer = new Timer(true);
-        if (contextRef.get() != null) {
-          progressTimer.schedule(new TimerTask() {
-            @Override
-            public void run() {
-              try {
-                final Object ctx = contextRef.get();
-                final Class<?> ctxClass = ctx.getClass();
-                final long vertices = ((AtomicLong) ctxClass.getField("createdVertices").get(ctx)).get();
-                final long edges = ((AtomicLong) ctxClass.getField("createdEdges").get(ctx)).get();
-                final long parsed = ((AtomicLong) ctxClass.getField("parsed").get(ctx)).get();
-                if (parsed > 0)
-                  sendSSE(out, new JSONObject().put("status", "progress")
-                      .put("parsed", parsed).put("vertices", vertices).put("edges", edges));
-              } catch (final Exception ignored) {}
-            }
-          }, 1000, 1000);
-        }
-
-        try {
-          @SuppressWarnings("unchecked")
-          final Map<String, Object> result = (Map<String, Object>) clazz.getMethod("load").invoke(importer);
-          progressTimer.cancel();
-          final JSONObject done = new JSONObject().put("status", "completed")
-              .put("message", databaseName + " imported successfully");
-          if (result != null)
-            for (final Map.Entry<String, Object> e : result.entrySet())
-              done.put(e.getKey(), e.getValue());
-          sendSSE(out, done);
-        } catch (final Exception e) {
-          progressTimer.cancel();
-          final Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ? e.getCause() : e;
-          sendSSE(out, new JSONObject().put("status", "error").put("message", cause.getMessage()));
-        }
-      } catch (final Exception e) {
-        final Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ? e.getCause() : e;
-        sendSSE(out, new JSONObject().put("status", "error").put("message", cause.getMessage()));
-      } finally {
-        closeSSE(out);
-      }
-      return null;
-    }
-
-    // Synchronous fallback. Threads the same resolved boolean validateClientRestoreImportUrl() already validated
-    // this URL against into the SQL command's execution context, so ImportDatabaseStatement's deep fetch cannot
-    // disagree with the pre-check that accepted the command (#6474, mirroring the setAllowLocalUrls call above).
-    final ContextConfiguration importConfiguration = new ContextConfiguration();
-    importConfiguration.setValue(GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS, !isRestoreImportLocalUrlsAllowed());
-    try (final var rs = database.command("sql", "import database " + url, importConfiguration, Map.of())) {
-      // try-with-resources releases the execution-plan state held by the import ResultSet.
-    }
-    return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
+    return streamOrRun(exchange, databaseName + " imported successfully",
+        listener -> controlPlane.importDatabase(databaseName, url, listener));
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  //  SSE helpers
+  //  Progress streaming (SSE)
   // ═══════════════════════════════════════════════════════════════════
+
+  /** One long-running control-plane operation, run against a progress sink this handler supplies. */
+  @FunctionalInterface
+  private interface ProgressingOperation {
+    /** @return the operation's final report, merged into the completion event, or null when it has none. */
+    JSONObject run(ServerControlPlane.ProgressListener listener);
+  }
+
+  /**
+   * Runs a restore or import, reporting its progress the way the client asked for it (issue #7308).
+   * <p>
+   * Without {@code Accept: text/event-stream} the operation runs to completion and answers with the
+   * usual JSON body. With it, every progress event becomes an SSE frame and the answer is the stream
+   * itself.
+   * <p>
+   * The stream is started <b>lazily</b>, on the first event rather than up front, which is what keeps
+   * a rejected request an HTTP error instead of a 200 carrying an error frame: an invalid URL, an
+   * invalid database name or an existing target all fail before the operation produces its first
+   * progress line, so they still propagate to {@code AbstractServerHttpHandler}'s status mapping. A
+   * failure <i>during</i> the restore or import - by which point the response has already begun - can
+   * only be reported inside the stream, and becomes an {@code error} frame as before.
+   */
+  private ExecutionResponse streamOrRun(final HttpServerExchange exchange, final String completionMessage,
+      final ProgressingOperation operation) {
+    if (!isSSERequested(exchange)) {
+      // Nothing to catch: a failure propagates to AbstractServerHttpHandler, which is what maps it
+      // onto a status code, and every control-plane failure is unchecked.
+      operation.run(ServerControlPlane.ProgressListener.NOOP);
+      return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
+    }
+
+    final SSEProgressSink sink = new SSEProgressSink(exchange);
+    try {
+      final JSONObject report = operation.run(sink);
+
+      final JSONObject completed = new JSONObject().put("status", "completed").put("message", completionMessage);
+      if (report != null)
+        for (final String key : report.keySet())
+          completed.put(key, report.get(key));
+      sink.send(completed);
+    } catch (final RuntimeException e) {
+      // Nothing has been written yet, so the request can still be answered with a status code.
+      if (!sink.started())
+        throw e;
+      sink.send(new JSONObject().put("status", "error").put("message", failureMessage(e)));
+    } finally {
+      sink.close();
+    }
+    return null; // response already sent via SSE
+  }
+
+  /**
+   * The message an SSE {@code error} frame carries. The control plane wraps a failure raised inside
+   * the restore or import machinery in a {@link CommandExecutionException}, so the cause is the one
+   * that names what actually went wrong - the same message the pre-#7308 handler read straight off
+   * the {@code InvocationTargetException}.
+   */
+  private static String failureMessage(final RuntimeException e) {
+    final Throwable cause = e.getCause();
+    return cause != null && cause.getMessage() != null ? cause.getMessage() : e.getMessage();
+  }
+
+  /**
+   * A {@link ServerControlPlane.ProgressListener} that writes each event to the exchange as an SSE
+   * frame, starting the stream on the first event.
+   * <p>
+   * An SSE event is two writes plus a flush, and the stream it goes to is the exchange's own -
+   * shared, and not safe for concurrent use. More than one thread reaches here: an import polls
+   * {@code ImporterContext} for counters on a timer thread while the importer logs on the calling
+   * thread, and since #6086 a parallel restore logs one line per archive entry from its worker pool.
+   * Without the lock two events interleave into a single corrupt {@code data:} frame, which the
+   * client cannot parse, rather than merely arriving in an unexpected order.
+   */
+  private static final class SSEProgressSink implements ServerControlPlane.ProgressListener {
+    private final HttpServerExchange exchange;
+    private       OutputStream       out;
+
+    private SSEProgressSink(final HttpServerExchange exchange) {
+      this.exchange = exchange;
+    }
+
+    @Override
+    public void onProgress(final String message) {
+      send(new JSONObject().put("status", "progress").put("message", message));
+    }
+
+    @Override
+    public void onImportCounters(final long parsed, final long vertices, final long edges) {
+      send(new JSONObject().put("status", "progress").put("parsed", parsed).put("vertices", vertices).put("edges", edges));
+    }
+
+    synchronized boolean started() {
+      return out != null;
+    }
+
+    synchronized void send(final JSONObject data) {
+      try {
+        if (out == null) {
+          exchange.getResponseHeaders().put(new HttpString("Content-Type"), "text/event-stream");
+          exchange.getResponseHeaders().put(new HttpString("Cache-Control"), "no-cache");
+          exchange.getResponseHeaders().put(new HttpString("X-Accel-Buffering"), "no");
+          exchange.setStatusCode(200);
+          if (!exchange.isBlocking())
+            exchange.startBlocking();
+          out = exchange.getOutputStream();
+        }
+        out.write(("data: " + data + "\n\n").getBytes(StandardCharsets.UTF_8));
+        out.flush();
+      } catch (final IOException ignored) {
+        // Client disconnected
+      }
+    }
+
+    synchronized void close() {
+      if (out == null)
+        return;
+      try {
+        out.close();
+      } catch (final IOException ignored) {
+        // Client disconnected
+      }
+    }
+  }
 
   private static boolean isSSERequested(final HttpServerExchange exchange) {
     final String accept = exchange.getRequestHeaders().getFirst("Accept");
     return accept != null && accept.contains("text/event-stream");
-  }
-
-  private static void startSSE(final HttpServerExchange exchange) {
-    exchange.getResponseHeaders().put(new HttpString("Content-Type"), "text/event-stream");
-    exchange.getResponseHeaders().put(new HttpString("Cache-Control"), "no-cache");
-    exchange.getResponseHeaders().put(new HttpString("X-Accel-Buffering"), "no");
-    exchange.setStatusCode(200);
-    if (!exchange.isBlocking())
-      exchange.startBlocking();
-  }
-
-  /**
-   * An SSE event is two writes plus a flush, and the stream it goes to is the exchange's own - shared, and not safe
-   * for concurrent use. More than one thread reaches here: the import path polls {@code ImporterContext} for progress
-   * on a thread of its own while the importer logs on another, and since #6086 a parallel restore logs one line per
-   * archive entry from its worker pool. Without the lock two events interleave into a single corrupt {@code data:}
-   * frame - which the client cannot parse - rather than merely arriving in an unexpected order.
-   */
-  private static void sendSSE(final OutputStream out, final JSONObject data) {
-    try {
-      synchronized (out) {
-        out.write(("data: " + data + "\n\n").getBytes(StandardCharsets.UTF_8));
-        out.flush();
-      }
-    } catch (final IOException ignored) {
-      // Client disconnected
-    }
-  }
-
-  private static void closeSSE(final OutputStream out) {
-    try { out.close(); } catch (final IOException ignored) {}
   }
 
   private void dropDatabase(final String databaseName) {
@@ -863,24 +642,11 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     checkServerIsLeaderIfInHA();
 
-    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.drop-database").increment();
 
-    if (!server.existsDatabase(databaseName))
-      throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
-
-    final ServerDatabase database = server.getDatabase(databaseName);
-    final DatabaseInternal wrappedDb = database.getWrappedDatabaseInstance();
-
-    if (wrappedDb instanceof HAReplicatedDatabase haDb) {
-      // Raft-first: do NOT drop locally. The state machine apply on every peer
-      // (including this leader) performs the actual drop once the entry is committed.
-      haDb.dropInReplicas();
-    } else {
-      // Non-HA mode: drop locally as before.
-      database.getEmbedded().drop();
-      server.removeDatabase(databaseName);
-    }
+    // Raft-first on a replicated database, local otherwise: shared with gRPC's DropDatabase, which
+    // took the local branch unconditionally until issue #7389.
+    controlPlane.dropDatabase(databaseName);
   }
 
 
@@ -972,38 +738,5 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha != null && !ha.isLeader())
       throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderName());
-  }
-
-  private HAServerPlugin getHA() {
-    final HAServerPlugin ha = httpServer.getServer().getHA();
-    if (ha == null)
-      throw new CommandExecutionException(
-          "ArcadeDB is not running with High Availability module enabled. Please add this setting at startup: -Darcadedb.ha.enabled=true");
-    return ha;
-  }
-
-  /**
-   * Post-restore HA hook. In HA mode, submits an install-database Raft entry with
-   * forceSnapshot=true so every replica pulls the restored files. On any failure,
-   * drops the just-restored local database so the operator can retry cleanly.
-   */
-  private void replicateRestoredDatabase(final ArcadeDBServer server, final ServerDatabase restored,
-      final String databaseName) {
-    if (!(restored.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb))
-      return;
-
-    try {
-      haDb.createInReplicas(true);
-    } catch (final RuntimeException e) {
-      // Compensate: drop the locally-restored database so the operator can retry cleanly.
-      try {
-        restored.getEmbedded().drop();
-        server.removeDatabase(databaseName);
-      } catch (final Exception inner) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Compensating drop after failed restore replication failed for '%s'", inner, databaseName);
-      }
-      throw e;
-    }
   }
 }

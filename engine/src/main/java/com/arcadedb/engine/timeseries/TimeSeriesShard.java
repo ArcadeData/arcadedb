@@ -396,6 +396,46 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
+   * Hands every row of both layers to {@code visitor} without collecting them, and returns {@code false} when the
+   * visitor asked to stop (issue #7354).
+   * <p>
+   * The counterpart of {@link #iterateRange} for a reader that folds the rows into an answer rather than returning
+   * them: the sealed layer streams block by block through {@link TimeSeriesSealedStore#forEachRow}, so the
+   * residency is one block instead of the whole range. The mutable bucket is still materialised, for the reason
+   * {@code iterateRange} materialises it - a lazy read of it could see pages a concurrent {@code compact()} has
+   * cleared - and it is bounded by the bucket, not by the series.
+   * <p>
+   * The rows arrive sealed-then-mutable, NOT merged by timestamp. Merging is what forces every shard's rows to be
+   * resident at once; a folding answer does not need the order, and one that does wants {@code iterateQuery}.
+   *
+   * @param metrics optional counters, may be {@code null}. Every visited row is counted in
+   *                {@code materializedRows}, but only the SEALED layer contributes block counts - the mutable
+   *                bucket is not organised into blocks - so {@code fastPathBlocks + slowPathBlocks} does not
+   *                account for every materialized row here, exactly as it does not in {@code scanRangeDescending}
+   */
+  public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
+      final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+    compactionLock.readLock().lock();
+    try {
+      if (!sealedStore.forEachRow(fromTs, toTs, columnIndices, tagFilter, metrics, visitor))
+        return false;
+
+      for (final Object[] row : mutableBucket.scanRange(fromTs, toTs, columnIndices)) {
+        // Use matchesMapped() so the filter works correctly when columnIndices is a subset.
+        if (tagFilter != null && !tagFilter.matchesMapped(row, columnIndices))
+          continue;
+        if (metrics != null)
+          metrics.addMaterializedRows(1);
+        if (!visitor.visit(row))
+          return false;
+      }
+      return true;
+    } finally {
+      compactionLock.readLock().unlock();
+    }
+  }
+
+  /**
    * Scans both layers newest-first and returns at most {@code limit} rows in descending timestamp
    * order (issue #5414).
    * <p>
@@ -594,9 +634,7 @@ public class TimeSeriesShard implements AutoCloseable {
     // Shared output lists for compressed blocks built in Phases 1+2.
     final List<byte[][]> allCompressedList = new ArrayList<>();
     final List<long[]> allMetaList = new ArrayList<>();
-    final List<double[]> allMinsList = new ArrayList<>();
-    final List<double[]> allMaxsList = new ArrayList<>();
-    final List<double[]> allSumsList = new ArrayList<>();
+    final List<TimeSeriesSealedStore.BlockStats> allStatsList = new ArrayList<>();
     final List<String[][]> allTagDVList = new ArrayList<>();
 
     // ── Phase 1 (no lock, read-only TX): read full/immutable pages ───────────────────────────
@@ -615,8 +653,8 @@ public class TimeSeriesShard implements AutoCloseable {
           // returnSpill=true: the last partial chunk is returned as raw data instead of being
           // emitted as a block, so Phase 4 can merge it with the partial-page samples and
           // produce a single correctly-sized block.
-          phase2Spill = buildCompressedBlocks(snapshotData, allCompressedList, allMetaList, allMinsList, allMaxsList,
-              allSumsList, allTagDVList, true);
+          phase2Spill = buildCompressedBlocks(snapshotData, allCompressedList, allMetaList, allStatsList,
+              allTagDVList, true);
       } finally {
         db.rollback(); // read-only: rollback is always safe
       }
@@ -629,7 +667,7 @@ public class TimeSeriesShard implements AutoCloseable {
     final List<TimeSeriesSealedStore.BlockEntry> newBlockDirectory;
     try {
       newBlockDirectory = sealedStore.writeTempCompactionFile(
-          allCompressedList, allMetaList, allMinsList, allMaxsList, allSumsList, allTagDVList);
+          allCompressedList, allMetaList, allStatsList, allTagDVList);
     } catch (final Exception e) {
       sealedStore.deleteTempFileIfExists();
       clearCompactionFlagBestEffort();
@@ -681,15 +719,11 @@ public class TimeSeriesShard implements AutoCloseable {
     if (toCompress4b != null) {
       final List<byte[][]> remCompressed = new ArrayList<>();
       final List<long[]> remMeta = new ArrayList<>();
-      final List<double[]> remMins = new ArrayList<>();
-      final List<double[]> remMaxs = new ArrayList<>();
-      final List<double[]> remSums = new ArrayList<>();
+      final List<TimeSeriesSealedStore.BlockStats> remStats = new ArrayList<>();
       final List<String[][]> remTagDV = new ArrayList<>();
-      phase4bSpill = buildCompressedBlocks(toCompress4b, remCompressed, remMeta, remMins, remMaxs, remSums,
-          remTagDV, true);
+      phase4bSpill = buildCompressedBlocks(toCompress4b, remCompressed, remMeta, remStats, remTagDV, true);
       if (!remCompressed.isEmpty())
-        sealedStore.appendBlocksToTempFile(remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV,
-            newBlockDirectory);
+        sealedStore.appendBlocksToTempFile(remCompressed, remMeta, remStats, remTagDV, newBlockDirectory);
     }
 
     // ── Phase 4c (brief writeLock + brief TX): read tail pages, swap + clear ──────────────
@@ -726,15 +760,11 @@ public class TimeSeriesShard implements AutoCloseable {
         if (toCompressFinal != null) {
           final List<byte[][]> tailCompressed = new ArrayList<>();
           final List<long[]> tailMeta = new ArrayList<>();
-          final List<double[]> tailMins = new ArrayList<>();
-          final List<double[]> tailMaxs = new ArrayList<>();
-          final List<double[]> tailSums = new ArrayList<>();
+          final List<TimeSeriesSealedStore.BlockStats> tailStats = new ArrayList<>();
           final List<String[][]> tailTagDV = new ArrayList<>();
-          buildCompressedBlocks(toCompressFinal, tailCompressed, tailMeta, tailMins, tailMaxs, tailSums, tailTagDV,
-              false);
+          buildCompressedBlocks(toCompressFinal, tailCompressed, tailMeta, tailStats, tailTagDV, false);
           if (!tailCompressed.isEmpty())
-            sealedStore.appendBlocksToTempFile(tailCompressed, tailMeta, tailMins, tailMaxs, tailSums, tailTagDV,
-                newBlockDirectory);
+            sealedStore.appendBlocksToTempFile(tailCompressed, tailMeta, tailStats, tailTagDV, newBlockDirectory);
         }
 
         // Atomically swap temp file into the sealed store; updates in-memory blockDirectory.
@@ -785,7 +815,7 @@ public class TimeSeriesShard implements AutoCloseable {
   private Object[] buildCompressedBlocks(
       final Object[] data,
       final List<byte[][]> compressedOut, final List<long[]> metaOut,
-      final List<double[]> minsOut, final List<double[]> maxsOut, final List<double[]> sumsOut,
+      final List<TimeSeriesSealedStore.BlockStats> statsOut,
       final List<String[][]> tagDVOut, final boolean returnSpill) {
 
     final long[] timestamps = (long[]) data[0];
@@ -847,8 +877,10 @@ public class TimeSeriesShard implements AutoCloseable {
       final double[] mins = new double[colCount];
       final double[] maxs = new double[colCount];
       final double[] sums = new double[colCount];
+      final long[] counts = new long[colCount];
       Arrays.fill(mins, Double.NaN);
       Arrays.fill(maxs, Double.NaN);
+      Arrays.fill(sums, Double.NaN);
 
       final byte[][] compressedCols = new byte[colCount][];
       for (int c = 0; c < colCount; c++) {
@@ -864,6 +896,7 @@ public class TimeSeriesShard implements AutoCloseable {
             mins[c] = stats[0];
             maxs[c] = stats[1];
             sums[c] = stats[2];
+            counts[c] = (long) stats[3];
           }
         }
       }
@@ -882,9 +915,7 @@ public class TimeSeriesShard implements AutoCloseable {
 
       compressedOut.add(compressedCols);
       metaOut.add(new long[]{chunkTs[0], chunkTs[chunkLen - 1], chunkLen});
-      minsOut.add(mins);
-      maxsOut.add(maxs);
-      sumsOut.add(sums);
+      statsOut.add(new TimeSeriesSealedStore.BlockStats(mins, maxs, sums, counts));
       tagDVOut.add(chunkTagDistinctValues);
       chunkStart = chunkEnd;
     }

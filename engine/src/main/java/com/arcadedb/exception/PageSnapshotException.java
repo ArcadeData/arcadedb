@@ -48,6 +48,8 @@ public class PageSnapshotException extends ArcadeDBException {
     SUSPEND_TIMEOUT,
     /** An in-flight page flush did not complete within the barrier's budget. Fatal. */
     FLUSH_TIMEOUT,
+    /** The database is closed, or its close is waiting for the open windows to drain, so no window may open (#7458). */
+    CLOSING,
     /** Any other failure: an I/O error enumerating the snapshot's files, an interrupt, an invalidated window, etc. */
     OTHER
   }

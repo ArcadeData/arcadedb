@@ -26,6 +26,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
@@ -136,6 +137,88 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
       assertThat(firstBucket.has("timestamp")).isTrue();
       assertThat(firstBucket.has("values")).isTrue();
     });
+  }
+
+  /**
+   * Issue #7325: an aggregation function the server does not know must be refused with a message that names the
+   * field and lists the accepted values. It used to reach {@code AggregationType.valueOf} unguarded, whose
+   * {@code IllegalArgumentException} the generic mapper answers as "Cannot execute command" with the specifics in
+   * the {@code detail} field - and {@code detail} is concealed whenever the server runs in production mode, so the
+   * caller was left with no way to tell which field was wrong.
+   */
+  @Test
+  void aggregationRejectsUnknownTypeWithANamedError() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      final JSONObject error = postTsQueryError(serverIndex, aggregationRequest("MEDIAN"));
+
+      assertThat(error.getString("error"))
+          .as("must name the field that was wrong and every value it accepts")
+          .contains("aggregation.requests[0].type")
+          .contains("SUM", "AVG", "MIN", "MAX", "COUNT")
+          .contains("MEDIAN");
+    });
+  }
+
+  /**
+   * Issue #7325: a missing aggregation function is the same client error as an unknown one and gets the same
+   * answer, instead of the JSONException the raw {@code getString} used to throw.
+   */
+  @Test
+  void aggregationTypeIsRequired() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      final JSONObject error = postTsQueryError(serverIndex, aggregationRequest(null));
+
+      assertThat(error.getString("error"))
+          .contains("aggregation.requests[0].type")
+          .contains("SUM", "AVG", "MIN", "MAX", "COUNT");
+    });
+  }
+
+  /**
+   * Issue #7325: the lower-cased spelling a hand-written client is most likely to send now resolves instead of
+   * being refused, and the default alias is unchanged by which spelling arrived.
+   */
+  @Test
+  void aggregationTypeIsCaseInsensitive() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      for (final String spelling : new String[] { "avg", " Avg ", "AVG" }) {
+        final JSONObject result = postTsQuery(serverIndex, aggregationRequest(spelling));
+
+        assertThat(result.getJSONArray("aggregations").getString(0))
+            .as("alias defaults to the field name plus the canonical lower-cased function name")
+            .isEqualTo("temperature_avg");
+        assertThat(result.getJSONArray("buckets").length()).isGreaterThan(0);
+      }
+    });
+  }
+
+  /**
+   * Builds a bucketed aggregation over the ingested "weather" type whose single request carries the given
+   * function name, or no "type" member at all when it is null.
+   */
+  private static JSONObject aggregationRequest(final String aggregationType) {
+    final JSONObject aggRequest = new JSONObject();
+    aggRequest.put("field", "temperature");
+    if (aggregationType != null)
+      aggRequest.put("type", aggregationType);
+
+    final JSONArray requests = new JSONArray();
+    requests.put(aggRequest);
+
+    final JSONObject aggregation = new JSONObject();
+    aggregation.put("bucketInterval", 5000L);
+    aggregation.put("requests", requests);
+
+    final JSONObject request = new JSONObject();
+    request.put("type", "weather");
+    request.put("aggregation", aggregation);
+    return request;
   }
 
   @Test
@@ -258,6 +341,105 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #7321: 'latest' honoured only the first 'tag' occurrence, so on a type with more than one tag
+   * column it could not name one series. Every occurrence now contributes an ANDed condition, the way
+   * POST /ts/{database}/query has always conjoined its 'tags' object.
+   * <p>
+   * The fixture is built so that no single tag can produce the expected answer on its own: host=web1 alone
+   * is newest at 4000 in region=us, and region=eu alone is newest at 4000 on host=web2. Only the
+   * conjunction host=web1 AND region=eu selects the sample at 3000, so a filter that dropped either
+   * occurrence would fail this assertion rather than pass it by coincidence.
+   */
+  @Test
+  void latestNarrowsOnEveryRepeatedTagOccurrence() throws Exception {
+    testEachServer(serverIndex -> {
+      createMultiTagTypeAndIngestData(serverIndex);
+
+      final JSONObject result = getTsLatestWithTags(serverIndex, "machines", "host:web1", "region:eu");
+      assertThat(result).isNotNull();
+
+      final JSONArray latest = result.getJSONArray("latest");
+      assertThat(latest).as("host=web1 AND region=eu holds exactly one sample, at 3000").isNotNull();
+      assertThat(latest.getLong(0)).isEqualTo(3000L);
+
+      // Order of the occurrences must not matter: the conditions are ANDed, not positional.
+      final JSONObject reversed = getTsLatestWithTags(serverIndex, "machines", "region:eu", "host:web1");
+      assertThat(reversed.getJSONArray("latest").getLong(0)).isEqualTo(3000L);
+    });
+  }
+
+  /**
+   * Issue #7321: proves the two occurrences above are genuinely both applied, by showing what each one
+   * yields on its own. Either single tag lands on 4000, so the 3000 the pair returns can only come from
+   * the conjunction.
+   */
+  @Test
+  void latestWithASingleTagIsUnchangedByTheRepeatableParameter() throws Exception {
+    testEachServer(serverIndex -> {
+      createMultiTagTypeAndIngestData(serverIndex);
+
+      assertThat(getTsLatestWithTags(serverIndex, "machines", "host:web1").getJSONArray("latest").getLong(0))
+          .as("host=web1 alone is newest at 4000, in region=us").isEqualTo(4000L);
+      assertThat(getTsLatestWithTags(serverIndex, "machines", "region:eu").getJSONArray("latest").getLong(0))
+          .as("region=eu alone is newest at 4000, on host=web2").isEqualTo(4000L);
+    });
+  }
+
+  /**
+   * Issue #7321: an occurrence that resolves to no TAG column contributes no condition and must not
+   * discard the occurrences that did resolve. Before the fix the handler returned a null filter outright
+   * in that situation. Rejecting such an occurrence instead of ignoring it is issue #7334.
+   */
+  @Test
+  void latestKeepsTheResolvedTagsWhenAnOccurrenceNamesNoTagColumn() throws Exception {
+    testEachServer(serverIndex -> {
+      createMultiTagTypeAndIngestData(serverIndex);
+
+      final JSONObject result = getTsLatestWithTags(serverIndex, "machines", "host:web1", "region:eu", "nosuchtag:x");
+      assertThat(result.getJSONArray("latest").getLong(0))
+          .as("the two resolvable occurrences still apply").isEqualTo(3000L);
+    });
+  }
+
+  /**
+   * Issue #7321: occurrences are ANDed, so two that name the same tag with different values ask for a
+   * sample that is both and select nothing. Pinned because the alternative reading - treating repeats of
+   * one name as a set membership test - is a plausible thing for someone to "fix" this into later, and it
+   * would silently widen every such request instead of emptying it.
+   */
+  @Test
+  void latestAndsTwoOccurrencesOfTheSameTagRatherThanUnioningThem() throws Exception {
+    testEachServer(serverIndex -> {
+      createMultiTagTypeAndIngestData(serverIndex);
+
+      final JSONObject result = getTsLatestWithTags(serverIndex, "machines", "host:web1", "host:web2");
+      assertThat(result.isNull("latest")).as("no sample has host both web1 and web2").isTrue();
+    });
+  }
+
+  /**
+   * Issue #7321 guards the refactor that moved the name-to-column resolution into a helper shared with
+   * this endpoint: POST /ts/{database}/query must still AND every pair of its 'tags' object.
+   */
+  @Test
+  void queryConjoinsEveryTagPair() throws Exception {
+    testEachServer(serverIndex -> {
+      createMultiTagTypeAndIngestData(serverIndex);
+
+      final JSONObject request = new JSONObject();
+      request.put("type", "machines");
+      final JSONObject tags = new JSONObject();
+      tags.put("host", "web1");
+      tags.put("region", "eu");
+      request.put("tags", tags);
+
+      final JSONObject result = postTsQuery(serverIndex, request);
+      assertThat(result.getInt("count")).as("only the sample at 3000 carries both tags").isEqualTo(1);
+      assertThat(result.getJSONArray("rows").getJSONArray(0).getLong(0)).isEqualTo(3000L);
+    });
+  }
+
   @Test
   void latestEmptyType() throws Exception {
     testEachServer(serverIndex -> {
@@ -309,6 +491,25 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
     final int statusCode = postLineProtocol(serverIndex, lineProtocol, "ms");
     assertThat(statusCode).isEqualTo(204);
+  }
+
+  /**
+   * A type with two tag columns, the shape issue #7321 is about. No single tag identifies the sample at
+   * 3000: host=web1 is also present at 4000 and region=eu is also present at 4000.
+   */
+  private void createMultiTagTypeAndIngestData(final int serverIndex) throws Exception {
+    command(serverIndex,
+        "CREATE TIMESERIES TYPE machines TIMESTAMP ts TAGS (host STRING, region STRING) FIELDS (cpu DOUBLE)");
+
+    final String lineProtocol = """
+        machines,host=web1,region=us cpu=10.0 1000
+        machines,host=web2,region=eu cpu=20.0 2000
+        machines,host=web1,region=eu cpu=30.0 3000
+        machines,host=web1,region=us cpu=40.0 4000
+        machines,host=web2,region=eu cpu=50.0 4000
+        """;
+
+    assertThat(postLineProtocol(serverIndex, lineProtocol, "ms")).isEqualTo(204);
   }
 
   private int postLineProtocol(final int serverIndex, final String body, final String precision) throws Exception {
@@ -394,6 +595,31 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
     assertThat(connection.getResponseCode()).isEqualTo(400);
     return new JSONObject(readError(connection));
+  }
+
+  /**
+   * Issue #7321: sends one 'tag' query parameter per entry, which is what a repeated parameter looks like
+   * on the wire. Values are percent-encoded because a tag value is caller text and may carry a ':' of its
+   * own past the first separator.
+   */
+  private JSONObject getTsLatestWithTags(final int serverIndex, final String type, final String... tags)
+      throws Exception {
+    final StringBuilder url = new StringBuilder(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/latest?type=" + type);
+    for (final String tag : tags)
+      url.append("&tag=").append(URLEncoder.encode(tag, StandardCharsets.UTF_8));
+
+    final HttpURLConnection connection = (HttpURLConnection) new URI(url.toString()).toURL().openConnection();
+
+    connection.setRequestMethod("GET");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+
+    assertThat(connection.getResponseCode()).isEqualTo(200);
+
+    try (final InputStream is = connection.getInputStream()) {
+      return new JSONObject(new String(is.readAllBytes(), StandardCharsets.UTF_8));
+    }
   }
 
   private JSONObject getTsLatest(final int serverIndex, final String type, final String tag) throws Exception {

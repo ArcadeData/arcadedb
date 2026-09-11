@@ -19,7 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 /**
- * THE NaN policy for the whole time-series stack: {@code NaN} is the ABSENT marker, and MIN/MAX skip it.
+ * THE NaN policy for the whole time-series stack: {@code NaN} is the ABSENT marker, and every aggregate skips it.
  * <p>
  * The policy exists as one class because the subsystem previously carried three of them. Every MIN/MAX
  * accumulator started from a sentinel of its own choosing - {@code ±Infinity} in the PromQL functions and the
@@ -33,6 +33,18 @@ package com.arcadedb.engine.timeseries;
  * accumulator and the accumulator is NaN if and only if nothing real ever reached it, so "no data" needs no
  * side-channel (a count, a bitset, a {@code found} flag) to be told apart from a real minimum. Merging two
  * partial results is the same fold, so it inherits the property for free.
+ * <p>
+ * SUM and AVG follow the same rule (issue #7089): a NaN sample is not a measurement of "not a number", it is the
+ * absence of a measurement, and a sum over 999 real samples and one absent one is the sum of the 999 - the way SQL's
+ * {@code SUM} and {@code AVG} skip NULL. So {@link #sum(double, long, double)} is the same fold shape, {@code AVG}
+ * divides the folded sum by the number of samples that were REAL ({@link #countIfPresent(long, double)}), and a
+ * window whose every sample was absent answers {@link #ABSENT} for all four. A NaN the arithmetic itself produces
+ * over real samples ({@code +Infinity + -Infinity}) is a different thing - an undefined total, kept as IEEE keeps
+ * it - which is why the SUM fold is keyed on that count rather than on the accumulator's value. {@code COUNT} is the one aggregate that does not
+ * skip: it counts rows, as SQL's {@code COUNT(*)} does, and the SQL push-down maps it from {@code count(*)}.
+ * <p>
+ * The PromQL layer is deliberately NOT under this policy for {@code sum}/{@code avg}: Prometheus propagates NaN
+ * through those, and a PromQL query is expected to answer what Prometheus would.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -70,5 +82,45 @@ public final class TimeSeriesNaN {
     if (Double.isNaN(sample))
       return accumulator;
     return Double.isNaN(accumulator) || sample > accumulator ? sample : accumulator;
+  }
+
+  /**
+   * Folds one sample into a running SUM (issue #7089). {@code accumulator} starts at {@link #ABSENT}; a NaN sample
+   * is skipped, the first real sample replaces the absent accumulator outright, and every later one is added.
+   * <p>
+   * "First" is decided by {@code present}, the count of real samples folded so far, and NOT by the accumulator
+   * being NaN: a sum can turn NaN by arithmetic - {@code +Infinity + -Infinity} - after real samples reached it,
+   * and that NaN is an answer ("the total is undefined"), not an absence. Keying on the accumulator would let the
+   * next real sample overwrite it, and would make this fold disagree with the vectorized reduction, which keeps
+   * it. So the accumulator is absent if and only if {@code present} is zero, and NaN with {@code present} above
+   * zero is the arithmetic result, kept as IEEE keeps it.
+   *
+   * @param present how many real samples the accumulator holds, BEFORE this one - see {@link #countIfPresent}
+   */
+  public static double sum(final double accumulator, final long present, final double sample) {
+    if (Double.isNaN(sample))
+      return accumulator;
+    return present == 0 ? sample : accumulator + sample;
+  }
+
+  /**
+   * Merges a partial SUM into a running one: the same rule as {@link #sum(double, long, double)}, with each side's
+   * count of real samples saying whether its value is a total or an absence. A partial with no real sample is
+   * skipped whatever its value; a running sum with none is replaced; two totals are added, NaN included.
+   */
+  public static double mergeSum(final double accumulator, final long present, final double partial,
+      final long partialPresent) {
+    if (partialPresent == 0)
+      return accumulator;
+    return present == 0 ? partial : accumulator + partial;
+  }
+
+  /**
+   * The count of REAL samples after {@code sample} reached the accumulator: unchanged for a NaN sample, one more
+   * otherwise. This is the denominator of AVG under the policy - the count of samples that contributed to the
+   * sum - and it is what tells an all-absent window apart from one that summed to zero.
+   */
+  public static long countIfPresent(final long count, final double sample) {
+    return Double.isNaN(sample) ? count : count + 1;
   }
 }

@@ -41,14 +41,47 @@ public final class SimdTimeSeriesVectorOps implements TimeSeriesVectorOps {
   public double sum(final double[] data, final int offset, final int length) {
     final int lanes = DOUBLE_SPECIES.length();
     double s = 0;
+    boolean found = false;
+    int i = 0;
+    for (; i + lanes <= length; i += lanes) {
+      DoubleVector v = DoubleVector.fromArray(DOUBLE_SPECIES, data, offset + i);
+      // NaN policy (issue #7089): a NaN lane would poison the ADD reduction, so it is replaced with the reduction
+      // identity (0 for SUM) and skipped, the same way min()/max() below substitute theirs.
+      final VectorMask<Double> nan = v.test(VectorOperators.IS_NAN);
+      if (nan.anyTrue()) {
+        if (!nan.allTrue())
+          found = true;
+        v = v.blend(0.0, nan);
+      } else
+        found = true;
+      s += v.reduceLanes(VectorOperators.ADD);
+    }
+    for (; i < length; i++) {
+      final double v = data[offset + i];
+      if (Double.isNaN(v))
+        continue;
+      found = true;
+      s += v;
+    }
+    // An empty or all-NaN range answers the absent marker, not the zero the identity leaves behind - which is
+    // what the scalar sibling's fold gives directly. A NaN that the ADD itself produced over real lanes (+Inf and
+    // -Inf in the range) is kept: `found` is true, and the scalar fold keeps it the same way.
+    return found ? s : TimeSeriesNaN.ABSENT;
+  }
+
+  @Override
+  public long countPresent(final double[] data, final int offset, final int length) {
+    final int lanes = DOUBLE_SPECIES.length();
+    long n = 0;
     int i = 0;
     for (; i + lanes <= length; i += lanes) {
       final DoubleVector v = DoubleVector.fromArray(DOUBLE_SPECIES, data, offset + i);
-      s += v.reduceLanes(VectorOperators.ADD);
+      n += lanes - v.test(VectorOperators.IS_NAN).trueCount();
     }
     for (; i < length; i++)
-      s += data[offset + i];
-    return s;
+      if (!Double.isNaN(data[offset + i]))
+        n++;
+    return n;
   }
 
   @Override
