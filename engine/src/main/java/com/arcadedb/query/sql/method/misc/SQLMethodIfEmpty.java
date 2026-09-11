@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
+import java.util.Iterator;
 import java.util.List;
 
 /**
@@ -50,6 +51,11 @@ public class SQLMethodIfEmpty extends AbstractSQLMethod {
 
     // AN ARRAY-VALUED PARAMETER OR PROPERTY IS A COLLECTION RECEIVER TOO (ISSUE #7114)
     final List<Object> list = listReceiverOrNull(value);
-    return list != null && list.isEmpty() ? params[0] : value;
+    if (list == null)
+      return value;
+    if (list.isEmpty())
+      return params[0];
+    // A BARE Iterator (A RESULT SET INCLUDED) WAS CONSUMED TO ANSWER THE QUESTION: HAND BACK WHAT IT HELD, NOT ITS HUSK
+    return value instanceof Iterator<?> ? list : value;
   }
 }
