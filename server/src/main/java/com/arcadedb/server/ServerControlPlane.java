@@ -33,6 +33,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupCoordinator;
+import com.arcadedb.server.backup.BackupCoordinator.Operation;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.http.HttpServer;
@@ -909,28 +910,51 @@ public class ServerControlPlane {
   /**
    * Runs a full backup inline and returns {@code {"result":"ok","backupFile":...}}.
    *
-   * @throws BackupInProgressException when another backup of the same database is already running.
-   *                                   This command runs the backup inline, so it is one of the entry points that can
-   *                                   have a database being backed up at the same time as the auto-backup schedule
-   *                                   does - down to resolving to the same archive name and writing into the same
-   *                                   file. Refusing outright is the honest answer to "back up a database that is
-   *                                   already being backed up": a second full backup of the same data produces
-   *                                   nothing the first one will not, and the caller gets told rather than silently
-   *                                   handed the other run's archive (issue #6753).
+   * @throws BackupInProgressException    when another backup of the same database is already running.
+   *                                      This command runs the backup inline, so it is one of the entry points that
+   *                                      can have a database being backed up at the same time as the auto-backup
+   *                                      schedule does - down to resolving to the same archive name and writing into
+   *                                      the same file. Refusing outright is the honest answer to "back up a database
+   *                                      that is already being backed up": a second full backup of the same data
+   *                                      produces nothing the first one will not, and the caller gets told rather
+   *                                      than silently handed the other run's archive (issue #6753).
+   * @throws OperationInProgressException when a restore of the same database is running instead. A restore drops and
+   *                                      replaces the database directory, so backing it up at the same time reads a
+   *                                      directory that is about to be deleted (issue #7384).
    */
   public JSONObject triggerBackup(final String databaseName) {
     requireBackupDatabaseName(databaseName);
 
-
     final BackupCoordinator coordinator = server.getBackupCoordinator();
-    if (!coordinator.begin(databaseName))
-      throw new BackupInProgressException("A backup of database '" + databaseName + "' is already in progress");
+    final Operation running = coordinator.begin(databaseName, Operation.BACKUP);
+    if (running != null)
+      // The pre-#7384 message, verbatim, for the pre-#7384 case: only a restore holding the slot is new.
+      throw running == Operation.BACKUP ?
+          new BackupInProgressException("A backup of database '" + databaseName + "' is already in progress") :
+          new OperationInProgressException(refusal(Operation.BACKUP, databaseName, running));
 
     try {
       return executeImmediateBackup(databaseName);
     } finally {
-      coordinator.end(databaseName);
+      coordinator.end(databaseName, Operation.BACKUP);
     }
+  }
+
+  /**
+   * Takes the per-database slot for {@code operation}, or refuses naming the operation that already holds it.
+   * <p>
+   * Every caller must release it with {@link BackupCoordinator#end(String, Operation)} from a {@code finally}: a
+   * leaked reservation blocks every later backup, restore and import of that database until the server restarts.
+   */
+  private void beginExclusive(final String databaseName, final Operation operation) {
+    final Operation running = server.getBackupCoordinator().begin(databaseName, operation);
+    if (running != null)
+      throw new OperationInProgressException(refusal(operation, databaseName, running));
+  }
+
+  private static String refusal(final Operation refused, final String databaseName, final Operation running) {
+    return "Cannot " + refused.label() + " database '" + databaseName + "': " + running.phrase()
+        + " of it is already in progress";
   }
 
   public JSONObject deleteBackup(final String databaseName, final String fileName) {
@@ -1111,10 +1135,26 @@ public class ServerControlPlane {
   }
 
   /**
-   * Raised by {@link #triggerBackup(String)} when the database is already being backed up. HTTP
-   * answers it with a 409 and gRPC with {@code ABORTED}; both carry this message verbatim.
+   * Raised when a backup, restore or import of a database is refused because another whole-database
+   * operation on it is already running - the per-database slot {@link BackupCoordinator} hands out.
+   * HTTP answers it with a 409 and gRPC with {@code ABORTED}; both carry this message verbatim.
+   * <p>
+   * The request is well formed and authorized, and retrying once the other operation finishes is the
+   * fix, which is what separates it from every other refusal these commands can produce (issue #7384).
    */
-  public static class BackupInProgressException extends RuntimeException {
+  public static class OperationInProgressException extends RuntimeException {
+    public OperationInProgressException(final String message) {
+      super(message);
+    }
+  }
+
+  /**
+   * The {@link OperationInProgressException} {@link #triggerBackup(String)} raises when it is another
+   * <i>backup</i> holding the slot - the only case that existed before restores took one too. Kept as
+   * its own type, and kept being thrown for that case, so code written against it before #7384 still
+   * catches what it always caught.
+   */
+  public static class BackupInProgressException extends OperationInProgressException {
     public BackupInProgressException(final String message) {
       super(message);
     }
@@ -1212,8 +1252,15 @@ public class ServerControlPlane {
    * The caller supplies the URL, so it is validated against
    * {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS} first.
    *
-   * @throws IllegalArgumentException when the name is invalid or the database already exists
-   * @throws SecurityException        when the URL is not one this server accepts from a client
+   * Serialised against every other backup, restore and import of the same database by the per-database
+   * slot {@link BackupCoordinator} hands out. The slot is taken <b>before</b> the existence pre-check,
+   * which is the only thing that made the check meaningful: two restores could both pass it, both
+   * restore into their own temporary directory and both reach the swap, and the loser's caller was
+   * still told it had succeeded (issue #7384).
+   *
+   * @throws IllegalArgumentException     when the name is invalid or the database already exists
+   * @throws SecurityException            when the URL is not one this server accepts from a client
+   * @throws OperationInProgressException when a backup, restore or import of the same database is already running
    */
   public void restoreDatabase(final String databaseName, final String url, final ProgressListener listener) {
     if (databaseName == null || databaseName.isEmpty() || url == null || url.isEmpty())
@@ -1224,11 +1271,16 @@ public class ServerControlPlane {
     // Prevent path traversal via the caller-supplied database name (GHSA-qwgr-2c45-63xx).
     server.checkDatabaseNameIsValid(databaseName);
 
-    final String dbPath = databaseDirectory(databaseName);
-    if (new File(dbPath).exists())
-      throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
+    beginExclusive(databaseName, Operation.RESTORE);
+    try {
+      final String dbPath = databaseDirectory(databaseName);
+      if (new File(dbPath).exists())
+        throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
-    performRestore(databaseName, dbPath, url, listener);
+      performRestore(databaseName, dbPath, url, listener);
+    } finally {
+      server.getBackupCoordinator().end(databaseName, Operation.RESTORE);
+    }
   }
 
   /**
@@ -1240,8 +1292,14 @@ public class ServerControlPlane {
    * {@code overwrite} decides what happens when the target already exists. Even with it set, the
    * existing database is dropped only once the restore into a temporary directory has succeeded
    * (issue #5027).
+   * <p>
+   * The slot is taken on the <b>target</b>, which is the database this writes, and covers the
+   * overwrite pre-check as well as the restore itself (issue #7384). The source is only read - its
+   * archive is a file this server wrote, and a concurrent backup of it writes a different archive -
+   * so it is not reserved, which also keeps this from needing a lock order between two names.
    *
-   * @throws IllegalArgumentException when a name is invalid, or the target exists and {@code overwrite} is false
+   * @throws IllegalArgumentException     when a name is invalid, or the target exists and {@code overwrite} is false
+   * @throws OperationInProgressException when a backup, restore or import of the target is already running
    */
   public void restoreBackup(final String databaseName, final String fileName, final String targetDatabase,
       final boolean overwrite, final ProgressListener listener) {
@@ -1256,12 +1314,17 @@ public class ServerControlPlane {
 
     final Path backupFile = resolveBackupFile(databaseName, fileName);
 
-    final String dbPath = databaseDirectory(targetDatabase);
-    if ((server.existsDatabase(targetDatabase) || new File(dbPath).exists()) && !overwrite)
-      throw new IllegalArgumentException(
-          "Database '" + targetDatabase + "' already exists. Enable overwrite to replace it with the backup");
+    beginExclusive(targetDatabase, Operation.RESTORE);
+    try {
+      final String dbPath = databaseDirectory(targetDatabase);
+      if ((server.existsDatabase(targetDatabase) || new File(dbPath).exists()) && !overwrite)
+        throw new IllegalArgumentException(
+            "Database '" + targetDatabase + "' already exists. Enable overwrite to replace it with the backup");
 
-    performRestore(targetDatabase, dbPath, "file://" + backupFile.toAbsolutePath(), listener);
+      performRestore(targetDatabase, dbPath, "file://" + backupFile.toAbsolutePath(), listener);
+    } finally {
+      server.getBackupCoordinator().end(targetDatabase, Operation.RESTORE);
+    }
   }
 
   /**
@@ -1270,7 +1333,13 @@ public class ServerControlPlane {
    * has it before the import's transactions start replicating; a failure to create it on the
    * replicas drops the local one again so the operator can retry cleanly.
    *
-   * @throws SecurityException when the URL is not one this server accepts from a client
+   * The import holds the per-database slot for its whole duration, so a restore cannot drop and replace
+   * the directory it is loading into (issue #7384). It does <b>not</b> exclude a backup: an import is
+   * ordinary transactions against a live database, and backing a live database up is exactly what the
+   * auto-backup schedule does - see {@link Operation#conflictsWith}.
+   *
+   * @throws SecurityException            when the URL is not one this server accepts from a client
+   * @throws OperationInProgressException when a restore or another import of the same database is already running
    */
   public JSONObject importDatabase(final String databaseName, final String url, final ProgressListener listener) {
     if (databaseName == null || databaseName.isEmpty() || url == null || url.isEmpty())
@@ -1281,20 +1350,25 @@ public class ServerControlPlane {
 
     server.checkDatabaseNameIsValid(databaseName);
 
-    final ServerDatabase createdDb = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
-    if (createdDb.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb) {
-      try {
-        haDb.createInReplicas();
-      } catch (final RuntimeException e) {
-        dropQuietly(createdDb, databaseName);
-        throw e;
+    beginExclusive(databaseName, Operation.IMPORT);
+    try {
+      final ServerDatabase createdDb = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+      if (createdDb.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb) {
+        try {
+          haDb.createInReplicas();
+        } catch (final RuntimeException e) {
+          dropQuietly(createdDb, databaseName);
+          throw e;
+        }
       }
-    }
 
-    // A failed import deliberately leaves the created database in place, as both HTTP branches do:
-    // dropping it would destroy whatever was imported before the failure, and the operator needs to
-    // see it to decide whether to retry or to drop it.
-    return runImport(createdDb, databaseName, url, listener);
+      // A failed import deliberately leaves the created database in place, as both HTTP branches do:
+      // dropping it would destroy whatever was imported before the failure, and the operator needs to
+      // see it to decide whether to retry or to drop it.
+      return runImport(createdDb, databaseName, url, listener);
+    } finally {
+      server.getBackupCoordinator().end(databaseName, Operation.IMPORT);
+    }
   }
 
   /**
