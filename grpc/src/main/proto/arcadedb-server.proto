@@ -897,6 +897,11 @@ message TimeSeriesQueryRequest {
   int32 batch_size = 9;
   // When set, the answer carries buckets instead of rows.
   TimeSeriesAggregation aggregation = 10;
+  // The client's open transaction, when it has one (issue #7370). An ArcadeDB transaction is thread-bound, so
+  // a query that names one is streamed on that transaction's own thread and therefore observes its uncommitted
+  // points; without it the read runs on a gRPC worker and sees only committed data. A non-blank id the server
+  // no longer knows is refused rather than read outside the transaction the caller believes it is inside.
+  TransactionContext transaction = 11;
 }
 
 // A row of a raw query, or the values of one aggregation bucket. A value that stands for "no measurement" -
@@ -933,6 +938,9 @@ message TimeSeriesLatestRequest {
   DatabaseCredentials credentials = 2;
   string type = 3;
   TimeSeriesTagFilter tags = 4;
+  // The client's open transaction, when it has one (issue #7370). Same contract as
+  // TimeSeriesQueryRequest.transaction.
+  TransactionContext transaction = 5;
 }
 
 message TimeSeriesLatestResponse {
