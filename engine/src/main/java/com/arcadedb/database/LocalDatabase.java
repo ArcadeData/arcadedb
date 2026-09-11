@@ -2576,9 +2576,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // #7458: a point-in-time snapshot window (a backup) reads this database's files without holding its lock, so
     // the close waits for the open windows to be released BEFORE tearing anything down - the database keeps serving
     // in the meantime - and marks itself so no new window opens on it. The mark is lifted at the end whatever
-    // happened: this instance is closed by then, and a later open of the same path is a new instance.
-    PageManager.INSTANCE.beginDatabaseClose(this);
+    // happened: this instance is closed by then, and a later open of the same path is a new instance. The mark is
+    // set inside the try so that a wait that threw could not leak it either.
     try {
+      PageManager.INSTANCE.beginDatabaseClose(this);
       closeSteps(drop);
     } finally {
       PageManager.INSTANCE.endDatabaseClose(this);
