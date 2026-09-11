@@ -151,12 +151,21 @@ public final class HybridSearch {
     final JSONObject expandArgs = requireExpandObject(args);
 
     final VectorLeg.VectorLegQuery vectorQuery = VectorLeg.build(database, args, "vectorIndexName", legLimit(k));
+
+    // Both "is this index on a vertex type?" checks belong here, with the other configuration checks, and not
+    // after the legs have run. Whether an index is declared on a vertex type is a property of the schema, not
+    // of what the query matched, so a request that cannot be served must be refused before it spends a search
+    // (issue #7394). The full-text half is checked inside runFullTextLeg, as soon as that index resolves.
+    final boolean expanding = expandArgs != null;
+    if (expanding)
+      requireVertexType(database, vectorQuery.index().typeIndex().getTypeName());
+
     final List<LegRow> vectorLeg = runVectorLeg(database, vectorQuery);
 
     final JSONObject legs = new JSONObject()
         .put("vector", new JSONObject().put("count", vectorLeg.size()));
 
-    final FullTextLeg fullTextLeg = runFullTextLeg(database, args, legLimit(k), legs);
+    final FullTextLeg fullTextLeg = runFullTextLeg(database, args, legLimit(k), legs, expanding);
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)
@@ -169,10 +178,7 @@ public final class HybridSearch {
       legList.add(new Leg("fulltext", fullTextLeg.rows(), weightOf(args, "fulltext", 1.0f), "score"));
 
     Map<RID, ExpansionInfo> expansionInfo = Map.of();
-    if (expandArgs != null) {
-      requireVertexType(database, vectorQuery.index().typeIndex().getTypeName());
-      if (!fullTextLeg.rows().isEmpty())
-        requireVertexType(database, fullTextLeg.typeName());
+    if (expanding) {
       final List<RID> seeds = collectSeeds(vectorLeg, fullTextLeg.rows());
       final Expansion expansion = runExpansionLeg(database, expandArgs, seeds);
       expansionInfo = expansion.info();
@@ -516,7 +522,7 @@ public final class HybridSearch {
   }
 
   private static FullTextLeg runFullTextLeg(final Database database, final JSONObject args, final int limit,
-      final JSONObject legs) {
+      final JSONObject legs, final boolean expanding) {
     final String indexName = args.getString("fulltextIndexName", null);
     final String queryText = args.getString("fulltextQuery", null);
     final boolean hasIndex = indexName != null && !indexName.isBlank();
@@ -541,6 +547,12 @@ public final class HybridSearch {
       throw new IllegalArgumentException("Index '" + indexName + "' is not a full-text index. Available full-text "
           + "indexes in '" + database.getName() + "': " + FullTextSearch.listFullTextIndexes(database), e);
     }
+
+    // Before the search, not after it: whether this index can seed a graph expansion is decided by the type it
+    // is declared on. Checking it once the hits are in made the same invalid configuration pass or fail
+    // depending on whether the corpus happened to contain a match (issue #7394).
+    if (expanding)
+      requireVertexType(database, typeIndex.getTypeName());
 
     // The parser's complaint about the caller's own query text is a client error, like every other stage's bad
     // input; left unwrapped it reached the protocol surfaces as an internal error with a logged stack trace
