@@ -2704,6 +2704,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
     final String databaseName = decoded.databaseName();
     final boolean forceSnapshot = decoded.forceSnapshot();
+    // An install replaces the database's files, so no reservation taken against the previous copy can still hold.
+    pageVersions.clear(databaseName);
 
     if (forceSnapshot) {
       // Replay guard (issue #7143). Ratis re-feeds every entry between the last snapshot marker and
@@ -3417,6 +3419,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // @VisibleForTesting
   void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String databaseName = decoded.databaseName();
+    // Whatever the database's pages were reserved at, the pages are going away: evict its ledger here so the
+    // per-database map does not keep the names of dropped databases for the node's lifetime (same rule as the
+    // persisted applied index above), and a database recreated under the same name starts from a clean ledger.
+    pageVersions.clear(databaseName);
 
     // Idempotent on replay: if the database is already gone, nothing to do beyond evicting any
     // persisted baseline. applyBootstrapFingerprintEntry records a baseline by name even when the

@@ -132,12 +132,8 @@ final class PageVersionLedger {
         final int targetVersion = pages.versions()[i];
         final long key = pageKey(fileId, pageNumber);
         Reservation reserved = ledger.pages.get(key);
-        if (reserved != null && !reserved.appended && !reserved.entry.equals(entry)
-            && now - reserved.reservedAtMs > STALE_RESERVATION_MS) {
-          // Reserved by a request Ratis never appended: nothing will confirm or release it, so it is dropped here.
-          ledger.pages.remove(key, reserved);
+        if (reserved != null && !reserved.entry.equals(entry) && dropIfStale(ledger, key, reserved, now))
           reserved = null;
-        }
         final int expected;
         if (reserved == null)
           expected = local.versionOf(fileId, pageNumber);
@@ -195,16 +191,25 @@ final class PageVersionLedger {
       return -1;
     final long key = pageKey(fileId, pageNumber);
     final Reservation reserved = ledger.pages.get(key);
-    if (reserved == null)
+    // The local phase-1 path applies the same staleness rule as validateAndReserve: a page only the leader itself
+    // writes would otherwise stay fenced by a dropped request until the next leadership change, since a transaction
+    // refused here never reaches the ledger's own cleanup.
+    if (reserved == null || dropIfStale(ledger, key, reserved, System.currentTimeMillis()))
       return -1;
-    if (!reserved.appended && System.currentTimeMillis() - reserved.reservedAtMs > STALE_RESERVATION_MS) {
-      // Same rule as validateAndReserve, applied on the local phase-1 path too: a page only the leader itself writes
-      // would otherwise stay fenced by a dropped request until the next leadership change, since a transaction
-      // refused here never reaches the ledger's own cleanup.
-      ledger.pages.remove(key, reserved);
-      return -1;
-    }
     return reserved.version;
+  }
+
+  /**
+   * Drops a reservation that a request Ratis never appended left behind: unconfirmed past
+   * {@link #STALE_RESERVATION_MS}, nothing will ever confirm or release it.
+   *
+   * @return {@code true} when the reservation was stale and is gone
+   */
+  private static boolean dropIfStale(final DatabaseLedger ledger, final long key, final Reservation reserved, final long now) {
+    if (reserved.appended || now - reserved.reservedAtMs <= STALE_RESERVATION_MS)
+      return false;
+    ledger.pages.remove(key, reserved);
+    return true;
   }
 
   /** Number of pages currently reserved for the database (diagnostics and tests). */
