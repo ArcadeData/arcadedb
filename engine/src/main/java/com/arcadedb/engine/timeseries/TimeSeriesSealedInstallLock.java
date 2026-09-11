@@ -56,11 +56,17 @@ import java.util.concurrent.locks.Lock;
  *
  * <h2>Lock ordering</h2>
  *
- * Shards are locked in the SAME order {@link TimeSeriesCompactionPause} takes them - schema type order, then
- * ascending shard index - and this lock only ever takes a subset of them. Two ordered acquisitions over the same
- * sequence cannot close a cycle, so a backup walking every shard and an apply walking the entry's shards can
- * block each other but never deadlock. The pause additionally acquires under a deadline and releases everything
- * it holds on expiry, which is a second, independent way out.
+ * Shards are locked in {@link TimeSeriesShardOrder}, the SAME total order {@link TimeSeriesCompactionPause}
+ * takes them in, and this lock only ever takes a subset of them. Two ordered acquisitions over one sequence
+ * cannot close a cycle, so a backup walking every shard and an apply walking the entry's shards can block each
+ * other but never deadlock. Both sides additionally acquire under a deadline and release everything they hold on
+ * expiry, which is a second, independent way out.
+ * <p>
+ * <b>The order is by type NAME, and that is load-bearing.</b> Both walks originally used whatever order
+ * {@code database.getSchema().getTypes()} returned, which is a {@code ConcurrentHashMap}'s bucket order and can
+ * put two already-present types in the OPPOSITE relative order after a resize - so two snapshots taken either
+ * side of a {@code CREATE ... TYPE} could disagree and open exactly the cycle this paragraph rules out
+ * (claude-review on PR #7474). {@link TimeSeriesShardOrder} carries the full reasoning.
  * <p>
  * Like the pause, the locks are released by the thread that took them, so acquire and {@link #close()} on the
  * same thread.
@@ -113,29 +119,20 @@ public final class TimeSeriesSealedInstallLock implements AutoCloseable {
     final List<Lock> acquired = new ArrayList<>(shards.size());
     final long deadline = System.currentTimeMillis() + timeoutMs;
     try {
-      // Driven by the SCHEMA's type order rather than by the entry's, so this walk and the pause's walk visit the
-      // shards in the same sequence. Ordering the entry's own list instead would be ordering it by something the
-      // pause knows nothing about, which is not an ordering at all for the purpose of avoiding a cycle.
-      for (final DocumentType type : database.getSchema().getTypes()) {
-        if (!(type instanceof final LocalTimeSeriesType tsType))
+      // Driven by {@link TimeSeriesShardOrder} rather than by the entry's own list, so this walk and the pause's
+      // walk visit the shards in the same sequence. Ordering the entry's list instead would be ordering it by
+      // something the pause knows nothing about, which is not an ordering at all for the purpose of a cycle.
+      for (final TimeSeriesShardOrder.ShardSlot slot : TimeSeriesShardOrder.of(database)) {
+        if (!contains(shards, slot.typeName(), slot.shardIndex()))
           continue;
 
-        final TimeSeriesEngine engine = tsType.getEngine();
-        if (engine == null)
-          continue;
-
-        for (int i = 0; i < engine.getShardCount(); i++) {
-          if (!contains(shards, tsType.getName(), i))
-            continue;
-
-          final Lock lock = engine.getShard(i).getCompactionLock().writeLock();
-          final long remaining = deadline - System.currentTimeMillis();
-          if (remaining <= 0 || !lock.tryLock(remaining, TimeUnit.MILLISECONDS))
-            throw new TimeoutException(
-                "Timeout of %dms expired while locking TimeSeries type '%s' shard %d for a sealed-store install".formatted(
-                    timeoutMs, tsType.getName(), i));
-          acquired.add(lock);
-        }
+        final Lock lock = slot.shard().getCompactionLock().writeLock();
+        final long remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0 || !lock.tryLock(remaining, TimeUnit.MILLISECONDS))
+          throw new TimeoutException(
+              "Timeout of %dms expired while locking TimeSeries type '%s' shard %d for a sealed-store install".formatted(
+                  timeoutMs, slot.typeName(), slot.shardIndex()));
+        acquired.add(lock);
       }
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();

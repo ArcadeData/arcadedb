@@ -23,6 +23,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -247,6 +248,105 @@ class Issue7337FollowerSealedInstallLockTest extends TestHelper {
     }
     throw new AssertionError("thread '" + thread.getName() + "' never parked in " + className + "." + methodName
         + " (state=" + thread.getState() + "); the block assertion that follows would have been vacuous");
+  }
+
+  // ---------------------------------------------------------------------------------------------------------
+  // The total order both acquisitions rest on (claude-review on PR #7474).
+  // ---------------------------------------------------------------------------------------------------------
+
+  /**
+   * Both locks must agree on ONE order over the shards, or a backup walking every shard and an apply walking a
+   * subset can each hold what the other is waiting for. The agreement used to be "we both walk
+   * {@code getSchema().getTypes()}", which is a {@code ConcurrentHashMap}'s bucket order: a resize moves an entry
+   * to bucket {@code i} or {@code i + n}, so two types already present can come back in the opposite relative
+   * order, and two snapshots taken either side of a {@code CREATE ... TYPE} disagree.
+   * <p>
+   * The types here are created in the REVERSE of their name order precisely so a walk that inherited the
+   * schema's own order would be visible as such.
+   */
+  @Test
+  void everyAcquisitionWalksTheShardsInOneStableOrder() {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE Zulu TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 2");
+    database.command("sql",
+        "CREATE TIMESERIES TYPE Alpha TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 3");
+
+    final List<String> order = new ArrayList<>();
+    for (final TimeSeriesShardOrder.ShardSlot slot : TimeSeriesShardOrder.of(database))
+      order.add(slot.typeName() + "#" + slot.shardIndex());
+
+    assertThat(order)
+        .as("by type NAME then ascending shard index, whatever order the schema's own map hands them back in")
+        .containsExactly("Alpha#0", "Alpha#1", "Alpha#2", "Reading#0", "Reading#1", "Zulu#0", "Zulu#1");
+
+    // Repeated after a further schema mutation, which is what could resize the map underneath: the relative
+    // order of the types already present must not move.
+    database.command("sql",
+        "CREATE TIMESERIES TYPE Mike TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
+
+    final List<String> after = new ArrayList<>();
+    for (final TimeSeriesShardOrder.ShardSlot slot : TimeSeriesShardOrder.of(database))
+      after.add(slot.typeName() + "#" + slot.shardIndex());
+
+    assertThat(after).containsExactly("Alpha#0", "Alpha#1", "Alpha#2", "Mike#0", "Reading#0", "Reading#1",
+        "Zulu#0", "Zulu#1");
+    assertThat(after.stream().filter(order::contains).toList())
+        .as("every type that was already there keeps its place relative to the others")
+        .isEqualTo(order);
+  }
+
+  /**
+   * The property that order buys, across MORE THAN ONE type - the shape none of the other tests exercise, and
+   * the one a disagreement would actually show up in. A pause covering every shard of every type and an install
+   * taking a subset of them must be able to block each other and still both complete, rather than each ending up
+   * holding what the other waits for.
+   */
+  @Test
+  void aPauseAndAnInstallAcrossSeveralTypesStillMakeProgress() throws Exception {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE Zulu TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 2");
+    database.command("sql",
+        "CREATE TIMESERIES TYPE Alpha TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 2");
+
+    final CountDownLatch installed = new CountDownLatch(1);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+    try (final TimeSeriesCompactionPause pause = TimeSeriesCompactionPause.acquire(database, 30_000L)) {
+      assertThat(pause.getPausedShards())
+          .as("every shard of every type: 2 (Reading) + 2 (Zulu) + 2 (Alpha)")
+          .isEqualTo(6);
+
+      // An entry naming shards of two types, in the order the ENTRY happens to list them - which is the reverse
+      // of the lock order, so a walk driven by the entry rather than by the shared one would take them backwards.
+      final Thread applier = new Thread(() -> {
+        try (final TimeSeriesSealedInstallLock lock = TimeSeriesSealedInstallLock.acquire(database, List.of(
+            new TimeSeriesSealedInstallLock.ShardRef("Zulu", 1),
+            new TimeSeriesSealedInstallLock.ShardRef("Alpha", 0)), 60_000L)) {
+          assertThat(lock.getLockedShards()).isEqualTo(2);
+        } catch (final Throwable e) {
+          failure.set(e);
+        } finally {
+          installed.countDown();
+        }
+      }, "issue7337-multi-type-applier");
+      applier.setDaemon(true);
+      applier.start();
+
+      awaitParkedIn(applier, "TimeSeriesSealedInstallLock", "acquire");
+
+      assertThat(installed.await(BLOCKED_PROBE_MS, TimeUnit.MILLISECONDS))
+          .as("the install waits for the pause, across types as within one")
+          .isFalse();
+
+      pause.close();
+
+      assertThat(installed.await(60, TimeUnit.SECONDS))
+          .as("and both complete once released - a disagreement over the order would leave each holding what "
+              + "the other waits for until a 60s deadline expired")
+          .isTrue();
+      assertThat(failure.get()).isNull();
+      applier.join(60_000);
+    }
   }
 
   private TimeSeriesEngine engine() {

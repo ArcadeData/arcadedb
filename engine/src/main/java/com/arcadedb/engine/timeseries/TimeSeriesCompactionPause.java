@@ -51,6 +51,12 @@ import java.util.concurrent.locks.Lock;
  *
  * <h2>Lock ordering</h2>
  *
+ * Shards are taken in {@link TimeSeriesShardOrder}, the single total order every multi-shard acquisition in this
+ * package shares. That is what makes this pause and {@link TimeSeriesSealedInstallLock} - which takes the WRITE
+ * half of a subset of the same locks, concurrently, by design - unable to close a cycle. Read its javadoc before
+ * changing either walk: the order used to be each acquirer's own walk of the schema, which is not stable enough
+ * to be held to (claude-review on PR #7474).
+ * <p>
  * Take it BEFORE any flush suspension or point-in-time window, never inside one: a compaction sitting in Phase
  * 4c holds the write lock while it commits, and a commit that cannot proceed because the caller has already
  * suspended flushing would never release it. Taken first, it waits for that compaction to finish and only then
@@ -85,26 +91,16 @@ public final class TimeSeriesCompactionPause implements AutoCloseable {
     final List<Lock> acquired = new ArrayList<>();
     final long deadline = System.currentTimeMillis() + timeoutMs;
     try {
-      for (final DocumentType type : database.getSchema().getTypes()) {
-        if (!(type instanceof final LocalTimeSeriesType tsType))
-          continue;
-
-        // The unchecked accessor on purpose: this is engine-internal housekeeping on behalf of a caller that has
-        // already been authorized for the whole database, and a type whose engine never started (issue #6356)
-        // has no shard to pause.
-        final TimeSeriesEngine engine = tsType.getEngine();
-        if (engine == null)
-          continue;
-
-        for (int i = 0; i < engine.getShardCount(); i++) {
-          final Lock lock = engine.getShard(i).getCompactionLock().readLock();
-          final long remaining = deadline - System.currentTimeMillis();
-          if (remaining <= 0 || !lock.tryLock(remaining, TimeUnit.MILLISECONDS))
-            throw new TimeoutException(
-                "Timeout of %dms expired while pausing the compaction of TimeSeries type '%s' shard %d".formatted(
-                    timeoutMs, tsType.getName(), i));
-          acquired.add(lock);
-        }
+      // The shared order, NOT this thread's own walk of the schema: {@link TimeSeriesShardOrder} explains why a
+      // walk of getTypes() is not a total order two concurrent acquirers can be held to.
+      for (final TimeSeriesShardOrder.ShardSlot slot : TimeSeriesShardOrder.of(database)) {
+        final Lock lock = slot.shard().getCompactionLock().readLock();
+        final long remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0 || !lock.tryLock(remaining, TimeUnit.MILLISECONDS))
+          throw new TimeoutException(
+              "Timeout of %dms expired while pausing the compaction of TimeSeries type '%s' shard %d".formatted(
+                  timeoutMs, slot.typeName(), slot.shardIndex()));
+        acquired.add(lock);
       }
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
