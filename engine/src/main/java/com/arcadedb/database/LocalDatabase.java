@@ -33,6 +33,7 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
@@ -1821,6 +1822,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return serializer;
   }
 
+  /**
+   * Page versions the replication log has already assigned but this node has not applied yet (issue #6965), or
+   * {@code null} on a standalone database. See {@link PageVersionReservations}.
+   */
+  public PageVersionReservations getPageVersionReservations() {
+    return pageVersionReservations;
+  }
+
+  public void setPageVersionReservations(final PageVersionReservations reservations) {
+    this.pageVersionReservations = reservations;
+  }
+
   @Override
   public PageManager getPageManager() {
     checkDatabaseIsOpen();
@@ -3007,6 +3020,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * reconciliation (recovery replay, or snapshot re-install via the DatabaseReconciler) repairs the node.
    */
   private volatile String fenceReason = null;
+  private volatile PageVersionReservations pageVersionReservations;
 
   public void fenceForRecovery(final String reason) {
     fenceForRecovery(reason, null);

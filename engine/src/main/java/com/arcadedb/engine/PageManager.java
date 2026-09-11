@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
@@ -1125,7 +1126,11 @@ public class PageManager extends LockContext {
     return flushThread;
   }
 
-  private int getMostRecentVersionOfPage(final PageId pageId, final int pageSize) throws IOException {
+  /**
+   * The version of the most recent committed copy of a page this node holds: the read cache, the flush pipeline or the
+   * file, in that order. {@code 0} for a page that does not exist yet.
+   */
+  public int getMostRecentVersionOfPage(final PageId pageId, final int pageSize) throws IOException {
     CachedPage page = readCache.get(pageId);
     if (page == null)
       page = loadPage(pageId, pageSize, false, true);
@@ -1234,7 +1239,21 @@ public class PageManager extends LockContext {
           "Concurrent modification on page " + pageId + ". The file with id " + pageId.getFileId()
               + " does not exist anymore. Please retry the operation (threadId=" + Thread.currentThread().threadId() + ")");
 
-    final int mostRecentPageVersion = getMostRecentVersionOfPage(pageId, page.getPhysicalSize());
+    int mostRecentPageVersion = getMostRecentVersionOfPage(pageId, page.getPhysicalSize());
+
+    // #6965: a version the replication log has already assigned to this page, but that this node has not applied yet,
+    // IS the most recent one. Validating against the stale local copy would let the transaction ship a delta computed
+    // on a superseded image, and the leader would refuse it at append time anyway - refuse it here, before the round
+    // trip. Null on a standalone database and on replicas, so the common path pays one volatile read.
+    if (pageId.getDatabase() instanceof DatabaseInternal databaseInternal
+        && databaseInternal.getEmbedded() instanceof LocalDatabase localDatabase) {
+      final PageVersionReservations reservations = localDatabase.getPageVersionReservations();
+      if (reservations != null) {
+        final int reserved = reservations.reservedVersion(pageId);
+        if (reserved > mostRecentPageVersion)
+          mostRecentPageVersion = reserved;
+      }
+    }
 
     if (mostRecentPageVersion != page.getVersion()) {
       totalConcurrentModificationExceptions.incrementAndGet();

@@ -18,12 +18,14 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.exceptions.AlreadyClosedException;
+import org.apache.ratis.protocol.exceptions.StateMachineException;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletableFuture;
@@ -391,6 +393,56 @@ class RaftGroupCommitterTest {
       assertThatThrownBy(() -> committer.submitAndWait(new byte[] { 1, 2, 3 }))
           .isInstanceOf(ReplicationDispatchedTimeoutException.class)
           .hasMessageContaining("dispatched");
+    } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * A reply carrying a {@code StateMachineException} whose cause is a retryable engine conflict is the leader
+   * refusing the entry BEFORE appending it (page-version validation in {@code preAppendTransaction}, issue #6965):
+   * a definite outcome, surfaced as that very conflict so the caller's retry loop handles it, never as the
+   * indeterminate "dispatched, outcome unknown".
+   */
+  @Test
+  void anEntryRefusedBeforeAppendSurfacesTheRetryableConflict() {
+    final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
+    final RaftClientReply reply = mock(RaftClientReply.class);
+    when(reply.isSuccess()).thenReturn(false);
+    final ConcurrentModificationException conflict = new ConcurrentModificationException("Concurrent modification on page 3/0");
+    when(reply.getException()).thenReturn(new StateMachineException(conflict.getMessage(), conflict, false));
+    when(client.async().send(any(Message.class))).thenReturn(CompletableFuture.completedFuture(reply));
+
+    final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.MAJORITY, 2_000);
+    try {
+      assertThatThrownBy(() -> committer.submitAndWait(new byte[] { 1, 2, 3 }))
+          .isInstanceOf(ConcurrentModificationException.class)
+          .isNotInstanceOf(ReplicationDispatchedTimeoutException.class)
+          .hasMessageContaining("page 3/0");
+    } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * The Ratis client does not hand a refusal back as a failed reply: {@code RaftClientImpl.handleRaftException}
+   * completes the send future exceptionally with the {@code StateMachineException}. The committer must recognise
+   * the refusal there too, or a definite, retryable conflict would be reported as an unknown outcome.
+   */
+  @Test
+  void anEntryRefusedBeforeAppendIsRecognisedOnTheExceptionalPath() {
+    final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
+    final ConcurrentModificationException conflict = new ConcurrentModificationException("Concurrent modification on page 3/0");
+    final CompletableFuture<RaftClientReply> refused = new CompletableFuture<>();
+    refused.completeExceptionally(new CompletionException(new StateMachineException(conflict.getMessage(), conflict, false)));
+    when(client.async().send(any(Message.class))).thenReturn(refused);
+
+    final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.MAJORITY, 2_000);
+    try {
+      assertThatThrownBy(() -> committer.submitAndWait(new byte[] { 1, 2, 3 }))
+          .isInstanceOf(ConcurrentModificationException.class)
+          .isNotInstanceOf(ReplicationDispatchedTimeoutException.class)
+          .hasMessageContaining("page 3/0");
     } finally {
       committer.stop();
     }

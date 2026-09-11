@@ -138,7 +138,12 @@ class Issue4790PhantomCommitOriginSkipIT extends BaseRaftHATest {
     }
 
     assertThat(faultFired.get()).as("The dispatched-timeout fault must have fired").isTrue();
-    assertThat(threw).as("commit() must surface the indeterminate replication error").isTrue();
+    // Since #6965 the state machine publishes the leader's own entry at its log position, so the outcome of this
+    // commit depends on who got there first: if the apply thread had already claimed the transaction when the
+    // timeout fired, commit() knows the entry committed and completes normally; otherwise it withdraws the
+    // transaction, rolls back and reports the indeterminate outcome, and the apply thread later applies the entry
+    // from its WAL bytes. Both are correct; what must never happen is the leader missing the write.
+    LogManager.instance().log(this, Level.INFO, "TEST: commit %s", threw ? "reported the indeterminate outcome" : "completed");
 
     // The entry was dispatched and will reach quorum: every node - INCLUDING the leader - must
     // converge to the second vertex. Before the fix the leader stayed at 1 (origin-skip dropped it).

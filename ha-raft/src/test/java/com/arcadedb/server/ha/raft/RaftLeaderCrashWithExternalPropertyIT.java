@@ -103,7 +103,7 @@ class RaftLeaderCrashWithExternalPropertyIT extends BaseRaftHATest {
 
     // Phase 2: arm the fault-injection hook. Single-shot: fires on the next successful Raft replication and
     // (a) stops the leader on a separate thread (stopping inline would deadlock the Ratis gRPC channel),
-    // (b) throws so commit2ndPhase() never runs locally on the crashed leader.
+    // (b) throws so the committing thread never completes the commit locally on the crashed leader.
     final AtomicBoolean hookFired = new AtomicBoolean(false);
     final CountDownLatch leaderStopped = new CountDownLatch(1);
     RaftReplicatedDatabase.TEST_POST_REPLICATION_HOOK = dbName -> {
@@ -168,7 +168,7 @@ class RaftLeaderCrashWithExternalPropertyIT extends BaseRaftHATest {
         .isEqualTo(INJECTED_PAYLOAD);
 
     // Phase 6: restart the crashed leader. Its Raft log has the committed entry (primary+external pages) but
-    // commit2ndPhase() never ran, so neither half is on disk. Ratis replays the entry through the state
+    // Whether the pages reached the disk before the crash or not, Ratis replays the entry through the state
     // machine follower path, applying both halves in lock-step.
     Thread.sleep(2_000);
     LogManager.instance().log(this, Level.INFO, "TEST: restarting old leader %d", leaderIndex);
