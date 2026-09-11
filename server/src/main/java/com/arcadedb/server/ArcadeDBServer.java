@@ -1011,6 +1011,11 @@ public class ArcadeDBServer {
    * and {@link ServerControlPlane#restoreBackup} are the two that do. Taking it separately would leave the same
    * window the claim exists to close, only narrower.
    * <p>
+   * The caller's existence check runs inside that same lock section, which puts a {@code File.exists()} stat under
+   * the monitor every open and create on this server contends on. That is deliberate - sampling the name outside the
+   * lock is the bug - and it is one stat on a path taken once per restore, against a lock that
+   * {@link #createDatabase} already holds across the creation of a whole database.
+   * <p>
    * A claim is not a lock a creator waits on. {@link #createDatabase} is refused immediately with
    * {@link ServerControlPlane.OperationInProgressException}, which HTTP answers with a 409 and gRPC with
    * {@code ABORTED}: parking a create behind a multi-GB download would be a worse answer than telling the caller to
@@ -1049,6 +1054,15 @@ public class ArcadeDBServer {
    * Refuses to bring a database into existence under a name an in-flight restore has claimed. Called from the two
    * places in this class that reach {@code DatabaseFactory.create()}, both already holding {@link #databasesLock},
    * which is what makes the refusal atomic with the claim rather than another unsynchronised sample.
+   * <p>
+   * The exception type is {@link ServerControlPlane.OperationInProgressException} rather than a new one of this
+   * class's own because it is what the transports already translate - {@code AbstractServerHttpHandler} answers it
+   * with a 409 and {@code ArcadeDbGrpcAdminService} with {@code ABORTED} - and because it is the same answer a
+   * caller gets when the {@link BackupCoordinator} slot refuses them: "well formed, and it will work once the other
+   * operation finishes". Naming the outer class here reads as this class reaching up into the one that wraps it, and
+   * it is: hoisting the type out of {@code ServerControlPlane} would be the tidier arrangement, but it is public API
+   * that {@code BackupInProgressException} extends and that handlers and tests across three modules already catch by
+   * that name, so moving it belongs in its own change rather than riding along with a bug fix.
    */
   private void checkDatabaseNameIsNotBeingRestored(final String databaseName) {
     if (restoringDatabaseNames.contains(databaseName))

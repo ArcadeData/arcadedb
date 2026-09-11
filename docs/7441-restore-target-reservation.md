@@ -298,3 +298,23 @@ throws rather than returning null for a missing database - and recorded as row 1
 evidence, plus a comment at the call site itself.
 
 Nothing else in the review asked for a change; the style and test notes were confirmations.
+
+### Cycle 2 - fb5b3f1
+
+`claude` reviewed again, re-derived the core mechanism, the HA row-4 argument, the
+`restoringDatabaseNames` synchronisation and the `replaceExisting` drop gate, and found no bugs.
+Two optional items, both answered by writing the decision down where the code is rather than by
+changing behaviour:
+
+1. *The exception type reaches up into `ServerControlPlane` from `ArcadeDBServer`.* Fair reading,
+   and the tidier arrangement would be to hoist `OperationInProgressException` somewhere neutral.
+   Not done here: it is public API that `BackupInProgressException` extends and that handlers and
+   tests in `server`, `grpcw` and `ha-raft` already catch under that name, so moving it is its own
+   change rather than something to ride along with a bug fix. The reason is now in the javadoc of
+   `checkDatabaseNameIsNotBeingRestored` instead of only in this file.
+2. *`databaseNameIsTaken`'s `File.exists()` now runs under `databasesLock`.* True, and deliberate -
+   sampling the name outside the lock is the bug. It is one stat, once per restore, on a monitor
+   `createDatabase` already holds across the creation of a whole database. Recorded in the javadoc
+   of `reserveDatabaseNameForRestore` so the next reader does not have to relitigate it.
+
+The review's remaining sections (correctness, tests, security) were confirmations with nothing to act on.
