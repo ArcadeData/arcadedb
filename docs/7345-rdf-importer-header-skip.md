@@ -33,8 +33,14 @@ whose sources have no header:
 
 For a source parsed by `RDFImporterFormat`, no line of the file is ever treated as a header: the
 default `skipEntries` is 0 on every branch that can be reached with an RDF source, and the analysis
-never consumes a statement as the column-name row. An explicit `-edgesSkipEntries`/`-verticesSkipEntries`/
-`-documentsSkipEntries` is still honoured exactly as given.
+never consumes a statement as the column-name row. An explicit `-edgesSkipEntries` is still honoured
+exactly as given.
+
+`-edgesSkipEntries` and not "an explicit `-...SkipEntries`": `RDFImporterFormat.load()` ignores the
+`entityType` it is handed and reads `settings.edgesSkipEntries` alone, so `-verticesSkipEntries` and
+`-documentsSkipEntries` govern nothing on an RDF source however it was routed. That is true before this
+change and after it - the default this fix moves is the one `load()` falls back to when
+`edgesSkipEntries` is unset - and it is filed as **#7487**.
 
 ## Completeness
 

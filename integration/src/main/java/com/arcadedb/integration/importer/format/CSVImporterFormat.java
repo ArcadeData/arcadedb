@@ -899,6 +899,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
+        // The !fieldNames.isEmpty() guard is what makes skipEntries mean "skip past the header" rather than "skip
+        // past the first N rows": with no -...Header option the names come off line 0 in the branch below, so
+        // skipping it before that would leave nothing to name the columns with. The consequence for a format with no
+        // header line - the RDF formats - is that an explicit -...SkipEntries is inert HERE unless a -...Header was
+        // also given, because fieldNames stays empty. Harmless: such an entity is registered with no properties
+        // either way, and the row count a user sees is governed by load(), which does its own skipping (issue #7345).
         if (skipEntries > 0 && line < skipEntries && !fieldNames.isEmpty())
           continue;
 
