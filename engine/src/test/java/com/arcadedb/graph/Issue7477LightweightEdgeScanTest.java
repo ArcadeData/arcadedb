@@ -156,6 +156,36 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
   }
 
   /**
+   * A {@code @rid} filter can only ever name a record-backed edge - a lightweight one has no addressable identity -
+   * so the RID short-circuit is correct on such a type and must keep winning over the walk. It matters on a mixed
+   * hierarchy, where the record half is the only half a RID can reach and the walk would otherwise be paid in full
+   * to answer a single-row lookup (PR #7478 review).
+   */
+  @Test
+  void theRidShortCircuitStillWinsOnAMixedHierarchy() {
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Mentions").create());
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Quotes").withLightweight(true)
+        .withSuperType("Mentions").create());
+
+    final RID[] works = newWorks(3);
+    connect("Mentions", works[0], works[1]);
+    connect("Quotes", works[0], works[2]);
+
+    final RID recordEdge = query("select from Mentions").stream()
+        .map(r -> r.getEdge().get().getIdentity())
+        .filter(rid -> rid.getPosition() >= 0)
+        .findFirst().orElseThrow();
+
+    assertThat(explain("select from Mentions where @rid = " + recordEdge))
+        .as("the walk must not be paid to answer a single-row RID lookup")
+        .doesNotContain("FETCH LIGHTWEIGHT EDGES OF TYPE");
+    assertThat(query("select from Mentions where @rid = " + recordEdge)).hasSize(1);
+
+    // ...and the unfiltered scan of the same type still returns both shapes
+    assertThat(query("select from Mentions")).hasSize(2);
+  }
+
+  /**
    * The rewrite that reaches the edges of ONE vertex is both cheaper and already correct for a lightweight type, so
    * it must keep winning over the whole-graph walk.
    */
