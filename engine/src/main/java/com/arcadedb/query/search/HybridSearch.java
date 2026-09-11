@@ -546,6 +546,8 @@ public final class HybridSearch {
     // input; left unwrapped it reached the protocol surfaces as an internal error with a logged stack trace
     // (issue #7393). Only IndexException is the parser's: this call runs no generated SQL, so anything else thrown
     // here is a server fault and must stay a 500 with its stack trace rather than be misfiled as a bad request.
+    // The type is also what the index raises for an analyzer failure while tokenizing; no path under this call
+    // tokenizes today, so if one is added the catch has to tell the two apart before it files the failure as a 400.
     final Map<RID, Float> hits;
     try {
       hits = FullTextSearch.search(typeIndex, queryText, limit);
