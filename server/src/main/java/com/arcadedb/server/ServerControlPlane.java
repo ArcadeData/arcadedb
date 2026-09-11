@@ -43,6 +43,7 @@ import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IPAddressBlocklist;
+import com.arcadedb.utility.ProgressCallback;
 
 import java.io.File;
 import java.io.IOException;
@@ -1216,6 +1217,24 @@ public class ServerControlPlane {
   // ---------------------------------------------------------------------------------------------
 
   /**
+   * A server-side restore is three phases, not one, and the middle and last are not cheap: the swap drops the
+   * database the restore replaces, and in HA the replication makes every replica pull the restored files. They
+   * are published as separate steps so the progress endpoint keeps saying something after the archive has been
+   * extracted (issue #7385).
+   */
+  private static final int    RESTORE_STEPS          = 3;
+  /**
+   * Deliberately a copy of {@code AbstractRestoreFormat.RESTORE_STEP_NAME} rather than a reference to it:
+   * {@code arcadedb-integration} is an optional dependency reached only reflectively, so the server cannot name
+   * its constants at compile time. The two only have to agree so that the marker published before the restorer
+   * exists reads the same as the reports the restorer then sends; a drift costs a changed label mid-step and
+   * nothing more.
+   */
+  private static final String RESTORE_STEP_EXTRACT   = "Restoring files";
+  private static final String RESTORE_STEP_ACTIVATE  = "Activating database";
+  private static final String RESTORE_STEP_REPLICATE = "Replicating to the cluster";
+
+  /**
    * The sink a transport supplies for the progress of a long-running control-plane operation
    * (issue #7308). The HTTP handler turns each event into an SSE frame on the {@code
    * HttpServerExchange}; {@code ArcadeDbGrpcAdminService} turns it into a message on a
@@ -1251,7 +1270,12 @@ public class ServerControlPlane {
    * Restores a database from a backup archive at {@code url}, under the name {@code databaseName}.
    * The caller supplies the URL, so it is validated against
    * {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS} first.
-   *
+   * <p>
+   * A target name that is already taken - see {@link #databaseNameIsTaken} - is refused outright:
+   * this command has no {@code overwrite} flag, so there is no way for the caller to say they meant
+   * it. Use {@code restore backup ... as &lt;name&gt;} with {@code overwrite}, or drop the database
+   * first.
+   * <p>
    * Serialised against every other backup, restore and import of the same database by the per-database
    * slot {@link BackupCoordinator} hands out. The slot is taken <b>before</b> the existence pre-check,
    * which is the only thing that made the check meaningful: two restores could both pass it, both
@@ -1274,10 +1298,10 @@ public class ServerControlPlane {
     beginExclusive(databaseName, Operation.RESTORE);
     try {
       final String dbPath = databaseDirectory(databaseName);
-      if (new File(dbPath).exists())
+      if (databaseNameIsTaken(databaseName, dbPath))
         throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
-      performRestore(databaseName, dbPath, url, listener);
+      performRestore(databaseName, dbPath, url, "restore database", listener);
     } finally {
       server.getBackupCoordinator().end(databaseName, Operation.RESTORE);
     }
@@ -1289,9 +1313,9 @@ public class ServerControlPlane {
    * {@link #resolveBackupFile}, so the caller never supplies a filesystem path and the resulting
    * {@code file://} URL needs no SSRF check.
    * <p>
-   * {@code overwrite} decides what happens when the target already exists. Even with it set, the
-   * existing database is dropped only once the restore into a temporary directory has succeeded
-   * (issue #5027).
+   * {@code overwrite} decides what happens when the target name is already taken, as
+   * {@link #databaseNameIsTaken} defines it. Even with it set, the existing database is dropped only
+   * once the restore into a temporary directory has succeeded (issue #5027).
    * <p>
    * The slot is taken on the <b>target</b>, which is the database this writes, and covers the
    * overwrite pre-check as well as the restore itself (issue #7384). The source is only read - its
@@ -1317,14 +1341,34 @@ public class ServerControlPlane {
     beginExclusive(targetDatabase, Operation.RESTORE);
     try {
       final String dbPath = databaseDirectory(targetDatabase);
-      if ((server.existsDatabase(targetDatabase) || new File(dbPath).exists()) && !overwrite)
+      if (databaseNameIsTaken(targetDatabase, dbPath) && !overwrite)
         throw new IllegalArgumentException(
             "Database '" + targetDatabase + "' already exists. Enable overwrite to replace it with the backup");
 
-      performRestore(targetDatabase, dbPath, "file://" + backupFile.toAbsolutePath(), listener);
+      performRestore(targetDatabase, dbPath, "file://" + backupFile.toAbsolutePath(), "restore backup", listener);
     } finally {
       server.getBackupCoordinator().end(targetDatabase, Operation.RESTORE);
     }
+  }
+
+  /**
+   * The single question both restore entry points ask about their target: is the name already taken
+   * on this server? It is taken when the server has a database of that name registered <b>or</b> when
+   * a directory of that name is present under {@code SERVER_DATABASE_DIRECTORY}.
+   * <p>
+   * The two halves are independent. A registered database whose directory has gone - removed out of
+   * band, or dropped through the embedded instance without {@link ArcadeDBServer#removeDatabase},
+   * which {@link #dropQuietly} has to call as a separate second step - satisfies the first and not
+   * the second. A directory left behind by a half-finished operation satisfies the second and not the
+   * first.
+   * <p>
+   * Until issue #7395 the two commands disagreed here: {@code restore backup} asked both halves and
+   * {@code restore database} only the filesystem, so a registered-but-absent database was "not there"
+   * to one and "there" to the other. Both now ask the same question, which is also the one
+   * {@link ArcadeDBServer#createDatabase} already asked - the registry first, then the files.
+   */
+  private boolean databaseNameIsTaken(final String databaseName, final String dbPath) {
+    return server.existsDatabase(databaseName) || new File(dbPath).exists();
   }
 
   /**
@@ -1475,39 +1519,79 @@ public class ServerControlPlane {
    * database.
    * <p>
    * The caller is responsible for the pre-restore existence and overwrite checks.
+   *
+   * @param operation the label the operation is published under - the command the operator typed, so that a
+   *                  reader of the progress endpoint sees {@code restore backup} or {@code restore database}
+   *                  rather than one name standing for both
    */
   private void performRestore(final String databaseName, final String dbPath, final String url,
-      final ProgressListener listener) {
+      final String operation, final ProgressListener listener) {
     final File finalDir = new File(dbPath);
     final File tempDir = new File(finalDir.getParentFile(),
         ArcadeDBServer.RESERVED_DATABASE_PREFIX + "restore-tmp-" + databaseName + "-" + System.nanoTime());
 
+    // Published to GET /api/v1/progress/{database}, the console and Studio for the WHOLE restore - extraction,
+    // swap and replication alike - as runImport publishes the import (issue #7385). Before this, a restore that
+    // ran for minutes left the endpoint reporting an idle database that was in fact being replaced. Unlike the
+    // import, which has no record total to count against and can only publish a coarse marker, the restore
+    // reports real counters: see restoreProgressCallback below. Always retired in the finally.
+    final OperationProgress progress = OperationProgressRegistry.instance().register(databaseName, operation);
+    progress.onProgress(RESTORE_STEP_EXTRACT, 1, RESTORE_STEPS, 0, -1);
     try {
-      final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-      final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
-      // The same boolean validateClientRestoreImportUrl() already validated this URL against: the fetch inside
-      // FullRestoreFormat must agree with this server's own configuration rather than falling back to the static
-      // default, or a per-server override that let the command through would still have the fetch refuse it.
-      clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(restorer, isRestoreImportLocalUrlsAllowed());
-      clazz.getMethod("setLogger", loggerClass()).invoke(restorer, progressLogger(listener));
+      try {
+        final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
+        final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
+        // The same boolean validateClientRestoreImportUrl() already validated this URL against: the fetch inside
+        // FullRestoreFormat must agree with this server's own configuration rather than falling back to the static
+        // default, or a per-server override that let the command through would still have the fetch refuse it.
+        clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(restorer, isRestoreImportLocalUrlsAllowed());
+        clazz.getMethod("setLogger", loggerClass()).invoke(restorer, progressLogger(listener));
+        installRestoreProgressCallback(clazz, restorer, progress);
 
-      listener.onProgress("Downloading and restoring " + databaseName + "...");
-      clazz.getMethod("restoreDatabase").invoke(restorer);
-    } catch (final InvocationTargetException e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw new CommandExecutionException("Error restoring database", e.getTargetException());
-    } catch (final ReflectiveOperationException e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw new CommandExecutionException("Restore libs not found in classpath", e);
-    } catch (final RuntimeException e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw e;
+        listener.onProgress("Downloading and restoring " + databaseName + "...");
+        clazz.getMethod("restoreDatabase").invoke(restorer);
+      } catch (final InvocationTargetException e) {
+        FileUtils.deleteRecursively(tempDir);
+        throw new CommandExecutionException("Error restoring database", e.getTargetException());
+      } catch (final ReflectiveOperationException e) {
+        FileUtils.deleteRecursively(tempDir);
+        throw new CommandExecutionException("Restore libs not found in classpath", e);
+      } catch (final RuntimeException e) {
+        FileUtils.deleteRecursively(tempDir);
+        throw e;
+      }
+
+      progress.onProgress(RESTORE_STEP_ACTIVATE, 2, RESTORE_STEPS, 0, -1);
+      swapRestoredDatabase(databaseName, finalDir, tempDir);
+
+      // A no-op outside HA, and minutes inside it: forceSnapshot makes every replica pull the restored files.
+      progress.onProgress(RESTORE_STEP_REPLICATE, 3, RESTORE_STEPS, 0, -1);
+      replicateRestoredDatabase(server.getDatabase(databaseName), databaseName);
+      // Completion is the transport's to announce, not this method's: HTTP writes a 'completed' SSE
+      // frame, gRPC a final message with completed=true, and a synchronous caller just returns.
+    } finally {
+      OperationProgressRegistry.instance().unregister(progress);
     }
+  }
 
-    swapRestoredDatabase(databaseName, finalDir, tempDir);
-    replicateRestoredDatabase(server.getDatabase(databaseName), databaseName);
-    // Completion is the transport's to announce, not this method's: HTTP writes a 'completed' SSE
-    // frame, gRPC a final message with completed=true, and a synchronous caller just returns.
+  /**
+   * Installs {@code progress} as the restorer's progress callback, renumbering the format's own step - which is
+   * always 1 of 1, because the integration module knows nothing of the swap and replicate phases that follow it -
+   * into step 1 of this method's three (issue #7385).
+   * <p>
+   * Best-effort, like {@code importerContext}: a build of {@code arcadedb-integration} without the setter reports
+   * no counters rather than failing the restore. Progress is a convenience; the restore is what the caller asked
+   * for.
+   */
+  private static void installRestoreProgressCallback(final Class<?> restoreClass, final Object restorer,
+      final OperationProgress progress) {
+    final ProgressCallback callback =
+        (stepName, stepIndex, totalSteps, done, total) -> progress.onProgress(stepName, 1, RESTORE_STEPS, done, total);
+    try {
+      restoreClass.getMethod("setProgressCallback", ProgressCallback.class).invoke(restorer, callback);
+    } catch (final ReflectiveOperationException ignored) {
+      // No setter on this build: the coarse step markers above are still published.
+    }
   }
 
   /**

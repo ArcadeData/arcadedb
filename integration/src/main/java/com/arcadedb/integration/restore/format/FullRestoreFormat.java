@@ -111,7 +111,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     final long beginTime = System.currentTimeMillis();
 
     final ParallelZipExtractor.ExtractStats stats = parallel ?
-        new ParallelZipExtractor(threads, logger).extract(randomAccessArchive, databaseDirectory) :
+        new ParallelZipExtractor(threads, logger, progressCallback).extract(randomAccessArchive, databaseDirectory) :
         restoreSequentially(inputSource, databaseDirectory);
 
     final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
@@ -146,6 +146,10 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
         databaseOrigSize += uncompressFile(zipFile, compressedFile, databaseDirectory);
         compressedFile = zipFile.getNextEntry();
         ++restoredFiles;
+        // -1 FOR THE DENOMINATOR BECAUSE THERE IS NO HONEST ONE HERE: THIS WALK LEARNS AN ENTRY ONLY WHEN IT
+        // REACHES IT, SO THE COUNT OF ENTRIES STILL TO COME IS NOT KNOWN UNTIL THERE ARE NONE. OperationProgress
+        // RENDERS -1 AS "PERCENTAGE UNKNOWN", WHICH IS THE TRUE ANSWER RATHER THAN A GUESSED ONE (ISSUE #7385)
+        reportRestoreProgress(restoredFiles, -1L);
       }
 
       zipFile.close();

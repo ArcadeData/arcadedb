@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.restore.format.AbstractRestoreFormat;
 import com.arcadedb.integration.restore.format.FullRestoreFormat;
+import com.arcadedb.utility.ProgressCallback;
 
 import java.util.Locale;
 import java.util.Timer;
@@ -33,6 +34,7 @@ public class Restore {
   protected Timer                 timer;
   protected ConsoleLogger         logger;
   protected AbstractRestoreFormat formatImplementation;
+  protected ProgressCallback      progressCallback;
 
   public Restore(final String[] args) {
     settings.parseParameters(args);
@@ -58,6 +60,7 @@ public class Restore {
         logger = new ConsoleLogger(settings.verboseLevel);
 
       formatImplementation = createFormatImplementation();
+      formatImplementation.setProgressCallback(progressCallback);
       formatImplementation.restoreDatabase();
 
     } catch (final Exception e) {
@@ -83,6 +86,21 @@ public class Restore {
 
   public Restore setLogger(final ConsoleLogger logger) {
     this.logger = logger;
+    return this;
+  }
+
+  /**
+   * Receives {@code ("Restoring files", 1, 1, entriesDone, entriesTotal)} as the archive is extracted, where
+   * {@code entriesTotal} is {@code -1} on the sequential walk, which only learns an entry when it reaches it
+   * (issue #7385).
+   * <p>
+   * The server's control plane installs an {@link com.arcadedb.engine.OperationProgress} here so that
+   * {@code GET /api/v1/progress/&#123;database&#125;}, the console and Studio show a real percentage while a
+   * restore runs instead of nothing at all. Implementations must be cheap and non-blocking: on the parallel path
+   * this is called from the extraction workers, one call per archive entry.
+   */
+  public Restore setProgressCallback(final ProgressCallback progressCallback) {
+    this.progressCallback = progressCallback;
     return this;
   }
 
