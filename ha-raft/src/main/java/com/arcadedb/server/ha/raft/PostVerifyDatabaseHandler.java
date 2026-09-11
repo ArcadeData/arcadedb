@@ -463,9 +463,8 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * from: a sealed store is replaced as a whole file by an atomic rename, so the path always resolves to a
    * complete file, and it is covered by no window on either path.
    * <p>
-   * A file that disappears between the listing and the read does not fail the verify - retention and downsampling
-   * rewrite a sealed store by rename without holding anything this handler holds - but it is REPORTED, which is
-   * the difference from how the page files above are treated. A missing page file is the same on every node; a
+   * A file that disappears between the listing and the read does not fail the verify, but it is REPORTED, which
+   * is the difference from how the page files above are treated. A missing page file is the same on every node; a
    * sealed store this node could not read leaves its answer silently short of one, and a leader comparing only
    * its own checksum keys would report that as agreement.
    *
@@ -512,11 +511,16 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * sealed store never lands in heap.
    * <p>
    * The two travel together deliberately (CodeRabbit on PR #7474). Taking the size from {@code File.length()}
-   * instead is a SECOND resolution of the path, and a sealed store is replaced by an atomic rename - by
-   * retention and downsampling, which do not take the compaction lock this handler holds, and on a follower by
-   * an install. So the pair could report a checksum of one version beside the size of another: individually
-   * correct values describing no file that ever existed, in a report whose whole purpose is to be compared.
-   * Counting the bytes actually read cannot disagree with the checksum computed over them.
+   * instead is a SECOND resolution of the path, and a sealed store is replaced by an ATOMIC RENAME - so the two
+   * reads can land on different versions and the pair reports a checksum of one beside the size of another:
+   * individually correct values describing no file that ever existed, in a report whose whole purpose is to be
+   * compared with another node's. Counting the bytes actually read cannot disagree with the checksum computed
+   * over them.
+   * <p>
+   * The compaction pause this handler holds narrows which renames can land here but does not remove them: a
+   * repair of a type whose engine never loaded takes no shard lock (issue #7475), and nothing at all excludes an
+   * operator replacing the file by hand - which, on an endpoint whose job is to detect exactly that, is not a
+   * case to reason away.
    */
   private static SealedImage readSealedImage(final File file) throws IOException {
     final CRC32 crc = new CRC32();
