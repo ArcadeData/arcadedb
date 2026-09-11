@@ -124,4 +124,4 @@ it on both paths so it surfaces as the definite, retryable conflict it is and ne
 
 A DDL on the leader runs under the database write lock and publishes its pages locally before its `SCHEMA_ENTRY`
 is appended, so a replica transaction on the same pages accepted in between is still merged the old way. Closing
-it means excluding replica writes for the duration of a leader DDL; tracked separately.
+it means excluding replica writes for the duration of a leader DDL; tracked as #7438.
