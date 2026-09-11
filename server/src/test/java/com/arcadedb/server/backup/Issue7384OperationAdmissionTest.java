@@ -18,7 +18,7 @@
  */
 package com.arcadedb.server.backup;
 
-import com.arcadedb.server.backup.BackupCoordinator.Operation;
+import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 

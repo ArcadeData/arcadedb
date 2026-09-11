@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -138,6 +139,13 @@ public final class GrpcErrorMapper {
         trailers.put(DUP_INDEX_KEY, encodeTrailer(dup.getIndexName()));
       if (dup.getKeys() != null)
         trailers.put(DUP_KEYS_KEY, encodeTrailer(dup.getKeys()));
+    } else if (cause instanceof DatabaseOperationInProgressException) {
+      // A backup, restore or import of the same database already holds the per-database maintenance slot, so a
+      // SQL 'BACKUP DATABASE' or 'IMPORT DATABASE' sent through ExecuteCommand was refused. ABORTED is what the
+      // admin service already answers for the server's own trigger/restore/import RPCs, and HTTP's 409: the
+      // request is well formed and authorized, and retrying once the other operation finishes is the fix
+      // (issue #7443). Without this arm it would read as INTERNAL - a server fault the caller cannot act on.
+      code = Status.Code.ABORTED;
     } else if (cause instanceof NeedRetryException) {
       // Covers ConcurrentModificationException (a NeedRetryException subclass): retryable conflict.
       code = Status.Code.ABORTED;

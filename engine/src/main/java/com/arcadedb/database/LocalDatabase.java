@@ -217,7 +217,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private final      File                                      configurationFile;
   private            DatabaseInternal                          wrappedDatabaseInstance   = this;
   private final      SecurityManager                           security;
-  private final      Map<String, Object>                       wrappers                  = new HashMap<>();
+  /**
+   * Per-database attachments, keyed by name: the lazily built query engine of each language, and the server's
+   * {@link com.arcadedb.engine.MaintenanceCoordinator} when one is bound.
+   * <p>
+   * CONCURRENT, and that is not decoration. The query-engine factories write here from a request thread the
+   * first time a language is used on this database, so two requests in two languages already raced on a plain
+   * {@code HashMap} - and a put concurrent with a get on one is not merely lost, it can corrupt the table. Since
+   * issue #7443 the server also writes here when it wraps a live database (HA rewraps one that is already
+   * serving requests) and {@code BACKUP DATABASE} / {@code IMPORT DATABASE} read it, so the exposure is wider
+   * than it was. A {@link ConcurrentHashMap} read is no slower than a {@code HashMap} one and takes no lock.
+   */
+  private final      Map<String, Object>                       wrappers                  = new ConcurrentHashMap<>();
   private            File                                      lockFile;
   private            RandomAccessFile                          lockFileIO;
   private            FileChannel                               lockFileIOChannel;

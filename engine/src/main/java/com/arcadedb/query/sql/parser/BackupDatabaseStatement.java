@@ -23,6 +23,9 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.engine.MaintenanceCoordinator;
+import com.arcadedb.engine.MaintenanceCoordinator.Operation;
+import com.arcadedb.engine.MaintenanceCoordinator.Reservation;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
@@ -87,91 +90,102 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
       context.getDatabase().rollback();
     }
 
-    // PUBLISH LIVE PROGRESS (issue #5376): the backup runs behind a reflective boundary (integration module),
-    // so only the coarse operation is published - visible in the progress endpoint, console and Studio while
-    // it runs. Always retired in the finally.
-    final OperationProgress progress = OperationProgressRegistry.instance()
-        .register(context.getDatabase().getName(), "backup database");
-    progress.onProgress("Backing up database", 1, 1, 0, -1);
-    try {
-      final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
-      final Object backup = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), targetUrl);
+    // TAKE THE PER-DATABASE MAINTENANCE SLOT (issue #7443). BACKUP DATABASE reads the whole database off disk and
+    // writes an archive, exactly as the server's own 'trigger backup' and the auto-backup schedule do, but being a
+    // SQL statement it is executed by the ENGINE and so could not reach the server's admission policy at all: a SQL
+    // backup ran unseen by a concurrent 'restore database' about to drop the directory out from under it, and a
+    // second SQL backup of the same database was not refused either - two archives named from the same
+    // second-precision timestamp writing into one file, which is #6753 on this path.
+    //
+    // On a database with no coordinator bound - an embedded process with no server in it - this reserves nothing
+    // and the statement behaves exactly as it did before.
+    try (final Reservation slot = MaintenanceCoordinator.reserve(context.getDatabase(), Operation.BACKUP)) {
+      // PUBLISH LIVE PROGRESS (issue #5376): the backup runs behind a reflective boundary (integration module),
+      // so only the coarse operation is published - visible in the progress endpoint, console and Studio while
+      // it runs. Always retired in the finally.
+      final OperationProgress progress = OperationProgressRegistry.instance()
+          .register(context.getDatabase().getName(), "backup database");
+      progress.onProgress("Backing up database", 1, 1, 0, -1);
+      try {
+        final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
+        final Object backup = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), targetUrl);
 
-      // ASSURE THE DIRECTORY CANNOT BE CHANGED
-      String backupDirectory = context.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY);
-      LogManager.instance().log(this, Level.INFO,
-          String.format("Backing up database '%s' to directory '%s'", context.getDatabase().getName(), backupDirectory));
-      if (!backupDirectory.endsWith(File.separator))
-        backupDirectory += File.separator;
+        // ASSURE THE DIRECTORY CANNOT BE CHANGED
+        String backupDirectory = context.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY);
+        LogManager.instance().log(this, Level.INFO,
+            String.format("Backing up database '%s' to directory '%s'", context.getDatabase().getName(), backupDirectory));
+        if (!backupDirectory.endsWith(File.separator))
+          backupDirectory += File.separator;
 
-      clazz.getMethod("setDirectory", String.class).invoke(backup, backupDirectory + context.getDatabase().getName());
-      clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 0);
+        clazz.getMethod("setDirectory", String.class).invoke(backup, backupDirectory + context.getDatabase().getName());
+        clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 0);
 
-      if (!settings.isEmpty()) {
-        for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
-          final String stringValue = entry.getValue().execute((Identifiable) null, context).toString();
+        if (!settings.isEmpty()) {
+          for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
+            final String stringValue = entry.getValue().execute((Identifiable) null, context).toString();
 
-          // The key is now always built as new Expression(Identifier) - never the raw-value shape that made
-          // toString() render nothing and silently drop every 'WITH ...' setting, encryptionKey included, which
-          // meant a backup asked to be encrypted was written in clear (issue #6409, item 1; SQLASTBuilder#putSetting
-          // is the one place all five WITH-settings statements build this key now).
-          final String settingName = entry.getKey().toString();
-          try {
-            switch (settingName) {
-            case "encryptionAlgorithm" -> clazz.getMethod("setEncryptionAlgorithm", String.class)
-                .invoke(backup, stringValue);
-            case "encryptionKey" -> clazz.getMethod("setEncryptionKey", String.class)
-                .invoke(backup, stringValue);
-            case "compressionLevel" -> clazz.getMethod("setCompressionLevel", Integer.TYPE)
-                .invoke(backup, parseIntSetting("compressionLevel", stringValue));
-            case "compressionThreads" -> clazz.getMethod("setCompressionThreads", Integer.TYPE)
-                .invoke(backup, parseIntSetting("compressionThreads", stringValue));
-            case "maxMBPerSecond" -> clazz.getMethod("setMaxMBPerSecond", Integer.TYPE)
-                .invoke(backup, parseIntSetting("maxMBPerSecond", stringValue));
-            // AN UNRECOGNISED NAME USED TO BE DROPPED IN SILENCE, WHICH IS THE SAME FAILURE MODE AS THE toString() BUG
-            // ABOVE AND JUST AS DANGEROUS: 'WITH encryptionkey = ...' (WRONG CASE, OR ANY TYPO) WOULD HAVE WRITTEN A
-            // CLEARTEXT ARCHIVE WHILE LOOKING LIKE IT ASKED FOR AN ENCRYPTED ONE. NOTHING IS LOST BY REFUSING: UNTIL
-            // THE FIX ABOVE, EVERY SETTING WAS IGNORED, SO NO WORKING STATEMENT DEPENDS ON ONE BEING ACCEPTED
-            default -> throw new CommandExecutionException(
-                "Unsupported backup setting '%s'. Supported settings are: compressionLevel, compressionThreads, encryptionAlgorithm, encryptionKey, maxMBPerSecond".formatted(
-                    settingName));
+            // The key is now always built as new Expression(Identifier) - never the raw-value shape that made
+            // toString() render nothing and silently drop every 'WITH ...' setting, encryptionKey included, which
+            // meant a backup asked to be encrypted was written in clear (issue #6409, item 1; SQLASTBuilder#putSetting
+            // is the one place all five WITH-settings statements build this key now).
+            final String settingName = entry.getKey().toString();
+            try {
+              switch (settingName) {
+              case "encryptionAlgorithm" -> clazz.getMethod("setEncryptionAlgorithm", String.class)
+                  .invoke(backup, stringValue);
+              case "encryptionKey" -> clazz.getMethod("setEncryptionKey", String.class)
+                  .invoke(backup, stringValue);
+              case "compressionLevel" -> clazz.getMethod("setCompressionLevel", Integer.TYPE)
+                  .invoke(backup, parseIntSetting("compressionLevel", stringValue));
+              case "compressionThreads" -> clazz.getMethod("setCompressionThreads", Integer.TYPE)
+                  .invoke(backup, parseIntSetting("compressionThreads", stringValue));
+              case "maxMBPerSecond" -> clazz.getMethod("setMaxMBPerSecond", Integer.TYPE)
+                  .invoke(backup, parseIntSetting("maxMBPerSecond", stringValue));
+              // AN UNRECOGNISED NAME USED TO BE DROPPED IN SILENCE, WHICH IS THE SAME FAILURE MODE AS THE toString() BUG
+              // ABOVE AND JUST AS DANGEROUS: 'WITH encryptionkey = ...' (WRONG CASE, OR ANY TYPO) WOULD HAVE WRITTEN A
+              // CLEARTEXT ARCHIVE WHILE LOOKING LIKE IT ASKED FOR AN ENCRYPTED ONE. NOTHING IS LOST BY REFUSING: UNTIL
+              // THE FIX ABOVE, EVERY SETTING WAS IGNORED, SO NO WORKING STATEMENT DEPENDS ON ONE BEING ACCEPTED
+              default -> throw new CommandExecutionException(
+                  "Unsupported backup setting '%s'. Supported settings are: compressionLevel, compressionThreads, encryptionAlgorithm, encryptionKey, maxMBPerSecond".formatted(
+                      settingName));
+              }
+            } catch (final InvocationTargetException e) {
+              // A SETTER REJECTING ITS VALUE IS A MISTAKE IN THE STATEMENT, SO SAY WHAT IT WAS. WITHOUT THIS THE OUTER
+              // HANDLER REPORTS THE USELESS 'Error on backing up database' AND BURIES THE REASON IN THE CAUSE CHAIN
+              final String reason = e.getTargetException().getMessage();
+              throw new CommandExecutionException(
+                  reason != null ? reason : "Invalid value for backup setting '%s'".formatted(settingName),
+                  e.getTargetException());
             }
-          } catch (final InvocationTargetException e) {
-            // A SETTER REJECTING ITS VALUE IS A MISTAKE IN THE STATEMENT, SO SAY WHAT IT WAS. WITHOUT THIS THE OUTER
-            // HANDLER REPORTS THE USELESS 'Error on backing up database' AND BURIES THE REASON IN THE CAUSE CHAIN
-            final String reason = e.getTargetException().getMessage();
-            throw new CommandExecutionException(
-                reason != null ? reason : "Invalid value for backup setting '%s'".formatted(settingName),
-                e.getTargetException());
           }
         }
+
+        try {
+          final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
+          result.setProperty("result", "OK");
+          result.setProperty("backupFile", backupFile);
+
+          final InternalResultSet rs = new InternalResultSet();
+          rs.add(result);
+          return rs;
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE,
+              String.format("Error on backup database '%s' to directory '%s'",
+                  context.getDatabase().getName(), backupDirectory), e);
+          // THE STATEMENT PARSED CORRECTLY: A BACKUP THAT FAILS AT RUNTIME IS AN EXECUTION ERROR, NOT A CLIENT
+          // PARSING ERROR, AND MUST NOT BE REPORTED AS HTTP 400
+          throw new CommandExecutionException(
+              String.format("Backup failed for database '%s' to directory '%s'",
+                  context.getDatabase().getName(), backupDirectory), e);
+        }
+
+      } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
+        throw new CommandExecutionException("Error on backing up database, backup libs not found in classpath", e);
+      } catch (final InvocationTargetException e) {
+        throw new CommandExecutionException("Error on backing up database", e.getTargetException());
+      } finally {
+        OperationProgressRegistry.instance().unregister(progress);
       }
-
-      try {
-        final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
-        result.setProperty("result", "OK");
-        result.setProperty("backupFile", backupFile);
-
-        final InternalResultSet rs = new InternalResultSet();
-        rs.add(result);
-        return rs;
-      } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE,
-            String.format("Error on backup database '%s' to directory '%s'",
-                context.getDatabase().getName(), backupDirectory), e);
-        // THE STATEMENT PARSED CORRECTLY: A BACKUP THAT FAILS AT RUNTIME IS AN EXECUTION ERROR, NOT A CLIENT
-        // PARSING ERROR, AND MUST NOT BE REPORTED AS HTTP 400
-        throw new CommandExecutionException(
-            String.format("Backup failed for database '%s' to directory '%s'",
-                context.getDatabase().getName(), backupDirectory), e);
-      }
-
-    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
-      throw new CommandExecutionException("Error on backing up database, backup libs not found in classpath", e);
-    } catch (final InvocationTargetException e) {
-      throw new CommandExecutionException("Error on backing up database", e.getTargetException());
-    } finally {
-      OperationProgressRegistry.instance().unregister(progress);
     }
   }
 
