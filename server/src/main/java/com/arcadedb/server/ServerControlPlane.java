@@ -1213,9 +1213,10 @@ public class ServerControlPlane {
    * {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS} first.
    *
    * <p>
-   * A target that {@link #databaseNameIsTaken is taken} is refused outright: this command has no
-   * {@code overwrite} flag, so there is no way for the caller to say they meant it. Use
-   * {@code restore backup ... as &lt;name&gt;} with {@code overwrite}, or drop the database first.
+   * A target name that is already taken - see {@link #databaseNameIsTaken} - is refused outright:
+   * this command has no {@code overwrite} flag, so there is no way for the caller to say they meant
+   * it. Use {@code restore backup ... as &lt;name&gt;} with {@code overwrite}, or drop the database
+   * first.
    *
    * @throws IllegalArgumentException when the name is invalid or the database already exists
    * @throws SecurityException        when the URL is not one this server accepts from a client
@@ -1242,9 +1243,9 @@ public class ServerControlPlane {
    * {@link #resolveBackupFile}, so the caller never supplies a filesystem path and the resulting
    * {@code file://} URL needs no SSRF check.
    * <p>
-   * {@code overwrite} decides what happens when the target {@link #databaseNameIsTaken is taken}.
-   * Even with it set, the existing database is dropped only once the restore into a temporary
-   * directory has succeeded (issue #5027).
+   * {@code overwrite} decides what happens when the target name is already taken, as
+   * {@link #databaseNameIsTaken} defines it. Even with it set, the existing database is dropped only
+   * once the restore into a temporary directory has succeeded (issue #5027).
    *
    * @throws IllegalArgumentException when a name is invalid, or the target exists and {@code overwrite} is false
    */

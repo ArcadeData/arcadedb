@@ -120,6 +120,22 @@ Four transports, two shared implementations. No transport repeats the check for 
 | `ServerControlPlane.importDatabase` -> `ArcadeDBServer.createDatabase` | n/a - argued | argued: `createDatabase` already applies registry-then-`factory.exists()`, the stricter predicate (`ArcadeDBServer.java:1002-1014`). It is the norm this fix aligns restore with, not a violator of it. |
 | `ha-raft` `SnapshotInstaller.restoreBackup(Path, Path)` | n/a - argued | argued: `private static void restoreBackup(final Path dbDir, final Path backupDir)` - a file-copy helper taking two paths, no database name, no registry. Same method name, different question. |
 
+### 4. Test per entry point
+
+One test per **fixed** row, driven through that row's own transport rather than through the shared
+implementation - a test that called `ServerControlPlane` directly would pass against a transport that
+never wired the method up.
+
+| Fixed row | Tests |
+|---|---|
+| HTTP `restore database` | `restoreDatabaseRefusesATargetRegisteredOnTheServerWhoseDirectoryIsGone` (the new behaviour), `restoreDatabaseStillRefusesATargetWhoseDirectoryIsPresentButUnregistered` (the other half of the predicate), `aTargetRefusedBecauseItIsOnlyRegisteredCanStillBeDroppedSoTheOperatorCanRetry` (the state reached the way it is really reached, plus the way out), `restoreDatabaseWithAFreeNameGetsPastTheExistenceCheckAndFailsOnTheArchive` (the control) |
+| HTTP `restore backup` | `restoreBackupRefusesATargetRegisteredOnTheServerWhoseDirectoryIsGone`, `restoreBackupRefusesATargetWhoseDirectoryIsPresentButUnregistered`, `restoreBackupWithAFreeTargetNameGetsPastTheExistenceCheckAndFailsOnTheArchive` (the control) |
+| gRPC `RestoreDatabase` | the same three shapes in `Issue7395GrpcRestoreTargetExistsIT` |
+| gRPC `RestoreBackup` | the same three shapes in `Issue7395GrpcRestoreTargetExistsIT` |
+
+The controls are what stop the refusal tests passing against a check that refuses every name; the
+"directory present but unregistered" tests are what stop the fix being written as a registry-only check.
+
 ### 5. Reachability
 
 `ServerControlPlane` is constructed by `ArcadeDBServer` and reached on every restore command; the two methods are
