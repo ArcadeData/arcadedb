@@ -143,6 +143,27 @@ class Issue7434MatchedAliasPropertyTest extends TestHelper {
         .hasMessageContaining("circular dependency");
   }
 
+  @Test
+  void correlatedLegIsRunAgainForEveryRowOfAnIndependentLeg() {
+    // THREE LEGS, THE CORRELATED ONE LAST: IT MUST BE PLANNED AND RUN AGAIN FOR EVERY ROW OF THE INDEPENDENT LEG g. A
+    // RESET OF THE SAME SUB-PLAN IS NOT ENOUGH, SINCE THE FETCH AND FILTER STEPS OF ITS ROOT SELECT DO NOT RESTART: THE
+    // SECOND ROW OF g CAME BACK WITH NO f AND THE PRODUCT STOPPED AT ONE ROW
+    try (final ResultSet rs = database.query("sql", """
+        MATCH {type: S, as: s, where: (id = 's1')}, {type: F, as: f, where: (path = $matched.s.filePath)}, {type: F, as: g}
+        RETURN f.path AS p, g.path AS q, $matched.s.filePath AS sfp""")) {
+      assertThat(rows(rs)).containsExactlyInAnyOrder("a.ts|a.ts|a.ts", "a.ts|b.ts|a.ts");
+    }
+  }
+
+  private static List<String> rows(final ResultSet rs) {
+    final List<String> out = new ArrayList<>();
+    while (rs.hasNext()) {
+      final Result row = rs.next();
+      out.add(row.getProperty("p") + "|" + row.getProperty("q") + "|" + row.getProperty("sfp"));
+    }
+    return out;
+  }
+
   private List<Object> paths(final String query) {
     final List<Object> out = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", query)) {
