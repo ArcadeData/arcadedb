@@ -31,7 +31,10 @@ import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
+import java.io.InterruptedIOException;
+import java.nio.channels.ClosedByInterruptException;
 import java.util.Arrays;
+import java.util.concurrent.CancellationException;
 import java.util.logging.Level;
 
 /**
@@ -222,6 +225,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
           }
         }
       } catch (final Exception e) {
+        abortIfInterrupted(e, ordinal);
         LogManager.instance().log(this, Level.WARNING,
             "Error reading vector from graph file (ordinal=%d), falling back: %s",
             ordinal, e.getMessage());
@@ -249,6 +253,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
           return result;
         }
       } catch (final Exception e) {
+        abortIfInterrupted(e, ordinal);
         // Fall through to document-based retrieval
         LogManager.instance().log(this, Level.WARNING,
             "Error reading quantized vector from index pages (ordinal=%d), falling back to document: %s",
@@ -321,10 +326,60 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       // DELETED RECORD — return sentinel to avoid NPE in JVector (issue #3715)
       return deletedSentinelVector;
     } catch (final Exception e) {
+      abortIfInterrupted(e, ordinal);
       LogManager.instance().log(this, Level.WARNING,
           "Error reading vector from document (ordinal=%d, RID=%s): %s", ordinal, rid, e.getMessage());
       return deletedSentinelVector;
     }
+  }
+
+  /**
+   * Turns a read that failed because the calling thread was interrupted into a {@link CancellationException},
+   * instead of letting it be logged and papered over like a bad vector.
+   * <p>
+   * Every read in {@link #getVector(int)} swallows its failure and falls through to the next source, ending on the
+   * deleted sentinel: the right answer for a vector that is genuinely unreadable, and the wrong one for a thread
+   * that has been told to stop. A graph build is cancelled by interrupting its pool workers
+   * ({@code LSMVectorIndex.releaseBackgroundResources()}), and {@code PageManager} refuses I/O on an interrupted
+   * thread and leaves the flag set - so before this, every read after the interrupt failed, was logged at WARNING,
+   * fed the builder a sentinel, and the worker went on to the next node. A 4.2M-vector build cancelled by a database
+   * close logged 42,700 such lines in five seconds and kept its pool alive past the close's 5s grace (issue #7432).
+   * Throwing here ends the parallel insertion at the first interrupted read, which {@code buildGraphFromScratch}
+   * already reports as a cancellation rather than a build failure.
+   * <p>
+   * Both signals are checked because neither alone is reliable: the flag is what {@code PageManager} leaves behind,
+   * but a layer in between may have cleared it while wrapping the exception; the cause chain carries the
+   * {@link InterruptedIOException} in that case, but not when the read was refused by a check of the flag alone.
+   * Either way the flag is set when this throws, so the cancellation is observable both ways. The flag also makes
+   * the trigger deliberately broad: on an interrupted thread ANY read failure is reported as the cancellation,
+   * including one that would have been a bad page on an uninterrupted thread. That is the right reading for the
+   * only thread that is interrupted today (a build worker being shut down), and it stays right for a query thread
+   * cancelled mid-search: whatever else went wrong, the caller asked for the work to stop.
+   *
+   * @param failure the exception the read failed with
+   * @param ordinal the ordinal being read, for the message; -1 when the caller reads by offset rather than ordinal
+   *
+   * @throws CancellationException when the failure is an interruption
+   */
+  static void abortIfInterrupted(final Exception failure, final int ordinal) {
+    if (!Thread.currentThread().isInterrupted()) {
+      if (!causedByInterrupt(failure))
+        return;
+      // A caught InterruptedException has cleared the flag as part of being thrown; put it back so a caller that
+      // keys off the flag rather than off this exception's type still sees the cancellation (PR #7433 review).
+      Thread.currentThread().interrupt();
+    }
+    final CancellationException cancelled = new CancellationException(
+        "Vector read interrupted" + (ordinal >= 0 ? " (ordinal=" + ordinal + ")" : "") + ": " + failure.getMessage());
+    cancelled.initCause(failure);
+    throw cancelled;
+  }
+
+  private static boolean causedByInterrupt(final Throwable failure) {
+    for (Throwable t = failure; t != null; t = t.getCause())
+      if (t instanceof InterruptedException || t instanceof InterruptedIOException || t instanceof ClosedByInterruptException)
+        return true;
+    return false;
   }
 
   @Override
