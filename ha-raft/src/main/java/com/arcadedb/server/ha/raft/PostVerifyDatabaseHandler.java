@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.timeseries.TimeSeriesCompactionPause;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
@@ -81,6 +82,19 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * never checksummed it".
    */
   private static final String  SEALED_STORES_INCLUDED  = "sealedStoresIncluded";
+  /**
+   * Response flag saying this PARTICULAR answer covers every sealed store, as opposed to
+   * {@link #SEALED_STORES_INCLUDED}, which says the build knows how to. Absent means complete; present and false
+   * means a store could not be read, or compaction could not be paused to read it against a matching page image,
+   * so the answer is silently short of one and must not roll up as agreement (CodeRabbit on PR #7474).
+   */
+  private static final String  SEALED_STORES_COMPLETE  = "sealedStoresComplete";
+  /**
+   * Budget for pausing TimeSeries compaction while the sealed stores are paired with the page image. The same 60s
+   * FullBackupFormat and SnapshotHttpHandler use, and for the same reason: every holder of the write half is
+   * bounded, so a longer wait means something is stuck.
+   */
+  private static final long    COMPACTION_PAUSE_TIMEOUT_MS = 60_000L;
   /** Valid database name: alphanumeric, underscore, hyphen, dot. No path traversal sequences. */
   static final         Pattern VALID_DATABASE_NAME     = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_\\-.]*");
 
@@ -152,7 +166,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     // Compute local checksums with file type categorization
     final JSONObject localChecksums = new JSONObject();
     final JSONArray localFiles = new JSONArray();
-    computeLocalChecksums(db, localChecksums, localFiles);
+    final boolean sealedStoresCovered = computeLocalChecksums(db, localChecksums, localFiles);
 
     final JSONObject response = new JSONObject();
 
@@ -173,7 +187,14 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
       // build that predates that omits the flag, and the comparison below then leaves its sealed files out
       // instead of reporting every one of them MISSING - a rolling upgrade must not make the divergence
       // detector cry divergence over a file the other side was never asked to checksum.
+      //
+      // Deliberately still true when coverage was INCOMPLETE, and the second flag says so separately. The two
+      // are different statements - "my build checksums sealed stores" against "this particular answer covers
+      // them" - and folding a transient read failure into the version marker would make this peer read as an
+      // older build, which is the one thing the marker exists to identify.
       response.put(SEALED_STORES_INCLUDED, true);
+      if (!sealedStoresCovered)
+        response.put(SEALED_STORES_COMPLETE, false);
       return new ExecutionResponse(200, response.toString());
     }
 
@@ -221,11 +242,24 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     boolean anyMismatch = false;
     boolean anyUnverified = false;
     for (int i = 0; i < peerResults.length(); i++) {
-      final String peerStatus = peerResults.getJSONObject(i).getString("status", "ERROR");
+      final JSONObject peerResult = peerResults.getJSONObject(i);
+      final String peerStatus = peerResult.getString("status", "ERROR");
       if ("INCONSISTENT".equals(peerStatus))
         anyMismatch = true;
       else if (!"CONSISTENT".equals(peerStatus))
         anyUnverified = true;
+      else if (peerResult.has("uncomparedSealedStores") || peerResult.has("incompleteSealedStores"))
+        // A CONSISTENT that did not compare every sealed store is a weaker statement than one that did, and
+        // rolling it up as ALL_CONSISTENT hands an operator a clean bill of health from the divergence detector
+        // at the moment they are asking precisely because they suspect divergence (CodeRabbit on PR #7474).
+        anyUnverified = true;
+    }
+
+    // This node's OWN answer can be short of a sealed store too - an unreadable file, or a compaction pause it
+    // could not take - and then no peer comparison can be complete, because the leader compares its own keys.
+    if (!sealedStoresCovered) {
+      anyUnverified = true;
+      result.put("incompleteSealedStores", true);
     }
 
     result.put("overallStatus", anyMismatch ? "INCONSISTENCY_DETECTED"
@@ -390,6 +424,10 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
             // to know which of the two they got.
             if (skippedSealedStores > 0)
               peerResult.put("uncomparedSealedStores", skippedSealedStores);
+            // The peer checksums sealed stores but says THIS answer did not cover them all, which is a different
+            // statement from the legacy-build case above and is reported as its own field.
+            if (peerCoversSealedStores && !peerResponse.getBoolean(SEALED_STORES_COMPLETE, true))
+              peerResult.put("incompleteSealedStores", true);
           } else {
             peerResult.put("status", "ERROR");
             peerResult.put("error", "peer response missing 'localChecksums'");
@@ -425,20 +463,41 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * from: a sealed store is replaced as a whole file by an atomic rename, so the path always resolves to a
    * complete file, and it is covered by no window on either path.
    * <p>
-   * A file that disappears between the listing and the read is skipped rather than failing the verify, matching
-   * how both paths above treat a file they cannot checksum: retention and downsampling rewrite a sealed store by
-   * rename without holding anything this handler holds.
+   * A file that disappears between the listing and the read does not fail the verify - retention and downsampling
+   * rewrite a sealed store by rename without holding anything this handler holds - but it is REPORTED, which is
+   * the difference from how the page files above are treated. A missing page file is the same on every node; a
+   * sealed store this node could not read leaves its answer silently short of one, and a leader comparing only
+   * its own checksum keys would report that as agreement.
+   *
+   * @return {@code false} when the directory could not be listed or any sealed store could not be read, so the
+   * caller can say the answer does not cover them rather than implying it does
    */
-  private static void collectSealedStores(final JSONObject checksums, final JSONArray files,
+  private static boolean collectSealedStores(final JSONObject checksums, final JSONArray files,
       final DatabaseInternal db) {
-    for (final File sealedFile : TimeSeriesSealedStore.listSealedFiles(new File(db.getDatabasePath())))
+    final File directory = new File(db.getDatabasePath());
+    // listSealedFiles turns an unreadable directory into an EMPTY array, which reads exactly like "this database
+    // has no sealed store". Asked here instead, because the difference decides whether this answer covers them.
+    if (!directory.isDirectory() || directory.list() == null) {
+      LogManager.instance().log(PostVerifyDatabaseHandler.class, Level.WARNING,
+          "Could not list the database directory of '%s' to checksum its TimeSeries sealed stores", null, db.getName());
+      return false;
+    }
+
+    boolean complete = true;
+    for (final File sealedFile : TimeSeriesSealedStore.listSealedFiles(directory))
       try {
         collectFileInfo(checksums, files, sealedFile.getName(), crcOf(sealedFile), sealedFile.length());
       } catch (final Exception e) {
-        // Same rule as the page files above: a store that went away between the listing and the read is not
-        // worth failing a verify over. It shows up as MISSING against a peer that still has it, which is the
-        // honest answer.
+        // Reported rather than swallowed. A page file that cannot be read is skipped silently above, and that is
+        // survivable there because the page enumeration is the same on every node; a sealed store that cannot be
+        // read is NOT, because this node then answers a checksum set that silently omits it while still claiming
+        // to cover sealed stores - a leader comparing only its own keys would roll that up as ALL_CONSISTENT.
+        LogManager.instance().log(PostVerifyDatabaseHandler.class, Level.WARNING,
+            "Could not checksum the TimeSeries sealed store '%s' of database '%s': %s", null, sealedFile.getName(),
+            db.getName(), e.getMessage());
+        complete = false;
       }
+    return complete;
   }
 
   /** CRC32 of a whole file, streamed so a multi-gigabyte sealed store never lands in heap. */
@@ -487,8 +546,42 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * CRCs every file of the local database into the two shapes the response carries. Package-private so the
    * enumeration can be asserted without an HTTP exchange or a Raft cluster - which is how {@code .ts.sealed}
    * came to be missing from it unnoticed (issue #7338).
+   * <p>
+   * <b>TimeSeries compaction is paused for the whole collection</b> (CodeRabbit on PR #7474, the same tear class
+   * as issues #7280 and #7337). The page files are fixed at a point in time - the window's t0, or the flush
+   * suspension - while {@code .ts.sealed} is read live off the disk, so a compaction landing between the two
+   * pairs a post-swap sealed image with a page image whose mutable bucket still holds the same samples. In a
+   * backup that restores as duplicates; here it is a checksum set that never described one state of this
+   * database, which is worse than useless to a detector whose whole job is to compare it with another node's.
+   * <p>
+   * Taken OUTSIDE {@code executeInReadLock} and outside the flush suspension, for the two reasons
+   * {@code FullBackupFormat.pauseCompaction} sets out: compaction's own order is compaction-lock-then-database-
+   * lock, and a compaction in its commit phase cannot finish while this thread holds a suspension.
+   * <p>
+   * A pause that cannot be taken degrades rather than failing the verify - the page half of the answer is still
+   * worth having - but it is reported as incomplete sealed-store coverage rather than passed off as a full one.
+   *
+   * @return {@code false} when the sealed stores are not fully covered by this answer
    */
-  void computeLocalChecksums(final DatabaseInternal db, final JSONObject localChecksums, final JSONArray localFiles) {
+  boolean computeLocalChecksums(final DatabaseInternal db, final JSONObject localChecksums, final JSONArray localFiles) {
+    TimeSeriesCompactionPause pause = null;
+    try {
+      pause = TimeSeriesCompactionPause.acquire(db, COMPACTION_PAUSE_TIMEOUT_MS);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not pause TimeSeries compaction for the verify of database '%s' (%s): the sealed stores are left "
+              + "out of this answer rather than paired with a page image they may not belong to", null, db.getName(),
+          e.getMessage());
+    }
+
+    try (final TimeSeriesCompactionPause held = pause) {
+      return computeLocalChecksums(db, localChecksums, localFiles, held != null);
+    }
+  }
+
+  private boolean computeLocalChecksums(final DatabaseInternal db, final JSONObject localChecksums,
+      final JSONArray localFiles, final boolean compactionPaused) {
+    final boolean[] sealedStoresCovered = { compactionPaused };
     db.executeInReadLock(() -> {
       // #6075: CRC THE FILES THROUGH A POINT-IN-TIME SNAPSHOT INSTEAD OF FREEZING THEM WITH A FLUSH SUSPENSION. A
       // VERIFY OF A LARGE DATABASE READS EVERY BYTE OF EVERY FILE, SO THE OLD PATH THROTTLED WRITERS FOR ITS WHOLE
@@ -510,7 +603,8 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
               // skip files that cannot be checksummed (e.g. in-flight creation)
             }
 
-          collectSealedStores(snapshotChecksums, snapshotFiles, db);
+          if (compactionPaused)
+            sealedStoresCovered[0] = collectSealedStores(snapshotChecksums, snapshotFiles, db);
 
           for (final String name : snapshotChecksums.keySet())
             localChecksums.put(name, snapshotChecksums.getLong(name));
@@ -533,9 +627,11 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
               // skip files that cannot be checksummed (e.g. in-flight creation)
             }
           }
-        collectSealedStores(localChecksums, localFiles, db);
+        if (compactionPaused)
+          sealedStoresCovered[0] = collectSealedStores(localChecksums, localFiles, db);
       });
       return null;
     });
+    return sealedStoresCovered[0];
   }
 }

@@ -88,6 +88,14 @@ public final class TimeSeriesSealedInstallLock implements AutoCloseable {
    * started (issue #6356), a shard index the engine does not have - is skipped rather than refused. The apply
    * path has its own diagnostics for each of those and must keep making them; this class only locks what is
    * there, and a shard that does not exist cannot be torn.
+   * <p>
+   * <b>The engine-unavailable case is a KNOWN GAP, not a safe skip</b> (CodeRabbit on PR #7474). When a type's
+   * engine never loaded, {@code ArcadeStateMachine.repairEngineWithSealedFile} installs the blob and re-runs
+   * {@code initEngine()} over it - with no lock, because the lock lives on {@code TimeSeriesShard} and there is
+   * no shard until the engine loads. {@link TimeSeriesCompactionPause} skips those types for the same reason and
+   * has since #7280. So a copy of the database taken across a repair can pair the same two images this class
+   * exists to keep apart. Closing it means moving the per-shard lock somewhere that outlives the engine, which
+   * is a change to who owns the engine's locking rather than a fix to this class, and is tracked separately.
    *
    * @param database  the database whose schema resolves the references
    * @param shards    the shards this entry installs sealed bytes for; empty or {@code null} holds nothing
