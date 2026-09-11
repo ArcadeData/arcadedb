@@ -1104,9 +1104,11 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // because the request is well formed - it is the identity that is taken.
     if (e instanceof ServerControlPlane.AlreadyExistsException)
       return Status.ALREADY_EXISTS.withDescription(e.getMessage()).asException();
-    // A backup already running for the same database is HTTP's 409 on the other transport: the request
-    // is well formed and authorized, and retrying once the other run finishes is the fix.
-    if (e instanceof ServerControlPlane.BackupInProgressException)
+    // A backup, restore or import already running on the same database is HTTP's 409 on the other
+    // transport: the request is well formed and authorized, and retrying once the other operation
+    // finishes is the fix. The base type, so RestoreBackup, RestoreDatabase and ImportDatabase get the
+    // same status TriggerBackup already got (issue #7384) - BackupInProgressException extends it.
+    if (e instanceof ServerControlPlane.OperationInProgressException)
       return Status.ABORTED.withDescription(e.getMessage()).asException();
     // A rejected argument must not read as a server fault: an empty database name, an unparseable
     // setting value or a backup file name outside the backup directory are all the caller's to fix.
