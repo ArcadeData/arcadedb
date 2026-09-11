@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -50,21 +51,27 @@ public final class CommandWarnings {
   }
 
   /**
-   * Records one occurrence of the situation {@code key} names and answers how many times it has now happened when
-   * this one is due to be reported, or 0 when it is not - so the caller both decides and has the number to print:
+   * Records one occurrence of the situation {@code key} names <b>in {@code database}</b> and answers how many times
+   * it has now happened when this one is due to be reported, or 0 when it is not - so the caller both decides and
+   * has the number to print:
    * <pre>
-   * final int occurrences = CommandWarnings.occurrencesWhenDue("Person.scan");
+   * final int occurrences = CommandWarnings.occurrencesWhenDue(database, "Person.scan");
    * if (occurrences &gt; 0)
    *   LogManager.instance().log(this, Level.WARNING, "... %d times ...", occurrences);
    * </pre>
+   * The database is part of the key rather than left to the caller to remember: two tenants on one server can both
+   * have a {@code Person} type, and sharing a counter between them would throttle one database's warning on the
+   * other's traffic while each message names its own database.
+   * <p>
    * A configured interval of 0 disables the warning and answers 0 without counting.
    */
-  public static int occurrencesWhenDue(final String key) {
+  public static int occurrencesWhenDue(final DatabaseInternal database, final String key) {
     final int every = GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger();
     if (every <= 0)
       return 0;
 
-    final int occurrences = OCCURRENCES.computeIfAbsent(key, k -> new AtomicInteger()).incrementAndGet();
+    final int occurrences =
+        OCCURRENCES.computeIfAbsent(database.getName() + "/" + key, k -> new AtomicInteger()).incrementAndGet();
 
     // Zero-based, so the FIRST occurrence is always reported and every Nth after it: at every = 1 that is all of
     // them, which is what "every occurrence" has to mean.
