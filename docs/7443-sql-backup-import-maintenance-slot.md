@@ -218,3 +218,36 @@ Not acted on, with the reason:
   RPCs and `ExecuteCommand` are different services with different mappers. Collapsing them means giving
   `ArcadeDbGrpcAdminService` a dependency on `GrpcErrorMapper`'s ladder, which would change the status of
   every other exception it maps. Both arms are pinned by `Issue7443GrpcMaintenanceSlotStatusTest`.
+
+### Cycle 2 - `59f9cb1fa7`
+
+No actionable items. The review re-verified, independently of cycle 1, that `Operation` was moved rather
+than duplicated, that all four `new ServerDatabase(...)` call sites funnel through the constructor that
+binds, that the try-with-resources placement releases the slot on every exit path including the
+reflection failures, and that the `ConcurrentHashMap` change is narrowly scoped rather than incidental.
+It also confirmed the three test classes' counts against the files.
+
+Two notes, neither applied:
+
+* **The #7461 result-overwrite sits right next to the code the reservation now wraps**, and the
+  reservation does not fix it. Agreed and already the case: it is filed, named in the PR body under
+  Known gaps, and left untouched deliberately - the fix is a contract decision about what an
+  `IMPORT DATABASE` failure should return, not something to fold into a concurrency change.
+* **The inline `// TAKE THE PER-DATABASE ...` blocks in the two statement classes are long.** Declined,
+  and the review does not ask for it either ("wouldn't block on it"). Each block answers the question a
+  reader of those two statements will actually have - why a SQL statement talks to an admission policy
+  it cannot see the implementation of - which is the thing that was missing, and the narrative style
+  matches the comments already around them in both files.
+
+No deferred items: nothing in either review needed a decision this loop could not make.
+
+## Final state
+
+**clean-approval**, 2 cycles.
+
+* PR: https://github.com/ArcadeData/arcadedb/pull/7460
+* cycle 1: `8ad93e5858` - one import-order fix applied, #7461 filed
+* cycle 2: `59f9cb1fa7` - no actionable items
+
+Follow-ups opened by this work: **#7450** (`EXPORT DATABASE` takes no slot) and **#7461**
+(`IMPORT DATABASE` reports `OK` for a failure). Merge is the developer's.
