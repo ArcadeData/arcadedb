@@ -33,7 +33,6 @@ import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
 
-import java.io.IOException;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
@@ -149,6 +148,10 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
 
     typeRecords = database.iterateType(edgeTypeName, true);
 
+    // Nothing reads the total when warnings are switched off, so don't pay for it: the size of the vertex set is
+    // only ever an input to warnIfTheVertexSetIsLarge.
+    final boolean measureTheVertexSet = CommandWarnings.isEnabled();
+
     final MultiIterator<Record> vertexIterator = new MultiIterator<>();
     for (final DocumentType type : schema.getTypes()) {
       if (type.getType() != Vertex.RECORD_TYPE)
@@ -161,7 +164,8 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
       for (final Bucket bucket : type.getBuckets(false))
         if (SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD)) {
           vertexIterator.addIterator(bucket.iterator());
-          vertexSetSize += sizeOf(database, bucket.getFileId());
+          if (measureTheVertexSet)
+            vertexSetSize += sizeOf(database, bucket.getFileId());
         }
     }
     vertices = vertexIterator;
@@ -195,19 +199,21 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
    * Size on disk of a bucket's file, or 0 when it cannot be read - this only feeds a warning threshold, so every
    * way of not knowing answers 0 rather than failing the query.
    * <p>
+   * Computed from the page count rather than from {@code getSize()}: the two are the same number - which is what
+   * {@code getTotalPagesFromChannel()} exists to let a test assert (#6132) - but one is a field read and the other
+   * takes the channel lock and a {@code channel.size()} syscall. This runs once per bucket of every vertex type in
+   * the schema on every query against a lightweight edge type, so on a wide schema the syscall version is a burst
+   * of them in front of even {@code SELECT ... LIMIT 1} (PR #7478 review).
+   * <p>
    * {@code getFileIfExists}, not {@code getFile}: the latter throws when the id is not registered, and a bucket can
    * be dropped between the schema snapshot this walk took and this lookup. Failing a whole query over a number that
-   * only decides whether to log would be the tail wagging the dog (PR #7478 review).
+   * only decides whether to log would be the tail wagging the dog.
    */
   private static long sizeOf(final DatabaseInternal database, final int fileId) {
     if (!(database.getFileManager().getFileIfExists(fileId) instanceof PaginatedComponentFile file))
       return 0;
 
-    try {
-      return file.getSize();
-    } catch (final IOException e) {
-      return 0;
-    }
+    return file.getTotalPages() * (long) file.getPageSize();
   }
 
   /** Refuses unless the caller may read {@code type} and every type inheriting from it. */
