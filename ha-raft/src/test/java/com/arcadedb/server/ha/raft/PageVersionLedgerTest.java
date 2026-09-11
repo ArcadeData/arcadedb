@@ -174,8 +174,10 @@ class PageVersionLedgerTest {
     final byte[] first = wal(1, new Page(3, 0, 1));
     ledger.validateAndReserve(DB, PageVersionLedger.parse(first), entry(1), localVersions);
     ledger.confirmAppended(DB, PageVersionLedger.parse(first), entry(1));
+    // The page must hold no reservation, or the early local read is skipped altogether.
+    ledger.release(DB, null, first);
 
-    // The entry is applied: the local copy moves to 1 and the reservation is released.
+    // The apply lands DURING the early read: the local copy moves to 1 and the release counter is bumped.
     final PageVersionLedger.LocalVersions applyDuringRead = (fileId, pageNumber) -> {
       final int version = localVersions.versionOf(fileId, pageNumber);
       local.put(PageVersionLedger.pageKey(3, 0), 1);
@@ -241,6 +243,27 @@ class PageVersionLedgerTest {
     ByteBuffer.wrap(tooManyPages).putInt(2 * Long.BYTES, 1_000_000);
     assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(tooManyPages), entry(1), localVersions))
         .isInstanceOf(ReplicationException.class);
+  }
+
+  /**
+   * A multi-page entry that lost one page to a later reservation is refused as a whole: none of its other pages may be
+   * marked appended, or they would be exempt from the stale sweep and fenced until the next leadership change.
+   */
+  @Test
+  void aPartiallyReplacedEntryIsRefusedWithoutMarkingAnything() throws Exception {
+    final byte[] delayed = wal(1, new Page(3, 0, 1), new Page(4, 0, 1));
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(delayed), entry(1), localVersions);
+    backdate(DB, 3, 0, PageVersionLedger.STALE_RESERVATION_MS + 1);
+    backdate(DB, 4, 0, PageVersionLedger.STALE_RESERVATION_MS + 1);
+
+    // A newcomer takes page 4/0 over; page 3/0 still belongs to the delayed entry.
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(4, 0, 1))), entry(2), localVersions);
+    assertThat(ledger.confirmAppended(DB, PageVersionLedger.parse(delayed), entry(1))).isFalse();
+
+    // Page 3/0 was NOT marked appended by the refused confirmation: it is still stale and sweeps on the next touch.
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 1))), entry(3), localVersions);
+    assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(1);
+    assertThat(ledger.reservedPages(DB)).isEqualTo(2);
   }
 
   /**
