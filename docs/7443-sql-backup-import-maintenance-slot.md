@@ -184,3 +184,37 @@ Recording that, because a pass run by the author is worth less than one run by s
 | `server` ITs (`Issue7443SqlMaintenanceSlotIT`, `Issue7384ConcurrentRestoreIT`, `Issue6753ConcurrentBackupIT`, `ServerBackupDatabaseIT`, `ServerImportDatabaseIT`, `ServerRestoreDatabaseIT`, `ServerDefaultDatabasesIT`, `Issue7385RestoreProgressIT`) | 26/26 green |
 | `grpcw` unit suite | 240/240 green |
 | `gremlin` `ArcadeGraph*Test` (the other writers of the wrappers map) | green |
+
+## Review cycles
+
+### Cycle 1 - `8ad93e5858`
+
+The `claude` review found no correctness problem and confirmed the wiring end to end, including two
+things worth recording because they were assertions about this tree rather than opinions:
+
+* `ServerDatabase`'s `if (server != null)` guard is exercised, not defensive decoration -
+  `ha-raft`'s `ArcadeStateMachineBootstrapMismatchTest` constructs `new ServerDatabase(null, localDb)`
+  at two call sites. Verified by grep.
+* Nothing is left resolving the removed nested `BackupCoordinator.Operation`. Verified by the full
+  reactor `test-compile`.
+
+Applied:
+
+* **Import order in `ServerControlPlane`.** The new imports had landed between `JSONObject` and the
+  `server.backup` block. Sorted back into place. The other five touched files were checked too and were
+  already in order.
+
+Filed rather than fixed here:
+
+* **#7461** - `ImportDatabaseStatement` sets `result = FAIL` for an importer `IllegalArgumentException`
+  and then unconditionally overwrites it with `OK` two lines later, so the one failure the statement
+  means to report in-band is invisible to every client. Pre-existing and untouched by this PR; the fix
+  is a contract decision (in-band `FAIL` with a reason, or throw like every other failure on that path),
+  not a moved assignment.
+
+Not acted on, with the reason:
+
+* **The two gRPC `ABORTED` arms.** The review names the duplication and agrees it is inherent: the admin
+  RPCs and `ExecuteCommand` are different services with different mappers. Collapsing them means giving
+  `ArcadeDbGrpcAdminService` a dependency on `GrpcErrorMapper`'s ladder, which would change the status of
+  every other exception it maps. Both arms are pinned by `Issue7443GrpcMaintenanceSlotStatusTest`.
