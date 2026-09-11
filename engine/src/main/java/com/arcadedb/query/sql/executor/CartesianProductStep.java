@@ -149,9 +149,16 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
   /**
    * Moves the given level to its next row. When the level is exhausted, the level before it is advanced and this one is
-   * opened again for the new outer tuple; the loop covers a correlated level that answers no row for some outer tuples.
+   * opened again for the new outer tuple. The four cases, in the order the loop meets them:
+   * <ol>
+   *   <li>the level has a next row: bind it (and buffer it, when this is the first pass of an independent level)</li>
+   *   <li>an independent level answered no row at all on its first pass: the product is empty, answer so at once</li>
+   *   <li>the outermost level is exhausted: the product is complete</li>
+   *   <li>otherwise advance the level before, open this one again for the new outer tuple and loop: a correlated level
+   *       may answer no row for that tuple, in which case the loop backtracks once more</li>
+   * </ol>
    *
-   * @return false when the outermost level is exhausted, i.e. the product is complete
+   * @return false when the product is complete or empty
    */
   private boolean advance(final int level) {
     while (true) {
@@ -186,6 +193,11 @@ public class CartesianProductStep extends AbstractExecutionStep {
    * the buffered first pass afterwards, or a fresh execution when the level is correlated with the outer tuple.
    */
   private void open(final int level) {
+    // THE RESULT SET BEING REPLACED IS THE LIVE ONE OF A SUB-PLAN, EXHAUSTED OR SUPERSEDED: RELEASE WHAT ITS STEPS HOLD
+    final ResultSet previous = resultSets.get(level);
+    if (previous instanceof LocalResultSet)
+      previous.close();
+
     final Supplier<InternalExecutionPlan> factory = factories.get(level);
     if (factory != null) {
       // THE ROOT OF THE LEG READS $matched AS ITS SEED WHEN IT IS FIRST PULLED, WHICH LocalResultSet DOES RIGHT HERE. THE
@@ -204,6 +216,17 @@ public class CartesianProductStep extends AbstractExecutionStep {
       buffered.reset();
       resultSets.set(level, buffered);
     }
+  }
+
+  @Override
+  public void close() {
+    for (final ResultSet rs : resultSets)
+      if (rs != null)
+        rs.close();
+    for (int level = 0; level < subPlans.size(); level++)
+      if (factories.get(level) == null)
+        subPlans.get(level).close();
+    super.close();
   }
 
   private ResultInternal partialTuple(final int levels) {

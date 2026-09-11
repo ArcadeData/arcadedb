@@ -71,6 +71,13 @@ public class MatchFirstStep extends AbstractExecutionStep {
   }
 
   @Override
+  public void close() {
+    if (subResultSet != null)
+      subResultSet.close();
+    super.close();
+  }
+
+  @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
 
