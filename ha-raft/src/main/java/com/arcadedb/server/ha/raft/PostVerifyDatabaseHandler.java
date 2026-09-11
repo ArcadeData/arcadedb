@@ -488,7 +488,8 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     boolean complete = true;
     for (final File sealedFile : sealedFiles)
       try {
-        collectFileInfo(checksums, files, sealedFile.getName(), crcOf(sealedFile), sealedFile.length());
+        final SealedImage image = readSealedImage(sealedFile);
+        collectFileInfo(checksums, files, sealedFile.getName(), image.crc(), image.size());
       } catch (final Exception e) {
         // Reported rather than swallowed. A page file that cannot be read is skipped silently above, and that is
         // survivable there because the page enumeration is the same on every node; a sealed store that cannot be
@@ -502,16 +503,33 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     return complete;
   }
 
-  /** CRC32 of a whole file, streamed so a multi-gigabyte sealed store never lands in heap. */
-  private static long crcOf(final File file) throws IOException {
+  /** One sealed store's checksum and the number of bytes it was computed over. */
+  private record SealedImage(long crc, long size) {
+  }
+
+  /**
+   * CRC32 of a whole file and the size of what was CRC'd, from ONE open handle and streamed so a multi-gigabyte
+   * sealed store never lands in heap.
+   * <p>
+   * The two travel together deliberately (CodeRabbit on PR #7474). Taking the size from {@code File.length()}
+   * instead is a SECOND resolution of the path, and a sealed store is replaced by an atomic rename - by
+   * retention and downsampling, which do not take the compaction lock this handler holds, and on a follower by
+   * an install. So the pair could report a checksum of one version beside the size of another: individually
+   * correct values describing no file that ever existed, in a report whose whole purpose is to be compared.
+   * Counting the bytes actually read cannot disagree with the checksum computed over them.
+   */
+  private static SealedImage readSealedImage(final File file) throws IOException {
     final CRC32 crc = new CRC32();
     final byte[] buffer = new byte[8192];
+    long size = 0;
     try (final FileInputStream in = new FileInputStream(file)) {
       int read;
-      while ((read = in.read(buffer)) != -1)
+      while ((read = in.read(buffer)) != -1) {
         crc.update(buffer, 0, read);
+        size += read;
+      }
     }
-    return crc.getValue();
+    return new SealedImage(crc.getValue(), size);
   }
 
   /** Records one file's checksum in both shapes the response carries: the flat map peers compare, and the detail list. */
