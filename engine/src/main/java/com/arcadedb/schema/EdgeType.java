@@ -63,4 +63,23 @@ public interface EdgeType extends DocumentType {
    * ones, which is worth knowing before declaring it on a high-degree type.
    */
   boolean isUnique();
+
+  /**
+   * Whether {@code type}, or any type inheriting from it, stores its edges without a record of their own - i.e.
+   * whether a scan of {@code type}'s buckets can miss edges that the graph holds.
+   * <p>
+   * Every read path that resolves edges by type name rather than by walking a vertex has to ask this before
+   * trusting a record count or a bucket scan: the Cypher planner's count push-down, the SQL planner's, and the SQL
+   * type scan itself (issues #5071, #7477). A {@code null} type, or one that is not an edge type, answers false.
+   */
+  static boolean holdsLightweightEdges(final DocumentType type) {
+    if (type == null)
+      return false;
+    if (type instanceof EdgeType edgeType && edgeType.isLightweight())
+      return true;
+    for (final DocumentType subType : type.getSubTypes())
+      if (holdsLightweightEdges(subType))
+        return true;
+    return false;
+  }
 }

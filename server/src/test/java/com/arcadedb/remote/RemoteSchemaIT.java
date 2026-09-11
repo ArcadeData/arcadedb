@@ -124,6 +124,37 @@ class RemoteSchemaIT extends BaseGraphServerTest {
   }
 
   /**
+   * Issue #7477: {@link RemoteSchema} has always read {@code lightweight}, {@code bidirectional} and {@code unique}
+   * off the {@code schema:types} listing, but the listing did not emit any of them - so every edge type reached a
+   * remote client as a plain bidirectional one, and a client could not tell that a LIGHTWEIGHT type keeps no records
+   * (which is why its count reads 0 whatever the graph holds).
+   */
+  @Test
+  void edgeTypeFlagsSurviveTheRemoteSchemaListing() throws Exception {
+    testEachServer(serverIndex -> {
+      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+
+        database.command("sql", "CREATE EDGE TYPE LightEdge LIGHTWEIGHT UNIQUE");
+        database.command("sql", "CREATE EDGE TYPE PlainEdge");
+
+        final EdgeType light = (EdgeType) database.getSchema().getType("LightEdge");
+        assertThat(light.isLightweight()).isTrue();
+        assertThat(light.isUnique()).isTrue();
+        assertThat(light.isBidirectional()).isTrue();
+
+        final EdgeType plain = (EdgeType) database.getSchema().getType("PlainEdge");
+        assertThat(plain.isLightweight()).isFalse();
+        assertThat(plain.isUnique()).isFalse();
+        assertThat(plain.isBidirectional()).isTrue();
+
+        database.getSchema().dropType("LightEdge");
+        database.getSchema().dropType("PlainEdge");
+      }
+    });
+  }
+
+  /**
    * Issue #4552: getBuckets() / getBucketByName() must trigger the lazy schema load instead of
    * throwing a NullPointerException on a fresh RemoteDatabase whose schema has not been loaded yet.
    */
