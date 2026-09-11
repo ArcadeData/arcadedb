@@ -20,8 +20,10 @@ package com.arcadedb.server.backup;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Set;
+import java.util.EnumSet;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -51,6 +53,20 @@ import java.util.regex.Pattern;
  * This is an admission policy, not the integrity guarantee. A backup started outside this server (the CLI, another
  * node writing into a shared directory) cannot be seen from here; what keeps THAT from corrupting an archive is
  * {@code FullBackupFormat} creating the target file atomically, so the loser of any race fails before it writes.
+ * <h2>Restores and imports</h2>
+ * The slot admits more than backups now. A restore is the one operation that <i>destroys</i> a database directory -
+ * it restores into a temporary sibling and then drops the target and moves the temporary one over it - and it used to
+ * take nothing at all, so two restores of one database both passed the existence pre-check and both reached the swap,
+ * and a restore could drop the directory a backup was reading (issue #7384). Restores and imports therefore take the
+ * same per-database slot, and {@link Operation} says which one holds it so the refusal can name it.
+ * <p>
+ * Two operations on one database conflict unless they are a backup and an import: those two coexist by construction,
+ * because an import is ordinary transactions against a live database and backing a live database up is what the
+ * auto-backup schedule does all day. Everything else is refused - see {@link Operation#conflictsWith}.
+ * <p>
+ * The class name predates restores and is kept so that the callers and tests written against
+ * {@code getBackupCoordinator()} keep compiling; what it coordinates is now every whole-database maintenance
+ * operation this server runs, not only backups.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -64,26 +80,139 @@ public class BackupCoordinator {
   private static final Pattern           ARCHIVE_NAME_PATTERN     = Pattern.compile(".*-backup-(\\d{8})-(\\d{6}(?:\\d{3})?)\\.zip$");
   private static final DateTimeFormatter ARCHIVE_TIMESTAMP_PARSER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss[SSS]");
 
-  private final Set<String> inProgress = ConcurrentHashMap.newKeySet();
+  /**
+   * The whole-database maintenance operations that share one per-database slot.
+   * <p>
+   * {@link #conflictsWith} is the whole admission policy: two operations on one database exclude each other unless
+   * one is a {@link #BACKUP} and the other an {@link #IMPORT}. A restore excludes everything because it drops and
+   * replaces the database directory; a backup excludes another backup because two full backups of one database read
+   * and compress the same data twice for one usable archive (issue #6753); an import excludes another import because
+   * an import creates the database it loads into, so the second one could not have created it anyway.
+   */
+  public enum Operation {
+    BACKUP("back up", "a backup"), RESTORE("restore", "a restore"), IMPORT("import", "an import");
+
+    private final String verb;
+    private final String phrase;
+
+    Operation(final String verb, final String phrase) {
+      this.verb = verb;
+      this.phrase = phrase;
+    }
+
+    /**
+     * The operation as a verb, for "Cannot back up database 'x'". Carried rather than derived from the enum
+     * constant, because the verb for a backup is two words.
+     */
+    public String verb() {
+      return verb;
+    }
+
+    /**
+     * The operation's name with its indefinite article, for "... a restore of it is already in progress". Carried
+     * rather than derived, because "a import" is what deriving it produces.
+     */
+    public String phrase() {
+      return phrase;
+    }
+
+    /**
+     * Whether an operation of this kind, already running on a database, refuses one of kind {@code other} on the
+     * same database.
+     */
+    public boolean conflictsWith(final Operation other) {
+      return this == other || this == RESTORE || other == RESTORE;
+    }
+  }
 
   /**
-   * Reserves this database for a backup. Returns {@code false} when one is already running, in which case the caller
-   * must not start a backup and must not call {@link #end(String)}.
+   * The operations currently running per database. A value is never an empty set - the entry is removed instead -
+   * so {@code containsKey} answers "is anything running on it".
+   * <p>
+   * {@link EnumSet} is exact here rather than merely convenient: every kind conflicts with itself, so at most one
+   * operation of each kind is ever admitted for one database and a set needs no multiplicity.
+   * <p>
+   * Every value is replaced rather than mutated in place, so a set a reader has already been handed is never written
+   * to by another thread: {@code EnumSet} is not thread-safe, and {@link #isInProgress(String, Operation)} reads one
+   * outside the map's own per-entry lock.
+   */
+  private final Map<String, EnumSet<Operation>> inProgress = new ConcurrentHashMap<>();
+
+  /**
+   * Reserves this database for a backup. Returns {@code false} when a backup, restore or import of it is already
+   * running, in which case the caller must not start a backup and must not call {@link #end(String)}.
+   * <p>
+   * The shorthand every backup entry point uses. {@link #begin(String, Operation)} is the same reservation for a
+   * caller that wants to name the operation already holding the slot in its refusal.
    */
   public boolean begin(final String databaseName) {
-    return inProgress.add(databaseName);
+    return begin(databaseName, Operation.BACKUP) == null;
   }
 
   /**
-   * Releases the reservation taken by a successful {@link #begin(String)}. Always call it from a {@code finally}: a
-   * reservation leaked by a failed backup would block every later backup of that database until the server restarts.
+   * Reserves this database for {@code operation}.
+   * <p>
+   * When more than one operation is running - which only {@link Operation#BACKUP} and {@link Operation#IMPORT}
+   * together can be - the one named is whichever the iteration reaches first, not a ranking: both refuse the caller
+   * equally, and the message is true of either.
+   *
+   * @return {@code null} when the reservation was taken - the caller must then release it with
+   * {@link #end(String, Operation)} from a {@code finally} - or the operation already running that refuses this one.
    */
-  public void end(final String databaseName) {
-    inProgress.remove(databaseName);
+  public Operation begin(final String databaseName, final Operation operation) {
+    final AtomicReference<Operation> conflict = new AtomicReference<>();
+
+    inProgress.compute(databaseName, (name, running) -> {
+      if (running == null)
+        return EnumSet.of(operation);
+
+      for (final Operation active : running)
+        if (active.conflictsWith(operation)) {
+          conflict.set(active);
+          return running;
+        }
+
+      final EnumSet<Operation> updated = EnumSet.copyOf(running);
+      updated.add(operation);
+      return updated;
+    });
+
+    return conflict.get();
   }
 
+  /**
+   * Releases the backup reservation taken by a successful {@link #begin(String)}. Always call it from a
+   * {@code finally}: a reservation leaked by a failed backup would block every later backup of that database until
+   * the server restarts.
+   */
+  public void end(final String databaseName) {
+    end(databaseName, Operation.BACKUP);
+  }
+
+  /**
+   * Releases the reservation a successful {@link #begin(String, Operation)} took. Always call it from a
+   * {@code finally}: a leaked reservation blocks every later operation of that database until the server restarts.
+   */
+  public void end(final String databaseName, final Operation operation) {
+    inProgress.computeIfPresent(databaseName, (name, running) -> {
+      if (!running.contains(operation))
+        return running;
+
+      final EnumSet<Operation> updated = EnumSet.copyOf(running);
+      updated.remove(operation);
+      return updated.isEmpty() ? null : updated;
+    });
+  }
+
+  /** Whether any backup, restore or import of this database is currently running. */
   public boolean isInProgress(final String databaseName) {
-    return inProgress.contains(databaseName);
+    return inProgress.containsKey(databaseName);
+  }
+
+  /** Whether an operation of this kind is currently running on this database. */
+  public boolean isInProgress(final String databaseName, final Operation operation) {
+    final EnumSet<Operation> running = inProgress.get(databaseName);
+    return running != null && running.contains(operation);
   }
 
   /**

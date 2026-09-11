@@ -306,15 +306,16 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * {@code trigger backup <database>}. A backup already running for the same database is a 409 here
-   * and an {@code ABORTED} on gRPC; both carry the message the shared implementation raised.
+   * {@code trigger backup <database>}. A backup - or, since #7384, a restore - already running for the
+   * same database is a 409 here and an {@code ABORTED} on gRPC; both carry the message the shared
+   * implementation raised.
    */
   private ExecutionResponse triggerBackup(final String databaseName) {
     try {
       final JSONObject result = controlPlane.triggerBackup(databaseName);
       Metrics.counter("http.trigger-backup").increment();
       return new ExecutionResponse(200, result.toString());
-    } catch (final ServerControlPlane.BackupInProgressException e) {
+    } catch (final ServerControlPlane.OperationInProgressException e) {
       return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
     }
   }

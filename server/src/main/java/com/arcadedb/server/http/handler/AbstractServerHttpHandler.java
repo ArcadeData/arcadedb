@@ -743,6 +743,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
+    // 409 Conflict: a backup, restore or import of this database is already running, and the per-database slot
+    // BackupCoordinator hands out refused this one. The request is well formed and authorized, and retrying once
+    // the other operation finishes is the fix - so it is a conflict, not a 500. 'trigger backup' answered this in
+    // its own handler long before; the arm is here so 'restore database', 'restore backup' and 'import database'
+    // answer it too rather than falling through to the generic internal-error arm (issue #7384).
+    final ServerControlPlane.OperationInProgressException inProgress = firstOf(e, cause,
+            ServerControlPlane.OperationInProgressException.class);
+    if (inProgress != null) {
+      logUserError(inProgress);
+      sendErrorResponse(exchange, 409, "Cannot execute command", inProgress, null);
+      return;
+    }
+
     // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
     // server-availability problem. 503 told clients/load balancers the request was retry-worthy, amplifying the
     // bad write. See issue #4350.
