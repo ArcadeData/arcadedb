@@ -119,8 +119,19 @@ class WebSocketConcurrentSendersIT extends BaseGraphServerTest {
       // its create events again, so the stream may carry more than the rows that ended up durable.
       assertThat(events).isGreaterThanOrEqualTo(expectedEvents);
 
-      final JSONObject committed = new JSONObject(client.send(new JSONObject().put("action", "commit")
-          .put("sessionId", sessionId).toString()));
+      // The loop above stops as soon as the counts match, but a retried chunk's events can still be in flight, so the
+      // next frame is not necessarily the commit reply: skip change events until a frame with an action arrives.
+      client.sendWithoutWaiting(new JSONObject().put("action", "commit").put("sessionId", sessionId).toString());
+      JSONObject committed = null;
+      while ((frame = client.popMessage(5_000)) != null) {
+        final JSONObject json = new JSONObject(frame);
+        if (json.has("action")) {
+          committed = json;
+          break;
+        }
+        assertThat(json.has("changeType")).as("only change events may precede the commit reply: " + frame).isTrue();
+      }
+      assertThat(committed).as("no commit reply arrived").isNotNull();
       assertThat(committed.getString("action", "")).isEqualTo("committed");
       assertThat(committed.getJSONObject("summary").getLong("inserted", -1)).isEqualTo(CHUNKS * ROWS_PER_CHUNK);
     }
