@@ -194,3 +194,32 @@ Checked and **not** real:
   `aLimitAtOrAboveTheObjectCountImportsEverything`, which also covers a limit the source never reaches.
 - *"Breaking one event earlier skips `waitCompletion()` / `endParsing()`."* No: both sit after the loop,
   not inside it (`load():203`, `analyze():355`), and the 372-test module run is green.
+
+## Review cycles
+
+### Cycle 1 - `f09ccbd`
+
+`claude` reviewed the commit and closed with "correct, minimal, well-tested fix [...] Nothing blocking." It
+confirmed the root cause from the source (the increment and `createRecord(...)` are in the same
+`if (nestLevel == objectNestLevel)` block, both ahead of the bottom-of-loop check), confirmed the disabled
+(`0`) case and the limit-at-or-above-count case are unaffected, and endorsed filing #7482 and #7485 rather
+than folding them in. It also noted it could not run `mvn` in its sandbox, so its pass was a code read.
+
+One nit, **applied**: the two CLI tests built their argument array with
+`("-documents file://" + path + " ...").split(" ")` against an absolute path, which would mis-tokenise on a
+checkout directory containing a space. Both now pass a literal `new String[] { ... }` to `Importer`, which
+removes the hazard entirely. Not manufactured into a space-containing path in the test itself: that would
+be exercising URL handling rather than the limit, and a pre-existing limitation there would turn this PR
+red for an unrelated reason.
+
+Two remarks recorded and **not** acted on, with reasons:
+
+- *"the tracking doc is 196 lines, the bulk of the diff, for a two-character fix."* Observation, not a
+  request - the reviewer says it follows the repo's existing `docs/<issue>-<slug>.md` convention and
+  raises no objection. The line count is the completeness sweep the workflow requires; shrinking it would
+  delete the evidence for the "argued" rows.
+- *"could not run mvn."* Nothing to act on in the branch. The numbers in this doc come from runs in this
+  worktree, not from the reviewer's sandbox.
+
+No inline review comments and no `pulls/7486/reviews` entries were posted on this commit; CodeRabbit's only
+comment was its in-progress status notice.

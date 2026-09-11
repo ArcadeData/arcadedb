@@ -239,7 +239,10 @@ class XMLImporterFormatParsingLimitTest {
     FileUtils.deleteRecursively(new File(cliDbPath));
 
     try {
-      new Importer(("-documents file://" + source + " -database " + cliDbPath + " -parsingLimitEntries 2").split(" ")).load();
+      // THE ARGUMENT ARRAY IS BUILT RATHER THAN SPLIT ON " ": source IS AN ABSOLUTE PATH UNDER THE MODULE'S target/,
+      // AND A CHECKOUT DIRECTORY CONTAINING A SPACE WOULD MAKE split(" ") MIS-TOKENISE THE -documents ARGUMENT
+      new Importer(new String[] { "-documents", "file://" + source, "-database", cliDbPath, "-parsingLimitEntries", "2" })
+          .load();
 
       try (final Database cliDatabase = new DatabaseFactory(cliDbPath).open()) {
         assertThat(countOf(cliDatabase, "item"))
@@ -270,7 +273,9 @@ class XMLImporterFormatParsingLimitTest {
     FileUtils.deleteRecursively(new File(cliDbPath));
 
     try {
-      new Importer(("-documents file://" + source + " -database " + cliDbPath + " -analyzingLimitEntries 2").split(" ")).load();
+      // SEE THE COMMENT IN theCliRouteAppliesTheLimitAsACap(): NOT split(" "), SO A PATH WITH A SPACE STILL WORKS
+      new Importer(new String[] { "-documents", "file://" + source, "-database", cliDbPath, "-analyzingLimitEntries", "2" })
+          .load();
 
       try (final Database cliDatabase = new DatabaseFactory(cliDbPath).open()) {
         assertThat(cliDatabase.getSchema().existsType("item")).isTrue();
