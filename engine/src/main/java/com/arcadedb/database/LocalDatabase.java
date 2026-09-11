@@ -117,7 +117,6 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -128,6 +127,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1039,18 +1039,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void registerCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
-    final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new ArrayList<>());
+    // COPY-ON-WRITE: SCHEMA_AFTER_FILE_CHANGES FIRES ON EVERY DDL (#7457), SO A CALLBACK REGISTERED OR REMOVED FROM
+    // ANOTHER THREAD MUST NOT RACE THE ITERATION IN executeCallbacks
+    final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new CopyOnWriteArrayList<>());
     callbacks.add(callback);
   }
 
   @Override
   public void unregisterCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
-    final List<Callable<Void>> callbacks = this.callbacks.get(event);
-    if (callbacks != null) {
+    this.callbacks.computeIfPresent(event, (k, callbacks) -> {
       callbacks.remove(callback);
-      if (callbacks.isEmpty())
-        this.callbacks.remove(event);
-    }
+      return callbacks.isEmpty() ? null : callbacks;
+    });
   }
 
   @Override
