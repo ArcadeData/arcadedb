@@ -1911,6 +1911,13 @@ public class SelectExecutionPlanner {
       if (handleEdgeTypeWithVertexRidFilter(plan, docType, info, context))
         return;
 
+      // effectiveClusters is deliberately not passed on, unlike every other branch below. It narrows the EDGE
+      // type's own buckets, and the edges this step returns are not in them - they are in the vertices. For a
+      // purely lightweight type the narrowing is vacuous twice over: the buckets are empty, and partition pruning
+      // (the only thing that narrows a plain type target) needs partition PROPERTIES, which such a type cannot
+      // have. For a non-lightweight supertype scanned with a lightweight subtype under it, the pruning is a lost
+      // optimisation on the record half and not a wrong answer: the WHERE clause that enabled the pruning is left
+      // un-consumed here, so handleWhere() filters those rows out downstream regardless (PR #7478 review).
       plan.chain(new FetchFromLightweightEdgeTypeStep(identifier.getStringValue(), context));
       return;
     }
