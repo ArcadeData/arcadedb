@@ -26,6 +26,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
@@ -106,6 +108,19 @@ public class ArcadeDBServer {
    * must not be registered at startup, nor exposed through the server/cluster status APIs.
    */
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
+
+  /**
+   * The two steps the startup {@code restore:} command publishes - {@link RestoreProgress#STEP_EXTRACT} then
+   * {@link RestoreProgress#STEP_ACTIVATE}. One fewer than {@code ServerControlPlane.performRestore}'s three:
+   * this command restores straight into the final directory, so there is no temporary directory to swap in, and
+   * it forces no cluster snapshot (issue #7440).
+   */
+  private static final int    STARTUP_RESTORE_STEPS     = 2;
+  /**
+   * The label the startup restore is published under. The same one the HTTP/gRPC {@code restore database} verb
+   * uses, because it is the same operation seen from a different transport.
+   */
+  private static final String STARTUP_RESTORE_OPERATION = "restore database";
 
   /**
    * How long the shutdown hook waits for the lifecycle lock when the server is still {@code STARTING} and has not
@@ -1485,27 +1500,8 @@ public class ArcadeDBServer {
                 // to keep than to reason about the exception).
                 removeDatabase(dbName);
               }
-              final String dbPath =
-                  configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
-//              new Restore(commandParams, dbPath).restoreDatabase();
-
-              try {
-                final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-                final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(commandParams,
-                    dbPath);
-
-                clazz.getMethod("restoreDatabase").invoke(restorer);
-
-              } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException |
-                             InstantiationException e) {
-                throw new CommandExecutionException("""
-                    Error on restoring database, restore libs not found in \
-                    classpath""", e);
-              } catch (final InvocationTargetException e) {
-                throw new CommandExecutionException("Error on restoring database", e.getTargetException());
-              }
-
-              getDatabase(dbName);
+              restoreDatabaseFromStartupCommand(dbName, commandParams,
+                  configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName);
               break;
 
             case "import":
@@ -1533,6 +1529,59 @@ public class ArcadeDBServer {
           }
         }
       }
+    }
+  }
+
+  /**
+   * Executes the {@code restore:} startup command of {@link GlobalConfiguration#SERVER_DEFAULT_DATABASES}:
+   * restores {@code url} into {@code databasePath}, opens the result, and publishes an {@link OperationProgress}
+   * for the whole of it (issue #7440).
+   * <p>
+   * Issue #7385 gave that publication to the four transports that reach
+   * {@code ServerControlPlane.performRestore} - HTTP {@code restore database}, HTTP {@code restore backup} and
+   * the two matching gRPC RPCs. This command does not go through the control plane and was the one left silent,
+   * although it is at least as worth watching: {@link #start()} calls {@code httpServer.startService()} before
+   * {@code loadDefaultDatabases()}, and {@code GetProgressHandler} reads only the lock-free registry snapshot
+   * (no database access), so a poll of {@code GET /api/v1/progress/&#123;database&#125;} that lands while a
+   * container is restoring a large archive at boot is served - and used to answer "nothing running" about the
+   * very database being built. Always retired in the {@code finally}, on failure as on success.
+   * <p>
+   * Two steps rather than {@code performRestore}'s three: this command restores straight into the final
+   * directory, so there is no temporary directory to swap in, and it does not force a cluster snapshot.
+   * <p>
+   * Package-private rather than private so a test can drive it with a real archive: the alternative is racing a
+   * full server boot, which is not a way to observe anything mid-flight.
+   *
+   * @param databaseName the database being restored, and the key the progress is published under
+   * @param url          the archive URL exactly as the operator wrote it after {@code restore:}
+   * @param databasePath the directory the archive is restored into
+   */
+  void restoreDatabaseFromStartupCommand(final String databaseName, final String url, final String databasePath) {
+    final OperationProgress progress = OperationProgressRegistry.instance()
+        .register(databaseName, STARTUP_RESTORE_OPERATION);
+    progress.onProgress(RestoreProgress.STEP_EXTRACT, 1, STARTUP_RESTORE_STEPS, 0, -1);
+    try {
+      final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
+      final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, databasePath);
+      RestoreProgress.installCallback(clazz, restorer, progress, STARTUP_RESTORE_STEPS);
+
+      clazz.getMethod("restoreDatabase").invoke(restorer);
+
+      progress.onProgress(RestoreProgress.STEP_ACTIVATE, 2, STARTUP_RESTORE_STEPS, 0, -1);
+      getDatabase(databaseName);
+    } catch (final InvocationTargetException e) {
+      throw new CommandExecutionException("Error on restoring database", e.getTargetException());
+    } catch (final ReflectiveOperationException e) {
+      // Everything the block above can throw that is NOT an InvocationTargetException means the optional
+      // arcadedb-integration module is absent or does not match: ClassNotFoundException, NoSuchMethodException,
+      // IllegalAccessException, InstantiationException. Caught by their common supertype so this arm reads the
+      // same as ServerControlPlane.performRestore's; the block reflects on no field, so NoSuchFieldException -
+      // the only other subtype - cannot arise here and nothing new is swallowed.
+      throw new CommandExecutionException("""
+          Error on restoring database, restore libs not found in \
+          classpath""", e);
+    } finally {
+      OperationProgressRegistry.instance().unregister(progress);
     }
   }
 
