@@ -39,12 +39,23 @@ import java.util.concurrent.TimeUnit;
  * {@code ServerImpl} applies them to every call whatever order the services were added in - so the two are installed
  * together here rather than per service.
  * <p>
- * It also carries the connection-lifetime bound the Raft listener otherwise has none of (issue #7316). Neither of the
- * two surfaces above can close a connection: {@code ServerTransportFilter} is handed no reference to the transport it
- * admits, and a {@code ServerCall} reaches only its own HTTP/2 stream. So a peer whose reach a revocation took away
- * kept its socket until something else dropped it. The only knobs gRPC exposes for that are builder-wide, and
- * {@code GrpcServicesImpl.newNettyServerBuilder} sets none of them, which is why this customizer is where the window
- * is applied.
+ * It also carries the connection-lifetime bounds the Raft listener otherwise has none of (issues #7316, #7339).
+ * Neither of the two surfaces above can close a connection: {@code ServerTransportFilter} is handed no reference to
+ * the transport it admits, and a {@code ServerCall} reaches only its own HTTP/2 stream. So a peer whose reach a
+ * revocation took away kept its socket until something else dropped it. The only knobs gRPC exposes for that are
+ * builder-wide, and {@code GrpcServicesImpl.newNettyServerBuilder} sets none of them, which is why this customizer is
+ * where the windows are applied.
+ * <p>
+ * The two windows answer different halves of the same question, and a deployment can want either, both or neither:
+ * <ul>
+ * <li>{@code maxConnectionIdle} (#7316) is measured from the moment the connection's last RPC finished, so it reaps
+ * the connections that went quiet and never touches one that is carrying traffic - including the leader's
+ * {@code AppendEntries} stream, which is why it was safe to default it on.</li>
+ * <li>{@code maxConnectionAge} (#7339) is armed once, when the connection is established, and fires on schedule
+ * whatever the connection is carrying. It is the only bound that closes a peer which keeps <i>starting</i> RPCs: each
+ * one opens and closes an HTTP/2 stream and pushes the idle deadline forward by the whole window, refused ones
+ * included. It recycles healthy connections on the same period, so it defaults to off.</li>
+ * </ul>
  */
 final class RaftGrpcServicesCustomizer implements GrpcServices.Customizer {
 
@@ -54,16 +65,26 @@ final class RaftGrpcServicesCustomizer implements GrpcServices.Customizer {
   private final ServerTransportFilter[] filters;
   private final ServerInterceptor[]     interceptors;
   private final long                    maxConnectionIdleMs;
+  private final long                    maxConnectionAgeMs;
+  private final long                    maxConnectionAgeGraceMs;
 
   /**
-   * @param maxConnectionIdleMs how long a connection may carry no RPC before the server closes it, or {@code 0} or
-   *                            less to leave connections unbounded, which is what Ratis does on its own
+   * @param maxConnectionIdleMs     how long a connection may carry no RPC before the server closes it, or {@code 0}
+   *                                or less to leave the idle window unbounded, which is what Ratis does on its own
+   * @param maxConnectionAgeMs      how long a connection may live whatever it is carrying, or {@code 0} or less to
+   *                                leave its age unbounded
+   * @param maxConnectionAgeGraceMs how long the RPCs still running on a connection that reached that age have to
+   *                                finish; read only when {@code maxConnectionAgeMs} is positive, and clamped at 0
+   *                                so a negative value from a configuration file cannot throw out of
+   *                                {@code NettyServerBuilder.maxConnectionAgeGrace}'s argument check at startup
    */
   RaftGrpcServicesCustomizer(final ServerTransportFilter[] filters, final ServerInterceptor[] interceptors,
-      final long maxConnectionIdleMs) {
+      final long maxConnectionIdleMs, final long maxConnectionAgeMs, final long maxConnectionAgeGraceMs) {
     this.filters = filters == null ? NO_FILTERS : filters;
     this.interceptors = interceptors == null ? NO_INTERCEPTORS : interceptors;
     this.maxConnectionIdleMs = maxConnectionIdleMs;
+    this.maxConnectionAgeMs = maxConnectionAgeMs;
+    this.maxConnectionAgeGraceMs = Math.max(0L, maxConnectionAgeGraceMs);
   }
 
   @Override
@@ -78,6 +99,16 @@ final class RaftGrpcServicesCustomizer implements GrpcServices.Customizer {
     // anything from 1000 days up as "disabled", so the only value handled here is the one that means off.
     if (maxConnectionIdleMs > 0)
       result = result.maxConnectionIdle(maxConnectionIdleMs, TimeUnit.MILLISECONDS);
+    // The age bound (#7339): the idle window above is pushed forward by every RPC, so it never closes a peer that
+    // keeps starting them. This one is armed once, in NettyServerHandler.handlerAdded, and fires on schedule.
+    // The grace is always passed alongside it rather than left at gRPC's default, which is infinite: under an
+    // infinite grace a connection carrying a stream that does not end - which is exactly what a leader's
+    // AppendEntries is - would wait out its GOAWAY forever, and the bound would not bound. gRPC still reads a
+    // CONFIGURED grace of 1000 days or more as infinite (AS_LARGE_AS_INFINITE), which the setting's description
+    // says; what this line rules out is arriving there by not setting it.
+    if (maxConnectionAgeMs > 0)
+      result = result.maxConnectionAge(maxConnectionAgeMs, TimeUnit.MILLISECONDS)
+          .maxConnectionAgeGrace(maxConnectionAgeGraceMs, TimeUnit.MILLISECONDS);
     return result;
   }
 }

@@ -2185,8 +2185,9 @@ public enum GlobalConfiguration {
       already-established connection still gave it: the Raft RPCs running on that connection are closed with \
       a permission error and later ones are refused. gRPC exposes no way to close one established transport on \
       demand, so the connection itself goes when it falls idle, after arcadedb.ha.grpcMaxConnectionIdleMs - or \
-      never, if that window is set to 0. Does not provide peer identity or encryption: use mTLS on untrusted \
-      networks.""",
+      never, if that window is set to 0 or if the peer keeps retrying, since a refused RPC restarts the idle \
+      window too. arcadedb.ha.grpcMaxConnectionAgeMs bounds such a connection's life regardless. Does not \
+      provide peer identity or encryption: use mTLS on untrusted networks.""",
       Boolean.class, true),
 
   HA_GRPC_ALLOWLIST_REFRESH_MS("arcadedb.ha.grpcAllowlistRefreshMs", SCOPE.SERVER,
@@ -2228,6 +2229,35 @@ public enum GlobalConfiguration {
       next call. Values below one second are raised to one second by gRPC. Set to 0 to leave connections unbounded, \
       which is the behaviour before 26.10.1.""",
       Long.class, 300_000L),
+
+  HA_GRPC_MAX_CONNECTION_AGE_MS("arcadedb.ha.grpcMaxConnectionAgeMs", SCOPE.SERVER,
+      """
+      How long in milliseconds an inbound Raft gRPC connection may live before the server closes it with a \
+      graceful GOAWAY, whatever it is carrying. Unlike arcadedb.ha.grpcMaxConnectionIdleMs, which gRPC measures \
+      from the moment the connection's last RPC finished, this timer is armed once when the connection is \
+      established and fires on schedule, so it also closes a connection that is never idle. That is the case the \
+      idle window cannot reach (issue #7339): every RPC opens and closes an HTTP/2 stream and pushes the idle \
+      deadline forward by the whole window, including the RPCs a revoked peer gets PERMISSION_DENIED for, so a \
+      removed peer that keeps campaigning - or a squatter keeping the connection busy on purpose - holds its \
+      socket open indefinitely. \
+      The price is that this recycles healthy connections on the same period: a leader's AppendEntries stream to \
+      each follower is torn down at the end of arcadedb.ha.grpcMaxConnectionAgeGraceMs and re-established, once \
+      per period per peer. Default is 0, which leaves connections unbounded in age and is the behaviour of every \
+      release; a value below one second is raised to one second by gRPC, and gRPC applies a random +/-10% jitter \
+      per connection, so the configured value is a centre rather than a deadline. Set it well above the Raft \
+      election timeout of the cluster it runs on.""",
+      Long.class, 0L),
+
+  HA_GRPC_MAX_CONNECTION_AGE_GRACE_MS("arcadedb.ha.grpcMaxConnectionAgeGraceMs", SCOPE.SERVER,
+      """
+      How long in milliseconds the RPCs still running on a connection that reached \
+      arcadedb.ha.grpcMaxConnectionAgeMs have to finish before the connection is closed underneath them. Read \
+      only when that setting is non-zero. Set to 0 to cancel them at the age boundary instead. gRPC's own \
+      default for this grace is infinite, which is not offered here: a leader's AppendEntries to a follower is \
+      one long-lived stream that does not end on its own, so an infinite grace would stop the age bound from \
+      bounding the very connection it exists for. A negative value is treated as 0, and a value of 1000 days or \
+      more is read by gRPC itself as infinite, which puts the age bound back where it was.""",
+      Long.class, 5_000L),
 
   HA_TLS_ENABLED("arcadedb.ha.tls.enabled", SCOPE.SERVER,
       """
