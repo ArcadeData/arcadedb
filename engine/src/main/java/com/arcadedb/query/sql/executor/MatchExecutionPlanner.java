@@ -117,7 +117,10 @@ public class MatchExecutionPlanner {
 
     final SelectExecutionPlan result = new SelectExecutionPlan(context,  limit != null ? limit.getValue(context):0);
     final Map<String, Long> estimatedRootEntries = estimateRootEntries(aliasTypes, aliasBuckets, aliasRids, aliasFilters, context);
-    final Set<String> aliasesToPrefetch = estimatedRootEntries.entrySet().stream().filter(x -> x.getValue() < threshold)
+    // A NODE WHOSE where: READS ANOTHER ALIAS THROUGH $matched CANNOT BE PREFETCHED: THE PREFETCH RUNS BEFORE ANY ALIAS IS
+    // BOUND, SO THE PREDICATE WOULD BE FALSE FOR EVERY CANDIDATE AND THE STATEMENT WOULD SILENTLY ANSWER NOTHING (ISSUE #7434)
+    final Set<String> aliasesToPrefetch = estimatedRootEntries.entrySet().stream()
+        .filter(x -> x.getValue() < threshold && matchedDependencies(aliasFilters.get(x.getKey())).isEmpty())
         .map(x -> x.getKey()).collect(Collectors.toSet());
     if (estimatedRootEntries.containsValue(0L)) {
       result.chain(new EmptyStep(context));
@@ -128,12 +131,19 @@ public class MatchExecutionPlanner {
 
     if (subPatterns.size() > 1) {
       final CartesianProductStep step = new CartesianProductStep(context);
-      for (final Pattern subPattern : subPatterns) {
-        step.addSubPlan(createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch));
+      final List<Boolean> correlatedSubPatterns = orderSubPatternsByDependencies();
+      for (int i = 0; i < subPatterns.size(); i++) {
+        final Pattern subPattern = subPatterns.get(i);
+        final boolean correlated = correlatedSubPatterns.get(i);
+        final InternalExecutionPlan subPlan = createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch,
+            correlated);
+        // A CORRELATED LEG IS PLANNED AGAIN FOR EVERY OUTER TUPLE: THE FETCH AND FILTER STEPS OF ITS ROOT SELECT DO NOT RESTART
+        step.addSubPlan(subPlan,
+            correlated ? () -> createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch, true) : null);
       }
       result.chain(step);
     } else {
-      final InternalExecutionPlan plan = createPlanForPattern(pattern, context, estimatedRootEntries, aliasesToPrefetch);
+      final InternalExecutionPlan plan = createPlanForPattern(pattern, context, estimatedRootEntries, aliasesToPrefetch, false);
       for (final ExecutionStep step : plan.getSteps()) {
         result.chain((ExecutionStepInternal) step);
       }
@@ -144,6 +154,8 @@ public class MatchExecutionPlanner {
     if (foundOptional) {
       result.chain(new RemoveEmptyOptionalsStep(context));
     }
+
+    result.chain(new MatchBindMatchedStep(context));
 
     if (returnElements || returnPaths || returnPatterns || returnPathElements) {
       addReturnStep(result, context);
@@ -277,8 +289,12 @@ public class MatchExecutionPlanner {
     }
   }
 
+  /**
+   * @param correlated true when the pattern is a disjoint sub-pattern that reads, through {@code $matched}, an alias bound
+   *                   by another sub-pattern, so its root must extend the outer tuple the cartesian product runs it for
+   */
   private InternalExecutionPlan createPlanForPattern(final Pattern pattern, final CommandContext context,
-      final Map<String, Long> estimatedRootEntries, final Set<String> prefetchedAliases) {
+      final Map<String, Long> estimatedRootEntries, final Set<String> prefetchedAliases, final boolean correlated) {
     final SelectExecutionPlan plan = new SelectExecutionPlan(context,  limit != null ? limit.getValue(context):0);
     final List<EdgeTraversal> sortedEdges = getTopologicalSortedSchedule(estimatedRootEntries, pattern);
 
@@ -301,7 +317,7 @@ public class MatchExecutionPlanner {
         final EdgeTraversal edge = sortedEdges.get(i);
 
         if (first) {
-          addStepsFor(plan, edge, context, true);
+          addStepsFor(plan, edge, context, true, correlated);
           first = false;
           i++;
           continue;
@@ -313,7 +329,7 @@ public class MatchExecutionPlanner {
           plan.chain(new MatchGAVFusedStep(context, chain, chain.get(0).gavProvider));
           i += chain.size();
         } else {
-          addStepsFor(plan, edge, context, false);
+          addStepsFor(plan, edge, context, false, correlated);
           i++;
         }
       }
@@ -321,7 +337,7 @@ public class MatchExecutionPlanner {
       final PatternNode node = pattern.getAliasToNode().values().iterator().next();
       if (prefetchedAliases.contains(node.alias)) {
         //from prefetch
-        plan.chain(new MatchFirstStep(context, node));
+        plan.chain(new MatchFirstStep(context, node, null, correlated));
       } else {
         //from actual execution plan
         final String typez = aliasTypes.get(node.alias);
@@ -329,7 +345,7 @@ public class MatchExecutionPlanner {
         final Rid rid = aliasRids.get(node.alias);
         final WhereClause filter = aliasFilters.get(node.alias);
         final SelectStatement select = createSelectStatement(typez, bucket, rid, filter);
-        plan.chain(new MatchFirstStep(context, node, select.createExecutionPlan(context)));
+        plan.chain(new MatchFirstStep(context, node, select.createExecutionPlan(context), correlated));
       }
     }
     return plan;
@@ -353,6 +369,10 @@ public class MatchExecutionPlanner {
     for (int i = startIdx; i < edges.size(); i++) {
       final EdgeTraversal et = edges.get(i);
       if (!isFusibleEdge(et))
+        break;
+      // THE FUSED CSR WALK BINDS THE ALIASES IT REACHES WITHOUT EVALUATING THEIR where:, SO A FILTERED HOP STAYS ON THE
+      // REGULAR MatchStep, WHICH DOES (AND BINDS $matched FOR IT, ISSUE #7434)
+      if (aliasFilters.get(et.out ? et.edge.in.alias : et.edge.out.alias) != null)
         break;
 
       // Find provider for this edge's labels
@@ -472,7 +492,10 @@ public class MatchExecutionPlanner {
       for (final String currentAlias : remainingStarts) {
         final PatternNode currentNode = pattern.aliasToNode.get(currentAlias);
 
-        if (visitedNodes.contains(currentNode)) {
+        if (currentNode == null) {
+          // THE ROOT ESTIMATES COVER EVERY ALIAS OF THE STATEMENT: ONE BOUND BY ANOTHER DISJOINT SUB-PATTERN IS NOT A START HERE
+          startsToRemove.add(currentAlias);
+        } else if (visitedNodes.contains(currentNode)) {
           // If a previous traversal already visited this alias, remove it from further consideration.
           startsToRemove.add(currentAlias);
         } else if (remainingDependencies.get(currentAlias) == null || remainingDependencies.get(currentAlias).isEmpty()) {
@@ -617,18 +640,80 @@ public class MatchExecutionPlanner {
     for (final PatternNode node : pattern.aliasToNode.values()) {
       final Set<String> currentDependencies = new HashSet<>();
 
-      final WhereClause filter = aliasFilters.get(node.alias);
-      if (filter != null && filter.getBaseExpression() != null) {
-        final List<String> involvedAliases = filter.getBaseExpression().getMatchPatternInvolvedAliases();
-        if (involvedAliases != null) {
-          currentDependencies.addAll(involvedAliases);
-        }
+      for (final String dependency : matchedDependencies(aliasFilters.get(node.alias))) {
+        // AN ALIAS BOUND BY ANOTHER DISJOINT SUB-PATTERN IS SATISFIED BY THE ORDER THE CARTESIAN PRODUCT RUNS THE SUB-PLANS IN
+        // (SEE orderSubPatternsByDependencies()), NOT BY THIS SCHEDULE. AN ALIAS NO PATTERN BINDS STAYS, SO THAT THE SCHEDULE
+        // STILL REPORTS IT AS UNDEFINED
+        final boolean boundByAnotherSubPattern = !pattern.aliasToNode.containsKey(dependency)
+            && this.pattern.aliasToNode.containsKey(dependency);
+        if (!boundByAnotherSubPattern)
+          currentDependencies.add(dependency);
       }
 
       result.put(node.alias, currentDependencies);
     }
 
     return result;
+  }
+
+  /**
+   * The aliases a node's {@code where:} reads through {@code $matched}, or an empty list when it reads none.
+   */
+  private static List<String> matchedDependencies(final WhereClause filter) {
+    if (filter == null || filter.getBaseExpression() == null)
+      return Collections.emptyList();
+    final List<String> involvedAliases = filter.getBaseExpression().getMatchPatternInvolvedAliases();
+    return involvedAliases == null ? Collections.emptyList() : involvedAliases;
+  }
+
+  /**
+   * Orders the disjoint sub-patterns so that one whose {@code where:} reads, through {@code $matched}, an alias bound by
+   * another sub-pattern runs after it. The cartesian product then re-runs such a sub-plan for every tuple of the ones
+   * before it, with {@code $matched} bound to that tuple, which turns the comma-pattern into a correlated nested loop
+   * (issue #7434). Sub-patterns without cross dependencies keep their original relative order.
+   *
+   * @return for each sub-pattern, in its reordered position, whether it depends on another sub-pattern and so must run
+   * correlated
+   */
+  private List<Boolean> orderSubPatternsByDependencies() {
+    final Map<String, Integer> owner = new HashMap<>();
+    for (int i = 0; i < subPatterns.size(); i++)
+      for (final String alias : subPatterns.get(i).aliasToNode.keySet())
+        owner.put(alias, i);
+
+    final List<Set<Integer>> dependencies = new ArrayList<>(subPatterns.size());
+    for (int i = 0; i < subPatterns.size(); i++) {
+      final Set<Integer> current = new HashSet<>();
+      for (final PatternNode node : subPatterns.get(i).aliasToNode.values())
+        for (final String dependency : matchedDependencies(aliasFilters.get(node.alias))) {
+          final Integer dependencyOwner = owner.get(dependency);
+          if (dependencyOwner != null && dependencyOwner != i)
+            current.add(dependencyOwner);
+        }
+      dependencies.add(current);
+    }
+
+    // KAHN'S ALGORITHM, TAKING THE FIRST READY SUB-PATTERN IN ORIGINAL ORDER SO INDEPENDENT ONES KEEP THEIR PLACE
+    final List<Pattern> ordered = new ArrayList<>(subPatterns.size());
+    final List<Boolean> correlated = new ArrayList<>(subPatterns.size());
+    final Set<Integer> scheduled = new HashSet<>();
+    while (ordered.size() < subPatterns.size()) {
+      int next = -1;
+      for (int i = 0; i < subPatterns.size() && next < 0; i++)
+        if (!scheduled.contains(i) && scheduled.containsAll(dependencies.get(i)))
+          next = i;
+
+      if (next < 0)
+        throw new CommandExecutionException("""
+            This query contains MATCH conditions that cannot be evaluated, \
+            like an undefined alias or a circular dependency on a $matched condition.""");
+
+      scheduled.add(next);
+      ordered.add(subPatterns.get(next));
+      correlated.add(!dependencies.get(next).isEmpty());
+    }
+    subPatterns = ordered;
+    return correlated;
   }
 
   private void splitDisjointPatterns(final CommandContext context) {
@@ -640,7 +725,7 @@ public class MatchExecutionPlanner {
   }
 
   private void addStepsFor(final SelectExecutionPlan plan, final EdgeTraversal edge, final CommandContext context,
-      final boolean first) {
+      final boolean first, final boolean correlated) {
     if (first) {
       final PatternNode patternNode = edge.out ? edge.edge.out : edge.edge.in;
       final String typez = this.aliasTypes.get(patternNode.alias);
@@ -660,8 +745,7 @@ public class MatchExecutionPlanner {
       select.setWhereClause(where == null ? null : where.copy());
       final BasicCommandContext subContxt = new BasicCommandContext();
       subContxt.setParentWithoutOverridingChild(context);
-      plan.chain(
-          new MatchFirstStep(context, patternNode, select.createExecutionPlan(subContxt)));
+      plan.chain(new MatchFirstStep(context, patternNode, select.createExecutionPlan(subContxt), correlated));
     }
     if (edge.edge.in.isOptionalNode()) {
       foundOptional = true;
@@ -870,7 +954,8 @@ public class MatchExecutionPlanner {
         final DocumentType oClass = schema.getType(typeName);
         final long upperBound;
         final WhereClause filter = aliasFilters.get(alias);
-        if (filter != null) {
+        // A FILTER THAT READS $matched CANNOT BE ESTIMATED BEFORE THE ALIASES IT READS ARE BOUND (ISSUE #7434)
+        if (filter != null && matchedDependencies(filter).isEmpty()) {
           upperBound = filter.estimate(oClass, threshold, context);
         } else {
           upperBound = context.getDatabase().countType(oClass.getName(), true);
@@ -890,7 +975,7 @@ public class MatchExecutionPlanner {
         if (oClass != null) {
           final long upperBound;
           final WhereClause filter = aliasFilters.get(alias);
-          if (filter != null) {
+          if (filter != null && matchedDependencies(filter).isEmpty()) {
             upperBound = Math.min(db.countBucket(bucketName), filter.estimate(oClass, threshold, context));
           } else {
             upperBound = db.countBucket(bucketName);

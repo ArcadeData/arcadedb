@@ -23,6 +23,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+
 /**
  * Remove all the occurrences of elements from a collection.
  *
@@ -46,8 +50,13 @@ public class SQLMethodRemoveAll extends AbstractSQLMethod {
         }
         return iArgument;
       });
-      // Work on a copy so the source value (e.g. a record property) is not mutated in place (issue #4730).
-      value = MultiValue.copy(value);
+      // Work on a copy so the source value (e.g. a record property) is not mutated in place. Without it,
+      // `UPDATE ... SET x = x.removeAll(...)` would return the same already-mutated instance as the current value,
+      // making UPDATE skip the write and leave the change unpersisted (issue #4730). A Collection or a Map keeps its own
+      // kind (a Set stays a Set); any other collection receiver - an array-valued parameter or property, an iterable - is
+      // materialised through the shared helper, which MultiValue.remove() could not take as an array (issue #7114).
+      final List<Object> list = value instanceof Collection ? null : listReceiverOrNull(value);
+      value = list != null ? new ArrayList<>(list) : MultiValue.copy(value);
       for (final Object o : arguments)
         value = MultiValue.remove(value, o, true);
     }

@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.method.collection;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
@@ -54,10 +55,13 @@ public class SQLMethodValues extends AbstractSQLMethod {
       return new ArrayList<>(document.toMap(false).values());
     else if (value instanceof Result result)
       return result.toMap().values();
-    else if (value instanceof Collection<?> collection) {
+
+    // AN ARRAY-VALUED PARAMETER OR PROPERTY IS A COLLECTION RECEIVER TOO (ISSUE #7114)
+    final List<Object> list = listReceiverOrNull(value);
+    if (list != null) {
       final List<Object> result = new ArrayList<>();
-      for (final Object o : collection) {
-        if (o instanceof Map || o instanceof Document || o instanceof Result || o instanceof Collection) {
+      for (final Object o : list) {
+        if (o instanceof Map || o instanceof Document || o instanceof Result || MultiValue.isMultiValue(o)) {
           final Object values = execute(o, currentRecord, context, params);
           if (values instanceof Collection<?> valuesCollection)
             result.addAll(valuesCollection);
