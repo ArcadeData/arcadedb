@@ -1589,6 +1589,20 @@ public enum GlobalConfiguration {
       protection). Default is 1000000.""",
       Integer.class, 1_000_000),
 
+  SERVER_GRPC_TIMESERIES_MAX_RESULT_ROWS("arcadedb.server.grpcTimeSeriesMaxResultRows", SCOPE.SERVER,
+      """
+      Hard ceiling on the number of rows - or aggregation buckets - one gRPC TimeSeriesQuery answers with. A \
+      request limit at or below this cap is honored; a request limit above it is refused BEFORE the first \
+      message with RESOURCE_EXHAUSTED, so a client is never handed a partial series it cannot tell apart from \
+      a complete one. Separate from grpcQueryMaxResultRows because TimeSeriesQuery is a server-streaming RPC \
+      whose raw path is lazy - it is bounded by the client's consumption rather than by this process' heap - \
+      so the single-message rationale that keeps the unary ceiling low does not apply to it. The default \
+      matches the HTTP twin POST /api/v1/ts/{database}/query ('arcadedb.server.httpQueryMaxResultRows'), so \
+      the same range is served over both protocols. Set to -1 or 0 for unlimited (WARNING: the aggregated \
+      path materializes every bucket before emitting any, so removing the cap removes its DoS protection; the \
+      raw path stays lazy either way). Default is 1000000.""",
+      Integer.class, 1_000_000),
+
   SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS("arcadedb.server.grpcStreamWriteTimeoutMs", SCOPE.SERVER,
       """
       Maximum time in milliseconds a gRPC StreamQuery worker waits for the client transport to become ready to \

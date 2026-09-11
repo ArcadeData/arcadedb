@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedSet;
+import java.util.StringJoiner;
 import java.util.TreeSet;
 
 /**
@@ -293,8 +294,10 @@ public final class TimeSeriesGateway {
   /**
    * Builds the conjunction of tag equality predicates described by {@code tags}, or {@code null} when the map
    * selects nothing. Values are coerced to the column's declared type so they match what both storage layers
-   * hand back (issue #5475). A name that is not a TAG column of this type contributes no predicate, so it
-   * neither widens nor narrows the result.
+   * hand back (issue #5475).
+   *
+   * @throws IllegalArgumentException if a name is not a TAG column of this type, or a value cannot be stored as
+   *                                  a tag. See {@link #andTag}
    */
   public static TagFilter buildTagFilter(final Map<String, Object> tags, final List<ColumnDefinition> columns) {
     if (tags == null || tags.isEmpty())
@@ -325,14 +328,26 @@ public final class TimeSeriesGateway {
    * could never have been written is not a selection that matches nothing - it is a malformed request, and
    * answering it with an empty series told the caller "no data" when the truth was "that value is not valid"
    * (issue #7394). The check runs before the name is resolved, because an unstorable value is unstorable
-   * whichever name carries it; an unresolvable NAME still contributes nothing, as it always has.
+   * whichever name carries it.
+   * <p>
+   * <b>A name that resolves to no TAG column is refused too</b> (issue #7334), for the same reason and with a
+   * worse symptom: dropping it silently left a conjunction with one fewer term, so a typo WIDENED the query
+   * instead of failing it. {@code {"hsot":"web1"}} returned every row of the range and {@code ?tag=hsot:web1}
+   * the newest sample of any series, neither distinguishable by the caller from a correct filter that happened
+   * to match everything - and on a multi-tag type a single mistyped name removed the whole predicate. The
+   * message lists the type's actual TAG columns, because a name that does not resolve is almost always a
+   * misspelling of one of them.
+   * <p>
+   * The PromQL evaluator deliberately does NOT come through here: an unknown label is a Prometheus-specified
+   * selection ({@code PromQLEvaluator.excludesEverySeries}) rather than a malformed request, so it decides the
+   * whole type in one go instead of being refused.
    *
-   * @return {@code filter} unchanged when no TAG column carries that name, a new filter otherwise -
-   * {@link TagFilter} is immutable, so the return value must be used
+   * @return a new filter - {@link TagFilter} is immutable, so the return value must be used
    *
-   * @throws IllegalArgumentException if {@code tagValue} cannot be stored as a tag. Callers on the gRPC path
-   *                                  let this surface as {@code INVALID_ARGUMENT} through
-   *                                  {@code GrpcErrorMapper}, and the HTTP handlers as a 400
+   * @throws IllegalArgumentException if no TAG column carries {@code tagName}, or if {@code tagValue} cannot be
+   *                                  stored as a tag. Callers on the gRPC path let this surface as
+   *                                  {@code INVALID_ARGUMENT} through {@code GrpcErrorMapper}, and the HTTP
+   *                                  handlers as a 400
    */
   public static TagFilter andTag(final TagFilter filter, final String tagName, final Object tagValue,
       final List<ColumnDefinition> columns) {
@@ -348,7 +363,20 @@ public final class TimeSeriesGateway {
       }
       nonTsIdx++;
     }
-    return filter;
+    throw new IllegalArgumentException("Tag '" + tagName + "' is not a TAG column of this type" + tagColumnNames(columns));
+  }
+
+  /**
+   * The type's TAG column names, rendered for the refusal above: {@code " (declared tags: a, b)"}, or a sentence
+   * saying there are none. Built from the same {@code columns} list the resolution walked, so it cannot name a
+   * set the caller was not actually matched against.
+   */
+  private static String tagColumnNames(final List<ColumnDefinition> columns) {
+    final StringJoiner declared = new StringJoiner(", ");
+    for (final ColumnDefinition col : columns)
+      if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
+        declared.add(col.getName());
+    return declared.length() == 0 ? ": the type declares no TAG column" : " (declared tags: " + declared + ")";
   }
 
   /**

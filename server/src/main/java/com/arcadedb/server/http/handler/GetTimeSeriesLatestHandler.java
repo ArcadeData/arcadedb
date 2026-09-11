@@ -73,8 +73,16 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
     final TimeSeriesEngine engine = resolved.engine();
     final List<ColumnDefinition> columns = resolved.columns();
 
-    // Build tag filter from query param
-    final TagFilter tagFilter = buildTagFilter(exchange, columns);
+    // Build tag filter from query param. A malformed occurrence, or a name that resolves to no TAG column, is
+    // refused with a 400 naming it rather than dropped (issue #7334). It matters most here: this endpoint
+    // answers ONE row, so a dropped term does not widen a result set the caller can inspect - it returns the
+    // newest sample of some other series as if it were the one asked for.
+    final TagFilter tagFilter;
+    try {
+      tagFilter = buildTagFilter(exchange, columns);
+    } catch (final IllegalArgumentException e) {
+      return TimeSeriesHandlerUtils.tagFilterError(e);
+    }
 
     // A bounded newest-first scan for a single row (issue #7322), through the same helper the gRPC
     // TimeSeriesLatest RPC calls (issue #7305) so the two protocols cannot answer different rows. The helper

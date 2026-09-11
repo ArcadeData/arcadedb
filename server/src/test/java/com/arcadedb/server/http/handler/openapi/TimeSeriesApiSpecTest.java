@@ -145,12 +145,33 @@ class TimeSeriesApiSpecTest {
     // (not '='), and since issue #7321 reads every occurrence out of the Deque and ANDs them, the way
     // POST /ts/{database}/query ANDs the pairs of its 'tags' object. Pinned so the wording cannot be
     // reverted to claim '=' or first-occurrence-only semantics.
+    //
+    // The refusal sentence is issue #7334: an unresolvable or malformed occurrence used to be DROPPED, which
+    // widened the query silently, and a contract change on a documented endpoint has to be documented.
     final Operation get = openAPI.getPaths().get("/api/v1/ts/{database}/latest").getGet();
     final Parameter tag = get.getParameters().stream()
         .filter(p -> "tag".equals(p.getName())).findFirst().orElseThrow();
     assertThat(tag.getDescription()).isEqualTo(
         "Tag filter in name:value form. Repeat the parameter to narrow to one series across several tags: "
-            + "every occurrence must match.");
+            + "every occurrence must match. An occurrence that carries no ':' separator, or whose name is no "
+            + "TAG column of the type, is refused with 400 rather than ignored.");
+  }
+
+  /**
+   * Issue #7334: the 400 of both read endpoints says which refusal it is. A generic "Bad request" against an
+   * endpoint whose most likely refusal is a mistyped tag tells the caller nothing, and until this change it
+   * was not a refusal at all - the term was dropped and the query widened.
+   */
+  @Test
+  void bothReadEndpointsDocumentTheUnresolvableTagRefusal() {
+    assertThat(openAPI.getPaths().get("/api/v1/ts/{database}/query").getPost()
+        .getResponses().get("400").getDescription())
+        .contains("TAG column")
+        .contains("declared TAG columns");
+    assertThat(openAPI.getPaths().get("/api/v1/ts/{database}/latest").getGet()
+        .getResponses().get("400").getDescription())
+        .contains("name:value")
+        .contains("TAG column");
   }
 
   @Test
