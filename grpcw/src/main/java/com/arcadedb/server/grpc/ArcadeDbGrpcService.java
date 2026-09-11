@@ -3568,8 +3568,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // without walking a row, and a client told up front can narrow its request, where one told at row
     // `configuredMax` has already been handed a partial series that looks exactly like a complete one.
     if (capEnabled && requestedLimit > configuredMax)
-      throw timeSeriesRowCeilingExceeded(requestedLimit + " rows were requested, more than the maximum of "
-          + configuredMax);
+      throw timeSeriesCeilingExceeded(requestedLimit + " rows were requested, more than the maximum of "
+          + configuredMax, TS_ROW_CEILING_REMEDY);
     final boolean clientLimited = requestedLimit > 0;
 
     final Iterator<Object[]> rows = engine.iterateQuery(fromTs, toTs, columnIndices, tagFilter);
@@ -3594,7 +3594,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // or refused before the first message. The lazy walk cannot know the row count in advance, so this is the
       // one case the ceiling still has to fire mid-stream - which is why `truncated` and `last` exist.
       if (capEnabled && emitted >= configuredMax)
-        throw timeSeriesRowCeilingExceeded("the result exceeds the maximum of " + configuredMax + " rows");
+        throw timeSeriesCeilingExceeded("the result exceeds the maximum of " + configuredMax + " rows",
+            TS_ROW_CEILING_REMEDY);
 
       final TimeSeriesRow row = GrpcTimeSeriesSupport.toRow(rows.next());
       batch.add(row);
@@ -3627,17 +3628,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
-   * The refusal both TimeSeriesQuery row ceilings answer with, worded the same way and naming the setting that
-   * actually applies (issue #7390). The remedies are listed because RESOURCE_EXHAUSTED alone tells a client
-   * nothing it can act on.
+   * The refusal EVERY TimeSeriesQuery ceiling answers with - the two on the raw row path and the one on the
+   * aggregated bucket path - worded the same way and naming the setting that actually applies (issue #7390).
+   * <p>
+   * The remedy is a parameter rather than a constant because the three are not the same advice: a bucket count
+   * is narrowed by widening the interval, which does nothing for a row count. It is carried at all because
+   * RESOURCE_EXHAUSTED on its own tells a client nothing it can act on.
    */
-  private static StatusRuntimeException timeSeriesRowCeilingExceeded(final String what) {
+  private static StatusRuntimeException timeSeriesCeilingExceeded(final String what, final String remedy) {
     return Status.RESOURCE_EXHAUSTED
         .withDescription("TimeSeriesQuery refused: " + what
-            + " (arcadedb.server.grpcTimeSeriesMaxResultRows); narrow the time range, add a tag filter, or lower "
-            + "the limit")
+            + " (arcadedb.server.grpcTimeSeriesMaxResultRows); " + remedy)
         .asRuntimeException();
   }
+
+  /** The row-path remedy, shared by the up-front refusal and the mid-stream one. */
+  private static final String TS_ROW_CEILING_REMEDY =
+      "narrow the time range, add a tag filter, or lower the limit";
 
   /**
    * Streams the fixed-interval buckets of an aggregated time-series query. Unlike the raw path this cannot be
@@ -3683,11 +3690,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final int configuredMax = serverConfiguration().getValueAsInteger(
         GlobalConfiguration.SERVER_GRPC_TIMESERIES_MAX_RESULT_ROWS);
     if (configuredMax > 0 && timestamps.size() > configuredMax)
-      throw Status.RESOURCE_EXHAUSTED
-          .withDescription("TimeSeriesQuery aggregation produced " + timestamps.size() + " buckets, more than the "
-              + "maximum of " + configuredMax + " (arcadedb.server.grpcTimeSeriesMaxResultRows); widen "
-              + "bucket_interval_ms or narrow the time range")
-          .asRuntimeException();
+      throw timeSeriesCeilingExceeded("the aggregation produced " + timestamps.size() + " buckets, more than the "
+          + "maximum of " + configuredMax, "widen bucket_interval_ms or narrow the time range");
 
     final List<TimeSeriesBucket> batch = new ArrayList<>(Math.min(batchSize, 1024));
     int batchBytes = 0;

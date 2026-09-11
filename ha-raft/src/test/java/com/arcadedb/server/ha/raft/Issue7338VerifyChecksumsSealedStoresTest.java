@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedInstallLock;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONArray;
@@ -36,6 +37,9 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,6 +68,8 @@ class Issue7338VerifyChecksumsSealedStoresTest {
   private static final String TYPE          = "Reading";
   private static final long   BASE_TS       = 1_700_000_000_000L;
   private static final int    SAMPLES       = 20_000;
+  /** A wait that is EXPECTED to expire: it IS the assertion. A stall can only make it more true. */
+  private static final long   BLOCKED_PROBE_MS = 2_000L;
 
   @BeforeEach
   @AfterEach
@@ -154,6 +160,86 @@ class Issue7338VerifyChecksumsSealedStoresTest {
     }
   }
 
+  /**
+   * CodeRabbit on PR #7474: the collection pairs a page image fixed at t0 with sealed stores read LIVE, so it has
+   * to hold TimeSeries compaction back across both - the same tear #7280 fixed for a backup and #7337 for a
+   * follower's install. Here the consequence is not duplicated samples but a checksum set that never described
+   * one state of this database, handed to a detector whose only job is to compare it with another node's.
+   */
+  @Test
+  void theCollectionHoldsCompactionBackWhileItPairsTheTwoImages() throws Exception {
+    try (final Database database = createDatabaseWithSealedStore()) {
+      final DatabaseInternal db = (DatabaseInternal) database;
+
+      // The pause is exclusive with a compaction in flight, so holding its write side proves the collection
+      // waits: with no pause taken it would sail through and CRC whatever the compaction left half-swapped.
+      final CountDownLatch collected = new CountDownLatch(1);
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+      try (final TimeSeriesSealedInstallLock blocker = TimeSeriesSealedInstallLock.acquire(db,
+          List.of(new TimeSeriesSealedInstallLock.ShardRef(TYPE, 0)), 30_000L)) {
+
+        final Thread verifier = new Thread(() -> {
+          try {
+            handler.computeLocalChecksums(db, new JSONObject(), new JSONArray());
+          } catch (final Throwable e) {
+            failure.set(e);
+          } finally {
+            collected.countDown();
+          }
+        }, "issue7338-verify");
+        verifier.setDaemon(true);
+        verifier.start();
+
+        assertThat(collected.await(BLOCKED_PROBE_MS, TimeUnit.MILLISECONDS))
+            .as("the collection must wait for an install in flight rather than photograph it halfway")
+            .isFalse();
+
+        blocker.close();
+
+        assertThat(collected.await(60, TimeUnit.SECONDS)).isTrue();
+        assertThat(failure.get()).isNull();
+        verifier.join(60_000);
+      }
+    }
+  }
+
+  /**
+   * CodeRabbit on PR #7474: a sealed store this node could not read used to be swallowed, leaving an answer
+   * silently one file short while still claiming to cover sealed stores. A leader compares only its OWN checksum
+   * keys, so that answer rolled up as agreement - the one outcome a divergence detector must never invent.
+   */
+  @Test
+  void aSealedStoreThatCannotBeReadIsReportedRatherThanSwallowed() throws Exception {
+    try (final Database database = createDatabaseWithSealedStore()) {
+      final DatabaseInternal db = (DatabaseInternal) database;
+      final String sealedName = sealedFileNames(db).getFirst();
+      final File sealed = new File(db.getDatabasePath(), sealedName);
+
+      final JSONObject checksums = new JSONObject();
+      assertThat(handler.computeLocalChecksums(db, checksums, new JSONArray()))
+          .as("the premise: an intact store reports complete coverage, so the assertion below is about the "
+              + "failure and not about the method always saying no")
+          .isTrue();
+      assertThat(checksums.keySet()).contains(sealedName);
+
+      // Stand in for an I/O failure on the store: a directory of the same name cannot be read as a file.
+      assertThat(sealed.delete()).isTrue();
+      assertThat(sealed.mkdir()).isTrue();
+      try {
+        final JSONObject degraded = new JSONObject();
+        assertThat(handler.computeLocalChecksums(db, degraded, new JSONArray()))
+            .as("an answer that could not read a sealed store does not cover them, and has to say so")
+            .isFalse();
+        assertThat(degraded.keySet())
+            .as("and it really is short of that file, which is exactly why claiming coverage was wrong")
+            .doesNotContain(sealedName);
+      } finally {
+        assertThat(sealed.delete()).isTrue();
+      }
+    }
+  }
+
   /** A database with no TimeSeries type pays nothing and answers exactly what it always did. */
   @Test
   void aDatabaseWithoutTimeSeriesIsUnchanged() {
@@ -177,7 +263,10 @@ class Issue7338VerifyChecksumsSealedStoresTest {
 
   private JSONObject localChecksums(final DatabaseInternal db) {
     final JSONObject checksums = new JSONObject();
-    handler.computeLocalChecksums(db, checksums, new JSONArray());
+    assertThat(handler.computeLocalChecksums(db, checksums, new JSONArray()))
+        .as("a healthy database must report FULL sealed-store coverage, or every assertion here is about a "
+            + "degraded answer instead of the normal one")
+        .isTrue();
     return checksums;
   }
 
