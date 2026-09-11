@@ -24,8 +24,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
-import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.Result;
@@ -544,14 +544,12 @@ public final class HybridSearch {
 
     // The parser's complaint about the caller's own query text is a client error, like every other stage's bad
     // input; left unwrapped it reached the protocol surfaces as an internal error with a logged stack trace
-    // (issue #7393). Only IndexException is the parser's: this call runs no generated SQL, so anything else thrown
-    // here is a server fault and must stay a 500 with its stack trace rather than be misfiled as a bad request.
-    // The type is also what the index raises for an analyzer failure while tokenizing; no path under this call
-    // tokenizes today, so if one is added the catch has to tell the two apart before it files the failure as a 400.
+    // (issue #7393). Only the parser's own exception is re-typed: an execution-time IndexException - a tokenizer,
+    // analyzer or search-engine fault - is a server fault and stays a 500 with its stack trace.
     final Map<RID, Float> hits;
     try {
       hits = FullTextSearch.search(typeIndex, queryText, limit);
-    } catch (final IndexException e) {
+    } catch (final FullTextQueryParseException e) {
       throw invalidExpression("full-text leg", e);
     }
     final List<Map.Entry<RID, Float>> ranked = new ArrayList<>(hits.entrySet());
