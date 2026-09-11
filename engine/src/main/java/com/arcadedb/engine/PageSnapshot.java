@@ -25,6 +25,7 @@ import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -108,6 +109,29 @@ public class PageSnapshot implements AutoCloseable {
     }
   }
 
+  /**
+   * One configuration file - {@code configuration.json} or {@code schema.json} - as it stood at t0, held as bytes
+   * (issue #6114).
+   * <p>
+   * These are not page files, so the copy-on-write shadow cannot cover them; they are read whole inside the t0
+   * barrier instead, which is affordable because they are a few KB. Before this the consumers read them off the
+   * filesystem AFTER t0 and held the database read lock for the whole operation to keep them still, which is what
+   * made a backup block DDL for as long as it ran. A window now serves a complete point-in-time image on its own:
+   * the pages, and the configuration that describes them.
+   * <p>
+   * The array is not defensively copied - this is an engine-internal record read by the backup and the HA snapshot
+   * ship, and copying a few KB per consumer buys nothing. Do not mutate it.
+   */
+  public record SnapshotConfigFile(String fileName, byte[] content, long lastModified) {
+    public long size() {
+      return content.length;
+    }
+
+    public InputStream newInputStream() {
+      return new ByteArrayInputStream(content);
+    }
+  }
+
   /** Pages read in one bulk call. 16 x 64 KB = 1 MB, the same unit the parallel backup compressor works on. */
   private static final int READ_RUN_PAGES = 16;
 
@@ -116,6 +140,7 @@ public class PageSnapshot implements AutoCloseable {
   private final long             lastTxId;
   private final SnapshotFile[]   filesById;
   private final List<SnapshotFile> files;
+  private final List<SnapshotConfigFile> configurationFiles;
   private final PageShadow       shadow;
   private final long             openedOn = System.currentTimeMillis();
 
@@ -133,11 +158,12 @@ public class PageSnapshot implements AutoCloseable {
   private volatile boolean released = false;
 
   PageSnapshot(final DatabaseInternal database, final PageManager pageManager, final long lastTxId,
-      final List<SnapshotFile> files, final PageShadow shadow) {
+      final List<SnapshotFile> files, final List<SnapshotConfigFile> configurationFiles, final PageShadow shadow) {
     this.database = database;
     this.pageManager = pageManager;
     this.lastTxId = lastTxId;
     this.files = Collections.unmodifiableList(files);
+    this.configurationFiles = Collections.unmodifiableList(configurationFiles);
     this.shadow = shadow;
 
     int maxFileId = -1;
@@ -157,6 +183,18 @@ public class PageSnapshot implements AutoCloseable {
 
   public SnapshotFile getFile(final int fileId) {
     return fileId >= 0 && fileId < filesById.length ? filesById[fileId] : null;
+  }
+
+  /**
+   * The configuration files as they stood at t0, in the order a consumer should archive them
+   * ({@code configuration.json} first, then {@code schema.json}), skipping any that did not exist (issue #6114).
+   * <p>
+   * A consumer that archives these instead of reading the files off the filesystem gets a configuration that
+   * matches the page set this window serves, and therefore no longer needs the database read lock to keep the two
+   * in step for the whole of its operation.
+   */
+  public List<SnapshotConfigFile> getConfigurationFiles() {
+    return configurationFiles;
   }
 
   /**
