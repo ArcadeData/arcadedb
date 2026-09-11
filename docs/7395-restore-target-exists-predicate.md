@@ -238,3 +238,25 @@ weaker version of the same check and is recorded as such rather than claimed as 
 - The check is not atomic with the swap: [#7441](https://github.com/ArcadeData/arcadedb/issues/7441).
 - Case-sensitivity between the two halves of the predicate is whatever `ArcadeDBServer`'s registry and the
   host filesystem already made it; this fix neither widens nor narrows it.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7442
+
+## Review cycles
+
+| # | Head | Changes | Bot outcome |
+|---|---|---|---|
+| 1 | `a9a1d9b` | the fix, both IT classes, this doc | `claude`: "Nothing here blocks merging." Three nits, none a defect - a javadoc `{@link}` label used as a mid-sentence verb, this doc skipping section 4, and the gRPC IT's hardcoded port. First two applied, third skipped with evidence (see below). |
+| 2 | `115ff5d0` | the two applied nits plus `docs/review-deferred-a9a1d9b.md` | `claude`: "Overall this looks ready to merge." No actionable items; the port nit re-raised only to agree it is out of scope and already answered. |
+
+Final state: **clean-approval** after 2 of a permitted 4 cycles.
+
+## Deferred items
+
+[`docs/review-deferred-a9a1d9b.md`](review-deferred-a9a1d9b.md) - one skipped review point, the gRPC
+IT's hardcoded `GRPC_PORT = 50051`. Not deferred for want of a decision: 43 IT classes in `grpcw`
+share that constant and the module runs one JVM per class in sequence, so changing this one class
+alone would make it the odd one out rather than make the package concurrency-safe. The `server`-module
+half of this PR does derive its port from `getServer(0).getHttpServer().getPort()`, which is the
+pattern that base class supports. Nothing here is waiting on the developer.
