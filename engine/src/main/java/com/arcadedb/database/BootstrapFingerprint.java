@@ -18,6 +18,8 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.schema.LocalSchema;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -72,9 +74,9 @@ public final class BootstrapFingerprint {
       ".huniq",
       ".hnotuniq",
       ".dict",
-      "schema.json",
-      "schema.prev.json",
-      "configuration.json");
+      LocalSchema.SCHEMA_FILE_NAME,
+      LocalSchema.SCHEMA_PREV_FILE_NAME,
+      LocalDatabase.CONFIGURATION_FILE_NAME);
 
   private BootstrapFingerprint() {
   }

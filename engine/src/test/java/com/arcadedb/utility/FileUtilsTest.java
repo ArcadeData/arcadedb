@@ -480,4 +480,32 @@ class FileUtilsTest {
 
     assertThat(new String(Files.readAllBytes(target), StandardCharsets.UTF_8)).isEqualTo("second-longer-content");
   }
+
+  @Test
+  void atomicWriteFileAlwaysEncodesInUtf8NeverInThePlatformDefault() throws Exception {
+    // The FileWriter this replaced in LocalSchema.update() used the JVM's default charset, which is asymmetric with
+    // readConfiguration()'s reader on any platform whose default is not UTF-8 (issue #6114).
+    final Path target = tempDir.resolve("default-encoded.txt");
+    final String content = "caffè-niño-日本";
+
+    FileUtils.atomicWriteFile(target.toFile(), content);
+
+    assertThat(Files.readAllBytes(target)).isEqualTo(content.getBytes(StandardCharsets.UTF_8));
+    // NOT VACUOUS: this content really is encoded differently by the two charsets, so the assertion above pins one.
+    assertThat(content.getBytes(StandardCharsets.UTF_8))
+        .isNotEqualTo(content.getBytes(StandardCharsets.ISO_8859_1));
+  }
+
+  @Test
+  void atomicCopyFileLeavesNoScratchFileWhenTheSourceIsMissing() {
+    final Path source = tempDir.resolve("does-not-exist.json");
+    final Path target = tempDir.resolve("target.json");
+
+    assertThatThrownBy(() -> FileUtils.atomicCopyFile(source.toFile(), target.toFile()))
+        .isInstanceOf(IOException.class);
+
+    assertThat(target).doesNotExist();
+    assertThat(tempDir.toFile().list((dir, name) -> name.endsWith(".tmp")))
+        .as("a failed copy must clean up after itself").isEmpty();
+  }
 }

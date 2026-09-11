@@ -2878,17 +2878,28 @@ public class LocalSchema implements Schema {
     final String latestSchema = newSchema.toString();
 
     if (configurationFile.exists()) {
+      // #6114: A COPY, NOT A RENAME. The rename this replaces moved schema.json out of the way and only then wrote
+      // the new one, so between the two statements schema.json DID NOT EXIST and while the writer ran it was
+      // truncated. A crash in that window left a database whose schema file was missing - recoverable only from
+      // schema.prev.json - and any concurrent reader (the backup's lock-free t0 configuration capture, the HA
+      // snapshot ship) could observe nothing, or half a JSON document. The copy is published as a hard link where
+      // the file store allows it, so it costs an inode operation rather than a re-read of the whole schema, and it
+      // is atomic on the target either way: schema.prev.json is what readConfiguration() falls back TO, so it can
+      // never be half-written. It is also byte-identical by construction - literally the same bytes, so no charset
+      // from setEncoding() is applied to it on the way out.
       final File copy = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
-      // Save the previous generation WITHOUT moving the primary aside: the old rename left schema.json absent for
-      // the whole write, so a concurrent reader (a lock-free backup, the HA snapshot ship) or a recovery after an
-      // interrupted write could find no schema at all (issue #6114). The copy is published as a hard link when the
-      // file store allows it, so it costs an inode operation rather than a re-read of the whole schema, and the
-      // previous generation is byte-identical by construction - it is literally the same bytes, so no charset from
-      // setEncoding() can be applied to it on the way out.
       FileUtils.atomicCopyFile(configurationFile, copy);
     }
 
     // The primary is replaced by an atomic rename, so a reader sees either this generation or the previous one.
+    //
+    // UTF-8 UNCONDITIONALLY, NOT `encoding`. readConfiguration() reads this file back with `encoding`, but that field
+    // is a transient per-instance setting that is never persisted and starts every open at DEFAULT_ENCODING: a file
+    // written in anything else would be unreadable on the next open unless the caller happened to re-apply
+    // setEncoding() first. So `encoding` is a READ-side compatibility knob for a legacy file, and every write
+    // normalises the primary back onto UTF-8 - which is also what makes the recovery in readConfiguration() self-heal
+    // a legacy database instead of perpetuating its charset. This replaces a FileWriter that used the JVM's DEFAULT
+    // charset, which was asymmetric with the reader on any platform whose default is not UTF-8 (issue #6114).
     FileUtils.atomicWriteFile(configurationFile, latestSchema);
 
     // Only after the bytes are on disk: a failed publication must not leave the in-memory version claiming a

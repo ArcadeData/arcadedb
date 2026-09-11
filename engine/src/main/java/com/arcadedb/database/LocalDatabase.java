@@ -152,6 +152,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   /** Header ({@code MutableEdgeSegment.CONTENT_START_POSITION}) plus room for a couple of maximum-width entries. */
   public static final int MIN_EDGE_LIST_CHUNK_SIZE             = 32;
 
+  /**
+   * The per-database settings file, next to {@code schema.json} in the database directory. Named here rather than
+   * spelled out at each use so the snapshot's t0 configuration capture (#6114) and this class agree by construction.
+   */
+  public static final String CONFIGURATION_FILE_NAME = "configuration.json";
+
   /** What {@link #quiesceAsync()} hands back on a database that never created an async executor: nothing to park. */
   private static final AsyncQuiesce NO_ASYNC_TO_QUIESCE = () -> {
   };
@@ -267,7 +273,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       else
         databasePath = path;
 
-      configurationFile = new File(databasePath + File.separator + "configuration.json");
+      configurationFile = new File(databasePath + File.separator + CONFIGURATION_FILE_NAME);
 
       final int lastSeparatorPos = path.lastIndexOf(File.separator);
       if (lastSeparatorPos > -1)
@@ -2502,8 +2508,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return openedOn;
   }
 
+  /**
+   * #6114: atomic, like {@code LocalSchema.update()}. The truncate-then-write this replaces left configuration.json
+   * observably partial for the duration of the write, which the full backup's lock-free t0 capture of the two
+   * configuration files cannot tolerate - it reads the file by name, with no lock excluding this writer.
+   */
   public void saveConfiguration() throws IOException {
-    FileUtils.writeFile(configurationFile, configuration.toJSON());
+    FileUtils.atomicWriteFile(configurationFile, configuration.toJSON());
   }
 
   /**

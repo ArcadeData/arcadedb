@@ -31,6 +31,7 @@ import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
@@ -42,6 +43,8 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -885,7 +888,68 @@ public class PageManager extends LockContext {
     final long maxSize = snapshotMaxShadowSize(configuration, files, spillVolumeUsableSpace);
 
     return new PageSnapshot(database, this, database.getTransactionManager().getLastTransactionId(), files,
-        new PageShadow(spillFile, maxRAM, maxSize));
+        captureConfigurationFiles(database), new PageShadow(spillFile, maxRAM, maxSize));
+  }
+
+  /**
+   * Reads {@code configuration.json} and {@code schema.json} whole, as the last step of the t0 barrier (#6114).
+   * <p>
+   * WHY INSIDE THE BARRIER. The two files describe the page set this window is about to serve: which buckets and
+   * indexes exist, and which file backs each of them. Read afterwards - which is what every consumer did before
+   * this - they are "the page files, plus whatever the configuration looked like shortly after", and the only thing
+   * that made that safe was the database read lock the consumer held for its WHOLE operation, excluding DDL. Read
+   * here, they belong to the same observation as the file list: this runs inside
+   * {@code FileManager.executeWithFileSetLocked}, so no file can be created or dropped between the listing above
+   * and these two reads, and a backup no longer has to block DDL for its duration.
+   * <p>
+   * WHAT THAT DOES NOT BUY. The file-set lock orders this against file creation and file drop, not against the
+   * schema SAVE. #7457 has since moved {@code LocalSchema.recordFileChanges}'s save inside the write-locked DDL
+   * callback, so the file set and {@code schema.json} now advance within one write-lock frame; but this barrier
+   * takes no DATABASE lock, only the file-set monitor, which the DDL releases between registering a file and
+   * saving the schema. A window landing in that gap can still observe a DDL half-applied. It is microseconds wide,
+   * it predates this change, and the read lock this path used to hold did not close it either - a DDL already past
+   * the write lock was never excluded by a reader.
+   * <p>
+   * WHY IT IS AFFORDABLE. The rest of this barrier works hard to avoid filesystem calls under the JVM-wide lock -
+   * see {@code PageSnapshot.SnapshotFile.lastModified()} and the note on the t0 page count, both of which were
+   * moved out or made lock-free for exactly that reason. This is two small sequential reads of a few KB with a
+   * fixed count, not one per bucket and index, and there is no later point at which the content would still be the
+   * t0 one. It is the deliberate exception, not a precedent.
+   * <p>
+   * A read that fails aborts the window rather than producing one with a missing or stale configuration: an archive
+   * whose {@code schema.json} does not match its pages is the failure mode a backup exists to avoid, and the
+   * consumers all fall back to the suspend-and-freeze path, which reads these files under a lock as before.
+   */
+  private List<PageSnapshot.SnapshotConfigFile> captureConfigurationFiles(final DatabaseInternal database)
+      throws IOException {
+    final List<PageSnapshot.SnapshotConfigFile> captured = new ArrayList<>(2);
+    final File databaseDirectory = new File(database.getDatabasePath());
+
+    for (final String fileName : new String[] { LocalDatabase.CONFIGURATION_FILE_NAME, LocalSchema.SCHEMA_FILE_NAME }) {
+      final File file = new File(databaseDirectory, fileName);
+      try {
+        // TIMESTAMP FIRST, BYTES SECOND. Both writers of these files publish by rename, so a rename landing
+        // between the two calls would otherwise stamp the archive entry with a version NEWER than the bytes next
+        // to it. Read in this order the mismatch can only go the other way - a stamp slightly behind its content,
+        // which is the harmless direction for a zip entry header
+        final long lastModified = file.lastModified();
+        captured.add(new PageSnapshot.SnapshotConfigFile(fileName, Files.readAllBytes(file.toPath()), lastModified));
+      } catch (final NoSuchFileException e) {
+        // ABSENT IS A LEGITIMATE STATE, NOT AN ERROR: configuration.json only exists once a setting has been
+        // persisted, and schema.json only once the schema has been saved. The consumers already treated a missing
+        // file as "nothing to archive", so the entry is simply left out - no entry rather than an empty one, which
+        // a restore would extract as a zero-length file where none belongs.
+        //
+        // LOGGED HERE AND NOT AT THE CONSUMER. The backup used to print "- File 'configuration.json'... not found"
+        // because it was the one naming the two files; now that it archives whatever the window carries, only this
+        // method knows which file was expected and was not there. Saying so here keeps that line's information
+        // without handing the filenames back to every consumer
+        LogManager.instance().log(this, Level.FINE,
+            "Snapshot of database '%s': configuration file '%s' did not exist at t0, so it is not part of the window",
+            null, database.getName(), fileName);
+      }
+    }
+    return captured;
   }
 
   /**
