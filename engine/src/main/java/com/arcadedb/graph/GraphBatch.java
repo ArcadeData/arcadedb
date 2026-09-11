@@ -1126,9 +1126,13 @@ public class GraphBatch implements AutoCloseable {
     buffer.putNumber(inPos);
 
     if (propCount == 0) {
-      // No properties — write empty header
-      buffer.putInt(buffer.position() + Binary.INT_SERIALIZED_SIZE);
+      // No properties: the header is the count alone and the header end offset points PAST it, where the values section
+      // would start, the same layout BinarySerializer.serializeProperties() writes. Pointing at the count instead (one
+      // byte short) made the reader's property-count validation reject every such edge as corrupted (#7448)
+      final int headerSizePos = buffer.position();
+      buffer.putInt(0);
       buffer.putUnsignedNumber(0);
+      buffer.putInt(headerSizePos, buffer.position());
       buffer.flip();
       return buffer;
     }

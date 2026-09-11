@@ -1008,6 +1008,59 @@ class BinarySerializerTest extends TestHelper {
   }
 
   /**
+   * Regression for #7448: {@code GraphBatch} used to write property-less edges with the header end offset pointing at
+   * the property count instead of past it, one byte short. Nothing is read past the count of such a record, so it is
+   * well-formed for every purpose but the #5774 count validation. Databases loaded before the fix keep that layout on
+   * disk, and the reader has to keep accepting exactly that shape, silently, while still reporting anything else.
+   */
+  @Test
+  void deserializeAcceptsLegacyEmptyHeaderOneByteShortButNothingElse() {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+    final List<String> reported = new CopyOnWriteArrayList<>();
+    final Logger originalLogger = LogManager.instance().getLogger();
+    LogManager.instance().setLogger(new CapturingLogger(reported, originalLogger));
+    try {
+      // Legacy shape: [headerEndOffset = position of the count][count = 0]
+      final Binary legacy = new Binary();
+      legacy.putInt(legacy.position() + Binary.INT_SERIALIZED_SIZE);
+      legacy.putUnsignedNumber(0);
+      legacy.flip();
+
+      assertThat(serializer.deserializeProperties(database, bufferPositionedAt(legacy.toByteArray(), 0), null, null)).isEmpty();
+      assertThat(serializer.getPropertyNames(database, bufferPositionedAt(legacy.toByteArray(), 0), null)).isEmpty();
+      assertThat(reported.stream().filter(m -> m.contains("Possible corrupted record")).toList())
+          .as("the legacy property-less layout must read back silently (captured=%s)", reported)
+          .isEmpty();
+
+      // One byte short with one property is still corruption: the pair cannot fit in the header
+      final Binary oneProperty = new Binary();
+      oneProperty.putInt(oneProperty.position() + Binary.INT_SERIALIZED_SIZE);
+      oneProperty.putUnsignedNumber(1);
+      oneProperty.putUnsignedNumber(0);
+      oneProperty.putUnsignedNumber(0);
+      oneProperty.flip();
+      assertThat(serializer.deserializeProperties(database, bufferPositionedAt(oneProperty.toByteArray(), 0), null, null))
+          .isEmpty();
+      assertThat(reported.stream().filter(m -> m.contains("Possible corrupted record")).toList())
+          .as("a header end offset before a non-empty property list must still be reported (captured=%s)", reported)
+          .hasSize(1);
+
+      // Two bytes short with zero properties is not the legacy shape either
+      final Binary twoShort = new Binary();
+      twoShort.putInt(twoShort.position() + Binary.INT_SERIALIZED_SIZE - 1);
+      twoShort.putUnsignedNumber(0);
+      twoShort.flip();
+      assertThat(serializer.deserializeProperties(database, bufferPositionedAt(twoShort.toByteArray(), 0), null, null))
+          .isEmpty();
+      assertThat(reported.stream().filter(m -> m.contains("Possible corrupted record")).toList())
+          .as("only the exact one-byte-short empty header is legacy, anything else is corruption (captured=%s)", reported)
+          .hasSize(2);
+    } finally {
+      LogManager.instance().setLogger(originalLogger);
+    }
+  }
+
+  /**
    * Wraps a serialized record in a fresh {@link Binary} whose size is exactly the record size, positioned at the given
    * offset. A separate copy per call keeps each accessor under test independent of the others.
    */
