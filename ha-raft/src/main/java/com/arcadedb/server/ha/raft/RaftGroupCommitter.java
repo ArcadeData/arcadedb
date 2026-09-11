@@ -23,12 +23,12 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import com.arcadedb.network.binary.ReplicationQueueFullException;
+import com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.exceptions.AlreadyClosedException;
-import org.apache.ratis.protocol.exceptions.StateMachineException;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.util.ArrayList;
@@ -58,9 +58,6 @@ class RaftGroupCommitter {
   static final long DEFAULT_MAX_QUEUED_BYTES = 256L * 1024 * 1024;
 
   /** Throttle for the "approaching cap" warning: at most one log line per minute. */
-  /** How deep a cause chain is walked; deeper than any real chain, and a guard against a cyclic one. */
-  private static final int MAX_CAUSE_DEPTH = 32;
-
   private static final long WARN_THROTTLE_MS = 60_000;
 
   /**
@@ -615,17 +612,13 @@ class RaftGroupCommitter {
   }
 
   /**
-   * The retryable conflict the leader refused the entry with BEFORE appending it (issue #6965), found by walking the
-   * cause chain, or {@code null} when the failure is something else. Such an entry never reached the log, so its
-   * outcome is definite: the caller rolls back and retries, exactly as for a single-node conflict.
+   * The retryable conflict the leader refused the entry with BEFORE appending it (issue #6965), or {@code null} when
+   * the failure is something else. Such an entry never reached the log, so its outcome is definite: the caller rolls
+   * back and retries, exactly as for a single-node conflict. One walk, shared with the log filter that mutes the same
+   * refusal.
    */
   static NeedRetryException refusedBeforeAppend(final Throwable thrown) {
-    // Bounded walk: a throwable chain can be cyclic, and a depth cap needs no identity comparison.
-    Throwable t = thrown;
-    for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; depth++, t = t.getCause())
-      if (t instanceof StateMachineException refusal && refusal.getCause() instanceof NeedRetryException conflict)
-        return conflict;
-    return null;
+    return RatisRefusedEntryErrorFilter.refusedBeforeAppend(thrown);
   }
 
   /**

@@ -2124,7 +2124,8 @@ public class TransactionContext implements Transaction {
     try {
       finishCommitBookkeeping();
       committed = true;
-    } catch (final TransactionException e) {
+    } catch (final ConcurrentModificationException | TransactionException e) {
+      // Same arms as commit2ndPhase: a retryable conflict and a first-class transaction error travel unwrapped.
       commitFailureCause = e;
       throw e;
     } catch (final Exception e) {

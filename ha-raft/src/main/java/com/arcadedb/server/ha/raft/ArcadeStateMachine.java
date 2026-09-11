@@ -74,6 +74,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -463,7 +464,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Ratis transaction context so the entry is decoded once: whether this node's own client submitted it, and the
    * decoded payload.
    */
-  private record AppendedEntry(boolean originatedLocally, RaftLogEntryCodec.DecodedEntry decoded, PageVersionLedger.EntryId entryId) {
+  private record AppendedEntry(boolean originatedLocally, RaftLogEntryCodec.DecodedEntry decoded, PageVersionLedger.EntryId entryId,
+                               PageVersionLedger.Pages pages) {
   }
 
 
@@ -807,17 +809,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     final PageVersionLedger.EntryId entryId = new PageVersionLedger.EntryId(request.getClientId(), request.getCallId());
+    // Decoded once: the same page list serves the validation here, the confirmation at append and the release at apply.
+    final PageVersionLedger.Pages pages;
+    try {
+      pages = PageVersionLedger.parse(decoded.walData());
+    } catch (final RuntimeException e) {
+      return context.build().setException(e);
+    }
     final DatabaseInternal db = databaseForValidation(decoded.databaseName());
     if (db != null)
       try {
-        validateBeforeAppend(db, decoded.walData(), entryId);
+        pageVersions.validateAndReserve(db.getName(), pages, entryId, localVersionsOf(db));
       } catch (final ConcurrentModificationException e) {
         HALog.log(this, HALog.DETAILED, "Refusing tx %d on database '%s': %s",
             peekWalTransactionId(decoded.walData()), decoded.databaseName(), e.getMessage());
         return context.build().setException(e);
       }
 
-    return context.setStateMachineContext(new AppendedEntry(isLocalOrigin, decoded, entryId)).build();
+    return context.setStateMachineContext(new AppendedEntry(isLocalOrigin, decoded, entryId, pages)).build();
   }
 
   /**
@@ -905,7 +914,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // A transaction entry also counts as this node's own when its client id is one of this node's, whatever the
         // context says: after a step-down, an entry this node appended is applied here with a fresh context, and the
         // committing thread may still be waiting for it.
-        case TX_ENTRY -> applyTxEntry(decoded, index, originatedLocally || isOwnClientEntry(entry));
+        case TX_ENTRY -> applyTxEntry(decoded, index, originatedLocally || isOwnClientEntry(entry),
+            context instanceof AppendedEntry appended ? appended.pages() : null);
         case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
         case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
         case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
@@ -1816,7 +1826,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   @Override
   public TransactionContext preAppendTransaction(final TransactionContext trx) throws IOException {
     if (trx.getStateMachineContext() instanceof AppendedEntry appended)
-      pageVersions.confirmAppended(appended.decoded().databaseName(), appended.decoded().walData(), appended.entryId());
+      pageVersions.confirmAppended(appended.decoded().databaseName(), appended.pages(), appended.entryId());
     return trx;
   }
 
@@ -1828,13 +1838,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // @VisibleForTesting
   void validateBeforeAppend(final DatabaseInternal db, final byte[] walData, final PageVersionLedger.EntryId entryId)
       throws IOException {
-    pageVersions.validateAndReserve(db.getName(), walData, entryId, localVersionsOf(db));
+    pageVersions.validateAndReserve(db.getName(), PageVersionLedger.parse(walData), entryId, localVersionsOf(db));
   }
 
   /** Releases the page versions an entry reserved, as the apply thread does once the entry is applied. */
   // @VisibleForTesting
   void releaseReservedVersions(final String databaseName, final byte[] walData) {
-    pageVersions.release(databaseName, walData);
+    pageVersions.release(databaseName, null, walData);
   }
 
   /** The database an entry targets, or {@code null} when it cannot be resolved here (it is then validated at apply). */
@@ -1879,7 +1889,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * applied every earlier entry).
    */
   @Override
-  public void notifyNotLeader(final java.util.Collection<TransactionContext> pendingEntries) throws IOException {
+  public void notifyNotLeader(final Collection<TransactionContext> pendingEntries) throws IOException {
     super.notifyNotLeader(pendingEntries);
     pageVersions.clearAll();
   }
@@ -1902,7 +1912,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * page-version guards in {@code applyChanges} make that idempotent.
    */
   private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
-      final boolean originatedLocally) {
+      final boolean originatedLocally, final PageVersionLedger.Pages pages) {
     final String databaseName = decoded.databaseName();
     final LocalCommit local = originatedLocally ? localCommits.claim(databaseName, peekWalTransactionId(decoded.walData())) : null;
     try {
@@ -1913,7 +1923,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } finally {
       // Applied, published or reconciled, the local copy of every page of this entry now carries its version, so the
       // reservation taken at append time has done its job. A no-op on a follower, whose ledger is empty.
-      pageVersions.release(databaseName, decoded.walData());
+      pageVersions.release(databaseName, pages, decoded.walData());
     }
   }
 
@@ -1925,20 +1935,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private void publishLocalCommit(final LocalCommit local, final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
     HALog.log(this, HALog.DETAILED, "Publishing locally-originated tx %d on database '%s' at log index %d",
         local.walTxId(), decoded.databaseName(), entryIndex);
+    boolean published = false;
+    Throwable failure = null;
+    boolean reconciled = false;
     try {
       final Consumer<String> phase2Fault = RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT;
       if (phase2Fault != null)
         phase2Fault.accept(decoded.databaseName());
 
       local.transaction().publishCommittedPages(local.phase1());
-      local.published();
+      published = true;
     } catch (final Throwable t) {
-      LogManager.instance().log(this, Level.SEVERE,
-          "Publishing the pages of locally-originated tx %d on database '%s' failed at log index %d after the entry was "
-              + "committed cluster-wide; reconciling the local pages from the replicated payload: %s",
-          local.walTxId(), decoded.databaseName(), entryIndex, t.getMessage());
-      boolean reconciled = false;
+      failure = t;
       try {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Publishing the pages of locally-originated tx %d on database '%s' failed at log index %d after the entry was "
+                + "committed cluster-wide; reconciling the local pages from the replicated payload: %s",
+            local.walTxId(), decoded.databaseName(), entryIndex, t.getMessage());
         final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
         db.getTransactionManager().applyChanges(deserializeWalTransaction(decoded.walData()), decoded.bucketRecordDelta(), true);
         reconciled = true;
@@ -1947,7 +1960,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
             "Reconciling the pages of tx %d on database '%s' from the replicated payload also failed: %s",
             local.walTxId(), decoded.databaseName(), reconcileError.getMessage());
       }
-      local.failed(t, reconciled);
+    } finally {
+      // The committing thread waits on this claim without a timeout: whatever happened above, it is resolved here.
+      if (published)
+        local.published();
+      else
+        local.failed(failure, reconciled);
     }
   }
 

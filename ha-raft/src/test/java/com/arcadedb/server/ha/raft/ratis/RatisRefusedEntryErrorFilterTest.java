@@ -67,6 +67,12 @@ class RatisRefusedEntryErrorFilterTest {
     assertThat(filter.getDelegate()).isSameAs(rejectAll);
   }
 
+  /** The filter is keyed to a Ratis-internal class name: a Ratis bump that renames it must turn this red. */
+  @Test
+  void theLoggerNameIsAClassOfTheShippedRatis() throws ClassNotFoundException {
+    assertThat(Class.forName(RatisRefusedEntryErrorFilter.RATIS_ORDERED_ASYNC_LOGGER)).isNotNull();
+  }
+
   @Test
   void installIsIdempotent() {
     RatisRefusedEntryErrorFilter.install();

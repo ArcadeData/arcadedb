@@ -75,13 +75,20 @@ final class PageVersionLedger {
     int versionOf(int fileId, int pageNumber) throws IOException;
   }
 
-  /** Receives one page of a replicated WAL transaction. */
-  interface PageVisitor {
-    void visit(int fileId, int pageNumber, int targetVersion) throws IOException;
-  }
-
   /** Identity of a replicated request: the Raft client that submitted it and its call id, unique cluster-wide. */
   record EntryId(Object client, long callId) {
+  }
+
+  /**
+   * The pages of a replicated WAL transaction with the version each is written at, decoded once from the entry's
+   * bytes and reused by every step of the entry's life on the leader: validation, confirmation and release. Arrays of
+   * primitives, one slot per page segment (a page split in several modified intervals appears once per segment, at
+   * the same version).
+   */
+  record Pages(int[] fileIds, int[] pageNumbers, int[] versions) {
+    int count() {
+      return fileIds.length;
+    }
   }
 
   private static final class Reservation {
@@ -113,13 +120,16 @@ final class PageVersionLedger {
    * @throws ConcurrentModificationException when at least one page was validated against a superseded version, or
    *                                         one that this node has not reached yet; nothing is reserved in that case
    */
-  void validateAndReserve(final String databaseName, final byte[] walData, final EntryId entry, final LocalVersions local)
+  void validateAndReserve(final String databaseName, final Pages pages, final EntryId entry, final LocalVersions local)
       throws IOException {
     final DatabaseLedger ledger = byDatabase.computeIfAbsent(databaseName, k -> new DatabaseLedger());
     final long now = System.currentTimeMillis();
     synchronized (ledger) {
       // Validate everything first: an entry is refused as a whole, so no page of a refused entry may stay reserved.
-      forEachPage(walData, (fileId, pageNumber, targetVersion) -> {
+      for (int i = 0; i < pages.count(); i++) {
+        final int fileId = pages.fileIds()[i];
+        final int pageNumber = pages.pageNumbers()[i];
+        final int targetVersion = pages.versions()[i];
         final long key = pageKey(fileId, pageNumber);
         Reservation reserved = ledger.pages.get(key);
         if (reserved != null && !reserved.appended && !reserved.entry.equals(entry)
@@ -139,39 +149,41 @@ final class PageVersionLedger {
 
         if (targetVersion != expected + 1)
           throw new ReplicatedPageConflictException(databaseName, fileId, pageNumber, targetVersion - 1, expected);
-      });
+      }
 
-      forEachPage(walData, (fileId, pageNumber, targetVersion) ->
-          ledger.pages.put(pageKey(fileId, pageNumber), new Reservation(targetVersion, entry, now)));
+      for (int i = 0; i < pages.count(); i++)
+        ledger.pages.put(pageKey(pages.fileIds()[i], pages.pageNumbers()[i]), new Reservation(pages.versions()[i], entry, now));
     }
   }
 
   /** Marks the reservations of an entry as backed by the log: the entry has been appended at its final position. */
-  void confirmAppended(final String databaseName, final byte[] walData, final EntryId entry) {
+  void confirmAppended(final String databaseName, final Pages pages, final EntryId entry) {
     final DatabaseLedger ledger = byDatabase.get(databaseName);
     if (ledger == null)
       return;
-    walk(walData, (fileId, pageNumber, targetVersion) -> {
-      final Reservation reserved = ledger.pages.get(pageKey(fileId, pageNumber));
+    for (int i = 0; i < pages.count(); i++) {
+      final Reservation reserved = ledger.pages.get(pageKey(pages.fileIds()[i], pages.pageNumbers()[i]));
       if (reserved != null && reserved.entry.equals(entry))
         reserved.appended = true;
-    });
+    }
   }
 
   /**
    * Releases the reservations of an entry once it has been applied on this node. A page whose reservation moved on to
-   * a later entry is left alone.
+   * a later entry is left alone. The pages are decoded from the entry only when there is something to release, so a
+   * follower, whose ledger is empty, never pays the decode.
    */
-  void release(final String databaseName, final byte[] walData) {
+  void release(final String databaseName, final Pages pagesOrNull, final byte[] walData) {
     final DatabaseLedger ledger = byDatabase.get(databaseName);
     if (ledger == null || ledger.pages.isEmpty())
       return;
-    walk(walData, (fileId, pageNumber, targetVersion) -> {
-      final long key = pageKey(fileId, pageNumber);
+    final Pages pages = pagesOrNull != null ? pagesOrNull : parse(walData);
+    for (int i = 0; i < pages.count(); i++) {
+      final long key = pageKey(pages.fileIds()[i], pages.pageNumbers()[i]);
       final Reservation reserved = ledger.pages.get(key);
-      if (reserved != null && reserved.version == targetVersion)
+      if (reserved != null && reserved.version == pages.versions()[i])
         ledger.pages.remove(key, reserved);
-    });
+    }
   }
 
   /**
@@ -199,20 +211,14 @@ final class PageVersionLedger {
     byDatabase.clear();
   }
 
-  private static void walk(final byte[] walData, final PageVisitor visitor) {
-    try {
-      forEachPage(walData, visitor);
-    } catch (final IOException e) {
-      throw new ReplicationException("Corrupted WAL transaction entry", e);
-    }
-  }
-
   /**
-   * Walks the page headers of a replicated WAL transaction without materializing the deltas. Same layout as
+   * Decodes the page headers of a replicated WAL transaction without materializing the deltas. Same layout as
    * {@link ArcadeStateMachine#deserializeWalTransaction(byte[])}: txId, timestamp, page count, segment size, then per
    * page the file id, page number, delta range, target version, page size and the delta bytes.
+   *
+   * @throws ReplicationException when the bytes do not describe a well-formed transaction
    */
-  static void forEachPage(final byte[] walData, final PageVisitor visitor) throws IOException {
+  static Pages parse(final byte[] walData) {
     if (walData == null || walData.length < WAL_TX_HEADER_SIZE)
       throw new ReplicationException("Corrupted WAL transaction entry: truncated header");
 
@@ -223,19 +229,22 @@ final class PageVersionLedger {
     if (pageCount < 0 || (long) pageCount * WAL_PAGE_HEADER_SIZE > buf.remaining())
       throw new ReplicationException("Corrupted WAL transaction entry: invalid page count " + pageCount);
 
+    final int[] fileIds = new int[pageCount];
+    final int[] pageNumbers = new int[pageCount];
+    final int[] versions = new int[pageCount];
     for (int i = 0; i < pageCount; i++) {
-      final int fileId = buf.getInt();
-      final int pageNumber = buf.getInt();
+      fileIds[i] = buf.getInt();
+      pageNumbers[i] = buf.getInt();
       final int changesFrom = buf.getInt();
       final int changesTo = buf.getInt();
-      final int targetVersion = buf.getInt();
+      versions[i] = buf.getInt();
       buf.getInt(); // currentPageSize
       final int deltaSize = changesTo - changesFrom + 1;
       if (deltaSize <= 0 || changesFrom < 0 || deltaSize > buf.remaining())
         throw new ReplicationException("Corrupted WAL transaction entry: invalid delta range [" + changesFrom + "," + changesTo
-            + "] for page " + fileId + ":" + pageNumber);
-      visitor.visit(fileId, pageNumber, targetVersion);
+            + "] for page " + fileIds[i] + ":" + pageNumbers[i]);
       buf.position(buf.position() + deltaSize);
     }
+    return new Pages(fileIds, pageNumbers, versions);
   }
 }

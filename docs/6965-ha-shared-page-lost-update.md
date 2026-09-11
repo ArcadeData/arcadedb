@@ -66,6 +66,22 @@ reproducer showed thousands of refusals per increment. The refusal carries the p
 at, and `RaftReplicatedDatabase` waits (bounded) for the local copy to reach it before returning the conflict, which
 turns a starvation into a fair race.
 
+### What the committing thread waits for
+
+Once the apply thread has claimed a transaction, the committing thread waits for the publication to conclude without
+giving up: the pages and file locks belong to the apply thread until then, and releasing them under it would let the
+next committer on those files validate against a publication in flight. The publication is a validation, a WAL
+append and a page-cache put, so the wait is microseconds; a stall of the single Ratis apply thread already stalls
+replication for every database on the node, and this wait does not add a coupling that was not there. The claim is
+resolved in a `finally`, so a failure anywhere in the publication (including in the logging around it) still wakes
+the committer with a `FAILED` outcome.
+
+The registry needs no sweep: every exit of `replicateAndCommitLocally` either withdraws the registration or finds it
+claimed, and a claim removes it. The one exit that could not be reasoned about is an entry Ratis acknowledged without
+the state machine ever applying it - impossible with a real Ratis, which acknowledges after the apply, but what a
+stubbed Raft server does - and that exit withdraws and publishes on the committing thread, the pre-#6965 way, so
+nothing waits on a claim that cannot come.
+
 ## The Ratis trap
 
 Refusing from `preAppendTransaction` would be the textbook place - it is the one hook with a total order - and it
