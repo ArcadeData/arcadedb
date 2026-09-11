@@ -70,6 +70,11 @@ class Issue7338VerifyChecksumsSealedStoresTest {
   private static final int    SAMPLES       = 20_000;
   /** A wait that is EXPECTED to expire: it IS the assertion. A stall can only make it more true. */
   private static final long   BLOCKED_PROBE_MS = 2_000L;
+  /**
+   * Budget for a thread to reach the lock it is expected to park on. Generous on purpose: a wider bound cannot
+   * turn a passing run red, it only decides how long a genuinely broken test takes to say so.
+   */
+  private static final long   PARK_WAIT_MS     = 30_000L;
 
   @BeforeEach
   @AfterEach
@@ -191,6 +196,12 @@ class Issue7338VerifyChecksumsSealedStoresTest {
         verifier.setDaemon(true);
         verifier.start();
 
+        // BEFORE the "still blocked" assertion, and this is the point of it (CodeRabbit on PR #7474): a bare
+        // await() also expires when the verifier thread simply never got scheduled, so it would keep passing
+        // after computeLocalChecksums stopped taking the pause at all. Waiting until the thread is provably
+        // parked INSIDE TimeSeriesCompactionPause.acquire is what makes the assertion about the lock.
+        awaitParkedIn(verifier, "TimeSeriesCompactionPause", "acquire");
+
         assertThat(collected.await(BLOCKED_PROBE_MS, TimeUnit.MILLISECONDS))
             .as("the collection must wait for an install in flight rather than photograph it halfway")
             .isFalse();
@@ -260,6 +271,31 @@ class Issue7338VerifyChecksumsSealedStoresTest {
    * assertion would leak one per call. Closed in {@link #clean()}.
    */
   private final PostVerifyDatabaseHandler handler = new PostVerifyDatabaseHandler(null, null);
+
+  /**
+   * Blocks until {@code thread} is parked inside {@code className.methodName}, or fails.
+   * <p>
+   * The discriminator a "did it stay blocked?" assertion needs: an elapsed wait proves nothing on its own,
+   * because a thread that was never scheduled produces exactly the same elapsed wait as one that is correctly
+   * held. Reading the stack rather than only {@link Thread.State} is deliberate - a thread can be WAITING for
+   * reasons that have nothing to do with the lock under test.
+   */
+  private static void awaitParkedIn(final Thread thread, final String className, final String methodName)
+      throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + PARK_WAIT_MS;
+    while (System.currentTimeMillis() < deadline) {
+      final Thread.State state = thread.getState();
+      if (state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING)
+        for (final StackTraceElement frame : thread.getStackTrace())
+          if (frame.getClassName().endsWith(className) && methodName.equals(frame.getMethodName()))
+            return;
+      if (state == Thread.State.TERMINATED)
+        break;
+      Thread.sleep(10);
+    }
+    throw new AssertionError("thread '" + thread.getName() + "' never parked in " + className + "." + methodName
+        + " (state=" + thread.getState() + "); the block assertion that follows would have been vacuous");
+  }
 
   private JSONObject localChecksums(final DatabaseInternal db) {
     final JSONObject checksums = new JSONObject();
