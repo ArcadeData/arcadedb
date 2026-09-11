@@ -92,7 +92,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
   /**
    * The target of a count can be a context variable, resolved only at execution time - so the check cannot live in
    * the planner, where the name is still {@code $t}. It sits in {@link CountFromTypeStep} instead, and this pins
-   * that the indirection does not reopen the issue one step away from the case above (PR #7478 review).
+   * that the indirection does not reopen the issue one step away from the case above (issue #7477).
    */
   @Test
   void theCountAgreesWithTheScanThroughAVariableTargetToo() {
@@ -159,7 +159,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
    * A {@code @rid} filter can only ever name a record-backed edge - a lightweight one has no addressable identity -
    * so the RID short-circuit is correct on such a type and must keep winning over the walk. It matters on a mixed
    * hierarchy, where the record half is the only half a RID can reach and the walk would otherwise be paid in full
-   * to answer a single-row lookup (PR #7478 review).
+   * to answer a single-row lookup (issue #7477, and the RID short-circuit of #5824).
    */
   @Test
   void theRidShortCircuitStillWinsOnAMixedHierarchy() {
@@ -205,7 +205,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
    * The whole design rests on the outgoing entry always being written while the incoming one is the optional half,
    * so walking OUT alone is complete and yields each edge exactly once. A non-bidirectional LIGHTWEIGHT type is the
    * combination that would break if that ever stopped being true, and it is the one no other test constructs
-   * (PR #7478 review).
+   * (issue #7477).
    */
   @Test
   void aNonBidirectionalLightweightTypeIsWalkedCompletelyAndOnce() {

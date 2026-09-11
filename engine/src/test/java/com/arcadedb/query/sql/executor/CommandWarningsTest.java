@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * The interval arithmetic behind {@code COMMAND_WARNINGS_EVERY}, which two copies had wrong in the same way:
  * {@code counter % every == 1} never holds at {@code every = 1}, so the setting's MOST verbose value - documented
- * as "every occurrence" - silenced the warning completely (PR #7478 review).
+ * as "every occurrence" - silenced the warning completely (found while fixing issue #7477).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

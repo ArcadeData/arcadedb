@@ -128,7 +128,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
     // between the schema snapshot above and this lookup. The total only decides whether to log a warning, so every
     // way of not knowing a bucket's size counts it as 0 rather than failing the query - and it is not computed at
     // all when warnings are off. Page count rather than getSize(): same number, but a field read instead of the
-    // channel lock and the channel.size() syscall (#6132, PR #7478 review).
+    // channel lock and the channel.size() syscall (#6132).
     long typeFileSize = 0;
     if (CommandWarnings.isEnabled())
       for (final int fileId : bucketIds)

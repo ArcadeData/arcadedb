@@ -143,7 +143,7 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
     // scan below happens to check the same set today - iterateType() opens a BucketIterator per bucket of the
     // hierarchy, and each of those checks - but that is incidental, and it would go away the moment this step
     // learned to skip the (usually empty) record scan on a purely lightweight type. Stated here so the coverage
-    // belongs to the walk rather than to a side effect of something else (PR #7478 review).
+    // belongs to the walk rather than to a side effect of something else.
     checkAccessOnTypeAndSubTypes(database, schema.getType(edgeTypeName));
 
     typeRecords = database.iterateType(edgeTypeName, true);
@@ -180,7 +180,7 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
    * O(1) cached counter to this, which is a complexity class an operator would otherwise discover on a large graph
    * by watching a query they believe is free. Throttled through {@link CommandWarnings} and sized on the same
    * threshold as the type-scan warning in {@link FetchFromTypeExecutionStep}, so the two speak about "large" in the
-   * same terms (PR #7478 review).
+   * same terms.
    */
   private void warnIfTheVertexSetIsLarge(final DatabaseInternal database) {
     if (vertexSetSize <= FetchFromTypeExecutionStep.LARGE_TYPE_BYTES)
@@ -203,7 +203,7 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
    * {@code getTotalPagesFromChannel()} exists to let a test assert (#6132) - but one is a field read and the other
    * takes the channel lock and a {@code channel.size()} syscall. This runs once per bucket of every vertex type in
    * the schema on every query against a lightweight edge type, so on a wide schema the syscall version is a burst
-   * of them in front of even {@code SELECT ... LIMIT 1} (PR #7478 review).
+   * of them in front of even {@code SELECT ... LIMIT 1}.
    * <p>
    * {@code getFileIfExists}, not {@code getFile}: the latter throws when the id is not registered, and a bucket can
    * be dropped between the schema snapshot this walk took and this lookup. Failing a whole query over a number that

@@ -75,7 +75,7 @@ public final class SecurityHelper {
    * {@code LocalDatabase.checkPermissionsOnFile}: a missing context or current user is embedded usage or an
    * internal caller, never an anonymous request - the server binds the user before a query is planned. Stated here
    * because the default is only safe while that holds: a caller reusing this from somewhere a request CAN arrive
-   * without a user would be reading "allow everything" as "allow this one" (PR #7478 review).
+   * without a user would be reading "allow everything" as "allow this one".
    */
   public static boolean canAccessFile(final DatabaseInternal database, final int fileId, final SecurityDatabaseUser.ACCESS access) {
     final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());

@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>
  * One implementation rather than a copy per warning site. The copies had the interval arithmetic wrong in the same
  * way - {@code counter % every == 1} silences the warning completely at {@code every = 1}, which is the setting's
- * most verbose value and is documented as "every occurrence" (PR #7478 review). The count is per key and per JVM,
+ * most verbose value and is documented as "every occurrence" (found while fixing issue #7477). The count is per key and per JVM,
  * like the setting.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
