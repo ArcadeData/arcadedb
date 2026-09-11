@@ -341,8 +341,11 @@ public final class SnapshotInstaller {
       Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_FILE));
 
       try {
-        // Re-open the database so the server registers it (also validates the snapshot is loadable)
-        server.getDatabase(databaseName);
+        // Re-open the database so the server registers it (also validates the snapshot is loadable). The pending
+        // marker is still on disk at this point - it is cleared only once this open succeeds - and it is what
+        // stops every other caller from opening the directory, so this one reopen has to say it owns the marker
+        // (issue #7129).
+        server.reopenDatabaseUnderSnapshotRecovery(databaseName);
       } catch (final RuntimeException openEx) {
         // The freshly installed snapshot will not open (corrupt/incompatible files). Roll back to the
         // previous local copy and reopen it so the node is never left with a closed database.
@@ -600,12 +603,15 @@ public final class SnapshotInstaller {
 
   /**
    * Best-effort reopen used by the rollback paths: a failure here must not mask the original cause,
-   * so it only logs. {@link ArcadeDBServer#getDatabase} opens and registers the database from disk
-   * when it is not already registered.
+   * so it only logs. {@link ArcadeDBServer#reopenDatabaseUnderSnapshotRecovery} opens and registers the database
+   * from disk when it is not already registered, looking past the {@code .snapshot-pending} marker these paths
+   * deliberately retain.
    */
   private static void reopenQuietly(final ArcadeDBServer server, final String databaseName) {
     try {
-      server.getDatabase(databaseName);
+      // Every caller of this is mid-reconciliation with the pending marker still on disk, so it reopens through
+      // the installer-only entry point rather than the one that refuses a marked directory (issue #7129).
+      server.reopenDatabaseUnderSnapshotRecovery(databaseName);
     } catch (final Exception e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
           "Failed to reopen database '%s' after a snapshot-install rollback; manual intervention may be required",
