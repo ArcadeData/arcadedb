@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
@@ -39,6 +40,7 @@ import org.apache.ratis.metrics.RatisMetricRegistry;
 import org.apache.ratis.metrics.impl.RatisMetricRegistryImpl;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.ClientId;
+import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftGroup;
@@ -97,6 +99,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -201,6 +204,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // still copies it to a local before use so a concurrent reassignment cannot null it mid-method.
   private volatile RaftServer                raftServer;
   private          RaftClient                raftClient;
+  // Every client id this node used to submit entries in its lifetime: the state machine recognises an entry this node
+  // originated by it even when the entry is applied with a fresh context, e.g. after a step-down (issue #6965).
+  private final    Set<ByteString>           ownClientIds          = ConcurrentHashMap.newKeySet();
   private volatile RaftProperties            raftProperties;
   private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
@@ -968,6 +974,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // Drop the one by-design SimpleStateMachineStorage warning about the missing snapshot digest,
     // without silencing that logger's genuine failures (issue #6991).
     RatisSnapshotDigestWarningFilter.install();
+    // Drop the Ratis client's SEVERE for an entry the leader refused before appending it: that is an ordinary
+    // retryable conflict since issue #6965, not a send failure.
+    RatisRefusedEntryErrorFilter.install();
 
     final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
 
@@ -1008,7 +1017,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     this.raftProperties = properties;
 
-    raftClient = buildRaftClient(raftGroup, properties, parameters);
+    raftClient = adoptClient(buildRaftClient(raftGroup, properties, parameters));
 
     LogManager.instance()
         .log(this, Level.INFO, "Raft cluster joined: %d nodes %s", peerDisplayNames.size(), peerDisplayNames.values());
@@ -1538,7 +1547,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             .build();
         this.raftServer.start();
         this.raftProperties = properties;
-        this.raftClient = buildRaftClient(raftGroup, properties, recoveryParameters);
+        this.raftClient = adoptClient(buildRaftClient(raftGroup, properties, recoveryParameters));
 
         final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
         final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
@@ -1748,6 +1757,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return raftClient;
   }
 
+  /** Whether a Raft client id (as carried by a log entry) belongs to a client this node created in its lifetime. */
+  public boolean isOwnClientId(final ByteString clientId) {
+    return clientId != null && ownClientIds.contains(clientId);
+  }
+
+  private RaftClient adoptClient(final RaftClient client) {
+    if (client != null)
+      ownClientIds.add(client.getId().toByteString());
+    return client;
+  }
+
   public RaftTransactionBroker getTransactionBroker() {
     return transactionBroker;
   }
@@ -1781,7 +1801,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // no broker is available to concurrent callers (the field is volatile).
     final RaftClient oldClient = raftClient;
 
-    raftClient = buildRaftClient(raftGroup, raftProperties, raftParameters, knownLeaderId);
+    raftClient = adoptClient(buildRaftClient(raftGroup, raftProperties, raftParameters, knownLeaderId));
 
     if (transactionBroker != null) {
       final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
@@ -2904,6 +2924,24 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Waits until the condition holds, re-evaluating it whenever the state machine applies an entry.
+   *
+   * @return {@code false} when the timeout elapsed first
+   */
+  public boolean awaitApplied(final BooleanSupplier condition, final long timeoutMs) throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + timeoutMs;
+    synchronized (applyNotifier) {
+      while (!condition.getAsBoolean()) {
+        final long remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0)
+          return false;
+        applyNotifier.wait(Math.min(remaining, 50L));
+      }
+    }
+    return true;
+  }
+
+  /**
    * Lenient overload (READ_YOUR_WRITES / bookmark wait): on timeout it logs and returns,
    * allowing the read to proceed against possibly-stale local state. Never used by the
    * LINEARIZABLE path - see {@link #waitForAppliedIndex(long, boolean)}.
@@ -3389,16 +3427,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * In-flight leader-side phase-2 holds on the Raft snapshot checkpoint (issue #5410). Reported on
-   * every node, not just the leader: a ticket taken while this node WAS the leader keeps pinning log
-   * compaction after it steps down, which is exactly the case an operator needs to see.
+   * Transactions this node originated whose pages the Raft apply thread has not published yet (issue #6965): the
+   * leader-side phase 2 in flight. Since the apply thread publishes them at the entry's log position, before the
+   * applied index moves past it, no snapshot checkpoint is ever held back by them any more: the replay floor is
+   * always {@code -1} (kept in the record for the gauge's stability).
    */
   public HAReplicationStatsProvider.PendingPhase2Stats getPendingPhase2Stats() {
     final ArcadeStateMachine sm = stateMachine;
     if (sm == null)
       return new HAReplicationStatsProvider.PendingPhase2Stats(0, 0, -1);
-    return new HAReplicationStatsProvider.PendingPhase2Stats(
-        sm.pendingLocalPhase2Count(), sm.oldestPendingLocalPhase2HeldMs(), sm.lowestPendingLocalPhase2ReplayFloor());
+    return new HAReplicationStatsProvider.PendingPhase2Stats(sm.pendingLocalCommits(), sm.oldestPendingLocalCommitMs(), -1);
   }
 
   /**

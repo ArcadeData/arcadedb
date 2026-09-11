@@ -94,7 +94,7 @@ class Issue5410AbandonedTicketReleaseIT extends BaseRaftHATest {
 
     // A cleanly committed write must leave nothing pinned: this is the baseline the faulted commit
     // is compared against, and it also proves the assertion below can actually observe a release.
-    assertThat(awaitNoPendingPhase2(leaderStateMachine))
+    assertThat(awaitNoPendingLocalCommit(leaderStateMachine))
         .as("a cleanly replicated commit must not pin the snapshot checkpoint")
         .isTrue();
 
@@ -133,7 +133,10 @@ class Issue5410AbandonedTicketReleaseIT extends BaseRaftHATest {
     }
 
     assertThat(faultFired.get()).as("The dispatched-timeout fault must have fired").isTrue();
-    assertThat(threw).as("commit() must surface the indeterminate replication error").isTrue();
+    // Either outcome is correct since #6965 (see Issue4790PhantomCommitOriginSkipIT): the commit reports the
+    // indeterminate result if it withdrew the transaction before the apply thread claimed it, or completes if
+    // the apply thread had already published the entry. The invariants below hold in both cases.
+    LogManager.instance().log(this, Level.INFO, "TEST: commit %s", threw ? "reported the indeterminate outcome" : "completed");
 
     // The abandoned entry reaches quorum and every node - including the leader, via the
     // abandonedLocalTransactions path - converges on both vertices (the #4790 contract).
@@ -151,33 +154,31 @@ class Issue5410AbandonedTicketReleaseIT extends BaseRaftHATest {
           .as("Node %d must hold both vertices", i)
           .isEqualTo(2L);
 
-    // The #5410 assertion: the entry's pages are on disk here, so the ticket taken before the
-    // abandoned replication must have been released. Before the fix this stayed at 1 until restart.
-    assertThat(awaitNoPendingPhase2(leaderStateMachine))
-        .as("applying the abandoned entry must release its phase-2 ticket, unpinning log compaction")
+    // The #5410 assertion, in its #6965 form: the entry's pages are published here, so nothing about the
+    // transaction may stay registered with the state machine (before the fix a ticket stayed held until restart,
+    // pinning the Raft snapshot checkpoint and with it log compaction).
+    assertThat(awaitNoPendingLocalCommit(leaderStateMachine))
+        .as("applying the abandoned entry must consume its registration")
         .isTrue();
-
-    // With nothing pinned the checkpoint is free to move again, which is what Ratis needs before it
-    // can purge the Raft log - the operational symptom the issue reports.
-    assertThat(leaderStateMachine.lowestPendingLocalPhase2ReplayFloor())
-        .as("no replay floor may remain pinned once the abandoned entry is applied")
-        .isEqualTo(-1L);
-    assertThat(leaderStateMachine.oldestPendingLocalPhase2HeldMs())
-        .as("no ticket age may remain once the abandoned entry is applied")
+    assertThat(leaderStateMachine.oldestPendingLocalCommitMs())
+        .as("no registration age may remain once the abandoned entry is applied")
+        .isZero();
+    assertThat(leaderStateMachine.reservedPageVersions(getDatabaseName()))
+        .as("no page version may stay reserved once the entry is applied")
         .isZero();
 
     assertClusterConsistency();
   }
 
   /**
-   * Waits for the leader to stop holding phase-2 tickets. Polled rather than asserted outright
-   * because the release happens on the Raft apply thread, asynchronously from the client commit that
+   * Waits for the leader to stop holding registered local commits. Polled rather than asserted outright
+   * because the claim happens on the Raft apply thread, asynchronously from the client commit that
    * observed the timeout.
    */
-  private static boolean awaitNoPendingPhase2(final ArcadeStateMachine stateMachine) throws InterruptedException {
+  private static boolean awaitNoPendingLocalCommit(final ArcadeStateMachine stateMachine) throws InterruptedException {
     final long deadline = System.currentTimeMillis() + 30_000;
     while (System.currentTimeMillis() < deadline) {
-      if (stateMachine.pendingLocalPhase2Count() == 0)
+      if (stateMachine.pendingLocalCommits() == 0)
         return true;
       Thread.sleep(100);
     }

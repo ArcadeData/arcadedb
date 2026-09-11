@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
@@ -27,6 +28,7 @@ import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.exceptions.AlreadyClosedException;
+import org.apache.ratis.protocol.exceptions.StateMachineException;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.util.ArrayList;
@@ -506,6 +508,15 @@ class RaftGroupCommitter {
         final long remainingNanos = deadlineNanos - System.nanoTime();
         final RaftClientReply reply = futures[i].get(remainingNanos, TimeUnit.NANOSECONDS);
         if (!reply.isSuccess()) {
+          // The leader refused the entry BEFORE appending it (a page-version conflict detected in
+          // ArcadeStateMachine.preAppendTransaction, issue #6965): a definite outcome, and a retryable one. Ratis
+          // rebuilds the cause on the client side from its class name and message, so it arrives as the same
+          // ConcurrentModificationException the leader threw.
+          final NeedRetryException refused = refusedBeforeAppend(reply.getException());
+          if (refused != null) {
+            batch.get(i).future.complete(refused);
+            continue;
+          }
           final String err = reply.getException() != null ? reply.getException().getMessage() : "replication failed";
           if (isClientClosed(reply.getException()))
             clientClosedDetected = true;
@@ -565,6 +576,13 @@ class RaftGroupCommitter {
                 "Group commit interrupted while awaiting quorum result (entry was dispatched to Raft; outcome unknown)"));
         break;
       } catch (final Exception e) {
+        // The Ratis client turns a refusal reply into an exceptional completion rather than a failed reply
+        // (RaftClientImpl.handleRaftException), so the leader's pre-append refusal (issue #6965) arrives here.
+        final NeedRetryException refused = refusedBeforeAppend(e);
+        if (refused != null) {
+          batch.get(i).future.complete(refused);
+          continue;
+        }
         if (isClientClosed(e))
           clientClosedDetected = true;
         final String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
@@ -591,6 +609,21 @@ class RaftGroupCommitter {
         }
       });
     }
+  }
+
+  /**
+   * The retryable conflict the leader refused the entry with BEFORE appending it (issue #6965), found by walking the
+   * cause chain, or {@code null} when the failure is something else. Such an entry never reached the log, so its
+   * outcome is definite: the caller rolls back and retries, exactly as for a single-node conflict.
+   */
+  static NeedRetryException refusedBeforeAppend(final Throwable thrown) {
+    for (Throwable t = thrown; t != null; t = t.getCause()) {
+      if (t instanceof StateMachineException refusal && refusal.getCause() instanceof NeedRetryException conflict)
+        return conflict;
+      if (t.getCause() == t)
+        break;
+    }
+    return null;
   }
 
   /**
