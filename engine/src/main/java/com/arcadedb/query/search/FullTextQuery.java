@@ -108,7 +108,9 @@ public final class FullTextQuery {
     } catch (final IndexException e) {
       // Lucene syntax the parser rejects is the caller's mistake and must be answered as one - HTTP 400, gRPC
       // INVALID_ARGUMENT - rather than as an internal error with a stack trace in the server log (issue #7393).
-      // Only the parser's IndexException is re-typed: any other failure on this path is a server fault.
+      // Only the parser's IndexException is re-typed: any other failure on this path is a server fault. The same type
+      // is raised for an analyzer failure while tokenizing; no path under this call tokenizes today, so a future one
+      // has to be told apart here before it is filed as a client error.
       final String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
       throw new IllegalArgumentException("Invalid full-text query: " + detail, e);
     }
