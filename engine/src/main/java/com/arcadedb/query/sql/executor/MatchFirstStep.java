@@ -31,27 +31,50 @@ import java.util.Set;
 public class MatchFirstStep extends AbstractExecutionStep {
   private final PatternNode           node;
   final         InternalExecutionPlan executionPlan;
+  private final boolean               correlated;
 
   Iterator<Result> iterator;
   ResultSet        subResultSet;
+  private Result   seed;
 
   public MatchFirstStep(final CommandContext context, final PatternNode node) {
     this(context, node, null);
   }
 
   public MatchFirstStep(final CommandContext context, final PatternNode node, final InternalExecutionPlan subPlan) {
+    this(context, node, subPlan, false);
+  }
+
+  /**
+   * @param correlated true when this is the root of a disjoint sub-pattern that reads, through {@code $matched}, an alias
+   *                   bound by another sub-pattern. {@link CartesianProductStep} then runs the sub-plan once per tuple of
+   *                   the sub-patterns before it, binding the {@code matched} context variable to that tuple: the step
+   *                   reads it as the seed every row it emits extends, so the hops after it see the outer aliases in the
+   *                   partial match exactly as they see the ones bound in their own sub-pattern (issue #7434)
+   */
+  public MatchFirstStep(final CommandContext context, final PatternNode node, final InternalExecutionPlan subPlan,
+      final boolean correlated) {
     super(context);
     this.node = node;
     this.executionPlan = subPlan;
+    this.correlated = correlated;
   }
 
   @Override
   public void reset() {
     this.iterator = null;
     this.subResultSet = null;
+    this.seed = null;
     if (executionPlan != null) {
       executionPlan.reset(this.getContext());
     }
+  }
+
+  @Override
+  public void close() {
+    if (subResultSet != null)
+      subResultSet.close();
+    super.close();
   }
 
   @Override
@@ -81,12 +104,14 @@ public class MatchFirstStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
 
         final ResultInternal result = new ResultInternal(context.getDatabase());
+        if (seed != null)
+          for (final String prop : seed.getPropertyNames())
+            result.setProperty(prop, seed.getProperty(prop));
         if (iterator != null)
           result.setProperty(getAlias(), iterator.next());
         else
           result.setProperty(getAlias(), subResultSet.next());
 
-        context.setVariable("matched", result);
         currentCount++;
         return result;
       }
@@ -102,6 +127,8 @@ public class MatchFirstStep extends AbstractExecutionStep {
 
   private void init(final CommandContext context) {
     if (iterator == null && subResultSet == null) {
+      if (correlated && context.getVariable(MatchBindMatchedStep.MATCHED_VARIABLE) instanceof Result outerTuple)
+        seed = outerTuple;
       final String alias = getAlias();
       final Object matchedNodes = context.getVariable(MatchPrefetchStep.PREFETCHED_MATCH_ALIAS_PREFIX + alias);
       if (matchedNodes != null) {

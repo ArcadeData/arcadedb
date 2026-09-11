@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.Result;
@@ -553,7 +554,16 @@ public final class HybridSearch {
     if (expanding)
       requireVertexType(database, typeIndex.getTypeName());
 
-    final Map<RID, Float> hits = FullTextSearch.search(typeIndex, queryText, limit);
+    // The parser's complaint about the caller's own query text is a client error, like every other stage's bad
+    // input; left unwrapped it reached the protocol surfaces as an internal error with a logged stack trace
+    // (issue #7393). Only the parser's own exception is re-typed: an execution-time IndexException - a tokenizer,
+    // analyzer or search-engine fault - is a server fault and stays a 500 with its stack trace.
+    final Map<RID, Float> hits;
+    try {
+      hits = FullTextSearch.search(typeIndex, queryText, limit);
+    } catch (final FullTextQueryParseException e) {
+      throw invalidExpression("full-text leg", e);
+    }
     final List<Map.Entry<RID, Float>> ranked = new ArrayList<>(hits.entrySet());
     // Score descending, tie-broken by RID so tied hits rank deterministically rather than by hash order.
     ranked.sort(Map.Entry.<RID, Float>comparingByValue().reversed().thenComparing(Map.Entry::getKey));

@@ -253,21 +253,25 @@ public class MatchEdgeTraverser {
 
           public void fetchNext() {
             final Object previousMatch = iCommandContext.getVariable("currentMatch");
-//            final ResultInternal matched = (ResultInternal) iCommandContext.getVariable("matched");
-//            if (matched != null) {
-//              matched.setProperty(getStartingPointAlias(), sourceRecord.getProperty(getStartingPointAlias()));
-//            }
-            while (iter.hasNext()) {
-              final ResultInternal next = iter.next();
-              final Document elem = next.toElement();
-              iCommandContext.setVariable("currentMatch", elem);
-              if (matchesFilters(iCommandContext, theFilter, elem) && matchesClass(theClassName, elem) && matchesCluster(
-                  theClusterId, elem) && matchesRid(iCommandContext, theTargetRid, elem)) {
-                nextElement = next;
-                break;
+            // $matched IS THE PARTIAL MATCH THIS HOP STARTS FROM, NOT THE ROW THE STEP LAST EMITTED (ISSUE #7434)
+            final Object previousMatched = iCommandContext.getVariable(MatchBindMatchedStep.MATCHED_VARIABLE);
+            iCommandContext.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, sourceRecord);
+            try {
+              while (iter.hasNext()) {
+                final ResultInternal next = iter.next();
+                final Document elem = next.toElement();
+                iCommandContext.setVariable("currentMatch", elem);
+                if (matchesFilters(iCommandContext, theFilter, elem) && matchesClass(theClassName, elem) && matchesCluster(
+                    theClusterId, elem) && matchesRid(iCommandContext, theTargetRid, elem)) {
+                  nextElement = next;
+                  break;
+                }
               }
+            } finally {
+              // THE FILTER IS ARBITRARY SQL: RESTORE EVEN WHEN IT THROWS, OR THE CONTEXT KEEPS THIS HOP'S BINDINGS
+              iCommandContext.setVariable("currentMatch", previousMatch);
+              iCommandContext.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, previousMatched);
             }
-            iCommandContext.setVariable("currentMatch", previousMatch);
           }
         };
       };
@@ -285,48 +289,54 @@ public class MatchEdgeTraverser {
       iCommandContext.setVariable("depth", depth);
       final Object previousMatch = iCommandContext.getVariable("currentMatch");
       iCommandContext.setVariable("currentMatch", startingPoint);
+      final Object previousMatched = iCommandContext.getVariable(MatchBindMatchedStep.MATCHED_VARIABLE);
+      iCommandContext.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, sourceRecord);
 
-      if (matchesFilters(iCommandContext, filter, startingPoint) && matchesClass(className, startingPoint) && matchesCluster(
-          clusterId, startingPoint) && matchesRid(iCommandContext, targetRid, startingPoint)) {
-        final ResultInternal rs = new ResultInternal(startingPoint.getRecord());
-        // set traversal depth in the metadata
-        rs.setMetadata("$depth", depth);
-        // set traversal path in the metadata
-        rs.setMetadata("$matchPath", pathToHere == null ? Collections.emptyList() : pathToHere);
-        // add the result to the list
-        ((List) result).add(rs);
-      }
+      try {
+        if (matchesFilters(iCommandContext, filter, startingPoint) && matchesClass(className, startingPoint) && matchesCluster(
+            clusterId, startingPoint) && matchesRid(iCommandContext, targetRid, startingPoint)) {
+          final ResultInternal rs = new ResultInternal(startingPoint.getRecord());
+          // set traversal depth in the metadata
+          rs.setMetadata("$depth", depth);
+          // set traversal path in the metadata
+          rs.setMetadata("$matchPath", pathToHere == null ? Collections.emptyList() : pathToHere);
+          // add the result to the list
+          ((List) result).add(rs);
+        }
 
-      if ((maxDepth == null || depth < maxDepth) && (whileCondition == null || whileCondition.matchesFilters(startingPoint,
-          iCommandContext))) {
+        if ((maxDepth == null || depth < maxDepth) && (whileCondition == null || whileCondition.matchesFilters(startingPoint,
+            iCommandContext))) {
 
-        final Iterable<ResultInternal> queryResult = traversePatternEdge(startingPoint, iCommandContext);
+          final Iterable<ResultInternal> queryResult = traversePatternEdge(startingPoint, iCommandContext);
 
-        for (final ResultInternal origin : queryResult) {
-          //          if(origin.equals(startingPoint)){
-          //            continue;
-          //          }
-          // TODO consider break strategies (eg. re-traverse nodes)
+          for (final ResultInternal origin : queryResult) {
+            //          if(origin.equals(startingPoint)){
+            //            continue;
+            //          }
+            // TODO consider break strategies (eg. re-traverse nodes)
 
-          final List<Identifiable> newPath = new ArrayList<>();
-          if (pathToHere != null) {
-            newPath.addAll(pathToHere);
-          }
+            final List<Identifiable> newPath = new ArrayList<>();
+            if (pathToHere != null) {
+              newPath.addAll(pathToHere);
+            }
 
-          final Document elem = origin.toElement();
-          newPath.add(elem.getIdentity());
+            final Document elem = origin.toElement();
+            newPath.add(elem.getIdentity());
 
-          final Iterable<ResultInternal> subResult = executeTraversal(iCommandContext, item, elem, depth + 1, newPath);
-          if (subResult instanceof Collection<? extends ResultInternal> collection) {
-            ((List) result).addAll(collection);
-          } else {
-            for (final ResultInternal i : subResult) {
-              ((List) result).add(i);
+            final Iterable<ResultInternal> subResult = executeTraversal(iCommandContext, item, elem, depth + 1, newPath);
+            if (subResult instanceof Collection<? extends ResultInternal> collection) {
+              ((List) result).addAll(collection);
+            } else {
+              for (final ResultInternal i : subResult) {
+                ((List) result).add(i);
+              }
             }
           }
         }
+      } finally {
+        iCommandContext.setVariable("currentMatch", previousMatch);
+        iCommandContext.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, previousMatched);
       }
-      iCommandContext.setVariable("currentMatch", previousMatch);
     }
     return result;
   }

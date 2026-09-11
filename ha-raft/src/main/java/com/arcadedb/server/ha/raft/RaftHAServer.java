@@ -194,6 +194,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // not advertised. Re-reported whenever the verdict changes, see {@code isNewAmbiguityVerdict} (issue #6297).
   private final    Map<HAServerPlugin.ROUTING_PROTOCOL, AtomicReference<String>> routingAmbiguityReported = createRoutingProtocolVerdicts();
   private final    Map<RaftPeerId, String> peerDisplayNames   = new ConcurrentHashMap<>();
+  // The server list as configured, in order, and the names the operator gave its entries: what
+  // resolvePeerIdByServerName() applies the local-peer resolution rules to (issue #7424).
+  private final    List<RaftPeer>          configuredPeerList;
+  private final    Map<RaftPeerId, String> configuredPeerNames;
   private final    String                  clusterName;
 
   // volatile: reassigned by the recovery path (restartRatis) and cleared by stop(), while background
@@ -356,6 +360,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           serverName, configuredPeers, synthesized.getId());
     }
     this.localPeerId = resolvedLocalPeerId;
+    this.configuredPeerList = peers;
+    this.configuredPeerNames = configuredPeerNames;
 
     // If this node is configured as a replica, override its Raft peer priority to 0
     // so Ratis never elects it as leader (useful for read-scale or witness nodes).
@@ -948,6 +954,31 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     } catch (final IOException ignored) {
       // best-effort cleanup
     }
+  }
+
+  /**
+   * The peer whose {@code arcadedb.server.name} is {@code serverName}, or {@code null} when no peer of the
+   * configured server list answers to it (issue #7424). Applies the rules a node uses to find ITSELF in the list
+   * ({@link RaftPeerAddressResolver#findLocalPeerId}) to another node's name: a configured {@code name@host}
+   * entry, a host equal to the name, or a {@code -N}/{@code _N} suffix naming the position in the list. Those
+   * rules hold on every node because every node reads the same list, so the answer here is the peer that node
+   * resolved itself to.
+   */
+  public RaftPeerId resolvePeerIdByServerName(final String serverName) {
+    if (serverName == null || serverName.isBlank())
+      return null;
+    try {
+      return RaftPeerAddressResolver.findLocalPeerId(configuredPeerList, configuredPeerNames, serverName, arcadeServer);
+    } catch (final IllegalArgumentException e) {
+      return null;
+    }
+  }
+
+  /**
+   * The HTTPS clients this node uses for its peer-to-peer RPCs, built once per server and reused (issue #7301).
+   */
+  TrustedHttpClientCache getHttpsClients() {
+    return capabilityHttpsClients;
   }
 
   /**
@@ -4310,12 +4341,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Installs the one {@code GrpcServices.Customizer} the Raft listener gets: the peer allowlist's transport filter
-   * and call interceptor (issues #7132, #7225, #7250) and the connection-idle window (issue #7316).
+   * and call interceptor (issues #7132, #7225, #7250), the connection-idle window (issue #7316) and the
+   * connection-age window (issue #7339).
    * <p>
-   * The two are configured independently, so this method is not gated on either of them: gating it on
+   * All three are configured independently, so this method is not gated on any of them: gating it on
    * {@code arcadedb.ha.peerAllowlist.enabled}, which is where the allowlist install used to live, would have made
    * {@code arcadedb.ha.grpcMaxConnectionIdleMs} a setting that silently does nothing on exactly the clusters that
-   * turned the allowlist off. When neither is configured no customizer is installed at all, which leaves Ratis's
+   * turned the allowlist off. When none is configured no customizer is installed at all, which leaves Ratis's
    * builder exactly as it was.
    */
   private void installGrpcServerCustomizations(final ContextConfiguration configuration, final Parameters parameters) {
@@ -4329,13 +4361,20 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     // Neither surface can close the connection itself, so the socket of a revoked peer outlived its reach (#7316).
     final long maxConnectionIdleMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_IDLE_MS);
-    if (filter == null && maxConnectionIdleMs <= 0)
+    // ...and the idle window only reaps a peer that goes quiet: gRPC restarts it from the last moment the
+    // connection's active-stream count hit zero, so a peer that keeps starting RPCs - a removed peer still
+    // campaigning, or a squatter - pushes it forward forever, refused RPCs included (#7339). The age window is the
+    // unconditional bound for that case, off by default because it recycles healthy connections on the same period.
+    final long maxConnectionAgeMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_MS);
+    final long maxConnectionAgeGraceMs = configuration.getValueAsLong(
+        GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_GRACE_MS);
+    if (filter == null && maxConnectionIdleMs <= 0 && maxConnectionAgeMs <= 0)
       return;
 
     GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(
         filter == null ? new ServerTransportFilter[0] : new ServerTransportFilter[] { filter },
         interceptor == null ? new ServerInterceptor[0] : new ServerInterceptor[] { interceptor },
-        maxConnectionIdleMs));
+        maxConnectionIdleMs, maxConnectionAgeMs, maxConnectionAgeGraceMs));
   }
 
   /** The inbound peer allowlist filter, or {@code null} when it is disabled or has no host to admit. */

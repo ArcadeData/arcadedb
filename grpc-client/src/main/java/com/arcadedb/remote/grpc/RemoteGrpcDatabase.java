@@ -63,6 +63,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.BatchAck;
 import com.arcadedb.server.grpc.BeginTransactionRequest;
@@ -154,8 +155,12 @@ import java.util.stream.Collectors;
  */
 public class RemoteGrpcDatabase extends RemoteDatabase {
 
-  private final    ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub blockingStub;
-  private final    ArcadeDbServiceGrpc.ArcadeDbServiceStub           asyncStub;
+  // Not final: a stub binds the channel it was built on, and RemoteGrpcServer.start() after close() builds a
+  // new one. Read through blockingStub() / asyncStub(), which rebuild both when the channel has moved (#7416).
+  private          ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub blockingStub;
+  private          ArcadeDbServiceGrpc.ArcadeDbServiceStub           asyncStub;
+  /** The {@link RemoteGrpcServer#channelGeneration()} the two stubs above were built under. */
+  private          long                                              stubChannelGeneration;
   private final    RemoteSchema                                      schema;
   private final    String                                            userName;
   private final    String                                            userPassword;
@@ -182,9 +187,43 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     this.userName = userName;
     this.userPassword = userPassword;
     this.databaseName = databaseName;
-    this.blockingStub = createBlockingStub();
-    this.asyncStub = createAsyncStub();
+    rebuildStubs();
     this.schema = new RemoteSchema(this);
+  }
+
+  /**
+   * The data-plane stub every unary call goes through, on the server's CURRENT channel.
+   * <p>
+   * The admin stub was already built per call for this reason - "a server restarted through start() is
+   * honoured" - while these two were built once in the constructor, so after a {@code close()} / {@code start()}
+   * cycle {@code getProgress()} kept working and every query, command, lookup and insert on the same object
+   * failed with {@code UNAVAILABLE: Channel shutdown invoked} (issue #7416). Rebuilding on a generation change
+   * keeps the per-call cost at one volatile read and one compare, and keeps {@link #createBlockingStub()} the
+   * single place a subclass customises stub construction.
+   */
+  private ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub blockingStub() {
+    if (stubChannelGeneration != remoteGrpcServer.channelGeneration())
+      rebuildStubs();
+    return blockingStub;
+  }
+
+  /** @see #blockingStub() */
+  private ArcadeDbServiceGrpc.ArcadeDbServiceStub asyncStub() {
+    if (stubChannelGeneration != remoteGrpcServer.channelGeneration())
+      rebuildStubs();
+    return asyncStub;
+  }
+
+  /**
+   * The generation is read BEFORE the stubs are built: a restart landing between the read and the build leaves
+   * the stubs on the new channel under the old generation, which only costs one more rebuild on the next call.
+   * Reading it after would let that same restart pin stale stubs under the new generation for good.
+   */
+  private void rebuildStubs() {
+    final long generation = remoteGrpcServer.channelGeneration();
+    blockingStub = createBlockingStub();
+    asyncStub = createAsyncStub();
+    stubChannelGeneration = generation;
   }
 
   /**
@@ -194,16 +233,39 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * caller against the database the calls actually target. Before #7320 no database travelled with the
    * call and the server fell back to the literal name {@code "default"}, which refused every principal
    * whose grants named real databases.
+   * <p>
+   * It also names THIS database's user rather than the {@link RemoteGrpcServer}'s. The two are separate
+   * constructor arguments and a scoped database user on a channel built for root is a supported
+   * combination; before #7374 only the request body carried the database's user, and the server prefers
+   * the principal it authenticated from the metadata - so the user the caller passed here was silently
+   * discarded on gRPC while the inherited HTTP methods still used it.
    */
   protected ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub createBlockingStub() {
-    return this.remoteGrpcServer.newBlockingStub(getTimeout(), databaseName);
+    return this.remoteGrpcServer.newBlockingStub(getTimeout(), databaseName, userName, userPassword);
   }
 
   /**
    * @see #createBlockingStub()
    */
   protected ArcadeDbServiceGrpc.ArcadeDbServiceStub createAsyncStub() {
-    return this.remoteGrpcServer.newAsyncStub(getTimeout(), databaseName);
+    return this.remoteGrpcServer.newAsyncStub(getTimeout(), databaseName, userName, userPassword);
+  }
+
+  /**
+   * A fresh admin stub carrying this database's user, for the admin-plane RPCs this class issues on its
+   * own behalf. The admin plane authenticates from the request body and reads no database metadata, so
+   * the stub names no database.
+   * <p>
+   * The stub is built per call, not cached: {@code withDeadlineAfter} fixes an ABSOLUTE deadline the
+   * moment it is applied, so a stub held across calls would carry a deadline that has already passed by
+   * the second poll. Building it also re-resolves the channel, so a server restarted through
+   * {@code start()} is honoured. The cost is a few field copies on a shared channel, which is nothing
+   * next to the round trip.
+   *
+   * @see #createBlockingStub()
+   */
+  protected ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub createAdminBlockingStub() {
+    return this.remoteGrpcServer.newAdminBlockingStub(getTimeout(), userName, userPassword);
   }
 
   @Override
@@ -239,12 +301,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         .setDatabase(getName()).build();
 
     try {
-      // The stub is built per call, not cached: withDeadlineAfter fixes an ABSOLUTE deadline the moment it
-      // is applied, so a stub held across calls would carry a deadline that has already passed by the second
-      // poll. Building it also re-resolves the channel, so a server restarted through start() is honoured.
-      // The cost is a few field copies on a shared channel, which is nothing next to the round trip.
       final GetProgressResponse response = callUnary("GetProgress",
-          () -> remoteGrpcServer.newAdminBlockingStub(getTimeout()).getProgress(request));
+          () -> createAdminBlockingStub().getProgress(request));
 
       final List<JSONObject> operations = new ArrayList<>(response.getOperationsCount());
       for (final OperationProgressInfo info : response.getOperationsList())
@@ -299,7 +357,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     callUnaryVoid("BeginTransaction", () -> {
 
       try {
-        BeginTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+        BeginTransactionResponse response = blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
             .beginTransaction(request);
         transactionId = response.getTransactionId();
         // Store transaction ID in parent class session management
@@ -350,7 +408,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
         try {
 
-          CommitTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+          CommitTransactionResponse response = blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
               .commitTransaction(request);
 
           LogManager.instance()
@@ -431,7 +489,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
         try {
 
-          RollbackTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+          RollbackTransactionResponse response = blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
               .rollbackTransaction(request);
 
           LogManager.instance()
@@ -521,7 +579,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
 
       final DeleteRecordResponse resp = callUnary("DeleteRecord",
-          () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).deleteRecord(req));
+          () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).deleteRecord(req));
 
       // Prefer the proto's 'deleted' flag (your other overload uses it)
       if (!resp.getDeleted()) {
@@ -556,7 +614,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
 
       final DeleteRecordResponse res = callUnary("DeleteRecord",
-          () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).deleteRecord(req));
+          () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).deleteRecord(req));
 
       return res.getDeleted();
 
@@ -631,7 +689,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
                 requestBuilder.getCommand().length(), requestBuilder.getParametersCount());
 
       final ExecuteCommandResponse response = callUnary("ExecuteCommand",
-          () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).executeCommand(requestBuilder.build()));
+          () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).executeCommand(requestBuilder.build()));
 
       if (LogManager.instance().isDebugEnabled())
         LogManager.instance().log(this, Level.FINE, "CLIENT executeCommand: success = %s", response.getSuccess());
@@ -726,7 +784,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       final ExecuteQueryRequest req = requestBuilder.build();
 
       final ExecuteQueryResponse response = callUnary("ExecuteQuery",
-          () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS) // or getTimeout(MODE_QUERY)
+          () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS) // or getTimeout(MODE_QUERY)
               .executeQuery(req));
 
       if (LogManager.instance().isDebugEnabled()) {
@@ -766,7 +824,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     try {
       return callUnary("ExecuteCommand",
-          () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).executeCommand(reqB.build()));
+          () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).executeCommand(reqB.build()));
     } catch (StatusException | StatusRuntimeException e) {
       // handleGrpcException already called in callUnary, this is unreachable
       throw new IllegalStateException("unreachable");
@@ -787,7 +845,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     try {
       return callUnary("ExecuteCommand",
-          () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).executeCommand(reqB.build()));
+          () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).executeCommand(reqB.build()));
     } catch (StatusException | StatusRuntimeException e) {
       // handleGrpcException already called in callUnary, this is unreachable
       throw new IllegalStateException("unreachable");
@@ -819,7 +877,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
         @SuppressWarnings("unused")
         UpdateRecordResponse response =
-            blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).updateRecord(updateBuilder.build());
+            blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).updateRecord(updateBuilder.build());
 
         // If your proto has flags, you can check response.getSuccess()/getUpdated()
         // Otherwise, treat non-exception as success.
@@ -847,7 +905,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
       try {
         CreateRecordResponse response =
-            blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).createRecord(request);
+            blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).createRecord(request);
 
         // Proto returns the newly created RID as a string
         final String ridStr = response.getRid();
@@ -941,7 +999,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     bindActiveTransaction(b);
 
     final BlockingClientCall<?, QueryResult> responseIterator = callServerStreaming("StreamQuery",
-        () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
+        () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
 
     // Return a streaming ResultSet implementation
     return new StreamingResultSet(responseIterator, this);
@@ -984,7 +1042,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     bindActiveTransaction(b);
 
     final BlockingClientCall<?, QueryResult> responseIterator = callServerStreaming("StreamQuery",
-        () -> blockingStub.withWaitForReady().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
+        () -> blockingStub().withWaitForReady().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
 
     return new BatchedStreamingResultSet(responseIterator, this);
   }
@@ -1008,7 +1066,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     bindActiveTransaction(b);
 
     final BlockingClientCall<?, QueryResult> responseIterator = callServerStreaming("StreamQuery",
-        () -> blockingStub.withWaitForReady().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
+        () -> blockingStub().withWaitForReady().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
 
     return new Iterator<QueryBatch>() {
       private QueryBatch nextBatch = null;
@@ -1094,7 +1152,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       reqB.setTransaction(tx);
 
     final BlockingClientCall<?, QueryResult> it = callServerStreaming("StreamQuery",
-        () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).streamQuery(reqB.build()));
+        () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).streamQuery(reqB.build()));
 
     return new Iterator<GrpcRecord>() {
       private Iterator<GrpcRecord> curr = Collections.emptyIterator();
@@ -1208,7 +1266,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
 
       final CreateRecordResponse res = callUnary("CreateRecord",
-          () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).createRecord(req));
+          () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).createRecord(req));
 
       return res.getRid(); // e.g. "#12:0"
 
@@ -1229,7 +1287,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     try {
       final CreateRecordResponse res = callUnary("CreateRecord",
-          () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).createRecord(req));
+          () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).createRecord(req));
       return res.getRid();
 
     } catch (StatusRuntimeException | StatusException e) {
@@ -1272,7 +1330,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
 
       final UpdateRecordResponse res = callUnary("UpdateRecord",
-          () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).updateRecord(req));
+          () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).updateRecord(req));
 
       // Most builds expose getSuccess(); if your proto has getUpdated(), swap here.
       return res.getSuccess();
@@ -1306,7 +1364,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
 
       final UpdateRecordResponse res = callUnary("UpdateRecord",
-          () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).updateRecord(req));
+          () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).updateRecord(req));
 
       return res.getSuccess();
 
@@ -1382,7 +1440,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
 
       final LookupByRidResponse resp = callUnary("LookupByRid",
-          () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).lookupByRid(req));
+          () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).lookupByRid(req));
 
       if (!resp.getFound())
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -1452,7 +1510,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
       // use callUnary so tx cross-thread checks + rpcSeq happen in one place
       return callUnary("BulkInsert",
-          () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).bulkInsert(req));
+          () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).bulkInsert(req));
 
     } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // maps to your domain exceptions and rethrows
@@ -1963,7 +2021,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         .setBatchSize(100).build();
 
     final BlockingClientCall<?, QueryResult> responseIterator = callServerStreaming("StreamQuery",
-        () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(request));
+        () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(request));
 
     return new Iterator<Record>() {
       private Iterator<GrpcRecord> currentBatch = Collections.emptyIterator();
@@ -2254,7 +2312,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       builder.setTransaction(openTransaction());
 
     return searchCall("VectorSearch", builder.build(),
-        req -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).vectorSearch(req));
+        req -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).vectorSearch(req));
   }
 
   /**
@@ -2268,7 +2326,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       builder.setTransaction(openTransaction());
 
     return searchCall("HybridSearch", builder.build(),
-        req -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).hybridSearch(req));
+        req -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).hybridSearch(req));
   }
 
   /**
@@ -2282,7 +2340,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       builder.setTransaction(openTransaction());
 
     return searchCall("FullTextSearch", builder.build(),
-        req -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).fullTextSearch(req));
+        req -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).fullTextSearch(req));
   }
 
   /**
@@ -2348,7 +2406,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     try {
       final com.arcadedb.server.grpc.TimeSeriesWriteSummary response = callUnary("TimeSeriesWrite",
-          () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+          () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
               .timeSeriesWrite(request.build()));
       return toWriteSummary(response);
     } catch (final StatusRuntimeException | StatusException e) {
@@ -2485,7 +2543,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     final BlockingClientCall<?, com.arcadedb.server.grpc.TimeSeriesQueryResult> stream =
         callServerStreaming("TimeSeriesQuery",
-            () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+            () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
                 .timeSeriesQuery(request.build()));
 
     final List<String> columns = new ArrayList<>();
@@ -2541,7 +2599,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     try {
       final TimeSeriesLatestResponse response = callUnary("TimeSeriesLatest",
-          () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+          () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
               .timeSeriesLatest(request.build()));
 
       return new TimeSeriesLatestResult(response.getType(), response.getColumnsList(),
@@ -2668,7 +2726,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       checkCrossThreadUse("STREAM " + opName);
       logTx("STREAM(local)", opName);
     }
-    final var stub = asyncStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS);
+    final var stub = asyncStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS);
     // Don't double-wrap if the observer is already a ClientResponseObserver (e.g. from wrapClientResponseObserver)
     // because wrapping it again with wrapObserver would hide the ClientResponseObserver interface
     // and prevent beforeStart() from being called.
@@ -2692,7 +2750,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       checkCrossThreadUse("STREAM " + opName);
       logTx("STREAM(local)", opName);
     }
-    final var stub = asyncStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS);
+    final var stub = asyncStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS);
     invoker.accept(stub, wrapObserver(opName, responseObserver));
     if (debugTx != null) {
       debugTx.rpcSeq.incrementAndGet();

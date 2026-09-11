@@ -430,6 +430,105 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
     assertThat((RID) neighbors.getFirst().get("@rid")).isEqualTo(allowed.getFirst());
   }
 
+  // ISSUE #7125: THE filter OPTION MUST ACCEPT THE COLLECTION A SUBQUERY PRODUCES DIRECTLY, WITHOUT THE `.@rid` TRICK
+
+  @Test
+  void sqlVectorNeighborsFilterAcceptsARidProjectingSubquery() {
+    assertFilteredTo(neighbors("""
+        SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 5, {
+          filter: (SELECT @rid FROM Doc WHERE name IN ['docA', 'docB'])
+        }) AS neighbors"""), collectRIDs("docA", "docB"));
+  }
+
+  @Test
+  void sqlVectorNeighborsFilterAcceptsARecordProjectingSubquery() {
+    assertFilteredTo(neighbors("""
+        SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 5, {
+          filter: (SELECT FROM Doc WHERE name IN ['docA', 'docB'])
+        }) AS neighbors"""), collectRIDs("docA", "docB"));
+  }
+
+  @Test
+  void sqlVectorNeighborsFilterAcceptsALetBoundSubquery() {
+    assertFilteredTo(neighbors("""
+        SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 5, { filter: $ids }) AS neighbors
+        LET $ids = (SELECT @rid FROM Doc WHERE name IN ['docA', 'docB'])"""), collectRIDs("docA", "docB"));
+  }
+
+  @Test
+  void sqlVectorNeighborsFilterFlattensOneLevelOfNesting() {
+    assertFilteredTo(neighbors("""
+        SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 5, {
+          filter: (SELECT list(@rid) AS l FROM Doc WHERE name IN ['docA', 'docB']).l
+        }) AS neighbors"""), collectRIDs("docA", "docB"));
+  }
+
+  @Test
+  void sqlVectorNeighborsFilterStillAcceptsTheRidProjectionWorkaround() {
+    assertFilteredTo(neighbors("""
+        SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 5, {
+          filter: (SELECT @rid FROM Doc WHERE name IN ['docA', 'docB']).@rid
+        }) AS neighbors"""), collectRIDs("docA", "docB"));
+  }
+
+  @Test
+  void sqlVectorNeighborsFilterRejectsASubqueryThatDoesNotProjectARid() {
+    // A TYPO IN THE PROJECTION STAYS LOUD RATHER THAN SILENTLY FILTERING NOTHING
+    assertThatThrownBy(() -> database.query("sql", """
+        SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 5, {
+          filter: (SELECT name FROM Doc WHERE name IN ['docA', 'docB'])
+        }) AS neighbors""").next())
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("must contain RIDs");
+  }
+
+  @Test
+  void sqlVectorNeighborsFilterRejectsASubqueryRowWithSeveralNonRidColumns() {
+    assertThatThrownBy(() -> database.query("sql", """
+        SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 5, {
+          filter: (SELECT name, @rid AS r FROM Doc WHERE name IN ['docA', 'docB'])
+        }) AS neighbors""").next())
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("must contain RIDs");
+  }
+
+  @Test
+  void sqlVectorNeighborsFilterRejectsTwoLevelsOfNesting() {
+    assertThatThrownBy(() -> database.query("sql", """
+        SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 5, {
+          filter: [[(SELECT @rid FROM Doc WHERE name = 'docA').@rid]]
+        }) AS neighbors""").next())
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("must contain RIDs");
+  }
+
+  @Test
+  void sqlVectorNeighborsFilterRejectsAMalformedRidStringWithTheParsingException() {
+    // EVERY SHAPE OF MALFORMED STRING, NOT ONLY THE ONE RID(String) REPORTS AS AN ILLEGAL ARGUMENT
+    for (final String malformed : new String[] { "docA", "#1", "#", "#1:", "#a:b" })
+      assertThatThrownBy(() -> database.query("sql",
+          "SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 5, { filter: :f }) AS neighbors",
+          Map.of("f", List.of(malformed))).next())
+          .as(malformed)
+          .isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining("must contain RIDs");
+  }
+
+  @SuppressWarnings("unchecked")
+  private List<Map<String, Object>> neighbors(final String query) {
+    try (final ResultSet rs = database.query("sql", query)) {
+      return (List<Map<String, Object>>) rs.next().getProperty("neighbors");
+    }
+  }
+
+  private static void assertFilteredTo(final List<Map<String, Object>> neighbors, final List<RID> allowed) {
+    assertThat(neighbors).isNotNull().hasSize(allowed.size());
+    final Set<RID> returned = new HashSet<>();
+    for (final Map<String, Object> row : neighbors)
+      returned.add((RID) row.get("@rid"));
+    assertThat(returned).containsExactlyInAnyOrderElementsOf(allowed);
+  }
+
   private List<RID> collectRIDs(final String... names) {
     final List<RID> out = new ArrayList<>(names.length);
     for (final String name : names) {

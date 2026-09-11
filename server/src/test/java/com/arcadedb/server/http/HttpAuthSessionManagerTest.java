@@ -435,4 +435,117 @@ class HttpAuthSessionManagerTest {
     assertThat(manager.checkSessionsValidity()).isEqualTo(2);
     assertThat(manager.getActiveSessionCount("testuser")).isZero();
   }
+
+  // --- Cluster-aware tokens (issue #7424) ---------------------------------------------------------------------
+
+  @Test
+  void tokenNamesTheIssuingNode() {
+    manager = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "arcadedb-0");
+    final HttpAuthSession session = manager.createSession(createMockUser("alice"));
+
+    assertThat(session.getToken()).startsWith("AU-arcadedb-0-");
+    assertThat(HttpAuthSessionManager.issuerOf(session.getToken())).isEqualTo("arcadedb-0");
+    assertThat(session.isRemote()).isFalse();
+    assertThat(session.getIssuer()).isNull();
+    assertThat(manager.getSessionByToken(session.getToken())).isSameAs(session);
+  }
+
+  @Test
+  void tokenWithoutIssuerKeepsTheLegacyForm() {
+    manager = new HttpAuthSessionManager(30_000L);
+    final HttpAuthSession session = manager.createSession(createMockUser("alice"));
+
+    assertThat(session.getToken()).matches("AU-[0-9a-f-]{36}");
+    assertThat(HttpAuthSessionManager.issuerOf(session.getToken())).isNull();
+  }
+
+  @Test
+  void issuerIsParsedFromTheEndSoNamesMayCarryDashes() {
+    final String uuid = "2af64e60-8455-423a-bc64-ed0e19729f04";
+    assertThat(HttpAuthSessionManager.issuerOf("AU-arcadedb-0-" + uuid)).isEqualTo("arcadedb-0");
+    assertThat(HttpAuthSessionManager.issuerOf("AU-ArcadeDB_1-" + uuid)).isEqualTo("ArcadeDB_1");
+    assertThat(HttpAuthSessionManager.issuerOf("AU-my-db-node-12-" + uuid)).isEqualTo("my-db-node-12");
+    assertThat(HttpAuthSessionManager.issuerOf("AU-" + uuid)).as("legacy form").isNull();
+    assertThat(HttpAuthSessionManager.issuerOf("AU--" + uuid)).as("empty issuer").isNull();
+    assertThat(HttpAuthSessionManager.issuerOf("AU-node" + uuid)).as("no separator").isNull();
+    assertThat(HttpAuthSessionManager.issuerOf("AU-bad name-" + uuid)).as("unsanitized issuer").isNull();
+    assertThat(HttpAuthSessionManager.issuerOf("at-node-" + uuid)).as("API token").isNull();
+    assertThat(HttpAuthSessionManager.issuerOf("AU-")).isNull();
+    assertThat(HttpAuthSessionManager.issuerOf(null)).isNull();
+  }
+
+  @Test
+  void issuerNameIsSanitizedOnBothSides() {
+    assertThat(HttpAuthSessionManager.sanitizeIssuerName("node one/2")).isEqualTo("node_one_2");
+    assertThat(HttpAuthSessionManager.sanitizeIssuerName("arcadedb-0.ns")).isEqualTo("arcadedb-0.ns");
+    assertThat(HttpAuthSessionManager.sanitizeIssuerName("x".repeat(100))).hasSize(HttpAuthSessionManager.MAX_ISSUER_NAME_LENGTH);
+    assertThat(HttpAuthSessionManager.sanitizeIssuerName("  ")).isNull();
+    assertThat(HttpAuthSessionManager.sanitizeIssuerName(null)).isNull();
+
+    manager = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "node one/2");
+    final HttpAuthSession session = manager.createSession(createMockUser("alice"));
+    assertThat(HttpAuthSessionManager.issuerOf(session.getToken())).isEqualTo("node_one_2");
+    assertThat(manager.getIssuerName()).isEqualTo("node_one_2");
+  }
+
+  @Test
+  void remoteCopyKeepsTheIssuersCreationTimeAndIsIndexedLikeALocalSession() {
+    fakeNow = 100_000L;
+    manager = new HttpAuthSessionManager(30_000L, 60_000L, 0, 0, "node-b", () -> fakeNow);
+    final ServerSecurityUser alice = createMockUser("alice");
+    final String token = "AU-node-a-2af64e60-8455-423a-bc64-ed0e19729f04";
+
+    final HttpAuthSession copy = manager.addRemoteSession(token, alice, 50_000L, "node-a");
+
+    assertThat(copy).isNotNull();
+    assertThat(copy.isRemote()).isTrue();
+    assertThat(copy.getIssuer()).isEqualTo("node-a");
+    assertThat(copy.getCreatedAt()).as("absolute timeout counts from the original login").isEqualTo(50_000L);
+    assertThat(copy.getLastUpdate()).as("idle timeout counts from the copy's own use").isEqualTo(100_000L);
+    assertThat(copy.elapsedFromConfirmation()).isZero();
+    assertThat(manager.getSessionByToken(token)).isSameAs(copy);
+    assertThat(manager.getActiveSessionCount("alice")).isEqualTo(1);
+
+    fakeNow = 110_001L;
+    assertThat(manager.getSessionByToken(token)).as("absolute timeout, 60s after the issuer's login").isNull();
+  }
+
+  @Test
+  void remoteCopyConfirmationIsTrackedSeparatelyFromUse() {
+    fakeNow = 0L;
+    manager = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "node-b", () -> fakeNow);
+    final HttpAuthSession copy = manager.addRemoteSession("AU-node-a-2af64e60-8455-423a-bc64-ed0e19729f04",
+        createMockUser("alice"), 0L, "node-a");
+
+    fakeNow = 5_000L;
+    copy.touch();
+    assertThat(copy.elapsedFromConfirmation()).isEqualTo(5_000L);
+    copy.confirm();
+    assertThat(copy.elapsedFromConfirmation()).isZero();
+
+    final HttpAuthSession local = manager.createSession(createMockUser("bob"));
+    fakeNow = 20_000L;
+    assertThat(local.elapsedFromConfirmation()).as("a local session needs no confirmation").isZero();
+  }
+
+  @Test
+  void remoteCopyIsRefusedByTheGlobalCapLikeALogin() {
+    manager = new HttpAuthSessionManager(30_000L, 0L, 1, 0, "node-b");
+    assertThat(manager.createSession(createMockUser("alice"))).isNotNull();
+
+    assertThat(manager.addRemoteSession("AU-node-a-2af64e60-8455-423a-bc64-ed0e19729f04", createMockUser("bob"), 0L,
+        "node-a")).isNull();
+  }
+
+  @Test
+  void renewalIntervalIsAThirdOfTheIdleTimeoutCapped() {
+    manager = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "n");
+    assertThat(manager.getRemoteRenewalIntervalMs()).isEqualTo(10_000L);
+    manager.close();
+    manager = new HttpAuthSessionManager(30 * 60_000L, 0L, 0, 0, "n");
+    assertThat(manager.getRemoteRenewalIntervalMs()).isEqualTo(HttpAuthSessionManager.MAX_RENEWAL_INTERVAL_MS);
+    manager.close();
+    manager = new HttpAuthSessionManager(2L, 0L, 0, 0, "n");
+    assertThat(manager.getRemoteRenewalIntervalMs()).isEqualTo(1L);
+  }
 }

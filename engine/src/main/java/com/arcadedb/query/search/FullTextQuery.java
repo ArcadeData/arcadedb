@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
@@ -101,7 +102,16 @@ public final class FullTextQuery {
     // The limit is pushed down per bucket: each bucket keeps only its own top-'limit' matches by score (a bounded
     // min-heap on the BM25 path, a sort-and-truncate on CLASSIC), so this merges at most (bucket count * limit)
     // entries instead of every match in the index.
-    final Map<RID, Float> hits = FullTextSearch.search(typeIndex, queryText, limit);
+    final Map<RID, Float> hits;
+    try {
+      hits = FullTextSearch.search(typeIndex, queryText, limit);
+    } catch (final FullTextQueryParseException e) {
+      // Lucene syntax the parser rejects is the caller's mistake and must be answered as one - HTTP 400, gRPC
+      // INVALID_ARGUMENT - rather than as an internal error with a stack trace in the server log (issue #7393).
+      // Only the parser's own exception is re-typed: an execution-time IndexException is a server fault.
+      final String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+      throw new IllegalArgumentException("Invalid full-text query: " + detail, e);
+    }
 
     final List<Map.Entry<RID, Float>> ranked = new ArrayList<>(hits.entrySet());
     // Score descending, tie-broken by RID so tied hits have a stable, deterministic order instead of depending on

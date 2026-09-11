@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.serializer.json.JSONObject;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -37,6 +38,8 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -113,6 +116,10 @@ class PostBatchStreamingIT extends BaseGraphServerTest {
   /**
    * The terminal line is not a second, parallel shape of the answer: it is the very object the buffered encoding
    * would have sent, produced by the same code. A client can therefore apply one piece of logic to both.
+   * <p>
+   * The one field that differs is the temporary-id mapping, and it differs on purpose: since issue #7353 it
+   * travels in the progress lines, so the summary reports how much of it was sent rather than carrying it. That
+   * is asserted separately below - here it is excluded so this test keeps checking the property it is about.
    */
   @Test
   @Timeout(60)
@@ -121,15 +128,173 @@ class PostBatchStreamingIT extends BaseGraphServerTest {
     final JSONObject streamed = terminal(postStreamed(ndjsonVertices(200_010, 6), "?vertexBatchSize=2", NDJSON),
         "summary");
 
-    assertThat(streamed.keySet())
-        .as("the summary must carry the same fields as the buffered body, so a client parses one shape")
-        .isEqualTo(buffered.keySet());
+    assertThat(withoutMappingFields(streamed))
+        .as("apart from where the mapping lives, the summary must carry the same fields as the buffered body, "
+            + "so a client parses one shape")
+        .isEqualTo(withoutMappingFields(buffered));
     assertThat(streamed.getLong("verticesCreated")).isEqualTo(buffered.getLong("verticesCreated"));
     assertThat(streamed.getLong("linesRead")).isEqualTo(buffered.getLong("linesRead"));
     assertThat(streamed.getLong("linesSkipped")).isEqualTo(buffered.getLong("linesSkipped"));
     assertThat(streamed.getLong("bytesRead")).isEqualTo(buffered.getLong("bytesRead"));
-    assertThat(streamed.getJSONObject("idMapping").length())
+    assertThat(streamed.getInt("idMappingSize", -1))
+        .as("the summary accounts for the mapping it streamed")
         .isEqualTo(buffered.getJSONObject("idMapping").length());
+  }
+
+  /**
+   * Issue #7353: the temporary-id mapping is handed back one committed chunk at a time instead of accumulating
+   * into the terminal object. The union of the chunks has to be exactly what the buffered encoding returns -
+   * anything less and a client resolving edges across requests silently points them at the wrong vertex.
+   */
+  @Test
+  @Timeout(60)
+  void theIdMappingTravelsInTheProgressLinesInsteadOfTheTerminalOne() throws Exception {
+    // Distinct id ranges because V1.id is unique: the same payload cannot be loaded twice. What is compared is
+    // therefore the SHAPE of the mapping - which keys, and how many - not the RIDs, which two separate loads
+    // necessarily assign differently.
+    final JSONObject buffered = postBuffered(ndjsonVertices(210_000, 6), "?vertexBatchSize=2", NDJSON, 200);
+    final List<JSONObject> events = postStreamed(ndjsonVertices(210_010, 6), "?vertexBatchSize=2", NDJSON);
+
+    assertThat(events.stream().filter(e -> e.has("progress"))
+        .filter(e -> e.getJSONObject("progress").has("idMapping")).count())
+        .as("a mapping delivered in one line would be the very thing streaming it is for")
+        .isGreaterThan(1);
+
+    final JSONObject summary = terminal(events, "summary");
+    assertThat(summary.has("idMapping"))
+        .as("the vertex flush is acknowledged, so nothing is left over for the terminal line to carry")
+        .isFalse();
+    assertThat(summary.getBoolean("idMappingStreamed", false))
+        .as("the client has to be told the mapping went somewhere rather than being omitted")
+        .isTrue();
+    assertThat(summary.getInt("idMappingSize", -1)).isEqualTo(6);
+
+    final JSONObject streamedMapping = collectStreamedMapping(events);
+    assertThat(streamedMapping.keySet())
+        .as("the chunks must reassemble into every temporary id the payload declared, and nothing else")
+        .containsExactlyInAnyOrder("t210010", "t210011", "t210012", "t210013", "t210014", "t210015");
+    assertThat(streamedMapping.length())
+        .as("and into as many entries as the buffered encoding returns for the same payload shape")
+        .isEqualTo(buffered.getJSONObject("idMapping").length());
+    assertThat(streamedMapping.getString("t210010"))
+        .as("each entry names a real record, not a placeholder")
+        .matches("#-?\\d+:\\d+");
+  }
+
+  /**
+   * The tripwire for an invariant that is currently held by adjacency alone (PR #7429 review).
+   * <p>
+   * When a load fails after the response has started, the error line reports its counters as of the LAST
+   * acknowledgement, and {@code streamRecordsAsNdJson} deliberately does not drain whatever the mapping sink
+   * may still hold onto that line - those entries were resolved after that acknowledgement, so sending them
+   * would hand back ids for vertices the same line says were never reached. Today nothing can accumulate there
+   * at all, because every vertex flush is followed immediately by its own acknowledgement.
+   * <p>
+   * What that adds up to, and what is asserted here rather than left to a comment, is one property a client can
+   * rely on: <b>the mapping it received is exactly the mapping for the vertices the failure reports as
+   * attempted</b> - no more, no less. A refactor that opened a window between the flush and its acknowledgement
+   * would break this loudly instead of silently changing what a failed load hands back.
+   */
+  @Test
+  @Timeout(60)
+  void aFailedLoadsMappingMatchesTheCountersItReports() throws Exception {
+    // V1.id is unique, so this id is already taken when the payload below reaches its second batch.
+    postStreamed(ndjsonVertices(1_200_010, 1), "?vertexBatchSize=1", NDJSON);
+
+    final StringBuilder body = new StringBuilder();
+    for (int i = 0; i < 2; i++)
+      body.append("{\"@type\":\"vertex\",\"@class\":\"V1\",\"@id\":\"m").append(i).append("\",\"id\":")
+          .append(1_200_000 + i).append("}\n");
+    body.append("{\"@type\":\"vertex\",\"@class\":\"V1\",\"@id\":\"m9\",\"id\":1200010}\n");
+
+    final List<JSONObject> events = postStreamed(body.toString().getBytes(StandardCharsets.UTF_8),
+        "?vertexBatchSize=2", NDJSON);
+
+    assertThat(countEvents(events, "progress"))
+        .as("the failure has to come after an acknowledgement, or this test proves nothing")
+        .isGreaterThan(0);
+
+    final JSONObject error = terminal(events, "error");
+    final JSONObject received = collectStreamedMapping(events);
+
+    assertThat((long) received.length())
+        .as("a client must be handed the mapping of exactly the vertices the failure reports as attempted: "
+            + "fewer would leave it unable to reference records that are durable, more would name records "
+            + "this same line says were never reached")
+        .isEqualTo(error.getLong("verticesCreated"));
+    assertThat(received.keySet())
+        .as("and those entries are the ids the payload actually declared before it failed")
+        .containsExactlyInAnyOrder("m0", "m1");
+  }
+
+  /**
+   * The memory property, which is the reason the mapping is streamed at all. Past
+   * {@code MAX_ID_MAPPING_IN_RESPONSE} (10,000) the buffered encoding stops sending the mapping altogether,
+   * because building it as one object and one string is what turns the last step of an otherwise successful
+   * import into an OutOfMemoryError. The streamed encoding has no such ceiling: it delivers the whole mapping,
+   * and no single line ever carries more than one {@code vertexBatchSize} flush of it.
+   */
+  @Test
+  @Tag("slow")
+  @Timeout(180)
+  void aLoadPastTheEchoCapStreamsTheWholeMappingWithoutEverHoldingIt() throws Exception {
+    final int vertices = 12_000;
+    final int batch = 1_000;
+
+    final JSONObject buffered = postBuffered(ndjsonVertices(2_000_000, vertices), "?vertexBatchSize=" + batch,
+        NDJSON, 200);
+    assertThat(buffered.getBoolean("idMappingOmitted", false))
+        .as("the premise of this test: the buffered encoding refuses a mapping of this size")
+        .isTrue();
+
+    final List<JSONObject> events = postStreamed(ndjsonVertices(2_100_000, vertices), "?vertexBatchSize=" + batch,
+        NDJSON);
+    final JSONObject summary = terminal(events, "summary");
+
+    assertThat(summary.has("idMappingOmitted"))
+        .as("the size cap has no counterpart here: nothing is ever built that a cap would protect")
+        .isFalse();
+    assertThat(summary.getInt("idMappingSize", -1)).isEqualTo(vertices);
+    assertThat(collectStreamedMapping(events).length())
+        .as("every one of the %d ids must reach the client, which the buffered encoding cannot do at all",
+            vertices)
+        .isEqualTo(vertices);
+
+    final int largestChunk = events.stream()
+        .filter(e -> e.has("progress"))
+        .map(e -> e.getJSONObject("progress"))
+        .filter(p -> p.has("idMapping"))
+        .mapToInt(p -> p.getJSONObject("idMapping").length())
+        .max().orElse(0);
+    assertThat(largestChunk)
+        .as("no line may carry more than the flush that produced it - that bound IS the memory property, and "
+            + "without it this encoding would just be the buffered one with newlines in it")
+        .isLessThanOrEqualTo(batch);
+  }
+
+  /**
+   * {@code idMapping=false} still means never, on this encoding as on the other: a load whose vertices nothing
+   * will reference has no use for the mapping, and not sending it saves both ends the bytes.
+   */
+  @Test
+  @Timeout(60)
+  void idMappingFalseSuppressesTheStreamedMappingToo() throws Exception {
+    final List<JSONObject> events = postStreamed(ndjsonVertices(220_000, 6),
+        "?vertexBatchSize=2&idMapping=false", NDJSON);
+
+    assertThat(collectStreamedMapping(events).isEmpty())
+        .as("no progress line may carry a mapping the client asked not to receive")
+        .isTrue();
+
+    final JSONObject summary = terminal(events, "summary");
+    assertThat(summary.has("idMapping")).isFalse();
+    assertThat(summary.getBoolean("idMappingStreamed", false))
+        .as("nothing was streamed, so nothing may claim to have been")
+        .isFalse();
+    assertThat(summary.getBoolean("idMappingOmitted", false))
+        .as("this is the buffered encoding's answer for a refused mapping, which is what a client sees when it "
+            + "declined one")
+        .isTrue();
   }
 
   /**
@@ -497,6 +662,37 @@ class PostBatchStreamingIT extends BaseGraphServerTest {
     } finally {
       conn.disconnect();
     }
+  }
+
+  /**
+   * The field names identical for both encodings, i.e. everything but where the temporary-id mapping lives:
+   * the buffered answer carries it (or says it refused to), the streamed one says it sent it in the lines
+   * before (issue #7353).
+   */
+  private static Set<String> withoutMappingFields(final JSONObject object) {
+    final Set<String> keys = new TreeSet<>(object.keySet());
+    keys.removeAll(Set.of("idMapping", "idMappingOmitted", "idMappingSize", "idMappingStreamed"));
+    return keys;
+  }
+
+  /**
+   * Reassembles the mapping a streamed load delivered, from every line that carried a piece of it. A duplicated
+   * key would be silently absorbed here, which is why the caller checks the total against 'idMappingSize'.
+   */
+  private static JSONObject collectStreamedMapping(final List<JSONObject> events) {
+    final JSONObject mapping = new JSONObject();
+    for (final JSONObject event : events)
+      for (final String kind : List.of("progress", "summary", "error")) {
+        if (!event.has(kind))
+          continue;
+        final JSONObject line = event.getJSONObject(kind);
+        if (line.has("idMapping")) {
+          final JSONObject chunk = line.getJSONObject("idMapping");
+          for (final String key : chunk.keySet())
+            mapping.put(key, chunk.getString(key));
+        }
+      }
+    return mapping;
   }
 
   private static String readAll(final InputStream in) throws Exception {

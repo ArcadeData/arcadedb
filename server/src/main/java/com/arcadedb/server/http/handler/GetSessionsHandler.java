@@ -70,6 +70,9 @@ public class GetSessionsHandler extends AbstractServerHttpHandler {
       sessionJson.put("userAgent", session.getUserAgent());
       sessionJson.put("country", session.getCountry());
       sessionJson.put("city", session.getCity());
+      // Which node issued the session, for a copy resolved from a peer (issue #7424); absent for a local session.
+      if (session.isRemote())
+        sessionJson.put("issuer", session.getIssuer());
       sessionsArray.put(sessionJson);
     }
 

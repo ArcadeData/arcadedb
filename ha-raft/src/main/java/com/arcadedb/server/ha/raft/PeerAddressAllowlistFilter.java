@@ -126,8 +126,12 @@ import java.util.logging.Level;
  * RPCs already running on it are closed. The socket is not closed on the spot - gRPC's public API exposes no way to
  * close one established transport on demand - but it is no longer left to the peer either: since issue #7316 the
  * Raft listener carries {@code arcadedb.ha.grpcMaxConnectionIdleMs}, so a connection that stops carrying RPCs, which
- * a revoked one does as soon as it stops retrying, is closed with a graceful GOAWAY. The accurate operator-facing
- * claim is that removing a peer revokes its reach immediately and its connection once that connection falls idle.
+ * a revoked one does as soon as it stops retrying, is closed with a graceful GOAWAY. A revoked peer that keeps
+ * retrying never stops, and its refused RPCs push that window forward indefinitely; for that case issue #7339 adds
+ * {@code arcadedb.ha.grpcMaxConnectionAgeMs}, an unconditional bound on the connection's whole life, off by default
+ * because it recycles healthy connections too. The accurate operator-facing claim is that removing a peer revokes
+ * its reach immediately and its connection once that connection falls idle - or, with the age window configured, no
+ * later than that window whether it falls idle or not.
  * <p>
  * This is NOT a substitute for mTLS: it does not authenticate peer identity and does not
  * encrypt the traffic. See GitHub issue #3890. The bounded startup fail-open is an acceptable
@@ -728,7 +732,8 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
           "Revoked the established Raft gRPC transport of %s: the address is no longer in the peer allowlist. "
               + "%d in-flight RPC(s) closed; every further RPC on that transport is refused. gRPC exposes no way to "
               + "close one established transport on demand, so the connection is closed once it has been idle for "
-              + "arcadedb.ha.grpcMaxConnectionIdleMs - a peer that keeps retrying keeps it open until it stops.",
+              + "arcadedb.ha.grpcMaxConnectionIdleMs - a peer that keeps retrying keeps it open until it stops, "
+              + "unless arcadedb.ha.grpcMaxConnectionAgeMs is set, which bounds its life regardless.",
           session.getRemoteIp(), closed);
     }
   }

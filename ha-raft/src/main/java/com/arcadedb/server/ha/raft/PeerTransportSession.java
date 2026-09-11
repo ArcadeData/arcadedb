@@ -42,9 +42,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * on demand (checked across {@code ServerTransportFilter} and every public method of {@code NettyServerBuilder}), so
  * revoking is not the same act as disconnecting. What is revoked is everything the socket can carry: in-flight calls
  * are closed with {@link #REVOKED} and every subsequent call on the transport is refused by the interceptor, which
- * sits in the server-wide interceptor chain that every RPC passes. The socket then goes when it falls idle: the one
- * connection-lifetime knob {@code NettyServerBuilder} does expose is builder-wide, and
- * {@link RaftGrpcServicesCustomizer} sets it from {@code arcadedb.ha.grpcMaxConnectionIdleMs} (issue #7316).
+ * sits in the server-wide interceptor chain that every RPC passes. The socket itself goes on whichever of the two
+ * builder-wide connection-lifetime knobs {@code NettyServerBuilder} does expose is configured, both of which
+ * {@link RaftGrpcServicesCustomizer} sets: {@code arcadedb.ha.grpcMaxConnectionIdleMs} once the connection stops
+ * carrying RPCs (issue #7316), and {@code arcadedb.ha.grpcMaxConnectionAgeMs} on schedule whatever it is carrying,
+ * which is the only one that reaches a revoked peer that keeps retrying (issue #7339).
  */
 final class PeerTransportSession {
 

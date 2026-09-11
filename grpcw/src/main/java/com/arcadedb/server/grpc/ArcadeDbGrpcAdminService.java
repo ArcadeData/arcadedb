@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
-import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
@@ -33,7 +32,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerControlPlane;
-import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
@@ -144,7 +142,9 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       final ServerSecurityUser user = authenticate(req.getCredentials());
 
       final String name = req.getName(); // proto should define 'name' for the DB
-      final boolean exists = containsDatabaseIgnoreCase(name) && (user == null || user.canAccessToDatabase(name));
+      // Exact name, like createDatabase / dropDatabase (issue #7413): what this reports as existing is what a
+      // create of the same name would refuse.
+      final boolean exists = server.existsDatabase(name) && (user == null || user.canAccessToDatabase(name));
 
       return ExistsDatabaseResponse.newBuilder().setExists(exists).build();
     });
@@ -159,16 +159,22 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       final String name = req.getName(); // DB name in proto
       final String type = req.getType(); // "graph" or "document" (logical)
 
-      if (containsDatabaseIgnoreCase(name))
-        return CreateDatabaseResponse.newBuilder().build();
+      // Exact name, the registry's and the HTTP command's notion of "the same database": the case-folded guard
+      // this used to be let CreateDatabase("MyDb") answer OK for an existing "mydb" and then DropDatabase("MyDb")
+      // fail inside the drop (issue #7413). An empty OK told a provisioning tool nothing either way; now the
+      // strict default refuses a taken name as HTTP does, and the idempotent form says which happened.
+      if (server.existsDatabase(name)) {
+        if (req.getIfNotExists())
+          return CreateDatabaseResponse.newBuilder().setCreated(false).build();
+        throw new ServerControlPlane.AlreadyExistsException("Database '" + name + "' already exists");
+      }
 
       // Physical creation (READ_WRITE is the common default)
-      createDatabasePhysical(name);
+      final Database db = createDatabasePhysical(name);
 
       // Optional: if requested 'graph', initialize default graph types
       if ("graph".equalsIgnoreCase(type)) {
-        // Use getDatabase which returns a shared ServerDatabase - don't close it
-        final Database db = openDatabase(name);
+        // The shared ServerDatabase the create returned - don't close it
         db.transaction(() -> {
           final Schema s = db.getSchema();
           if (!existsVertexType(s, "V"))
@@ -177,7 +183,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
             s.createEdgeType("E");
         });
       }
-      return CreateDatabaseResponse.newBuilder().build();
+      return CreateDatabaseResponse.newBuilder().setCreated(true).build();
     });
   }
 
@@ -189,10 +195,16 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
       final String name = req.getName();
 
-      if (containsDatabaseIgnoreCase(name))
-        dropDatabasePhysical(name);
+      // See createDatabase: exact name, strict by default, explicit outcome either way (issue #7413).
+      if (!server.existsDatabase(name)) {
+        if (req.getIfExists())
+          return DropDatabaseResponse.newBuilder().setDropped(false).build();
+        throw new ServerControlPlane.NotFoundException("Database '" + name + "' does not exist");
+      }
 
-      return DropDatabaseResponse.newBuilder().build();
+      dropDatabasePhysical(name);
+
+      return DropDatabaseResponse.newBuilder().setDropped(true).build();
     });
   }
 
@@ -210,7 +222,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       if (user != null && !user.canAccessToDatabase(name))
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
-      if (!containsDatabaseIgnoreCase(name))
+      if (!server.existsDatabase(name))
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
       // Use getDatabase which returns a shared ServerDatabase - don't close it
@@ -897,6 +909,35 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   }
 
   /**
+   * The other half of the cluster pair (issue #7400), and the last verb of
+   * {@code PostServerCommandHandler}'s dispatch chain that had no RPC.
+   * <p>
+   * A thin adapter over the same {@code ServerControlPlane.connectCluster} the HTTP {@code connect
+   * cluster} verb calls, so the two transports cannot drift on what the verb does. Today that shared
+   * method refuses unconditionally - the current HA stack has never implemented a client-initiated
+   * join - and the refusal reaches the caller as {@code FAILED_PRECONDITION} through the
+   * {@code OperationNotAvailableException} arm of {@link #toStatusException}. That is the same answer
+   * the HTTP caller gets, from the same method, which is the point: parity of the contract, not a
+   * working join. Issue #7401 carries the decision on whether to implement the join or retire the
+   * verb.
+   * <p>
+   * The address is passed through unvalidated because the HTTP verb passes it through unvalidated:
+   * {@code extractTarget} yields {@code ""} for a bare {@code connect cluster} and the shared method
+   * refuses before reading its argument. Root-only, as {@code checkRootUser} makes the HTTP verb, and
+   * not leader-routed, because {@code PostServerCommandHandler} does not forward either half of the
+   * pair to the leader.
+   */
+  @Override
+  public void connectCluster(final ConnectClusterRequest req, final StreamObserver<ConnectClusterResponse> resp) {
+    respond(resp, "connectCluster", () -> {
+      requireServerAdmin(authenticate(req.getCredentials()));
+
+      controlPlane.connectCluster(req.getServerAddress());
+      return ConnectClusterResponse.newBuilder().build();
+    });
+  }
+
+  /**
    * The server's open HTTP authentication sessions, the RPC equivalent of {@code GET /api/v1/sessions}
    * (issue #7310), root-only as {@code GetSessionsHandler}'s {@code checkRootUser} makes it.
    * <p>
@@ -1162,28 +1203,27 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     return server.getDatabaseNames();
   }
 
-  private boolean containsDatabaseIgnoreCase(String name) {
-    for (String n : getDatabaseNames()) {
-      if (n.equalsIgnoreCase(name))
-        return true;
-    }
-    return false;
-  }
-
   /**
-   * Create DB physically with READ_WRITE mode.
+   * Creates the database across the cluster, through the same control-plane method the HTTP
+   * {@code create database} command uses: on a replicated database that also submits the Raft
+   * install-database entry, so the peers install it too. This RPC created the database locally only
+   * until issue #7389, and the {@link #requireLeader} gate above meant the divergence it produced
+   * always landed on the node the followers treat as authoritative.
+   *
+   * @return the created database, so the {@code graph} branch of {@link #createDatabase} initialises
+   * its default types on the instance the create already resolved rather than looking it up again
    */
-  private void createDatabasePhysical(final String name) {
-    server.createDatabase(name, ComponentFile.MODE.READ_WRITE);
+  private Database createDatabasePhysical(final String name) {
+    return controlPlane.createDatabase(name);
   }
 
   /**
-   * Drop DB physically. Gets the database, drops it via embedded, then removes from server cache.
+   * Drops the database across the cluster, through the same control-plane method the HTTP
+   * {@code drop database} command uses: Raft-first on a replicated database, local otherwise. See
+   * {@link #createDatabasePhysical} for why this RPC no longer touches the embedded database itself.
    */
   private void dropDatabasePhysical(final String name) {
-    final ServerDatabase database = server.getDatabase(name);
-    database.getEmbedded().drop();
-    server.removeDatabase(database.getName());
+    controlPlane.dropDatabase(name);
   }
 
   /**
