@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * JVM-wide registry of the long-running maintenance operations currently in progress (CHECK DATABASE first;
- * COMPACT INDEX, index rebuilds, backups and imports can publish here too). Producers register an
+ * COMPACT INDEX, index rebuilds, backups, imports and restores can publish here too). Producers register an
  * {@link OperationProgress} when the operation starts, feed it as their progress callback, and MUST unregister
  * it in a finally block. Readers (HTTP progress endpoint, console/Studio pollers) get a weakly-consistent
  * snapshot. The registry is deliberately process-local: in an HA cluster each server reports what it is doing,
