@@ -310,20 +310,34 @@ public final class TimeSeriesGateway {
 
   /**
    * ANDs one tag condition onto {@code filter}, resolving {@code tagName} to its position among the
-   * non-timestamp columns. Every protocol's tag selection converges here - the gRPC {@code TimeSeries*} RPCs
-   * through {@link #buildTagFilter(Map, List)}, the {@code tags} object of {@code POST /ts/{database}/query},
-   * and the repeated {@code tag=name:value} parameter of {@code GET /ts/{database}/latest} - so the three
-   * cannot drift apart on how a tag is resolved, which is how two of them came to disagree in the first place
-   * (issue #7321).
+   * non-timestamp columns. Three tag selections converge here - the gRPC {@code TimeSeries*} RPCs through
+   * {@link #buildTagFilter(Map, List)}, the {@code tags} object of {@code POST /ts/{database}/query} (and of
+   * the Grafana query endpoint), and the repeated {@code tag=name:value} parameter of
+   * {@code GET /ts/{database}/latest} - so they cannot drift apart on how a tag is resolved, which is how two
+   * of them came to disagree in the first place (issue #7321). The PromQL evaluator is the one reader that
+   * does NOT: it builds its own {@link TagFilter} from label matchers, whose values are always parser-produced
+   * strings.
    * <p>
    * The value is coerced to the column's declared type so it matches what both storage layers hand back
    * (issue #5475).
+   * <p>
+   * It is first held to {@link #requireStorableTagValue}, the same rule the write path applies. A value that
+   * could never have been written is not a selection that matches nothing - it is a malformed request, and
+   * answering it with an empty series told the caller "no data" when the truth was "that value is not valid"
+   * (issue #7394). The check runs before the name is resolved, because an unstorable value is unstorable
+   * whichever name carries it; an unresolvable NAME still contributes nothing, as it always has.
    *
    * @return {@code filter} unchanged when no TAG column carries that name, a new filter otherwise -
    * {@link TagFilter} is immutable, so the return value must be used
+   *
+   * @throws IllegalArgumentException if {@code tagValue} cannot be stored as a tag. Callers on the gRPC path
+   *                                  let this surface as {@code INVALID_ARGUMENT} through
+   *                                  {@code GrpcErrorMapper}, and the HTTP handlers as a 400
    */
   public static TagFilter andTag(final TagFilter filter, final String tagName, final Object tagValue,
       final List<ColumnDefinition> columns) {
+    requireStorableTagValue(tagName, tagValue);
+
     int nonTsIdx = 0;
     for (final ColumnDefinition col : columns) {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
@@ -439,8 +453,13 @@ public final class TimeSeriesGateway {
    * {@code toString()} means something - a string, a number, a boolean, an enum, a temporal - and silently
    * corrupts for anything whose does not. A {@code byte[]} is the sharp case: it has no {@code toString()}
    * override, so it would be stored as {@code [B@6bc7c054}, a different meaningless value on every run
-   * (claude-review on PR #7323). Collections and maps are refused with it: their text form is stable but is not
+   * (claude-review on PR #7323). Iterables and maps are refused with it: their text form is stable but is not
    * a tag value anyone means.
+   * <p>
+   * {@link Iterable} rather than {@link Collection} because the HTTP {@code tags} object hands over JSON types
+   * and {@code JSONArray} implements only the former, so a {@code Collection} test would have let
+   * {@code ["a","b"]} through as a tag value (issue #7394). {@code JSONObject} is a {@link Map} and was already
+   * refused.
    * <p>
    * Fields are deliberately NOT subject to this - they carry typed values into typed columns, and the column
    * decides what it can hold.
@@ -449,7 +468,7 @@ public final class TimeSeriesGateway {
    *                                  surface as {@code INVALID_ARGUMENT} through {@code GrpcErrorMapper}
    */
   public static Object requireStorableTagValue(final String tagName, final Object value) {
-    if (value != null && (value.getClass().isArray() || value instanceof Collection<?> || value instanceof Map<?, ?>))
+    if (value != null && (value.getClass().isArray() || value instanceof Iterable<?> || value instanceof Map<?, ?>))
       throw new IllegalArgumentException("Tag '" + tagName + "' cannot hold a " + value.getClass().getSimpleName()
           + ": a tag is stored by its text form, and this one has none that means anything. "
           + "Use a string, a number or a boolean.");

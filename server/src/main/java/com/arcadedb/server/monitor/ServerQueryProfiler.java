@@ -81,10 +81,28 @@ public class ServerQueryProfiler {
     return recording;
   }
 
+  /**
+   * The timeout the current (or most recent) recording is running under, in seconds - always the effective
+   * value, never the one that was asked for: {@link #start(int)} substitutes
+   * {@value #DEFAULT_TIMEOUT_SECONDS} for a non-positive request, and a start against an already-recording
+   * profiler is a no-op that leaves the live recording's timeout in place. Callers report this rather than
+   * their own argument so what they tell the client is when the recording will actually end (issue #7394).
+   */
+  public synchronized int getTimeoutSeconds() {
+    return timeoutSeconds;
+  }
+
+  /** Records for {@value #DEFAULT_TIMEOUT_SECONDS} seconds, the same bound {@link #start(int)} applies to a non-positive request. */
   public void start() {
     start(DEFAULT_TIMEOUT_SECONDS);
   }
 
+  /**
+   * Starts recording, for {@code timeoutSec} seconds or - when that is not positive - for
+   * {@value #DEFAULT_TIMEOUT_SECONDS}. There is deliberately no way to ask for an unbounded recording: while
+   * one is running every server query is wrapped in a {@code ProfilingResultSet}, so a capture nobody
+   * remembers to stop is a cost nobody sees. {@link #getTimeoutSeconds()} answers which bound applied.
+   */
   public synchronized void start(final int timeoutSec) {
     if (recording)
       return;
