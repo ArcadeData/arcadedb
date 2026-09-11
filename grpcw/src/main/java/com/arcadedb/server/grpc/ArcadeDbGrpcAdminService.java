@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -1106,9 +1107,12 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       return Status.ALREADY_EXISTS.withDescription(e.getMessage()).asException();
     // A backup, restore or import already running on the same database is HTTP's 409 on the other
     // transport: the request is well formed and authorized, and retrying once the other operation
-    // finishes is the fix. The base type, so RestoreBackup, RestoreDatabase and ImportDatabase get the
-    // same status TriggerBackup already got (issue #7384) - BackupInProgressException extends it.
-    if (e instanceof ServerControlPlane.OperationInProgressException)
+    // finishes is the fix. The engine's base type, so RestoreBackup, RestoreDatabase and ImportDatabase
+    // get the same status TriggerBackup already got (issue #7384 - BackupInProgressException and
+    // ServerControlPlane.OperationInProgressException both extend it). ExecuteCommand, which is where a SQL
+    // 'BACKUP DATABASE' refused by the same slot surfaces, is on the other service and maps it to the same
+    // ABORTED through GrpcErrorMapper (issue #7443).
+    if (e instanceof DatabaseOperationInProgressException)
       return Status.ABORTED.withDescription(e.getMessage()).asException();
     // A rejected argument must not read as a server fault: an empty database name, an unparseable
     // setting value or a backup file name outside the backup directory are all the caller's to fix.

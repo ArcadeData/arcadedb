@@ -748,8 +748,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // the other operation finishes is the fix - so it is a conflict, not a 500. 'trigger backup' answered this in
     // its own handler long before; the arm is here so 'restore database', 'restore backup' and 'import database'
     // answer it too rather than falling through to the generic internal-error arm (issue #7384).
-    final ServerControlPlane.OperationInProgressException inProgress = firstOf(e, cause,
-            ServerControlPlane.OperationInProgressException.class);
+    //
+    // It matches the ENGINE's type, which ServerControlPlane.OperationInProgressException extends, so a SQL
+    // 'BACKUP DATABASE' or 'IMPORT DATABASE' refused by the same slot gets the same 409 through
+    // /api/v1/command rather than a 500 - one arm rather than two (issue #7443).
+    final DatabaseOperationInProgressException inProgress = firstOf(e, cause,
+            DatabaseOperationInProgressException.class);
     if (inProgress != null) {
       logUserError(inProgress);
       sendErrorResponse(exchange, 409, "Cannot execute command", inProgress, null);

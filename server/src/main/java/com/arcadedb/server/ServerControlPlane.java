@@ -23,9 +23,12 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.MaintenanceCoordinator;
+import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -33,7 +36,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupCoordinator;
-import com.arcadedb.server.backup.BackupCoordinator.Operation;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.http.HttpServer;
@@ -954,9 +956,13 @@ public class ServerControlPlane {
       throw new OperationInProgressException(refusal(operation, databaseName, running));
   }
 
+  /**
+   * One wording for every entry point. It is built in {@link MaintenanceCoordinator} rather than here because the
+   * SQL {@code BACKUP DATABASE} and {@code IMPORT DATABASE} statements raise the same refusal from the engine, and
+   * a client must not be able to tell the two apart (issue #7443).
+   */
   private static String refusal(final Operation refused, final String databaseName, final Operation running) {
-    return "Cannot " + refused.verb() + " database '" + databaseName + "': " + running.phrase()
-        + " of it is already in progress";
+    return MaintenanceCoordinator.refusal(refused, databaseName, running);
   }
 
   public JSONObject deleteBackup(final String databaseName, final String fileName) {
@@ -1141,10 +1147,14 @@ public class ServerControlPlane {
    * operation on it is already running - the per-database slot {@link BackupCoordinator} hands out.
    * HTTP answers it with a 409 and gRPC with {@code ABORTED}; both carry this message verbatim.
    * <p>
+   * It extends {@link DatabaseOperationInProgressException}, which is the engine's name for the same refusal and
+   * what the SQL {@code BACKUP DATABASE} and {@code IMPORT DATABASE} statements raise: both transports match on
+   * the engine type, so the SQL path gets the same status as this one without a second arm (issue #7443).
+   * <p>
    * The request is well formed and authorized, and retrying once the other operation finishes is the
    * fix, which is what separates it from every other refusal these commands can produce (issue #7384).
    */
-  public static class OperationInProgressException extends RuntimeException {
+  public static class OperationInProgressException extends DatabaseOperationInProgressException {
     public OperationInProgressException(final String message) {
       super(message);
     }
