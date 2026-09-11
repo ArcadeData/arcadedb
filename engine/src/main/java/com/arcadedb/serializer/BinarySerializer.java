@@ -84,6 +84,12 @@ import java.util.logging.Level;
  * TODO: efficient, because it doesn't need to unmarshall all the values first.
  */
 public class BinarySerializer {
+  /**
+   * Header bytes a property-less record written by {@code GraphBatch} before #7448 is short of: its header end offset
+   * points at the property count instead of past it. See {@link #checkPropertyCount}.
+   */
+  private static final int LEGACY_EMPTY_HEADER_SHORTFALL = -1;
+
   private final BinaryComparator comparator = new BinaryComparator();
   private       Class<?>         dateImplementation;
   private       Class<?>         dateTimeImplementation;
@@ -980,11 +986,19 @@ public class BinarySerializer {
     final int properties = checkDeserializedCount(buffer.getUnsignedNumber(), buffer);
 
     final int headerBytesLeft = headerEndOffset - buffer.position();
-    if (headerBytesLeft < properties * 2L)
+    if (headerBytesLeft < properties * 2L) {
+      // Property-less edges written by GraphBatch before #7448 carry a header end offset that points AT the count byte
+      // rather than past it: exactly one byte short, with exactly zero properties. Nothing is read past the count of
+      // such a record, so it is well-formed for every purpose but this check, and databases bulk-loaded before the fix
+      // keep that layout on disk. Accept that one shape; any other shortfall is still corruption
+      if (properties == 0 && headerBytesLeft == LEGACY_EMPTY_HEADER_SHORTFALL)
+        return 0;
+
       throw new SerializationException(
           "Error on deserialize record. It may be corrupted (properties=" + properties + " do not fit in the "
               + headerBytesLeft + " header bytes before headerEndOffset=" + headerEndOffset + " at position " + initialPosition
               + ")");
+    }
 
     return properties;
   }
