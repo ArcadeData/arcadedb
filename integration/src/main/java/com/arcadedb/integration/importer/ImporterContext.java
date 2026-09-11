@@ -137,7 +137,14 @@ public class ImporterContext {
     lastParsed = 0L;
   }
 
-  /** Rows parsed by this import so far: every finished phase plus the one currently running. */
+  /**
+   * Rows parsed by this import so far: every finished phase plus the one currently running.
+   * <p>
+   * {@link #toMap()} deliberately does not call this - it needs both published keys built from one reading of
+   * {@link #parsed}, which a second call here would re-read. The caller this exists for is a progress reader that
+   * wants a figure which does not jump backwards at a phase boundary, which is what the server's once-a-second
+   * import counter needs and does not yet use (issue #7483).
+   */
   public long totalParsedRecords() {
     return totalParsed.get() + parsed.get();
   }

@@ -118,9 +118,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     // One ImporterContext serves every phase of an import, so this counter arrives carrying whatever an earlier
     // phase left in it, and the periodic commit below is taken off it: an inherited offset moved the first commit
-    // to somewhere inside the first batch (issue #7313). Since #7342 loadFromSource() already zeroes it before
-    // dispatching here, so this is redundant on that path and kept for the direct FormatImporter.load() call,
-    // which is public API; routed through ImporterContext so the two cannot drift.
+    // to somewhere inside the first batch (issue #7313). Kept for direct FormatImporter.load() callers;
+    // loadFromSource() has already done it. See ImporterContext#beginParsingPhase().
     context.beginParsingPhase();
 
     // Governs the commit granularity below (see the loop): skip mode needs one record per transaction so a
