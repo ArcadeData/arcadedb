@@ -988,7 +988,7 @@ public class PageManager extends LockContext {
       // #7458: DECIDED UNDER THE SAME MONITOR beginDatabaseClose MARKS AND WAITS UNDER, SO A WINDOW IS EITHER SEEN BY
       // THE WAITING CLOSE OR REFUSED HERE - NEVER NEITHER. A CLOSE THAT IS WAITING FOR THE OPEN WINDOWS TO DRAIN MUST
       // NOT BE POSTPONED BY NEW ONES, AND A WINDOW MUST NOT OPEN ON FILES A CLOSE IS ABOUT TO SHUT
-      refused = (!closingDatabases.isEmpty() && closingDatabases.contains(database)) || !database.isOpen();
+      refused = closingDatabases.contains(database) || !database.isOpen();
       if (!refused) {
         final PageSnapshot[] current = activeSnapshots;
         final PageSnapshot[] updated = current == null ? new PageSnapshot[1] : Arrays.copyOf(current, current.length + 1);
