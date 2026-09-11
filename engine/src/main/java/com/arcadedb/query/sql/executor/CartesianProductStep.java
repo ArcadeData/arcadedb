@@ -160,7 +160,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
       // HANDS OUT THE CURRENT ONE: BY THEN MatchBindMatchedStep DOWNSTREAM HAS REBOUND $matched TO A ROW OF ANOTHER OUTER
       // TUPLE, SO THE LEG'S OWN OUTER TUPLE IS BOUND AGAIN BEFORE EVERY PULL
       if (factories.get(level) != null)
-        context.setVariable("matched", outerTuples.get(level));
+        context.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, outerTuples.get(level));
       if (rs.hasNext()) {
         final Result item = rs.next();
         currentTuple.set(level, item);
@@ -168,6 +168,11 @@ public class CartesianProductStep extends AbstractExecutionStep {
           preFetches.get(level).add(item);
         return true;
       }
+
+      // AN INDEPENDENT LEVEL WITH NO ROW AT ALL EMPTIES THE WHOLE PRODUCT: ANSWER SO AT ONCE RATHER THAN WALKING EVERY ROW OF
+      // THE LEVELS BEFORE IT TO FIND OUT. A CORRELATED LEVEL ANSWERS PER OUTER TUPLE, SO IT GETS NO SUCH SHORTCUT
+      if (factories.get(level) == null && firstPass.get(level) && preFetches.get(level).countEntries() == 0)
+        return false;
 
       firstPass.set(level, false);
       if (level == 0 || !advance(level - 1))
@@ -189,7 +194,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
       // OWN, SO THE BINDINGS DO NOT NEST
       final ResultInternal outerTuple = partialTuple(level);
       outerTuples.set(level, outerTuple);
-      context.setVariable("matched", outerTuple);
+      context.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, outerTuple);
       final InternalExecutionPlan plan = factory.get();
       resultSets.set(level, new LocalResultSet(plan));
     } else if (firstPass.get(level))

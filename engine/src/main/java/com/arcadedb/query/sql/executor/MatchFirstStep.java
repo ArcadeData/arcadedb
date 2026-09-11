@@ -120,7 +120,7 @@ public class MatchFirstStep extends AbstractExecutionStep {
 
   private void init(final CommandContext context) {
     if (iterator == null && subResultSet == null) {
-      if (correlated && context.getVariable("matched") instanceof Result outerTuple)
+      if (correlated && context.getVariable(MatchBindMatchedStep.MATCHED_VARIABLE) instanceof Result outerTuple)
         seed = outerTuple;
       final String alias = getAlias();
       final Object matchedNodes = context.getVariable(MatchPrefetchStep.PREFETCHED_MATCH_ALIAS_PREFIX + alias);

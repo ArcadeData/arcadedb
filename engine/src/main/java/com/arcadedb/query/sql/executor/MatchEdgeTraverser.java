@@ -254,8 +254,8 @@ public class MatchEdgeTraverser {
           public void fetchNext() {
             final Object previousMatch = iCommandContext.getVariable("currentMatch");
             // $matched IS THE PARTIAL MATCH THIS HOP STARTS FROM, NOT THE ROW THE STEP LAST EMITTED (ISSUE #7434)
-            final Object previousMatched = iCommandContext.getVariable("matched");
-            iCommandContext.setVariable("matched", sourceRecord);
+            final Object previousMatched = iCommandContext.getVariable(MatchBindMatchedStep.MATCHED_VARIABLE);
+            iCommandContext.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, sourceRecord);
             try {
               while (iter.hasNext()) {
                 final ResultInternal next = iter.next();
@@ -270,7 +270,7 @@ public class MatchEdgeTraverser {
             } finally {
               // THE FILTER IS ARBITRARY SQL: RESTORE EVEN WHEN IT THROWS, OR THE CONTEXT KEEPS THIS HOP'S BINDINGS
               iCommandContext.setVariable("currentMatch", previousMatch);
-              iCommandContext.setVariable("matched", previousMatched);
+              iCommandContext.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, previousMatched);
             }
           }
         };
@@ -289,8 +289,8 @@ public class MatchEdgeTraverser {
       iCommandContext.setVariable("depth", depth);
       final Object previousMatch = iCommandContext.getVariable("currentMatch");
       iCommandContext.setVariable("currentMatch", startingPoint);
-      final Object previousMatched = iCommandContext.getVariable("matched");
-      iCommandContext.setVariable("matched", sourceRecord);
+      final Object previousMatched = iCommandContext.getVariable(MatchBindMatchedStep.MATCHED_VARIABLE);
+      iCommandContext.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, sourceRecord);
 
       try {
         if (matchesFilters(iCommandContext, filter, startingPoint) && matchesClass(className, startingPoint) && matchesCluster(
@@ -335,7 +335,7 @@ public class MatchEdgeTraverser {
         }
       } finally {
         iCommandContext.setVariable("currentMatch", previousMatch);
-        iCommandContext.setVariable("matched", previousMatched);
+        iCommandContext.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, previousMatched);
       }
     }
     return result;

@@ -502,6 +502,18 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
         .hasMessageContaining("must contain RIDs");
   }
 
+  @Test
+  void sqlVectorNeighborsFilterRejectsAMalformedRidStringWithTheParsingException() {
+    // EVERY SHAPE OF MALFORMED STRING, NOT ONLY THE ONE RID(String) REPORTS AS AN ILLEGAL ARGUMENT
+    for (final String malformed : new String[] { "docA", "#1", "#", "#1:", "#a:b" })
+      assertThatThrownBy(() -> database.query("sql",
+          "SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 5, { filter: :f }) AS neighbors",
+          Map.of("f", List.of(malformed))).next())
+          .as(malformed)
+          .isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining("must contain RIDs");
+  }
+
   @SuppressWarnings("unchecked")
   private List<Map<String, Object>> neighbors(final String query) {
     try (final ResultSet rs = database.query("sql", query)) {
