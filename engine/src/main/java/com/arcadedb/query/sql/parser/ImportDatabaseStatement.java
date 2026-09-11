@@ -116,28 +116,60 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
         if (statistics != null)
           result.setPropertiesFromMap(statistics);
 
+        // THE OUTCOME IS SET ON THE SUCCESS PATH ONLY. IT USED TO BE ASSIGNED UNCONDITIONALLY BELOW THE try, WHERE IT
+        // OVERWROTE THE 'FAIL' THE HANDLER BENEATH HAD JUST WRITTEN - SO THE ONE FAILURE THIS STATEMENT REPORTS
+        // IN-BAND INSTEAD OF BY THROWING COULD NOT BE OBSERVED BY ANY CALLER, AND AN IMPORT THAT NEVER RAN ANSWERED
+        // {"result":"OK"} WITH NO ROWS AND NO STATISTICS (#7461)
+        result.setProperty("result", "OK");
+
       } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
         throw new CommandExecutionException("Error on importing database, importer libs not found in classpath", e);
       } catch (final InvocationTargetException e) {
+        final Throwable target = e.getTargetException();
+
         // SURFACE A SECURITY VIOLATION (SSRF/LFI GUARD IN THE IMPORTER) DIRECTLY SO IT MAPS TO HTTP 403 INSTEAD OF 500
-        for (Throwable cause = e.getTargetException(); cause != null; cause = cause.getCause())
+        for (Throwable cause = target; cause != null; cause = cause.getCause())
           if (cause instanceof SecurityException se)
             throw se;
 
-        if ("IllegalArgumentException".equals(e.getCause().getClass().getSimpleName()))
+        // THE IN-BAND FAILURE. 'WITH probeOnly = true' asks whether a source can be parsed, and Importer.load()
+        // answers a failed probe with an IllegalArgumentException precisely so this statement can report it as a row
+        // rather than as an error (#1401); ImporterSettings.parseParameter raises the same exact type for a
+        // 'WITH ...' value it refuses, before the import runs at all. Both are imports that did not happen, and both
+        // now say so. The reason travels with it because 'FAIL' on its own tells the caller nothing it can act on.
+        //
+        // The match stays an exact class-name comparison rather than an instanceof: the IllegalArgumentException
+        // SUBCLASSES that reach here - NumberFormatException, from parseParameter's Integer/Long.parse on a numeric
+        // setting - have always been thrown, and widening the branch would silently turn those errors into rows.
+        if (target != null && "IllegalArgumentException".equals(target.getClass().getSimpleName())) {
           result.setProperty("result", "FAIL");
-        else
-          throw new CommandExecutionException("Error on importing database", e.getTargetException());
+          result.setProperty("reason", failureReason(target));
+        } else
+          throw new CommandExecutionException("Error on importing database", target);
       } finally {
         OperationProgressRegistry.instance().unregister(progress);
       }
     }
 
-    result.setProperty("result", "OK");
-
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
+  }
+
+  /**
+   * The human-readable reason behind an importer failure reported in-band, for the {@code reason} property that
+   * travels with {@code result=FAIL}.
+   * <p>
+   * The failure's own message is the right one to report for both producers of that branch, and deliberately not
+   * the cause's: {@code Importer.load()} builds a failed probe as {@code new IllegalArgumentException(cause)}, and
+   * that constructor makes the message the cause's {@code toString()} - type included, which is the whole of the
+   * answer when the cause is a {@code FileNotFoundException} whose own message is nothing but the path it could not
+   * open. A settings failure carries its own sentence and no cause. The {@code toString()} fallback is for the
+   * message-less exception neither shape produces today.
+   */
+  private static String failureReason(final Throwable failure) {
+    final String message = failure.getMessage();
+    return message != null && !message.isBlank() ? message : failure.toString();
   }
 
   @Override
