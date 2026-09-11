@@ -23,7 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupCoordinator;
-import com.arcadedb.server.backup.BackupCoordinator.Operation;
+import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.utility.FileUtils;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
