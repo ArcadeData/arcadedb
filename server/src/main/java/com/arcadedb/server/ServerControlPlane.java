@@ -146,13 +146,29 @@ public class ServerControlPlane {
   }
 
   /**
-   * The {@code connect cluster} command of the HTTP control plane. Kept here with the rest so the
-   * command set is complete in one place; it has never been implemented by the current HA stack.
+   * The {@code connect cluster} command, shared by the HTTP verb and the gRPC {@code ConnectCluster}
+   * RPC (issue #7400). Kept here with the rest so the command set is complete in one place; it has
+   * never been implemented by the current HA stack, and whether to implement the join or retire the
+   * verb is issue #7401.
+   * <p>
+   * The refusal names the address the caller asked for, as the rest of this class names the user,
+   * group or backup file a command could not act on. That is the caller's own argument echoed back,
+   * so it tells an operator which of several join attempts failed - and it is the only thing that
+   * makes the argument observable from outside while the operation itself does nothing with it, so
+   * a transport that dropped the parameter on the way here cannot do so unnoticed.
+   * <p>
+   * Not null-guarded. Both callers found by
+   * {@code grep -rn --include='*.java' "\.connectCluster(" --exclude-dir=target .} on the main
+   * sources pass a value that cannot be null: {@code PostServerCommandHandler} passes
+   * {@code extractTarget}'s result, which is {@code ""} or a substring, and
+   * {@code ArcadeDbGrpcAdminService} passes a protobuf string field, which defaults to {@code ""}.
+   * A null from some future caller renders as {@code 'null'} in the message rather than throwing,
+   * so the guard would buy nothing.
    */
   public void connectCluster(final String serverAddress) {
 
-    throw new OperationNotAvailableException(
-        "Connect cluster operation is not supported by the current HA implementation. Use the cluster configuration to join nodes.");
+    throw new OperationNotAvailableException("Connect cluster to '" + serverAddress
+        + "' is not supported by the current HA implementation. Use the cluster configuration to join nodes.");
   }
 
   // ---------------------------------------------------------------------------------------------

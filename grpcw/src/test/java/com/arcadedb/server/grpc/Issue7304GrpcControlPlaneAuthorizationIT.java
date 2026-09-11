@@ -155,6 +155,11 @@ public class Issue7304GrpcControlPlaneAuthorizationIT extends BaseGraphServerTes
         c -> adminStub.getServerEvents(GetServerEventsRequest.newBuilder().setCredentials(c).setFileName("").build()));
     calls.put("DisconnectCluster",
         c -> adminStub.disconnectCluster(DisconnectClusterRequest.newBuilder().setCredentials(c).build()));
+    // The other half of the cluster pair, added by #7400. Its own behaviour is
+    // Issue7400GrpcConnectClusterIT's subject; the row is here because this table is where a
+    // control-plane RPC missing its gate becomes visible, and cluster membership is privileged.
+    calls.put("ConnectCluster", c -> adminStub.connectCluster(
+        ConnectClusterRequest.newBuilder().setCredentials(c).setServerAddress("localhost:2425").build()));
     // Empty server name is the LOCAL shutdown. It must be denied before it is scheduled: were the
     // gate missing, this row would stop the JVM the rest of the suite runs in.
     calls.put("Shutdown",
