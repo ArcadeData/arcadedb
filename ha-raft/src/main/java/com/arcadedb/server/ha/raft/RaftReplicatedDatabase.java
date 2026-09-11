@@ -883,14 +883,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * Sentinel for "this payload's WAL transaction id could not be read", which makes the whole #6848
-   * handshake inapplicable: an entry we cannot correlate is one we cannot prove was applied, so the
-   * caller keeps the conservative pre-#6848 behaviour (mark nothing, hold the ticket, roll back).
-   * <p>
-   * It shares a value with {@link ArcadeStateMachine#NO_ABANDONED_MARK} and means something entirely
-   * unrelated - that one is a phase-2 ticket sentinel, this one a transaction id. The two are never
-   * compared, assigned to each other, or passed through the same variable; the shared value is a
-   * coincidence of both wanting the one number their domain cannot produce, not a shared protocol.
+   * Sentinel for "this payload's WAL transaction id could not be read". The id is the key the committing thread and
+   * the Raft apply thread meet on (see {@link LocalCommit}); a registration under an unreadable id could never be
+   * claimed, so the commit is still registered but nothing is lost when it is not: the apply thread then applies the
+   * entry from its WAL bytes, and the committing thread's withdrawal succeeds.
    * <p>
    * {@code Long.MIN_VALUE} is that number here because a replicated WAL transaction id is either the
    * per-database counter ({@code TransactionManager.getNextTransactionId()}, an {@code AtomicLong}
