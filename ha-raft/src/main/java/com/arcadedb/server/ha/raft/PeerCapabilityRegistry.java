@@ -38,7 +38,8 @@ import java.util.function.LongSupplier;
  * <p>
  * It also owns what was last REPORTED about each peer, which is why {@link #record} and {@link #forget} answer a
  * boolean: the caller logs a transition, and the shadow that decides what counts as one has to be dropped by the
- * same call that drops the entry it shadows (issue #7301).
+ * same call that drops the entry it shadows (issue #7301). {@link #suspend} is the one write that moves the
+ * belief without settling the report, for a failure the same round may still recover from (issue #7331).
  *
  * <h2>Every unknown is a "no"</h2>
  *
@@ -188,6 +189,35 @@ public final class PeerCapabilityRegistry {
       else
         unknownReasons.put(peerId, reason);
       return lastReported.put(peerId, PROBE_FAILED) != PROBE_FAILED;
+    }
+  }
+
+  /**
+   * Drops what was known about {@code peerId} WITHOUT settling what was last reported about it, so the caller can
+   * stop believing a failed probe at the moment it fails and still decide, later in the same round, whether the
+   * failure is worth a log line (issue #7331).
+   * <p>
+   * The split exists because the two halves of {@link #forget} answer to different clocks. The advertisement has
+   * to go the instant a probe fails - a peer that stopped answering may have been replaced by an older build, and
+   * {@link #freshAdvertisementOf} is what decides whether a schema delta is written to it, so holding the previous
+   * answer for the rest of the round is exactly the window this mechanism exists to close. The report shadow, on
+   * the other hand, has to survive until the round has finished looking: a peer the second pass reaches at a
+   * shared address answered after all, and settling the shadow on its behalf in pass 1 would make the round log a
+   * "does not advertise" warning and a re-advertisement every five seconds, forever, on a cluster whose whole
+   * configuration dials through one collapsed address.
+   *
+   * @param generation the value {@link #generation()} gave when this round of probing started; a failure from an
+   *                   ended leadership term is dropped rather than recorded.
+   */
+  public void suspend(final long generation, final String peerId, final String reason) {
+    synchronized (writeLock) {
+      if (generation != this.generation)
+        return;
+      advertisements.remove(peerId);
+      if (reason == null)
+        unknownReasons.remove(peerId);
+      else
+        unknownReasons.put(peerId, reason);
     }
   }
 

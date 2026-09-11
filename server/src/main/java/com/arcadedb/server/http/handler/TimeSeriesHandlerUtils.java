@@ -106,8 +106,10 @@ final class TimeSeriesHandlerUtils {
   }
 
   /**
-   * Builds the conjunction of a {@code tags} request object: every name/value pair that resolves to a TAG
-   * column becomes an ANDed condition.
+   * Builds the conjunction of a {@code tags} request object: every name/value pair becomes an ANDed condition.
+   *
+   * @throws IllegalArgumentException if a name resolves to no TAG column of the type, or a value cannot be
+   *                                  stored as a tag. See {@link TimeSeriesGateway#andTag}
    */
   static TagFilter buildTagFilter(final JSONObject tagsJson, final List<ColumnDefinition> columns) {
     if (tagsJson == null || tagsJson.keySet().isEmpty())
@@ -134,9 +136,18 @@ final class TimeSeriesHandlerUtils {
    * "every occurrence must match" the OpenAPI description gives, and it is deliberate rather than an
    * accident of the loop - a set-membership (IN) reading would need {@link TagFilter#andIn} and its own
    * documented syntax.
+   * <p>
+   * An occurrence that is not in {@code name:value} form is REFUSED rather than skipped (issue #7334), and so
+   * is a name that resolves to no TAG column - the latter inside {@link TimeSeriesGateway#andTag}, which every
+   * protocol's tag selection shares. Skipping either dropped one term of the conjunction, which on this
+   * endpoint means {@code ?tag=hsot:web1} answered the newest sample of ANY series: a widened query the caller
+   * cannot tell apart from a correct filter that matched everything. A blank occurrence is still ignored,
+   * because a bare {@code ?tag=} or {@code &tag=&} is what an empty form field produces and says nothing.
    *
    * @param tagParams every occurrence of the parameter, in the order the request carried them; may be
    *                  {@code null} or empty, which yields no filter
+   *
+   * @throws IllegalArgumentException if an occurrence carries no {@code ':'} separator, or names no TAG column
    */
   static TagFilter buildTagFilterFromQueryParams(final Collection<String> tagParams,
       final List<ColumnDefinition> columns) {
@@ -150,9 +161,8 @@ final class TimeSeriesHandlerUtils {
 
       final int colonIdx = tagParam.indexOf(':');
       if (colonIdx <= 0)
-        // Not in name:value form, so it names no column. Silently skipped, as an unresolvable name is on
-        // the 'tags' object path above - reporting either is issue #7334.
-        continue;
+        throw new IllegalArgumentException("The 'tag' parameter must be in 'name:value' form: received '"
+            + truncate(tagParam) + "'");
 
       filter = TimeSeriesGateway.andTag(filter, tagParam.substring(0, colonIdx),
           tagParam.substring(colonIdx + 1), columns);
@@ -174,6 +184,22 @@ final class TimeSeriesHandlerUtils {
 
   static int findColumnIndex(final String fieldName, final List<ColumnDefinition> columns) {
     return TimeSeriesGateway.findColumnIndex(fieldName, columns);
+  }
+
+  /**
+   * Renders a rejected tag filter as the 400 the TimeSeries read endpoints answer with, carrying the reason in
+   * {@code error} (issue #7334).
+   * <p>
+   * Answered explicitly rather than by letting the exception reach the generic handler mapper, which does map an
+   * {@link IllegalArgumentException} to a 400 but puts its text in {@code detail} - a field {@code buildErrorBody}
+   * CONCEALS outside development mode. The whole point of this refusal is that the caller reads which tag did not
+   * resolve and what the type actually declares, so the message has to be in the field that is always sent.
+   * <p>
+   * Built with {@link JSONObject} rather than string concatenation because the message echoes caller text, which
+   * can carry a double quote or a backslash that raw concatenation would turn into invalid JSON.
+   */
+  static ExecutionResponse tagFilterError(final IllegalArgumentException e) {
+    return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
   }
 
   /**

@@ -30,6 +30,7 @@ import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedInstallLock;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
@@ -452,6 +453,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // fires at most once per window. Entries are cleared when the database's divergence clears.
   private final        Map<String, Long> lastDivergedResyncLogByDb        = new ConcurrentHashMap<>();
   private static final long              DIVERGED_RESYNC_LOG_THROTTLE_MS   = 5_000L;
+
+  // Budget for taking the compaction write lock of the shards a sealed-store entry installs (issue #7337). The
+  // only holders of the read half on a follower are a backup or a snapshot ship, both of which release it the
+  // moment the sealed images have been read, so this is sized as a hang detector rather than as a queue: a wait
+  // longer than this means something is not releasing, and failing the apply loudly is better than installing
+  // a sealed store that a copy in flight can pair with the wrong page image.
+  private static final long              SEALED_INSTALL_LOCK_TIMEOUT_MS    = 120_000L;
 
   // The transactions this node originated that are in flight between replication and the publication of their
   // pages, and the page versions the Raft log has assigned but this node has not applied yet (issue #6965).
@@ -2180,7 +2188,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
         && !isNotEmpty(decoded.sealedFileBlobs()) && !isNotEmpty(decoded.sealedFileChunks())
         && decoded.walEntries() != null && !decoded.walEntries().isEmpty();
 
-    try {
+    // Hold the compaction write lock of every shard this entry installs sealed bytes for, from before the
+    // install until after the WAL that clears the matching mutable bucket (issue #7337). The leader ships the
+    // two together so they are atomic with respect to each other, but the follower applying them is also a node
+    // a backup or a snapshot ship can be running on, and THAT pairing was unguarded: TimeSeriesCompactionPause
+    // holds each shard's compaction READ lock, which excludes a local compaction and excluded nothing here,
+    // because installSealedFile takes only the store's own directoryLock. A copy taken across this window could
+    // capture a pre-clear page image with a post-install sealed image and restore with every one of those
+    // samples twice, silently. Taking the same lock a local compaction takes is what makes the pause mean on a
+    // follower what it already means on a standalone database.
+    try (final TimeSeriesSealedInstallLock sealedInstallLock = TimeSeriesSealedInstallLock.acquire(db,
+        sealedShardsOf(decoded), SEALED_INSTALL_LOCK_TIMEOUT_MS)) {
       if (decoded.filesToAdd() != null)
         createNewFiles(db, decoded.filesToAdd());
 
@@ -2231,6 +2249,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
             walEntries.size(), decoded.databaseName());
       }
 
+      // RELEASED HERE AND NOT AT THE END OF THE BLOCK: the span that has to be indivisible is [sealed image
+      // installed, mutable bucket cleared], and it closes with the WAL above. What follows - retiring superseded
+      // files, reloading the schema - touches no sealed store, and schema.load() re-instantiates every TimeSeries
+      // engine and closes its shard executors, which is not work to be doing while holding a shard's own
+      // compaction lock (issue #7337). Idempotent, so the try-with-resources below is still the safety net on
+      // every path out of here.
+      sealedInstallLock.close();
+
       // Retire the superseded files only AFTER the WAL (issue #4743). This used to run first, before the
       // schema update - and the schema update re-instantiates the affected components, so an LSM index
       // whose page 0 still named the file just deleted (the WAL that repoints it at the new compacted
@@ -2274,6 +2300,28 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     HALog.log(this, HALog.DETAILED, "Applied schema change to database '%s'", decoded.databaseName());
+  }
+
+  /**
+   * The shards a schema entry installs sealed bytes for, inline or sliced (issue #7337). A slice that only
+   * stages bytes is included along with the one that installs: locking a shard that turns out not to be replaced
+   * by this entry costs one uncontended lock, and deciding it from {@code last} would make the lock depend on a
+   * flag the decoder could mis-set.
+   * <p>
+   * Package-private so a test can pin that BOTH carriers are covered: an inline blob and a slice sequence
+   * install the same file, and covering only the first would leave every sealed store too large for one Raft
+   * entry - the ones a tear costs most on - unguarded.
+   */
+  static List<TimeSeriesSealedInstallLock.ShardRef> sealedShardsOf(
+      final RaftLogEntryCodec.DecodedEntry decoded) {
+    final List<TimeSeriesSealedInstallLock.ShardRef> shards = new ArrayList<>();
+    if (decoded.sealedFileBlobs() != null)
+      for (final RaftLogEntryCodec.TsSealedBlob blob : decoded.sealedFileBlobs())
+        shards.add(new TimeSeriesSealedInstallLock.ShardRef(blob.typeName(), blob.shardIndex()));
+    if (decoded.sealedFileChunks() != null)
+      for (final RaftLogEntryCodec.TsSealedChunk chunk : decoded.sealedFileChunks())
+        shards.add(new TimeSeriesSealedInstallLock.ShardRef(chunk.typeName(), chunk.shardIndex()));
+    return shards;
   }
 
   /**

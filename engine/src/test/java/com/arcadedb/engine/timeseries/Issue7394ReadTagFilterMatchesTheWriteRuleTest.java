@@ -98,16 +98,19 @@ class Issue7394ReadTagFilterMatchesTheWriteRuleTest {
   }
 
   /**
-   * The value is judged on its own, before the name is resolved: a name that matches no TAG column still
-   * contributes nothing to the filter (issue #7321's documented behaviour, tracked for reporting by #7334),
-   * but an unstorable value is unstorable whichever name carries it, and answering "no data" for it is the
-   * very confusion this refusal removes.
+   * The value is judged on its own, BEFORE the name is resolved. Both are refusals now (issue #7334 made the
+   * unresolvable name one too), but they are different refusals and the caller is entitled to the one that
+   * describes what is actually wrong: an unstorable value is unstorable whichever name carries it, so a
+   * request that gets both wrong is told about the value rather than sent to check its spelling.
    */
   @Test
   void anUnstorableValueIsRefusedEvenUnderANameThatResolvesToNoColumn() {
     assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(Map.of("nosuchtag", new byte[] { 1 }), COLUMNS))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("nosuchtag");
+        .hasMessageContaining("nosuchtag")
+        .as("the VALUE rule wins: 'not a TAG column' would send the caller to fix the spelling of a name "
+            + "whose value would be refused after they did")
+        .hasMessageContaining("cannot hold a");
   }
 
   @Test

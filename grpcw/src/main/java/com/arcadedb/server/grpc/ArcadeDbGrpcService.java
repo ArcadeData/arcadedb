@@ -3555,11 +3555,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Same bounding contract as executeQuery: an explicit positive limit at or below the configured cap is the
     // client's own bound and is honoured silently; the cap is otherwise a HARD ceiling a client cannot widen by
     // asking for more, and exceeding it fails loudly instead of silently dropping rows.
+    //
+    // The ceiling is TimeSeriesQuery's own and not the unary ExecuteQuery one (issue #7390). The unary ceiling's
+    // default is deliberately the low one BECAUSE its response is a single gRPC message - the one property a
+    // server-streaming RPC does not have - so reading it here refused at a tenth of what the HTTP twin serves,
+    // and refused it mid-stream, after the client had already consumed part of the series.
     final int configuredMax = serverConfiguration().getValueAsInteger(
-        GlobalConfiguration.SERVER_GRPC_QUERY_MAX_RESULT_ROWS);
+        GlobalConfiguration.SERVER_GRPC_TIMESERIES_MAX_RESULT_ROWS);
     final boolean capEnabled = configuredMax > 0;
     final int requestedLimit = req.getLimit();
-    final boolean clientLimitWithinCap = requestedLimit > 0 && (!capEnabled || requestedLimit <= configuredMax);
+    // A limit that already exceeds the ceiling is refused HERE, before the first message: the answer is known
+    // without walking a row, and a client told up front can narrow its request, where one told at row
+    // `configuredMax` has already been handed a partial series that looks exactly like a complete one.
+    if (capEnabled && requestedLimit > configuredMax)
+      throw timeSeriesRowCeilingExceeded(requestedLimit + " rows were requested, more than the maximum of "
+          + configuredMax);
+    final boolean clientLimited = requestedLimit > 0;
 
     final Iterator<Object[]> rows = engine.iterateQuery(fromTs, toTs, columnIndices, tagFilter);
 
@@ -3574,16 +3585,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (cancelled.get())
         return;
 
-      if (clientLimitWithinCap && emitted >= requestedLimit) {
+      if (clientLimited && emitted >= requestedLimit) {
         // The loop condition already proved another row exists, so this answer really is cut short.
         truncated = true;
         break;
       }
+      // Reached only by a request that stated NO limit: one that stated a limit was either bounded by it above
+      // or refused before the first message. The lazy walk cannot know the row count in advance, so this is the
+      // one case the ceiling still has to fire mid-stream - which is why `truncated` and `last` exist.
       if (capEnabled && emitted >= configuredMax)
-        throw Status.RESOURCE_EXHAUSTED
-            .withDescription("TimeSeriesQuery result exceeds the maximum of " + configuredMax
-                + " rows (arcadedb.server.grpcQueryMaxResultRows); narrow the time range, add a tag filter, or set a limit")
-            .asRuntimeException();
+        throw timeSeriesRowCeilingExceeded("the result exceeds the maximum of " + configuredMax + " rows");
 
       final TimeSeriesRow row = GrpcTimeSeriesSupport.toRow(rows.next());
       batch.add(row);
@@ -3613,6 +3624,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         .setRunningTotalEmitted(emitted)
         .setTruncated(truncated)
         .setLast(true));
+  }
+
+  /**
+   * The refusal both TimeSeriesQuery row ceilings answer with, worded the same way and naming the setting that
+   * actually applies (issue #7390). The remedies are listed because RESOURCE_EXHAUSTED alone tells a client
+   * nothing it can act on.
+   */
+  private static StatusRuntimeException timeSeriesRowCeilingExceeded(final String what) {
+    return Status.RESOURCE_EXHAUSTED
+        .withDescription("TimeSeriesQuery refused: " + what
+            + " (arcadedb.server.grpcTimeSeriesMaxResultRows); narrow the time range, add a tag filter, or lower "
+            + "the limit")
+        .asRuntimeException();
   }
 
   /**
@@ -3657,12 +3681,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final List<Long> timestamps = result.getBucketTimestamps();
 
     final int configuredMax = serverConfiguration().getValueAsInteger(
-        GlobalConfiguration.SERVER_GRPC_QUERY_MAX_RESULT_ROWS);
+        GlobalConfiguration.SERVER_GRPC_TIMESERIES_MAX_RESULT_ROWS);
     if (configuredMax > 0 && timestamps.size() > configuredMax)
       throw Status.RESOURCE_EXHAUSTED
           .withDescription("TimeSeriesQuery aggregation produced " + timestamps.size() + " buckets, more than the "
-              + "maximum of " + configuredMax + " (arcadedb.server.grpcQueryMaxResultRows); widen bucket_interval_ms "
-              + "or narrow the time range")
+              + "maximum of " + configuredMax + " (arcadedb.server.grpcTimeSeriesMaxResultRows); widen "
+              + "bucket_interval_ms or narrow the time range")
           .asRuntimeException();
 
     final List<TimeSeriesBucket> batch = new ArrayList<>(Math.min(batchSize, 1024));

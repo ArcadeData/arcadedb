@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -34,6 +35,9 @@ import io.undertow.server.HttpServerExchange;
 import org.apache.ratis.protocol.RaftPeer;
 
 import javax.net.ssl.HttpsURLConnection;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -48,6 +52,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
+import java.util.zip.CRC32;
 
 /**
  * POST /api/v1/cluster/verify/{database} - verifies database consistency across cluster nodes.
@@ -70,6 +75,12 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
   private static final int     PEER_CONNECT_TIMEOUT_MS = 30_000;
   private static final int     PEER_READ_TIMEOUT_MS    = 60_000;
   private static final int     MAX_PEER_RESPONSE_BYTES = 1024 * 1024; // 1 MB
+  /**
+   * Response flag saying the checksum map covers the TimeSeries sealed stores (issue #7338). Absent on a build
+   * that predates it, which is what lets a leader tell "this peer's sealed store differs" apart from "this peer
+   * never checksummed it".
+   */
+  private static final String  SEALED_STORES_INCLUDED  = "sealedStoresIncluded";
   /** Valid database name: alphanumeric, underscore, hyphen, dot. No path traversal sequences. */
   static final         Pattern VALID_DATABASE_NAME     = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_\\-.]*");
 
@@ -141,51 +152,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     // Compute local checksums with file type categorization
     final JSONObject localChecksums = new JSONObject();
     final JSONArray localFiles = new JSONArray();
-    db.executeInReadLock(() -> {
-      // #6075: CRC THE FILES THROUGH A POINT-IN-TIME SNAPSHOT INSTEAD OF FREEZING THEM WITH A FLUSH SUSPENSION. A
-      // VERIFY OF A LARGE DATABASE READS EVERY BYTE OF EVERY FILE, SO THE OLD PATH THROTTLED WRITERS FOR ITS WHOLE
-      // DURATION AND POSTPONED INDEX COMPACTION WITH THEM. THE CHECKSUM IS BYTE-FOR-BYTE THE SAME VALUE, SO A PEER
-      // STILL ON THE FALLBACK PATH COMPARES EQUAL
-      if (db.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED)) {
-        // COLLECTED ASIDE AND MERGED ONLY ON SUCCESS: A WINDOW INVALIDATED HALFWAY THROUGH MUST NOT LEAVE THE
-        // RESPONSE HOLDING A MIX OF SNAPSHOT AND FALLBACK CHECKSUMS
-        final JSONObject snapshotChecksums = new JSONObject();
-        final JSONArray snapshotFiles = new JSONArray();
-        try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
-          for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
-            try {
-              collectFileInfo(snapshotChecksums, snapshotFiles, file.fileName(), snapshot.calculateChecksum(file.fileId()),
-                  file.size());
-            } catch (final PageSnapshotException e) {
-              throw e;
-            } catch (final Exception e) {
-              // skip files that cannot be checksummed (e.g. in-flight creation)
-            }
-
-          for (final String name : snapshotChecksums.keySet())
-            localChecksums.put(name, snapshotChecksums.getLong(name));
-          for (int i = 0; i < snapshotFiles.length(); i++)
-            localFiles.put(snapshotFiles.getJSONObject(i));
-          return null;
-        } catch (final PageSnapshotException e) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Point-in-time snapshot unusable for the verify of database '%s' (%s): falling back to suspending the page flush",
-              null, db.getName(), e.getMessage());
-        }
-      }
-
-      db.getPageManager().suspendFlushAndExecute(db, () -> {
-        for (final var file : db.getFileManager().getFiles())
-          if (file != null) {
-            try {
-              collectFileInfo(localChecksums, localFiles, file.getFileName(), file.calculateChecksum(), file.getSize());
-            } catch (final Exception e) {
-              // skip files that cannot be checksummed (e.g. in-flight creation)
-            }
-          }
-      });
-      return null;
-    });
+    computeLocalChecksums(db, localChecksums, localFiles);
 
     final JSONObject response = new JSONObject();
 
@@ -202,6 +169,11 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
       response.put("localChecksums", localChecksums);
       response.put("files", localFiles);
       response.put("localServer", server.getServerName());
+      // Tells the asking leader that this map covers the TimeSeries sealed stores (issue #7338). A peer on a
+      // build that predates that omits the flag, and the comparison below then leaves its sealed files out
+      // instead of reporting every one of them MISSING - a rolling upgrade must not make the divergence
+      // detector cry divergence over a file the other side was never asked to checksum.
+      response.put(SEALED_STORES_INCLUDED, true);
       return new ExecutionResponse(200, response.toString());
     }
 
@@ -371,12 +343,20 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
           if (peerResponse.has("localChecksums")) {
             final JSONObject remoteChecksums = peerResponse.getJSONObject("localChecksums");
+            // See SEALED_STORES_INCLUDED: an older peer's map holds no .ts.sealed entry because its build never
+            // put one there, which is not the same statement as "that file differs".
+            final boolean peerCoversSealedStores = peerResponse.getBoolean(SEALED_STORES_INCLUDED, false);
+            int skippedSealedStores = 0;
 
             int matchCount = 0;
             int mismatchCount = 0;
             final JSONArray mismatches = new JSONArray();
 
             for (final String fileName : localChecksums.keySet()) {
+              if (!peerCoversSealedStores && fileName.endsWith(TimeSeriesSealedStore.FILE_EXTENSION)) {
+                skippedSealedStores++;
+                continue;
+              }
               final long localCrc = localChecksums.getLong(fileName);
               if (remoteChecksums.has(fileName)) {
                 final long remoteCrc = remoteChecksums.getLong(fileName);
@@ -405,6 +385,11 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
             peerResult.put("mismatchedFiles", mismatchCount);
             if (mismatchCount > 0)
               peerResult.put("mismatches", mismatches);
+            // Said rather than silently done: a CONSISTENT that did not compare the sealed stores is a weaker
+            // statement than one that did, and an operator running a verify during a rolling upgrade is entitled
+            // to know which of the two they got.
+            if (skippedSealedStores > 0)
+              peerResult.put("uncomparedSealedStores", skippedSealedStores);
           } else {
             peerResult.put("status", "ERROR");
             peerResult.put("error", "peer response missing 'localChecksums'");
@@ -423,6 +408,51 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     return peerResult;
   }
 
+  /**
+   * CRCs the TimeSeries sealed stores, which NEITHER of this handler's enumerations can reach (issue #7338).
+   * <p>
+   * Both paths above are file-list-oriented - the snapshot's own file list, or {@code FileManager.getFiles()} -
+   * and {@code TimeSeriesSealedStore} opens {@code <base>.ts.sealed} with raw {@code RandomAccessFile}/
+   * {@code FileChannel} I/O and never registers it as a {@code ComponentFile}, so it is in neither. It was
+   * therefore never checksummed and never compared, which is exactly the wrong file to omit from a divergence
+   * detector: the sealed store is replicated OUT OF BAND, by {@code ArcadeStateMachine.applySealedBlobs} rather
+   * than by the page WAL (issue #4382), so it is the side channel a verify exists to police. A follower whose
+   * sealed store failed to install, installed a stale slice sequence, or was repaired by hand reported a fully
+   * matching checksum set while holding different historical samples from the leader.
+   * <p>
+   * Read raw off the disk, the same way {@code SnapshotManager.computeFileChecksums} - the directory-oriented
+   * twin that serves {@code /checksums} - has always read them. That is consistent whatever the page image came
+   * from: a sealed store is replaced as a whole file by an atomic rename, so the path always resolves to a
+   * complete file, and it is covered by no window on either path.
+   * <p>
+   * A file that disappears between the listing and the read is skipped rather than failing the verify, matching
+   * how both paths above treat a file they cannot checksum: retention and downsampling rewrite a sealed store by
+   * rename without holding anything this handler holds.
+   */
+  private static void collectSealedStores(final JSONObject checksums, final JSONArray files,
+      final DatabaseInternal db) {
+    for (final File sealedFile : TimeSeriesSealedStore.listSealedFiles(new File(db.getDatabasePath())))
+      try {
+        collectFileInfo(checksums, files, sealedFile.getName(), crcOf(sealedFile), sealedFile.length());
+      } catch (final Exception e) {
+        // Same rule as the page files above: a store that went away between the listing and the read is not
+        // worth failing a verify over. It shows up as MISSING against a peer that still has it, which is the
+        // honest answer.
+      }
+  }
+
+  /** CRC32 of a whole file, streamed so a multi-gigabyte sealed store never lands in heap. */
+  private static long crcOf(final File file) throws IOException {
+    final CRC32 crc = new CRC32();
+    final byte[] buffer = new byte[8192];
+    try (final FileInputStream in = new FileInputStream(file)) {
+      int read;
+      while ((read = in.read(buffer)) != -1)
+        crc.update(buffer, 0, read);
+    }
+    return crc.getValue();
+  }
+
   /** Records one file's checksum in both shapes the response carries: the flat map peers compare, and the detail list. */
   private static void collectFileInfo(final JSONObject checksums, final JSONArray files, final String name, final long crc,
       final long size) {
@@ -439,6 +469,10 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
   private static String categorizeFile(final String fileName) {
     if (fileName == null) return "unknown";
     final String lower = fileName.toLowerCase();
+    // Ahead of the "index" arm: a sealed store IS a block index over compacted samples, and a name like
+    // "cpu_index_shard_0.ts.sealed" would otherwise be reported to an operator as an index file (issue #7338).
+    if (lower.endsWith(TimeSeriesSealedStore.FILE_EXTENSION))
+      return "timeseries";
     if (lower.endsWith(".json") || "configuration".equals(lower) || lower.contains("schema"))
       return "config";
     if (lower.contains("index") || lower.contains(".idx") || lower.contains(".ridx") || lower.contains(".notunique")
@@ -447,5 +481,61 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     if (lower.contains("bucket") || lower.contains(".pcf"))
       return "bucket";
     return "data";
+  }
+
+  /**
+   * CRCs every file of the local database into the two shapes the response carries. Package-private so the
+   * enumeration can be asserted without an HTTP exchange or a Raft cluster - which is how {@code .ts.sealed}
+   * came to be missing from it unnoticed (issue #7338).
+   */
+  void computeLocalChecksums(final DatabaseInternal db, final JSONObject localChecksums, final JSONArray localFiles) {
+    db.executeInReadLock(() -> {
+      // #6075: CRC THE FILES THROUGH A POINT-IN-TIME SNAPSHOT INSTEAD OF FREEZING THEM WITH A FLUSH SUSPENSION. A
+      // VERIFY OF A LARGE DATABASE READS EVERY BYTE OF EVERY FILE, SO THE OLD PATH THROTTLED WRITERS FOR ITS WHOLE
+      // DURATION AND POSTPONED INDEX COMPACTION WITH THEM. THE CHECKSUM IS BYTE-FOR-BYTE THE SAME VALUE, SO A PEER
+      // STILL ON THE FALLBACK PATH COMPARES EQUAL
+      if (db.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED)) {
+        // COLLECTED ASIDE AND MERGED ONLY ON SUCCESS: A WINDOW INVALIDATED HALFWAY THROUGH MUST NOT LEAVE THE
+        // RESPONSE HOLDING A MIX OF SNAPSHOT AND FALLBACK CHECKSUMS
+        final JSONObject snapshotChecksums = new JSONObject();
+        final JSONArray snapshotFiles = new JSONArray();
+        try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
+          for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
+            try {
+              collectFileInfo(snapshotChecksums, snapshotFiles, file.fileName(), snapshot.calculateChecksum(file.fileId()),
+                  file.size());
+            } catch (final PageSnapshotException e) {
+              throw e;
+            } catch (final Exception e) {
+              // skip files that cannot be checksummed (e.g. in-flight creation)
+            }
+
+          collectSealedStores(snapshotChecksums, snapshotFiles, db);
+
+          for (final String name : snapshotChecksums.keySet())
+            localChecksums.put(name, snapshotChecksums.getLong(name));
+          for (int i = 0; i < snapshotFiles.length(); i++)
+            localFiles.put(snapshotFiles.getJSONObject(i));
+          return null;
+        } catch (final PageSnapshotException e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Point-in-time snapshot unusable for the verify of database '%s' (%s): falling back to suspending the page flush",
+              null, db.getName(), e.getMessage());
+        }
+      }
+
+      db.getPageManager().suspendFlushAndExecute(db, () -> {
+        for (final var file : db.getFileManager().getFiles())
+          if (file != null) {
+            try {
+              collectFileInfo(localChecksums, localFiles, file.getFileName(), file.calculateChecksum(), file.getSize());
+            } catch (final Exception e) {
+              // skip files that cannot be checksummed (e.g. in-flight creation)
+            }
+          }
+        collectSealedStores(localChecksums, localFiles, db);
+      });
+      return null;
+    });
   }
 }

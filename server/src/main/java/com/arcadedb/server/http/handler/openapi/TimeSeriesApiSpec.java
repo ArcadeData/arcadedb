@@ -113,6 +113,13 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
 
     post.setResponses(SpecBuilders.standardResponses("200", success,
         "400", "401", "403", "404", "500"));
+    // The generic "Bad request" text is replaced: the one refusal a caller of this endpoint is most likely to
+    // meet is a mistyped tag name, and until #7334 it was not a refusal at all - the term was dropped and the
+    // query silently widened to the whole range.
+    post.getResponses().addApiResponse("400", SpecBuilders.errorResponse(
+        "Bad request. A name in 'tags' that is no TAG column of the type is refused here, naming it and listing "
+            + "the type's declared TAG columns: dropping it would widen the query to the whole range, which is "
+            + "indistinguishable from a filter that matched everything."));
     // Added explicitly rather than through standardResponses, whose 413 text describes an oversized REQUEST
     // body: here it is the response that would be too large (issue #5719). Both shapes can raise it - the raw
     // one on its rows, the aggregated one on its buckets.
@@ -139,11 +146,18 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     // and hold generated clients down to one tag.
     get.addParametersItem(SpecBuilders.repeatableQueryParam("tag",
         "Tag filter in name:value form. Repeat the parameter to narrow to one series across several tags: "
-            + "every occurrence must match.",
+            + "every occurrence must match. An occurrence that carries no ':' separator, or whose name is no "
+            + "TAG column of the type, is refused with 400 rather than ignored.",
         false));
     get.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Most recent sample", "TimeSeriesLatestResponse"),
         "400", "401", "403", "404", "500"));
+    // See the query endpoint: dropping an unresolvable tag is worse here, because this endpoint answers ONE
+    // row, so the caller gets the newest sample of some other series rather than a widened result set they
+    // could at least inspect (issue #7334).
+    get.getResponses().addApiResponse("400", SpecBuilders.errorResponse(
+        "Bad request. A 'tag' occurrence not in 'name:value' form, or whose name is no TAG column of the type, "
+            + "is refused here, naming it and listing the type's declared TAG columns."));
 
     final PathItem pathItem = new PathItem();
     pathItem.setGet(get);
@@ -171,7 +185,8 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     schema.addProperty("to", SpecBuilders.integer(
         "Inclusive upper bound of the timestamp range. Unbounded when omitted."));
     schema.addProperty("tags", SpecBuilders.object(
-        "Tag filter as name to value pairs. All pairs must match."));
+        "Tag filter as name to value pairs. All pairs must match. A name that is no TAG column of the type is "
+            + "refused with 400 rather than ignored."));
     schema.addProperty("fields", SpecBuilders.arrayOf(
         SpecBuilders.string("Field name"), "Fields to project. All fields when omitted."));
     schema.addProperty("aggregation", aggregation);
