@@ -33,6 +33,7 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
@@ -145,6 +146,8 @@ import java.util.stream.Stream;
  */
 public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public static final int EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
+  // #6965: page versions the replication log assigned but this node has not applied yet (HA leader only)
+  private volatile PageVersionReservations pageVersionReservations;
   public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
   /** Header ({@code MutableEdgeSegment.CONTENT_START_POSITION}) plus room for a couple of maximum-width entries. */
   public static final int MIN_EDGE_LIST_CHUNK_SIZE             = 32;
@@ -1819,6 +1822,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public BinarySerializer getSerializer() {
     return serializer;
+  }
+
+  /**
+   * Page versions the replication log has already assigned but this node has not applied yet (issue #6965), or
+   * {@code null} on a standalone database. See {@link PageVersionReservations}.
+   */
+  public PageVersionReservations getPageVersionReservations() {
+    return pageVersionReservations;
+  }
+
+  public void setPageVersionReservations(final PageVersionReservations reservations) {
+    this.pageVersionReservations = reservations;
   }
 
   @Override

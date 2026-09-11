@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
@@ -1125,7 +1126,11 @@ public class PageManager extends LockContext {
     return flushThread;
   }
 
-  private int getMostRecentVersionOfPage(final PageId pageId, final int pageSize) throws IOException {
+  /**
+   * The version of the most recent committed copy of a page this node holds: the read cache, the flush pipeline or the
+   * file, in that order. {@code 0} for a page that does not exist yet.
+   */
+  public int getMostRecentVersionOfPage(final PageId pageId, final int pageSize) throws IOException {
     CachedPage page = readCache.get(pageId);
     if (page == null)
       page = loadPage(pageId, pageSize, false, true);
@@ -1227,14 +1232,30 @@ public class PageManager extends LockContext {
   public void checkPageVersion(final MutablePage page, final boolean isNew) throws IOException {
     final PageId pageId = page.getPageId();
 
-    final FileManager fileManager = ((DatabaseInternal) pageId.getDatabase()).getFileManager();
+    final DatabaseInternal database = (DatabaseInternal) pageId.getDatabase();
+    final FileManager fileManager = database.getFileManager();
 
     if (!fileManager.existsFile(pageId.getFileId()))
       throw new ConcurrentModificationException(
           "Concurrent modification on page " + pageId + ". The file with id " + pageId.getFileId()
               + " does not exist anymore. Please retry the operation (threadId=" + Thread.currentThread().threadId() + ")");
 
-    final int mostRecentPageVersion = getMostRecentVersionOfPage(pageId, page.getPhysicalSize());
+    int mostRecentPageVersion = getMostRecentVersionOfPage(pageId, page.getPhysicalSize());
+
+    // #6965: a version the replication log has already assigned to this page, but that this node has not applied yet,
+    // IS the most recent one. Validating against the stale local copy would let the transaction ship a delta computed
+    // on a superseded image, and the leader would refuse it at append time anyway - refuse it here, before the round
+    // trip. Null on a standalone database and on replicas, so the common path pays one volatile read. Only phase 1
+    // consults it: the phase-2 bump in updatePageVersion runs at the entry's log position, where the reservation
+    // it would find is the entry's own.
+    if (database.getEmbedded() instanceof LocalDatabase localDatabase) {
+      final PageVersionReservations reservations = localDatabase.getPageVersionReservations();
+      if (reservations != null) {
+        final int reserved = reservations.reservedVersion(pageId);
+        if (reserved > mostRecentPageVersion)
+          mostRecentPageVersion = reserved;
+      }
+    }
 
     if (mostRecentPageVersion != page.getVersion()) {
       totalConcurrentModificationExceptions.incrementAndGet();
@@ -1369,6 +1390,15 @@ public class PageManager extends LockContext {
     }
   }
 
+  /**
+   * The phase-2 half of the version check: validates against the local copy only, by design. On a replicated leader
+   * this runs on the Raft apply thread at the entry's own log position, where the only reservation
+   * {@link #checkPageVersion} could find for the page (#6965) is this very entry's, so consulting the reservations
+   * here would refuse every replicated commit. The direct writers that also come through here (index compaction,
+   * bloom filters, vector graphs) are therefore NOT checked against in-flight replicated entries: they run under the
+   * database write lock, which excludes local committers but not replica entries, and closing that window is the
+   * cluster-wide DDL exclusion tracked as #7438.
+   */
   public MutablePage updatePageVersion(final MutablePage page, final boolean isNew) throws IOException, InterruptedException {
     final PageId pageId = page.getPageId();
 

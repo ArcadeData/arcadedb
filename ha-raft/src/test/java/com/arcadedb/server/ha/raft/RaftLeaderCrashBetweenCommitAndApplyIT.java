@@ -35,19 +35,20 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Fault-injection test for the narrow crash window between Raft replication and phase-2 apply.
- * After Raft commits the entry (followers have it), the leader crashes before {@code commit2ndPhase()}
- * runs locally. This test verifies that:
+ * Fault-injection test for the narrow crash window between Raft replication and the completion of the
+ * local commit. After Raft commits the entry (followers have it), the leader crashes before its committing
+ * thread completes the transaction locally. This test verifies that:
  * <ol>
  *   <li>Surviving followers retain the injected record (Raft durability holds)</li>
  *   <li>A new leader is elected from the surviving nodes</li>
- *   <li>The restarted old leader recovers via Raft log replay (origin-skip does not fire
- *       during replay because {@code isLeader()} returns false)</li>
+ *   <li>The restarted old leader holds the record after Raft log replay: the pages the state machine
+ *       published at the entry's log position (#6965) and the replay agree, page-version guards making
+ *       the replay idempotent</li>
  *   <li>All 3 nodes converge to identical state (no double-apply corruption)</li>
  * </ol>
  *
  * <p>The fault is injected via {@link RaftReplicatedDatabase#TEST_POST_REPLICATION_HOOK},
- * which fires after Raft replication succeeds but before phase-2 runs.
+ * which fires after Raft replication succeeds but before the committing thread completes the commit.
  */
 @Tag("slow")
 class RaftLeaderCrashBetweenCommitAndApplyIT extends BaseRaftHATest {
@@ -100,7 +101,7 @@ class RaftLeaderCrashBetweenCommitAndApplyIT extends BaseRaftHATest {
     // Phase 2: arm the fault-injection hook. On the next successful Raft commit it:
     //  (a) kicks server.stop() onto a separate thread - stopping the leader on the
     //      same thread that is mid-commit would deadlock the Ratis gRPC channel
-    //  (b) throws a RuntimeException so commit2ndPhase() is never invoked
+    //  (b) throws a RuntimeException so the committing thread never completes the commit
     // The hook is single-shot: later commits (if any) no-op before returning.
     final AtomicBoolean hookFired = new AtomicBoolean(false);
     final CountDownLatch leaderStopped = new CountDownLatch(1);
@@ -158,10 +159,9 @@ class RaftLeaderCrashBetweenCommitAndApplyIT extends BaseRaftHATest {
         .as("Surviving leader must have baseline (100) + injected (1) records")
         .isEqualTo(101L);
 
-    // Phase 6: restart the crashed leader. Its Raft log contains the committed entry
-    // but commit2ndPhase() never ran, so the pages are missing. Ratis replay applies
-    // the entry via the state machine follower path (origin-skip bypassed because
-    // isLeader() is false at replay time).
+    // Phase 6: restart the crashed leader. Its Raft log contains the committed entry; whether its pages reached
+    // the disk before the crash or not, Ratis replay applies the entry via the state machine follower path and
+    // the page-version guards make that idempotent.
     // Brief pause to allow the OS to release the gRPC port.
     Thread.sleep(2_000);
     LogManager.instance().log(this, Level.INFO, "TEST: restarting old leader %d", leaderIndex);

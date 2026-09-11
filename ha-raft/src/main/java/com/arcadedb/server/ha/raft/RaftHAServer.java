@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
@@ -39,6 +40,7 @@ import org.apache.ratis.metrics.RatisMetricRegistry;
 import org.apache.ratis.metrics.impl.RatisMetricRegistryImpl;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.ClientId;
+import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftGroup;
@@ -97,6 +99,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -153,6 +156,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile ArcadeStateMachine      stateMachine;
   private final    ClusterMonitor          clusterMonitor;
   private final    Quorum                  quorum;
+  /**
+   * The RPC timeout of this node's own Raft client: a request unanswered for this long is retried with the same call
+   * id. {@link PageVersionLedger#STALE_RESERVATION_MS} is derived from it, since a retry refreshes the reservation.
+   */
+  public static final long CLIENT_REQUEST_TIMEOUT_MS = 10_000L;
+
   private final    long                    quorumTimeout;
   private final    RaftGroup               raftGroup;
   private final    RaftPeerId              localPeerId;
@@ -999,6 +1008,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // Drop the one by-design SimpleStateMachineStorage warning about the missing snapshot digest,
     // without silencing that logger's genuine failures (issue #6991).
     RatisSnapshotDigestWarningFilter.install();
+    // Drop the Ratis client's SEVERE for an entry the leader refused before appending it: that is an ordinary
+    // retryable conflict since issue #6965, not a send failure.
+    RatisRefusedEntryErrorFilter.install();
 
     final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
 
@@ -1778,6 +1790,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public RaftClient getClient() {
     return raftClient;
   }
+
 
   public RaftTransactionBroker getTransactionBroker() {
     return transactionBroker;
@@ -2882,7 +2895,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final Parameters parameters, final RaftPeerId knownLeaderId) {
     // Set the client-side RPC timeout to match the quorum timeout so a slow leader response
     // does not trigger a premature TimeoutIOException before the commit completes.
-    RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
+    RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(CLIENT_REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS));
     final RaftClient.Builder builder = RaftClient.newBuilder()
         .setRaftGroup(group)
         .setProperties(properties)
@@ -3011,6 +3024,26 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     synchronized (applyNotifier) {
       applyNotifier.notifyAll();
     }
+  }
+
+  /**
+   * Waits until the condition holds, re-evaluating it whenever the state machine applies an entry.
+   *
+   * @return {@code false} when the timeout elapsed first
+   */
+  public boolean awaitApplied(final BooleanSupplier condition, final long timeoutMs) throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + timeoutMs;
+    // The condition may read a page (a disk read on a cache miss), so it is evaluated OUTSIDE the monitor that the
+    // apply thread takes after every entry: the monitor is only used to park between evaluations.
+    while (!condition.getAsBoolean()) {
+      final long remaining = deadline - System.currentTimeMillis();
+      if (remaining <= 0)
+        return false;
+      synchronized (applyNotifier) {
+        applyNotifier.wait(Math.min(remaining, 50L));
+      }
+    }
+    return true;
   }
 
   /**
@@ -3499,16 +3532,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * In-flight leader-side phase-2 holds on the Raft snapshot checkpoint (issue #5410). Reported on
-   * every node, not just the leader: a ticket taken while this node WAS the leader keeps pinning log
-   * compaction after it steps down, which is exactly the case an operator needs to see.
+   * Transactions this node originated whose pages the Raft apply thread has not published yet (issue #6965): the
+   * leader-side phase 2 in flight. Since the apply thread publishes them at the entry's log position, before the
+   * applied index moves past it, no snapshot checkpoint is ever held back by them any more: the replay floor is
+   * always {@code -1} (kept in the record for the gauge's stability).
    */
   public HAReplicationStatsProvider.PendingPhase2Stats getPendingPhase2Stats() {
     final ArcadeStateMachine sm = stateMachine;
     if (sm == null)
       return new HAReplicationStatsProvider.PendingPhase2Stats(0, 0, -1);
-    return new HAReplicationStatsProvider.PendingPhase2Stats(
-        sm.pendingLocalPhase2Count(), sm.oldestPendingLocalPhase2HeldMs(), sm.lowestPendingLocalPhase2ReplayFloor());
+    return new HAReplicationStatsProvider.PendingPhase2Stats(sm.pendingLocalCommits(), sm.oldestPendingLocalCommitMs(), -1);
   }
 
   /**
