@@ -146,6 +146,8 @@ import java.util.stream.Stream;
  */
 public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public static final int EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
+  // #6965: page versions the replication log assigned but this node has not applied yet (HA leader only)
+  private volatile PageVersionReservations pageVersionReservations;
   public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
   /** Header ({@code MutableEdgeSegment.CONTENT_START_POSITION}) plus room for a couple of maximum-width entries. */
   public static final int MIN_EDGE_LIST_CHUNK_SIZE             = 32;
@@ -3020,7 +3022,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * reconciliation (recovery replay, or snapshot re-install via the DatabaseReconciler) repairs the node.
    */
   private volatile String fenceReason = null;
-  private volatile PageVersionReservations pageVersionReservations;
 
   public void fenceForRecovery(final String reason) {
     fenceForRecovery(reason, null);

@@ -59,6 +59,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class PageVersionLedger {
+  /**
+   * How long an unconfirmed reservation is trusted. The confirmation follows the reservation on the same request
+   * thread, straight into the log append, so anything older than this is a request Ratis dropped in between.
+   */
+  static final long STALE_RESERVATION_MS = 30_000L;
+
+  private static final int WAL_TX_HEADER_SIZE   = 2 * Long.BYTES + 2 * Integer.BYTES;
+  private static final int WAL_PAGE_HEADER_SIZE = 6 * Integer.BYTES;
+
+  private final Map<String, DatabaseLedger> byDatabase = new ConcurrentHashMap<>();
+
   /** Resolves the version of a page on this node, {@code 0} for a page that does not exist yet. */
   interface LocalVersions {
     int versionOf(int fileId, int pageNumber) throws IOException;
@@ -72,15 +83,6 @@ final class PageVersionLedger {
   /** Identity of a replicated request: the Raft client that submitted it and its call id, unique cluster-wide. */
   record EntryId(Object client, long callId) {
   }
-
-  /**
-   * How long an unconfirmed reservation is trusted. The confirmation follows the reservation on the same request
-   * thread, straight into the log append, so anything older than this is a request Ratis dropped in between.
-   */
-  static final long STALE_RESERVATION_MS = 30_000L;
-
-  private static final int WAL_TX_HEADER_SIZE   = 2 * Long.BYTES + 2 * Integer.BYTES;
-  private static final int WAL_PAGE_HEADER_SIZE = 6 * Integer.BYTES;
 
   private static final class Reservation {
     private final int     version;
@@ -99,8 +101,6 @@ final class PageVersionLedger {
   private static final class DatabaseLedger {
     private final ConcurrentHashMap<Long, Reservation> pages = new ConcurrentHashMap<>();
   }
-
-  private final Map<String, DatabaseLedger> byDatabase = new ConcurrentHashMap<>();
 
   static long pageKey(final int fileId, final int pageNumber) {
     return ((long) fileId << 32) | (pageNumber & 0xFFFFFFFFL);
