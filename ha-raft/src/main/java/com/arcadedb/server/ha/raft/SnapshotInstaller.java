@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.utility.FileUtils;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -162,6 +163,12 @@ public final class SnapshotInstaller {
    * a violation of that assumption from a silent double-close into a logged WARNING so it is
    * diagnosable after the fact. Keyed by resolved path (not database name) so two logical servers in
    * the same JVM - which use distinct database directories - never raise a spurious overlap warning.
+   * <p>
+   * Since issue #7444 the per-database maintenance slot {@link #install} takes usually prevents the overlap
+   * outright rather than only reporting it: a second install of the same database on the same server waits for the
+   * first. This set still earns its keep, because that wait is bounded - an install that outlasts
+   * {@code arcadedb.ha.snapshotInstallBackupWaitMs} can still be joined by a second one, and that is exactly the
+   * case worth a WARNING.
    */
   private static final Set<String> INSTALLS_IN_FLIGHT = ConcurrentHashMap.newKeySet();
 
@@ -206,6 +213,63 @@ public final class SnapshotInstaller {
    * again, giving leader election time to complete.
    */
   public static void install(final String databaseName, final String databasePath,
+      final Supplier<String> leaderHttpAddrSupplier, final Supplier<String> leaderHttpsAddrSupplier,
+      final String clusterToken, final ArcadeDBServer server) throws IOException {
+
+    // An install REPLACES this node's copy of the database - it closes the live one, swaps its directory for the
+    // leader's snapshot and reopens it - so it is a restore of this node's copy, and it takes the same per-database
+    // maintenance slot a restore takes (issue #7384). Without this, a backup running on THIS node had its directory
+    // reinstalled underneath it: the restore that produced the entry ran on the leader, a different JVM, so the
+    // leader's slot could not be the one that excluded it (issue #7444).
+    //
+    // Taken here rather than at any call site because this method is the choke point every install driver shares:
+    // the forceSnapshot arm of applyInstallDatabaseEntry, the bootstrap installs, the reconciler's resync, and
+    // acquireNewDatabase on both arms where it finds the database already registered and delegates here.
+    //
+    // The wait is bounded, and expiry is not fatal. An install applies a committed Raft entry and a follower that
+    // declines to apply one diverges, so an in-flight backup can delay the install but must not veto it. The default
+    // is proportionate rather than cautious: the download below runs on this same thread and takes minutes for a
+    // large database, so the wait is small beside what the caller is already committed to.
+    //
+    // Bounding it also keeps one narrow circular wait from becoming a deadlock. A leader-side restore holds this
+    // database's RESTORE slot on its request thread while replicateRestoredDatabase blocks waiting for the entry to
+    // commit and apply; applyInstallDatabaseEntry normally returns early on a leader and never reaches here, but a
+    // node that lost leadership between the submit and the apply does reach here, on the apply thread, with its own
+    // request thread still holding the slot and waiting on it. The reservation is not reentrant and these are two
+    // different threads, so an unbounded wait would be a cycle. Bounded, it costs the timeout and a warning.
+    //
+    // A null coordinator is not a production state - ArcadeDBServer's field is final and initialised inline - but
+    // the unit tests that drive this method directly hand it a partially-stubbed server,
+    // which is the same reason downloadSnapshot and purgeRaftLogBeforeInstall below already tolerate one. No
+    // coordinator means no slot to take, and therefore none to release.
+    final BackupCoordinator coordinator = server.getBackupCoordinator();
+    final BackupCoordinator.Operation refusedBy = coordinator == null ? null
+        : coordinator.begin(databaseName, BackupCoordinator.Operation.RESTORE,
+            server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS));
+    final boolean slotHeld = coordinator != null && refusedBy == null;
+    if (refusedBy != null)
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+          "Reinstalling database '%s' from the leader while %s of it is still running on this node: the install "
+              + "applies a committed Raft entry and cannot be declined, so it proceeds and that operation will fail "
+              + "or produce an incomplete result. Raise '%s' to give it longer to finish", null,
+          databaseName, refusedBy.phrase(), GlobalConfiguration.HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS.getKey());
+
+    try {
+      installHoldingMaintenanceSlot(databaseName, databasePath, leaderHttpAddrSupplier, leaderHttpsAddrSupplier,
+          clusterToken, server);
+    } finally {
+      // Only what was actually reserved: a wait that expired took nothing, and releasing then would drop the
+      // reservation the operation still in flight is holding.
+      if (slotHeld)
+        coordinator.end(databaseName, BackupCoordinator.Operation.RESTORE);
+    }
+  }
+
+  /**
+   * The install itself, with this node's per-database maintenance slot already held (or deliberately given up on)
+   * by {@link #install(String, String, Supplier, Supplier, String, ArcadeDBServer)}.
+   */
+  private static void installHoldingMaintenanceSlot(final String databaseName, final String databasePath,
       final Supplier<String> leaderHttpAddrSupplier, final Supplier<String> leaderHttpsAddrSupplier,
       final String clusterToken, final ArcadeDBServer server) throws IOException {
 
