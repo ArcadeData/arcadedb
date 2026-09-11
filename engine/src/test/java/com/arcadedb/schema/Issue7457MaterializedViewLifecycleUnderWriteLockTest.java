@@ -138,6 +138,61 @@ class Issue7457MaterializedViewLifecycleUnderWriteLockTest extends TestHelper {
     database.transaction(() -> database.newDocument("Source").set("value", 3).save());
   }
 
+  /**
+   * Alters racing a drop of the same view: every alter either completes before the drop, replacing the listener under
+   * the write lock, or fails as not found after it. Whatever the interleaving, the one drop tears down the resources
+   * of the view it removed, and nothing is left listening on the source type.
+   */
+  @Test
+  void concurrentAltersAndDropOfTheSameViewLeaveNothingBehind() throws Exception {
+    final Schema schema = database.getSchema();
+    schema.buildMaterializedView().withName("View").withQuery("SELECT value FROM Source")
+        .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL).create();
+
+    final int alterers = 3;
+    final CyclicBarrier start = new CyclicBarrier(alterers + 1);
+    final AtomicInteger altered = new AtomicInteger();
+    final AtomicInteger alterNotFound = new AtomicInteger();
+    final AtomicReference<Throwable> unexpected = new AtomicReference<>();
+    final Thread[] threads = new Thread[alterers + 1];
+    for (int i = 0; i < alterers; i++) {
+      final MaterializedViewRefreshMode mode = i % 2 == 0 ? MaterializedViewRefreshMode.MANUAL : MaterializedViewRefreshMode.INCREMENTAL;
+      threads[i] = new Thread(() -> {
+        try {
+          start.await(10, TimeUnit.SECONDS);
+          schema.alterMaterializedView("View", mode, 0);
+          altered.incrementAndGet();
+        } catch (final SchemaException e) {
+          if (e.getMessage().contains("not found"))
+            alterNotFound.incrementAndGet();
+          else
+            unexpected.set(e);
+        } catch (final Throwable e) {
+          unexpected.set(e);
+        }
+      }, "alterer-" + i);
+    }
+    threads[alterers] = new Thread(() -> {
+      try {
+        start.await(10, TimeUnit.SECONDS);
+        schema.dropMaterializedView("View");
+      } catch (final Throwable e) {
+        unexpected.set(e);
+      }
+    }, "dropper");
+    for (final Thread thread : threads)
+      thread.start();
+    for (final Thread thread : threads)
+      thread.join(30_000);
+
+    assertThat(unexpected.get()).isNull();
+    assertThat(altered.get() + alterNotFound.get()).isEqualTo(alterers);
+    assertThat(schema.existsMaterializedView("View")).isFalse();
+    assertThat(schema.existsType("View")).isFalse();
+    // WHATEVER LISTENER THE LAST ALTER BEFORE THE DROP INSTALLED, THE DROP TORE IT DOWN: THE INSERT IS HARMLESS
+    database.transaction(() -> database.newDocument("Source").set("value", 4).save());
+  }
+
   /** The transition runs inside one outermost recording frame, whichever resources it installs or tears down. */
   @Test
   void lifecycleTransitionIsOneWriteLockedFrame() {

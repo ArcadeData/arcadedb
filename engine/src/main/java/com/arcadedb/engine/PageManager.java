@@ -1004,7 +1004,7 @@ public class PageManager extends LockContext {
       // OBJECT, AND IT IS DONE OUTSIDE THE REGISTRY MONITOR LIKE EVERY OTHER WINDOW CLOSE
       snapshot.close();
       throw new PageSnapshotException("Cannot open a snapshot of database '" + database.getName()
-          + "': the database is being closed", PageSnapshotException.Reason.CLOSING);
+          + "': the database is closed or closing", PageSnapshotException.Reason.CLOSING);
     }
 
     totalSnapshotWindowsOpened.incrementAndGet();
