@@ -232,3 +232,38 @@ against the tree instead - which is weaker, and is recorded as such. Findings:
 6. **Port binding in the new ha-raft test.** Each case starts a real `ArcadeDBServer`, which binds
    the 2480-2489 HTTP range. Not new: `SnapshotInstallSwapLockTest` in the same package does exactly
    the same, and the range auto-increments.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/7453
+
+## Review cycles
+
+### Cycle 1 - `d72d88fe` - clean approval
+
+The `claude` reviewer traced the diff against the tree rather than against the write-up: it
+re-derived the `wait`/`notify` ordering in `BackupCoordinator` ("that ordering closes the classic
+'release lands between check and wait' race correctly - no missed wakeups"), independently confirmed
+the leadership-change deadlock scenario is real by walking `restoreDatabase` -> `performRestore` ->
+`replicateRestoredDatabase`, and confirmed by grep that neither `ArcadeStateMachine` nor
+`DatabaseReconciler` calls `getBackupCoordinator()` directly - so `install` really is the single
+choke point. Verdict: "Nothing blocking found."
+
+Two nits, both declined with reasons rather than applied:
+
+1. **The waiting `begin` calls the non-waiting one twice on the conflict path** - once outside the
+   monitor as the fast path, once as the `while` condition inside it. Declined, and the reviewer's
+   own verdict was "not worth restructuring": collapsing them means taking the monitor before the
+   fast path, which makes the common uncontended case worse to save one `ConcurrentHashMap.compute`
+   on a path that runs a handful of times a day.
+2. **`Operation.RESTORE` reuse rather than a fourth `SNAPSHOT_INSTALL` constant** - the reviewer
+   raised it "only so it's visible outside the doc" and said it would "lean toward agreeing it's
+   fine as-is". Declined for the reason already in the adversarial pass above: a second constant that
+   must never diverge from the first is a thing to keep in sync, not a distinction.
+
+No code changed in this cycle, and nothing was deferred - both items were technically assessed and
+declined, which is a decision rather than a deferral.
+
+## Final state
+
+`clean-approval` on cycle 1 of a maximum of 4.
