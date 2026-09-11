@@ -26,7 +26,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerControlPlane;
-import com.arcadedb.server.backup.BackupCoordinator.Operation;
+import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
