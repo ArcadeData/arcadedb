@@ -253,10 +253,9 @@ public class MatchEdgeTraverser {
 
           public void fetchNext() {
             final Object previousMatch = iCommandContext.getVariable("currentMatch");
-//            final ResultInternal matched = (ResultInternal) iCommandContext.getVariable("matched");
-//            if (matched != null) {
-//              matched.setProperty(getStartingPointAlias(), sourceRecord.getProperty(getStartingPointAlias()));
-//            }
+            // $matched IS THE PARTIAL MATCH THIS HOP STARTS FROM, NOT THE ROW THE STEP LAST EMITTED (ISSUE #7434)
+            final Object previousMatched = iCommandContext.getVariable("matched");
+            iCommandContext.setVariable("matched", sourceRecord);
             while (iter.hasNext()) {
               final ResultInternal next = iter.next();
               final Document elem = next.toElement();
@@ -268,6 +267,7 @@ public class MatchEdgeTraverser {
               }
             }
             iCommandContext.setVariable("currentMatch", previousMatch);
+            iCommandContext.setVariable("matched", previousMatched);
           }
         };
       };
@@ -285,6 +285,8 @@ public class MatchEdgeTraverser {
       iCommandContext.setVariable("depth", depth);
       final Object previousMatch = iCommandContext.getVariable("currentMatch");
       iCommandContext.setVariable("currentMatch", startingPoint);
+      final Object previousMatched = iCommandContext.getVariable("matched");
+      iCommandContext.setVariable("matched", sourceRecord);
 
       if (matchesFilters(iCommandContext, filter, startingPoint) && matchesClass(className, startingPoint) && matchesCluster(
           clusterId, startingPoint) && matchesRid(iCommandContext, targetRid, startingPoint)) {
@@ -327,6 +329,7 @@ public class MatchEdgeTraverser {
         }
       }
       iCommandContext.setVariable("currentMatch", previousMatch);
+      iCommandContext.setVariable("matched", previousMatched);
     }
     return result;
   }

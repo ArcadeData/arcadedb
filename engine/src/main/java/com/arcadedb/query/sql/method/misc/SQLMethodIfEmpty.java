@@ -20,10 +20,9 @@ package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
-import java.util.Collection;
+import java.util.List;
 
 /**
  * Returns argument if result is empty else return result.
@@ -46,10 +45,11 @@ public class SQLMethodIfEmpty extends AbstractSQLMethod {
   @Override
   public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
 
-    if ( (value instanceof String && value.toString().length() == 0)
-         || (value instanceof Collection<?> && MultiValue.getSize(value) == 0) )
-      return params[0];
-    else
-      return value;
+    if (value instanceof String string)
+      return string.isEmpty() ? params[0] : value;
+
+    // AN ARRAY-VALUED PARAMETER OR PROPERTY IS A COLLECTION RECEIVER TOO (ISSUE #7114)
+    final List<Object> list = listReceiverOrNull(value);
+    return list != null && list.isEmpty() ? params[0] : value;
   }
 }

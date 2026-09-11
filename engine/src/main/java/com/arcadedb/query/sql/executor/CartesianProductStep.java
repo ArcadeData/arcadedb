@@ -26,15 +26,25 @@ import java.util.List;
 import java.util.NoSuchElementException;
 
 /**
+ * Combines the rows of the disjoint sub-patterns of a MATCH into their cartesian product, as a nested loop over the sub-plans.
+ * <p>
+ * The first pass of an independent sub-plan is buffered and replayed for every tuple of the levels before it. A
+ * <b>correlated</b> sub-plan - one whose {@code where:} reads, through {@code $matched}, an alias bound by an earlier
+ * sub-plan (issue #7434) - cannot be replayed: it is reset and executed again for every tuple of the outer levels, with the
+ * {@code matched} context variable bound to that partial tuple so the predicate sees the aliases it reads. The planner
+ * orders the sub-plans so that every alias a level reads is bound by a level before it.
+ * <p>
  * Created by luigidellaquila on 11/10/16.
  */
 public class CartesianProductStep extends AbstractExecutionStep {
 
-  private final List<InternalExecutionPlan> subPlans = new ArrayList<>();
+  private final List<InternalExecutionPlan> subPlans   = new ArrayList<>();
+  private final List<Boolean>               correlated = new ArrayList<>();
 
-  private       boolean                 inited            = false;
-  private final List<Boolean>           completedPrefetch = new ArrayList<>();
-  private final List<InternalResultSet> preFetches        = new ArrayList<>();//consider using resultset.reset() instead of buffering
+  private boolean inited = false;
+  // THE ROWS OF AN INDEPENDENT LEVEL'S FIRST PASS, REPLAYED THROUGH reset() FOR EVERY LATER OUTER TUPLE
+  private final List<InternalResultSet> preFetches = new ArrayList<>();
+  private final List<Boolean>           firstPass  = new ArrayList<>();
 
   private final List<ResultSet> resultSets   = new ArrayList<>();
   private       List<Result>    currentTuple = new ArrayList<>();
@@ -50,7 +60,6 @@ public class CartesianProductStep extends AbstractExecutionStep {
     pullPrevious(context, nRecords);
 
     init();
-    //    return new OInternalResultSet();
     return new ResultSet() {
       int currentCount = 0;
 
@@ -73,8 +82,16 @@ public class CartesianProductStep extends AbstractExecutionStep {
         return result;
       }
     };
-    //    throw new UnsupportedOperationException("cartesian product is not yet implemented in MATCH statement");
-    //TODO
+  }
+
+  @Override
+  public void reset() {
+    inited = false;
+    preFetches.clear();
+    firstPass.clear();
+    resultSets.clear();
+    currentTuple = new ArrayList<>();
+    nextRecord = null;
   }
 
   private void init() {
@@ -83,93 +100,110 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
     if (inited)
       return;
-
-    for (final InternalExecutionPlan plan : subPlans) {
-      resultSets.add(new LocalResultSet(plan));
-      this.preFetches.add(new InternalResultSet());
-    }
-    fetchFirstRecord();
     inited = true;
-  }
 
-  private void fetchFirstRecord() {
-    for (int i = 0; i < resultSets.size(); i++) {
-      final ResultSet rs = resultSets.get(i);
-      if (!rs.hasNext()) {
+    for (int level = 0; level < subPlans.size(); level++) {
+      resultSets.add(null);
+      preFetches.add(new InternalResultSet());
+      firstPass.add(true);
+      currentTuple.add(null);
+    }
+
+    for (int level = 0; level < subPlans.size(); level++) {
+      open(level);
+      if (!advance(level)) {
         nextRecord = null;
+        currentTuple = null;
         return;
       }
-      final Result item = rs.next();
-      currentTuple.add(item);
-      completedPrefetch.add(false);
-      bufferLiveValue(i, item);
     }
     buildNextRecord();
   }
 
   private void fetchNextRecord() {
-    fetchNextRecord(resultSets.size() - 1);
-  }
-
-  private void fetchNextRecord(final int level) {
-    ResultSet currentRs = resultSets.get(level);
-    if (!currentRs.hasNext()) {
-      if (level <= 0) {
-        nextRecord = null;
-        currentTuple = null;
-        return;
-      }
-      currentRs = preFetches.get(level);
-      currentRs.reset();
-      resultSets.set(level, currentRs);
-      currentTuple.set(level, currentRs.next());
-      fetchNextRecord(level - 1);
-    } else {
-      final Result item = currentRs.next();
-      currentTuple.set(level, item);
-      bufferLiveValue(level, item);
+    if (currentTuple != null && advance(resultSets.size() - 1))
+      buildNextRecord();
+    else {
+      nextRecord = null;
+      currentTuple = null;
     }
-    buildNextRecord();
   }
 
   /**
-   * Buffers a value read from the live result set of the given level so it can be replayed later via
-   * {@link InternalResultSet#reset()}. Only values seen during the first pass of a level are buffered, and each
-   * exactly once: while {@code completedPrefetch[level]} is false the level is still consuming its live source.
-   * This prevents the outer-level rows from being appended repeatedly while inner levels iterate (issue #4543).
+   * Moves the given level to its next row. When the level is exhausted, the level before it is advanced and this one is
+   * opened again for the new outer tuple; the loop covers a correlated level that answers no row for some outer tuples.
+   *
+   * @return false when the outermost level is exhausted, i.e. the product is complete
    */
-  private void bufferLiveValue(final int level, final Result value) {
-    if (completedPrefetch.get(level))
-      return;
-    preFetches.get(level).add(value);
-    if (!resultSets.get(level).hasNext())
-      completedPrefetch.set(level, true);
+  private boolean advance(final int level) {
+    while (true) {
+      final ResultSet rs = resultSets.get(level);
+      if (rs.hasNext()) {
+        final Result item = rs.next();
+        currentTuple.set(level, item);
+        if (firstPass.get(level) && !correlated.get(level))
+          preFetches.get(level).add(item);
+        return true;
+      }
+
+      firstPass.set(level, false);
+      if (level == 0 || !advance(level - 1))
+        return false;
+      open(level);
+    }
+  }
+
+  /**
+   * Opens the result set of a level for the current tuple of the levels before it: the live sub-plan on the first pass,
+   * the buffered first pass afterwards, or a fresh execution when the level is correlated with the outer tuple.
+   */
+  private void open(final int level) {
+    if (correlated.get(level)) {
+      context.setVariable("matched", partialTuple(level));
+      final InternalExecutionPlan plan = subPlans.get(level);
+      plan.reset(context);
+      resultSets.set(level, new LocalResultSet(plan));
+    } else if (firstPass.get(level))
+      resultSets.set(level, new LocalResultSet(subPlans.get(level)));
+    else {
+      final InternalResultSet buffered = preFetches.get(level);
+      buffered.reset();
+      resultSets.set(level, buffered);
+    }
+  }
+
+  private ResultInternal partialTuple(final int levels) {
+    final ResultInternal partial = new ResultInternal(context.getDatabase());
+    for (int i = 0; i < levels; i++) {
+      final Result res = currentTuple.get(i);
+      for (final String s : res.getPropertyNames())
+        partial.setProperty(s, res.getProperty(s));
+    }
+    return partial;
   }
 
   private void buildNextRecord() {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
-      if (currentTuple == null) {
-        nextRecord = null;
-        return;
-      }
-      nextRecord = new ResultInternal(context.getDatabase());
-
-      for (int i = 0; i < this.currentTuple.size(); i++) {
-        final Result res = this.currentTuple.get(i);
-        for (final String s : res.getPropertyNames()) {
-          nextRecord.setProperty(s, res.getProperty(s));
-        }
-      }
+      nextRecord = partialTuple(currentTuple.size());
     } finally {
-      if( context.isProfiling() ) {
+      if (context.isProfiling()) {
         cost += System.nanoTime() - begin;
       }
     }
   }
 
   public void addSubPlan(final InternalExecutionPlan subPlan) {
+    addSubPlan(subPlan, false);
+  }
+
+  /**
+   * @param correlated true when the sub-plan reads, through {@code $matched}, an alias bound by a sub-plan added before it,
+   *                   so it must be executed again for every tuple of those instead of being buffered and replayed
+   */
+  public void addSubPlan(final InternalExecutionPlan subPlan, final boolean correlated) {
     this.subPlans.add(subPlan);
+    this.correlated.add(correlated);
   }
 
   @Override
