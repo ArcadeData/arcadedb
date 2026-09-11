@@ -109,6 +109,39 @@ class Issue7458CloseWaitsForSnapshotWindowTest extends TestHelper {
     assertThat(db.isOpen()).isFalse();
   }
 
+  /**
+   * A window leaves the registry as the FIRST step of its close and is fully released (shadow closed, retained files
+   * deleted) only at the end of it. The close must count it until the end: this drives the two steps by hand, so the
+   * gap between them is as wide as the test wants it.
+   */
+  @Test
+  void closeWaitsForAReleaseStillInProgress() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final PageManager pageManager = db.getPageManager();
+
+    final PageSnapshot snapshot = pageManager.openSnapshot(db);
+    // THE FIRST STEP OF PageSnapshot.close(): OUT OF THE REGISTRY, NOT RELEASED YET
+    pageManager.unregisterSnapshot(snapshot);
+    assertThat(pageManager.isSnapshotWindowOpen(db)).isFalse();
+
+    final Thread closer = new Thread(db::close, "closer");
+    try {
+      closer.start();
+      closer.join(1_000);
+      assertThat(closer.isAlive()).as("the close must wait for the release, not only for the unregistration").isTrue();
+      assertThat(db.isOpen()).isTrue();
+    } finally {
+      // THE LAST STEP OF PageSnapshot.close()
+      pageManager.snapshotReleased(snapshot);
+      closer.join(30_000);
+    }
+
+    assertThat(closer.isAlive()).isFalse();
+    assertThat(db.isOpen()).isFalse();
+    // THE REAL CLOSE FINDS NOTHING LEFT TO UNREGISTER OR TO WAKE
+    snapshot.close();
+  }
+
   @Test
   void windowOnAClosedDatabaseIsRefused() {
     final DatabaseInternal db = (DatabaseInternal) database;

@@ -1282,34 +1282,37 @@ public class LocalSchema implements Schema {
   public void dropMaterializedView(final String viewName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    // #7457: THE MONITOR COVERS THE LOOKUP AND THE REMOVAL, NEVER THE recordFileChanges CALL. That call waits for the
-    // database write lock, and every schema save runs under that lock and takes this monitor (saveConfiguration is
-    // synchronized): a thread holding the monitor while waiting for the write lock is the reverse order, and it
-    // deadlocks against any concurrent DDL that is saving. The same shape is kept by alterMaterializedView and
-    // dropContinuousAggregate.
-    final MaterializedViewImpl view;
+    // #7457: THE MONITOR IS NEVER HELD ACROSS THE recordFileChanges CALL. That call waits for the database write lock,
+    // and every schema save runs under that lock and takes this monitor (saveConfiguration is synchronized): a thread
+    // holding the monitor while waiting for the write lock is the reverse order, and it deadlocks against any
+    // concurrent DDL that is saving. The same shape is kept by alterMaterializedView and dropContinuousAggregate.
     synchronized (this) {
-      view = materializedViews.get(viewName);
-      if (view == null)
+      if (!materializedViews.containsKey(viewName))
         throw new SchemaException("Materialized view '" + viewName + "' not found");
+    }
+
+    // Wrap in recordFileChanges so that the MV metadata removal and backing type
+    // drop are replicated atomically to HA replicas. THE WHOLE LIFECYCLE TRANSITION - REMOVAL, SCHEDULER, LISTENERS,
+    // BACKING TYPE - RUNS UNDER THE WRITE LOCK, SO IT CANNOT INTERLEAVE WITH A CREATE OR AN ALTER OF THE SAME VIEW
+    // THAT IS STILL INSTALLING ITS REFRESH RESOURCES: WHAT IS TORN DOWN HERE IS WHAT THE VIEW REMOVED HERE OWNED
+    recordFileChanges(() -> {
+      final MaterializedViewImpl view;
+      final MaterializedViewScheduler scheduler;
+      synchronized (this) {
+        // Two drops of the same view can both pass the check above: the second loses here
+        view = materializedViews.remove(viewName);
+        if (view == null)
+          throw new SchemaException("Materialized view '" + viewName + "' not found");
+        scheduler = materializedViewScheduler;
+      }
 
       // Cancel periodic scheduler if active
-      if (materializedViewScheduler != null)
-        materializedViewScheduler.cancel(viewName);
+      if (scheduler != null)
+        scheduler.cancel(viewName);
 
       // Unregister incremental listeners from source types
       if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
         MaterializedViewBuilder.unregisterListeners(this, view);
-    }
-
-    // Wrap in recordFileChanges so that the MV metadata removal and backing type
-    // drop are replicated atomically to HA replicas
-    recordFileChanges(() -> {
-      // Remove the view definition. Two drops of the same view can both pass the lookup above: the second loses here
-      synchronized (this) {
-        if (materializedViews.remove(viewName) == null)
-          throw new SchemaException("Materialized view '" + viewName + "' not found");
-      }
 
       // Drop the backing type (which drops buckets and indexes)
       if (existsType(view.getBackingTypeName()))
@@ -1325,28 +1328,33 @@ public class LocalSchema implements Schema {
       final long newIntervalMs) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    // See dropMaterializedView for why the monitor is not held across recordFileChanges (#7457)
-    final MaterializedViewImpl oldView;
+    // See dropMaterializedView for why the monitor is not held across recordFileChanges, and why the teardown of the
+    // old refresh resources and the setup of the new ones both run inside it (#7457)
     synchronized (this) {
-      oldView = materializedViews.get(viewName);
-      if (oldView == null)
+      if (!materializedViews.containsKey(viewName))
         throw new SchemaException("Materialized view '" + viewName + "' not found");
+    }
+
+    recordFileChanges(() -> {
+      final MaterializedViewImpl oldView;
+      final MaterializedViewImpl newView;
+      final MaterializedViewScheduler scheduler;
+      synchronized (this) {
+        oldView = materializedViews.get(viewName);
+        if (oldView == null)
+          throw new SchemaException("Materialized view '" + viewName + "' not found");
+        // Create new view instance with updated refresh mode
+        newView = oldView.copyWithRefreshMode(newMode, newIntervalMs);
+        materializedViews.put(viewName, newView);
+        scheduler = materializedViewScheduler;
+      }
 
       // Tear down old refresh infrastructure
       if (oldView.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
         MaterializedViewBuilder.unregisterListeners(this, oldView);
-      if (materializedViewScheduler != null)
-        materializedViewScheduler.cancel(viewName);
-    }
+      if (scheduler != null)
+        scheduler.cancel(viewName);
 
-    recordFileChanges(() -> {
-      // Create new view instance with updated refresh mode
-      final MaterializedViewImpl newView = oldView.copyWithRefreshMode(newMode, newIntervalMs);
-      synchronized (this) {
-        if (materializedViews.get(viewName) != oldView)
-          throw new SchemaException("Materialized view '" + viewName + "' was dropped or altered concurrently");
-        materializedViews.put(viewName, newView);
-      }
       saveConfiguration();
 
       // Set up new refresh infrastructure
