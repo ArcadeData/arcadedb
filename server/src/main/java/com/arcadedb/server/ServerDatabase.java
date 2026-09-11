@@ -42,6 +42,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.MaintenanceCoordinator;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
@@ -86,6 +87,15 @@ public class ServerDatabase implements DatabaseInternal {
   public ServerDatabase(final ArcadeDBServer server, final DatabaseInternal wrapped) {
     this.server = server;
     this.wrapped = wrapped;
+
+    // BIND THE SERVER'S ADMISSION POLICY TO THE DATABASE ITSELF (issue #7443). 'BACKUP DATABASE' and
+    // 'IMPORT DATABASE' are SQL statements the ENGINE executes, and the engine cannot see the server - the
+    // dependency runs the other way - so the only thing they can reach is what the database carries. Every one of
+    // this server's databases is wrapped here, in the one constructor ArcadeDBServer uses for all four of its open
+    // paths, so binding it here covers them all; setWrapper delegates down to the embedded instance, which is the
+    // same map the statement reads through whichever wrapper layer it happens to hold.
+    if (server != null)
+      wrapped.setWrapper(MaintenanceCoordinator.WRAPPER_NAME, server.getBackupCoordinator());
   }
 
   private ServerQueryProfiler getProfiler() {

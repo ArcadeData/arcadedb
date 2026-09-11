@@ -2012,6 +2012,10 @@ public enum GlobalConfiguration {
       "Base delay in milliseconds for exponential backoff between snapshot download retries. Actual delay is baseMs * 2^attempt.",
       Long.class, 5000L),
 
+  HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS("arcadedb.ha.snapshotInstallBackupWaitMs", SCOPE.SERVER,
+      "Milliseconds a snapshot install waits for a backup or an import of the same database, already running on this node, to finish before it replaces the database files anyway. An install applies a committed Raft entry, so the wait has to be bounded: when it expires the install proceeds and logs a warning. 0 refuses to wait at all.",
+      Long.class, 60_000L),
+
   HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
       "Read timeout in milliseconds for the leader proxy in AbstractServerHttpHandler. Covers long-running queries proxied from a follower to the leader.",
       Long.class, 30000L),

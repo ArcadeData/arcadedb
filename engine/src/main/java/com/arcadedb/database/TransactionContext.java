@@ -207,6 +207,9 @@ public class TransactionContext implements Transaction {
   // committed them - a retry would duplicate) nor fence the database (no orphaned local WAL record exists;
   // the Raft layer reconciles pages from the replicated payload).
   private       boolean                              remotelyCommitted;
+  // Set by publishCommittedPages once the WAL append crossed the point of no return; drives the failure regime of
+  // the 2nd phase whichever thread concludes it.
+  private       boolean                              phase2WalAppended;
   private       boolean                              asyncFlush            = true;
   private       WALFile.FlushType                    walFlush;
   private       List<Integer>                        lockedFiles;
@@ -1997,8 +2000,46 @@ public class TransactionContext implements Transaction {
     }
 
     boolean committed = false;
-    boolean walAppended = false;
     Throwable commitFailureCause = null;
+    try {
+      publishCommittedPages(changes);
+      finishCommitBookkeeping();
+      committed = true;
+    } catch (final ConcurrentModificationException e) {
+      commitFailureCause = e;
+      throw e;
+    } catch (final TransactionException e) {
+      // Already a first-class transaction error (e.g. the recovery fence): rethrow as-is instead of
+      // double-wrapping it in a generic "Transaction error on commit" (#5053 review, same as phase 1).
+      commitFailureCause = e;
+      throw e;
+    } catch (final Exception e) {
+      commitFailureCause = e;
+      // #6505: kept at FINE - most callers land here through an ordinary, retryable failure - but the finally
+      // below logs this SAME cause at SEVERE alongside fenceForRecovery when it also crossed the WAL point of
+      // no return, so the one commit failure serious enough to fence the whole database is never invisible.
+      LogManager.instance()
+          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
+      throw new TransactionException("Transaction error on commit", e);
+    } finally {
+      concludePhase2(committed, commitFailureCause);
+    }
+  }
+
+  /**
+   * First half of the 2nd phase: validates and bumps the page versions, appends the transaction to the WAL (the point
+   * of no return), publishes the pages and folds the page and record counters. The transaction is left in
+   * {@link STATUS#COMMIT_2ND_PHASE}, with its file locks held and its user-held record state untouched, so that
+   * {@link #completeCommit()} can finish it later, on any thread. That split is what lets the replication layer
+   * publish the pages on the Raft apply thread, at the entry's position in the log (issue #6965), and let the
+   * committing thread finish once the entry is acknowledged. {@link #commit2ndPhase} runs both halves back to back.
+   * <p>
+   * On failure the transaction is NOT reset here: the caller owns the failure regime through
+   * {@link #completeCommit()} / {@link #concludeFailedPhase2(Throwable)}. A failure past the WAL append does fence the
+   * database right away, on the thread that observed it, so no other transaction can commit on top of the orphaned
+   * record before the locks are released.
+   */
+  public void publishCommittedPages(final TransactionPhase1 changes) {
     try {
       if (database.getMode() == ComponentFile.MODE.READ_ONLY)
         throw new TransactionException("Cannot commit changes because the database is open in read-only mode");
@@ -2035,7 +2076,7 @@ public class TransactionContext implements Transaction {
         // changes.result is null, nothing is durable and there is no WAL record for recovery to replay - a
         // publish failure must then behave like any pre-durability failure (full rollback of user-held
         // record state, no fence: fencing would promise a replay that cannot happen).
-        walAppended = true;
+        phase2WalAppended = true;
       }
 
       LogManager.instance()
@@ -2057,102 +2098,139 @@ public class TransactionContext implements Transaction {
           // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
           bucket.setCachedRecordCount(bucket.getCachedRecordCount() + delta);
       });
-
-      for (final Record r : modifiedRecordsCache.values())
-        ((RecordInternal) r).unsetDirty();
-
-      for (final int fileId : lockedFiles) {
-        final PaginatedComponent file = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
-        if (file != null)
-          // THE FILE COULD BE NULL IN CASE OF INDEX COMPACTION
-          file.onAfterCommit();
-      }
-
-      committed = true;
-
-    } catch (final ConcurrentModificationException e) {
-      commitFailureCause = e;
+    } catch (final IOException | InterruptedException e) {
+      fenceIfPastPointOfNoReturn(e);
+      LogManager.instance()
+          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
+      throw new TransactionException("Transaction error on commit", e);
+    } catch (final RuntimeException | Error e) {
+      fenceIfPastPointOfNoReturn(e);
       throw e;
-    } catch (final TransactionException e) {
-      // Already a first-class transaction error (e.g. the recovery fence): rethrow as-is instead of
-      // double-wrapping it in a generic "Transaction error on commit" (#5053 review, same as phase 1).
+    }
+  }
+
+  /**
+   * Second half of the 2nd phase, after {@link #publishCommittedPages}: marks the records clean, lets the modified
+   * components react to the commit and releases the transaction, firing the after-commit callbacks. A failure here
+   * follows the same regime as in {@link #commit2ndPhase}: the pages are durable, so the database is fenced for
+   * recovery and the transaction is reset without touching user-held record identities.
+   */
+  public void completeCommit() {
+    if (status != STATUS.COMMIT_2ND_PHASE)
+      throw new TransactionException("Cannot complete a commit whose pages have not been published");
+
+    boolean committed = false;
+    Throwable commitFailureCause = null;
+    try {
+      finishCommitBookkeeping();
+      committed = true;
+    } catch (final ConcurrentModificationException | TransactionException e) {
+      // Same arms as commit2ndPhase: a retryable conflict and a first-class transaction error travel unwrapped.
       commitFailureCause = e;
       throw e;
     } catch (final Exception e) {
       commitFailureCause = e;
-      // #6505: kept at FINE - most callers land here through an ordinary, retryable failure - but the finally
-      // below logs this SAME cause at SEVERE alongside fenceForRecovery when it also crossed the WAL point of
-      // no return, so the one commit failure serious enough to fence the whole database is never invisible.
       LogManager.instance()
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
       throw new TransactionException("Transaction error on commit", e);
     } finally {
-      if (committed)
-        resetAndFireCallbacks();
-      else if (walAppended) {
-        // #5053: the transaction IS durable (its WAL record survives and recovery will replay it) but its
-        // pages may not all be published - the live state and the WAL may diverge. Fence BEFORE reset()
-        // releases the file locks: the volatile write is then visible to any transaction that was blocked
-        // on these locks, so no conflicting WAL record for the same page versions can follow. The orphaned
-        // record's pages were never flush-acked, so the ack-gated close (#4928) preserves the WAL and the
-        // lock file, and reopening the database replays it.
-        //
-        // DELIBERATELY WIDE (covers every failure from the append to the end of the try, not just
-        // publishPages): a mid-publish failure can leave SOME pages visible and others not - a partial
-        // publication no boolean flag can distinguish from a complete one - and post-publish failures
-        // (page counters, onAfterCommit) leave component metadata that recovery replay also repairs.
-        // Under-fencing risks exactly the divergence this exists to prevent; the cost (a restart after an
-        // exceptional post-append failure) is the acceptable side.
-        if (database.getEmbedded() instanceof LocalDatabase localDatabase)
-          localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append", commitFailureCause);
-        // The RIDs optimistically assigned to records created in this transaction remain valid (the replay
-        // makes them real): release resources WITHOUT touching user-held record state.
-        reset();
-      } else if (remotelyCommitted)
-        // #5064: the replication QUORUM already durably committed this transaction cluster-wide; only the
-        // LOCAL apply failed, before anything local was durable. The records the user holds carry the
-        // identities the cluster committed, so rollback()'s identity reset would invite an application
-        // retry to INSERT DUPLICATES of already-committed records - release resources WITHOUT touching
-        // user-held record state. No fence in THIS branch because it is only reachable pre-append (no
-        // orphaned local WAL record to diverge from; the Raft layer reconciles the pages from the
-        // replicated payload). A failure AFTER the local append takes the walAppended branch above and
-        // still fences, INTENTIONALLY: an orphaned local WAL record exists there regardless of the remote
-        // commit, and that branch also preserves identities via reset(). Unlike the #4940 rollback below,
-        // modified records are intentionally NOT reloaded: their in-memory content is exactly what the
-        // cluster committed, so there is nothing to restore.
-        reset();
-      else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
-        // A fence-REFUSED commit (this tx appended nothing; the fence came from an earlier failure) cannot
-        // roll back its record state: rollback()'s record reload would hit the fence choke point itself and
-        // replace the fence error with a confusing secondary failure. Release resources only - the database
-        // is unusable until close/reopen anyway, so user-held record state is moot.
-        reset();
-      else
-        // #4940: the failure happened BEFORE anything durable exists. Restore user-held records exactly like
-        // a phase-1 failure does: reload the modified records to their committed content and reset the
-        // identity of records created in this transaction to provisional, so a retry re-inserts them instead
-        // of updating a record that was never persisted (#4562).
-        try {
-          rollback();
-        } catch (final Throwable rollbackError) {
-          // #5061: the cleanup must never SUPPRESS the primary commit exception - e.g. a failed
-          // dictionary reload here would surface a retryable ConcurrentModificationException as a
-          // non-retryable SchemaException, breaking the caller's retry loop. Log the secondary failure and
-          // degrade to reset() so locks and status are still released (reset() is safe after a partial
-          // rollback: it null-guards the lock lists and only releases what is still held).
-          LogManager.instance().log(this, Level.WARNING,
-              "Error during phase-2 failure rollback (the primary commit error is propagated)", rollbackError);
-          // The #4940 core must survive the degraded path too: rollback() can only throw at the dictionary
-          // reload, which runs BEFORE its identity reset - without this, records created in the failed tx
-          // would keep their dangling RID, the exact defect #4940 fixes. The loop is cheap and cannot throw.
-          // Documented asymmetry vs the happy rollback(): user-held MODIFIED records are NOT reloaded here
-          // (that loop also never ran) and keep their uncommitted in-memory content - the safest available
-          // degradation, since reloading is exactly what just failed.
-          for (final Record newRecord : newRecords)
-            ((RecordInternal) newRecord).setIdentity(null);
-          reset();
-        }
+      concludePhase2(committed, commitFailureCause);
     }
+  }
+
+  /**
+   * Releases a transaction whose {@link #publishCommittedPages} failed on another thread, applying the failure regime
+   * {@link #commit2ndPhase} would have applied had the failure happened inline: fence past the WAL append, reset
+   * without touching user-held record identities when the cluster already committed the transaction, rollback
+   * otherwise.
+   */
+  public void concludeFailedPhase2(final Throwable cause) {
+    concludePhase2(false, cause);
+  }
+
+  private void finishCommitBookkeeping() {
+    for (final Record r : modifiedRecordsCache.values())
+      ((RecordInternal) r).unsetDirty();
+
+    for (final int fileId : lockedFiles) {
+      final PaginatedComponent file = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
+      if (file != null)
+        // THE FILE COULD BE NULL IN CASE OF INDEX COMPACTION
+        file.onAfterCommit();
+    }
+  }
+
+  private void fenceIfPastPointOfNoReturn(final Throwable cause) {
+    if (phase2WalAppended && database.getEmbedded() instanceof LocalDatabase localDatabase)
+      localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append", cause);
+  }
+
+  private void concludePhase2(final boolean committed, final Throwable commitFailureCause) {
+    if (committed)
+      resetAndFireCallbacks();
+    else if (phase2WalAppended) {
+      // #5053: the transaction IS durable (its WAL record survives and recovery will replay it) but its
+      // pages may not all be published - the live state and the WAL may diverge. Fence BEFORE reset()
+      // releases the file locks: the volatile write is then visible to any transaction that was blocked
+      // on these locks, so no conflicting WAL record for the same page versions can follow. The orphaned
+      // record's pages were never flush-acked, so the ack-gated close (#4928) preserves the WAL and the
+      // lock file, and reopening the database replays it.
+      //
+      // DELIBERATELY WIDE (covers every failure from the append to the end of the try, not just
+      // publishPages): a mid-publish failure can leave SOME pages visible and others not - a partial
+      // publication no boolean flag can distinguish from a complete one - and post-publish failures
+      // (page counters, onAfterCommit) leave component metadata that recovery replay also repairs.
+      // Under-fencing risks exactly the divergence this exists to prevent; the cost (a restart after an
+      // exceptional post-append failure) is the acceptable side.
+      if (database.getEmbedded() instanceof LocalDatabase localDatabase)
+        localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append", commitFailureCause);
+      // The RIDs optimistically assigned to records created in this transaction remain valid (the replay
+      // makes them real): release resources WITHOUT touching user-held record state.
+      reset();
+    } else if (remotelyCommitted)
+      // #5064: the replication QUORUM already durably committed this transaction cluster-wide; only the
+      // LOCAL apply failed, before anything local was durable. The records the user holds carry the
+      // identities the cluster committed, so rollback()'s identity reset would invite an application
+      // retry to INSERT DUPLICATES of already-committed records - release resources WITHOUT touching
+      // user-held record state. No fence in THIS branch because it is only reachable pre-append (no
+      // orphaned local WAL record to diverge from; the Raft layer reconciles the pages from the
+      // replicated payload). A failure AFTER the local append takes the walAppended branch above and
+      // still fences, INTENTIONALLY: an orphaned local WAL record exists there regardless of the remote
+      // commit, and that branch also preserves identities via reset(). Unlike the #4940 rollback below,
+      // modified records are intentionally NOT reloaded: their in-memory content is exactly what the
+      // cluster committed, so there is nothing to restore.
+      reset();
+    else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
+      // A fence-REFUSED commit (this tx appended nothing; the fence came from an earlier failure) cannot
+      // roll back its record state: rollback()'s record reload would hit the fence choke point itself and
+      // replace the fence error with a confusing secondary failure. Release resources only - the database
+      // is unusable until close/reopen anyway, so user-held record state is moot.
+      reset();
+    else
+      // #4940: the failure happened BEFORE anything durable exists. Restore user-held records exactly like
+      // a phase-1 failure does: reload the modified records to their committed content and reset the
+      // identity of records created in this transaction to provisional, so a retry re-inserts them instead
+      // of updating a record that was never persisted (#4562).
+      try {
+        rollback();
+      } catch (final Throwable rollbackError) {
+        // #5061: the cleanup must never SUPPRESS the primary commit exception - e.g. a failed
+        // dictionary reload here would surface a retryable ConcurrentModificationException as a
+        // non-retryable SchemaException, breaking the caller's retry loop. Log the secondary failure and
+        // degrade to reset() so locks and status are still released (reset() is safe after a partial
+        // rollback: it null-guards the lock lists and only releases what is still held).
+        LogManager.instance().log(this, Level.WARNING,
+            "Error during phase-2 failure rollback (the primary commit error is propagated)", rollbackError);
+        // The #4940 core must survive the degraded path too: rollback() can only throw at the dictionary
+        // reload, which runs BEFORE its identity reset - without this, records created in the failed tx
+        // would keep their dangling RID, the exact defect #4940 fixes. The loop is cheap and cannot throw.
+        // Documented asymmetry vs the happy rollback(): user-held MODIFIED records are NOT reloaded here
+        // (that loop also never ran) and keep their uncommitted in-memory content - the safest available
+        // degradation, since reloading is exactly what just failed.
+        for (final Record newRecord : newRecords)
+          ((RecordInternal) newRecord).setIdentity(null);
+        reset();
+      }
   }
 
   public void addIndexOperation(final IndexInternal index, final TransactionIndexContext.IndexKey.IndexKeyOperation operation,
@@ -2172,6 +2250,7 @@ public class TransactionContext implements Transaction {
 
   public void reset() {
     remotelyCommitted = false;
+    phase2WalAppended = false;
     status = STATUS.INACTIVE;
 
     if (explicitLockedFiles != null) {

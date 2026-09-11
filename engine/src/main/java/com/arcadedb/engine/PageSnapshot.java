@@ -293,22 +293,29 @@ public class PageSnapshot implements AutoCloseable {
     // ORDER MATTERS: UNPUBLISH FIRST SO NO NEW CAPTURE CAN FIND THIS WINDOW, THEN DRAIN THE ONES ALREADY INSIDE
     pageManager.unregisterSnapshot(this);
     released = true;
-    // A CAPTURE IN FLIGHT IS ONE PAGE READ PLUS ONE COPY, SO SPINNING IS THE RIGHT WAIT - BUT IT YIELDS AFTER A WHILE
-    // SO A CAPTURE STUCK ON A SLOW DISK DOES NOT BURN A CORE
-    for (int spins = 0; inFlightCaptures.get() > 0; spins++) {
-      if (spins < 1_000)
-        Thread.onSpinWait();
-      else
-        Thread.yield();
+    try {
+      // A CAPTURE IN FLIGHT IS ONE PAGE READ PLUS ONE COPY, SO SPINNING IS THE RIGHT WAIT - BUT IT YIELDS AFTER A WHILE
+      // SO A CAPTURE STUCK ON A SLOW DISK DOES NOT BURN A CORE
+      for (int spins = 0; inFlightCaptures.get() > 0; spins++) {
+        if (spins < 1_000)
+          Thread.onSpinWait();
+        else
+          Thread.yield();
+      }
+
+      status = STATUS.CLOSED;
+      shadow.close();
+
+      // CHALLENGE C2: THE FILES DROPPED WHILE THE WINDOW WAS OPEN WERE KEPT ALIVE FOR THE READER. RELEASE THIS
+      // WINDOW'S CLAIM; THE LAST WINDOW STILL HOLDING ONE PERFORMS THE PHYSICAL DELETE
+      for (ComponentFile retired = retiredFiles.poll(); retired != null; retired = retiredFiles.poll())
+        pageManager.releaseDeferredFileDrop(retired);
+    } finally {
+      // #7458: A CLOSE OF THE DATABASE MAY BE WAITING FOR THIS WINDOW, AND IT COUNTS THE WINDOW UNTIL THIS CALL - NOT
+      // UNTIL THE UNREGISTRATION ABOVE - SO IT NEVER SHUTS THE FILES UNDER A RELEASE STILL IN PROGRESS. IN A finally
+      // BECAUSE A RELEASE THAT THREW WOULD OTHERWISE LEAVE THE CLOSE WAITING FOREVER
+      pageManager.snapshotReleased(this);
     }
-
-    status = STATUS.CLOSED;
-    shadow.close();
-
-    // CHALLENGE C2: THE FILES DROPPED WHILE THE WINDOW WAS OPEN WERE KEPT ALIVE FOR THE READER. RELEASE THIS
-    // WINDOW'S CLAIM; THE LAST WINDOW STILL HOLDING ONE PERFORMS THE PHYSICAL DELETE
-    for (ComponentFile retired = retiredFiles.poll(); retired != null; retired = retiredFiles.poll())
-      pageManager.releaseDeferredFileDrop(retired);
   }
 
   // ---------------------------------------------------------------------------------------------- ENGINE INTERNALS

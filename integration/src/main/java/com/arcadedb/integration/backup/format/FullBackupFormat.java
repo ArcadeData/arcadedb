@@ -161,8 +161,11 @@ public class FullBackupFormat extends AbstractBackupFormat {
         // SAFETY NETS ONLY TEACH THE NEXT READER THAT THE THROW ABOVE MIGHT NOT HAPPEN
         break;
       } catch (final PageSnapshotException e) {
-        if (!snapshotAttempt) {
-          // A PARTIAL ARCHIVE MUST NOT SURVIVE: LEAVING ONE BEHIND INVITES A RESTORE FROM IT
+        if (!snapshotAttempt || e.getReason() == PageSnapshotException.Reason.CLOSING) {
+          // A PARTIAL ARCHIVE MUST NOT SURVIVE: LEAVING ONE BEHIND INVITES A RESTORE FROM IT.
+          // #7458: A WINDOW REFUSED BECAUSE THE DATABASE IS CLOSED, OR BECAUSE A CLOSE IS WAITING FOR THE WINDOWS
+          // ALREADY OPEN, IS NOT THE TRANSIENT SHADOW PROBLEM THE RETRY BELOW EXISTS FOR - THE DATABASE IS GOING
+          // AWAY, AND A FROZEN-FILES RETRY WOULD ONLY RACE ITS TEARDOWN. FAIL NOW, AND SAY WHY
           backupFile.delete();
           throw e;
         }

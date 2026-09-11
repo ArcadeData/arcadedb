@@ -20,23 +20,115 @@ package com.arcadedb.utility;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.MockedStatic;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mockStatic;
 
 class FileUtilsTest {
 
   @TempDir
   Path tempDir;
+
+  @Test
+  void atomicByteWritePreservesContentWithoutCharacterConversion() throws Exception {
+    final Path target = tempDir.resolve("previous-schema.json");
+    final byte[] content = { 0, 0x7f, (byte) 0x80, (byte) 0xe9, (byte) 0xff };
+    Files.writeString(target, "old generation");
+
+    FileUtils.atomicWriteFile(target.toFile(), content);
+
+    assertThat(Files.readAllBytes(target)).isEqualTo(content);
+    try (final var files = Files.list(tempDir)) {
+      assertThat(files).containsExactly(target);
+    }
+  }
+
+  @Test
+  void atomicCopyPublishesTheSourceBytesWithoutUnlinkingTheSource() throws Exception {
+    final Path source = tempDir.resolve("schema.json");
+    final Path target = tempDir.resolve("schema.prev.json");
+    // Bytes that are not valid UTF-8: a copy that decodes and re-encodes would replace them with U+FFFD.
+    final byte[] content = { 0, 0x7f, (byte) 0x80, (byte) 0xe9, (byte) 0xff };
+    Files.write(source, content);
+    Files.writeString(target, "an older generation");
+
+    FileUtils.atomicCopyFile(source.toFile(), target.toFile());
+
+    assertThat(Files.readAllBytes(target)).isEqualTo(content);
+    assertThat(Files.readAllBytes(source)).as("the source must never be moved aside").isEqualTo(content);
+    try (final var files = Files.list(tempDir)) {
+      assertThat(files).containsExactlyInAnyOrder(source, target);
+    }
+  }
+
+  @Test
+  void atomicCopyDetachesTheTargetFromLaterSourceReplacements() throws Exception {
+    // Where the copy is published as a hard link the two names share an inode: replacing the source afterwards
+    // must rebind only the source's name, leaving the previous generation readable under the target's.
+    final Path source = tempDir.resolve("schema.json");
+    final Path target = tempDir.resolve("schema.prev.json");
+    Files.writeString(source, "generation-1");
+
+    FileUtils.atomicCopyFile(source.toFile(), target.toFile());
+    FileUtils.atomicWriteFile(source.toFile(), "generation-2");
+
+    assertThat(Files.readString(source)).isEqualTo("generation-2");
+    assertThat(Files.readString(target)).isEqualTo("generation-1");
+  }
+
+  @Test
+  void atomicCopyFallsBackToAByteCopyWhenTheFileStoreHasNoLinks() throws Exception {
+    final Path source = tempDir.resolve("schema.json");
+    final Path target = tempDir.resolve("schema.prev.json");
+    final byte[] content = { 0, (byte) 0x80, (byte) 0xff };
+    Files.write(source, content);
+    try (final MockedStatic<Files> ignored = mockStatic(Files.class, invocation -> {
+      if (invocation.getMethod().getName().equals("createLink"))
+        throw new UnsupportedOperationException("test filesystem has no hard links");
+      return invocation.callRealMethod();
+    })) {
+      FileUtils.atomicCopyFile(source.toFile(), target.toFile());
+    }
+
+    assertThat(Files.readAllBytes(target)).isEqualTo(content);
+    assertThat(Files.readAllBytes(source)).isEqualTo(content);
+    try (final var files = Files.list(tempDir)) {
+      assertThat(files).containsExactlyInAnyOrder(source, target);
+    }
+  }
+
+  @Test
+  void defaultAtomicWriteRetainsTheExistingFallbackForUnsupportedFileSystems() throws Exception {
+    final Path target = tempDir.resolve("config.json").toAbsolutePath();
+    Files.writeString(target, "old");
+    final AtomicInteger attempts = new AtomicInteger();
+    try (final MockedStatic<Files> ignored = mockStatic(Files.class, invocation -> {
+      if (invocation.getMethod().getName().equals("move") && target.equals(invocation.getArgument(1))
+          && attempts.incrementAndGet() == 1)
+        throw new AtomicMoveNotSupportedException("temporary", target.toString(), "test filesystem");
+      return invocation.callRealMethod();
+    })) {
+      FileUtils.atomicWriteFile(target.toFile(), "new");
+    }
+    assertThat(attempts.get()).isEqualTo(2);
+    assertThat(Files.readString(target)).isEqualTo("new");
+    try (final var files = Files.list(tempDir)) {
+      assertThat(files).containsExactly(target);
+    }
+  }
 
   @Test
   void sizeConstants() {
@@ -390,71 +482,18 @@ class FileUtilsTest {
   }
 
   @Test
-  void atomicWriteFileHonoursAnExplicitCharset() throws Exception {
-    final Path target = tempDir.resolve("encoded.txt");
-    final String content = "caffè-niño-\u00ff";
-
-    FileUtils.atomicWriteFile(target.toFile(), content, StandardCharsets.ISO_8859_1);
-
-    assertThat(Files.readAllBytes(target)).isEqualTo(content.getBytes(StandardCharsets.ISO_8859_1));
-    assertThat(new String(Files.readAllBytes(target), StandardCharsets.ISO_8859_1)).isEqualTo(content);
-    // NOT VACUOUS: the two encodings really do differ for this content, so the assertion above pins the charset
-    assertThat(content.getBytes(StandardCharsets.ISO_8859_1))
-        .isNotEqualTo(content.getBytes(StandardCharsets.UTF_8));
-  }
-
-  @Test
-  void atomicWriteFileDefaultsToUtf8() throws Exception {
+  void atomicWriteFileAlwaysEncodesInUtf8NeverInThePlatformDefault() throws Exception {
+    // The FileWriter this replaced in LocalSchema.update() used the JVM's default charset, which is asymmetric with
+    // readConfiguration()'s reader on any platform whose default is not UTF-8 (issue #6114).
     final Path target = tempDir.resolve("default-encoded.txt");
-    final String content = "caffè-niño";
+    final String content = "caffè-niño-日本";
 
     FileUtils.atomicWriteFile(target.toFile(), content);
 
     assertThat(Files.readAllBytes(target)).isEqualTo(content.getBytes(StandardCharsets.UTF_8));
-  }
-
-  @Test
-  void atomicCopyFileCreatesDirsAndCopiesContent() throws Exception {
-    final Path source = tempDir.resolve("source.json");
-    Files.write(source, "{\"a\":1}".getBytes(StandardCharsets.UTF_8));
-
-    final Path target = tempDir.resolve("nested/dir/copy.json");
-    FileUtils.atomicCopyFile(source.toFile(), target.toFile());
-
-    assertThat(Files.exists(target)).isTrue();
-    assertThat(new String(Files.readAllBytes(target), StandardCharsets.UTF_8)).isEqualTo("{\"a\":1}");
-    assertThat(Files.exists(source)).as("the source must survive: this is a copy, not a rename").isTrue();
-    // No temporary artifacts must survive a successful copy.
-    try (var stream = Files.list(target.getParent())) {
-      assertThat(stream.map(p -> p.getFileName().toString()).anyMatch(n -> n.endsWith(".tmp"))).isFalse();
-    }
-  }
-
-  @Test
-  void atomicCopyFileReplacesAnExistingTarget() throws Exception {
-    final Path source = tempDir.resolve("newer.txt");
-    final Path target = tempDir.resolve("older.txt");
-    Files.write(target, "the-previous-and-much-longer-content".getBytes(StandardCharsets.UTF_8));
-    Files.write(source, "short".getBytes(StandardCharsets.UTF_8));
-
-    FileUtils.atomicCopyFile(source.toFile(), target.toFile());
-
-    assertThat(new String(Files.readAllBytes(target), StandardCharsets.UTF_8))
-        .as("a shorter replacement must not leave a tail of the previous content behind").isEqualTo("short");
-  }
-
-  @Test
-  void atomicCopyFilePublishesBytesUnchanged() throws Exception {
-    // THE REASON THIS EXISTS RATHER THAN read-as-String-then-atomicWriteFile: the bytes are published as they are,
-    // so a file in any encoding - or none - survives the copy intact
-    final byte[] content = new byte[] { 0x00, (byte) 0xC3, (byte) 0xA8, (byte) 0xFF, 0x7F, (byte) 0x80 };
-    final Path source = tempDir.resolve("bytes.bin");
-    Files.write(source, content);
-
-    final Path target = tempDir.resolve("bytes-copy.bin");
-    FileUtils.atomicCopyFile(source.toFile(), target.toFile());
-
-    assertThat(Files.readAllBytes(target)).isEqualTo(content);
+    // NOT VACUOUS: this content really is encoded differently by the two charsets, so the assertion above pins one.
+    assertThat(content.getBytes(StandardCharsets.UTF_8))
+        .isNotEqualTo(content.getBytes(StandardCharsets.ISO_8859_1));
   }
 
   @Test

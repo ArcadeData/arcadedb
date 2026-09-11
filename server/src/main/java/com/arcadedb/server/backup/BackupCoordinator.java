@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.backup;
 
+import com.arcadedb.engine.MaintenanceCoordinator;
+
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.EnumSet;
@@ -64,13 +66,28 @@ import java.util.regex.Pattern;
  * because an import is ordinary transactions against a live database and backing a live database up is what the
  * auto-backup schedule does all day. Everything else is refused - see {@link Operation#conflictsWith}.
  * <p>
+ * An HA snapshot install takes {@link Operation#RESTORE} too, and for the same reason: it closes this node's copy of
+ * the database, swaps its directory for the leader's snapshot and reopens it, which is a restore of this node's copy
+ * whoever asked for it. That is what closes the one pair the per-server scoping above cannot see - a restore on the
+ * leader replicates as an install entry, and a follower running its own scheduled backup of that database answers
+ * the entry by replacing the directory the backup is reading (issue #7444). Unlike every other holder the install
+ * cannot simply be refused, because it applies a committed Raft entry: it uses
+ * {@link #begin(String, Operation, long)}, which waits out a conflicting operation for a bounded time first.
+ * <p>
  * The class name predates restores and is kept so that the callers and tests written against
  * {@code getBackupCoordinator()} keep compiling; what it coordinates is now every whole-database maintenance
  * operation this server runs, not only backups.
+ * <h2>The engine's view of it</h2>
+ * {@link Operation} and the reservation contract live in {@link MaintenanceCoordinator}, in the engine, and this
+ * class is its only implementation. {@code BACKUP DATABASE} and {@code IMPORT DATABASE} are SQL statements the
+ * ENGINE executes, so until issue #7443 they could not reach this policy at all and took nothing: a SQL backup
+ * ran unseen by a concurrent restore, and a second SQL backup of one database was not refused either. The server
+ * binds this instance to every database it opens (see {@code ServerDatabase}), which is how a statement finds it
+ * without the engine depending on the server.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class BackupCoordinator {
+public class BackupCoordinator implements MaintenanceCoordinator {
   private static final DateTimeFormatter ARCHIVE_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS");
   /**
    * Matches the archives this class names, and the second-precision ones every release before it wrote: retention and
@@ -79,51 +96,6 @@ public class BackupCoordinator {
    */
   private static final Pattern           ARCHIVE_NAME_PATTERN     = Pattern.compile(".*-backup-(\\d{8})-(\\d{6}(?:\\d{3})?)\\.zip$");
   private static final DateTimeFormatter ARCHIVE_TIMESTAMP_PARSER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss[SSS]");
-
-  /**
-   * The whole-database maintenance operations that share one per-database slot.
-   * <p>
-   * {@link #conflictsWith} is the whole admission policy: two operations on one database exclude each other unless
-   * one is a {@link #BACKUP} and the other an {@link #IMPORT}. A restore excludes everything because it drops and
-   * replaces the database directory; a backup excludes another backup because two full backups of one database read
-   * and compress the same data twice for one usable archive (issue #6753); an import excludes another import because
-   * an import creates the database it loads into, so the second one could not have created it anyway.
-   */
-  public enum Operation {
-    BACKUP("back up", "a backup"), RESTORE("restore", "a restore"), IMPORT("import", "an import");
-
-    private final String verb;
-    private final String phrase;
-
-    Operation(final String verb, final String phrase) {
-      this.verb = verb;
-      this.phrase = phrase;
-    }
-
-    /**
-     * The operation as a verb, for "Cannot back up database 'x'". Carried rather than derived from the enum
-     * constant, because the verb for a backup is two words.
-     */
-    public String verb() {
-      return verb;
-    }
-
-    /**
-     * The operation's name with its indefinite article, for "... a restore of it is already in progress". Carried
-     * rather than derived, because "a import" is what deriving it produces.
-     */
-    public String phrase() {
-      return phrase;
-    }
-
-    /**
-     * Whether an operation of this kind, already running on a database, refuses one of kind {@code other} on the
-     * same database.
-     */
-    public boolean conflictsWith(final Operation other) {
-      return this == other || this == RESTORE || other == RESTORE;
-    }
-  }
 
   /**
    * The operations currently running per database. A value is never an empty set - the entry is removed instead -
@@ -137,6 +109,16 @@ public class BackupCoordinator {
    * outside the map's own per-entry lock.
    */
   private final Map<String, EnumSet<Operation>> inProgress = new ConcurrentHashMap<>();
+
+  /**
+   * The monitor a bounded wait parks on, notified by every {@link #end(String, Operation)}.
+   * <p>
+   * One monitor for the whole coordinator rather than one per database: a server runs a handful of these
+   * operations a day, so the spurious wakeups a release on an unrelated database causes cost a re-check of a
+   * {@link ConcurrentHashMap} entry and nothing else, and a per-database monitor would need its own lifecycle to
+   * avoid leaking an entry per database name ever waited on.
+   */
+  private final Object slotReleased = new Object();
 
   /**
    * Reserves this database for a backup. Returns {@code false} when a backup, restore or import of it is already
@@ -159,6 +141,7 @@ public class BackupCoordinator {
    * @return {@code null} when the reservation was taken - the caller must then release it with
    * {@link #end(String, Operation)} from a {@code finally} - or the operation already running that refuses this one.
    */
+  @Override
   public Operation begin(final String databaseName, final Operation operation) {
     final AtomicReference<Operation> conflict = new AtomicReference<>();
 
@@ -181,6 +164,54 @@ public class BackupCoordinator {
   }
 
   /**
+   * Reserves this database for {@code operation}, waiting up to {@code timeoutMs} for a conflicting operation to
+   * finish rather than refusing straight away.
+   * <p>
+   * Every other caller may simply be refused: a scheduled backup is covered again on the next tick, and a restore or
+   * an import is an operator command that can be retried. An HA snapshot install cannot - it applies a committed
+   * Raft entry, and a follower that declines to apply one diverges from the cluster (issue #7444). So it needs a
+   * third answer between taking the slot and giving up: wait for whatever is in the way, and take the slot the
+   * moment it lets go.
+   * <p>
+   * The wait is bounded because the caller's own operation is: a timeout expiring means the caller proceeds without
+   * the slot, loudly, which is the same outcome it had before this existed. Bounding it is also what keeps a caller
+   * that already holds a conflicting reservation on this database from waiting on itself - these reservations are
+   * not reentrant.
+   *
+   * @param timeoutMs how long to wait; zero or negative does not wait at all and is exactly
+   *                  {@link #begin(String, Operation)}
+   *
+   * @return {@code null} when the reservation was taken - the caller must then release it with
+   * {@link #end(String, Operation)} from a {@code finally} - or the operation that was still refusing this one when
+   * the wait ran out. A non-null answer means nothing was reserved and {@link #end} must NOT be called.
+   */
+  public Operation begin(final String databaseName, final Operation operation, final long timeoutMs) {
+    Operation conflict = begin(databaseName, operation);
+    if (conflict == null || timeoutMs <= 0)
+      return conflict;
+
+    final long deadline = System.currentTimeMillis() + timeoutMs;
+    synchronized (slotReleased) {
+      // Re-checked inside the monitor before every wait, and end() takes the same monitor to notify AFTER it has
+      // updated the map: a release that lands between the check and the wait therefore cannot be missed.
+      while ((conflict = begin(databaseName, operation)) != null) {
+        final long remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0)
+          return conflict;
+
+        try {
+          slotReleased.wait(remaining);
+        } catch (final InterruptedException e) {
+          // Restore the flag and report the conflict: an interrupted caller took nothing and must not release.
+          Thread.currentThread().interrupt();
+          return conflict;
+        }
+      }
+      return null;
+    }
+  }
+
+  /**
    * Releases the backup reservation taken by a successful {@link #begin(String)}. Always call it from a
    * {@code finally}: a reservation leaked by a failed backup would block every later backup of that database until
    * the server restarts.
@@ -193,6 +224,7 @@ public class BackupCoordinator {
    * Releases the reservation a successful {@link #begin(String, Operation)} took. Always call it from a
    * {@code finally}: a leaked reservation blocks every later operation of that database until the server restarts.
    */
+  @Override
   public void end(final String databaseName, final Operation operation) {
     inProgress.computeIfPresent(databaseName, (name, running) -> {
       if (!running.contains(operation))
@@ -202,6 +234,11 @@ public class BackupCoordinator {
       updated.remove(operation);
       return updated.isEmpty() ? null : updated;
     });
+    // AFTER the map update, so a waiter that re-checks on waking sees the release that woke it. Unconditional: a
+    // release that changed nothing costs one uncontended monitor and a notify nobody is parked on.
+    synchronized (slotReleased) {
+      slotReleased.notifyAll();
+    }
   }
 
   /** Whether any backup, restore or import of this database is currently running. */

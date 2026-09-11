@@ -26,6 +26,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
@@ -108,6 +110,19 @@ public class ArcadeDBServer {
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
 
   /**
+   * The two steps the startup {@code restore:} command publishes - {@link RestoreProgress#STEP_EXTRACT} then
+   * {@link RestoreProgress#STEP_ACTIVATE}. One fewer than {@code ServerControlPlane.performRestore}'s three:
+   * this command restores straight into the final directory, so there is no temporary directory to swap in, and
+   * it forces no cluster snapshot (issue #7440).
+   */
+  private static final int    STARTUP_RESTORE_STEPS     = 2;
+  /**
+   * The label the startup restore is published under. The same one the HTTP/gRPC {@code restore database} verb
+   * uses, because it is the same operation seen from a different transport.
+   */
+  private static final String STARTUP_RESTORE_OPERATION = "restore database";
+
+  /**
    * How long the shutdown hook waits for the lifecycle lock when the server is still {@code STARTING} and has not
    * opened any database yet (issues #5418, #7025). Short on purpose: with no database open there is nothing worth
    * flushing, so the wait only has to be long enough to lose a benign race with a start that is about to complete.
@@ -165,6 +180,13 @@ public class ArcadeDBServer {
   // half-swapped directory or reopens it from disk mid-swap (issue #4832). Kept distinct from the map so it can be
   // exposed via getDatabasesLock() without leaking the registry itself.
   private final       Object                                databasesLock                        = new Object();
+  // Database names an in-flight restore has claimed, guarded by databasesLock (issue #7441). A restore checks its
+  // target up front and replaces it minutes later, in swapRestoredDatabase; without a claim held across that window
+  // a database created inside it was dropped and overwritten with no error reported to either caller. Sampling the
+  // name a second time would not have helped - the two samples are not atomic with each other either - so the name
+  // is reserved in the same databasesLock section as the pre-check and released when the restore ends. Creators are
+  // refused, not parked: waiting here would block a create behind a multi-GB download.
+  private final       Set<String>                           restoringDatabaseNames               = new HashSet<>();
   // Serialises start() and stop(). Deliberately an explicit lock rather than `synchronized` on the
   // instance: the JVM shutdown hook must be able to give up on it (see stopFromShutdownHook), because a
   // startup failure that calls System.exit() from inside start() would otherwise deadlock the JVM
@@ -995,11 +1017,81 @@ public class ArcadeDBServer {
     return databasesLock;
   }
 
+  /**
+   * Claims {@code databaseName} for a restore that is about to start, so that no database can be created under that
+   * name until the restore has swapped its result into place (issue #7441).
+   * <p>
+   * The caller takes this in the same {@link #getDatabasesLock()} section as its own "does the target already exist"
+   * check and releases it from a {@code finally} around the whole restore - {@link ServerControlPlane#restoreDatabase}
+   * and {@link ServerControlPlane#restoreBackup} are the two that do. Taking it separately would leave the same
+   * window the claim exists to close, only narrower.
+   * <p>
+   * The caller's existence check runs inside that same lock section, which puts a {@code File.exists()} stat under
+   * the monitor every open and create on this server contends on. That is deliberate - sampling the name outside the
+   * lock is the bug - and it is one stat on a path taken once per restore, against a lock that
+   * {@link #createDatabase} already holds across the creation of a whole database.
+   * <p>
+   * A claim is not a lock a creator waits on. {@link #createDatabase} is refused immediately with
+   * {@link ServerControlPlane.OperationInProgressException}, which HTTP answers with a 409 and gRPC with
+   * {@code ABORTED}: parking a create behind a multi-GB download would be a worse answer than telling the caller to
+   * retry. It is also per server instance rather than per JVM, matching {@link BackupCoordinator}: an HA test and a
+   * co-located pair of nodes run several servers with the same database names in one process.
+   * <p>
+   * Re-claiming a name already claimed is not rejected here. Two restores of one database cannot get this far - the
+   * {@link BackupCoordinator} slot refuses the second one before it reaches the pre-check (issue #7384) - so a
+   * rejection would be unreachable code standing in for an invariant that is enforced elsewhere.
+   */
+  public void reserveDatabaseNameForRestore(final String databaseName) {
+    synchronized (databasesLock) {
+      restoringDatabaseNames.add(databaseName);
+    }
+  }
+
+  /**
+   * Releases the claim {@link #reserveDatabaseNameForRestore} took. Always call it from a {@code finally}: a claim
+   * leaked by a failed restore would refuse every later create of that name until the server restarts, turning one
+   * bad URL into an outage.
+   */
+  public void releaseDatabaseNameReservedForRestore(final String databaseName) {
+    synchronized (databasesLock) {
+      restoringDatabaseNames.remove(databaseName);
+    }
+  }
+
+  /** Whether a restore on this server currently holds {@code databaseName}. */
+  public boolean isDatabaseNameReservedForRestore(final String databaseName) {
+    synchronized (databasesLock) {
+      return restoringDatabaseNames.contains(databaseName);
+    }
+  }
+
+  /**
+   * Refuses to bring a database into existence under a name an in-flight restore has claimed. Called from the two
+   * places in this class that reach {@code DatabaseFactory.create()}, both already holding {@link #databasesLock},
+   * which is what makes the refusal atomic with the claim rather than another unsynchronised sample.
+   * <p>
+   * The exception type is {@link ServerControlPlane.OperationInProgressException} rather than a new one of this
+   * class's own because it is what the transports already translate - {@code AbstractServerHttpHandler} answers it
+   * with a 409 and {@code ArcadeDbGrpcAdminService} with {@code ABORTED} - and because it is the same answer a
+   * caller gets when the {@link BackupCoordinator} slot refuses them: "well formed, and it will work once the other
+   * operation finishes". Naming the outer class here reads as this class reaching up into the one that wraps it, and
+   * it is: hoisting the type out of {@code ServerControlPlane} would be the tidier arrangement, but it is public API
+   * that {@code BackupInProgressException} extends and that handlers and tests across three modules already catch by
+   * that name, so moving it belongs in its own change rather than riding along with a bug fix.
+   */
+  private void checkDatabaseNameIsNotBeingRestored(final String databaseName) {
+    if (restoringDatabaseNames.contains(databaseName))
+      throw new ServerControlPlane.OperationInProgressException(
+          "Cannot create database '" + databaseName + "': a restore of it is already in progress");
+  }
+
   public ServerDatabase createDatabase(final String databaseName, final ComponentFile.MODE mode) {
     checkDatabaseNameIsValid(databaseName);
 
     ServerDatabase serverDatabase;
     synchronized (databasesLock) {
+      checkDatabaseNameIsNotBeingRestored(databaseName);
+
       serverDatabase = databases.get(databaseName);
       if (serverDatabase != null)
         throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
@@ -1284,9 +1376,18 @@ public class ArcadeDBServer {
           defaultDbMode = READ_WRITE;
 
         DatabaseInternal embDatabase;
-        if (createIfNotExists)
-          embDatabase = (DatabaseInternal) (factory.exists() ? factory.open(defaultDbMode) : factory.create());
-        else {
+        if (createIfNotExists) {
+          if (factory.exists())
+            embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
+          else {
+            // The second of the two places a database comes into existence on a server - createDatabase above is the
+            // other - so the restore claim has to be honoured here too (issue #7441). Only the create arm asks: an
+            // OPEN of a directory that is already there is what 'restore backup ... overwrite' means to replace, and
+            // refusing it would take a live database away from its readers for the duration of the restore.
+            checkDatabaseNameIsNotBeingRestored(databaseName);
+            embDatabase = (DatabaseInternal) factory.create();
+          }
+        } else {
           final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
           if (!activeDatabases.isEmpty()) {
             embDatabase = null;
@@ -1399,27 +1500,8 @@ public class ArcadeDBServer {
                 // to keep than to reason about the exception).
                 removeDatabase(dbName);
               }
-              final String dbPath =
-                  configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
-//              new Restore(commandParams, dbPath).restoreDatabase();
-
-              try {
-                final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-                final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(commandParams,
-                    dbPath);
-
-                clazz.getMethod("restoreDatabase").invoke(restorer);
-
-              } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException |
-                             InstantiationException e) {
-                throw new CommandExecutionException("""
-                    Error on restoring database, restore libs not found in \
-                    classpath""", e);
-              } catch (final InvocationTargetException e) {
-                throw new CommandExecutionException("Error on restoring database", e.getTargetException());
-              }
-
-              getDatabase(dbName);
+              restoreDatabaseFromStartupCommand(dbName, commandParams,
+                  configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName);
               break;
 
             case "import":
@@ -1447,6 +1529,59 @@ public class ArcadeDBServer {
           }
         }
       }
+    }
+  }
+
+  /**
+   * Executes the {@code restore:} startup command of {@link GlobalConfiguration#SERVER_DEFAULT_DATABASES}:
+   * restores {@code url} into {@code databasePath}, opens the result, and publishes an {@link OperationProgress}
+   * for the whole of it (issue #7440).
+   * <p>
+   * Issue #7385 gave that publication to the four transports that reach
+   * {@code ServerControlPlane.performRestore} - HTTP {@code restore database}, HTTP {@code restore backup} and
+   * the two matching gRPC RPCs. This command does not go through the control plane and was the one left silent,
+   * although it is at least as worth watching: {@link #start()} calls {@code httpServer.startService()} before
+   * {@code loadDefaultDatabases()}, and {@code GetProgressHandler} reads only the lock-free registry snapshot
+   * (no database access), so a poll of {@code GET /api/v1/progress/&#123;database&#125;} that lands while a
+   * container is restoring a large archive at boot is served - and used to answer "nothing running" about the
+   * very database being built. Always retired in the {@code finally}, on failure as on success.
+   * <p>
+   * Two steps rather than {@code performRestore}'s three: this command restores straight into the final
+   * directory, so there is no temporary directory to swap in, and it does not force a cluster snapshot.
+   * <p>
+   * Package-private rather than private so a test can drive it with a real archive: the alternative is racing a
+   * full server boot, which is not a way to observe anything mid-flight.
+   *
+   * @param databaseName the database being restored, and the key the progress is published under
+   * @param url          the archive URL exactly as the operator wrote it after {@code restore:}
+   * @param databasePath the directory the archive is restored into
+   */
+  void restoreDatabaseFromStartupCommand(final String databaseName, final String url, final String databasePath) {
+    final OperationProgress progress = OperationProgressRegistry.instance()
+        .register(databaseName, STARTUP_RESTORE_OPERATION);
+    progress.onProgress(RestoreProgress.STEP_EXTRACT, 1, STARTUP_RESTORE_STEPS, 0, -1);
+    try {
+      final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
+      final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, databasePath);
+      RestoreProgress.installCallback(clazz, restorer, progress, STARTUP_RESTORE_STEPS);
+
+      clazz.getMethod("restoreDatabase").invoke(restorer);
+
+      progress.onProgress(RestoreProgress.STEP_ACTIVATE, 2, STARTUP_RESTORE_STEPS, 0, -1);
+      getDatabase(databaseName);
+    } catch (final InvocationTargetException e) {
+      throw new CommandExecutionException("Error on restoring database", e.getTargetException());
+    } catch (final ReflectiveOperationException e) {
+      // Everything the block above can throw that is NOT an InvocationTargetException means the optional
+      // arcadedb-integration module is absent or does not match: ClassNotFoundException, NoSuchMethodException,
+      // IllegalAccessException, InstantiationException. Caught by their common supertype so this arm reads the
+      // same as ServerControlPlane.performRestore's; the block reflects on no field, so NoSuchFieldException -
+      // the only other subtype - cannot arise here and nothing new is swallowed.
+      throw new CommandExecutionException("""
+          Error on restoring database, restore libs not found in \
+          classpath""", e);
+    } finally {
+      OperationProgressRegistry.instance().unregister(progress);
     }
   }
 
