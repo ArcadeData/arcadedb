@@ -104,7 +104,7 @@ ArcadeDbGrpcAdminService.java:297-298  (definition, mirrors checkRootUser)
 | `disconnect cluster` | `DisconnectCluster` | fixed here | yes (authz + non-HA rejection) |
 | `GET /health` | `Health` | fixed here | yes |
 | `GET /ready` | `Ready` | fixed here | yes |
-| `connect cluster` | none | **argued** | - |
+| `connect cluster` | `ConnectCluster` | **argued here, reversed by #7400** | yes, in #7400 (authz + non-HA rejection) |
 | `restore backup` | none | **filed** #7308 | - |
 | `restore database` | none | **filed** #7308 | - |
 | `import database` | none | **filed** #7308 | - |
@@ -116,10 +116,18 @@ ArcadeDbGrpcAdminService.java:297-298  (definition, mirrors checkRootUser)
 
 ### Arguments
 
-- **`connect cluster`** - the HTTP implementation has no behaviour to adapt. It is a single
-  `throw new CommandExecutionException("Connect cluster operation is not supported by the current
-  HA implementation...")` (`PostServerCommandHandler.connectCluster`, lines 829-834). Adding a
-  gRPC RPC would reproduce an unconditional error, not an operation.
+- **`connect cluster`** - *this argument was reversed by #7400; the RPC exists as of that issue and
+  the row above is updated. Kept here because the reasoning is the record of what was decided, and
+  what was wrong with it.* The argument was: the HTTP implementation has no behaviour to adapt - it
+  is a single unconditional throw - so a gRPC RPC would reproduce an error, not an operation. What
+  it missed is that the *contract* is the thing the two transports must agree on, not just the
+  behaviour: a verb HTTP accepts and answers with a reasoned refusal, and gRPC answers
+  `UNIMPLEMENTED`, is a difference a client can see and has to code around. #7400 added the RPC as
+  the same thin adapter every other row uses, so the refusal now arrives as `FAILED_PRECONDITION`
+  carrying the shared implementation's own message, and a later real join lands in one place for
+  both transports. The shared method has since moved to `ServerControlPlane.connectCluster` and
+  raises `OperationNotAvailableException` (a `CommandExecutionException` subtype), which is the arm
+  that maps to `FAILED_PRECONDITION`. Whether to implement the join at all is #7401.
 - **`POST /login` / `POST /logout` / `GET /sessions`** - HTTP sessions exist because HTTP is
   stateless per request and the browser needs a bearer token. gRPC authenticates every admin RPC
   from the `DatabaseCredentials` on the request body, enforced centrally in

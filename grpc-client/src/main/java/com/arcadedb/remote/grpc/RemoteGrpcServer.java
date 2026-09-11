@@ -27,6 +27,7 @@ import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.BackupInfo;
 import com.arcadedb.server.grpc.CloseDatabaseRequest;
+import com.arcadedb.server.grpc.ConnectClusterRequest;
 import com.arcadedb.server.grpc.CreateApiTokenRequest;
 import com.arcadedb.server.grpc.CreateApiTokenResponse;
 import com.arcadedb.server.grpc.CreateDatabaseRequest;
@@ -727,6 +728,21 @@ public class RemoteGrpcServer implements AutoCloseable {
   public void disconnectCluster() {
     call("disconnect cluster", stub -> stub.disconnectCluster(
         DisconnectClusterRequest.newBuilder().setCredentials(buildCredentials()).build()));
+  }
+
+  /**
+   * Asks this server to join the cluster reachable at {@code serverAddress} ({@code <host>:<port>}),
+   * the client half of the pair {@link #disconnectCluster()} completes (issue #7400).
+   * <p>
+   * Reaches the same {@code ServerControlPlane.connectCluster} the HTTP {@code connect cluster} verb
+   * calls. The current HA stack does not implement a client-initiated join, so today this raises the
+   * server's own refusal through {@code GrpcClientErrorMapper} rather than joining anything; issue
+   * #7401 carries that decision. The address is sent as given - the server refuses before reading it,
+   * exactly as the HTTP verb does.
+   */
+  public void connectCluster(final String serverAddress) {
+    call("connect cluster", stub -> stub.connectCluster(
+        ConnectClusterRequest.newBuilder().setCredentials(buildCredentials()).setServerAddress(serverAddress).build()));
   }
 
   /**
