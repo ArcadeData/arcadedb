@@ -210,3 +210,76 @@ client uses. No feature flag gates it.
 
 - [x] 1. `result=FAIL` overwritten by an unconditional `result=OK` - fixed, on both producers of the
       branch, with a `reason` property and 6 tests.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7493
+
+### Follow-up issues filed before the PR opened
+
+- **#7484** - startup `import:` default-database command discards the statement's result row, so a
+  failed import is silent. Named in the PR body under **Known gaps**.
+
+### Review cycles
+
+**Cycle 1 - `6ae500d9b6`**
+
+- `claude` (gating): substantive review, **nothing blocking**. It re-derived the claims against
+  `Importer.java`, `SourceDiscovery.java` and `ImporterSettings.java` rather than taking the PR body
+  at face value, and confirmed each: both producers of the `FAIL` branch, the bare-path
+  `FileNotFoundException` at `SourceDiscovery.java:216` that makes `failureReason()`'s choice of the
+  wrapper's message the right one, the unguarded `e.getCause()` as a genuine latent NPE, and the exact
+  class-name match as correctly pinned by `aNonNumericNumericSettingStillThrows`. Two non-blocking
+  nits, neither of which asks for a change to this PR:
+  - the `reason` key has no precedent in the tree ("Not a problem for this PR", raised as a
+    consistency note for whatever a future statement does);
+  - the file's comment blocks are long ("consistent with the rest of this file's existing style, so
+    not something to change here").
+
+  One follow-through, not a code change: confirm in CI the two server ITs that could not run locally
+  because port 2480 was occupied.
+- `CodeRabbit`: **rate-limited on this push** and posted no findings ("Review limit reached ... You've
+  used all free OSS reviews for now"). No threads to resolve.
+- `Codacy`: 0 new issues, complexity 4.
+
+No changes were applied in this cycle - the working tree stayed empty and no deferred-items notes file
+was produced - so the loop exited at the early-exit check.
+
+### Final state
+
+`clean-approval` after 1 cycle of a permitted 4.
+
+### CI on this branch, and what is inherited
+
+The branch's own test ran and passed in CI: the `unit-test-reports` artifact of run 34657385125 carries
+`TEST-com.arcadedb.integration.importer.Issue7461ImportDatabaseFailResultTest.xml` with
+`tests="6" errors="0" skipped="0" failures="0"`.
+
+Two lanes are red, and **neither failure is this branch's**. Both are now filed, because a red lane that
+belongs to nobody costs every later PR author the same investigation:
+
+**`unit-tests` - three failures, all pre-existing on the base branch (#7495)**
+
+| Test | Assertion |
+|---|---|
+| `MultiColumnAggregationResultTest.emptySumAndCountStayZeroNotNaN` | `expected: 0.0 but was: NaN` |
+| `Issue7089NaNTransparentSumAvgTest.oneNaNSampleNoLongerPoisonsTheBucketOnAnyPath` | `expected: 0 but was: 2` |
+| `ArcadeStateMachinePerDatabaseHaltTest` (both methods) | got `Corrupted WAL transaction entry`, expected `per-database snapshot resync in progress` / `Apply error on database 'db-B'` |
+
+Evidence, not inference: the unrelated PR #7489 (`fix/7345-...`, RDF importer only, run 34657353357)
+fails on **exactly the same three report files**. Locally, `MultiColumnAggregationResultTest` fails
+identically with `ImportDatabaseStatement.java` restored to its `HEAD` content. Neither branch touches
+time series or Raft. `main` itself never runs this workflow, which is why the breakage surfaces on
+other people's PRs instead of on the commit that caused it.
+
+**`integration-tests` - one failure, a fixed-port collision (#7496)**
+
+`Issue7304GrpcAdminLeaderRoutingIT` errored in `@BeforeEach` for both its methods, before any test code
+ran: `Failed to bind to address 0.0.0.0/0.0.0.0:51142 ... Address already in use`. That class hardcodes
+`BASE_GRPC_PORT = 51141`, so 51142 is its own node 1. The same lane fails on unrelated PRs with a
+different victim each run (PR #7491, run 34656829906: `Issue6070GraphBatchLoadLeaderGuardIT`,
+`TimeSeriesGrpcForwardedInsertTypeIT`, `ServerProfilingIT`) - the signature of a port collision, not of
+a defect in any one test.
+
+Neither was re-run to force green: the three unit-test failures are deterministic on the base, so a
+re-run only burns CI, and the gRPC one would only be a different roll of the same dice.
