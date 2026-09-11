@@ -324,6 +324,11 @@ public class SnapshotHttpHandler implements HttpHandler {
       exchange.getResponseHeaders().put(new HttpString(SnapshotManager.MANIFEST_HEADER), "1");
       exchange.startBlocking();
 
+      // CLOSED TWICE ON THE WINDOW PATH, DELIBERATELY: serveSnapshotZip releases the pause the moment the last
+      // sealed byte is read, and this is the safety net for every other way out - a throw, a client disconnect,
+      // the frozen-files path that never releases early. TimeSeriesCompactionPause.close() is idempotent, so the
+      // second close is a no-op rather than an unlock of a lock this thread no longer holds (claude-review on
+      // PR #7474).
       try (pause) {
         db.executeInReadLock(() -> {
           // #6075: stream the page files through a point-in-time snapshot. Shipping a multi-GB snapshot used to

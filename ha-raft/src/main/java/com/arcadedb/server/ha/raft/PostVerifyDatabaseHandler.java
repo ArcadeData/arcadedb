@@ -476,15 +476,17 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
       final DatabaseInternal db) {
     final File directory = new File(db.getDatabasePath());
     // listSealedFiles turns an unreadable directory into an EMPTY array, which reads exactly like "this database
-    // has no sealed store". Asked here instead, because the difference decides whether this answer covers them.
-    if (!directory.isDirectory() || directory.list() == null) {
+    // has no sealed store" - and the difference decides whether this answer covers them. The ...OrNull variant
+    // keeps that distinction while still listing the directory ONCE (claude-review on PR #7474).
+    final File[] sealedFiles = TimeSeriesSealedStore.listSealedFilesOrNull(directory);
+    if (sealedFiles == null) {
       LogManager.instance().log(PostVerifyDatabaseHandler.class, Level.WARNING,
           "Could not list the database directory of '%s' to checksum its TimeSeries sealed stores", null, db.getName());
       return false;
     }
 
     boolean complete = true;
-    for (final File sealedFile : TimeSeriesSealedStore.listSealedFiles(directory))
+    for (final File sealedFile : sealedFiles)
       try {
         collectFileInfo(checksums, files, sealedFile.getName(), crcOf(sealedFile), sealedFile.length());
       } catch (final Exception e) {
