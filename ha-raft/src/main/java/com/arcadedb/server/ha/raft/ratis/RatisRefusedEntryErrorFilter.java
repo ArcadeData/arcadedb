@@ -50,6 +50,9 @@ import java.util.logging.Logger;
  */
 public final class RatisRefusedEntryErrorFilter implements Filter {
   /** The Ratis logger that emits the record. Matches the class name Ratis logs under. */
+  /** How deep a cause chain is walked; deeper than any real chain, and a guard against a cyclic one. */
+  private static final int MAX_CAUSE_DEPTH = 32;
+
   public static final String RATIS_ORDERED_ASYNC_LOGGER = "org.apache.ratis.client.impl.OrderedAsync";
 
   private static final Object INSTALL_LOCK = new Object();
@@ -84,12 +87,11 @@ public final class RatisRefusedEntryErrorFilter implements Filter {
 
   /** Whether the throwable chain says the leader refused the entry with a retryable conflict before appending it. */
   public static boolean isRefusedEntry(final Throwable thrown) {
-    for (Throwable t = thrown; t != null; t = t.getCause()) {
+    // Bounded walk: a throwable chain can be cyclic, and a depth cap needs no identity comparison.
+    Throwable t = thrown;
+    for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; depth++, t = t.getCause())
       if (t instanceof StateMachineException refusal && refusal.getCause() instanceof NeedRetryException)
         return true;
-      if (t.getCause() == t)
-        break;
-    }
     return false;
   }
 

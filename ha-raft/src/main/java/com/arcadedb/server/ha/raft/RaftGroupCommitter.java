@@ -58,6 +58,9 @@ class RaftGroupCommitter {
   static final long DEFAULT_MAX_QUEUED_BYTES = 256L * 1024 * 1024;
 
   /** Throttle for the "approaching cap" warning: at most one log line per minute. */
+  /** How deep a cause chain is walked; deeper than any real chain, and a guard against a cyclic one. */
+  private static final int MAX_CAUSE_DEPTH = 32;
+
   private static final long WARN_THROTTLE_MS = 60_000;
 
   /**
@@ -617,12 +620,11 @@ class RaftGroupCommitter {
    * outcome is definite: the caller rolls back and retries, exactly as for a single-node conflict.
    */
   static NeedRetryException refusedBeforeAppend(final Throwable thrown) {
-    for (Throwable t = thrown; t != null; t = t.getCause()) {
+    // Bounded walk: a throwable chain can be cyclic, and a depth cap needs no identity comparison.
+    Throwable t = thrown;
+    for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; depth++, t = t.getCause())
       if (t instanceof StateMachineException refusal && refusal.getCause() instanceof NeedRetryException conflict)
         return conflict;
-      if (t.getCause() == t)
-        break;
-    }
     return null;
   }
 
