@@ -2493,8 +2493,22 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * @return the sealed-store files, never {@code null} and empty when the directory holds none or cannot be read
    */
   public static File[] listSealedFiles(final File databaseDirectory) {
-    final File[] files = databaseDirectory.listFiles((dir, name) -> name.endsWith(FILE_EXTENSION));
+    final File[] files = listSealedFilesOrNull(databaseDirectory);
     return files != null ? files : EMPTY_FILES;
+  }
+
+  /**
+   * {@link #listSealedFiles(File)} without the empty-array fallback, so a caller that cares can tell a directory
+   * it could NOT list apart from one holding no sealed store (claude-review on PR #7474).
+   * <p>
+   * The two are the same answer to {@code listSealedFiles} and must not be to a checksum or a backup: answering
+   * "this database has no sealed store" for a directory that could not be read produces a file set that is
+   * silently short of every one of them, which is indistinguishable from a correct answer at every layer above.
+   *
+   * @return the sealed-store files, or {@code null} when the directory does not exist or cannot be listed
+   */
+  public static File[] listSealedFilesOrNull(final File databaseDirectory) {
+    return databaseDirectory.listFiles((dir, name) -> name.endsWith(FILE_EXTENSION));
   }
 
   /**
