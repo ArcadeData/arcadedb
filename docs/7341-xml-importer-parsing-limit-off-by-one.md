@@ -1,6 +1,7 @@
 # #7341 - XMLImporterFormat imports `parsingLimitEntries + 1` objects
 
 Issue: https://github.com/ArcadeData/arcadedb/issues/7341
+PR: https://github.com/ArcadeData/arcadedb/pull/7486
 
 ## Finding ledger
 
@@ -223,3 +224,36 @@ Two remarks recorded and **not** acted on, with reasons:
 
 No inline review comments and no `pulls/7486/reviews` entries were posted on this commit; CodeRabbit's only
 comment was its in-progress status notice.
+
+### Cycle 2 - `5616fff`
+
+`claude` re-reviewed the commit that applied the cycle-1 nit and closed with "Nothing blocking. Nice,
+minimal fix with thorough boundary-case coverage." No actionable items, no inline comments, no formal
+review entries. It independently re-derived the root cause and, usefully, **spot-checked the three "argued,
+not a violator" rows of the coverage table above and confirmed each**:
+
+- `TextEmbeddingsImporterLSM:251-252` really is `Stream.limit(N)`, "at most N" by contract.
+- `CSVImporterFormat.analyze():871-879` really does analyse exactly `L` data rows, because index 0 is always
+  spent on the header - so the `>` there is not the same defect.
+- `analyzingLimitEntries` really does reach `getIntValue` through `parseParameter`'s unconditional
+  `options.put(name, value)` - undocumented, not dead - which is the reachability claim #7485 rests on.
+
+It also confirmed the increment and the limit check are both on the parsing thread, so the `>=` introduces
+no race with the async `createRecord` callback (which only touches `createdVertices`/`createdDocuments`),
+and that the XXE hardening in the same method is untouched. Like cycle 1 it could not run `mvn` in its
+sandbox.
+
+No changes were made in this cycle; the working tree was empty at the early-exit check.
+
+## Deferred items
+
+None. No `review-deferred-*.md` notes file was produced by either cycle. (Two such files exist in `docs/`
+from PR #7442 and are unrelated to this branch.)
+
+## Final state
+
+`clean-approval` after 2 review cycles.
+
+- PR: https://github.com/ArcadeData/arcadedb/pull/7486
+- Follow-ups filed and named in the PR body: #7482, #7485
+- Merge is the developer's.
