@@ -26,6 +26,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
@@ -56,6 +58,7 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.ProgressCallback;
 import com.arcadedb.utility.ServerPathUtils;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -106,6 +109,24 @@ public class ArcadeDBServer {
    * must not be registered at startup, nor exposed through the server/cluster status APIs.
    */
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
+
+  /**
+   * The two steps the startup {@code restore:} command publishes: extracting the archive, then opening the
+   * restored database. One fewer than {@code ServerControlPlane.performRestore}'s three - this command restores
+   * straight into the final directory, so there is no temporary directory to swap in, and it forces no cluster
+   * snapshot (issue #7440).
+   * <p>
+   * The step NAMES are deliberately a copy of the control plane's rather than a reference to them: the two are
+   * strings an operator reads, not a contract, and the modules must stay independently changeable.
+   */
+  private static final int    STARTUP_RESTORE_STEPS         = 2;
+  private static final String STARTUP_RESTORE_STEP_EXTRACT  = "Restoring files";
+  private static final String STARTUP_RESTORE_STEP_ACTIVATE = "Activating database";
+  /**
+   * The label the startup restore is published under. The same one the HTTP/gRPC {@code restore database} verb
+   * uses, because it is the same operation seen from a different transport.
+   */
+  private static final String STARTUP_RESTORE_OPERATION     = "restore database";
 
   /**
    * How long the shutdown hook waits for the lifecycle lock when the server is still {@code STARTING} and has not
@@ -1399,27 +1420,8 @@ public class ArcadeDBServer {
                 // to keep than to reason about the exception).
                 removeDatabase(dbName);
               }
-              final String dbPath =
-                  configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
-//              new Restore(commandParams, dbPath).restoreDatabase();
-
-              try {
-                final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-                final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(commandParams,
-                    dbPath);
-
-                clazz.getMethod("restoreDatabase").invoke(restorer);
-
-              } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException |
-                             InstantiationException e) {
-                throw new CommandExecutionException("""
-                    Error on restoring database, restore libs not found in \
-                    classpath""", e);
-              } catch (final InvocationTargetException e) {
-                throw new CommandExecutionException("Error on restoring database", e.getTargetException());
-              }
-
-              getDatabase(dbName);
+              restoreDatabaseFromStartupCommand(dbName, commandParams,
+                  configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName);
               break;
 
             case "import":
@@ -1447,6 +1449,75 @@ public class ArcadeDBServer {
           }
         }
       }
+    }
+  }
+
+  /**
+   * Executes the {@code restore:} startup command of {@link GlobalConfiguration#SERVER_DEFAULT_DATABASES}:
+   * restores {@code url} into {@code databasePath}, opens the result, and publishes an {@link OperationProgress}
+   * for the whole of it (issue #7440).
+   * <p>
+   * Issue #7385 gave that publication to the four transports that reach
+   * {@code ServerControlPlane.performRestore} - HTTP {@code restore database}, HTTP {@code restore backup} and
+   * the two matching gRPC RPCs. This command does not go through the control plane and was the one left silent,
+   * although it is at least as worth watching: {@link #start()} calls {@code httpServer.startService()} before
+   * {@code loadDefaultDatabases()}, and {@code GetProgressHandler} reads only the lock-free registry snapshot
+   * (no database access), so a poll of {@code GET /api/v1/progress/&#123;database&#125;} that lands while a
+   * container is restoring a large archive at boot is served - and used to answer "nothing running" about the
+   * very database being built. Always retired in the {@code finally}, on failure as on success.
+   * <p>
+   * Two steps rather than {@code performRestore}'s three: this command restores straight into the final
+   * directory, so there is no temporary directory to swap in, and it does not force a cluster snapshot.
+   * <p>
+   * Package-private rather than private so a test can drive it with a real archive: the alternative is racing a
+   * full server boot, which is not a way to observe anything mid-flight.
+   *
+   * @param databaseName the database being restored, and the key the progress is published under
+   * @param url          the archive URL exactly as the operator wrote it after {@code restore:}
+   * @param databasePath the directory the archive is restored into
+   */
+  void restoreDatabaseFromStartupCommand(final String databaseName, final String url, final String databasePath) {
+    final OperationProgress progress = OperationProgressRegistry.instance()
+        .register(databaseName, STARTUP_RESTORE_OPERATION);
+    progress.onProgress(STARTUP_RESTORE_STEP_EXTRACT, 1, STARTUP_RESTORE_STEPS, 0, -1);
+    try {
+      final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
+      final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, databasePath);
+      installStartupRestoreProgressCallback(clazz, restorer, progress);
+
+      clazz.getMethod("restoreDatabase").invoke(restorer);
+
+      progress.onProgress(STARTUP_RESTORE_STEP_ACTIVATE, 2, STARTUP_RESTORE_STEPS, 0, -1);
+      getDatabase(databaseName);
+    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException |
+                   InstantiationException e) {
+      throw new CommandExecutionException("""
+          Error on restoring database, restore libs not found in \
+          classpath""", e);
+    } catch (final InvocationTargetException e) {
+      throw new CommandExecutionException("Error on restoring database", e.getTargetException());
+    } finally {
+      OperationProgressRegistry.instance().unregister(progress);
+    }
+  }
+
+  /**
+   * Installs {@code progress} as the restorer's progress callback, renumbering the format's own step - always
+   * 1 of 1, because the integration module knows nothing of the activation that follows it - into step 1 of
+   * this command's two (issue #7440). The same arrangement {@code ServerControlPlane} uses for the restores
+   * that go through it.
+   * <p>
+   * Best-effort: a build of {@code arcadedb-integration} without the setter reports no counters rather than
+   * failing the boot. Progress is a convenience; the restore is what the operator configured.
+   */
+  private static void installStartupRestoreProgressCallback(final Class<?> restoreClass, final Object restorer,
+      final OperationProgress progress) {
+    final ProgressCallback callback = (stepName, stepIndex, totalSteps, done, total) -> progress.onProgress(stepName,
+        1, STARTUP_RESTORE_STEPS, done, total);
+    try {
+      restoreClass.getMethod("setProgressCallback", ProgressCallback.class).invoke(restorer, callback);
+    } catch (final ReflectiveOperationException ignored) {
+      // No setter on this build: the coarse step markers above are still published.
     }
   }
 
