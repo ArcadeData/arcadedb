@@ -84,6 +84,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
@@ -204,9 +206,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // still copies it to a local before use so a concurrent reassignment cannot null it mid-method.
   private volatile RaftServer                raftServer;
   private          RaftClient                raftClient;
-  // Every client id this node used to submit entries in its lifetime: the state machine recognises an entry this node
-  // originated by it even when the entry is applied with a fresh context, e.g. after a step-down (issue #6965).
+  // The client ids this node used to submit entries, most recent last: the state machine recognises an entry this node
+  // originated by it even when the entry is applied with a fresh context, e.g. after a step-down (issue #6965). A
+  // client is rebuilt on leader changes and transport recovery, so the set is bounded to the last few ids - an entry
+  // outlives its client only for the round trip it is in flight for.
   private final    Set<ByteString>           ownClientIds          = ConcurrentHashMap.newKeySet();
+  private final    Deque<ByteString>         ownClientIdOrder      = new ArrayDeque<>();
+  private static final int                   OWN_CLIENT_IDS_KEPT   = 16;
   private volatile RaftProperties            raftProperties;
   private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
@@ -1763,8 +1769,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   private RaftClient adoptClient(final RaftClient client) {
-    if (client != null)
-      ownClientIds.add(client.getId().toByteString());
+    if (client == null)
+      return null;
+    final ByteString id = client.getId().toByteString();
+    synchronized (ownClientIdOrder) {
+      if (ownClientIds.add(id)) {
+        ownClientIdOrder.addLast(id);
+        while (ownClientIdOrder.size() > OWN_CLIENT_IDS_KEPT)
+          ownClientIds.remove(ownClientIdOrder.removeFirst());
+      }
+    }
     return client;
   }
 

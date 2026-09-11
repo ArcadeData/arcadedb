@@ -193,8 +193,18 @@ final class PageVersionLedger {
     final DatabaseLedger ledger = byDatabase.get(databaseName);
     if (ledger == null || ledger.pages.isEmpty())
       return -1;
-    final Reservation reserved = ledger.pages.get(pageKey(fileId, pageNumber));
-    return reserved != null ? reserved.version : -1;
+    final long key = pageKey(fileId, pageNumber);
+    final Reservation reserved = ledger.pages.get(key);
+    if (reserved == null)
+      return -1;
+    if (!reserved.appended && System.currentTimeMillis() - reserved.reservedAtMs > STALE_RESERVATION_MS) {
+      // Same rule as validateAndReserve, applied on the local phase-1 path too: a page only the leader itself writes
+      // would otherwise stay fenced by a dropped request until the next leadership change, since a transaction
+      // refused here never reaches the ledger's own cleanup.
+      ledger.pages.remove(key, reserved);
+      return -1;
+    }
+    return reserved.version;
   }
 
   /** Number of pages currently reserved for the database (diagnostics and tests). */
