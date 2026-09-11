@@ -57,6 +57,11 @@ class Issue7337FollowerSealedInstallLockTest extends TestHelper {
   private static final long BASE_TS = 1_700_000_000_000L;
   /** A wait that is EXPECTED to expire: it IS the assertion. A stall can only make it more true. */
   private static final long BLOCKED_PROBE_MS = 2_000L;
+  /**
+   * Budget for a thread to reach the lock it is expected to park on. Generous on purpose: a wider bound cannot
+   * turn a passing run red, it only decides how long a genuinely broken test takes to say so.
+   */
+  private static final long PARK_WAIT_MS     = 30_000L;
 
   @Override
   protected void beginTest() {
@@ -88,6 +93,10 @@ class Issue7337FollowerSealedInstallLockTest extends TestHelper {
       }, "issue7337-applier");
       applier.setDaemon(true);
       applier.start();
+
+      // Same reason as its sibling below (CodeRabbit on PR #7474): a bare await() also expires when the thread
+      // was never scheduled, so it would keep passing after the lock stopped being taken at all.
+      awaitParkedIn(applier, "TimeSeriesSealedInstallLock", "acquire");
 
       assertThat(installed.await(BLOCKED_PROBE_MS, TimeUnit.MILLISECONDS))
           .as("a sealed install must not get through a held pause: that is the whole tear")
@@ -126,6 +135,8 @@ class Issue7337FollowerSealedInstallLockTest extends TestHelper {
       }, "issue7337-backup");
       backup.setDaemon(true);
       backup.start();
+
+      awaitParkedIn(backup, "TimeSeriesCompactionPause", "acquire");
 
       assertThat(paused.await(BLOCKED_PROBE_MS, TimeUnit.MILLISECONDS))
           .as("a copy of the database must wait for an install in flight rather than photograph it halfway")
@@ -211,6 +222,31 @@ class Issue7337FollowerSealedInstallLockTest extends TestHelper {
     try (final TimeSeriesCompactionPause pause = TimeSeriesCompactionPause.acquire(database, 5_000L)) {
       assertThat(pause.getPausedShards()).isEqualTo(2);
     }
+  }
+
+  /**
+   * Blocks until {@code thread} is parked inside {@code className.methodName}, or fails.
+   * <p>
+   * What turns "it was still blocked after 2s" into an assertion about the LOCK: an elapsed wait proves nothing
+   * on its own, because a thread that was never scheduled produces the same elapsed wait as one correctly held.
+   * The stack is read rather than only {@link Thread.State}, since a thread can be WAITING for reasons that have
+   * nothing to do with the lock under test.
+   */
+  private static void awaitParkedIn(final Thread thread, final String className, final String methodName)
+      throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + PARK_WAIT_MS;
+    while (System.currentTimeMillis() < deadline) {
+      final Thread.State state = thread.getState();
+      if (state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING)
+        for (final StackTraceElement frame : thread.getStackTrace())
+          if (frame.getClassName().endsWith(className) && methodName.equals(frame.getMethodName()))
+            return;
+      if (state == Thread.State.TERMINATED)
+        break;
+      Thread.sleep(10);
+    }
+    throw new AssertionError("thread '" + thread.getName() + "' never parked in " + className + "." + methodName
+        + " (state=" + thread.getState() + "); the block assertion that follows would have been vacuous");
   }
 
   private TimeSeriesEngine engine() {
