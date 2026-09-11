@@ -192,7 +192,11 @@ public class XMLImporterFormat implements FormatImporter {
           // IGNORE IT
         }
 
-        if (settings.parsingLimitEntries > 0 && context.parsed.get() > settings.parsingLimitEntries)
+        // >= AND NOT >: context.parsed IS INCREMENTED ABOVE, IN THIS SAME ITERATION, BEFORE THE RECORD IS HANDED TO
+        // database.async().createRecord(), SO A STRICT > LET THE OBJECT THAT REACHES THE LIMIT THROUGH AND BROKE ONLY
+        // ON THE NEXT ONE - IMPORTING parsingLimitEntries + 1 OBJECTS. -parsingLimitEntries IS A CAP, THE WAY THE SAME
+        // SETTING CAPS THE VECTOR ROUTE AT TextEmbeddingsImporterLSM:252 (Stream.limit) (ISSUE #7341)
+        if (settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
           break;
       }
 
@@ -336,7 +340,10 @@ public class XMLImporterFormat implements FormatImporter {
           // IGNORE IT
         }
 
-        if (analyzingLimitEntries > 0 && parsedObjects > analyzingLimitEntries)
+        // >= AND NOT >, FOR THE SAME REASON AS load() ABOVE: parsedObjects IS INCREMENTED WHEN AN OBJECT COMPLETES, SO
+        // A STRICT > FED THE (analyzingLimitEntries + 1)th OBJECT'S PROPERTIES TO THE SCHEMA ANALYSER BEFORE BREAKING
+        // (ISSUE #7341)
+        if (analyzingLimitEntries > 0 && parsedObjects >= analyzingLimitEntries)
           break;
       }
 

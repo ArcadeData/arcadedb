@@ -125,21 +125,19 @@ class XMLImporterFormatStaleParsedCounterTest {
 
     assertThat(countOf(database, "item"))
         .as("-parsingLimitEntries is measured from this phase's own first object, not from an inherited offset")
-        .isEqualTo(3);
+        .isEqualTo(2);
     assertThat(context.parsed.get())
         .as("the counter this phase reports is its own object count, not the previous phase's plus its own")
-        .isEqualTo(3);
+        .isEqualTo(2);
   }
 
   /**
    * The other half, so the fix cannot be "ignore the limit": with no stale offset the limit must still stop the
    * parse where it stopped it before.
    * <p>
-   * Three, not two, for a limit of two: the check is a strict {@code parsed > limit} taken after the object has
-   * been created, so the object that trips the limit is imported as well. That off-by-one is not this issue's
-   * subject - #7313 changes what the counter counts, not where the boundary falls - and is tracked separately as
-   * #7341. This assertion pins the current behaviour so the reset cannot silently move it; it is the assertion
-   * to update when #7341 is fixed.
+   * Two for a limit of two since #7341 turned the check into {@code parsed >= limit}: the object that reaches the
+   * limit is the last one kept rather than the first one past it. This assertion pins where the boundary falls, so
+   * a later change to what the counter counts cannot silently move it.
    */
   @Test
   void theParseLimitStillStopsTheImport() throws Exception {
@@ -150,9 +148,8 @@ class XMLImporterFormatStaleParsedCounterTest {
         settingsWithParsingLimit(2));
 
     assertThat(countOf(database, "item"))
-        .as("the limit still stops the parse: the fourth object is never reached (see #7341 for why it is three "
-            + "objects rather than two)")
-        .isEqualTo(3);
+        .as("the limit stops the parse at the limit: the third object is never reached")
+        .isEqualTo(2);
   }
 
   /**
@@ -179,10 +176,10 @@ class XMLImporterFormatStaleParsedCounterTest {
       try (final Database cliDatabase = new DatabaseFactory(cliDbPath).open()) {
         assertThat(countOf(cliDatabase, "v_first"))
             .as("the first phase imports up to its own limit")
-            .isEqualTo(3);
+            .isEqualTo(2);
         assertThat(countOf(cliDatabase, "second"))
             .as("the second phase gets its own budget of objects rather than inheriting an already-spent one")
-            .isEqualTo(3);
+            .isEqualTo(2);
       }
     } finally {
       FileUtils.deleteRecursively(new File(cliDbPath));
