@@ -75,10 +75,9 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // phase reports is its own row count (issue #7288).
     context.parsed.set(0);
 
-    long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
-    if (settings.edgesSkipEntries == null)
-      // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-      skipEntries = 1l;
+    // Defaults to 0 through firstLineIsHeader(): an RDF source has no header row, so nothing is skipped unless the
+    // caller asked for it. -edgesSkipEntries is still honoured exactly as given (issue #7345).
+    final long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : defaultSkipEntries();
 
     // Whether the transaction this method is about to use belongs to the import, as opposed to predating it.
     // Not the same as "this call pushed it": in the CLI pipeline AbstractImporter.openDatabase() ends with a
@@ -207,6 +206,22 @@ public class RDFImporterFormat extends CSVImporterFormat {
               readEdges - committedEdges);
       }
     }
+  }
+
+  /**
+   * False: N-Triples, N-Quads and Turtle have no header row - every line is a statement. The inherited CSV
+   * convention had the first line of every RDF source skipped as column names, and since
+   * {@link com.arcadedb.integration.importer.SourceDiscovery} selects this format precisely because the first line
+   * <em>is</em> a well-formed triple, the one line the importer is certain carries data was the one it threw away.
+   * Silently: {@code parsedRecords} counted it, so nothing in the report told a skipped header apart from a
+   * malformed row (issue #7345).
+   * <p>
+   * It governs the default only, here as in {@link CSVImporterFormat}: an explicit {@code -edgesSkipEntries} still
+   * skips exactly the number of lines it names.
+   */
+  @Override
+  protected boolean firstLineIsHeader() {
+    return false;
   }
 
   @Override

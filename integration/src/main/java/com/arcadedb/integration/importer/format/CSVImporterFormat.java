@@ -86,6 +86,34 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     return delimiter != null ? delimiter : settings.getValue("delimiter", ",");
   }
 
+  /**
+   * Whether the first line of a source in this format names the columns rather than carrying data. True for CSV and
+   * TSV, where it is the convention {@code -documentsSkipEntries}/{@code -verticesSkipEntries}/{@code -edgesSkipEntries}
+   * default to 1 for, and where {@link #analyze} reads the field names off line 0 when no {@code -...Header} option
+   * was given.
+   * <p>
+   * {@link RDFImporterFormat} overrides it to false: N-Triples, N-Quads and Turtle have no header row - every line is
+   * a statement - and the format is selected by content sniffing precisely because the first line <em>is</em> a
+   * triple, so the one line the importer is certain carries data was the one the inherited default threw away
+   * (issue #7345).
+   * <p>
+   * It governs the default only. An explicit {@code -...SkipEntries} and an explicit {@code -...Header} are honoured
+   * exactly as given whatever this returns.
+   *
+   * @return true when line 0 is a header, false when every line of the source is data
+   */
+  protected boolean firstLineIsHeader() {
+    return true;
+  }
+
+  /**
+   * The number of leading lines to skip when the caller set no {@code -...SkipEntries} for the entity being loaded:
+   * the one header line for a format that has one, none for a format that does not.
+   */
+  protected final long defaultSkipEntries() {
+    return firstLineIsHeader() ? 1L : 0L;
+  }
+
   private static final Object[] NO_PARAMS = new Object[] {};
   public static final  int      _32MB     = 32 * 1024 * 1024;
 
@@ -127,8 +155,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
     if (settings.documentsHeader == null && settings.documentsSkipEntries == null)
-      // by default skip the first line as header
-      skipEntries = 1l;
+      // by default skip the first line as header, unless the format has no header line at all (see firstLineIsHeader)
+      skipEntries = defaultSkipEntries();
 
     // Captured before the try below so both are also visible in the catch blocks.
     final TransactionOwnership ownership = computeTransactionOwnership(database, context);
@@ -393,7 +421,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
     if (settings.verticesSkipEntries == null)
-      skipEntries = 1L;
+      // BY DEFAULT SKIP THE FIRST LINE AS HEADER, UNLESS THE FORMAT HAS NO HEADER LINE AT ALL
+      skipEntries = defaultSkipEntries();
 
     final TransactionOwnership ownership = computeTransactionOwnership(database, context);
     final boolean transactionActiveOnEntry = ownership.transactionActiveOnEntry();
@@ -561,8 +590,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
     if (settings.edgesSkipEntries == null)
-      // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-      skipEntries = 1l;
+      // BY DEFAULT SKIP THE FIRST LINE AS HEADER, UNLESS THE FORMAT HAS NO HEADER LINE AT ALL
+      skipEntries = defaultSkipEntries();
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
@@ -830,24 +859,24 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       header = settings.verticesHeader;
       skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
       if (settings.verticesSkipEntries == null)
-        // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-        skipEntries = 1l;
+        // BY DEFAULT SKIP THE FIRST LINE AS HEADER, UNLESS THE FORMAT HAS NO HEADER LINE AT ALL
+        skipEntries = defaultSkipEntries();
       break;
 
     case EDGE:
       header = settings.edgesHeader;
       skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
       if (settings.edgesSkipEntries == null)
-        // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-        skipEntries = 1l;
+        // BY DEFAULT SKIP THE FIRST LINE AS HEADER, UNLESS THE FORMAT HAS NO HEADER LINE AT ALL
+        skipEntries = defaultSkipEntries();
       break;
 
     case DOCUMENT:
       header = settings.documentsHeader;
       skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
       if (settings.documentsSkipEntries == null)
-        // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-        skipEntries = 1l;
+        // BY DEFAULT SKIP THE FIRST LINE AS HEADER, UNLESS THE FORMAT HAS NO HEADER LINE AT ALL
+        skipEntries = defaultSkipEntries();
       break;
 
     default:
@@ -879,7 +908,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         if (settings.analysisLimitEntries > 0 && line > settings.analysisLimitEntries)
           break;
 
-        if (line == 0 && header == null) {
+        if (line == 0 && header == null && firstLineIsHeader()) {
           // READ THE HEADER FROM FILE
           fieldNames.addAll(Arrays.asList(row));
           LogManager.instance().log(this, Level.INFO, "Reading header from 1st line in data file: %s", null, Arrays.toString(row));
@@ -888,7 +917,16 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           final AnalyzedEntity entity = analyzedSchema.getOrCreateEntity(entityName, entityType);
 
           entity.setRowSize(row);
-          for (int i = 0; i < row.length; ++i) {
+
+          // fieldNames is empty exactly when no -...Header option was given AND this format has no header line to
+          // read one off - the RDF formats, whose every line is a statement rather than a named-column record. The
+          // entity is still registered above, because the type has to be created; it simply has no columns to name.
+          // Naming them off line 0 anyway is what used to give the edge type three properties called
+          // <http://a/s1>, <http://a/rel> and <http://a/o1>, which nothing ever writes to (issue #7345). Written as
+          // a column count rather than as a min() so that the CSV path keeps the bounds it had: a row wider than
+          // its header still fails on fieldNames.get(i) rather than silently dropping the extra columns.
+          final int columns = fieldNames.isEmpty() ? 0 : row.length;
+          for (int i = 0; i < columns; ++i) {
             entity.getOrCreateProperty(fieldNames.get(i), row[i]);
           }
         }

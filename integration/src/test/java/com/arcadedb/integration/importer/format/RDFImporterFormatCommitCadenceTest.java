@@ -104,6 +104,10 @@ class RDFImporterFormatCommitCadenceTest {
     settings.typeIdProperty = "id";
     settings.commitEvery = commitEvery;
     settings.options.put("maxPropertySize", 5);
+    // These fixtures open with a literal "s,p,o" line and have always relied on it being dropped. Since #7345 an RDF
+    // source has no default header skip, so the skip these tests want is asked for explicitly rather than inherited;
+    // not one fixture line and not one assertion below changes.
+    settings.edgesSkipEntries = 1L;
     return settings;
   }
 
@@ -377,9 +381,9 @@ class RDFImporterFormatCommitCadenceTest {
           + " -database " + cliDbPath + " " + typeOptions + " -commitEvery 2").split(" ")).load();
 
       assertThat(report.get("createdEdges"))
-          .as("the import must actually have run: four of the five triples become edges, the first being skipped as "
-              + "the header row RDF sources default to (-edgesSkipEntries 0 opts out)")
-          .isEqualTo(4L);
+          .as("the import must actually have run: all five triples become edges, none of them discarded as a header "
+              + "row an RDF source does not have (#7345)")
+          .isEqualTo(5L);
       assertThat(report.get("parsedRecords"))
           .as("the five source rows are counted once each, not twice")
           .isEqualTo(5L);

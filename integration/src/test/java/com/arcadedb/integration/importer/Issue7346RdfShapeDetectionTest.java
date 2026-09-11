@@ -275,11 +275,12 @@ class Issue7346RdfShapeDetectionTest {
   // -----------------------------------------------------------------------------------------------------------
 
   /**
-   * Imports {@code content} through the live CLI path and asserts the three triples became two edges.
+   * Imports {@code content} through the live CLI path and asserts the three triples became three edges.
    * <p>
-   * Two and not three because the RDF format skips its first line as a header by default - the behaviour #7345
-   * tracks - which is also what the issue's own repro table records ({@code parsedRecords=3, createdEdges=2}). The
-   * point here is the detection, so the count is asserted as it is rather than as it should perhaps become.
+   * Three since #7345 removed the RDF format's inherited default of skipping line 0 as a header: an N-Triples file
+   * has no header row, so every statement is data. The issue's own repro table recorded the old count
+   * ({@code parsedRecords=3, createdEdges=2}); the point here is the detection, and what it has to show is that
+   * every line reached the parser.
    */
   private void assertImportsAsRdf(final String name, final String content) throws Exception {
     final String databasePath = "target/databases/test-import-7346-" + name;
@@ -303,11 +304,11 @@ class Issue7346RdfShapeDetectionTest {
       final Map<String, Object> result = new Importer(new String[] { "-url", "file://" + file.getAbsolutePath(),
           "-database", databasePath, "-edgeType", "Related" }).load();
 
-      assertThat(result).as("every line reached the parser, and the ones past the header default became edges")
-          .containsEntry("parsedRecords", 3L).containsEntry("createdEdges", 2L);
+      assertThat(result).as("every line reached the parser, and every one of them became an edge")
+          .containsEntry("parsedRecords", 3L).containsEntry("createdEdges", 3L);
 
       try (final Database db = new DatabaseFactory(databasePath).open()) {
-        assertThat(db.countType("Related", true)).isEqualTo(2);
+        assertThat(db.countType("Related", true)).isEqualTo(3);
       }
     } finally {
       final DatabaseFactory factory = new DatabaseFactory(databasePath);

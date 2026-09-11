@@ -93,10 +93,7 @@ class RDFImporterFormatTransactionLeakTest {
   }
 
   private ImporterSettings settingsWithTinyMaxPropertySize() {
-    final ImporterSettings settings = new ImporterSettings();
-    settings.vertexTypeName = "Node";
-    settings.edgeTypeName = "Related";
-    settings.typeIdProperty = "id";
+    final ImporterSettings settings = settings();
     settings.options.put("maxPropertySize", 5);
     return settings;
   }
@@ -106,6 +103,10 @@ class RDFImporterFormatTransactionLeakTest {
     settings.vertexTypeName = "Node";
     settings.edgeTypeName = "Related";
     settings.typeIdProperty = "id";
+    // These fixtures open with a literal "s,p,o" line and have always relied on it being dropped. Since #7345 an RDF
+    // source has no default header skip, so the skip these tests want is asked for explicitly rather than inherited;
+    // not one fixture line and not one assertion below changes.
+    settings.edgesSkipEntries = 1L;
     return settings;
   }
 
