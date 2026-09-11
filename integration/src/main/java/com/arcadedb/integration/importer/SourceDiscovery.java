@@ -53,6 +53,12 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public class SourceDiscovery {
+  /**
+   * The number of leading comment or blank lines content sniffing is willing to skip before it concludes the source
+   * is not a commented data file. A bound and not a limit anyone is expected to reach: without it a source that is
+   * comments all the way down would be read end to end just to decide its format.
+   */
+  private static final int    MAX_COMMENT_LINES  = 10_000;
   private static final String RESOURCE_SEPARATOR = ":::";
   private static final String FILE_PREFIX        = "file://";
   private static final String CLASSPATH_PREFIX   = "classpath://";
@@ -234,7 +240,17 @@ public class SourceDiscovery {
     return userDelimiter;
   }
 
-  private FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.EntityType entityType,
+  /**
+   * Decides the format of a source: the file type the user named or the extension implies first, then the content
+   * itself through {@link #analyzeChar} and {@link #analyzeText}.
+   * <p>
+   * Package-private rather than private so that a test can assert the format a source is recognised as WITHOUT
+   * going on to parse it, the way {@link #getSchema} does. The two are not the same question: the comment prefix
+   * this class skips is handed on intact to the format it picks, and only the delimited-text formats skip anything
+   * there - univocity's single comment character, {@code #} (issue #7490). For a commented XML or JSON source, or
+   * for a {@code //}-commented source of any kind, only the first question has an answer.
+   */
+  FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.EntityType entityType,
       final ImporterSettings settings,
       final ConsoleLogger logger) throws IOException {
 
@@ -328,35 +344,42 @@ public class SourceDiscovery {
   }
 
   /**
-   * The content sniffing that follows {@link #analyzeChar}: comments are skipped, then the first line is read for a
-   * separator to decide between the delimited-text formats.
+   * The content sniffing that follows {@link #analyzeChar}: the leading comment and blank lines are skipped, the
+   * first line that carries content is dispatched on, and failing that it is read for a separator to decide between
+   * the delimited-text formats.
    *
    * @param userDelimiter the delimiter the user supplied for this entity, or null - a detected one yields to it
    */
   private FormatImporter analyzeText(final Parser parser, final ImporterSettings settings, final ConsoleLogger logger,
       final String userDelimiter) throws IOException {
     FormatImporter format = null;
-    parser.mark();
 
-    // SKIP COMMENTS '#' IF ANY
-    while (parser.isAvailable() && parser.getCurrentChar() == '#') {
-      skipLine(parser);
+    // SKIP THE LEADING COMMENT LINES, THEN DISPATCH ON THE FIRST CHARACTER OF THE LINE THAT FOLLOWS THEM. WHAT WAS
+    // HERE WERE TWO LOOPS THAT DID NEITHER (ISSUE #7347): skipLine() STOPPED ON THE '\n' IT HAD JUST READ RATHER
+    // THAN ON THE NEXT LINE'S FIRST CHARACTER, SO analyzeChar() WAS ALWAYS CALLED ON '\n' AND COULD NEVER MATCH,
+    // THE '#' LOOP'S OWN CONDITION RE-READ THAT SAME '\n' AND SO RAN AT MOST ONCE, THE '//' LOOP RAN AFTER A
+    // reset() THAT LEAVES getCurrentChar() AT 0 AND SO NEVER RAN AT ALL, AND THAT reset() ALSO GAVE BACK THE ONE
+    // LINE THE '#' LOOP HAD CONSUMED - SO THE SEPARATOR SCAN BELOW READ THE COMMENT ITSELF AS THE FIRST DATA LINE.
+    final long commentChars = skipComments(parser);
+
+    if (commentChars > 0) {
+      // THE SOURCE OPENS WITH COMMENTS, SO THE FIRST-CHARACTER DISPATCH HAS NOT YET SEEN A DATA LINE:
+      // analyzeSourceContent() RAN IT ON THE COMMENT'S OWN FIRST CHARACTER. THIS IS THE CALL THAT LETS A COMMENTED
+      // N-TRIPLES, XML OR JSON SOURCE BE RECOGNISED AS ONE. GUARDED ON commentChars RATHER THAN UNCONDITIONAL SO A
+      // SOURCE WITH NO COMMENTS IS NOT DISPATCHED ON TWICE, THE SECOND TIME FROM WHEREVER THE FIRST CALL LEFT THE
+      // PARSER.
       format = analyzeChar(parser, settings, userDelimiter);
       if (format != null)
         return format;
     }
 
-    // SKIP COMMENTS '//' IF ANY
-    parser.reset();
+    // BACK TO THE FIRST CHARACTER OF THE FIRST LINE THAT CARRIES CONTENT, WHICH THE SEPARATOR SCAN BELOW HAS TO SEE:
+    // analyzeChar() CONSUMES THE LINE IT INSPECTS WHENEVER IT DISPATCHES ON IT, AND analyzeSourceContent() HAS
+    // ALREADY CALLED IT ONCE ON THE FIRST LINE OF THE SOURCE. WITH NO COMMENTS (commentChars == 0) THIS REWINDS TO
+    // THE START OF THE SOURCE, WHICH IS WHAT THE reset() IT REPLACES DID.
+    rewindTo(parser, commentChars);
 
     try {
-      while (parser.getCurrentChar() == '/' && parser.nextChar() == '/') {
-        skipLine(parser);
-        format = analyzeChar(parser, settings, userDelimiter);
-        if (format != null)
-          return format;
-      }
-
       // CHECK FOR CSV-LIKE FILES
       final Map<Character, AtomicInteger> candidateSeparators = new HashMap<>();
 
@@ -623,9 +646,106 @@ public class SourceDiscovery {
     };
   }
 
-  private void skipLine(final Parser parser) throws IOException {
-    while (parser.isAvailable() && parser.nextChar() != '\n')
-      ;
+  /**
+   * Consumes the rest of the line the parser is on AND the newline that ends it, so that {@link
+   * Parser#getCurrentChar()} holds the first character of the NEXT line when this returns - or the last character of
+   * the source when it has no trailing newline.
+   * <p>
+   * Stopping on the {@code '\n'} instead is what made comment skipping a no-op for as long as it has existed
+   * (issue #7347): every caller inspects {@code getCurrentChar()} straight afterwards, and {@code '\n'} answers no
+   * question either of them asks.
+   *
+   * @return the number of characters read, so the caller can rewind to exactly this position with {@link #rewindTo}
+   */
+  private long skipLine(final Parser parser) throws IOException {
+    long consumed = 0;
+    while (parser.getCurrentChar() != '\n') {
+      if (!parser.isAvailable())
+        // NO TRAILING NEWLINE: THE SOURCE ENDS ON THIS LINE
+        return consumed;
+      parser.nextChar();
+      ++consumed;
+    }
+
+    if (parser.isAvailable()) {
+      parser.nextChar();
+      ++consumed;
+    }
+    return consumed;
+  }
+
+  /**
+   * Advances the parser past every leading {@code #} comment line, {@code //} comment line and blank line, leaving
+   * {@link Parser#getCurrentChar()} on the first character of the first line that carries content to sniff.
+   * <p>
+   * The two comment markers are handled by one loop rather than by two, because they interleave in real files and
+   * because the second of the two loops this replaces could only ever have run after the first had already rewound
+   * the source out from under it.
+   *
+   * @return the number of characters consumed - the offset of the first data line, and the argument {@link #rewindTo}
+   * takes to come back to it
+   */
+  private long skipComments(final Parser parser) throws IOException {
+    long skipped = 0;
+    int lines = 0;
+
+    while (parser.isAvailable()) {
+      final char first = parser.getCurrentChar();
+      if (first != '#' && first != '/' && first != '\n' && first != '\r')
+        break;
+
+      if (++lines > MAX_COMMENT_LINES) {
+        // A SOURCE WHOSE FIRST MAX_COMMENT_LINES LINES ARE ALL COMMENTS IS NOT A COMMENTED DATA FILE, AND READING IT
+        // TO ITS END LOOKING FOR ONE WOULD MAKE FORMAT SNIFFING COST THE WHOLE FILE. REPORTING NO COMMENT PREFIX AT
+        // ALL PUTS THE SCAN BACK ON LINE 1, WHICH IS WHERE IT LOOKED BEFORE COMMENT SKIPPING WORKED AT ALL - THE
+        // CALLER REWINDS TO THE OFFSET THIS RETURNS BEFORE READING ANYTHING.
+        LogManager.instance().log(this, Level.WARNING,
+            "The source opens with more than %d comment or blank lines: content sniffing gives up skipping them and "
+                + "analyzes the first line as data", MAX_COMMENT_LINES);
+        return 0;
+      }
+
+      if (first == '#' || first == '\n' || first == '\r') {
+        // A BLANK LINE CARRIES NO CONTENT TO SNIFF EITHER, AND ONE BETWEEN THE COMMENT BLOCK AND THE DATA IS
+        // ORDINARY. SKIPPING THE COMMENTS AND THEN STOPPING ON THE BLANK LINE BELOW THEM WOULD HAND THE SEPARATOR
+        // SCAN AN EMPTY LINE, WHICH PRODUCES NO CANDIDATE AND SO "Cannot determine the file type" - A WORSE ANSWER
+        // THAN THE WRONG-DELIMITER ONE THAT SHAPE USED TO GET. THE SAME TEST ALSO SKIPS A BLANK FIRST LINE, WHICH
+        // USED TO REACH THE SCAN AND FAIL THERE FOR THE SAME REASON.
+        skipped += skipLine(parser);
+        continue;
+      }
+
+      // '//' OPENS A COMMENT LINE, A LONE '/' IS DATA - A CSV COLUMN HOLDING A PATH, SAY. TELLING THEM APART NEEDS
+      // THE SECOND CHARACTER, AND THE PARSER CANNOT PUSH ONE BACK, SO A LONE '/' IS UNDONE BY REWINDING TO WHERE
+      // THIS LINE STARTED AND RE-READING ITS FIRST CHARACTER.
+      if (!parser.isAvailable())
+        break;
+
+      if (parser.nextChar() != '/') {
+        rewindTo(parser, skipped);
+        parser.nextChar();
+        break;
+      }
+
+      // +1 FOR THE SECOND '/', WHICH skipLine() DOES NOT COUNT BECAUSE IT IS ALREADY PAST IT
+      skipped += skipLine(parser) + 1;
+    }
+
+    return skipped;
+  }
+
+  /**
+   * Rewinds the parser to the start of the source and reads {@code offset} characters back, so that the NEXT
+   * {@link Parser#nextChar()} returns the character at {@code offset}.
+   * <p>
+   * Counted in characters rather than in bytes because that is what {@link #skipComments} counts and what a
+   * multi-byte encoding makes different: {@link Parser#getPosition()} is a byte-ish counter that the reader's own
+   * bulk reads also advance, so it cannot be used to seek.
+   */
+  private void rewindTo(final Parser parser, final long offset) throws IOException {
+    parser.reset();
+    for (long i = 0; i < offset; ++i)
+      parser.nextChar();
   }
 
   /**

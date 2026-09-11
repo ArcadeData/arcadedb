@@ -82,6 +82,15 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     this.delimiter = delimiter;
   }
 
+  /**
+   * The delimiter this format was built with - the user's own when they set one, else the one content sniffing
+   * settled on for this source - or null when it was built without one, in which case the generic {@code delimiter}
+   * option and then a comma apply at parse time.
+   */
+  public String getDelimiter() {
+    return delimiter;
+  }
+
   private String delimiterFor(final ImporterSettings settings) {
     return delimiter != null ? delimiter : settings.getValue("delimiter", ",");
   }
