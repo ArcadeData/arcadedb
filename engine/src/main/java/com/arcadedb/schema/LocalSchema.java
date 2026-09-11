@@ -76,6 +76,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.Callable;
@@ -2861,11 +2862,12 @@ public class LocalSchema implements Schema {
     // sees either the whole previous file or the whole new one. That is what lets the full backup capture the
     // configuration at the snapshot's t0 without holding the database read lock for its whole duration.
     //
-    // IT ALSO PINS THE CHARSET. The FileWriter this replaces used the JVM's DEFAULT charset, while
-    // readConfiguration() has always read this file as UTF-8 (FileUtils.readFileAsString defaults to it) - so on a
-    // JVM whose default is not UTF-8, a type or property name outside ASCII was written in one encoding and read
-    // back in another. atomicWriteFile writes UTF-8, which is what the reader was already assuming.
-    FileUtils.atomicWriteFile(configurationFile, latestSchema);
+    // IT ALSO MAKES THE CHARSET SYMMETRIC. The FileWriter this replaces used the JVM's DEFAULT charset, while
+    // readConfiguration() reads this file back with `encoding` - DEFAULT_ENCODING unless Schema.setEncoding()
+    // changed it - so a type or property name outside ASCII could be written in one encoding and read in another.
+    // Passing `encoding` here is what removes that, rather than hardcoding UTF-8: the default IS UTF-8, but the
+    // setter is public API and the pair has to agree whatever it is set to.
+    FileUtils.atomicWriteFile(configurationFile, latestSchema, Charset.forName(encoding));
 
     database.getExecutionPlanCache().invalidate();
     // The OpenCypher plan cache embeds schema-derived physical operators (index-seek vs scan, bucket

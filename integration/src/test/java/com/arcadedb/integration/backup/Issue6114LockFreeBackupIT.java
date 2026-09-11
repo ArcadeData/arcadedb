@@ -31,7 +31,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -59,12 +58,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code configuration.json} and {@code schema.json} consistent with the page files, which the window now does
  * itself by capturing them at t0.
  * <p>
- * Tagged {@code slow}: both tests deliberately throttle the backup so the DDL has a window to run inside, which is
- * the only way to observe the property at all.
+ * Both tests deliberately throttle the backup so the DDL has a window to run inside, which is the only way to
+ * observe the property at all. Deliberately NOT tagged {@code slow}: the IT lane in {@code mvn-test.yml} runs
+ * {@code mvnw verify -Pintegration} with no {@code -DexcludedGroups}, so the tag would route nothing and would
+ * claim a lane that does not exist for integration tests.
  *
  * @see com.arcadedb.engine.PageSnapshot#getConfigurationFiles()
  */
-@Tag("slow")
 class Issue6114LockFreeBackupIT {
   private static final String DATABASE_PATH = "target/databases/backup-lock-free";
   private static final String RESTORED_PATH = "target/databases/backup-lock-free-restored";

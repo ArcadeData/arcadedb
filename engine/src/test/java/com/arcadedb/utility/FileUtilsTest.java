@@ -390,6 +390,30 @@ class FileUtilsTest {
   }
 
   @Test
+  void atomicWriteFileHonoursAnExplicitCharset() throws Exception {
+    final Path target = tempDir.resolve("encoded.txt");
+    final String content = "caffè-niño-\u00ff";
+
+    FileUtils.atomicWriteFile(target.toFile(), content, StandardCharsets.ISO_8859_1);
+
+    assertThat(Files.readAllBytes(target)).isEqualTo(content.getBytes(StandardCharsets.ISO_8859_1));
+    assertThat(new String(Files.readAllBytes(target), StandardCharsets.ISO_8859_1)).isEqualTo(content);
+    // NOT VACUOUS: the two encodings really do differ for this content, so the assertion above pins the charset
+    assertThat(content.getBytes(StandardCharsets.ISO_8859_1))
+        .isNotEqualTo(content.getBytes(StandardCharsets.UTF_8));
+  }
+
+  @Test
+  void atomicWriteFileDefaultsToUtf8() throws Exception {
+    final Path target = tempDir.resolve("default-encoded.txt");
+    final String content = "caffè-niño";
+
+    FileUtils.atomicWriteFile(target.toFile(), content);
+
+    assertThat(Files.readAllBytes(target)).isEqualTo(content.getBytes(StandardCharsets.UTF_8));
+  }
+
+  @Test
   void atomicCopyFileCreatesDirsAndCopiesContent() throws Exception {
     final Path source = tempDir.resolve("source.json");
     Files.write(source, "{\"a\":1}".getBytes(StandardCharsets.UTF_8));

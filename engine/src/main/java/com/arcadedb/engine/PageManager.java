@@ -899,8 +899,12 @@ public class PageManager extends LockContext {
     for (final String fileName : new String[] { LocalDatabase.CONFIGURATION_FILE_NAME, LocalSchema.SCHEMA_FILE_NAME }) {
       final File file = new File(databaseDirectory, fileName);
       try {
-        captured.add(new PageSnapshot.SnapshotConfigFile(fileName, Files.readAllBytes(file.toPath()),
-            file.lastModified()));
+        // TIMESTAMP FIRST, BYTES SECOND. Both writers of these files publish by rename, so a rename landing
+        // between the two calls would otherwise stamp the archive entry with a version NEWER than the bytes next
+        // to it. Read in this order the mismatch can only go the other way - a stamp slightly behind its content,
+        // which is the harmless direction for a zip entry header
+        final long lastModified = file.lastModified();
+        captured.add(new PageSnapshot.SnapshotConfigFile(fileName, Files.readAllBytes(file.toPath()), lastModified));
       } catch (final NoSuchFileException e) {
         // ABSENT IS A LEGITIMATE STATE, NOT AN ERROR: configuration.json only exists once a setting has been
         // persisted, and schema.json only once the schema has been saved. The consumers already treated a missing

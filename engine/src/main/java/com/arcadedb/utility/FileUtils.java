@@ -39,6 +39,7 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
 import java.net.URLEncoder;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -355,6 +356,16 @@ public class FileUtils {
    * {@code REPLACE_EXISTING} move (still a single rename, just without the cross-crash guarantee).
    */
   public static void atomicWriteFile(final File file, final String content) throws IOException {
+    atomicWriteFile(file, content, StandardCharsets.UTF_8);
+  }
+
+  /**
+   * {@link #atomicWriteFile(File, String)} with an explicit charset, for a file whose reader does not assume UTF-8.
+   * {@code LocalSchema} is the case this exists for: {@code Schema.setEncoding} is public API and
+   * {@code readConfiguration()} reads {@code schema.json} back with whatever it was set to, so the write has to use
+   * the same one or the pair is asymmetric for any name outside ASCII (issue #6114).
+   */
+  public static void atomicWriteFile(final File file, final String content, final Charset charset) throws IOException {
     // Resolve to an absolute path so getParent() is never null for relative inputs (e.g. new
     // File("ai.json")); this keeps the temp file on the same file store as the target, which is
     // required for the ATOMIC_MOVE below to actually be atomic instead of falling back to a copy.
@@ -365,7 +376,7 @@ public class FileUtils {
     final Path tmp = Files.createTempFile(dir, file.getName() + ".", ".tmp");
     try {
       try (final FileOutputStream fos = new FileOutputStream(tmp.toFile())) {
-        fos.write(content.getBytes(StandardCharsets.UTF_8));
+        fos.write(content.getBytes(charset));
         fos.flush();
         fos.getFD().sync();
       }
