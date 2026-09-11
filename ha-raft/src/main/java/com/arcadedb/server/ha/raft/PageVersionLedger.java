@@ -40,8 +40,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * a retryable {@link ConcurrentModificationException} instead of a fake acknowledgement, and no node ever sees a
  * conflicting entry in its log. {@link ArcadeStateMachine#preAppendTransaction} then confirms the reservation at the
  * point that fixes the log order, and the apply releases it: from then on the local copy of the page carries the
- * version itself. The ledger only ever holds the pages of in-flight entries, so its size is bounded by the replication
- * pipeline depth rather than by the database, and a page with no reservation is seeded from the local copy - correct
+ * version itself. The ledger holds the pages of in-flight entries, plus the reservations of dropped requests until the
+ * next touch of their page sweeps them, so its size is bounded by the replication pipeline depth and the drop rate
+ * rather than by the database, and a page with no reservation is seeded from the local copy - correct
  * because Ratis makes a leader ready only after it has applied every entry that precedes its own term, and every entry
  * accepted since is either still reserved here or applied locally.
  * <p>
@@ -61,7 +62,11 @@ import java.util.concurrent.ConcurrentHashMap;
 final class PageVersionLedger {
   /**
    * How long an unconfirmed reservation is trusted. The confirmation follows the reservation on the same request
-   * thread, straight into the log append, so anything older than this is a request Ratis dropped in between.
+   * thread, straight into the log append (permit acquisition and the append itself, nothing that waits on the
+   * network), so anything older than this is a request Ratis dropped in between. The bound is a trade-off: too short
+   * and a leader whose append pipeline stalls for that long could accept a second entry on a page the first one still
+   * holds unconfirmed; too long and a dropped request fences its pages for that long. Thirty seconds is an order of
+   * magnitude above any append that is not itself a symptom of a wedged leader.
    */
   static final long STALE_RESERVATION_MS = 30_000L;
 
@@ -124,6 +129,17 @@ final class PageVersionLedger {
       throws IOException {
     final DatabaseLedger ledger = byDatabase.computeIfAbsent(databaseName, k -> new DatabaseLedger());
     final long now = System.currentTimeMillis();
+
+    // The local version of a page is a cache lookup at best and a disk read at worst: it is read OUTSIDE the ledger
+    // lock, for the pages that hold no reservation right now, so a cold page does not serialise every other writer of
+    // the database behind its read. It is safe to read early: the local copy only moves forward when an entry is
+    // applied, and an entry applied between this read and the lock below has released its reservation, so the value
+    // read here is at most one the lock-side check finds superseded by a reservation - never one it trusts wrongly.
+    final int[] localVersions = new int[pages.count()];
+    for (int i = 0; i < pages.count(); i++)
+      localVersions[i] = ledger.pages.containsKey(pageKey(pages.fileIds()[i], pages.pageNumbers()[i])) ? -1 :
+          local.versionOf(pages.fileIds()[i], pages.pageNumbers()[i]);
+
     synchronized (ledger) {
       // Validate everything first: an entry is refused as a whole, so no page of a refused entry may stay reserved.
       for (int i = 0; i < pages.count(); i++) {
@@ -136,7 +152,8 @@ final class PageVersionLedger {
           reserved = null;
         final int expected;
         if (reserved == null)
-          expected = local.versionOf(fileId, pageNumber);
+          // A page that carried a reservation at the early read and lost it since is read here, under the lock.
+          expected = localVersions[i] >= 0 ? localVersions[i] : local.versionOf(fileId, pageNumber);
         else if (reserved.entry.equals(entry))
           // The same request, retried by Ratis: it is validated against the base it reserved from.
           expected = reserved.version - 1;

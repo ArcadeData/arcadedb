@@ -824,8 +824,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return context.build().setException(new NeedRetryException(
           "Database '" + decoded.databaseName() + "' is not available on the leader to validate the transaction. Please retry"));
     try {
-      pageVersions.validateAndReserve(db.getName(), pages, entryId, localVersionsOf(db));
-    } catch (final ConcurrentModificationException e) {
+      validateBeforeAppend(db, pages, entryId);
+    } catch (final NeedRetryException e) {
       HALog.log(this, HALog.DETAILED, "Refusing tx %d on database '%s': %s",
           peekWalTransactionId(decoded.walData()), decoded.databaseName(), e.getMessage());
       return context.build().setException(e);
@@ -1841,9 +1841,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * against a version the log already moved past, reserves its versions otherwise.
    */
   // @VisibleForTesting
-  void validateBeforeAppend(final DatabaseInternal db, final byte[] walData, final PageVersionLedger.EntryId entryId)
-      throws IOException {
-    pageVersions.validateAndReserve(db.getName(), PageVersionLedger.parse(walData), entryId, localVersionsOf(db));
+  void validateBeforeAppend(final DatabaseInternal db, final byte[] walData, final PageVersionLedger.EntryId entryId) {
+    validateBeforeAppend(db, PageVersionLedger.parse(walData), entryId);
+  }
+
+  /**
+   * Never lets anything but a {@link NeedRetryException} out: an entry {@link #startTransaction} cannot validate is
+   * refused through the context, never by an exception escaping the hook. A page that cannot be read on the leader
+   * (an I/O error, a database closing under the read) is therefore a retryable refusal too, with the cause attached.
+   */
+  private void validateBeforeAppend(final DatabaseInternal db, final PageVersionLedger.Pages pages,
+      final PageVersionLedger.EntryId entryId) {
+    try {
+      pageVersions.validateAndReserve(db.getName(), pages, entryId, localVersionsOf(db));
+    } catch (final NeedRetryException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new NeedRetryException(
+          "Cannot validate the transaction on the leader against database '" + db.getName() + "': " + e.getMessage()
+              + ". Please retry", e);
+    }
   }
 
   /** Releases the page versions an entry reserved, as the apply thread does once the entry is applied. */
@@ -1878,11 +1895,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final FileManager fileManager = db.getFileManager();
     final PageManager pageManager = db.getPageManager();
     return (fileId, pageNumber) -> {
-      if (!fileManager.existsFile(fileId))
+      // A file that is gone, or that a racing schema change replaced with something that is not paged, is the same
+      // retryable conflict the engine's own version check raises for it.
+      if (!fileManager.existsFile(fileId) || !(fileManager.getFile(fileId) instanceof PaginatedComponentFile file))
         throw new ConcurrentModificationException(
             "Concurrent modification on page " + fileId + "/" + pageNumber + " of database '" + db.getName() + "': the file with id "
                 + fileId + " does not exist anymore. Please retry the operation");
-      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFile(fileId);
       return pageManager.getMostRecentVersionOfPage(new PageId(db, fileId, pageNumber), file.getPageSize());
     };
   }

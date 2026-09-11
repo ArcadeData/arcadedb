@@ -24,6 +24,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.NeedRetryException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -123,6 +124,26 @@ class Issue6965PreAppendValidationTest {
 
     assertThat(db.lookupByRID(leaderCounter, true).asDocument().getLong("value")).isEqualTo(1L);
     assertThat(db.lookupByRID(replicaCounter, true).asDocument().getLong("value")).isEqualTo(1L);
+  }
+
+  /**
+   * The validation never lets anything but a retryable refusal out of {@code startTransaction}: a file that vanished
+   * under the entry is the engine's own conflict, and a database that cannot be read at all is a retryable refusal
+   * with the cause attached.
+   */
+  @Test
+  void anEntryThatCannotBeValidatedIsRefusedNotThrown() throws Exception {
+    final byte[] entry = prepareIncrement(leaderCounter);
+
+    db.getSchema().dropType(TYPE);
+    assertThatThrownBy(() -> stateMachine.validateBeforeAppend(db, entry, entry(1)))
+        .isInstanceOf(ConcurrentModificationException.class)
+        .hasMessageContaining("does not exist anymore");
+
+    db.close();
+    assertThatThrownBy(() -> stateMachine.validateBeforeAppend(db, entry, entry(2)))
+        .isInstanceOf(NeedRetryException.class)
+        .hasMessageContaining("Cannot validate the transaction on the leader");
   }
 
   private static PageVersionLedger.EntryId entry(final long callId) {
