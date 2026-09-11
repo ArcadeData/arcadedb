@@ -73,6 +73,13 @@ public class JSONImporterFormat implements FormatImporter {
     }
   }
 
+  /**
+   * Deliberately carries no {@code context.beginParsingPhase()} of its own, unlike the nine formats that grew one
+   * each: {@link com.arcadedb.integration.importer.Importer#loadFromSource} zeroes the phase counter for every
+   * format before dispatching here, and this is the format that proves it does - it was the one that never reset
+   * the counter itself, so a run ending in a JSON phase reported the previous phase's rows along with its own
+   * (issue #7342). A tenth copy of the line here would make the hoist unobservable.
+   */
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser,
       final DatabaseInternal database,

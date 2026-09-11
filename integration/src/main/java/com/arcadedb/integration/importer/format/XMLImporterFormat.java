@@ -51,9 +51,10 @@ public class XMLImporterFormat implements FormatImporter {
 
       // One ImporterContext serves every phase of an import, so this counter arrives carrying whatever an earlier
       // phase left in it, and -parsingLimitEntries is checked against it below: a phase entered already past the
-      // limit imported nothing at all while still reporting success. Zeroed here the way RDFImporterFormat and the
-      // six other formats zero it, so the limit counts this phase's own objects (issue #7313).
-      context.parsed.set(0);
+      // limit imported nothing at all while still reporting success (issue #7313). Since #7342 loadFromSource()
+      // already zeroes it before dispatching here, so this is redundant on that path and kept for the direct
+      // FormatImporter.load() call, which is public API; routed through ImporterContext so the two cannot drift.
+      context.beginParsingPhase();
 
       final XMLInputFactory xmlFactory = XMLInputFactory.newInstance();
       xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");

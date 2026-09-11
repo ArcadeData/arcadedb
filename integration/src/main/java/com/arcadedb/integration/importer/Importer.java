@@ -136,6 +136,13 @@ public class Importer extends AbstractImporter {
 
     format = sourceSchema.getContentImporter();
 
+    // One ImporterContext serves every phase of an import, so context.parsed arrives carrying whatever the previous
+    // phase left in it. Zeroed here rather than by each format in turn: this is the single place every phase of
+    // every import passes through, so a format cannot forget it and a format added later inherits it. The rows the
+    // previous phase parsed are rolled into context.totalParsed rather than discarded, so the run can still report
+    // what it parsed as a whole (issue #7342).
+    context.beginParsingPhase();
+
     format.load(sourceSchema, entityType, parser, database, context, settings);
   }
 

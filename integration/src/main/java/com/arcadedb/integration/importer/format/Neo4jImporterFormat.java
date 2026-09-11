@@ -36,7 +36,10 @@ public class Neo4jImporterFormat extends AbstractImporterFormat {
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
-    context.parsed.set(0);
+    // Redundant with Importer.loadFromSource(), which zeroes the phase counter for every format before dispatching
+    // here; kept because FormatImporter.load() is public API and is called directly too. Routed through
+    // ImporterContext so there is one definition of what a phase reset is (issue #7342).
+    context.beginParsingPhase();
 
     try {
       new Neo4jImporter(database, context) {

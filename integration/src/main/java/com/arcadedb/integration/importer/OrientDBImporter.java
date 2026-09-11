@@ -407,6 +407,10 @@ public class OrientDBImporter {
 
     final AtomicLong processedItems = new AtomicLong();
     context.skippedEdges.set(0);
+    // NOT a phase boundary, so deliberately not ImporterContext#beginParsingPhase(): run() calls parseInputFile()
+    // up to three times (ANALYZE, CREATE_SCHEMA, CREATE_EDGES) and each pass reaches here and re-counts the same
+    // records. The previous pass's rows are discarded rather than accumulated, or one OrientDB import would report
+    // its records two or three times over (issue #7342).
     context.parsed.set(0);
 
     final List<Map<String, Object>> batch = new ArrayList<>(batchSize);

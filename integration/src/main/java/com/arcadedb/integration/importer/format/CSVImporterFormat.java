@@ -96,7 +96,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       final ImporterContext context,
       final ImporterSettings settings) throws ImportException {
 
-    context.parsed.set(0);
+    // Redundant with Importer.loadFromSource(), which zeroes the phase counter for every format before dispatching
+    // here; kept because FormatImporter.load() is public API and is called directly too. Routed through
+    // ImporterContext so there is one definition of what a phase reset is (issue #7342).
+    context.beginParsingPhase();
 
     switch (entityType) {
     case DOCUMENT, DATABASE -> loadDocuments(sourceSchema, parser, database, context, settings);

@@ -70,10 +70,10 @@ public class RDFImporterFormat extends CSVImporterFormat {
 
     // One ImporterContext serves every phase of an import - Importer.load() calls loadFromSource() for the url,
     // documents, vertices and edges sources against the same context - so this counter arrives carrying whatever an
-    // earlier phase left in it. Zeroed here the way CSVImporterFormat, Neo4jImporterFormat, OrientDBImporterFormat,
-    // GloVeImporterFormat, Word2VecImporterFormat and Word2VecImporterFormatLSM all zero it, so the number this
-    // phase reports is its own row count (issue #7288).
-    context.parsed.set(0);
+    // earlier phase left in it, and the commit boundary below is taken off it. Since #7342 loadFromSource() already
+    // zeroes it before dispatching here, so this is redundant on that path and kept for the direct FormatImporter
+    // .load() call, which is public API; routed through ImporterContext so the two cannot drift (issue #7288).
+    context.beginParsingPhase();
 
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
     if (settings.edgesSkipEntries == null)
