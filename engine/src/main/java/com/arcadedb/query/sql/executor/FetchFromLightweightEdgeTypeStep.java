@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
@@ -38,7 +37,6 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -69,11 +67,6 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
-  private static final ConcurrentHashMap<String, Integer> WARNINGS = new ConcurrentHashMap<>();
-  private static final int                                WARNINGS_EVERY = GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger();
-  /** Same threshold the type-scan warning uses, so the two speak about "large" in the same terms. */
-  private static final long                               LARGE_VERTEX_SET_BYTES = 100_000_000L;
-
   private final String           edgeTypeName;
   private       Iterator<Record> typeRecords;
   private       Iterator<Record> vertices;
@@ -181,15 +174,16 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
    * an operator at: no index can exist over a type with no records, and the vertex types are not narrowed by the
    * edge type, so an unrelated one adds its buckets to every walk. A {@code count(*)} in particular drops from the
    * O(1) cached counter to this, which is a complexity class an operator would otherwise discover on a large graph
-   * by watching a query they believe is free. Throttled by {@code COMMAND_WARNINGS_EVERY}, keyed and sized exactly
-   * as the type-scan warning in {@link FetchFromTypeExecutionStep} (PR #7478 review).
+   * by watching a query they believe is free. Throttled through {@link CommandWarnings} and sized on the same
+   * threshold as the type-scan warning in {@link FetchFromTypeExecutionStep}, so the two speak about "large" in the
+   * same terms (PR #7478 review).
    */
   private void warnIfTheVertexSetIsLarge(final DatabaseInternal database) {
-    if (WARNINGS_EVERY <= 0 || vertexSetSize <= LARGE_VERTEX_SET_BYTES)
+    if (vertexSetSize <= FetchFromTypeExecutionStep.LARGE_TYPE_BYTES)
       return;
 
-    final Integer counter = WARNINGS.compute(edgeTypeName + ".lightweightWalk", (k, v) -> v == null ? 1 : v + 1);
-    if (counter % WARNINGS_EVERY == 1)
+    final int counter = CommandWarnings.occurrencesWhenDue(edgeTypeName + ".lightweightWalk");
+    if (counter > 0)
       LogManager.instance().log(this, Level.WARNING,
           "Query on LIGHTWEIGHT edge type '%s' in database '%s' walked the whole vertex set (%s) %d times, because a "
               + "lightweight edge is stored inside its two vertices and has no record to scan or index. Anchor the "
