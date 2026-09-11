@@ -32,6 +32,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -42,7 +43,7 @@ public class DatabaseFactory implements AutoCloseable {
   private static final Map<Path, Database>                                        ACTIVE_INSTANCES     = new ConcurrentHashMap<>();
   private final        ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
   private final        String                                                     databasePath;
-  private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new HashMap<>();
+  private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new ConcurrentHashMap<>();
 
   /**
    * Milliseconds the JVM shutdown hook waits for the graceful close of the databases still open. On expiry the
@@ -173,7 +174,7 @@ public class DatabaseFactory implements AutoCloseable {
    * Test only API
    */
   public void registerCallback(final DatabaseInternal.CALLBACK_EVENT event, final Callable<Void> callback) {
-    final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new ArrayList<>());
+    final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new CopyOnWriteArrayList<>());
     callbacks.add(callback);
   }
 

@@ -131,15 +131,46 @@ class Issue7458CloseWaitsForSnapshotWindowTest extends TestHelper {
       assertThat(closer.isAlive()).as("the close must wait for the release, not only for the unregistration").isTrue();
       assertThat(db.isOpen()).isTrue();
     } finally {
-      // THE LAST STEP OF PageSnapshot.close()
-      pageManager.snapshotReleased(snapshot);
+      // THE REST OF PageSnapshot.close(): NOTHING LEFT TO UNREGISTER, THE SHADOW AND THE RETAINED FILES ARE RELEASED
+      // AND ONLY THEN IS THE WAITING CLOSE TOLD
+      snapshot.close();
       closer.join(30_000);
     }
 
     assertThat(closer.isAlive()).isFalse();
     assertThat(db.isOpen()).isFalse();
-    // THE REAL CLOSE FINDS NOTHING LEFT TO UNREGISTER OR TO WAKE
-    snapshot.close();
+  }
+
+  /** An interrupt does not cut the wait short: the close still waits for the window, and the interrupt survives it. */
+  @Test
+  void interruptedCloseStillWaitsForTheWindowAndKeepsTheInterrupt() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final PageManager pageManager = db.getPageManager();
+
+    final PageSnapshot snapshot = pageManager.openSnapshot(db);
+    final AtomicReference<Boolean> interruptedAfterClose = new AtomicReference<>();
+    final Thread closer = new Thread(() -> {
+      db.close();
+      interruptedAfterClose.set(Thread.currentThread().isInterrupted());
+    }, "closer");
+    try {
+      closer.start();
+      closer.join(500);
+      assertThat(closer.isAlive()).isTrue();
+
+      closer.interrupt();
+      closer.join(1_000);
+      assertThat(closer.isAlive()).as("the interrupt must not let the close shut the files under the window").isTrue();
+      assertThat(db.isOpen()).isTrue();
+      snapshot.checkValid();
+    } finally {
+      snapshot.close();
+      closer.join(30_000);
+    }
+
+    assertThat(closer.isAlive()).isFalse();
+    assertThat(db.isOpen()).isFalse();
+    assertThat(interruptedAfterClose.get()).as("the interrupt is restored for the caller").isTrue();
   }
 
   @Test

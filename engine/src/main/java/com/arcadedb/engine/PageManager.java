@@ -1020,11 +1020,15 @@ public class PageManager extends LockContext {
    * until {@link #endDatabaseClose}, {@link #openSnapshot} refuses the database, so a stream of backups cannot
    * postpone the close indefinitely.
    * <p>
-   * The wait is unbounded, as the write lock acquisition it replaces was, but interruptible: an interrupted caller
-   * proceeds with the close, and the windows still open fail the way they did before this method existed. Called
-   * holding no lock of this manager - it waits on the registry monitor, which is last in the lock order.
+   * The wait is unbounded and NOT cut short by an interrupt, exactly like the write lock acquisition it replaces
+   * ({@code ReentrantReadWriteLock.lock()} is uninterruptible), and like the durable part of the close that follows it,
+   * which runs with the interrupt flag cleared on purpose: an interrupt that let the close go ahead would shut the
+   * files under the backups still reading them, which is the failure this method exists to prevent. The interrupt is
+   * remembered and restored on the way out, so the caller still sees it. Called holding no lock of this manager - it
+   * waits on the registry monitor, which is last in the lock order.
    */
   public void beginDatabaseClose(final Database database) {
+    boolean interrupted = false;
     synchronized (snapshotRegistryLock) {
       closingDatabases.add(database);
 
@@ -1037,14 +1041,16 @@ public class PageManager extends LockContext {
         try {
           snapshotRegistryLock.wait(CLOSE_WAIT_POLL_MILLIS);
         } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          LogManager.instance().log(this, Level.WARNING,
-              "Close of database '%s' interrupted while waiting for %d open snapshot window(s): closing anyway, the backups reading them will fail",
-              null, database.getName(), open);
-          return;
+          if (!interrupted)
+            LogManager.instance().log(this, Level.WARNING,
+                "Close of database '%s' interrupted while waiting for %d open snapshot window(s): the wait goes on until they are released, the interrupt is restored afterwards",
+                null, database.getName(), open);
+          interrupted = true;
         }
       }
     }
+    if (interrupted)
+      Thread.currentThread().interrupt();
   }
 
   /** Lifts the mark set by {@link #beginDatabaseClose}. Called once the close has completed, whatever its outcome. */
