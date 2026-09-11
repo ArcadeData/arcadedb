@@ -320,6 +320,47 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     assertThat(query("select from Mentions")).hasSize(2);
   }
 
+  /**
+   * TRUNCATE deletes what {@code scanType()} finds, and that reads the type's buckets directly rather than going
+   * through the planner - so the walk never reaches it and the statement used to report success having deleted
+   * nothing. It refuses instead, and points at the operation that does reach them (issue #7481).
+   */
+  @Test
+  void truncateOnALightweightEdgeTypeRefusesAndPointsAtDelete() {
+    final RID[] works = newWorks(3);
+    connect("Cite", works[0], works[1]);
+    connect("Cite", works[1], works[2]);
+
+    assertThatThrownBy(() -> database.command("sql", "truncate type Cite").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("LIGHTWEIGHT")
+        .hasMessageContaining("DELETE FROM Cite");
+
+    assertThat(query("select from Cite")).as("a refused TRUNCATE must not have deleted anything either").hasSize(2);
+
+    // UNSAFE is about "the type is not empty", not about "this cannot work": it must not talk its way past this
+    assertThatThrownBy(() -> database.command("sql", "truncate type Cite unsafe").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("LIGHTWEIGHT");
+
+    // ...and the operation the message names does the job
+    database.transaction(() -> database.command("sql", "delete from Cite").close());
+    assertThat(query("select from Cite")).isEmpty();
+    database.transaction(() -> assertThat(database.lookupByRID(works[0], true).asVertex()
+        .countEdges(Vertex.DIRECTION.OUT, "Cite")).isZero());
+  }
+
+  /** A regular edge type truncates as it always did. */
+  @Test
+  void truncateOnARegularEdgeTypeIsUnchanged() {
+    final RID[] works = newWorks(2);
+    connect("Wrote", works[0], works[1]);
+
+    database.command("sql", "truncate type Wrote unsafe").close();
+
+    assertThat(query("select from Wrote")).isEmpty();
+  }
+
   /** The walk is the plan, so EXPLAIN has to name it: it is O(V + E) where a bucket scan reads O(E). */
   @Test
   void explainNamesTheVertexWalk() {
