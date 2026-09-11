@@ -2573,6 +2573,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   private void closeInternal(final boolean drop) {
+    // #7458: a point-in-time snapshot window (a backup) reads this database's files without holding its lock, so
+    // the close waits for the open windows to be released BEFORE tearing anything down - the database keeps serving
+    // in the meantime - and marks itself so no new window opens on it. The mark is lifted at the end whatever
+    // happened: this instance is closed by then, and a later open of the same path is a new instance.
+    PageManager.INSTANCE.beginDatabaseClose(this);
+    try {
+      closeSteps(drop);
+    } finally {
+      PageManager.INSTANCE.endDatabaseClose(this);
+    }
+  }
+
+  private void closeSteps(final boolean drop) {
     // Graceful async drain FIRST, with the caller's interrupt flag INTACT so an interrupted caller bails
     // this wait fast; the warning distinguishes an interrupt from a real timeout.
     if (async != null) {

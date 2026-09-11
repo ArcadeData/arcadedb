@@ -134,7 +134,9 @@ public class MaterializedViewBuilder {
           database, name, query, name, sourceTypeNames,
           refreshMode, simple, refreshInterval);
       view.setStatus(MaterializedViewStatus.BUILDING);
-      schema.materializedViews.put(name, view);
+      synchronized (schema) {
+        schema.materializedViews.put(name, view);
+      }
       schema.saveConfiguration();
 
       // Perform initial full refresh; on failure clean up the orphaned view and backing type
@@ -142,7 +144,9 @@ public class MaterializedViewBuilder {
         MaterializedViewRefresher.fullRefresh(database, view);
       } catch (final Exception e) {
         // Remove the MV entry first (so dropType's backing-type guard won't block)
-        schema.materializedViews.remove(name);
+        synchronized (schema) {
+          schema.materializedViews.remove(name);
+        }
         try {
           schema.dropType(name);
         } catch (final Exception dropEx) {

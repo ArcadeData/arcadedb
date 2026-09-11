@@ -271,6 +271,10 @@ public class PageSnapshot implements AutoCloseable {
     // WINDOW'S CLAIM; THE LAST WINDOW STILL HOLDING ONE PERFORMS THE PHYSICAL DELETE
     for (ComponentFile retired = retiredFiles.poll(); retired != null; retired = retiredFiles.poll())
       pageManager.releaseDeferredFileDrop(retired);
+
+    // #7458: A CLOSE OF THE DATABASE MAY BE WAITING FOR THIS WINDOW. TOLD ONLY NOW, WITH THE SHADOW AND THE RETAINED
+    // FILES GONE, SO IT NEVER SHUTS THE FILES UNDER A RELEASE STILL IN PROGRESS
+    pageManager.snapshotReleased();
   }
 
   // ---------------------------------------------------------------------------------------------- ENGINE INTERNALS
