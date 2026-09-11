@@ -642,14 +642,15 @@ public class PageManager extends LockContext {
   }
 
   private PageSnapshot openSnapshotInternal(final DatabaseInternal database) throws IOException, InterruptedException {
-    if (!database.isOpen())
+    if (!database.isOpen() || isDatabaseClosing(database))
       // NOT TIMED AND NOT COUNTED: NOTHING OF THE BARRIER RAN, AND A CALL THAT REFUSED INSTANTLY WOULD OTHERWISE PULL
       // THE AVERAGE THIS METRIC EXISTS TO REPORT TOWARDS ZERO. ASKED BEFORE THE FLUSH THREAD, WHICH THE LAST CLOSE
       // TAKES DOWN WITH IT: "THE DATABASE IS CLOSED" IS THE ANSWER THE CALLER CAN ACT ON. THE RACE WITH A CLOSE IN
       // PROGRESS IS SETTLED BY registerSnapshot, UNDER THE MONITOR THE CLOSE MARKS ITSELF ON - THIS IS ONLY THE
-      // CHEAP EARLY ANSWER (#7458)
+      // CHEAP EARLY ANSWER (#7458), SO THAT A BACKUP ASKING WHILE A CLOSE IS ALREADY WAITING DOES NOT DRAIN AND
+      // SUSPEND THE FLUSH PIPELINE OF EVERY DATABASE IN THE JVM ONLY TO BE REFUSED AT THE LAST STEP
       throw new PageSnapshotException(
-          "Cannot open a snapshot of database '" + database.getName() + "': the database is closed",
+          "Cannot open a snapshot of database '" + database.getName() + "': the database is closed or closing",
           PageSnapshotException.Reason.CLOSING);
 
     final PageManagerFlushThread thread = flushThread;
@@ -1051,6 +1052,12 @@ public class PageManager extends LockContext {
     }
     if (interrupted)
       Thread.currentThread().interrupt();
+  }
+
+  private boolean isDatabaseClosing(final Database database) {
+    synchronized (snapshotRegistryLock) {
+      return closingDatabases.contains(database);
+    }
   }
 
   /** Lifts the mark set by {@link #beginDatabaseClose}. Called once the close has completed, whatever its outcome. */
