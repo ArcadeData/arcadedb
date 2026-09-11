@@ -450,33 +450,11 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info))
       return false;
 
-    // countType() counts records, and a lightweight edge has none: pushing the count down would answer 0 for a type
-    // whose scan returns rows, which is the contradiction issue #7477 was reported as. Fall through to the plan that
-    // counts what the scan actually yields. The Cypher planner declines the same push-down for the same reason.
-    if (EdgeType.holdsLightweightEdges(resolveTypeOrNull(context, targetClass.getStringValue())))
-      return false;
-
     // The type name, not the rendered target: FromItem.toString() appends " AS <alias>" when the statement declared
     // one, and CountFromTypeStep looks its argument up in the schema (issue #7153).
     result.chain(new CountFromTypeStep(targetClass.getStringValue(), info.projection.getAllAliases().getFirst(), context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
-  }
-
-  /**
-   * The schema type a hardwired plan's target names, or null when the name is a context variable, is not a type, or
-   * names nothing - the cases where the hardwired plan defers to {@link CountFromTypeStep}'s own resolution at
-   * execution time. Applies the same unquoting that step does (issue #7153).
-   */
-  private static DocumentType resolveTypeOrNull(final CommandContext context, final String name) {
-    if (name == null || name.startsWith("$"))
-      return null;
-
-    final String typeName =
-        name.length() > 1 && name.startsWith("`") && name.endsWith("`") ? name.substring(1, name.length() - 1) : name;
-
-    final Schema schema = context.getDatabase().getSchema();
-    return schema.existsType(typeName) ? schema.getType(typeName) : null;
   }
 
   /**

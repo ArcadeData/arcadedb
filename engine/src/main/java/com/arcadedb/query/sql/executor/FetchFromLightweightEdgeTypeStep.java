@@ -54,7 +54,10 @@ import java.util.NoSuchElementException;
  * edge, whatever its type says today.
  * <p>
  * Cost is O(V + E) against the O(E) of a bucket scan, and there is no index over a lightweight edge to replace it
- * with - a type with no records has no properties to index. {@code EXPLAIN} names the step so the walk is visible.
+ * with - a type with no records has no properties to index. Nor is there any way to seek into the walk, so a
+ * {@code LIMIT} is satisfied by walking vertices until enough entries have been found rather than by addressing
+ * them: on a graph whose edges hang off a small corner of a large vertex set, even a small {@code LIMIT} can cost
+ * most of the vertex scan. {@code EXPLAIN} names the step so that cost is visible rather than a surprise.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -138,14 +141,35 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
     for (final DocumentType type : schema.getTypes()) {
       if (type.getType() != Vertex.RECORD_TYPE)
         continue;
-      if (!SecurityHelper.canAccessType(database, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
-        continue;
       // Own buckets only: a subtype contributes its own through its own entry in this loop, so a polymorphic
-      // walk here would visit every inherited bucket once per level of the hierarchy.
+      // walk here would visit every inherited bucket once per level of the hierarchy. Checked one bucket at a
+      // time rather than once per type: a type-level check answers yes as soon as ONE of its buckets is readable,
+      // and opening the rest would then fail the whole statement inside BucketIterator - the very thing leaving a
+      // denied type out is meant to avoid.
       for (final Bucket bucket : type.getBuckets(false))
-        vertexIterator.addIterator(bucket.iterator());
+        if (SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+          vertexIterator.addIterator(bucket.iterator());
     }
     vertices = vertexIterator;
+  }
+
+  /**
+   * How many edges of {@code edgeTypeName} the walk would return, without building a {@link Result} for any of
+   * them. Shares {@link #fetchNext} with the scan itself, so a count and a scan of the same type cannot disagree -
+   * which is the whole point of routing {@link CountFromTypeStep} here rather than letting it read a record count
+   * that is 0 by construction (issue #7477).
+   */
+  static long countEdgesOf(final CommandContext context, final String edgeTypeName) {
+    final FetchFromLightweightEdgeTypeStep walk = new FetchFromLightweightEdgeTypeStep(edgeTypeName, context);
+    walk.init(context);
+
+    long count = 0;
+    while (walk.fetchNext()) {
+      walk.nextRecord = null;
+      walk.nextEdge = null;
+      ++count;
+    }
+    return count;
   }
 
   /** Advances to the next row to serve, leaving it in {@link #nextRecord} or {@link #nextEdge}. */

@@ -47,6 +47,8 @@ class Issue7477LightweightEdgeScanAclTest {
 
   private DatabaseFactory factory;
   private Database        database;
+  private RID             workSource;
+  private RID             secretSource;
 
   @BeforeEach
   void setUp() {
@@ -57,17 +59,18 @@ class Issue7477LightweightEdgeScanAclTest {
 
     database = factory.create();
 
-    database.command("sql", "CREATE VERTEX TYPE Work");
+    // Spread over four buckets on purpose: denying one of them is an ACL shape a per-type check cannot express.
+    database.command("sql", "CREATE VERTEX TYPE Work BUCKETS 4");
     database.command("sql", "CREATE VERTEX TYPE Secret");
     database.command("sql", "CREATE EDGE TYPE Cite LIGHTWEIGHT");
 
     database.transaction(() -> {
-      final RID w0 = database.newVertex("Work").set("id", 0).save().getIdentity();
-      final RID w1 = database.newVertex("Work").set("id", 1).save().getIdentity();
-      final RID s0 = database.newVertex("Secret").set("id", 2).save().getIdentity();
+      workSource = database.newVertex("Work").set("id", 0).save().getIdentity();
+      final RID target = database.newVertex("Work").set("id", 1).save().getIdentity();
+      secretSource = database.newVertex("Secret").set("id", 2).save().getIdentity();
 
-      database.lookupByRID(w0, true).asVertex().modify().newEdge("Cite", w1);
-      database.lookupByRID(s0, true).asVertex().modify().newEdge("Cite", w1);
+      database.lookupByRID(workSource, true).asVertex().modify().newEdge("Cite", target);
+      database.lookupByRID(secretSource, true).asVertex().modify().newEdge("Cite", target);
     });
   }
 
@@ -105,7 +108,35 @@ class Issue7477LightweightEdgeScanAclTest {
     }
 
     assertThat(pairs).hasSize(1);
-    assertThat(pairs.getFirst()).startsWith("#1:0->");
+    assertThat(pairs.getFirst()).startsWith(workSource + "->");
+  }
+
+  /**
+   * A type-level check answers yes as soon as ONE bucket of the type is readable, so a vertex type with several
+   * buckets and a per-bucket ACL would pass it and then fail inside {@code BucketIterator} on the first denied
+   * bucket - failing the whole statement over a type it never named, which is exactly what leaving a denied type
+   * out of the walk is meant to avoid. The walk therefore checks one bucket at a time (PR #7478 review).
+   */
+  @Test
+  void oneDeniedBucketOfAReadableVertexTypeIsSkipped() {
+    assertThat(database.getSchema().getType("Work").getBucketIds(false).size())
+        .as("precondition: Work must have more than one bucket, or a per-type check would already refuse it")
+        .isGreaterThan(1);
+
+    // Exactly the bucket that holds the source of the Work->Work edge, so the type-level check still answers yes.
+    bindUserOnBuckets(Set.of(workSource.getBucketId()));
+
+    final List<String> pairs = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Cite")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        pairs.add(r.getEdge().get().getOut() + "->" + r.getEdge().get().getIn());
+      }
+    }
+
+    // The denied bucket's edge is dropped, the Secret vertex's is still reached, and nothing threw.
+    assertThat(pairs).hasSize(1);
+    assertThat(pairs.getFirst()).startsWith(secretSource + "->");
   }
 
   @Test
@@ -120,6 +151,15 @@ class Issue7477LightweightEdgeScanAclTest {
     for (final String typeName : deniedTypes)
       deniedBucketIds.addAll(database.getSchema().getType(typeName).getBucketIds(false));
 
+    bindUser(deniedTypes, deniedBucketIds);
+  }
+
+  /** Denies the given buckets and no type by name: the per-bucket ACL shape a type-level check cannot express. */
+  private void bindUserOnBuckets(final Set<Integer> deniedBucketIds) {
+    bindUser(Set.of(), deniedBucketIds);
+  }
+
+  private void bindUser(final Set<String> deniedTypes, final Set<Integer> deniedBucketIds) {
     DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).setCurrentUser(new SecurityDatabaseUser() {
       @Override
       public String getName() {

@@ -87,9 +87,20 @@ test("a type listing from an older server, with no lightweight flag, is unchange
   assert.ok(html.includes("sidebar-badge-count'>7<"), "an absent flag must read as 'not lightweight'");
 });
 
-test("the type name is escaped in both the label and the tooltip", () => {
+test("the type name is escaped exactly once in both the label and the tooltip", () => {
   const html = renderTypeSidebarBadge({ name: "A<B>", type: "edge", records: 0, lightweight: true }, "#f97316", "show-type-detail");
 
   assert.ok(!html.includes("<B>"), "an unescaped type name must not reach the markup");
-  assert.ok(html.includes("A&lt;B&gt;"), "the escaped name must be present");
+  assert.ok(html.includes("<span class='sidebar-badge-name'>A&lt;B&gt;</span>"), "the label must carry the escaped name");
+  // Asserted on the title attribute specifically: the label alone satisfies a bare "contains A&lt;B&gt;" check,
+  // so a title built from the already-escaped name and escaped a second time would have gone unnoticed.
+  assert.ok(html.includes("title='A&lt;B&gt; - "), "the tooltip must escape the name once, not twice");
+  assert.ok(!html.includes("&amp;lt;"), "no part of the badge may be escaped twice");
+});
+
+test("a regular type's tooltip is escaped exactly once too", () => {
+  const html = renderTypeSidebarBadge({ name: "A&B", type: "edge", records: 12 }, "#f97316", "show-type-detail");
+
+  assert.ok(html.includes("title='A&amp;B (12 records)'"), "the tooltip must read A&B, not A&amp;B");
+  assert.ok(!html.includes("&amp;amp;"), "no part of the badge may be escaped twice");
 });
