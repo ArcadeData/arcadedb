@@ -110,6 +110,21 @@ class SparseNeighborsDuplicateSubIndexTest extends TestHelper {
     assertThat(new LinkedHashSet<>(uuids)).hasSize(6);
   }
 
+  @Test
+  void sparseNeighborsFilterAcceptsARidProjectingSubquery() {
+    // ISSUE #7125: parseRidFilter IS SHARED WITH vector.neighbors, SO THE SUBQUERY SHAPE MUST WORK HERE TOO
+    final List<String> uuids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", """
+        SELECT expand(`vector.sparseNeighbors`(?, ?, ?, ?, {
+          filter: (SELECT @rid FROM SparseDoc WHERE uuid IN ['d3', 'd10'])
+        }))""",
+        TYPE_NAME + "[tokens,weights]", new int[] { 3, 10, 16 }, new float[] { 1.0f, 0.5f, 0.25f }, 10)) {
+      while (rs.hasNext())
+        uuids.add(rs.next().getProperty("uuid"));
+    }
+    assertThat(uuids).containsExactlyInAnyOrder("d3", "d10");
+  }
+
   private List<String> topK(final int k) {
     final List<String> uuids = new ArrayList<>();
     try (final ResultSet rs = database.query("sql",

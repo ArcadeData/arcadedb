@@ -81,7 +81,6 @@ public class MatchStep extends AbstractExecutionStep {
         final Result result = nextResult;
         fetchNext(context, nRecords, guard);
         localCount++;
-        context.setVariable("matched", result);
         return result;
       }
 
