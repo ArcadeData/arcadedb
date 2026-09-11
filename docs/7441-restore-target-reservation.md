@@ -163,9 +163,13 @@ carry `overwrite`. The tests drive the control plane and the HTTP endpoint direc
 2. `restoreDatabase` and `restoreBackup` take the reservation **in the same `databasesLock`
    section as the existence check** and release it in a `finally` around the whole restore, so the
    check and the swap are two ends of one reservation rather than two independent samples.
-3. `swapRestoredDatabase` re-asks `databaseNameIsTaken` **inside the same `databasesLock` section
-   that deletes and moves**, unless the caller passed `overwrite`. A name that appeared anyway
-   fails the restore instead of being destroyed.
+3. `swapRestoredDatabase` splits on `replaceExisting`. With it, the old behaviour: delete the
+   target, `ATOMIC_MOVE` over it. Without it, **the branch contains no destructive call at all** -
+   it re-asks `existsDatabase` inside the lock for the registry half, and for the filesystem half
+   it moves with neither `ATOMIC_MOVE` nor `REPLACE_EXISTING`, so a target that appeared anyway
+   fails the move with `FileAlreadyExistsException` rather than being deleted. The filesystem is
+   not *checked*, because any check is a sample and a directory can appear between it and the
+   move; the move is the filesystem answering the question instead of being asked it.
 4. The HA-aware `dropDatabaseForRestore` is gated on the same flag. It has to run outside
    `databasesLock` (an HA drop round-trips through Raft and the apply thread takes that lock -
    issue #4832), so a database registered during the restore would have been dropped there,
@@ -183,11 +187,15 @@ than parked behind a multi-minute download.
   lock file, not an in-memory set.
 - The reservation is per `ArcadeDBServer` instance, deliberately: an HA test and a co-located pair
   of nodes run several servers with the same database names in one process.
-- The pre-swap re-check is a tripwire, not a second claim. It is atomic with the delete-and-move
-  it guards - both are in one `databasesLock` section - but it only answers the question at that
-  instant, and for anything outside this JVM the answer can be stale the moment it is read. For
-  every creator that goes through `ArcadeDBServer` it is the reservation, not the re-check, that
-  carries the invariant.
+- The registry re-check in the swap is a tripwire, not a second claim: it answers only for that
+  instant, and for anything outside this JVM the answer can be stale the moment it is read. What
+  makes that survivable is that the non-overwrite branch it guards cannot destroy anything even if
+  the answer *is* stale - there is no delete on it and the move does not replace. For every creator
+  that goes through `ArcadeDBServer` it is the reservation, not the re-check, that carries the
+  invariant.
+- `restore backup ... overwrite` still deletes and replaces, by design. An out-of-band directory
+  appearing during an overwrite restore is still destroyed - the caller said to replace whatever is
+  at that name.
 
 ## Changes
 
@@ -318,3 +326,36 @@ changing behaviour:
    of `reserveDatabaseNameForRestore` so the next reader does not have to relitigate it.
 
 The review's remaining sections (correctness, tests, security) were confirmations with nothing to act on.
+
+### Cycle 3 - 8c8ed6d
+
+`coderabbitai` left one inline finding on `ServerControlPlane.java:1679`, and it was right:
+the non-overwrite branch still ran `FileUtils.deleteRecursively(finalDir)` between the re-check and
+the move, and fell back to `REPLACE_EXISTING`. Holding `databasesLock` binds creators that go
+through `ArcadeDBServer`; it does not stop a directory appearing on disk, so the check-to-delete gap
+was microseconds of exposure that ended in a deletion - on the one command whose contract is that it
+never replaces anything.
+
+Fixed as suggested, and the shape is better than a tighter check would have been: the non-overwrite
+branch now has no destructive call on it. `existsDatabase` covers the registry half; the filesystem
+half is left to `Files.move` with no options, which fails with `FileAlreadyExistsException` if the
+target is there. `ATOMIC_MOVE` is deliberately not set on that branch - with no `REPLACE_EXISTING`
+its behaviour over an existing target is implementation-specific and POSIX `rename(2)` would clobber
+silently, which is the outcome being prevented. The move is a single rename either way, `tempDir`
+being a sibling of `finalDir`.
+
+Both halves were already under test, and the split makes which is which explicit:
+`aDatabaseDirectoryThatAppearsDuringARestoreFailsTheSwapInsteadOfBeingDestroyed` plants a directory
+that is registered nowhere, so it now exercises the move; `aDatabaseRegisteredDuringARestoreIsNotDroppedByTheSwap`
+exercises the registry check. Both javadocs now say so.
+
+Re-run: `Issue7441` 7/7, the restore/backup/import neighbours 19/19, and the server suite
+1052/1052 green.
+
+`claude` reviewed the same head and found no bugs - it re-derived the lock ordering
+(`BackupCoordinator` slot, then `databasesLock`, identically at every call site, so no inversion),
+confirmed the guard really is inside the critical section in both creators rather than sampled
+outside it, and confirmed the 409/`ABORTED` wiring exists rather than taking the PR body's word for
+it. One actionable line: the tripwire is skipped entirely under `overwrite`, which the adversarial
+table argued was not a defect but which only the tracking doc said. It is now said in
+`swapRestoredDatabase`'s own javadoc, where the next reader is.

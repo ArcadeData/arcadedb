@@ -251,9 +251,16 @@ class Issue7441RestoreNameReservationIT extends BaseGraphServerTest {
   /**
    * Coverage-table row 8: the half a reservation cannot cover. A directory appearing under the target's name - an
    * embedded {@code DatabaseFactory} in the same JVM, an operator's {@code mkdir}, a half-finished operation - is
-   * invisible to an in-memory claim, so the swap re-asks the pre-check's own question before it drops anything.
+   * invisible to an in-memory claim.
    * <p>
-   * The restore fails and the directory is still there. Before this, {@code swapRestoredDatabase} deleted it.
+   * This is the <b>filesystem</b> half of the swap's guard, and nothing checks for it: the directory is registered
+   * nowhere, so {@code existsDatabase} says no, and what refuses the restore is the move itself, which on this
+   * branch carries neither {@code ATOMIC_MOVE} nor {@code REPLACE_EXISTING} and so fails with
+   * {@code FileAlreadyExistsException}. A check could not have done the job - a directory can appear between any
+   * check and the move that follows it.
+   * <p>
+   * The restore fails and the directory is still there, marker and all. Before this,
+   * {@code swapRestoredDatabase} deleted it.
    */
   @Test
   void aDatabaseDirectoryThatAppearsDuringARestoreFailsTheSwapInsteadOfBeingDestroyed() throws Exception {
@@ -293,11 +300,11 @@ class Issue7441RestoreNameReservationIT extends BaseGraphServerTest {
    * The other half of row 8, and the half that decides whether the tripwire is worth having: a database that is
    * REGISTERED - not merely a directory on disk - when the swap comes round.
    * <p>
-   * The restore drops its predecessor through {@code dropDatabaseForRestore}, which has to run outside
-   * {@code databasesLock} because an HA drop round-trips through Raft and the apply thread takes that lock
-   * (issue #4832). A guard placed after it would therefore have been checking whether a database still existed
-   * immediately after dropping it. So the drop is gated on the caller having asked for a replacement, and the
-   * re-check runs inside the swap's own lock section.
+   * This is the <b>registry</b> half, the one a check does answer: the restore drops its predecessor through
+   * {@code dropDatabaseForRestore}, which has to run outside {@code databasesLock} because an HA drop round-trips
+   * through Raft and the apply thread takes that lock (issue #4832). A guard placed after it would therefore have
+   * been asking whether a database still existed immediately after dropping it. So the drop is gated on the caller
+   * having asked for a replacement, and {@code existsDatabase} is re-asked inside the swap's own lock section.
    * <p>
    * The registered database is planted by releasing the claim, creating, and re-claiming - standing in for a creator
    * an in-memory claim cannot bind: another process, or anything that reaches the directory without going through

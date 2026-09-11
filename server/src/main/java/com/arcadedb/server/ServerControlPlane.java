@@ -53,6 +53,7 @@ import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -1647,8 +1648,13 @@ public class ServerControlPlane {
    * <p>
    * {@code replaceExisting} is the caller saying it accepted, when the command was issued, that an existing target is
    * destroyed - only {@code restore backup ... overwrite} does. Without it, nothing here may destroy anything: the
-   * target did not exist when the command was accepted, and this is where that answer is finally acted on
-   * (issue #7441).
+   * target did not exist when the command was accepted, so the branch below neither drops, nor deletes, nor moves
+   * with {@code REPLACE_EXISTING}, and a target that appeared since fails the restore instead (issue #7441).
+   * <p>
+   * With it there is no tripwire at all, deliberately and not by omission: a database that appeared out of band
+   * during an {@code overwrite} restore is destroyed without a word, because replacing whatever is at that name is
+   * the entire content of the flag. Reserving the name still keeps every creator that goes through
+   * {@link ArcadeDBServer} out of the way; what is unprotected here is only what a reservation cannot see.
    */
   private void swapRestoredDatabase(final String databaseName, final File finalDir, final File tempDir,
       final boolean replaceExisting) {
@@ -1668,23 +1674,40 @@ public class ServerControlPlane {
       // Serialise the on-disk swap against concurrent getDatabase / createDatabase so no concurrent
       // open observes the transient half-swapped directory.
       synchronized (server.getDatabasesLock()) {
-        // Ask the pre-check's own question one last time, in the same lock section that does the destroying, so the
-        // answer cannot go stale between the two the way it did between the pre-check and here (issue #7441). The
-        // name reservation already refuses every creator that goes through ArcadeDBServer; what this catches is what
-        // an in-memory claim cannot see - a directory appearing out of band, from an embedded DatabaseFactory in
-        // this JVM, an operator's mkdir, or a half-finished operation. Failing the restore is the honest outcome for
-        // a command that promised not to replace anything; deleting the directory was not.
-        if (!replaceExisting && databaseNameIsTaken(databaseName, finalDir.getPath()))
-          throw new CommandExecutionException("Cannot activate the restored database '" + databaseName
-              + "': a database by that name appeared while the restore was running");
+        if (replaceExisting) {
+          // The caller asked for the target to be replaced, so replace it.
+          if (finalDir.exists())
+            FileUtils.deleteRecursively(finalDir);
 
-        if (finalDir.exists())
-          FileUtils.deleteRecursively(finalDir);
+          try {
+            Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.ATOMIC_MOVE);
+          } catch (final AtomicMoveNotSupportedException e) {
+            Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.REPLACE_EXISTING);
+          }
+        } else {
+          // Nothing on this branch may destroy anything: the target did not exist when the command was accepted,
+          // and this command has no way for the caller to say they meant to replace one (issue #7441). So it does
+          // not delete and it does not move with REPLACE_EXISTING - it asks, and then it lets the move be the
+          // second half of the answer.
+          //
+          // The two halves are split that way because a name is taken on two independent registers and only one of
+          // them can be tested and acted on in a single step. The server registry is checked here; the filesystem
+          // is not checked at all, because a check would be a sample and a directory can appear between it and the
+          // move however tightly they are written - the monitor held here binds every creator that goes through
+          // ArcadeDBServer, not an embedded DatabaseFactory elsewhere in this JVM or another process. A move with
+          // no options fails with FileAlreadyExistsException instead, which is the filesystem answering the
+          // question rather than being asked it. ATOMIC_MOVE is deliberately not set: combined with no
+          // REPLACE_EXISTING its behaviour over an existing target is implementation-specific, and on POSIX
+          // rename(2) would silently clobber - the exact outcome this branch exists to prevent. The move is a
+          // single rename regardless, tempDir being a sibling of finalDir and so always on the same filesystem.
+          if (server.existsDatabase(databaseName))
+            throw new CommandExecutionException(restoreTargetAppeared(databaseName));
 
-        try {
-          Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.ATOMIC_MOVE);
-        } catch (final AtomicMoveNotSupportedException e) {
-          Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.REPLACE_EXISTING);
+          try {
+            Files.move(tempDir.toPath(), finalDir.toPath());
+          } catch (final FileAlreadyExistsException e) {
+            throw new CommandExecutionException(restoreTargetAppeared(databaseName), e);
+          }
         }
       }
     } catch (final CommandExecutionException e) {
@@ -1694,6 +1717,15 @@ public class ServerControlPlane {
       FileUtils.deleteRecursively(tempDir);
       throw new CommandExecutionException("Error activating restored database '" + databaseName + "'", e);
     }
+  }
+
+  /**
+   * What a restore that promised not to replace anything says when it finds something there anyway - from either of
+   * the two registers a name can be taken on, so a caller cannot tell which one answered and does not need to.
+   */
+  private static String restoreTargetAppeared(final String databaseName) {
+    return "Cannot activate the restored database '" + databaseName
+        + "': a database by that name appeared while the restore was running";
   }
 
   /**
