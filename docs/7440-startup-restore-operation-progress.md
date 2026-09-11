@@ -195,3 +195,46 @@ weaker, and is recorded as such.
 - [x] Give the path a seam a test can drive - fixed, `restoreDatabaseFromStartupCommand` is
       package-private and two of the three tests call it directly
 - [x] Adversarial follow-up: no operation slot at boot - filed as #7454
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7455
+
+## Review cycles
+
+| Cycle | Head SHA | Changes | Bot outcome |
+|---|---|---|---|
+| 1 | `6932946` | none - nothing actionable arrived | **timeout**. The gating `claude` bot posted nothing on any of the three surfaces (formal review, inline review comment, PR issue comment) within the 15-minute window. Its workflow run is not stalled: run 34599178805 / job 103262038152 finished `completed`/`success` at 12:31:25Z, two minutes after the push, with `"subtype": "success"`, `"is_error": false`, 29 turns and `permission_denials_count: 0` - it read the diff and then never ran the `gh pr comment` its prompt asks for. The known "review bot can time out before posting" failure mode, an infrastructure problem rather than a verdict on this PR |
+
+Other reviewers on the same SHA did report, and neither asked for a change:
+
+- **CodeRabbit** - "No actionable comments were generated in the recent review." Merge risk: minimal. Its one failed pre-merge check is `Docstring Coverage` at 42.86%, counting the test class's private helpers (`freePort`, `port`, `stop`, `typeName`, `databaseDirectory`) as undocumented functions. Not acted on: these are four-line test helpers whose names say what they do, and the methods that carry real decisions - `restoreDatabaseFromStartupCommand`, `installStartupRestoreProgressCallback`, every test method, and the non-obvious fields - all have Javadoc.
+- **Codacy** - pass.
+
+No deferred-items notes file was produced: no review comment arrived to defer.
+
+## CI on the PR head (`6932946`)
+
+`integration-tests` - the lane that actually runs `Issue7440StartupRestoreProgressIT` - **passed**,
+as did `build-and-package`, `lint`, `builder-tests`, `slow-unit-tests`, `vector-unit-tests`,
+`studio-e2e-tests`, `opencypher-tck-tests`, every language e2e lane, CodeQL, Codacy and Meterian.
+
+Two lanes are red, and both are red on `main` independently of this branch:
+
+- **`unit-tests`** - `Issue7089NaNTransparentSumAvgTest.oneNaNSampleNoLongerPoisonsTheBucketOnAnyPath:298`
+  and `MultiColumnAggregationResultTest.emptySumAndCountStayZeroNotNaN:86`, both in
+  `com.arcadedb.engine.timeseries`. The `main` run of this PR's own merge base (run 34598973837,
+  commit `6533998b`) fails with the same two tests, the same line numbers and the same
+  `Tests run: 14806, Failures: 2, Errors: 0, Skipped: 22` total. Nothing in this PR touches `engine`.
+- **`ha-integration-tests`** - `GetClusterHandlerIT.everyNodePublishesItsOwnResyncStateAndPosition:166`,
+  `Issue5569SlotMergeDeleteRaftIT.mergedDeletesReplicateIntact:121` and
+  `RaftPriorityRejoinIT.leaderRestartThenReplicaRestartConverges:143`, the long-known flaky Raft lane
+  (#5668). Red on three of the last four `main` runs (34599296509, 34589620366, 34589587148). The
+  changed code additionally cannot run there: it is the `case "restore":` arm of
+  `loadDefaultDatabases()`, and `grep -rn 'SERVER_DEFAULT_DATABASES\|defaultDatabases' ha-raft/src`
+  returns nothing, so no test in that module configures a startup restore at all.
+
+## Final state
+
+`timeout` - one cycle, no changes applied, PR open and awaiting the developer. Merge is the
+developer's call; this workflow does not merge.
