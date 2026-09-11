@@ -25,6 +25,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
@@ -56,6 +57,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("slow")
 class Issue6965SharedPageCrossNodeWritersTest extends BaseRaftHATest {
   private static final String TYPE_NAME  = "Issue6965Counter";
   private static final int    INCREMENTS = 1000;

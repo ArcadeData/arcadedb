@@ -55,27 +55,27 @@ class PageVersionLedgerTest {
 
   @Test
   void acceptsTheNextVersionAndRefusesTheSameBaseTwice() throws IOException {
-    ledger.validateAndReserve(DB, wal(1, new Page(3, 0, 1)), entry(1), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
     assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(1);
 
     // A second entry validated against the same base (version 0) must be refused: the log already gave version 1 away.
-    assertThatThrownBy(() -> ledger.validateAndReserve(DB, wal(2, new Page(3, 0, 1)), entry(2), localVersions))
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(3, 0, 1))), entry(2), localVersions))
         .isInstanceOf(ConcurrentModificationException.class)
         .hasMessageContaining("3/0")
         .hasMessageContaining("version 0")
         .hasMessageContaining("version 1");
 
     // An entry that chains on the reserved version (its originator applied the first entry) is fine.
-    ledger.validateAndReserve(DB, wal(3, new Page(3, 0, 2)), entry(3), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 2))), entry(3), localVersions);
     assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(2);
   }
 
   @Test
   void refusesAnEntryAheadOfTheLog() {
     local.put(PageVersionLedger.pageKey(3, 0), 5);
-    assertThatThrownBy(() -> ledger.validateAndReserve(DB, wal(1, new Page(3, 0, 7)), entry(1), localVersions))
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 7))), entry(1), localVersions))
         .isInstanceOf(ConcurrentModificationException.class);
-    assertThatThrownBy(() -> ledger.validateAndReserve(DB, wal(1, new Page(3, 0, 5)), entry(1), localVersions))
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 5))), entry(1), localVersions))
         .isInstanceOf(ConcurrentModificationException.class);
     assertThat(ledger.reservedPages(DB)).isZero();
   }
@@ -83,15 +83,15 @@ class PageVersionLedgerTest {
   @Test
   void seedsFromTheLocalCopyWhenNothingIsReserved() throws IOException {
     local.put(PageVersionLedger.pageKey(3, 0), 5);
-    ledger.validateAndReserve(DB, wal(1, new Page(3, 0, 6)), entry(1), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 6))), entry(1), localVersions);
     assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(6);
   }
 
   @Test
   void aRefusedEntryReservesNothing() throws IOException {
-    ledger.validateAndReserve(DB, wal(1, new Page(3, 0, 1)), entry(1), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
     // Page 4/0 is fine, page 3/0 conflicts: the entry is refused as a whole and 4/0 must not stay reserved.
-    assertThatThrownBy(() -> ledger.validateAndReserve(DB, wal(2, new Page(4, 0, 1), new Page(3, 0, 1)), entry(2), localVersions))
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(4, 0, 1), new Page(3, 0, 1))), entry(2), localVersions))
         .isInstanceOf(ConcurrentModificationException.class);
     assertThat(ledger.reservedVersion(DB, 4, 0)).isEqualTo(-1);
     assertThat(ledger.reservedPages(DB)).isEqualTo(1);
@@ -101,32 +101,32 @@ class PageVersionLedgerTest {
   void releaseDropsOnlyTheVersionTheEntryReserved() throws IOException {
     final byte[] first = wal(1, new Page(3, 0, 1));
     final byte[] second = wal(2, new Page(3, 0, 2));
-    ledger.validateAndReserve(DB, first, entry(1), localVersions);
-    ledger.validateAndReserve(DB, second, entry(2), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(first), entry(1), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(second), entry(2), localVersions);
 
     // The first entry was applied: its reservation moved on to the second entry already, so nothing changes.
-    ledger.release(DB, first);
+    ledger.release(DB, null, first);
     assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(2);
 
-    ledger.release(DB, second);
+    ledger.release(DB, null, second);
     assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(-1);
     assertThat(ledger.reservedPages(DB)).isZero();
 
     // Back to the local copy as the seed (still 0 here: nothing was applied in this test).
-    ledger.validateAndReserve(DB, wal(3, new Page(3, 0, 1)), entry(3), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 1))), entry(3), localVersions);
   }
 
   /** Ratis retries a request it could not append with the same client id and call id: that is not a conflict. */
   @Test
   void theSameRequestRetriedIsAcceptedAgain() throws IOException {
     final byte[] first = wal(1, new Page(3, 0, 1));
-    ledger.validateAndReserve(DB, first, entry(1), localVersions);
-    ledger.validateAndReserve(DB, first, entry(1), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(first), entry(1), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(first), entry(1), localVersions);
     assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(1);
     assertThat(ledger.reservedPages(DB)).isEqualTo(1);
 
     // Still one reservation, still one version given away: another entry on the same base is refused.
-    assertThatThrownBy(() -> ledger.validateAndReserve(DB, wal(2, new Page(3, 0, 1)), entry(2), localVersions))
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(3, 0, 1))), entry(2), localVersions))
         .isInstanceOf(ConcurrentModificationException.class);
   }
 
@@ -139,37 +139,37 @@ class PageVersionLedgerTest {
   void anUnconfirmedReservationExpiresAConfirmedOneDoesNot() throws Exception {
     final byte[] dropped = wal(1, new Page(3, 0, 1));
     final byte[] appended = wal(2, new Page(4, 0, 1));
-    ledger.validateAndReserve(DB, dropped, entry(1), localVersions);
-    ledger.validateAndReserve(DB, appended, entry(2), localVersions);
-    ledger.confirmAppended(DB, appended, entry(2));
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(dropped), entry(1), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(appended), entry(2), localVersions);
+    ledger.confirmAppended(DB, PageVersionLedger.parse(appended), entry(2));
 
     // Before the bound, both hold.
-    assertThatThrownBy(() -> ledger.validateAndReserve(DB, wal(3, new Page(3, 0, 1)), entry(3), localVersions))
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 1))), entry(3), localVersions))
         .isInstanceOf(ConcurrentModificationException.class);
 
     backdate(DB, 3, 0, PageVersionLedger.STALE_RESERVATION_MS + 1);
     backdate(DB, 4, 0, PageVersionLedger.STALE_RESERVATION_MS + 1);
 
     // The dropped request's reservation is discarded and the page is seeded from the local copy again...
-    ledger.validateAndReserve(DB, wal(3, new Page(3, 0, 1)), entry(3), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 1))), entry(3), localVersions);
     assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(1);
     // ... while the appended entry's reservation still refuses a stale base.
-    assertThatThrownBy(() -> ledger.validateAndReserve(DB, wal(4, new Page(4, 0, 1)), entry(4), localVersions))
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(4, new Page(4, 0, 1))), entry(4), localVersions))
         .isInstanceOf(ConcurrentModificationException.class);
   }
 
   @Test
   void aPageSplitInSeveralSegmentsIsOnePage() throws IOException {
     // Two disjoint modified intervals of the same page ship as two consecutive segments at the same target version.
-    ledger.validateAndReserve(DB, wal(1, new Page(3, 0, 1), new Page(3, 0, 1)), entry(1), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1), new Page(3, 0, 1))), entry(1), localVersions);
     assertThat(ledger.reservedPages(DB)).isEqualTo(1);
     assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(1);
   }
 
   @Test
   void databasesAreIndependent() throws IOException {
-    ledger.validateAndReserve(DB, wal(1, new Page(3, 0, 1)), entry(1), localVersions);
-    ledger.validateAndReserve("other", wal(1, new Page(3, 0, 1)), entry(1), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+    ledger.validateAndReserve("other", PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
     assertThat(ledger.reservedVersion("other", 3, 0)).isEqualTo(1);
 
     ledger.clear("other");
@@ -182,11 +182,11 @@ class PageVersionLedgerTest {
 
   @Test
   void refusesACorruptedEntry() {
-    assertThatThrownBy(() -> ledger.validateAndReserve(DB, new byte[3], entry(1), localVersions))
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(new byte[3]), entry(1), localVersions))
         .isInstanceOf(ReplicationException.class);
     final byte[] tooManyPages = wal(1, new Page(3, 0, 1));
     ByteBuffer.wrap(tooManyPages).putInt(2 * Long.BYTES, 1_000_000);
-    assertThatThrownBy(() -> ledger.validateAndReserve(DB, tooManyPages, entry(1), localVersions))
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(tooManyPages), entry(1), localVersions))
         .isInstanceOf(ReplicationException.class);
   }
 

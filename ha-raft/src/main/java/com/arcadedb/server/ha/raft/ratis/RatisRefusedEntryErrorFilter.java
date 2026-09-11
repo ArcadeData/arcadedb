@@ -50,10 +50,10 @@ import java.util.logging.Logger;
  */
 public final class RatisRefusedEntryErrorFilter implements Filter {
   /** The Ratis logger that emits the record. Matches the class name Ratis logs under. */
+  public static final String RATIS_ORDERED_ASYNC_LOGGER = "org.apache.ratis.client.impl.OrderedAsync";
+
   /** How deep a cause chain is walked; deeper than any real chain, and a guard against a cyclic one. */
   private static final int MAX_CAUSE_DEPTH = 32;
-
-  public static final String RATIS_ORDERED_ASYNC_LOGGER = "org.apache.ratis.client.impl.OrderedAsync";
 
   private static final Object INSTALL_LOCK = new Object();
 
@@ -80,19 +80,23 @@ public final class RatisRefusedEntryErrorFilter implements Filter {
 
   @Override
   public boolean isLoggable(final LogRecord record) {
-    if (isRefusedEntry(record.getThrown()))
+    if (refusedBeforeAppend(record.getThrown()) != null)
       return false;
     return delegate == null || delegate.isLoggable(record);
   }
 
-  /** Whether the throwable chain says the leader refused the entry with a retryable conflict before appending it. */
-  public static boolean isRefusedEntry(final Throwable thrown) {
+  /**
+   * The retryable conflict the leader refused an entry with BEFORE appending it, found by walking the cause chain of
+   * what the Ratis client reported, or {@code null} when the failure is something else. Shared with the group
+   * committer, which maps the same refusal to a definite outcome, so the two never drift apart.
+   */
+  public static NeedRetryException refusedBeforeAppend(final Throwable thrown) {
     // Bounded walk: a throwable chain can be cyclic, and a depth cap needs no identity comparison.
     Throwable t = thrown;
     for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; depth++, t = t.getCause())
-      if (t instanceof StateMachineException refusal && refusal.getCause() instanceof NeedRetryException)
-        return true;
-    return false;
+      if (t instanceof StateMachineException refusal && refusal.getCause() instanceof NeedRetryException conflict)
+        return conflict;
+    return null;
   }
 
   Filter getDelegate() {

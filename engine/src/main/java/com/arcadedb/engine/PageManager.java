@@ -1232,7 +1232,8 @@ public class PageManager extends LockContext {
   public void checkPageVersion(final MutablePage page, final boolean isNew) throws IOException {
     final PageId pageId = page.getPageId();
 
-    final FileManager fileManager = ((DatabaseInternal) pageId.getDatabase()).getFileManager();
+    final DatabaseInternal database = (DatabaseInternal) pageId.getDatabase();
+    final FileManager fileManager = database.getFileManager();
 
     if (!fileManager.existsFile(pageId.getFileId()))
       throw new ConcurrentModificationException(
@@ -1244,9 +1245,10 @@ public class PageManager extends LockContext {
     // #6965: a version the replication log has already assigned to this page, but that this node has not applied yet,
     // IS the most recent one. Validating against the stale local copy would let the transaction ship a delta computed
     // on a superseded image, and the leader would refuse it at append time anyway - refuse it here, before the round
-    // trip. Null on a standalone database and on replicas, so the common path pays one volatile read.
-    if (pageId.getDatabase() instanceof DatabaseInternal databaseInternal
-        && databaseInternal.getEmbedded() instanceof LocalDatabase localDatabase) {
+    // trip. Null on a standalone database and on replicas, so the common path pays one volatile read. Only phase 1
+    // consults it: the phase-2 bump in updatePageVersion runs at the entry's log position, where the reservation
+    // it would find is the entry's own.
+    if (database.getEmbedded() instanceof LocalDatabase localDatabase) {
       final PageVersionReservations reservations = localDatabase.getPageVersionReservations();
       if (reservations != null) {
         final int reserved = reservations.reservedVersion(pageId);
@@ -1388,6 +1390,14 @@ public class PageManager extends LockContext {
     }
   }
 
+  /**
+   * The phase-2 half of the version check: validates against the local copy only, deliberately. On a replicated leader
+   * this runs on the Raft apply thread at the entry's own log position, so the reservation
+   * {@link #checkPageVersion} consults (#6965) would be this very entry's; the direct writers that also come through
+   * here (index compaction, bloom filters, vector graphs) run under the database write lock or on files no replicated
+   * entry can target while they run, and the leader-side DDL exclusion for the pages they rewrite is tracked as a
+   * follow-up of #6965.
+   */
   public MutablePage updatePageVersion(final MutablePage page, final boolean isNew) throws IOException, InterruptedException {
     final PageId pageId = page.getPageId();
 
