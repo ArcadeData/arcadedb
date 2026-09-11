@@ -23,8 +23,10 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,6 +50,10 @@ class Issue7114CollectionMethodsOnArrayReceiverTest extends TestHelper {
     // THE LIST CONTROL ANSWERS THE SAME, AND A MAP RECEIVER KEEPS ITS OWN KIND
     assertThat(scalar("SELECT [3,2,1,2].remove(2) AS r")).isEqualTo(List.of(3, 1, 2));
     assertThat(scalar("SELECT {'a': 1, 'b': 2}.remove('a') AS r")).isEqualTo(Map.of("b", 2));
+    final Set<Integer> set = new LinkedHashSet<>(List.of(3, 2, 1));
+    assertThat(scalar("SELECT :p.remove(2) AS r", Map.of("p", set))).isInstanceOf(Set.class).isEqualTo(Set.of(3, 1));
+    assertThat(scalar("SELECT :p.removeAll(2) AS r", Map.of("p", set))).isInstanceOf(Set.class).isEqualTo(Set.of(3, 1));
+    assertThat(set).as("the source set is not mutated").containsExactly(3, 2, 1);
   }
 
   @Test
