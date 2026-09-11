@@ -28,6 +28,7 @@ import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
@@ -772,7 +773,7 @@ public class ServerControlPlane {
    * scheduler was running (issue #7392).
    */
   public JSONObject listBackups(final String databaseName) {
-    requireDatabaseName(databaseName);
+    requireBackupDatabaseName(databaseName);
 
     final JSONArray backups = new JSONArray();
     long totalSize = 0;
@@ -812,6 +813,16 @@ public class ServerControlPlane {
     return response;
   }
 
+  /**
+   * The database name is a path segment under the backup directory for every backup command, and {@code trigger}
+   * creates that directory, so a name with a separator or a {@code ..} must be refused before any path is built
+   * rather than caught by the file-level {@code startsWith} check that only guards the archive name.
+   */
+  private void requireBackupDatabaseName(final String databaseName) {
+    requireDatabaseName(databaseName);
+    server.checkDatabaseNameIsValid(databaseName);
+  }
+
   private static boolean isBackupArchive(final Path p) {
     final String name = p.getFileName().toString();
     return name.endsWith(".zip") && name.contains("-backup-");
@@ -830,7 +841,7 @@ public class ServerControlPlane {
    *                                   handed the other run's archive (issue #6753).
    */
   public JSONObject triggerBackup(final String databaseName) {
-    requireDatabaseName(databaseName);
+    requireBackupDatabaseName(databaseName);
 
 
     final BackupCoordinator coordinator = server.getBackupCoordinator();
@@ -873,7 +884,7 @@ public class ServerControlPlane {
    * wrote (issue #7392).
    */
   public Path resolveBackupFile(final String databaseName, final String fileName) {
-    requireDatabaseName(databaseName);
+    requireBackupDatabaseName(databaseName);
 
     // Reject anything that is not a plain backup file name.
     if (fileName.contains("/") || fileName.contains("\\") || fileName.contains("..") || fileName.isBlank()
@@ -967,7 +978,9 @@ public class ServerControlPlane {
         final String configured = new JSONObject(Files.readString(configPath)).getString("backupDirectory", null);
         if (configured != null && !configured.isBlank())
           return AutoBackupSchedulerPlugin.validateAndResolveBackupPath(configured, serverRoot);
-      } catch (final IOException e) {
+      } catch (final IOException | JSONException e) {
+        // Unreadable or malformed: the scheduler ignores such a file at start-up too, so fall through to the server
+        // setting with a warning rather than answer every backup command with an internal error.
         LogManager.instance().log(this, Level.WARNING, "Cannot read '%s', falling back to the server backup directory: %s",
             configPath, e.getMessage());
       }
