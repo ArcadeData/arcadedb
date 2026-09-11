@@ -48,7 +48,7 @@ re-check immediately before the swap catches anything that did not.
 
 ### Every creator of a database on a server
 
-```
+```text
 $ grep -rn "\.createDatabase(" --include='*.java' . | grep -v /target/ | grep -v /src/test/ \
     | grep -v "DatabaseFactory\|createDatabases\|createDatabaseInReplicas"
 ha-raft/.../ArcadeStateMachine.java:2986:    server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
@@ -85,7 +85,7 @@ A server-side database therefore comes into existence at exactly two places, bot
 
 ### Every restore that swaps a directory into place
 
-```
+```text
 $ grep -rn "performRestore\|restoreDatabase(\|restoreBackup(" --include='*.java' . \
     | grep -v /target/ | grep -v /src/test/
 server/.../ServerControlPlane.java:1289 restoreDatabase   -> performRestore:1304
@@ -122,7 +122,7 @@ so it is not the window this issue describes.
 `ArcadeDbGrpcService` keeps a `databasePool` of its own and, on a miss, opens or creates through a bare
 `DatabaseFactory`. That call is unreachable on a server:
 
-```
+```text
 $ grep -rn "new ArcadeDbGrpcService(" --include='*.java' . | grep -v /target/ | grep -v /src/test/
 grpcw/.../GrpcServerPlugin.java:262:      this.grpcService = new ArcadeDbGrpcService(databasePath, arcadeServer, ...)
 ```
@@ -222,7 +222,7 @@ than parked behind a multi-minute download.
 
 ## Test results
 
-```
+```text
 $ mvn -o -pl server test -Dtest=Issue7441RestoreNameReservationIT
 Tests run: 7, Failures: 0, Errors: 0, Skipped: 0
 ```
@@ -231,7 +231,7 @@ The tests can fail. With the two `checkDatabaseNameIsNotBeingRestored` calls and
 re-check disabled - the fix's three load-bearing lines, everything else left in place - the same
 run is:
 
-```
+```text
 Tests run: 6, Failures: 4, Errors: 0
   aCreateDatabaseOfTheRestoreTargetIsRefusedWhileTheRestoreRuns
   theHttpCreateDatabaseCommandAnswers409WhileTheNameIsReservedForARestore   expected: 409
@@ -243,7 +243,7 @@ The two that stay green are the ones that assert the claim is released, which it
 
 Regression runs:
 
-```
+```text
 $ mvn -o -pl server test -Dtest='Issue7441...,Issue7384ConcurrentRestoreIT,ServerRestoreDatabaseIT,
     ServerBackupDatabaseIT,ServerImportDatabaseIT,ServerControlPlane*Test,BackupCoordinatorTest,
     ReservedInternalDatabaseTest,ServerDefaultDatabasesIT,Issue6778DatabaseNotAvailableExceptionTest'
@@ -359,3 +359,25 @@ outside it, and confirmed the 409/`ABORTED` wiring exists rather than taking the
 it. One actionable line: the tripwire is skipped entirely under `overwrite`, which the adversarial
 table argued was not a defect but which only the tracking doc said. It is now said in
 `swapRestoredDatabase`'s own javadoc, where the next reader is.
+
+### Cycle 4 - ea0210d
+
+`claude` reviewed the rewritten swap and reported **no blocking findings**, having re-traced both
+`checkDatabaseNameIsNotBeingRestored` call sites in the current file rather than in the diff
+context, re-run the `registerDatabase` grep behind coverage row 7 itself, checked that the
+non-overwrite branch leaves no temp directory on the `FileAlreadyExistsException` path, and agreed
+with the row 10 argument. Its remaining notes - the `HashSet` under the lock, the exception's
+upward dependency, the doc's overlap with the PR body - were each recorded as already weighed and
+asked for no change.
+
+`coderabbitai` left one markdownlint nit on this file: code fences with no language. Applied - the
+six shell/output fences are now `text`. Nothing in the repo lints Markdown (`markdownlint` appears
+in neither `.github/workflows/` nor `.pre-commit-config.yaml`), so it is cosmetic, but it is free.
+
+That is the fourth and last cycle `--max-cycles=4` allows. The final commit is documentation only.
+
+## Final state
+
+`max-cycles-reached`, with the loop having exhausted its budget rather than having failed: the
+gating reviewer's verdict on the last reviewed head was clean, and the only change after it was
+this file's code fences.
