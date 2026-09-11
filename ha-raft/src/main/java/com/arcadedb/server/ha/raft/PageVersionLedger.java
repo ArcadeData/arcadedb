@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The page versions the Raft log has assigned but this node has not applied yet, per database (issue #6965).
@@ -111,7 +112,9 @@ final class PageVersionLedger {
 
   /** The reservations of one database; validation is a check-then-act, so it runs under the instance's monitor. */
   private static final class DatabaseLedger {
-    private final ConcurrentHashMap<Long, Reservation> pages = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, Reservation> pages    = new ConcurrentHashMap<>();
+    /** Bumped on every release: tells a validation whether a local copy read outside the monitor may have moved. */
+    private final AtomicLong                           releases = new AtomicLong();
   }
 
   static long pageKey(final int fileId, final int pageNumber) {
@@ -132,15 +135,17 @@ final class PageVersionLedger {
 
     // The local version of a page is a cache lookup at best and a disk read at worst: it is read OUTSIDE the ledger
     // lock, for the pages that hold no reservation right now, so a cold page does not serialise every other writer of
-    // the database behind its read. It is safe to read early: the local copy only moves forward when an entry is
-    // applied, and an entry applied between this read and the lock below has released its reservation, so the value
-    // read here is at most one the lock-side check finds superseded by a reservation - never one it trusts wrongly.
+    // the database behind its read. The local copy moves forward only when an entry is applied, which also releases
+    // that entry's reservation and bumps the release counter: if the counter has not moved by the time the lock is
+    // taken, no page can have changed since the early read; if it has, the values are re-read under the lock.
+    final long releasesBefore = ledger.releases.get();
     final int[] localVersions = new int[pages.count()];
     for (int i = 0; i < pages.count(); i++)
       localVersions[i] = ledger.pages.containsKey(pageKey(pages.fileIds()[i], pages.pageNumbers()[i])) ? -1 :
           local.versionOf(pages.fileIds()[i], pages.pageNumbers()[i]);
 
     synchronized (ledger) {
+      final boolean earlyReadsValid = ledger.releases.get() == releasesBefore;
       // Validate everything first: an entry is refused as a whole, so no page of a refused entry may stay reserved.
       for (int i = 0; i < pages.count(); i++) {
         final int fileId = pages.fileIds()[i];
@@ -152,8 +157,8 @@ final class PageVersionLedger {
           reserved = null;
         final int expected;
         if (reserved == null)
-          // A page that carried a reservation at the early read and lost it since is read here, under the lock.
-          expected = localVersions[i] >= 0 ? localVersions[i] : local.versionOf(fileId, pageNumber);
+          // A page read early while nothing was released since keeps that value; otherwise it is read under the lock.
+          expected = earlyReadsValid && localVersions[i] >= 0 ? localVersions[i] : local.versionOf(fileId, pageNumber);
         else if (reserved.entry.equals(entry))
           // The same request, retried by Ratis: it is validated against the base it reserved from.
           expected = reserved.version - 1;
@@ -169,16 +174,27 @@ final class PageVersionLedger {
     }
   }
 
-  /** Marks the reservations of an entry as backed by the log: the entry has been appended at its final position. */
-  void confirmAppended(final String databaseName, final Pages pages, final EntryId entry) {
+  /**
+   * Marks the reservations of an entry as backed by the log: the entry is being appended at its final position.
+   *
+   * @return {@code false} when at least one of the entry's pages is no longer reserved by it - the entry was delayed
+   * past {@link #STALE_RESERVATION_MS} and a later entry took the page over - so appending it would put two entries
+   * with the same target version in the log; {@code true} when every page is still the entry's own (or the ledger of
+   * the database is gone, which means nothing in flight can conflict with it any more)
+   */
+  boolean confirmAppended(final String databaseName, final Pages pages, final EntryId entry) {
     final DatabaseLedger ledger = byDatabase.get(databaseName);
     if (ledger == null)
-      return;
+      return true;
+    boolean owned = true;
     for (int i = 0; i < pages.count(); i++) {
       final Reservation reserved = ledger.pages.get(pageKey(pages.fileIds()[i], pages.pageNumbers()[i]));
       if (reserved != null && reserved.entry.equals(entry))
         reserved.appended = true;
+      else
+        owned = false;
     }
+    return owned;
   }
 
   /**
@@ -197,6 +213,7 @@ final class PageVersionLedger {
       if (reserved != null && reserved.version == pages.versions()[i])
         ledger.pages.remove(key, reserved);
     }
+    ledger.releases.incrementAndGet();
   }
 
   /**

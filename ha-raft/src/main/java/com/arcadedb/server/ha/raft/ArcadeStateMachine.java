@@ -52,6 +52,7 @@ import org.apache.ratis.protocol.RaftClientRequest;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftGroupMemberId;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.protocol.exceptions.StateMachineException;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.RaftLog;
@@ -1830,8 +1831,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   @Override
   public TransactionContext preAppendTransaction(final TransactionContext trx) throws IOException {
-    if (trx.getStateMachineContext() instanceof AppendedEntry appended)
-      pageVersions.confirmAppended(appended.decoded().databaseName(), appended.pages(), appended.entryId());
+    if (trx.getStateMachineContext() instanceof AppendedEntry appended
+        && !pageVersions.confirmAppended(appended.decoded().databaseName(), appended.pages(), appended.entryId())) {
+      // The entry was delayed between its reservation and this append for longer than the ledger trusts an
+      // unconfirmed reservation, and another entry took the page over in between: appending it now would put two
+      // entries with the same target version in the log, the exact splice this ledger exists to prevent. Refusing
+      // from here costs one Ratis pending-write permit (see startTransaction), which is why every other refusal
+      // lives there; this one is the last line of defence for a window that only a wedged leader opens.
+      final ConcurrentModificationException conflict = new ConcurrentModificationException(
+          "Concurrent modification on database '" + appended.decoded().databaseName()
+              + "': the transaction was delayed on the leader and its pages were taken over by a later transaction. "
+              + "Please retry the operation");
+      LogManager.instance().log(this, Level.WARNING,
+          "Refusing to append tx %d on database '%s' whose page reservation expired before the append: %s",
+          peekWalTransactionId(appended.decoded().walData()), appended.decoded().databaseName(), conflict.getMessage());
+      throw new StateMachineException(conflict.getMessage(), conflict, false);
+    }
     return trx;
   }
 
@@ -1970,6 +1985,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       published = true;
     } catch (final Throwable t) {
       failure = t;
+      if (t instanceof Error error)
+        // An Error (out of memory, a linkage failure) is not something to reconcile from: the claim is still resolved
+        // in the finally so the committing thread wakes, then the Error reaches applyTransaction's fatal-halt path.
+        throw error;
       try {
         LogManager.instance().log(this, Level.SEVERE,
             "Publishing the pages of locally-originated tx %d on database '%s' failed at log index %d after the entry was "
@@ -1978,7 +1997,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
         final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
         db.getTransactionManager().applyChanges(deserializeWalTransaction(decoded.walData()), decoded.bucketRecordDelta(), true);
         reconciled = true;
-      } catch (final Throwable reconcileError) {
+      } catch (final Error reconcileError) {
+        throw reconcileError;
+      } catch (final Exception reconcileError) {
         LogManager.instance().log(this, Level.SEVERE,
             "Reconciling the pages of tx %d on database '%s' from the replicated payload also failed: %s",
             local.walTxId(), decoded.databaseName(), reconcileError.getMessage());

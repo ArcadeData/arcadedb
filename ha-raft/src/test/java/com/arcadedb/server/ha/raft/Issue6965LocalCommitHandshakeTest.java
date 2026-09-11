@@ -239,6 +239,21 @@ class Issue6965LocalCommitHandshakeTest {
     assertThat(stateMachine.pendingLocalCommits()).as("the withdrawal removed the registration").isZero();
   }
 
+  /** MAJORITY committed, ALL watch failed, and no apply thread ever claimed the entry: the committing thread publishes. */
+  @Test
+  void aMajorityCommitNobodyClaimedIsPublishedByTheCommittingThread() {
+    when(broker.replicateTransaction(anyString(), any(), any()))
+        .thenThrow(new MajorityCommittedAllFailedException("ALL quorum not reached"));
+
+    assertThatThrownBy(() -> database.replicateAndCommitLocally(payload, true, stateMachine))
+        .isInstanceOf(MajorityCommittedAllFailedException.class);
+
+    verify(tx).commit2ndPhase(any());
+    verify(tx, never()).completeCommit();
+    verify(proxied, never()).rollback();
+    assertThat(stateMachine.pendingLocalCommits()).isZero();
+  }
+
   /** Without a state machine nobody can publish at the log position, so the committing thread does, as before. */
   @Test
   void withoutAStateMachineTheCommittingThreadPublishes() {

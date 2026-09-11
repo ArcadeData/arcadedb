@@ -608,7 +608,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       HALog.log(this, HALog.BASIC,
           "ALL quorum watch failed after MAJORITY commit; completing the local commit to prevent leader divergence: db=%s",
           getName());
-      concludeAfterMajorityCommit(local, payload);
+      concludeAfterMajorityCommit(local, stateMachine, payload);
       throw e;
     } catch (final ReplicationDispatchedTimeoutException e) {
       // INDETERMINATE outcome (issue #4790): the entry was dispatched to Ratis but the quorum wait timed out before we
@@ -824,9 +824,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Completes the local commit after a MAJORITY commit whose ALL-quorum watch failed. The caller reports the watch
    * failure itself, so a local failure here is logged and recovered from (reconcile, step down) rather than surfaced.
    */
-  private void concludeAfterMajorityCommit(final LocalCommit local, final ReplicationPayload payload) {
+  private void concludeAfterMajorityCommit(final LocalCommit local, final ArcadeStateMachine stateMachine,
+      final ReplicationPayload payload) {
     try {
-      if (local != null)
+      // Same rule as the acknowledged path: a registration the apply thread never claimed means no apply ran for the
+      // entry here, so this thread publishes rather than waiting for a claim that cannot come.
+      if (local != null && !stateMachine.withdrawLocalCommit(local))
         concludeLocalCommit(local, payload);
       else
         commitLocallyWithoutStateMachine(payload);
