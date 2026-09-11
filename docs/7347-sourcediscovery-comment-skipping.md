@@ -1,7 +1,9 @@
 # #7347 - SourceDiscovery never actually skips leading `#` or `//` comment lines
 
-/ Issue: https://github.com/ArcadeData/arcadedb/issues/7347
-/ Branch: `fix/7347-sourcediscovery-comment-skip`
+Issue: https://github.com/ArcadeData/arcadedb/issues/7347
+PR: https://github.com/ArcadeData/arcadedb/pull/7492
+Branch: `fix/7347-sourcediscovery-comment-skip`
+Follow-ups filed: #7490, #7494
 
 ## Finding ledger
 
@@ -398,3 +400,41 @@ Verdict: **"No blocking issues found from an independent pass."** Three notes, n
 | `CSVImporterFormat.getDelimiter()` is permanent public API on a class outside the test's package, for a value that was previously write-only. | **Argued, no change.** The reviewer's own alternative - reflection into a private field - is worse, and the accessor is symmetric with the constructor that takes the value. Package-private would not reach the test, which lives in `com.arcadedb.integration.importer` while the class is in `...importer.format`. |
 
 No deferred items.
+
+### cycle 4 - `b183d02`
+
+`claude`, same surface; CodeRabbit rate-limited for the whole life of this PR - zero reviews, zero
+inline comments, zero threads on every one of the four head SHAs. Verdict: **"No blocking issues
+found."**
+
+The review independently re-derived the offset arithmetic rather than reading this doc's version of
+it, and separately confirmed two claims made here: that `Parser.reset()` rebuilds `is`/`reader` from
+`source.reset()` and so never consulted the mark (i.e. `parser.mark()` was dead before this change,
+not made dead by it), and that the `+1` in the `//` branch of `skipComments()` accounts for the
+`nextChar()` spent probing the second `/`.
+
+Three minor observations, all explicitly non-blocking and all already answered:
+
+| Item | Disposition |
+|---|---|
+| `getDelimiter()` / package-private `analyzeSourceContent()` are a small permanent API footprint. "The PR's own reasoning is reasonable; just flagging." | No change - the same item as cycle 3, answered there. |
+| `isAvailable()` is now called once per character while skipping. "Not a hot-path concern, and the sharper reliance on `isAvailable()`'s EOF-detection gap is already tracked as #7494." | No change - tracked. |
+| The remote double-fetch "is real but bounded, and its cost is documented directly on `MAX_COMMENT_LINES`'s Javadoc, which is the right place". | No change - that is where cycle 3 put it. |
+
+Working tree empty, nothing applied, no deferred items.
+
+## Final state
+
+**clean-approval**, after 4 review cycles.
+
+| Cycle | Head | What it produced |
+|---|---|---|
+| 1 | `b3d5b32` | bare-`'\r'` line terminators handled in `skipLine()`; the four-defect narration in `analyzeText`'s comment trimmed |
+| 2 | `e6ee095` | two carriage-return branches separated by distinct tests, one salvaged and corrected from the stray Phase 1.5 subagent's edits, one written to pin the branch it claimed to |
+| 3 | `0320efb` | #7494 filed after verifying it; the replay cost moved onto `MAX_COMMENT_LINES`'s own Javadoc |
+| 4 | `b183d02` | nothing - no blocking issues, no actionable items, empty working tree |
+
+No deferred items in any cycle. Every review item was applied, argued with evidence, or filed as an
+issue - none was skipped silently.
+
+**Merge is the developer's.** This work never merges or closes the PR.
