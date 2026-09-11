@@ -43,7 +43,6 @@ import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IPAddressBlocklist;
-import com.arcadedb.utility.ProgressCallback;
 
 import java.io.File;
 import java.io.IOException;
@@ -1224,14 +1223,9 @@ public class ServerControlPlane {
    */
   private static final int    RESTORE_STEPS          = 3;
   /**
-   * Deliberately a copy of {@code AbstractRestoreFormat.RESTORE_STEP_NAME} rather than a reference to it:
-   * {@code arcadedb-integration} is an optional dependency reached only reflectively, so the server cannot name
-   * its constants at compile time. The two only have to agree so that the marker published before the restorer
-   * exists reads the same as the reports the restorer then sends; a drift costs a changed label mid-step and
-   * nothing more.
+   * The step this path adds over {@link RestoreProgress}'s two: replication is the control plane's alone, so it
+   * lives here rather than in the shared holder.
    */
-  private static final String RESTORE_STEP_EXTRACT   = "Restoring files";
-  private static final String RESTORE_STEP_ACTIVATE  = "Activating database";
   private static final String RESTORE_STEP_REPLICATE = "Replicating to the cluster";
 
   /**
@@ -1534,9 +1528,9 @@ public class ServerControlPlane {
     // swap and replication alike - as runImport publishes the import (issue #7385). Before this, a restore that
     // ran for minutes left the endpoint reporting an idle database that was in fact being replaced. Unlike the
     // import, which has no record total to count against and can only publish a coarse marker, the restore
-    // reports real counters: see restoreProgressCallback below. Always retired in the finally.
+    // reports real counters: see RestoreProgress.installCallback below. Always retired in the finally.
     final OperationProgress progress = OperationProgressRegistry.instance().register(databaseName, operation);
-    progress.onProgress(RESTORE_STEP_EXTRACT, 1, RESTORE_STEPS, 0, -1);
+    progress.onProgress(RestoreProgress.STEP_EXTRACT, 1, RESTORE_STEPS, 0, -1);
     try {
       try {
         final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
@@ -1546,7 +1540,7 @@ public class ServerControlPlane {
         // default, or a per-server override that let the command through would still have the fetch refuse it.
         clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(restorer, isRestoreImportLocalUrlsAllowed());
         clazz.getMethod("setLogger", loggerClass()).invoke(restorer, progressLogger(listener));
-        installRestoreProgressCallback(clazz, restorer, progress);
+        RestoreProgress.installCallback(clazz, restorer, progress, RESTORE_STEPS);
 
         listener.onProgress("Downloading and restoring " + databaseName + "...");
         clazz.getMethod("restoreDatabase").invoke(restorer);
@@ -1561,7 +1555,7 @@ public class ServerControlPlane {
         throw e;
       }
 
-      progress.onProgress(RESTORE_STEP_ACTIVATE, 2, RESTORE_STEPS, 0, -1);
+      progress.onProgress(RestoreProgress.STEP_ACTIVATE, 2, RESTORE_STEPS, 0, -1);
       swapRestoredDatabase(databaseName, finalDir, tempDir);
 
       // A no-op outside HA, and minutes inside it: forceSnapshot makes every replica pull the restored files.
@@ -1571,26 +1565,6 @@ public class ServerControlPlane {
       // frame, gRPC a final message with completed=true, and a synchronous caller just returns.
     } finally {
       OperationProgressRegistry.instance().unregister(progress);
-    }
-  }
-
-  /**
-   * Installs {@code progress} as the restorer's progress callback, renumbering the format's own step - which is
-   * always 1 of 1, because the integration module knows nothing of the swap and replicate phases that follow it -
-   * into step 1 of this method's three (issue #7385).
-   * <p>
-   * Best-effort, like {@code importerContext}: a build of {@code arcadedb-integration} without the setter reports
-   * no counters rather than failing the restore. Progress is a convenience; the restore is what the caller asked
-   * for.
-   */
-  private static void installRestoreProgressCallback(final Class<?> restoreClass, final Object restorer,
-      final OperationProgress progress) {
-    final ProgressCallback callback =
-        (stepName, stepIndex, totalSteps, done, total) -> progress.onProgress(stepName, 1, RESTORE_STEPS, done, total);
-    try {
-      restoreClass.getMethod("setProgressCallback", ProgressCallback.class).invoke(restorer, callback);
-    } catch (final ReflectiveOperationException ignored) {
-      // No setter on this build: the coarse step markers above are still published.
     }
   }
 

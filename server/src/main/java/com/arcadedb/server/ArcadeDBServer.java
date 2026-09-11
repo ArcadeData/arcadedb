@@ -58,7 +58,6 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
-import com.arcadedb.utility.ProgressCallback;
 import com.arcadedb.utility.ServerPathUtils;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -111,22 +110,17 @@ public class ArcadeDBServer {
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
 
   /**
-   * The two steps the startup {@code restore:} command publishes: extracting the archive, then opening the
-   * restored database. One fewer than {@code ServerControlPlane.performRestore}'s three - this command restores
-   * straight into the final directory, so there is no temporary directory to swap in, and it forces no cluster
-   * snapshot (issue #7440).
-   * <p>
-   * The step NAMES are deliberately a copy of the control plane's rather than a reference to them: the two are
-   * strings an operator reads, not a contract, and the modules must stay independently changeable.
+   * The two steps the startup {@code restore:} command publishes - {@link RestoreProgress#STEP_EXTRACT} then
+   * {@link RestoreProgress#STEP_ACTIVATE}. One fewer than {@code ServerControlPlane.performRestore}'s three:
+   * this command restores straight into the final directory, so there is no temporary directory to swap in, and
+   * it forces no cluster snapshot (issue #7440).
    */
-  private static final int    STARTUP_RESTORE_STEPS         = 2;
-  private static final String STARTUP_RESTORE_STEP_EXTRACT  = "Restoring files";
-  private static final String STARTUP_RESTORE_STEP_ACTIVATE = "Activating database";
+  private static final int    STARTUP_RESTORE_STEPS     = 2;
   /**
    * The label the startup restore is published under. The same one the HTTP/gRPC {@code restore database} verb
    * uses, because it is the same operation seen from a different transport.
    */
-  private static final String STARTUP_RESTORE_OPERATION     = "restore database";
+  private static final String STARTUP_RESTORE_OPERATION = "restore database";
 
   /**
    * How long the shutdown hook waits for the lifecycle lock when the server is still {@code STARTING} and has not
@@ -1479,45 +1473,29 @@ public class ArcadeDBServer {
   void restoreDatabaseFromStartupCommand(final String databaseName, final String url, final String databasePath) {
     final OperationProgress progress = OperationProgressRegistry.instance()
         .register(databaseName, STARTUP_RESTORE_OPERATION);
-    progress.onProgress(STARTUP_RESTORE_STEP_EXTRACT, 1, STARTUP_RESTORE_STEPS, 0, -1);
+    progress.onProgress(RestoreProgress.STEP_EXTRACT, 1, STARTUP_RESTORE_STEPS, 0, -1);
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
       final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, databasePath);
-      installStartupRestoreProgressCallback(clazz, restorer, progress);
+      RestoreProgress.installCallback(clazz, restorer, progress, STARTUP_RESTORE_STEPS);
 
       clazz.getMethod("restoreDatabase").invoke(restorer);
 
-      progress.onProgress(STARTUP_RESTORE_STEP_ACTIVATE, 2, STARTUP_RESTORE_STEPS, 0, -1);
+      progress.onProgress(RestoreProgress.STEP_ACTIVATE, 2, STARTUP_RESTORE_STEPS, 0, -1);
       getDatabase(databaseName);
-    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException |
-                   InstantiationException e) {
+    } catch (final InvocationTargetException e) {
+      throw new CommandExecutionException("Error on restoring database", e.getTargetException());
+    } catch (final ReflectiveOperationException e) {
+      // Everything the block above can throw that is NOT an InvocationTargetException means the optional
+      // arcadedb-integration module is absent or does not match: ClassNotFoundException, NoSuchMethodException,
+      // IllegalAccessException, InstantiationException. Caught by their common supertype so this arm reads the
+      // same as ServerControlPlane.performRestore's; the block reflects on no field, so NoSuchFieldException -
+      // the only other subtype - cannot arise here and nothing new is swallowed.
       throw new CommandExecutionException("""
           Error on restoring database, restore libs not found in \
           classpath""", e);
-    } catch (final InvocationTargetException e) {
-      throw new CommandExecutionException("Error on restoring database", e.getTargetException());
     } finally {
       OperationProgressRegistry.instance().unregister(progress);
-    }
-  }
-
-  /**
-   * Installs {@code progress} as the restorer's progress callback, renumbering the format's own step - always
-   * 1 of 1, because the integration module knows nothing of the activation that follows it - into step 1 of
-   * this command's two (issue #7440). The same arrangement {@code ServerControlPlane} uses for the restores
-   * that go through it.
-   * <p>
-   * Best-effort: a build of {@code arcadedb-integration} without the setter reports no counters rather than
-   * failing the boot. Progress is a convenience; the restore is what the operator configured.
-   */
-  private static void installStartupRestoreProgressCallback(final Class<?> restoreClass, final Object restorer,
-      final OperationProgress progress) {
-    final ProgressCallback callback = (stepName, stepIndex, totalSteps, done, total) -> progress.onProgress(stepName,
-        1, STARTUP_RESTORE_STEPS, done, total);
-    try {
-      restoreClass.getMethod("setProgressCallback", ProgressCallback.class).invoke(restorer, callback);
-    } catch (final ReflectiveOperationException ignored) {
-      // No setter on this build: the coarse step markers above are still published.
     }
   }
 
