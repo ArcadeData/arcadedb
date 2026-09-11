@@ -26,6 +26,7 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -242,8 +243,62 @@ class PageVersionLedgerTest {
         .isInstanceOf(ReplicationException.class);
   }
 
+  /**
+   * The confirmation of a delayed entry and the stale-replacement of its reservation by a concurrent validation are
+   * atomic: exactly one of the two entries wins, never both (which would put two entries with the same target version
+   * in the log), never neither.
+   */
+  @Test
+  void confirmationAndStaleReplacementAreAtomic() throws Exception {
+    final byte[] delayed = wal(1, new Page(3, 0, 1));
+    final byte[] newcomer = wal(2, new Page(3, 0, 1));
+    for (int round = 0; round < 500; round++) {
+      final PageVersionLedger contended = new PageVersionLedger();
+      contended.validateAndReserve(DB, PageVersionLedger.parse(delayed), entry(1), localVersions);
+      backdate(contended, DB, 3, 0, PageVersionLedger.STALE_RESERVATION_MS + 1);
+
+      final CountDownLatch start = new CountDownLatch(1);
+      final boolean[] delayedConfirmed = new boolean[1];
+      final boolean[] newcomerAccepted = new boolean[1];
+      final Thread confirmer = Thread.ofPlatform().unstarted(() -> {
+        awaitLatch(start);
+        delayedConfirmed[0] = contended.confirmAppended(DB, PageVersionLedger.parse(delayed), entry(1));
+      });
+      final Thread validator = Thread.ofPlatform().unstarted(() -> {
+        awaitLatch(start);
+        try {
+          contended.validateAndReserve(DB, PageVersionLedger.parse(newcomer), entry(2), localVersions);
+          newcomerAccepted[0] = true;
+        } catch (final ConcurrentModificationException | IOException refused) {
+          newcomerAccepted[0] = false;
+        }
+      });
+      confirmer.start();
+      validator.start();
+      start.countDown();
+      confirmer.join();
+      validator.join();
+
+      assertThat(delayedConfirmed[0] && newcomerAccepted[0]).as("round %d: both entries cannot win the page", round).isFalse();
+      assertThat(delayedConfirmed[0] || newcomerAccepted[0]).as("round %d: one of them must", round).isTrue();
+    }
+  }
+
+  private static void awaitLatch(final CountDownLatch latch) {
+    try {
+      latch.await();
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
   /** Ages a reservation, since the staleness bound is measured on the wall clock. */
   private void backdate(final String database, final int fileId, final int pageNumber, final long byMs) throws Exception {
+    backdate(ledger, database, fileId, pageNumber, byMs);
+  }
+
+  private static void backdate(final PageVersionLedger ledger, final String database, final int fileId, final int pageNumber,
+      final long byMs) throws Exception {
     final Field byDatabase = PageVersionLedger.class.getDeclaredField("byDatabase");
     byDatabase.setAccessible(true);
     final Object databaseLedger = ((Map<?, ?>) byDatabase.get(ledger)).get(database);

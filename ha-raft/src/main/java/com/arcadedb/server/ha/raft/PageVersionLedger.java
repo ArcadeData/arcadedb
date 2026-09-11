@@ -186,15 +186,20 @@ final class PageVersionLedger {
     final DatabaseLedger ledger = byDatabase.get(databaseName);
     if (ledger == null)
       return true;
-    boolean owned = true;
-    for (int i = 0; i < pages.count(); i++) {
-      final Reservation reserved = ledger.pages.get(pageKey(pages.fileIds()[i], pages.pageNumbers()[i]));
-      if (reserved != null && reserved.entry.equals(entry))
-        reserved.appended = true;
-      else
-        owned = false;
+    // Under the same monitor as validateAndReserve: the ownership check and the confirmation must be atomic with the
+    // stale-replacement a concurrent validation can perform, or a confirmation could mark a reservation the map has
+    // just replaced and let both entries append.
+    synchronized (ledger) {
+      boolean owned = true;
+      for (int i = 0; i < pages.count(); i++) {
+        final Reservation reserved = ledger.pages.get(pageKey(pages.fileIds()[i], pages.pageNumbers()[i]));
+        if (reserved != null && reserved.entry.equals(entry))
+          reserved.appended = true;
+        else
+          owned = false;
+      }
+      return owned;
     }
-    return owned;
   }
 
   /**
