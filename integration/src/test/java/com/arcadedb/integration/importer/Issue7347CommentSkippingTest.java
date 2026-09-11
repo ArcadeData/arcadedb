@@ -325,6 +325,23 @@ class Issue7347CommentSkippingTest {
         .isEqualTo(",");
   }
 
+  /**
+   * A source whose only line terminator is a bare {@code '\r'} - classic-Mac style. Nothing else in this file's
+   * line handling knows about it, so such a source is still not READ correctly; but a {@code skipLine()} that only
+   * stops on {@code '\n'} finds no line ends at all in one, so the first comment line swallows the whole source and
+   * sniffing is left with nothing to look at. Raised in review on the first push of #7347's PR.
+   */
+  @Test
+  void aSourceTerminatedOnlyByCarriageReturnsStillHasItsCommentBlockSkipped() throws Exception {
+    // Semicolons in the comment and commas in the data: the delimiter alone says which of the two was sniffed
+    final FormatImporter format = detect("bare-cr", "#;generated;by;something\rid,name\r1,first\r2,second\r");
+
+    assertThat(format).isInstanceOf(CSVImporterFormat.class);
+    assertThat(((CSVImporterFormat) format).getDelimiter())
+        .as("the ',' of the data, not the ';' of the comment and not nothing at all")
+        .isEqualTo(",");
+  }
+
   /** A source that is nothing but comments has no data line to sniff, and saying so is the right answer. */
   @Test
   void aSourceThatIsAllCommentsIsStillUndeterminable() {

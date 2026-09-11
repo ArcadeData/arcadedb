@@ -137,6 +137,7 @@ switch, before sniffing.
 | the separator scan, for a commented delimited source | yes | yes - `theSeparatorOfACommentedDelimitedSourceIsTakenFromItsFirstDataLine`, `theSeparatorOfASlashCommentedDelimitedSourceIsTakenFromItsFirstDataLine` |
 | a commented source at LOAD time (the format layer): `//` for every format, and `#` for XML/JSON | no - **filed as #7490** | n/a |
 | a blank line between the comment block and the data | yes | yes - `aBlankLineBetweenTheCommentBlockAndTheDataIsSkippedToo`, `aLeadingBlankLineIsSkipped` |
+| a source whose only line terminator is a bare `'\r'` | yes, for the comment block | yes - `aSourceTerminatedOnlyByCarriageReturnsStillHasItsCommentBlockSkipped` |
 | the user's `-delimiter` on the newly-live `analyzeChar` dispatch | yes | yes - `anExplicitDelimiterStillWinsOnTheNewlyLiveDispatch` |
 | a `#` comment appearing after the first data line | no - **argued**, see Residual risk | n/a |
 | a comment line preceded by whitespace | no - **argued**, see Residual risk | n/a |
@@ -160,8 +161,11 @@ correct for them. Only `skipLine` is a line SKIPPER whose caller's next act is t
 
 `integration/src/main/java/com/arcadedb/integration/importer/SourceDiscovery.java`
 
-- `skipLine()` now consumes the newline as well, so it leaves the parser on the first character of
-  the next line, and returns how many characters it read.
+- `skipLine()` now consumes the line terminator as well, so it leaves the parser on the first
+  character of the next line, and returns how many characters it read. All three terminators end a
+  line: `"\n"`, `"\r\n"` and a bare `"\r"`. The bare `'\r'` was added in review cycle 1 - without it
+  a source that uses it as its only terminator has no line ends at all as far as this method is
+  concerned, so the first comment line swallows the whole source and sniffing is left with nothing.
 - `skipComments()` (new) advances past every leading `#` comment line, `//` comment line and blank
   line in one loop rather than two, and returns the character offset of the first data line.
   Blank lines are in it because skipping the comments and then stopping on the blank line below
@@ -220,7 +224,7 @@ Full runs:
 
 | Suite | Result |
 |---|---|
-| `mvn -o -pl integration verify -DskipITs=false -DexcludedGroups=benchmark,vector` | 392 tests, 0 failures, 9 skipped (unit) + 133 tests, 0 failures (IT) |
+| `mvn -o -pl integration verify -DskipITs=false -DexcludedGroups=benchmark,vector` | 393 tests, 0 failures, 9 skipped (unit) + 133 tests, 0 failures (IT) |
 | `mvn -o -pl gremlin-it verify -DskipITs=false -DexcludedGroups=benchmark,vector,slow` | 1926 tests, 0 failures, 544 skipped - includes `GraphMLImporterIT`, `GraphSONImporterIT`, `Issue6751GraphSONMultiPropertyTest` |
 
 (the `gremlin` module itself skips its own tests by design - they run in `gremlin-it` against the
@@ -268,7 +272,12 @@ What this does NOT cover:
    source re-opens the connection. The reset itself is not new - the `parser.reset()` this replaces
    was unconditional at the same point - but the prefix that gets read before it is. Bounded by
    `MAX_COMMENT_LINES`.
-6. **`Parser.mark()` is now dead.** `grep -rn "\.mark()" integration/src` finds no call site. It was
+6. **The rest of `SourceDiscovery`'s line handling is still `'\n'`-only.** `skipLine()` now ends a
+   line on a bare `'\r'`, but the separator scan and `analyzeChar()` do not, so a classic-Mac source
+   has its comment block skipped and then its whole remainder read as one line. Not made worse by
+   this change and not fixed by it either; `aSourceTerminatedOnlyByCarriageReturnsStillHasItsCommentBlockSkipped`
+   pins the half that is.
+7. **`Parser.mark()` is now dead.** `grep -rn "\.mark()" integration/src` finds no call site. It was
    already inert: `Parser.reset()` rebuilds the stream from `Source.reset()` and never reads the
    mark. Left in place because it is public API on a public class; removing it is a larger change
    than this bugfix.
@@ -299,3 +308,23 @@ Findings and dispositions:
 | 4 | The comment prefix is skipped by sniffing and handed to the format intact. Probing the four formats on this branch showed the gap is wider than the `//` it was first written up as: a `#`-commented XML or JSONL source is now recognised correctly and then dies in the XML/JSON parser. Only univocity's `#` is skipped downstream. | **Filed as #7490** (out of scope: the fix is in the format layer, not in `SourceDiscovery`). The issue was retitled and rewritten once the probe showed the wider scope, and the overstated "`#` works end to end" claims in the code and test Javadoc were corrected. |
 | 5 | The issue's suggested fix says the loops "should not `reset()` past the lines they consumed", and the patch does reset (inside `rewindTo`). | **Not real.** The literal suggestion is wrong: `analyzeChar()` CONSUMES the line it inspects (`SourceDiscovery.java`, the `while (parser.isAvailable() && parser.nextChar() != '\n')` inside its `<`/`_` arm), so a source whose first data line starts with `<` but is neither XML nor a triple would leave the separator scan reading the SECOND data line. Rewinding to the recorded offset is the same thing the suggestion asks for - the scan sees the first data line - reached differently. |
 | 6 | `Parser.mark()` is now called from nowhere: `grep -rn "\.mark()" integration/src` returns no hits at all. | **Not real** as a defect, and deliberately not removed: it is public API on a public class, and it has been inert since long before this change - `Parser.reset()` rebuilds the stream from `source.reset()` and never reads the mark. Deleting public API is a larger change than this bugfix. |
+
+## Review cycles
+
+### cycle 1 - `b3d5b32` (first push)
+
+`claude` reviewed on the PR as an issue comment (its surface on this org's repos). CodeRabbit was
+rate-limited on this PR - "Review limit reached ... You've used all 4 included reviews currently
+available" - and left no review, no inline comment and no thread, so `claude` is the only reviewer
+this cycle had.
+
+The review traced the offset bookkeeping character by character against `Parser`'s semantics and
+found no case where `rewindTo` lands one character off. Three items, dispositions:
+
+| Item | Disposition |
+|---|---|
+| A source whose only line terminator is a bare `'\r'`: `skipLine()` stops only on `'\n'`, so the first comment line swallows the whole source. Raised as pre-existing and non-blocking. | **Applied.** Non-blocking as raised, but the OUTCOME does change under this patch - the old code rewound to the start and sniffed the whole file as one line, the new one rewinds past everything and throws "Cannot determine the file type". `skipLine()` now ends a line on `"\n"`, `"\r\n"` or a bare `"\r"`, and `aSourceTerminatedOnlyByCarriageReturnsStillHasItsCommentBlockSkipped` was verified to be the ONLY test that goes red when that handling is removed. |
+| The inline comments narrate the historical bug at length; "worth a maintainer call on whether to trim it, not a correctness issue", and the review itself notes the file's existing `ISSUE #NNNN` comments make this consistent with local convention. | **Partly applied.** The blow-by-blow of all four defects in `analyzeText` was cut to three lines: it is duplicated verbatim in the test Javadoc, this doc and the PR body, so the code comment was the copy carrying the least. The issue reference and the reason the replacement is shaped as it is were kept - the file's own convention, which the review confirms. |
+| `CSVImporterFormat.getDelimiter()` and package-private `analyzeSourceContent()` are narrowly-scoped test-only accessors with no behavioural effect - "reasonable". | No change. |
+
+No deferred items.

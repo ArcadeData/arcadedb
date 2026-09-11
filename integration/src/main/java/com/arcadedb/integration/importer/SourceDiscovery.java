@@ -354,29 +354,24 @@ public class SourceDiscovery {
       final String userDelimiter) throws IOException {
     FormatImporter format = null;
 
-    // SKIP THE LEADING COMMENT LINES, THEN DISPATCH ON THE FIRST CHARACTER OF THE LINE THAT FOLLOWS THEM. WHAT WAS
-    // HERE WERE TWO LOOPS THAT DID NEITHER (ISSUE #7347): skipLine() STOPPED ON THE '\n' IT HAD JUST READ RATHER
-    // THAN ON THE NEXT LINE'S FIRST CHARACTER, SO analyzeChar() WAS ALWAYS CALLED ON '\n' AND COULD NEVER MATCH,
-    // THE '#' LOOP'S OWN CONDITION RE-READ THAT SAME '\n' AND SO RAN AT MOST ONCE, THE '//' LOOP RAN AFTER A
-    // reset() THAT LEAVES getCurrentChar() AT 0 AND SO NEVER RAN AT ALL, AND THAT reset() ALSO GAVE BACK THE ONE
-    // LINE THE '#' LOOP HAD CONSUMED - SO THE SEPARATOR SCAN BELOW READ THE COMMENT ITSELF AS THE FIRST DATA LINE.
+    // SKIP THE LEADING COMMENT LINES, THEN DISPATCH ON THE FIRST CHARACTER OF THE LINE THAT FOLLOWS THEM. THE TWO
+    // LOOPS THIS REPLACES DID NEITHER, SO THE SEPARATOR SCAN BELOW READ THE COMMENT ITSELF AS THE FIRST DATA LINE
+    // (ISSUE #7347)
     final long commentChars = skipComments(parser);
 
     if (commentChars > 0) {
-      // THE SOURCE OPENS WITH COMMENTS, SO THE FIRST-CHARACTER DISPATCH HAS NOT YET SEEN A DATA LINE:
-      // analyzeSourceContent() RAN IT ON THE COMMENT'S OWN FIRST CHARACTER. THIS IS THE CALL THAT LETS A COMMENTED
-      // N-TRIPLES, XML OR JSON SOURCE BE RECOGNISED AS ONE. GUARDED ON commentChars RATHER THAN UNCONDITIONAL SO A
-      // SOURCE WITH NO COMMENTS IS NOT DISPATCHED ON TWICE, THE SECOND TIME FROM WHEREVER THE FIRST CALL LEFT THE
-      // PARSER.
+      // analyzeSourceContent() RAN THE FIRST-CHARACTER DISPATCH ON THE COMMENT'S OWN FIRST CHARACTER, SO THIS IS THE
+      // CALL THAT LETS A COMMENTED N-TRIPLES, XML OR JSON SOURCE BE RECOGNISED AS ONE. GUARDED ON commentChars SO A
+      // SOURCE WITHOUT COMMENTS IS NOT DISPATCHED ON TWICE, THE SECOND TIME FROM WHEREVER THE FIRST CALL LEFT THE
+      // PARSER
       format = analyzeChar(parser, settings, userDelimiter);
       if (format != null)
         return format;
     }
 
     // BACK TO THE FIRST CHARACTER OF THE FIRST LINE THAT CARRIES CONTENT, WHICH THE SEPARATOR SCAN BELOW HAS TO SEE:
-    // analyzeChar() CONSUMES THE LINE IT INSPECTS WHENEVER IT DISPATCHES ON IT, AND analyzeSourceContent() HAS
-    // ALREADY CALLED IT ONCE ON THE FIRST LINE OF THE SOURCE. WITH NO COMMENTS (commentChars == 0) THIS REWINDS TO
-    // THE START OF THE SOURCE, WHICH IS WHAT THE reset() IT REPLACES DID.
+    // analyzeChar() CONSUMES THE LINE IT INSPECTS WHENEVER IT DISPATCHES ON IT. WITH NO COMMENTS THIS REWINDS TO THE
+    // START OF THE SOURCE, WHICH IS WHAT THE reset() IT REPLACES DID
     rewindTo(parser, commentChars);
 
     try {
@@ -647,24 +642,40 @@ public class SourceDiscovery {
   }
 
   /**
-   * Consumes the rest of the line the parser is on AND the newline that ends it, so that {@link
+   * Consumes the rest of the line the parser is on AND the terminator that ends it, so that {@link
    * Parser#getCurrentChar()} holds the first character of the NEXT line when this returns - or the last character of
-   * the source when it has no trailing newline.
+   * the source when it has no trailing terminator.
    * <p>
    * Stopping on the {@code '\n'} instead is what made comment skipping a no-op for as long as it has existed
    * (issue #7347): every caller inspects {@code getCurrentChar()} straight afterwards, and {@code '\n'} answers no
    * question either of them asks.
+   * <p>
+   * All three terminators end a line here - {@code "\n"}, {@code "\r\n"} and a bare {@code "\r"}. The bare
+   * {@code '\r'} is in because without it a source that uses it as its only terminator has no line ends at all as
+   * far as this method is concerned, so the first comment line swallows the whole source and sniffing is left with
+   * nothing to look at. The rest of the file's line handling is still {@code '\n'}-only, so such a source is not
+   * yet READ correctly - but its comment block is skipped, which is this method's job.
    *
    * @return the number of characters read, so the caller can rewind to exactly this position with {@link #rewindTo}
    */
   private long skipLine(final Parser parser) throws IOException {
     long consumed = 0;
-    while (parser.getCurrentChar() != '\n') {
+    while (parser.getCurrentChar() != '\n' && parser.getCurrentChar() != '\r') {
       if (!parser.isAvailable())
-        // NO TRAILING NEWLINE: THE SOURCE ENDS ON THIS LINE
+        // NO TRAILING TERMINATOR: THE SOURCE ENDS ON THIS LINE
         return consumed;
       parser.nextChar();
       ++consumed;
+    }
+
+    if (parser.getCurrentChar() == '\r') {
+      if (!parser.isAvailable())
+        return consumed;
+      parser.nextChar();
+      ++consumed;
+      if (parser.getCurrentChar() != '\n')
+        // A BARE '\r' ENDED THE LINE, SO THE PARSER IS ALREADY ON THE NEXT ONE
+        return consumed;
     }
 
     if (parser.isAvailable()) {
