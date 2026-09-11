@@ -5700,9 +5700,13 @@ function stepsHaveCost(steps) {
  */
 function stepTotalCost(step) {
   if (step.totalCost != null && step.totalCost >= 0) return step.totalCost;
+  // The fallback walks the subtree, and renderFlameRow asks for every node on its way down; remember the answer on
+  // the node so a deep plan is summed once rather than once per ancestor.
+  if (step._subtreeCost != null) return step._subtreeCost;
   var total = step.cost != null && step.cost > 0 ? step.cost : 0;
   if (step.subSteps)
     for (var i = 0; i < step.subSteps.length; i++) total += stepTotalCost(step.subSteps[i]);
+  step._subtreeCost = total;
   return total;
 }
 
