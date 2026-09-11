@@ -150,12 +150,13 @@ public class PageManager extends LockContext {
   private volatile PageSnapshot[] activeSnapshots = null;
   private final    Object         snapshotRegistryLock = new Object();
   /**
-   * Databases whose close is in progress (#7458): no snapshot window may open on them, and
-   * {@link #beginDatabaseClose} waits until the ones already open are released. Guarded by
-   * {@link #snapshotRegistryLock}, keyed like {@code LocalDatabase.equals} - by path - so a wrapper and the embedded
-   * instance it wraps mark the same database.
+   * Databases whose close is in progress (#7458), with the number of closers in flight: no snapshot window may open
+   * on them, and {@link #beginDatabaseClose} waits until the ones already open are released. Counted rather than a
+   * set, so two concurrent closers of the same database (a shutdown hook racing an explicit drop) keep the mark up
+   * until the LAST of them has finished, not the first. Guarded by {@link #snapshotRegistryLock}, keyed like
+   * {@code LocalDatabase.equals} - by path - so a wrapper and the embedded instance it wraps mark the same database.
    */
-  private final    Set<Database>  closingDatabases     = new HashSet<>();
+  private final    Map<Database, Integer> closingDatabases = new HashMap<>();
   /**
    * Windows that have left {@link #activeSnapshots} but whose {@code close()} has not finished releasing them: the
    * shadow may still be open and the files whose deletion they deferred may still be on disk. {@link #beginDatabaseClose}
@@ -989,7 +990,7 @@ public class PageManager extends LockContext {
       // #7458: DECIDED UNDER THE SAME MONITOR beginDatabaseClose MARKS AND WAITS UNDER, SO A WINDOW IS EITHER SEEN BY
       // THE WAITING CLOSE OR REFUSED HERE - NEVER NEITHER. A CLOSE THAT IS WAITING FOR THE OPEN WINDOWS TO DRAIN MUST
       // NOT BE POSTPONED BY NEW ONES, AND A WINDOW MUST NOT OPEN ON FILES A CLOSE IS ABOUT TO SHUT
-      refused = closingDatabases.contains(database) || !database.isOpen();
+      refused = closingDatabases.containsKey(database) || !database.isOpen();
       if (!refused) {
         final PageSnapshot[] current = activeSnapshots;
         final PageSnapshot[] updated = current == null ? new PageSnapshot[1] : Arrays.copyOf(current, current.length + 1);
@@ -1031,7 +1032,7 @@ public class PageManager extends LockContext {
   public void beginDatabaseClose(final Database database) {
     boolean interrupted = false;
     synchronized (snapshotRegistryLock) {
-      closingDatabases.add(database);
+      closingDatabases.merge(database, 1, Integer::sum);
 
       boolean logged = false;
       for (int open; (open = countSnapshotWindows(database)) > 0; ) {
@@ -1056,14 +1057,17 @@ public class PageManager extends LockContext {
 
   private boolean isDatabaseClosing(final Database database) {
     synchronized (snapshotRegistryLock) {
-      return closingDatabases.contains(database);
+      return closingDatabases.containsKey(database);
     }
   }
 
-  /** Lifts the mark set by {@link #beginDatabaseClose}. Called once the close has completed, whatever its outcome. */
+  /**
+   * Releases one closer's mark set by {@link #beginDatabaseClose}; the last one lifts it. Called once the close has
+   * completed, whatever its outcome.
+   */
   public void endDatabaseClose(final Database database) {
     synchronized (snapshotRegistryLock) {
-      closingDatabases.remove(database);
+      closingDatabases.computeIfPresent(database, (k, closers) -> closers > 1 ? closers - 1 : null);
     }
   }
 
@@ -1075,7 +1079,7 @@ public class PageManager extends LockContext {
   void snapshotReleased(final PageSnapshot snapshot) {
     synchronized (snapshotRegistryLock) {
       // ONLY A CLOSE OF THIS WINDOW'S DATABASE CAN BE WAITING FOR IT: A RELEASE ON ANOTHER DATABASE WAKES NOBODY
-      if (releasingSnapshots.remove(snapshot) && closingDatabases.contains(snapshot.getDatabase()))
+      if (releasingSnapshots.remove(snapshot) && closingDatabases.containsKey(snapshot.getDatabase()))
         snapshotRegistryLock.notifyAll();
     }
   }

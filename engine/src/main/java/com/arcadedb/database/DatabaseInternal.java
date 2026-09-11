@@ -58,7 +58,8 @@ public interface DatabaseInternal extends Database {
      * released. Exists for tests that need to check the file set and the schema file agree before any other thread
      * can observe them (issue #7457). A callback must not wait for another thread to take the database lock, and it
      * must not throw: the change is applied and saved by the time it runs, so a throw would report as failed a DDL
-     * that fully succeeded.
+     * that fully succeeded. "Saved" has the one exception every schema save has: a DDL run by a thread with a
+     * transaction open has its save postponed to the commit, so at that moment the file still predates the change.
      */
     SCHEMA_AFTER_FILE_CHANGES
   }
