@@ -1231,6 +1231,12 @@ public class ServerControlPlane {
    * The caller supplies the URL, so it is validated against
    * {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS} first.
    *
+   * <p>
+   * A target name that is already taken - see {@link #databaseNameIsTaken} - is refused outright:
+   * this command has no {@code overwrite} flag, so there is no way for the caller to say they meant
+   * it. Use {@code restore backup ... as &lt;name&gt;} with {@code overwrite}, or drop the database
+   * first.
+   *
    * @throws IllegalArgumentException when the name is invalid or the database already exists
    * @throws SecurityException        when the URL is not one this server accepts from a client
    */
@@ -1244,7 +1250,7 @@ public class ServerControlPlane {
     server.checkDatabaseNameIsValid(databaseName);
 
     final String dbPath = databaseDirectory(databaseName);
-    if (new File(dbPath).exists())
+    if (databaseNameIsTaken(databaseName, dbPath))
       throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
     performRestore(databaseName, dbPath, url, "restore database", listener);
@@ -1256,9 +1262,9 @@ public class ServerControlPlane {
    * {@link #resolveBackupFile}, so the caller never supplies a filesystem path and the resulting
    * {@code file://} URL needs no SSRF check.
    * <p>
-   * {@code overwrite} decides what happens when the target already exists. Even with it set, the
-   * existing database is dropped only once the restore into a temporary directory has succeeded
-   * (issue #5027).
+   * {@code overwrite} decides what happens when the target name is already taken, as
+   * {@link #databaseNameIsTaken} defines it. Even with it set, the existing database is dropped only
+   * once the restore into a temporary directory has succeeded (issue #5027).
    *
    * @throws IllegalArgumentException when a name is invalid, or the target exists and {@code overwrite} is false
    */
@@ -1276,11 +1282,31 @@ public class ServerControlPlane {
     final Path backupFile = resolveBackupFile(databaseName, fileName);
 
     final String dbPath = databaseDirectory(targetDatabase);
-    if ((server.existsDatabase(targetDatabase) || new File(dbPath).exists()) && !overwrite)
+    if (databaseNameIsTaken(targetDatabase, dbPath) && !overwrite)
       throw new IllegalArgumentException(
           "Database '" + targetDatabase + "' already exists. Enable overwrite to replace it with the backup");
 
     performRestore(targetDatabase, dbPath, "file://" + backupFile.toAbsolutePath(), "restore backup", listener);
+  }
+
+  /**
+   * The single question both restore entry points ask about their target: is the name already taken
+   * on this server? It is taken when the server has a database of that name registered <b>or</b> when
+   * a directory of that name is present under {@code SERVER_DATABASE_DIRECTORY}.
+   * <p>
+   * The two halves are independent. A registered database whose directory has gone - removed out of
+   * band, or dropped through the embedded instance without {@link ArcadeDBServer#removeDatabase},
+   * which {@link #dropQuietly} has to call as a separate second step - satisfies the first and not
+   * the second. A directory left behind by a half-finished operation satisfies the second and not the
+   * first.
+   * <p>
+   * Until issue #7395 the two commands disagreed here: {@code restore backup} asked both halves and
+   * {@code restore database} only the filesystem, so a registered-but-absent database was "not there"
+   * to one and "there" to the other. Both now ask the same question, which is also the one
+   * {@link ArcadeDBServer#createDatabase} already asked - the registry first, then the files.
+   */
+  private boolean databaseNameIsTaken(final String databaseName, final String dbPath) {
+    return server.existsDatabase(databaseName) || new File(dbPath).exists();
   }
 
   /**
