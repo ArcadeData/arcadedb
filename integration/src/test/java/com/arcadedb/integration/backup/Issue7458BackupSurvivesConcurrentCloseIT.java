@@ -23,6 +23,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.restore.Restore;
 import com.arcadedb.utility.FileUtils;
@@ -35,6 +37,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7458, end to end: a database close requested while a snapshot backup is streaming waits for the backup,
@@ -60,6 +63,59 @@ class Issue7458BackupSurvivesConcurrentCloseIT {
     FileUtils.deleteRecursively(new File(DATABASE_PATH));
     FileUtils.deleteRecursively(new File(RESTORED_PATH));
     new File(BACKUP_FILE).delete();
+  }
+
+  /**
+   * The other order: the close is already waiting for a window when a backup asks for one. The backup is refused
+   * outright with {@link PageSnapshotException.Reason#CLOSING} - not sent down the frozen-files retry, which exists
+   * for a shadow that ran out of room and would only race the teardown here - and leaves no archive behind.
+   */
+  @Test
+  void backupRequestedWhileACloseIsWaitingFailsFast() throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(true);
+
+    final Database database = new DatabaseFactory(DATABASE_PATH).create();
+    final DatabaseInternal internal = (DatabaseInternal) database;
+    database.getSchema().createDocumentType(TYPE);
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newDocument(TYPE).set("id", i).save();
+    });
+    final PageManager pageManager = internal.getPageManager();
+
+    final PageSnapshot window = pageManager.openSnapshot(internal);
+    final Thread closer = new Thread(database::close, "closer");
+    try {
+      closer.start();
+      // THE CLOSE HAS NO SIGNAL FOR "WAITING", SO PROBE ITS EFFECT: A NEW WINDOW IS REFUSED ONCE IT IS
+      final long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(30);
+      boolean closing = false;
+      while (!closing && System.currentTimeMillis() < deadline) {
+        try (final PageSnapshot probe = pageManager.openSnapshot(internal)) {
+          assertThat(probe.getStatus()).isEqualTo(PageSnapshot.STATUS.ACTIVE);
+        } catch (final PageSnapshotException e) {
+          closing = e.getReason() == PageSnapshotException.Reason.CLOSING;
+        }
+        Thread.sleep(10);
+      }
+      assertThat(closing).as("the close must be waiting for the window").isTrue();
+
+      final long requestedAt = System.currentTimeMillis();
+      assertThatThrownBy(() -> new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase())
+          .isInstanceOf(BackupException.class)
+          .hasCauseInstanceOf(PageSnapshotException.class)
+          .cause().hasMessageContaining("closed or closing");
+      assertThat(System.currentTimeMillis() - requestedAt).as("refused before any retry, not after a frozen-files pass")
+          .isLessThan(TimeUnit.SECONDS.toMillis(20));
+      assertThat(new File(BACKUP_FILE)).as("no partial archive survives").doesNotExist();
+      assertThat(closer.isAlive()).as("the refused backup did not let the close through either").isTrue();
+    } finally {
+      window.close();
+      closer.join(30_000);
+    }
+    assertThat(closer.isAlive()).isFalse();
+    assertThat(database.isOpen()).isFalse();
+    TestHelper.checkActiveDatabases();
   }
 
   @Test
