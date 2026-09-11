@@ -235,6 +235,11 @@ public class TraverseExecutionPlanner {
   private void handleClassAsTarget(final SelectExecutionPlan plan, final FromClause queryTarget, final CommandContext context) {
     final Identifier identifier = queryTarget.getItem().getIdentifier();
 
+    // A TRAVERSE rooted on a LIGHTWEIGHT edge type still reads the (empty by construction) bucket and answers
+    // nothing, the symptom issue #7477 fixes on the SELECT side. It is NOT routed to the walk here: the fix needs
+    // AbstractTraverseStep's dedup as well, and that keys on (bucketId, position) through RidHashSet, which every
+    // lightweight edge of a type shares - so the walk would hand TRAVERSE two edges and TRAVERSE would collapse
+    // them into one. Tracked in issue #7480.
     final Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
     final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), null, context,
         orderByRidAsc);
