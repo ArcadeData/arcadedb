@@ -68,6 +68,18 @@ public final class SecurityHelper {
   }
 
   /**
+   * Non-throwing check on ONE bucket, for a caller that opens the buckets of a type individually and wants to skip
+   * the ones it may not read rather than fail on the first: {@link #canAccessType} answers yes as soon as a single
+   * bucket of the type is readable, which is the right question for a listing and the wrong one for a scan.
+   * A {@code null} user (no security context: embedded usage or root) sees everything.
+   */
+  public static boolean canAccessFile(final DatabaseInternal database, final int fileId, final SecurityDatabaseUser.ACCESS access) {
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    final SecurityDatabaseUser user = dbContext == null ? null : dbContext.getCurrentUser();
+    return user == null || user.requestAccessOnFile(fileId, access);
+  }
+
+  /**
    * Same as {@link #canAccessType(SecurityDatabaseUser, DocumentType, SecurityDatabaseUser.ACCESS)}, resolving the
    * user bound to {@code database}'s current context. For listings that must silently hide what the caller cannot
    * see rather than fail the whole request.

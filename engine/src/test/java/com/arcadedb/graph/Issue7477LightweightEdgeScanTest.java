@@ -19,9 +19,13 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.LocalResultSet;
+import com.arcadedb.query.sql.parser.SelectStatement;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -83,6 +87,25 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     assertThat(query("select from Cite")).hasSize(2);
     // ...while the record count of the type itself is still, correctly, zero
     assertThat(database.countType("Cite", true)).isZero();
+  }
+
+  /**
+   * The target of a count can be a context variable, resolved only at execution time - so the check cannot live in
+   * the planner, where the name is still {@code $t}. It sits in {@link CountFromTypeStep} instead, and this pins
+   * that the indirection does not reopen the issue one step away from the case above (PR #7478 review).
+   */
+  @Test
+  void theCountAgreesWithTheScanThroughAVariableTargetToo() {
+    final RID[] works = newWorks(3);
+    connect("Cite", works[0], works[1]);
+    connect("Cite", works[1], works[2]);
+
+    assertThat(varTargetQuery("SELECT count(*) as c FROM $t").getFirst().<Long>getProperty("c")).isEqualTo(2L);
+    assertThat(varTargetQuery("SELECT FROM $t")).hasSize(2);
+
+    // ...and a regular edge type reached the same way is unaffected
+    connect("Wrote", works[0], works[2]);
+    assertThat(varTargetQuery("SELECT count(*) as c FROM $t", "Wrote").getFirst().<Long>getProperty("c")).isEqualTo(1L);
   }
 
   /** SKIP/LIMIT and the page boundary of the step's own {@code nRecords} batching. */
@@ -227,6 +250,26 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     for (final Result r : query(sql))
       pairs.add(r.getEdge().get().getOut() + "->" + r.getEdge().get().getIn());
     return pairs;
+  }
+
+  private List<Result> varTargetQuery(final String sql) {
+    return varTargetQuery(sql, "Cite");
+  }
+
+  /** Runs {@code sql} with {@code $t} bound to {@code typeName}, the way {@code SELECT FROM $t} is driven. */
+  private List<Result> varTargetQuery(final String sql, final String typeName) {
+    final List<Result> results = new ArrayList<>();
+    database.transaction(() -> {
+      final SelectStatement statement = (SelectStatement) ((DatabaseInternal) database).getStatementCache().get(sql);
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      context.setVariable("$t", typeName);
+      try (final ResultSet rs = new LocalResultSet(statement.createExecutionPlan(context))) {
+        while (rs.hasNext())
+          results.add(rs.next());
+      }
+    });
+    return results;
   }
 
   private String explain(final String sql) {

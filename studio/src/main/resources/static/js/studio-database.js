@@ -3390,11 +3390,13 @@ function renderTypeSidebarBadge(row, color, action) {
   let lightweight = row.lightweight === true;
   let records = (row.records || 0).toLocaleString();
   let count = lightweight ? "lightweight" : records;
-  let title = lightweight ? name + " - " + LIGHTWEIGHT_EDGE_HINT : name + " (" + records + " records)";
+  // Escaped once, off the raw name: building the title from `name` and escaping the result would escape the type
+  // name twice and show a tooltip reading "A&amp;B" for a type called "A&B".
+  let title = escapeHtml(lightweight ? row.name + " - " + LIGHTWEIGHT_EDGE_HINT : row.name + " (" + records + " records)");
   return (
     "<a class='sidebar-badge' href='#' style='background-color: " + color + "'" +
     schemaActionAttrs(action, row.name) +
-    " title='" + escapeHtml(title) + "'>" +
+    " title='" + title + "'>" +
     "<span class='sidebar-badge-name'>" + name + "</span>" +
     "<span class='sidebar-badge-count'>" + count + "</span>" +
     "</a>"
