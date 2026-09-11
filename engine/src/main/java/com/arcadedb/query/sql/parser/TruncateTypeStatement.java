@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeIndexBuilder;
@@ -66,6 +67,21 @@ public class TruncateTypeStatement extends DDLStatement {
     if (typez == null) {
       throw new CommandExecutionException("Schema Class not found: " + typeName);
     }
+
+    // TRUNCATE deletes what scanType() finds, and scanType() reads the type's buckets directly - it never goes
+    // through the planner, so the walk that issue #7477 gave SELECT and DELETE does not reach it. A lightweight
+    // edge allocates no record, so those buckets are empty by construction and the statement would report success
+    // having deleted nothing while every edge of the type is still live in the vertices holding it.
+    //
+    // It refuses instead. Silently no-opping a bulk delete is the failure #7477 is about, and it is the worse half
+    // of it: a caller who believes a TRUNCATE happened has no reason to look again. Not fixed by walking and
+    // deleting here because the walk would be mutating the very edge lists it iterates - tracked in issue #7481 -
+    // and because the caller already has an operation that does exactly this, correctly: DELETE FROM <type>.
+    if (EdgeType.holdsLightweightEdges(typez))
+      throw new CommandExecutionException("'TRUNCATE TYPE' cannot be used on '" + typeName.getStringValue()
+          + "' because it is a LIGHTWEIGHT edge type (or has one below it), whose edges are stored inside their two "
+          + "vertices and have no record for TRUNCATE to remove. Use 'DELETE FROM " + typeName.getStringValue()
+          + "' instead, which reaches them. See issue #7481");
 
     final long recs = context.getDatabase().countType(typeName.getStringValue(), polymorphic);
     if (recs > 0 && !unsafe) {
