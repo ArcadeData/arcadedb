@@ -236,3 +236,20 @@ with the same disposition rules.
 | The per-entry reports come from several worker threads, so `OperationProgress.done` can go backwards and a finished extraction could be left reading one entry short. | **Real, fixed here** before the pass, by the closing report the coordinating thread makes once every worker has been collected. Asserted by `parallelRestoreReportsEntryCountsAgainstAKnownTotal`. |
 | `done`/`total` reset to `0`/`-1` at steps 2 and 3, so a reader watching a percentage sees 100% and then "unknown". | **Not real.** `ProgressCallback`'s contract is that `done`/`total` are the units of the *current step*, and steps 2 and 3 have no countable units. `getPercentage()` returns -1, which the console and Studio already render as "no bar". |
 | A non-root user scoped to specific databases cannot poll the progress of a restore into a brand-new database, because `checkAuthorizationOnDatabase` asks `canAccessToDatabase` about a name that does not exist yet. | **Real, out of scope and pre-existing.** It is the progress endpoint's authorization rule, not something this change introduces, and it applies equally to `import database` since #7308. Not filed: refusing to report on a database the caller may not access is the endpoint behaving as designed. |
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7446
+
+### Review cycles
+
+| Cycle | Head SHA | Changes | Bot outcome |
+|---|---|---|---|
+| 1 | `30cc4ae9` | the initial implementation as described above | `claude` reviewed by manual code tracing (it reported that `mvn` was blocked by its sandbox, so it did not run the suite). Independently re-derived the two claims worth checking rather than taking the PR body's word for them: that the swap/replicate placement relative to the inner `try/catch` is unchanged from before the PR, and that the startup path at `ArcadeDBServer.java:1393-1416` really does still lack the wiring, so the #7440 gap claim is accurate. It flagged the `RESTORE_STEP_EXTRACT` / `RESTORE_STEP_NAME` literal duplication as a future-maintenance fragility and agreed the optional-dependency constraint leaves no compile-time way to share it - which is what the comment added before the PR opened already says. **No blocking issues, no actionable items.** |
+
+No changes were applied in response to the review, so no follow-up commit was needed and no deferred-items notes
+file was produced.
+
+### Final state
+
+`clean-approval` on cycle 1 of a maximum of 4.
