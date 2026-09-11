@@ -342,6 +342,41 @@ class Issue7347CommentSkippingTest {
         .isEqualTo(",");
   }
 
+  /**
+   * A STRAY bare {@code '\r'} in an otherwise line-feed-terminated source, as opposed to the all-{@code '\r'}
+   * source above. It opens a blank line, and a {@code skipLine()} that ends a line only on {@code '\n'} runs
+   * straight past it to the end of the real header, so the separator scan reads the row BELOW the header and
+   * settles on that row's delimiter instead.
+   * <p>
+   * The header uses {@code ';'} and the row below it {@code ','} - a contrived shape, deliberately: the two rows
+   * have to be told apart by which delimiter comes back, and a fixture using one delimiter throughout would pass
+   * whichever of them the scan actually read.
+   * <p>
+   * Raised in review of the second push.
+   */
+  @Test
+  void aStrayCarriageReturnDoesNotSwallowTheHeaderBelowIt() throws Exception {
+    final FormatImporter format = detect("stray-cr-csv", "\rid;name;score\n1,first,10\n2,second,20\n");
+
+    assertThat(format).isInstanceOf(CSVImporterFormat.class);
+    assertThat(((CSVImporterFormat) format).getDelimiter())
+        .as("the header 'id;name;score' is what the scan sees, not the row below it")
+        .isEqualTo(";");
+  }
+
+  /**
+   * The character after a bare {@code '\r'} belongs to the next line and must not be eaten with it. Neither
+   * carriage-return test above can see that: both end on a delimited source, where losing the first character of
+   * the data line costs one character of a column name and leaves the separator scan with the same answer. The
+   * first-character DISPATCH is where it shows, because it is the one reader that looks at exactly one character.
+   */
+  @Test
+  void theCharacterAfterABareCarriageReturnIsNotEatenWithIt() throws Exception {
+    assertThat(detect("stray-cr-json", "\r{\"id\": 1, \"name\": \"first\"}\n"))
+        .as("the dispatch has to be handed the '{', not the '\"' after it")
+        .isInstanceOf(JSONImporterFormat.class);
+  }
+
   /** A source that is nothing but comments has no data line to sniff, and saying so is the right answer. */
   @Test
   void aSourceThatIsAllCommentsIsStillUndeterminable() {

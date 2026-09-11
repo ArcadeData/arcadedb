@@ -138,6 +138,7 @@ switch, before sniffing.
 | a commented source at LOAD time (the format layer): `//` for every format, and `#` for XML/JSON | no - **filed as #7490** | n/a |
 | a blank line between the comment block and the data | yes | yes - `aBlankLineBetweenTheCommentBlockAndTheDataIsSkippedToo`, `aLeadingBlankLineIsSkipped` |
 | a source whose only line terminator is a bare `'\r'` | yes, for the comment block | yes - `aSourceTerminatedOnlyByCarriageReturnsStillHasItsCommentBlockSkipped` |
+| a STRAY bare `'\r'` in an otherwise line-feed source | yes | yes - `aStrayCarriageReturnDoesNotSwallowTheHeaderBelowIt`, `theCharacterAfterABareCarriageReturnIsNotEatenWithIt` |
 | the user's `-delimiter` on the newly-live `analyzeChar` dispatch | yes | yes - `anExplicitDelimiterStillWinsOnTheNewlyLiveDispatch` |
 | a `#` comment appearing after the first data line | no - **argued**, see Residual risk | n/a |
 | a comment line preceded by whitespace | no - **argued**, see Residual risk | n/a |
@@ -224,7 +225,7 @@ Full runs:
 
 | Suite | Result |
 |---|---|
-| `mvn -o -pl integration verify -DskipITs=false -DexcludedGroups=benchmark,vector` | 393 tests, 0 failures, 9 skipped (unit) + 133 tests, 0 failures (IT) |
+| `mvn -o -pl integration verify -DskipITs=false -DexcludedGroups=benchmark,vector` | 395 tests, 0 failures, 9 skipped (unit) + 133 tests, 0 failures (IT) |
 | `mvn -o -pl gremlin-it verify -DskipITs=false -DexcludedGroups=benchmark,vector,slow` | 1926 tests, 0 failures, 544 skipped - includes `GraphMLImporterIT`, `GraphSONImporterIT`, `Issue6751GraphSONMultiPropertyTest` |
 
 (the `gremlin` module itself skips its own tests by design - they run in `gremlin-it` against the
@@ -326,5 +327,54 @@ found no case where `rewindTo` lands one character off. Three items, disposition
 | A source whose only line terminator is a bare `'\r'`: `skipLine()` stops only on `'\n'`, so the first comment line swallows the whole source. Raised as pre-existing and non-blocking. | **Applied.** Non-blocking as raised, but the OUTCOME does change under this patch - the old code rewound to the start and sniffed the whole file as one line, the new one rewinds past everything and throws "Cannot determine the file type". `skipLine()` now ends a line on `"\n"`, `"\r\n"` or a bare `"\r"`, and `aSourceTerminatedOnlyByCarriageReturnsStillHasItsCommentBlockSkipped` was verified to be the ONLY test that goes red when that handling is removed. |
 | The inline comments narrate the historical bug at length; "worth a maintainer call on whether to trim it, not a correctness issue", and the review itself notes the file's existing `ISSUE #NNNN` comments make this consistent with local convention. | **Partly applied.** The blow-by-blow of all four defects in `analyzeText` was cut to three lines: it is duplicated verbatim in the test Javadoc, this doc and the PR body, so the code comment was the copy carrying the least. The issue reference and the reason the replacement is shaped as it is were kept - the file's own convention, which the review confirms. |
 | `CSVImporterFormat.getDelimiter()` and package-private `analyzeSourceContent()` are narrowly-scoped test-only accessors with no behavioural effect - "reasonable". | No change. |
+
+No deferred items.
+
+### cycle 2 - `e6ee095`
+
+`claude` again, on the same issue-comment surface; CodeRabbit still rate-limited, still zero reviews,
+inline comments and threads. Verdict: **"No blocking issues found."** The review re-traced the offset
+bookkeeping including the carriage-return handling added in cycle 1 and confirmed the
+`MAX_COMMENT_LINES` boundary is not off by one.
+
+Four notes, all explicitly non-blockers:
+
+| Item | Disposition |
+|---|---|
+| A remote source's comment prefix is now read twice - once by `skipComments()`, again by `rewindTo()`'s replay after `Source.reset()` re-opens the connection. "Worth confirming this is an acceptable cost." | **Argued, no change.** It is: bounded by `MAX_COMMENT_LINES`, and the `reset()` itself was already unconditional at this point. Already stated in Residual risk 5, which is where the confirmation the review asks for lives. |
+| `is.mark(0)` inside `Parser.resetInput()` now has no remaining reader. "Not worth a follow-up on its own, just flagging in case a future cleanup pass wants to fold it in." | **Argued, no change.** It was already inert before this PR - the anonymous `BufferedInputStream`'s `reset()` override sets `pos = 0` and never consults `markpos` - so this PR did not make it dead, it only removed the last `Parser.mark()` caller. Touching `Parser`'s internals is outside a `SourceDiscovery` bugfix, and the reviewer agrees it does not earn an issue. Residual risk 7. |
+| The inline comments are dense; matches the file's convention, "not flagging it as inconsistent". | **No change.** Trimmed once already in cycle 1; a second pass would start removing the reasons rather than the narration. |
+| The tracking doc is large; matches repo convention, "no concern there". | **No change.** |
+
+**Separately**, the `code-review` subagent from Phase 1.5 - which had been sitting `running` since
+before the first push, and whose findings never reached the session - turned out to be editing the
+worktree while the review loop ran. It left debug `System.out.println` calls in `SourceDiscovery`, a
+deleted comment block, a scratch `Probe7347b.java`, and one new test. The debris was discarded
+(`git show HEAD:... > ...`, which is why the pushed commits never carried it) and the test kept, but
+not as written:
+
+- its fixture (`"\rid;name;score\n1,first,10\n2,second,20\n"`) does pin something real - a stray
+  bare `'\r'` in an otherwise line-feed source, which is NOT the all-`'\r'` source cycle 1 tested -
+  so it is kept, as `aStrayCarriageReturnDoesNotSwallowTheHeaderBelowIt`;
+- its Javadoc claimed it caught "an earlier, still-buggy version of this test". Verified by removing
+  the bare-`'\r'` early return from `skipLine()` and re-running: the test stayed GREEN, so the claim
+  was wrong and the Javadoc was rewritten to say what the fixture actually separates;
+- the branch it claimed to pin - "the character after a bare `'\r'` belongs to the next line" - had
+  no test at all, because on a delimited source losing one character costs one character of a column
+  name and the separator scan answers the same either way. `theCharacterAfterABareCarriageReturnIsNotEatenWithIt`
+  was added for it, on a JSON source, because the first-character dispatch is the one reader that
+  looks at exactly one character.
+
+Mutation-tested to confirm each branch is pinned by a distinct test:
+
+```
+# bare-'\r' early return removed
+[ERROR]   theCharacterAfterABareCarriageReturnIsNotEatenWithIt:377   <- and nothing else
+
+# all bare-'\r' handling removed
+[ERROR]   aStrayCarriageReturnDoesNotSwallowTheHeaderBelowIt:364
+[ERROR]   aSourceTerminatedOnlyByCarriageReturnsStillHasItsCommentBlockSkipped:337
+[ERROR]   theCharacterAfterABareCarriageReturnIsNotEatenWithIt:375
+```
 
 No deferred items.
