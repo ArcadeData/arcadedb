@@ -32,6 +32,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Schema;
@@ -97,6 +98,14 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
             t = "edge";
 
           r.setProperty("type", t);
+
+          // The storage shape of an edge type, which tooling cannot infer from the record count: a LIGHTWEIGHT type
+          // keeps no edge record, so its count is 0 however many edges the graph holds (issue #7477).
+          if (type instanceof EdgeType edgeType) {
+            r.setProperty("lightweight", edgeType.isLightweight());
+            r.setProperty("bidirectional", edgeType.isBidirectional());
+            r.setProperty("unique", edgeType.isUnique());
+          }
 
           if (isTimeSeries)
             populateTimeSeriesMetadata(r, (LocalTimeSeriesType) type);

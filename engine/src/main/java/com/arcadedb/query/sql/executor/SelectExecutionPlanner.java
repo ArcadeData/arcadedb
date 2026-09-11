@@ -450,11 +450,33 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info))
       return false;
 
+    // countType() counts records, and a lightweight edge has none: pushing the count down would answer 0 for a type
+    // whose scan returns rows, which is the contradiction issue #7477 was reported as. Fall through to the plan that
+    // counts what the scan actually yields. The Cypher planner declines the same push-down for the same reason.
+    if (EdgeType.holdsLightweightEdges(resolveTypeOrNull(context, targetClass.getStringValue())))
+      return false;
+
     // The type name, not the rendered target: FromItem.toString() appends " AS <alias>" when the statement declared
     // one, and CountFromTypeStep looks its argument up in the schema (issue #7153).
     result.chain(new CountFromTypeStep(targetClass.getStringValue(), info.projection.getAllAliases().getFirst(), context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
+  }
+
+  /**
+   * The schema type a hardwired plan's target names, or null when the name is a context variable, is not a type, or
+   * names nothing - the cases where the hardwired plan defers to {@link CountFromTypeStep}'s own resolution at
+   * execution time. Applies the same unquoting that step does (issue #7153).
+   */
+  private static DocumentType resolveTypeOrNull(final CommandContext context, final String name) {
+    if (name == null || name.startsWith("$"))
+      return null;
+
+    final String typeName =
+        name.length() > 1 && name.startsWith("`") && name.endsWith("`") ? name.substring(1, name.length() - 1) : name;
+
+    final Schema schema = context.getDatabase().getSchema();
+    return schema.existsType(typeName) ? schema.getType(typeName) : null;
   }
 
   /**
@@ -1898,6 +1920,20 @@ public class SelectExecutionPlanner {
       }
 
       plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, context));
+      return;
+    }
+
+    // A lightweight edge allocates no record, so neither a scan of the edge type's buckets nor anything addressing
+    // those records - a RID lookup, an index, an indexed function - can reach it: the edge lives inside the two
+    // vertices. Every one of those paths would answer zero rows for a graph that holds the edges, which is how a
+    // bulk load of 75 million of them read as a load that had silently done nothing (issue #7477). So this is
+    // decided ahead of all of them, and only the @out/@in rewrite - which reaches the same edges through ONE vertex
+    // instead of all of them, and is already correct on a lightweight type - is given the chance to win.
+    if (EdgeType.holdsLightweightEdges(docType)) {
+      if (handleEdgeTypeWithVertexRidFilter(plan, docType, info, context))
+        return;
+
+      plan.chain(new FetchFromLightweightEdgeTypeStep(identifier.getStringValue(), context));
       return;
     }
 

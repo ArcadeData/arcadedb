@@ -1,0 +1,242 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.graph;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Issue #7477, reported as discussion #7473: a LIGHTWEIGHT edge type stores its edges inside the two vertices and
+ * allocates no record, so the bucket a type scan reads is empty by construction. Every query that named the type
+ * therefore answered zero - {@code SELECT FROM CITE}, {@code SELECT count(*) FROM CITE} and Studio's record count
+ * alike - on a graph that held 75 million edges, which is what the bulk load in the report looked like when it had
+ * in fact worked.
+ * <p>
+ * The scan now walks the vertices that hold those edges. This pins what it returns, that the count agrees with it,
+ * and that neither a regular edge type nor the cheap {@code @out}/{@code @in} rewrite changed on the way.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue7477LightweightEdgeScanTest extends TestHelper {
+
+  @Override
+  protected void beginTest() {
+    database.transaction(() -> {
+      database.getSchema().buildVertexType().withName("Work").create();
+      database.getSchema().buildEdgeType().withName("Cite").withLightweight(true).create();
+      database.getSchema().buildEdgeType().withName("Wrote").create();
+    });
+  }
+
+  @Test
+  void aLightweightEdgeTypeIsScannedThroughTheVerticesThatHoldIt() {
+    final RID[] works = newWorks(3);
+    connect("Cite", works[0], works[1]);
+    connect("Cite", works[0], works[2]);
+    connect("Cite", works[1], works[2]);
+
+    final List<Result> edges = query("select from Cite");
+    assertThat(edges).hasSize(3);
+    for (final Result edge : edges) {
+      assertThat(edge.isEdge()).isTrue();
+      assertThat(edge.getEdge().get().getTypeName()).isEqualTo("Cite");
+    }
+
+    assertThat(pairs("select from Cite")).containsExactlyInAnyOrder(
+        works[0] + "->" + works[1], works[0] + "->" + works[2], works[1] + "->" + works[2]);
+  }
+
+  @Test
+  void theCountAgreesWithTheScan() {
+    final RID[] works = newWorks(3);
+    connect("Cite", works[0], works[1]);
+    connect("Cite", works[0], works[2]);
+
+    // The count push-down reads countType(), which counts records: it has to decline on a type that keeps none, or
+    // it answers 0 for a scan that returns 2.
+    assertThat(query("select count(*) as c from Cite").getFirst().<Long>getProperty("c")).isEqualTo(2L);
+    assertThat(query("select from Cite")).hasSize(2);
+    // ...while the record count of the type itself is still, correctly, zero
+    assertThat(database.countType("Cite", true)).isZero();
+  }
+
+  /** SKIP/LIMIT and the page boundary of the step's own {@code nRecords} batching. */
+  @Test
+  void theScanPaginates() {
+    final RID[] works = newWorks(20);
+    for (int i = 1; i < works.length; i++)
+      connect("Cite", works[0], works[i]);
+
+    assertThat(query("select from Cite")).hasSize(19);
+    assertThat(query("select from Cite limit 5")).hasSize(5);
+    assertThat(query("select from Cite skip 15")).hasSize(4);
+  }
+
+  /** A regular edge type keeps the bucket scan: its edges are records, and there is no vertex walk to pay for. */
+  @Test
+  void aRegularEdgeTypeIsUnchanged() {
+    final RID[] works = newWorks(2);
+    connect("Wrote", works[0], works[1]);
+
+    assertThat(query("select from Wrote")).hasSize(1);
+    assertThat(query("select count(*) as c from Wrote").getFirst().<Long>getProperty("c")).isEqualTo(1L);
+    assertThat(explain("select from Wrote")).contains("FETCH FROM TYPE Wrote");
+  }
+
+  /**
+   * A supertype that holds records with a lightweight subtype under it: the scan must return both shapes, and each
+   * edge exactly once. The record edges come from the bucket, the lightweight ones from the vertex walk, and the
+   * walk tells them apart by the storage shape of the entry rather than by what its type declares.
+   */
+  @Test
+  void aMixedHierarchyReturnsEachEdgeOnce() {
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Mentions").create());
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Quotes").withLightweight(true)
+        .withSuperType("Mentions").create());
+
+    final RID[] works = newWorks(3);
+    connect("Mentions", works[0], works[1]);
+    connect("Quotes", works[0], works[2]);
+    connect("Quotes", works[1], works[2]);
+
+    assertThat(pairs("select from Mentions")).containsExactlyInAnyOrder(
+        works[0] + "->" + works[1], works[0] + "->" + works[2], works[1] + "->" + works[2]);
+    assertThat(query("select count(*) as c from Mentions").getFirst().<Long>getProperty("c")).isEqualTo(3L);
+
+    assertThat(pairs("select from Quotes")).containsExactlyInAnyOrder(
+        works[0] + "->" + works[2], works[1] + "->" + works[2]);
+  }
+
+  /**
+   * The rewrite that reaches the edges of ONE vertex is both cheaper and already correct for a lightweight type, so
+   * it must keep winning over the whole-graph walk.
+   */
+  @Test
+  void theVertexRidRewriteStillWins() {
+    final RID[] works = newWorks(3);
+    connect("Cite", works[0], works[1]);
+    connect("Cite", works[0], works[2]);
+    connect("Cite", works[1], works[2]);
+
+    assertThat(explain("select from Cite where @out = " + works[0])).contains("FETCH EDGES FROM VERTEX");
+    assertThat(query("select from Cite where @out = " + works[0])).hasSize(2);
+    assertThat(query("select from Cite where @in = " + works[2])).hasSize(2);
+  }
+
+  /** The walk is the plan, so EXPLAIN has to name it: it is O(V + E) where a bucket scan reads O(E). */
+  @Test
+  void explainNamesTheVertexWalk() {
+    assertThat(explain("select from Cite")).contains("FETCH LIGHTWEIGHT EDGES OF TYPE Cite");
+  }
+
+  @Test
+  void anEmptyGraphStillAnswersEmpty() {
+    assertThat(query("select from Cite")).isEmpty();
+    assertThat(query("select count(*) as c from Cite").getFirst().<Long>getProperty("c")).isZero();
+  }
+
+  /** A filter on the endpoints is applied on top of the walk, not lost by it. */
+  @Test
+  void aFilterOverTheWalkIsApplied() {
+    final RID[] works = newWorks(3);
+    connect("Cite", works[0], works[1]);
+    connect("Cite", works[1], works[2]);
+
+    assertThat(pairs("select from Cite where @in = " + works[2] + " or @in = " + works[1]))
+        .containsExactlyInAnyOrder(works[0] + "->" + works[1], works[1] + "->" + works[2]);
+  }
+
+  /**
+   * DELETE and UPDATE resolve their target through the same planner, so both used to address an empty bucket and
+   * silently do nothing on a lightweight type. Both now reach the edges: the delete removes them from BOTH vertices'
+   * edge lists, and the update refuses with the sentence that says why rather than reporting a no-op as a success.
+   */
+  @Test
+  void deleteReachesTheEdgesAndUpdateSaysWhyItCannot() {
+    final RID[] works = newWorks(3);
+    connect("Cite", works[0], works[1]);
+    connect("Cite", works[1], works[2]);
+
+    assertThat(query("delete from Cite where @in = " + works[2]).getFirst().<Long>getProperty("count")).isEqualTo(1L);
+
+    database.transaction(() -> {
+      assertThat(database.lookupByRID(works[1], true).asVertex().countEdges(Vertex.DIRECTION.OUT, "Cite"))
+          .as("the deleted edge must be gone from the source vertex's edge list").isZero();
+      assertThat(database.lookupByRID(works[2], true).asVertex().countEdges(Vertex.DIRECTION.IN, "Cite"))
+          .as("...and from the destination's").isZero();
+    });
+
+    assertThat(query("select from Cite")).hasSize(1);
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "update Cite set since = 2020").close()))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Lightweight edges cannot be modified");
+  }
+
+  private RID[] newWorks(final int count) {
+    final RID[] rids = new RID[count];
+    database.transaction(() -> {
+      for (int i = 0; i < count; i++)
+        rids[i] = database.newVertex("Work").set("id", i).save().getIdentity();
+    });
+    return rids;
+  }
+
+  private void connect(final String edgeType, final RID from, final RID to) {
+    database.transaction(() -> database.lookupByRID(from, true).asVertex().modify().newEdge(edgeType, to));
+  }
+
+  private List<Result> query(final String sql) {
+    final List<Result> results = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql", sql)) {
+        while (rs.hasNext())
+          results.add(rs.next());
+      }
+    });
+    return results;
+  }
+
+  private List<String> pairs(final String sql) {
+    final List<String> pairs = new ArrayList<>();
+    for (final Result r : query(sql))
+      pairs.add(r.getEdge().get().getOut() + "->" + r.getEdge().get().getIn());
+    return pairs;
+  }
+
+  private String explain(final String sql) {
+    final StringBuilder plan = new StringBuilder();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "explain " + sql)) {
+        while (rs.hasNext())
+          plan.append(rs.next().toJSON());
+      }
+    });
+    return plan.toString();
+  }
+}
