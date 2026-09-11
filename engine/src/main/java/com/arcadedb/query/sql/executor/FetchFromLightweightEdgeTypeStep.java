@@ -133,7 +133,13 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     final Schema schema = database.getSchema();
 
-    SecurityHelper.checkAccessOnType(database, schema.getType(edgeTypeName), SecurityDatabaseUser.ACCESS.READ_RECORD);
+    // Every type the walk can emit, not only the one the caller named: getEdges(OUT, name) resolves the entries it
+    // accepts polymorphically, so a subtype's lightweight edges come out of a scan of its supertype. The record
+    // scan below happens to check the same set today - iterateType() opens a BucketIterator per bucket of the
+    // hierarchy, and each of those checks - but that is incidental, and it would go away the moment this step
+    // learned to skip the (usually empty) record scan on a purely lightweight type. Stated here so the coverage
+    // belongs to the walk rather than to a side effect of something else (PR #7478 review).
+    checkAccessOnTypeAndSubTypes(database, schema.getType(edgeTypeName));
 
     typeRecords = database.iterateType(edgeTypeName, true);
 
@@ -151,6 +157,16 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
           vertexIterator.addIterator(bucket.iterator());
     }
     vertices = vertexIterator;
+  }
+
+  /** Refuses unless the caller may read {@code type} and every type inheriting from it. */
+  private static void checkAccessOnTypeAndSubTypes(final DatabaseInternal database, final DocumentType type) {
+    if (type == null)
+      return;
+
+    SecurityHelper.checkAccessOnType(database, type, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    for (final DocumentType subType : type.getSubTypes())
+      checkAccessOnTypeAndSubTypes(database, subType);
   }
 
   /**
