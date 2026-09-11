@@ -73,7 +73,10 @@ public interface EdgeType extends DocumentType {
    * type scan itself (issues #5071, #7477). A {@code null} type, or one that is not an edge type, answers false.
    */
   static boolean holdsLightweightEdges(final DocumentType type) {
-    if (type == null)
+    // Vertex, edge and document hierarchies are disjoint - the kind byte is fixed through inheritance - so nothing
+    // under a non-edge root can be a lightweight edge, and walking its subtypes to find that out is pure cost on a
+    // planning hot path that asks this of every SELECT target (PR #7478 review).
+    if (type == null || type.getType() != Edge.RECORD_TYPE)
       return false;
     if (type instanceof EdgeType edgeType && edgeType.isLightweight())
       return true;

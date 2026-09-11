@@ -191,11 +191,20 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
           edgeTypeName, database.getName(), FileUtils.getSizeAsString(vertexSetSize), counter, edgeTypeName);
   }
 
-  /** Size on disk of a bucket's file, or 0 when it cannot be read - this only feeds a warning threshold. */
+  /**
+   * Size on disk of a bucket's file, or 0 when it cannot be read - this only feeds a warning threshold, so every
+   * way of not knowing answers 0 rather than failing the query.
+   * <p>
+   * {@code getFileIfExists}, not {@code getFile}: the latter throws when the id is not registered, and a bucket can
+   * be dropped between the schema snapshot this walk took and this lookup. Failing a whole query over a number that
+   * only decides whether to log would be the tail wagging the dog (PR #7478 review).
+   */
   private static long sizeOf(final DatabaseInternal database, final int fileId) {
+    if (!(database.getFileManager().getFileIfExists(fileId) instanceof PaginatedComponentFile file))
+      return 0;
+
     try {
-      final PaginatedComponentFile file = (PaginatedComponentFile) database.getFileManager().getFile(fileId);
-      return file != null ? file.getSize() : 0;
+      return file.getSize();
     } catch (final IOException e) {
       return 0;
     }

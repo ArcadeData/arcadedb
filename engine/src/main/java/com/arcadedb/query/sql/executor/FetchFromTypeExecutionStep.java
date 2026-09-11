@@ -125,16 +125,17 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
 
     bucketIds[bucketIds.length - 1] = -1;//temporary bucket, data in tx
 
+    // getFileIfExists, not getFile: the latter throws when the id is not registered, and a bucket can be dropped
+    // between the schema snapshot above and this lookup. The total only decides whether to log a warning, so every
+    // way of not knowing a bucket's size counts it as 0 rather than failing the query (PR #7478 review).
     long typeFileSize = 0;
     for (final int fileId : bucketIds) {
-      if (fileId > -1) {
-        final PaginatedComponentFile f = (PaginatedComponentFile) context.getDatabase().getFileManager().getFile(fileId);
-        if (f != null) {
-          try {
-            typeFileSize += f.getSize();
-          } catch (final IOException e) {
-            // IGNORE IT
-          }
+      if (fileId > -1
+          && context.getDatabase().getFileManager().getFileIfExists(fileId) instanceof PaginatedComponentFile f) {
+        try {
+          typeFileSize += f.getSize();
+        } catch (final IOException e) {
+          // IGNORE IT
         }
       }
     }
