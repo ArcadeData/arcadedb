@@ -58,8 +58,8 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   private              boolean                            orderByRidDesc = false;
   private              boolean                            parallelScan   = false;
   private              List<ExecutionStep>                subSteps = new ArrayList<>();
-  private static final ConcurrentHashMap<String, Integer> WARNINGS = new ConcurrentHashMap<>();
-  private static final int                                WARNINGS_EVERY;
+  /** Size above which scanning a whole type is worth warning an operator about. */
+  static final         long                               LARGE_TYPE_BYTES = 100_000_000L;
 
   ResultSet currentResultSet;
   int       currentStep = 0;
@@ -79,10 +79,6 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   // into the (blocking) result queue. Small enough to keep DDL/close wait bounded, large enough to amortize
   // the uncontended read-lock cost to noise.
   private static final int SCAN_BATCH_SIZE = 256;
-
-  static {
-    WARNINGS_EVERY = GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger();
-  }
 
   protected FetchFromTypeExecutionStep(final CommandContext context) {
     super(context);
@@ -143,22 +139,20 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       }
     }
 
-    if (WARNINGS_EVERY > 0) {
-      if (typeFileSize > 100_000_000) {
-        final Integer counter = WARNINGS.compute(typeName + ".scan", (k, v) -> v == null ? 1 : v + 1);
-        if (counter % WARNINGS_EVERY == 1) {
-          final Set<String> filteredProperties = planningInfo != null ?
-              extractFilteredProperties(planningInfo.whereClause) : Collections.emptySet();
-          if (filteredProperties.isEmpty())
-            LogManager.instance().log(this, Level.WARNING,
-                "Attempt to scan type '%s' in database '%s' of total size %s %d times. This operation is very expensive, consider using an index",
-                typeName, context.getDatabase().getName(), FileUtils.getSizeAsString(typeFileSize), counter);
-          else
-            LogManager.instance().log(this, Level.WARNING,
-                "Attempt to scan type '%s' in database '%s' of total size %s %d times, filtering on propert%s %s. This operation is very expensive, consider creating an index",
-                typeName, context.getDatabase().getName(), FileUtils.getSizeAsString(typeFileSize), counter,
-                filteredProperties.size() == 1 ? "y" : "ies", String.join(", ", filteredProperties));
-        }
+    if (typeFileSize > LARGE_TYPE_BYTES) {
+      final int counter = CommandWarnings.occurrencesWhenDue(typeName + ".scan");
+      if (counter > 0) {
+        final Set<String> filteredProperties = planningInfo != null ?
+            extractFilteredProperties(planningInfo.whereClause) : Collections.emptySet();
+        if (filteredProperties.isEmpty())
+          LogManager.instance().log(this, Level.WARNING,
+              "Attempt to scan type '%s' in database '%s' of total size %s %d times. This operation is very expensive, consider using an index",
+              typeName, context.getDatabase().getName(), FileUtils.getSizeAsString(typeFileSize), counter);
+        else
+          LogManager.instance().log(this, Level.WARNING,
+              "Attempt to scan type '%s' in database '%s' of total size %s %d times, filtering on propert%s %s. This operation is very expensive, consider creating an index",
+              typeName, context.getDatabase().getName(), FileUtils.getSizeAsString(typeFileSize), counter,
+              filteredProperties.size() == 1 ? "y" : "ies", String.join(", ", filteredProperties));
       }
     }
 
