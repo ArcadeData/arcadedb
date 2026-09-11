@@ -72,6 +72,9 @@ class Issue7114CollectionMethodsOnArrayReceiverTest extends TestHelper {
     assertThat(scalar("SELECT [].ifempty('none') AS r")).isEqualTo("none");
     assertThat(scalar("SELECT ''.ifempty('none') AS r")).isEqualTo("none");
     assertThat(scalar("SELECT 'a'.ifempty('none') AS r")).isEqualTo("a");
+    // AN ITERATOR RECEIVER IS CONSUMED BY THE TEST FOR EMPTINESS, SO THE ANSWER IS WHAT IT HELD, NOT THE EXHAUSTED ITERATOR
+    assertThat(scalar("SELECT :p.ifempty('none') AS r", Map.of("p", List.of(1, 2).iterator()))).isEqualTo(List.of(1, 2));
+    assertThat(scalar("SELECT :p.ifempty('none') AS r", Map.of("p", List.of().iterator()))).isEqualTo("none");
   }
 
   @Test
