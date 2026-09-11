@@ -387,6 +387,10 @@ public class FileUtils {
    * {@code target} therefore always sees either the previous complete file or the new complete one, never a
    * partial or spliced mixture - the same guarantee {@link #atomicWriteFile} gives for content produced in memory,
    * for the case where the content to publish is another file that must not be re-encoded (issue #6114).
+   * <p>
+   * The temporary file is fsync'd before the rename, exactly as {@link #atomicWriteFile} does it: without that the
+   * rename can outlive the data on a crash, so the target would be present but empty - which for a file kept as a
+   * recovery fallback is the one outcome worth paying an fsync to avoid.
    */
   public static void atomicCopyFile(final File source, final File target) throws IOException {
     // Absolute, so getParent() is never null for a relative input and the temporary file lands on the SAME file
@@ -397,7 +401,12 @@ public class FileUtils {
 
     final Path tmp = Files.createTempFile(dir, target.getName() + ".", ".tmp");
     try {
-      Files.copy(source.toPath(), tmp, StandardCopyOption.REPLACE_EXISTING);
+      // COPIED THROUGH AN OutputStream RATHER THAN Files.copy(Path, Path) SO THE DESCRIPTOR IS IN HAND TO SYNC
+      try (final FileOutputStream fos = new FileOutputStream(tmp.toFile())) {
+        Files.copy(source.toPath(), fos);
+        fos.flush();
+        fos.getFD().sync();
+      }
       try {
         Files.move(tmp, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
       } catch (final AtomicMoveNotSupportedException e) {

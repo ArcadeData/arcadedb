@@ -388,4 +388,61 @@ class FileUtilsTest {
 
     assertThat(new String(Files.readAllBytes(target), StandardCharsets.UTF_8)).isEqualTo("second-longer-content");
   }
+
+  @Test
+  void atomicCopyFileCreatesDirsAndCopiesContent() throws Exception {
+    final Path source = tempDir.resolve("source.json");
+    Files.write(source, "{\"a\":1}".getBytes(StandardCharsets.UTF_8));
+
+    final Path target = tempDir.resolve("nested/dir/copy.json");
+    FileUtils.atomicCopyFile(source.toFile(), target.toFile());
+
+    assertThat(Files.exists(target)).isTrue();
+    assertThat(new String(Files.readAllBytes(target), StandardCharsets.UTF_8)).isEqualTo("{\"a\":1}");
+    assertThat(Files.exists(source)).as("the source must survive: this is a copy, not a rename").isTrue();
+    // No temporary artifacts must survive a successful copy.
+    try (var stream = Files.list(target.getParent())) {
+      assertThat(stream.map(p -> p.getFileName().toString()).anyMatch(n -> n.endsWith(".tmp"))).isFalse();
+    }
+  }
+
+  @Test
+  void atomicCopyFileReplacesAnExistingTarget() throws Exception {
+    final Path source = tempDir.resolve("newer.txt");
+    final Path target = tempDir.resolve("older.txt");
+    Files.write(target, "the-previous-and-much-longer-content".getBytes(StandardCharsets.UTF_8));
+    Files.write(source, "short".getBytes(StandardCharsets.UTF_8));
+
+    FileUtils.atomicCopyFile(source.toFile(), target.toFile());
+
+    assertThat(new String(Files.readAllBytes(target), StandardCharsets.UTF_8))
+        .as("a shorter replacement must not leave a tail of the previous content behind").isEqualTo("short");
+  }
+
+  @Test
+  void atomicCopyFilePublishesBytesUnchanged() throws Exception {
+    // THE REASON THIS EXISTS RATHER THAN read-as-String-then-atomicWriteFile: the bytes are published as they are,
+    // so a file in any encoding - or none - survives the copy intact
+    final byte[] content = new byte[] { 0x00, (byte) 0xC3, (byte) 0xA8, (byte) 0xFF, 0x7F, (byte) 0x80 };
+    final Path source = tempDir.resolve("bytes.bin");
+    Files.write(source, content);
+
+    final Path target = tempDir.resolve("bytes-copy.bin");
+    FileUtils.atomicCopyFile(source.toFile(), target.toFile());
+
+    assertThat(Files.readAllBytes(target)).isEqualTo(content);
+  }
+
+  @Test
+  void atomicCopyFileLeavesNoScratchFileWhenTheSourceIsMissing() {
+    final Path source = tempDir.resolve("does-not-exist.json");
+    final Path target = tempDir.resolve("target.json");
+
+    assertThatThrownBy(() -> FileUtils.atomicCopyFile(source.toFile(), target.toFile()))
+        .isInstanceOf(IOException.class);
+
+    assertThat(target).doesNotExist();
+    assertThat(tempDir.toFile().list((dir, name) -> name.endsWith(".tmp")))
+        .as("a failed copy must clean up after itself").isEmpty();
+  }
 }
