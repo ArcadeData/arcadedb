@@ -110,6 +110,15 @@ public class ArcadeDBServer {
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
 
   /**
+   * Marker file the HA snapshot installer writes into {@code databases/<name>/} before it touches a single file
+   * and clears only once the swapped-in copy has been reopened. While it exists the directory holds a mix of the
+   * previous database and the incoming snapshot - it is neither - so nothing may open it except the installer
+   * that owns the marker (issue #7129). Declared here, rather than in {@code ha-raft}, because the server's own
+   * boot scan and database registry are the paths that have to honour it.
+   */
+  public static final String                                SNAPSHOT_PENDING_FILE                = ".snapshot-pending";
+
+  /**
    * The two steps the startup {@code restore:} command publishes - {@link RestoreProgress#STEP_EXTRACT} then
    * {@link RestoreProgress#STEP_ACTIVATE}. One fewer than {@code ServerControlPlane.performRestore}'s three:
    * this command restores straight into the final directory, so there is no temporary directory to swap in, and
@@ -392,7 +401,7 @@ public class ArcadeDBServer {
 
     createDirectories();
 
-    loadDatabases();
+    loadDatabases(false);
 
     security.loadUsers();
 
@@ -427,10 +436,12 @@ public class ArcadeDBServer {
       getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "HA", null, haWarning);
     }
 
-    loadDefaultDatabases();
+    // RELOAD DATABASES: A PLUGIN MAY HAVE REGISTERED A NEW ONE (LIKE THE GREMLIN SERVER), AND HA SNAPSHOT
+    // RECOVERY MAY HAVE JUST RECONCILED A DIRECTORY THE FIRST PASS DEFERRED. THIS RUNS BEFORE THE DEFAULT
+    // DATABASES SO A RECOVERED ONE IS REGISTERED RATHER THAN MISTAKEN FOR ABSENT AND RECREATED (ISSUE #7129).
+    loadDatabases(true);
 
-    // RELOAD DATABASE IF A PLUGIN REGISTERED A NEW DATABASE (LIKE THE GREMLIN SERVER)
-    loadDatabases();
+    loadDefaultDatabases();
 
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN);
 
@@ -1096,9 +1107,18 @@ public class ArcadeDBServer {
       if (serverDatabase != null)
         throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
-      final DatabaseFactory factory = new DatabaseFactory(
-          configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator
-              + databaseName).setAutoTransaction(true);
+      final String databasePath =
+          configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName;
+
+      // A directory mid-snapshot-install can look "absent" to factory.exists() precisely because the swap took
+      // its schema away, and creating a fresh database on top of it would destroy the one state snapshot
+      // recovery reads to decide between completing the swap and rolling it back (issue #7129).
+      if (isAwaitingSnapshotRecovery(new File(databasePath)))
+        throw new DatabaseNotAvailableException("Cannot create database '" + databaseName + "': an interrupted "
+            + "HA snapshot install left '" + SNAPSHOT_PENDING_FILE + "' in its directory. Snapshot recovery must "
+            + "reconcile it first");
+
+      final DatabaseFactory factory = new DatabaseFactory(databasePath).setAutoTransaction(true);
 
       factory.setSecurity(getSecurity());
 
@@ -1135,6 +1155,16 @@ public class ArcadeDBServer {
    */
   public static boolean isReservedDatabaseName(final String databaseName) {
     return databaseName != null && databaseName.startsWith(RESERVED_DATABASE_PREFIX);
+  }
+
+  /**
+   * Returns {@code true} when {@code databaseDirectory} carries the {@link #SNAPSHOT_PENDING_FILE} marker, i.e.
+   * an HA snapshot install started writing into it and has not finished. Every path that would open or create a
+   * database goes through this check: the boot scan, the default-database pass, {@link #getDatabase} and
+   * {@link #createDatabase} (issue #7129).
+   */
+  private static boolean isAwaitingSnapshotRecovery(final File databaseDirectory) {
+    return new File(databaseDirectory, SNAPSHOT_PENDING_FILE).exists();
   }
 
   /**
@@ -1202,8 +1232,9 @@ public class ArcadeDBServer {
    * skipped: the mutation has already happened and cannot be undone by a failing listener.
    * <p>
    * Only the plugins that have been configured are notified. Discovery installs every plugin instance up front, but
-   * {@link #loadDatabases()} runs before {@code startPlugins(AFTER_DATABASES_OPEN)}, so a plugin of that priority was
-   * being handed a registration per pre-existing database before it had even been given this server (issue #6852).
+   * {@link #loadDatabases(boolean)} runs before {@code startPlugins(AFTER_DATABASES_OPEN)}, so a plugin of that
+   * priority was being handed a registration per pre-existing database before it had even been given this server
+   * (issue #6852).
    */
   private void notifyPlugins(final String databaseName, final boolean registered) {
     if (pluginManager == null)
@@ -1328,6 +1359,28 @@ public class ArcadeDBServer {
 
   public ServerDatabase getDatabase(final String databaseName, final boolean createIfNotExists,
       final boolean allowLoad) {
+    return getDatabase(databaseName, createIfNotExists, allowLoad, false);
+  }
+
+  /**
+   * Opens and registers a database whose {@link #SNAPSHOT_PENDING_FILE} marker is still on disk, for the only
+   * caller entitled to look past it: the HA snapshot installer reopening the copy it has just swapped in, or the
+   * previous copy it has just restored, while holding {@link #getDatabasesLock()} (issue #7129).
+   * <p>
+   * The exemption is granted to that <i>call</i>, not to a phase of the server lifecycle: the installer writes the
+   * marker before the download starts and clears it only after this reopen has proved the new files load, so a
+   * gate keyed on {@code STATUS.STARTING} would both refuse the installer's own reopen during a startup-time
+   * bootstrap install - which {@code swapAndReopen} reads as "the snapshot will not open" and answers by rolling a
+   * perfectly good snapshot back - and stop protecting anything the moment the server turns {@code ONLINE}, which
+   * is precisely when a directory whose recovery deliberately retained its marker (issue #7139) would be opened
+   * and served torn by the first request that names it.
+   */
+  public ServerDatabase reopenDatabaseUnderSnapshotRecovery(final String databaseName) {
+    return getDatabase(databaseName, false, true, true);
+  }
+
+  private ServerDatabase getDatabase(final String databaseName, final boolean createIfNotExists,
+      final boolean allowLoad, final boolean underSnapshotRecovery) {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Invalid database name " + databaseName);
 
@@ -1364,6 +1417,15 @@ public class ArcadeDBServer {
 
         final String path =
             configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName;
+
+        // An interrupted HA snapshot install left this directory mid-swap: its files are neither the previous
+        // database nor the new one, so opening it would register - and serve - a torn mix (issue #7129). The
+        // refusal is unconditional in time and bypassed only by the installer's own reopen, which passes
+        // underSnapshotRecovery through reopenDatabaseUnderSnapshotRecovery.
+        if (!underSnapshotRecovery && isAwaitingSnapshotRecovery(new File(path)))
+          throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: an interrupted "
+              + "HA snapshot install left '" + SNAPSHOT_PENDING_FILE + "' in its directory, so its files are "
+              + "neither the previous database nor the new one. Snapshot recovery must reconcile it first");
 
         final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);
 
@@ -1423,7 +1485,17 @@ public class ArcadeDBServer {
     return db;
   }
 
-  private void loadDatabases() {
+  /**
+   * Opens and registers every database directory under {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY}.
+   * Runs twice during startup: once before the plugins, and once after {@code AFTER_HTTP_ON} so a database the HA
+   * plugin recovered, acquired or registered is picked up.
+   *
+   * @param afterSnapshotRecovery {@code true} on the second pass, i.e. after HA snapshot recovery has had its
+   *                              chance. A directory still carrying {@link #SNAPSHOT_PENDING_FILE} is deferred on
+   *                              both passes, but only on the second one is that a problem worth a SEVERE: on the
+   *                              first it is the expected, self-healing state of a node that crashed mid-install.
+   */
+  private void loadDatabases(final boolean afterSnapshotRecovery) {
     final File databaseDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
     if (!databaseDir.exists()) {
       databaseDir.mkdirs();
@@ -1437,8 +1509,26 @@ public class ArcadeDBServer {
         for (final File f : databaseDirectories)
           // Skip reserved internal databases (e.g. the Raft control directory '.raft'): they are not
           // user databases and must not be registered nor leak into the server/cluster status APIs.
-          if (!isReservedDatabaseName(f.getName()))
+          if (!isReservedDatabaseName(f.getName())) {
+            // HA snapshot recovery runs between the two passes. Never open a half-swapped directory, and never
+            // leave open handles on files recovery is about to move: the recovery pass holds no registry lock and
+            // would rename them out from under a registered instance (issue #7129).
+            if (isAwaitingSnapshotRecovery(f)) {
+              if (afterSnapshotRecovery)
+                LogManager.instance().log(this, Level.SEVERE,
+                    "Database '%s' was NOT opened: snapshot recovery did not clear its '%s' marker, so its directory "
+                        + "is still neither the previous database nor the installed snapshot. It stays unavailable "
+                        + "until an HA snapshot install reconciles it or an operator removes the directory", null,
+                    f.getName(), SNAPSHOT_PENDING_FILE);
+              else
+                LogManager.instance().log(this, Level.INFO,
+                    "Deferring database '%s': an interrupted HA snapshot install left its '%s' marker. It is opened "
+                        + "once snapshot recovery has completed or rolled back the install", null, f.getName(),
+                    SNAPSHOT_PENDING_FILE);
+              continue;
+            }
             getDatabase(f.getName());
+          }
       }
     }
   }
@@ -1461,6 +1551,18 @@ public class ArcadeDBServer {
         }
 
         final String dbName = db.substring(0, credentialBegin);
+
+        // Without this the deferred directory reads as an absent database and the branch below creates one over
+        // it. The boot scan has already reported the skip at SEVERE, so this only says what it means for the
+        // default-database configuration (issue #7129).
+        if (isAwaitingSnapshotRecovery(
+            new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), dbName))) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Default database '%s' is awaiting snapshot recovery: not opened, and NOT recreated - the directory on "
+                  + "disk still holds the interrupted install", null, dbName);
+          continue;
+        }
+
         final int credentialEnd = db.indexOf(']', credentialBegin);
         final String credentials = db.substring(credentialBegin + 1, credentialEnd);
 
