@@ -1901,17 +1901,29 @@ public class SelectExecutionPlanner {
       return;
     }
 
-    // A lightweight edge allocates no record, so neither a scan of the edge type's buckets nor anything addressing
-    // those records - a RID lookup, an index, an indexed function - can reach it: the edge lives inside the two
-    // vertices. Every one of those paths would answer zero rows for a graph that holds the edges, which is how a
-    // bulk load of 75 million of them read as a load that had silently done nothing (issue #7477). So this is
-    // decided ahead of all of them, and only the @out/@in rewrite - which reaches the same edges through ONE vertex
-    // instead of all of them, and is already correct on a lightweight type - is given the chance to win.
+    // RID-address optimization: for queries like SELECT FROM Type WHERE @rid = <RID> or
+    // WHERE @rid IN [<RID list>], fetch the records directly by RID address instead of
+    // scanning the whole type. This is always cheaper than an index lookup, so it is checked
+    // before the index-based paths below. See issue #5824.
+    if (handleTypeWithRidFilter(plan, identifier, info, context))
+      return;
+
+    // A lightweight edge allocates no record, so a scan of the edge type's buckets, an index, or an indexed
+    // function cannot reach it: the edge lives inside the two vertices. Every one of those would answer zero rows
+    // for a graph that holds the edges, which is how a bulk load of 75 million of them read as a load that had
+    // silently done nothing (issue #7477). So this is decided ahead of all of them.
+    //
+    // The two paths given the chance to win first are the two that address RECORDS, and both are correct on such a
+    // type precisely because they do: a `@rid` filter can only ever name a record-backed edge - a lightweight one
+    // has no addressable identity, its RID carries the placeholder position -1 - so handleTypeWithRidFilter above
+    // selects exactly the right rows and keeps its short-circuit, including on a mixed hierarchy where the record
+    // half is the only half a RID can reach (PR #7478 review). The @out/@in rewrite below reaches the same edges
+    // this step would, through ONE vertex instead of all of them.
     if (EdgeType.holdsLightweightEdges(docType)) {
       if (handleEdgeTypeWithVertexRidFilter(plan, docType, info, context))
         return;
 
-      // Returning here also skips the index paths below, and that is required rather than incidental: an index over
+      // Returning here skips the index paths below, and that is required rather than incidental: an index over
       // a mixed hierarchy's record half cannot see the lightweight edges, so an index-only plan would be incomplete
       // in exactly the way this issue is about. The cost is that such a supertype loses a useful index on its
       // record half - a real cliff, and the honest price of answering the whole type.
@@ -1922,17 +1934,10 @@ public class SelectExecutionPlanner {
       // (the only thing that narrows a plain type target) needs partition PROPERTIES, which such a type cannot
       // have. For a non-lightweight supertype scanned with a lightweight subtype under it, the pruning is a lost
       // optimisation on the record half and not a wrong answer: the WHERE clause that enabled the pruning is left
-      // un-consumed here, so handleWhere() filters those rows out downstream regardless (PR #7478 review).
+      // un-consumed here, so handleWhere() filters those rows out downstream regardless.
       plan.chain(new FetchFromLightweightEdgeTypeStep(identifier.getStringValue(), context));
       return;
     }
-
-    // RID-address optimization: for queries like SELECT FROM Type WHERE @rid = <RID> or
-    // WHERE @rid IN [<RID list>], fetch the records directly by RID address instead of
-    // scanning the whole type. This is always cheaper than an index lookup, so it is checked
-    // before the index-based paths below. See issue #5824.
-    if (handleTypeWithRidFilter(plan, identifier, info, context))
-      return;
 
     if (handleTypeAsTargetWithIndexedFunction(plan, effectiveClusters, identifier, info, context)) {
       plan.chain(new FilterByTypeStep(identifier, context));
