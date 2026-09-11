@@ -56,7 +56,9 @@ public interface DatabaseInternal extends Database {
      * {@code LocalSchema.recordFileChanges} frame, still under the database write lock: the change is applied, its
      * files are registered or dropped and {@code schema.json} is saved, and nothing else happens before the lock is
      * released. Exists for tests that need to check the file set and the schema file agree before any other thread
-     * can observe them (issue #7457). A callback must not wait for another thread to take the database lock.
+     * can observe them (issue #7457). A callback must not wait for another thread to take the database lock, and it
+     * must not throw: the change is applied and saved by the time it runs, so a throw would report as failed a DDL
+     * that fully succeeded.
      */
     SCHEMA_AFTER_FILE_CHANGES
   }
