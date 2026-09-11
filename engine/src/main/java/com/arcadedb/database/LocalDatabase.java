@@ -117,7 +117,6 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -128,6 +127,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1050,18 +1050,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void registerCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
-    final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new ArrayList<>());
+    // COPY-ON-WRITE: SCHEMA_AFTER_FILE_CHANGES FIRES ON EVERY DDL (#7457), SO A CALLBACK REGISTERED OR REMOVED FROM
+    // ANOTHER THREAD MUST NOT RACE THE ITERATION IN executeCallbacks
+    final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new CopyOnWriteArrayList<>());
     callbacks.add(callback);
   }
 
   @Override
   public void unregisterCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
-    final List<Callable<Void>> callbacks = this.callbacks.get(event);
-    if (callbacks != null) {
+    this.callbacks.computeIfPresent(event, (k, callbacks) -> {
       callbacks.remove(callback);
-      if (callbacks.isEmpty())
-        this.callbacks.remove(event);
-    }
+      return callbacks.isEmpty() ? null : callbacks;
+    });
   }
 
   @Override
@@ -2584,6 +2584,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   private void closeInternal(final boolean drop) {
+    // #7458: a point-in-time snapshot window (a backup) reads this database's files without holding its lock, so
+    // the close waits for the open windows to be released BEFORE tearing anything down - the database keeps serving
+    // in the meantime - and marks itself so no new window opens on it. The mark is lifted at the end whatever
+    // happened: this instance is closed by then, and a later open of the same path is a new instance. The mark is
+    // set inside the try so that a wait that threw could not leak it either.
+    try {
+      PageManager.INSTANCE.beginDatabaseClose(this);
+      closeSteps(drop);
+    } finally {
+      PageManager.INSTANCE.endDatabaseClose(this);
+    }
+  }
+
+  private void closeSteps(final boolean drop) {
     // Graceful async drain FIRST, with the caller's interrupt flag INTACT so an interrupted caller bails
     // this wait fast; the warning distinguishes an interrupt from a real timeout.
     if (async != null) {
