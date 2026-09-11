@@ -190,15 +190,16 @@ final class PageVersionLedger {
     // stale-replacement a concurrent validation can perform, or a confirmation could mark a reservation the map has
     // just replaced and let both entries append.
     synchronized (ledger) {
-      boolean owned = true;
+      // All or nothing: a reservation marked appended is exempt from the stale sweep, so marking some pages of an
+      // entry that is then refused would leave them fenced for good. Check every page first, mark only then.
       for (int i = 0; i < pages.count(); i++) {
         final Reservation reserved = ledger.pages.get(pageKey(pages.fileIds()[i], pages.pageNumbers()[i]));
-        if (reserved != null && reserved.entry.equals(entry))
-          reserved.appended = true;
-        else
-          owned = false;
+        if (reserved == null || !reserved.entry.equals(entry))
+          return false;
       }
-      return owned;
+      for (int i = 0; i < pages.count(); i++)
+        ledger.pages.get(pageKey(pages.fileIds()[i], pages.pageNumbers()[i])).appended = true;
+      return true;
     }
   }
 
@@ -209,7 +210,13 @@ final class PageVersionLedger {
    */
   void release(final String databaseName, final Pages pagesOrNull, final byte[] walData) {
     final DatabaseLedger ledger = byDatabase.get(databaseName);
-    if (ledger == null || ledger.pages.isEmpty())
+    if (ledger == null)
+      return;
+    // Counted even when nothing is reserved: an apply moves the local copy on whether or not this ledger (possibly a
+    // fresh one, after a clear) still holds the entry's reservation, and a validation that read the local copy early
+    // must learn about it either way.
+    ledger.releases.incrementAndGet();
+    if (ledger.pages.isEmpty())
       return;
     final Pages pages = pagesOrNull != null ? pagesOrNull : parse(walData);
     for (int i = 0; i < pages.count(); i++) {
@@ -218,7 +225,6 @@ final class PageVersionLedger {
       if (reserved != null && reserved.version == pages.versions()[i])
         ledger.pages.remove(key, reserved);
     }
-    ledger.releases.incrementAndGet();
   }
 
   /**
