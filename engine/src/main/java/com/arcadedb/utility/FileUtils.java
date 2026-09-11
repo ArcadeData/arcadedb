@@ -381,6 +381,33 @@ public class FileUtils {
     }
   }
 
+  /**
+   * Copies {@code source} onto {@code target} atomically, byte for byte: the content is first copied to a sibling
+   * temporary file, which is then moved onto the target with {@code ATOMIC_MOVE}. A concurrent reader of
+   * {@code target} therefore always sees either the previous complete file or the new complete one, never a
+   * partial or spliced mixture - the same guarantee {@link #atomicWriteFile} gives for content produced in memory,
+   * for the case where the content to publish is another file that must not be re-encoded (issue #6114).
+   */
+  public static void atomicCopyFile(final File source, final File target) throws IOException {
+    // Absolute, so getParent() is never null for a relative input and the temporary file lands on the SAME file
+    // store as the target - which is what makes the move below a rename instead of a copy.
+    final Path destination = target.toPath().toAbsolutePath();
+    final Path dir = destination.getParent();
+    Files.createDirectories(dir);
+
+    final Path tmp = Files.createTempFile(dir, target.getName() + ".", ".tmp");
+    try {
+      Files.copy(source.toPath(), tmp, StandardCopyOption.REPLACE_EXISTING);
+      try {
+        Files.move(tmp, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      } catch (final AtomicMoveNotSupportedException e) {
+        Files.move(tmp, destination, StandardCopyOption.REPLACE_EXISTING);
+      }
+    } finally {
+      Files.deleteIfExists(tmp);
+    }
+  }
+
   public static void appendContentToFile(final File file, final String content) throws IOException {
     try (final FileOutputStream fos = new FileOutputStream(file, true)) {
       fos.write(content.getBytes());

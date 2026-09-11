@@ -131,12 +131,19 @@ public class FullBackupFormat extends AbstractBackupFormat {
       final boolean snapshotAttempt = useSnapshot;
 
       try (final TimeSeriesCompactionPause pause = pauseCompaction()) {
-        writeArchive(backupFile, compressionLevel, compressionThreads, maxMBPerSecond, failure, archive ->
-          // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
-          database.executeInReadLock(() -> {
-            if (snapshotAttempt)
-              databaseOrigSize.set(backupFromSnapshot(archive, pause));
-            else
+        writeArchive(backupFile, compressionLevel, compressionThreads, maxMBPerSecond, failure, archive -> {
+          if (snapshotAttempt)
+            // #6114: NO DATABASE READ LOCK. The lock this path used to hold for its WHOLE duration existed only to
+            // keep the two configuration files consistent with the page files, by excluding the DDL that rewrites
+            // them - so a backup blocked CREATE TYPE / DROP TYPE / CREATE INDEX for as long as it ran. The window
+            // now carries those files itself, captured at t0 together with the page list (see
+            // PageSnapshot.getConfigurationFiles), so there is nothing left for the lock to protect
+            databaseOrigSize.set(backupFromSnapshot(archive, pause));
+          else
+            // THE FALLBACK STILL TAKES IT. Here the page image is the LIVE on-disk one, held still by the flush
+            // suspension rather than by a point in time, so the configuration files have to be pinned by a lock the
+            // way they always were - there is no t0 to capture them at
+            database.executeInReadLock(() -> {
               // FORCE FLUSHING BEFORE THE BACKUP AND AVOID FLUSHING OF DATA PAGES TO DISK
               database.getPageManager().suspendFlushAndExecute(database, () -> {
                 try {
@@ -146,8 +153,9 @@ public class FullBackupFormat extends AbstractBackupFormat {
                   throw e;
                 }
               });
-            return null;
-          }));
+              return null;
+            });
+        });
         // NO SECOND CHECK OF failure HERE: writeArchive RETHROWS IT FROM INSIDE ITS OWN CALLBACK, WHICH IT HAS TO DO SO
         // THE STREAM-CLOSING THERE KNOWS THE BACKUP FAILED. A CHECK AT THIS POINT WOULD BE UNREACHABLE, AND UNREACHABLE
         // SAFETY NETS ONLY TEACH THE NEXT READER THAT THE THROW ABOVE MIGHT NOT HAPPEN
@@ -187,21 +195,25 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * Archives the two configuration files and the TimeSeries sealed stores, plus every PAGE file as it stood at the
    * snapshot's t0 (issue #6075).
    * <p>
-   * The configuration files are still read straight off the filesystem: they are not page files, so the snapshot
-   * does not cover them, and the database read lock this runs under is what keeps them consistent with the page
-   * files - it excludes the DDL that rewrites them. Files created after t0 are absent from the snapshot by
-   * construction, which is correct: they did not exist at the point in time being archived. Files DROPPED after t0
-   * are still readable, because their physical deletion is deferred until the window closes.
+   * The configuration files come FROM THE WINDOW since issue #6114, as bytes captured inside the t0 barrier, rather
+   * than being read off the filesystem after it. That is what removes the database read lock from this path: the
+   * lock's only remaining job was to exclude the DDL that rewrites those two files while they were read, and a
+   * configuration pinned at t0 needs no exclusion - it is captured in the same file-set-locked region that lists
+   * the pages (see {@code PageManager.captureConfigurationFiles}, and #7457 for the one ordering window that
+   * region does not cover and the read lock did not either). Files
+   * created after t0 are absent from the snapshot by construction, which is correct: they did not exist at the
+   * point in time being archived. Files DROPPED after t0 are still readable, because their physical deletion is
+   * deferred until the window closes.
    * <p>
-   * The sealed stores are read straight off the filesystem for the same reason and are NOT covered by the read
-   * lock, which is why the caller's compaction pause is held until they have been read (issue #7280).
+   * The sealed stores are still read straight off the filesystem, and never were covered by the read lock, which is
+   * why the caller's compaction pause is held until they have been read (issue #7280).
    */
   private long backupFromSnapshot(final BackupArchiveWriter archive, final TimeSeriesCompactionPause pause)
       throws Exception {
     long origSize = 0L;
     try (final PageSnapshot snapshot = database.getPageManager().openSnapshot(database)) {
-      origSize += compressFile(archive, ((LocalDatabase) database.getEmbedded()).getConfigurationFile());
-      origSize += compressFile(archive, ((LocalSchema) database.getSchema()).getConfigurationFile());
+      for (final PageSnapshot.SnapshotConfigFile config : snapshot.getConfigurationFiles())
+        origSize += compressEntry(archive, config.fileName(), config.lastModified(), config.newInputStream());
       origSize += compressSealedStores(archive);
       // RELEASED HERE AND NOT AT THE END: THE SPAN THAT HAS TO EXCLUDE A COMPACTION ENDS WITH THE LAST SEALED
       // BYTE READ, BECAUSE THE PAGE IMAGE IS ALREADY FIXED AT THE WINDOW'S t0 NO MATTER WHEN ITS BYTES ARE
@@ -277,7 +289,8 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * <p>
    * Called OUTSIDE {@code executeInReadLock} and outside the flush suspension, and both matter.
    * <p>
-   * Outside the read lock, because compaction's own order is compaction-write-lock first and database read lock
+   * Outside the read lock - which since #6114 only the suspend-and-freeze FALLBACK still takes, so this argument
+   * now constrains that path alone - because compaction's own order is compaction-write-lock first and database read lock
    * second (Phase 0/4a/4c take the write lock and then commit, and {@code LocalDatabase.commit()} runs under the
    * database READ lock). Taking them the other way round here would close a cycle with any waiting DDL: the
    * database lock is a {@code ReentrantReadWriteLock}, so a queued writer stops new readers from barging, which

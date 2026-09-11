@@ -2841,18 +2841,31 @@ public class LocalSchema implements Schema {
     final String latestSchema = newSchema.toString();
 
     if (configurationFile.exists()) {
+      // #6114: A COPY, NOT A RENAME. The rename this replaces moved schema.json out of the way and only then wrote
+      // the new one, so between the two statements schema.json DID NOT EXIST, and while the writer ran it was
+      // truncated. A crash in that window left a database whose schema file was missing - recoverable only from
+      // schema.prev.json - and any concurrent reader (the backup's t0 configuration capture above all) could
+      // observe nothing, or half a JSON document. The copy is itself atomic on the target, so schema.prev.json is
+      // never half-written either: it is the fallback readConfiguration() falls back TO, so it has to be whole.
       final File copy = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
-      if (copy.exists())
-        if (!copy.delete())
-          LogManager.instance().log(this, Level.WARNING, "Error on deleting previous schema file '%s'", null, copy);
-
-      if (!configurationFile.renameTo(copy))
-        LogManager.instance().log(this, Level.WARNING, "Error on renaming previous schema file '%s'", null, copy);
+      try {
+        FileUtils.atomicCopyFile(configurationFile, copy);
+      } catch (final IOException e) {
+        // NOT FATAL: schema.prev.json is a recovery aid, and failing the schema change because the aid could not be
+        // refreshed would turn a degraded backup into a broken DDL. The new schema below still lands atomically.
+        LogManager.instance().log(this, Level.WARNING, "Error on saving the previous schema file '%s'", e, copy);
+      }
     }
 
-    try (final FileWriter file = new FileWriter(databasePath + File.separator + SCHEMA_FILE_NAME)) {
-      file.write(latestSchema);
-    }
+    // #6114: ATOMIC. Writes a sibling temporary file, fsyncs it, and renames it over schema.json, so every observer
+    // sees either the whole previous file or the whole new one. That is what lets the full backup capture the
+    // configuration at the snapshot's t0 without holding the database read lock for its whole duration.
+    //
+    // IT ALSO PINS THE CHARSET. The FileWriter this replaces used the JVM's DEFAULT charset, while
+    // readConfiguration() has always read this file as UTF-8 (FileUtils.readFileAsString defaults to it) - so on a
+    // JVM whose default is not UTF-8, a type or property name outside ASCII was written in one encoding and read
+    // back in another. atomicWriteFile writes UTF-8, which is what the reader was already assuming.
+    FileUtils.atomicWriteFile(configurationFile, latestSchema);
 
     database.getExecutionPlanCache().invalidate();
     // The OpenCypher plan cache embeds schema-derived physical operators (index-seek vs scan, bucket
