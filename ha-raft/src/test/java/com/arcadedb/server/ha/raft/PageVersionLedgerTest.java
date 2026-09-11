@@ -141,7 +141,7 @@ class PageVersionLedgerTest {
     final byte[] appended = wal(2, new Page(4, 0, 1));
     ledger.validateAndReserve(DB, PageVersionLedger.parse(dropped), entry(1), localVersions);
     ledger.validateAndReserve(DB, PageVersionLedger.parse(appended), entry(2), localVersions);
-    ledger.confirmAppended(DB, PageVersionLedger.parse(appended), entry(2));
+    assertThat(ledger.confirmAppended(DB, PageVersionLedger.parse(appended), entry(2))).isTrue();
 
     // Before the bound, both hold.
     assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 1))), entry(3), localVersions))
@@ -156,6 +156,36 @@ class PageVersionLedgerTest {
     // ... while the appended entry's reservation still refuses a stale base.
     assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(4, new Page(4, 0, 1))), entry(4), localVersions))
         .isInstanceOf(ConcurrentModificationException.class);
+
+    // The delayed request finally reaches its append: its page now belongs to entry 3, so it must not be appended.
+    assertThat(ledger.confirmAppended(DB, PageVersionLedger.parse(dropped), entry(1)))
+        .as("an entry whose reservation was taken over cannot be appended")
+        .isFalse();
+    assertThat(ledger.confirmAppended(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 1))), entry(3))).isTrue();
+  }
+
+  /**
+   * The local copy of a page is read outside the ledger lock; a release in between (an entry applied) invalidates
+   * that read, so the same base is refused once the applied entry moved the page on.
+   */
+  @Test
+  void anEarlyLocalReadIsNotTrustedAcrossARelease() throws IOException {
+    final byte[] first = wal(1, new Page(3, 0, 1));
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(first), entry(1), localVersions);
+    ledger.confirmAppended(DB, PageVersionLedger.parse(first), entry(1));
+
+    // The entry is applied: the local copy moves to 1 and the reservation is released.
+    final PageVersionLedger.LocalVersions applyDuringRead = (fileId, pageNumber) -> {
+      final int version = localVersions.versionOf(fileId, pageNumber);
+      local.put(PageVersionLedger.pageKey(3, 0), 1);
+      ledger.release(DB, null, first);
+      return version;
+    };
+    // A second entry validated against version 0 reads the page before the apply lands and must still be refused:
+    // its early read said 0, the lock-side check re-reads 1.
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(3, 0, 1))), entry(2), applyDuringRead))
+        .isInstanceOf(ConcurrentModificationException.class);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 2))), entry(3), localVersions);
   }
 
   /**

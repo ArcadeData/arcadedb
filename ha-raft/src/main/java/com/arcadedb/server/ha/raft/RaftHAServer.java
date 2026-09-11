@@ -2944,11 +2944,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public boolean awaitApplied(final BooleanSupplier condition, final long timeoutMs) throws InterruptedException {
     final long deadline = System.currentTimeMillis() + timeoutMs;
-    synchronized (applyNotifier) {
-      while (!condition.getAsBoolean()) {
-        final long remaining = deadline - System.currentTimeMillis();
-        if (remaining <= 0)
-          return false;
+    // The condition may read a page (a disk read on a cache miss), so it is evaluated OUTSIDE the monitor that the
+    // apply thread takes after every entry: the monitor is only used to park between evaluations.
+    while (!condition.getAsBoolean()) {
+      final long remaining = deadline - System.currentTimeMillis();
+      if (remaining <= 0)
+        return false;
+      synchronized (applyNotifier) {
         applyNotifier.wait(Math.min(remaining, 50L));
       }
     }

@@ -69,6 +69,20 @@ class Issue6965SharedPageCrossNodeWritersTest extends BaseRaftHATest {
 
   @Test
   void singleWriterPerDocumentMustNotLoseIncrementsWhenDocumentsSharePage() throws Exception {
+    runTwoWriters(false);
+  }
+
+  /**
+   * The issue's own reproducer took the pessimistic type lock inside every transaction, the strongest serialization
+   * the embedded API offers. It is node-local by design, so it cannot prevent the cross-node collision: the outcome
+   * must be the same as without it.
+   */
+  @Test
+  void pessimisticTypeLockDoesNotChangeTheOutcome() throws Exception {
+    runTwoWriters(true);
+  }
+
+  private void runTwoWriters(final boolean typeLock) throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
     final int replicaIndex = leaderIndex == 0 ? 1 : 0;
@@ -95,8 +109,8 @@ class Issue6965SharedPageCrossNodeWritersTest extends BaseRaftHATest {
     final CountDownLatch start = new CountDownLatch(1);
     final ExecutorService pool = Executors.newFixedThreadPool(2);
     try {
-      final Future<String> leaderOutcome = pool.submit(() -> incrementLoop(leaderDb, "leader", start, surfacedConflicts));
-      final Future<String> replicaOutcome = pool.submit(() -> incrementLoop(replicaDb, "replica", start, surfacedConflicts));
+      final Future<String> leaderOutcome = pool.submit(() -> incrementLoop(leaderDb, "leader", start, surfacedConflicts, typeLock));
+      final Future<String> replicaOutcome = pool.submit(() -> incrementLoop(replicaDb, "replica", start, surfacedConflicts, typeLock));
       start.countDown();
 
       final String leaderResult = leaderOutcome.get(240, TimeUnit.SECONDS);
@@ -135,7 +149,7 @@ class Issue6965SharedPageCrossNodeWritersTest extends BaseRaftHATest {
    * not match the value its own previous, acknowledged commit wrote.
    */
   private static String incrementLoop(final Database database, final String documentName, final CountDownLatch start,
-      final AtomicLong surfacedConflicts) throws Exception {
+      final AtomicLong surfacedConflicts, final boolean typeLock) throws Exception {
     start.await();
     long expected = 0;
     for (int i = 0; i < INCREMENTS; i++) {
@@ -143,6 +157,8 @@ class Issue6965SharedPageCrossNodeWritersTest extends BaseRaftHATest {
       for (int attempt = 0; ; attempt++) {
         try {
           database.transaction(() -> {
+            if (typeLock)
+              database.acquireLock().type(TYPE_NAME).lock();
             final MutableDocument counter = database.lookupByKey(TYPE_NAME, "name", documentName).next().getRecord()
                 .asDocument().modify();
             observed[0] = counter.getLong("value");
