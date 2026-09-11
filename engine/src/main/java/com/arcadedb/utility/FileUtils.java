@@ -41,11 +41,14 @@ import java.lang.management.ThreadMXBean;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
 import java.util.Locale;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.zip.GZIPOutputStream;
 
@@ -55,6 +58,9 @@ public class FileUtils {
   public static final int    GIGABYTE = 1073741824;
   public static final long   TERABYTE = 1099511627776L;
   public static final String UTF8_BOM = "\uFEFF";
+
+  /** One warning per JVM when the file store cannot replace files atomically (see {@link #publishAtomically}). */
+  private static final AtomicBoolean NON_ATOMIC_MOVE_REPORTED = new AtomicBoolean();
 
   public static String getStringContent(final Object iValue) {
     if (iValue == null)
@@ -355,23 +361,15 @@ public class FileUtils {
    * {@code REPLACE_EXISTING} move (still a single rename, just without the cross-crash guarantee).
    */
   public static void atomicWriteFile(final File file, final String content) throws IOException {
-    atomicWriteFile(file, content, false);
-  }
-
-  /**
-   * Writes a synced sibling temporary file before replacing the target. When {@code requireAtomicMove}
-   * is true, an unsupported atomic move fails without falling back to a potentially non-atomic replacement.
-   * Existing callers of the two-argument overload retain their best-effort fallback.
-   */
-  public static void atomicWriteFile(final File file, final String content, final boolean requireAtomicMove) throws IOException {
-    atomicWriteFile(file, content.getBytes(StandardCharsets.UTF_8), requireAtomicMove);
+    atomicWriteFile(file, content.getBytes(StandardCharsets.UTF_8));
   }
 
   /**
    * Atomically replaces a file with the supplied bytes, without decoding or re-encoding its content.
-   * When {@code requireAtomicMove} is true, unsupported atomic replacement fails without a fallback.
+   * Callers holding text that is not already encoded should use {@link #atomicWriteFile(File, String)},
+   * which encodes in UTF-8.
    */
-  public static void atomicWriteFile(final File file, final byte[] content, final boolean requireAtomicMove) throws IOException {
+  public static void atomicWriteFile(final File file, final byte[] content) throws IOException {
     // Resolve to an absolute path so getParent() is never null for relative inputs (e.g. new
     // File("ai.json")); this keeps the temp file on the same file store as the target, which is
     // required for the ATOMIC_MOVE below to actually be atomic instead of falling back to a copy.
@@ -386,17 +384,71 @@ public class FileUtils {
         fos.flush();
         fos.getFD().sync();
       }
-      try {
-        // REPLACE_EXISTING is required for ATOMIC_MOVE to overwrite an existing target on some
-        // platforms (notably Windows), where the move otherwise throws FileAlreadyExistsException.
-        Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-      } catch (final AtomicMoveNotSupportedException e) {
-        if (requireAtomicMove)
-          throw e;
-        Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
-      }
+      publishAtomically(tmp, target);
     } finally {
       Files.deleteIfExists(tmp);
+    }
+  }
+
+  /**
+   * Publishes a byte-identical copy of {@code source} at {@code target} atomically, so a reader of
+   * {@code target} sees either its previous complete content or the full copy, never a partial one, and
+   * {@code source} is never unlinked in the process.
+   * <p>
+   * A hard link is attempted first: it makes {@code target} a second name for the bytes already on disk,
+   * which costs one inode operation instead of a full read + write + fsync of the source, and is
+   * byte-exact by construction (no charset can be applied to bytes that are never decoded). Filesystems
+   * that do not support links (FAT/exFAT, some network mounts) fall back to reading the source and
+   * republishing it through {@link #atomicWriteFile(File, byte[])}.
+   *
+   * @param source the file to copy; must exist. The link fast path additionally needs it on the same file store as
+   *               {@code target}, which is the case for every caller today (both names sit in the database directory)
+   * @param target the name to publish the copy under, replaced if it already exists
+   */
+  public static void atomicCopyFile(final File source, final File target) throws IOException {
+    final Path from = source.toPath().toAbsolutePath();
+    final Path to = target.toPath().toAbsolutePath();
+    final Path dir = to.getParent();
+    Files.createDirectories(dir);
+
+    // Unique by construction, so the link below never races another writer for the name.
+    final Path tmp = dir.resolve(target.getName() + "." + UUID.randomUUID() + ".tmp");
+    try {
+      try {
+        Files.createLink(tmp, from);
+      } catch (final UnsupportedOperationException | FileSystemException e) {
+        // No links on this file store: pay for the copy instead. Still a byte copy, never a decode.
+        atomicWriteFile(target, Files.readAllBytes(from));
+        return;
+      }
+      publishAtomically(tmp, to);
+    } finally {
+      Files.deleteIfExists(tmp);
+    }
+  }
+
+  /**
+   * Moves {@code tmp} onto {@code target} with {@code ATOMIC_MOVE}, falling back to a plain
+   * {@code REPLACE_EXISTING} move when the file store cannot do it atomically.
+   * <p>
+   * The fallback is kept rather than made fatal on purpose. {@code tmp} is always a sibling of
+   * {@code target}, so a same-store move is what the provider is being asked for and
+   * {@code AtomicMoveNotSupportedException} is practically unreachable; on the exotic file store where
+   * it is not, refusing to write would leave the caller - notably the schema save, whose only error
+   * handling is a logged SEVERE - permanently unable to persist anything, which is far worse than one
+   * replacement that is merely non-atomic. It is logged once per JVM so the condition is visible.
+   */
+  private static void publishAtomically(final Path tmp, final Path target) throws IOException {
+    try {
+      // REPLACE_EXISTING is required for ATOMIC_MOVE to overwrite an existing target on some
+      // platforms (notably Windows), where the move otherwise throws FileAlreadyExistsException.
+      Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+    } catch (final AtomicMoveNotSupportedException e) {
+      if (NON_ATOMIC_MOVE_REPORTED.compareAndSet(false, true))
+        LogManager.instance().log(FileUtils.class, Level.WARNING,
+            "File store hosting '%s' cannot replace files atomically: a crash during a replacement can leave the file "
+                + "missing or partial. Consider hosting the database on a file store that supports atomic renames.", null, target);
+      Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
     }
   }
 

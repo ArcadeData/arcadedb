@@ -76,7 +76,6 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.nio.file.Files;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.Callable;
@@ -2872,19 +2871,28 @@ public class LocalSchema implements Schema {
   }
 
   public synchronized void update(final JSONObject newSchema) throws IOException {
-    // An absent version keeps the current one, but an explicitly null version must still be rejected.
+    // Validate before touching either file: getLong() throws on a non-numeric or explicitly null value, and a
+    // rejected schema must leave both generations exactly as they were. An ABSENT version keeps the current one,
+    // which is why the default-value getter cannot be used here - it treats an explicit null as absent too.
     final long newVersion = newSchema.has("schemaVersion") ? newSchema.getLong("schemaVersion") : versionSerial.get();
     final String latestSchema = newSchema.toString();
 
     if (configurationFile.exists()) {
       final File copy = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
-      // Keep the primary in place while saving the previous generation. Moving it aside exposes a
-      // missing/partial schema to readers and to recovery after an interrupted write (issue #6114).
-      FileUtils.atomicWriteFile(copy, Files.readAllBytes(configurationFile.toPath()), true);
+      // Save the previous generation WITHOUT moving the primary aside: the old rename left schema.json absent for
+      // the whole write, so a concurrent reader (a lock-free backup, the HA snapshot ship) or a recovery after an
+      // interrupted write could find no schema at all (issue #6114). The copy is published as a hard link when the
+      // file store allows it, so it costs an inode operation rather than a re-read of the whole schema, and the
+      // previous generation is byte-identical by construction - it is literally the same bytes, so no charset from
+      // setEncoding() can be applied to it on the way out.
+      FileUtils.atomicCopyFile(configurationFile, copy);
     }
 
-    FileUtils.atomicWriteFile(configurationFile, latestSchema, true);
+    // The primary is replaced by an atomic rename, so a reader sees either this generation or the previous one.
+    FileUtils.atomicWriteFile(configurationFile, latestSchema);
 
+    // Only after the bytes are on disk: a failed publication must not leave the in-memory version claiming a
+    // generation that no file holds.
     versionSerial.set(newVersion);
 
     database.getExecutionPlanCache().invalidate();

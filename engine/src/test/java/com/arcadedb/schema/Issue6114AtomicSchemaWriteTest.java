@@ -29,12 +29,17 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.mockito.MockedStatic;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -44,9 +49,14 @@ import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.Mockito.mockStatic;
 
-/** Tests the persisted schema at the replacement boundary, including an unclean child-JVM exit. */
+/**
+ * Tests the persisted schema at the replacement boundary, including an unclean child-JVM exit.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 @Timeout(300) // Separate wall-clock watchdog for a hung test; completion budgets below discount JVM stalls.
 class Issue6114AtomicSchemaWriteTest extends TestHelper {
   @Test
@@ -115,25 +125,61 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
   }
 
   @Test
-  void unsupportedAtomicMoveDoesNotFallBackToANonAtomicReplacement() throws Exception {
+  void unsupportedAtomicMoveStillPublishesTheSchemaThroughTheFallback() throws Exception {
+    // A file store that cannot rename atomically must not be turned into a store where the schema stops
+    // persisting: saveConfiguration()'s only error handling is a logged SEVERE, so a hard failure here would
+    // lose every DDL silently. The replacement is merely non-atomic, which is still no worse than the
+    // truncate-and-rewrite this change replaced.
     createIndexedRecord();
     final LocalSchema schema = database.getSchema().getEmbedded();
     final Path primary = schemaPath();
-    final String before = Files.readString(primary);
     final AtomicInteger attempts = new AtomicInteger();
+    final JSONObject replacement = replacement(schema, "published-through-the-fallback");
     try (final MockedStatic<Files> ignored = mockStatic(Files.class, invocation -> {
-      if (invocation.getMethod().getName().equals("move") && primary.equals(invocation.getArgument(1))) {
-        attempts.incrementAndGet();
+      // Only the first move onto the primary is the ATOMIC_MOVE one; the retry must be allowed through.
+      if (invocation.getMethod().getName().equals("move") && primary.equals(invocation.getArgument(1))
+          && attempts.incrementAndGet() == 1)
         throw new AtomicMoveNotSupportedException("temporary", primary.toString(), "test filesystem");
-      }
       return invocation.callRealMethod();
     })) {
-      assertThatThrownBy(() -> schema.update(replacement(schema, "unpublished")))
-          .isInstanceOf(AtomicMoveNotSupportedException.class);
+      schema.update(replacement);
     }
 
-    assertThat(attempts.get()).isEqualTo(1);
-    assertThat(Files.readString(primary)).isEqualTo(before);
+    assertThat(attempts.get()).as("the atomic move must be retried exactly once, without an atomic guarantee")
+        .isEqualTo(2);
+    assertThat(Files.readString(primary)).isEqualTo(replacement.toString());
+    assertNoTemporaryFiles();
+    reopenDatabase();
+    assertIndexedRecord();
+  }
+
+  @Test
+  void theSavedPreviousGenerationDoesNotRereadTheWholeSchema() throws Exception {
+    // The previous generation is published as a hard link where the file store supports one, so a schema save
+    // costs an inode operation instead of a full read + write + fsync of a file that can reach megabytes on a
+    // large schema. Reading the primary back would silently reintroduce that cost on every DDL statement.
+    createIndexedRecord();
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    final Path primary = schemaPath();
+    assumeTrue(supportsHardLinks(primary.getParent()), "the file store hosting the test databases has no hard links");
+    final byte[] before = Files.readAllBytes(primary);
+    final AtomicInteger reads = new AtomicInteger();
+    final AtomicInteger links = new AtomicInteger();
+    try (final MockedStatic<Files> ignored = mockStatic(Files.class, invocation -> {
+      final String method = invocation.getMethod().getName();
+      if ((method.equals("readAllBytes") || method.equals("readString") || method.equals("copy"))
+          && primary.equals(invocation.getArgument(0)))
+        reads.incrementAndGet();
+      else if (method.equals("createLink"))
+        links.incrementAndGet();
+      return invocation.callRealMethod();
+    })) {
+      schema.update(replacement(schema, "linked"));
+    }
+
+    assertThat(links.get()).as("the previous generation must be published by link, not by copy").isEqualTo(1);
+    assertThat(reads.get()).as("the primary schema must not be read back to save the previous generation").isZero();
+    assertThat(Files.readAllBytes(previousPath())).isEqualTo(before);
     assertNoTemporaryFiles();
   }
 
@@ -190,13 +236,19 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
     try (final var executor = Executors.newSingleThreadExecutor()) {
       final var reader = executor.submit(() -> {
         int reads = 0;
-        do {
-          final String observed = Files.readString(primary);
-          assertThat(observed.equals(first) || observed.equals(second))
-              .as("reader must see a complete schema generation, observed %d characters", observed.length()).isTrue();
-          ++reads;
+        try {
+          do {
+            final String observed = Files.readString(primary);
+            assertThat(observed.equals(first) || observed.equals(second))
+                .as("reader must see a complete schema generation, observed %d characters", observed.length()).isTrue();
+            ++reads;
+            reading.countDown();
+          } while (!finished.get());
+        } finally {
+          // Release the readiness wait even when the first read already failed, so the failure below is the
+          // assertion the reader raised and not a 30-second "hung reader" that hides it.
           reading.countDown();
-        } while (!finished.get());
+        }
         return reads;
       });
       try {
@@ -221,9 +273,13 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
     database.close();
     final String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
     final String classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
-    final Process process = new ProcessBuilder(java, "-XX:+EnableDynamicAgentLoading", "-cp", classpath,
-        InterruptedWriter.class.getName(), primary.getParent().toString())
-        .redirectErrorStream(true).redirectOutput(log.toFile()).start();
+    // Attach Byte Buddy up front the way surefire does for this build, instead of leaning on self-attach:
+    // -XX:+EnableDynamicAgentLoading is a deprecated escape hatch that later JDKs refuse by default.
+    final List<String> command = new ArrayList<>(List.of(java));
+    final String agent = byteBuddyAgentJar(classpath);
+    command.add(agent != null ? "-javaagent:" + agent : "-XX:+EnableDynamicAgentLoading");
+    command.addAll(List.of("-cp", classpath, InterruptedWriter.class.getName(), primary.getParent().toString()));
+    final Process process = new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log.toFile()).start();
     try {
       awaitCompletion(() -> !process.isAlive(), 120_000, "a disposable writer terminating versus a hung writer");
       assertThat(process.exitValue()).as("child output: %s", Files.readString(log)).isEqualTo(73);
@@ -324,6 +380,29 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
       stopwatch.assertGaveUpWithin(boundMs, whatItSeparates);
       Thread.sleep(10);
     }
+  }
+
+  /** Probes the file store so the link assertion above is skipped, not failed, on FAT/exFAT and the like. */
+  private static boolean supportsHardLinks(final Path dir) throws IOException {
+    final Path source = Files.createTempFile(dir, "link-probe.", ".tmp");
+    final Path link = dir.resolve("link-probe." + UUID.randomUUID() + ".tmp");
+    try {
+      Files.createLink(link, source);
+      return true;
+    } catch (final UnsupportedOperationException | FileSystemException e) {
+      return false;
+    } finally {
+      Files.deleteIfExists(link);
+      Files.deleteIfExists(source);
+    }
+  }
+
+  /** Returns the byte-buddy-agent jar on {@code classpath}, or null when the build does not ship one. */
+  private static String byteBuddyAgentJar(final String classpath) {
+    for (final String entry : classpath.split(File.pathSeparator))
+      if (entry.contains("byte-buddy-agent"))
+        return entry;
+    return null;
   }
 
   private Path schemaPath() {
