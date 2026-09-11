@@ -24,8 +24,14 @@ import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PageVersionReservations;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
@@ -47,6 +53,7 @@ import org.apache.ratis.protocol.RaftClientRequest;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftGroupMemberId;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.protocol.exceptions.StateMachineException;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.RaftLog;
@@ -69,6 +76,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -88,6 +96,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.zip.CRC32;
@@ -444,120 +453,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final        Map<String, Long> lastDivergedResyncLogByDb        = new ConcurrentHashMap<>();
   private static final long              DIVERGED_RESYNC_LOG_THROTTLE_MS   = 5_000L;
 
-  // Outcome slots for locally-originated transactions, keyed by "<databaseName>/<walTxId>". Two
-  // threads race to claim the same slot and the winner decides who writes the entry's pages:
-  //
-  //   - the committing thread writes an AbandonedPhase2 when replication returned an INDETERMINATE
-  //     result (the entry was dispatched to Ratis but submitAndWait timed out before quorum was
-  //     confirmed - see ReplicationDispatchedTimeoutException). If such an entry later reaches
-  //     quorum and is applied here, applyTxEntry MUST apply it locally instead of origin-skipping
-  //     it, otherwise the write lands on every follower but never on this leader: a silent,
-  //     permanent divergence (issue #4790);
-  //   - the Raft apply thread writes an OriginSkipped when it passes a locally-originated entry and
-  //     leaves the pages to phase 2.
-  //
-  // Whoever finds the other's slot already there knows the other side got in first, and the loser
-  // takes over the work. That handshake is the whole point of routing BOTH sides through this one
-  // map: before issue #6848 the abandoned mark was published only after the entry had already been
-  // dispatched, so on a cold JVM the apply thread reached applyTxEntry first, found no mark and
-  // origin-skipped an entry whose phase 2 never ran - the leader stayed one transaction behind its
-  // followers for the rest of its uptime.
-  //
-  // Marking is always safe: it only changes behaviour IF the entry actually commits on this node's
-  // state machine (applying is then correct because the followers have it); if the entry never
-  // commits, the slot is inert and is pruned by TTL. Bounded by time-based pruning on insert.
-  private final        Map<String, LocalTxOutcome> abandonedLocalTransactions = new ConcurrentHashMap<>();
-  // Entries older than this are pruned on the next mark. Generous because a dispatched-but-stuck
-  // entry can take a long time to either commit or be overwritten by a new leader.
-  private static final long              ABANDONED_TX_TTL_MS           = 10 * 60 * 1000L;
-  // The origin-skip slot is written on the leader's hot commit path, so it cannot afford the full
-  // TTL scan the (rare) abandon path runs; throttled to once per window, this sweep keeps that path
-  // O(1) while still bounding the map.
-  //
-  // It is a backstop, not the main disposal route. Ratis completes a write's client reply from the
-  // applyTransaction future, so on the leader the apply - and therefore the slot - normally happens
-  // BEFORE replicateTransaction returns and the committing thread's own finally removes it. What is
-  // left for the sweep is the slots nobody came back for: a committing thread that died, and any exit
-  // where the reply reached it by some other route than its own entry's apply.
-  //
-  // Nothing here is load-bearing on that Ratis ordering. If a reply ever overtook its apply, the only
-  // consequence is a slot removed before it was written and then left for this sweep - map hygiene,
-  // not correctness. The arbitration itself is settled by putIfAbsent in either order, which is the
-  // whole reason it was moved into the map in the first place.
-  //
-  // The TTL those slots are held for is deliberately NOT tightened to "a few seconds". A slot must
-  // outlive the whole window in which its committing thread can still abandon (2 x quorumTimeout
-  // plus the grace wait, i.e. 30 s at the default arcadedb.ha.quorumTimeout of 10 s), because a slot
-  // evicted inside that window would let the abandon claim a free key, roll back, and re-open the
-  // #6848 lost write. ABANDONED_TX_TTL_MS clears that bar by an order of magnitude, which is the
-  // point of reusing it.
-  private static final long              ORIGIN_SKIP_PRUNE_EVERY_MS    = 60 * 1000L;
-  private final        AtomicLong        lastOriginSkipPruneMs         = new AtomicLong();
+  // The transactions this node originated that are in flight between replication and the publication of their
+  // pages, and the page versions the Raft log has assigned but this node has not applied yet (issue #6965).
+  // Together they give the leader the same page-write order as every follower - its own entries are published at
+  // their log position by the apply thread - and let it refuse, before the entry enters the log, a transaction that
+  // was validated against a page version the log has already moved past. See LocalCommit and PageVersionLedger.
+  private final LocalCommitRegistry localCommits = new LocalCommitRegistry();
+  private final PageVersionLedger   pageVersions = new PageVersionLedger();
 
-  // In-flight leader-side phase 2 applies, ticket -> the applied index observed when the commit
-  // started (its "replay floor"). A locally-originated entry is origin-skipped by applyTxEntry
-  // because RaftReplicatedDatabase.commit's phase 2 writes the pages instead - but phase 2 runs
-  // AFTER Raft commits the entry, so between the two this node has advanced lastAppliedIndex past
-  // an entry whose pages are not on disk yet. takeSnapshot() must not hand that index to Ratis as a
-  // durability checkpoint: the marker it writes is the only thing reinitialize() consults on
-  // restart, so a checkpoint covering an unapplied entry makes the write unreplayable and lost
-  // forever on this node (issue #5407). Registering the floor BEFORE replication and clamping
-  // takeSnapshot() to it keeps the entry inside the replay window until phase 2 confirms.
-  private final Map<Long, PendingPhase2> pendingLocalPhase2       = new ConcurrentHashMap<>();
-  private final AtomicLong               pendingLocalPhase2Ticket = new AtomicLong();
-  // A ticket is only released once its pages are settled, so one that is never released pins the
-  // checkpoint - and therefore Raft log purge - until the node restarts. That is the intended
-  // durability trade, but it must not be silent: without a signal an operator meets it as disk
-  // pressure. Warn (throttled) once a held ticket outlives the threshold.
-  private static final long STALLED_PHASE2_WARN_AFTER_MS = 5 * 60 * 1000L;
-  private static final long STALLED_PHASE2_WARN_EVERY_MS = 60 * 1000L;
-  private final AtomicLong  lastStalledPhase2WarnMs      = new AtomicLong();
-
-  /** One in-flight leader-side phase 2: the replay floor to protect, and when it started. */
-  private record PendingPhase2(long replayFloor, long startedAtMs) {
+  /**
+   * What {@link #preAppendTransaction} learned about a client entry, handed to {@link #applyTransaction} through the
+   * Ratis transaction context so the entry is decoded once: whether this node's own client submitted it, and the
+   * decoded payload.
+   */
+  private record AppendedEntry(boolean originatedLocally, RaftLogEntryCodec.DecodedEntry decoded, PageVersionLedger.EntryId entryId,
+                               PageVersionLedger.Pages pages) {
   }
-
-  /**
-   * One claim on a locally-originated transaction, written by whichever of the committing thread and
-   * the Raft apply thread reaches {@link #abandonedLocalTransactions} first. {@code insertedAt} backs
-   * the TTL pruning that bounds the map.
-   */
-  private sealed interface LocalTxOutcome permits AbandonedPhase2, OriginSkipped {
-    long insertedAt();
-  }
-
-  /**
-   * One abandoned locally-originated transaction: the phase-2 ticket its commit is still holding,
-   * and when the mark was inserted (for TTL pruning). Carrying the ticket is what lets
-   * {@link #applyTxEntry} release it once the entry finally applies here, instead of leaving the
-   * snapshot checkpoint - and therefore Raft log purging - pinned until the node restarts (#5410).
-   */
-  private record AbandonedPhase2(long phase2Ticket, long insertedAt) implements LocalTxOutcome {
-  }
-
-  /**
-   * The Raft apply thread passed this locally-originated entry and left its pages to phase 2. Its
-   * only purpose is to be visible to a committing thread that abandons afterwards: finding it there
-   * proves the entry committed AND that nothing else will ever write its pages on this node, so the
-   * committer has to apply it itself (issue #6848).
-   */
-  private record OriginSkipped(long insertedAt) implements LocalTxOutcome {
-  }
-
-  /**
-   * Sentinel for "this entry carries no phase-2 ticket to release". Real tickets come from an
-   * {@link AtomicLong#incrementAndGet()} and are therefore always positive.
-   */
-  static final long NO_PHASE2_TICKET = -1L;
-
-  /**
-   * Sentinel for "this transaction was never marked abandoned", i.e. the origin-skip case. Kept
-   * distinct from {@link #NO_PHASE2_TICKET} on purpose: a transaction CAN be abandoned while holding
-   * no ticket (the commit took none because this node was not the leader), and conflating the two
-   * would make {@link #applyTxEntry} origin-skip an abandoned entry and reintroduce the #4790 lost
-   * write.
-   */
-  static final long NO_ABANDONED_MARK = Long.MIN_VALUE;
 
 
   public void setServer(final ArcadeDBServer server) {
@@ -725,8 +636,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         staleSnapshotAppliedFloor.set(-1);
 
       // Only a trustworthy marker may seed the ArcadeDB-side counter: takeSnapshot() reads it as the
-      // durability checkpoint it hands Ratis and pendingLocalPhase2 uses it as a replay floor, and
-      // neither may claim entries this node never applied.
+      // durability checkpoint it hands Ratis, and it must not claim entries this node never applied.
       lastAppliedIndex.set(staleSnapshot ? persistedApplied : snapshotIndex);
       // If the on-disk marker carries an inflated term (issues #575, #593), this seed records it as-is
       // (the previous applied TermIndex is null here, so no violation is possible) and the first
@@ -852,13 +762,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Called by Ratis on the leader when a client request is received, before the entry is
    * replicated. Sets a marker in the {@link TransactionContext} so that {@link #applyTransaction}
-   * can identify entries that were originated (and pre-applied) by this node in the current
-   * lifecycle, without relying on a runtime {@code isLeader()} check that is susceptible to
-   * TOCTOU races if leadership changes between submission and apply.
+   * can identify entries that were originated by this node in the current lifecycle, without relying
+   * on a runtime {@code isLeader()} check that is susceptible to TOCTOU races if leadership changes
+   * between submission and apply. For a transaction entry the marker tells the apply thread to look
+   * for the committing thread's prepared pages and publish those (issue #6965); for a schema entry it
+   * tells it to skip, because the leader applied the change locally under the database write lock.
+   * A transaction entry is also validated here against the page versions the log assigned so far, and
+   * refused through the context when it was validated against a superseded one (see {@link PageVersionLedger}).
    * <p>
    * Only requests submitted by THIS node's own {@code RaftClient} are marked as locally-originated.
    * Requests forwarded from a follower's {@code RaftClient} carry a different {@code ClientId} and
-   * must NOT be marked, because Phase 2 never ran on this node for follower-submitted transactions.
+   * must NOT be marked, because nothing was prepared or applied on this node for them.
    */
   @Override
   public TransactionContext startTransaction(final RaftClientRequest request) throws IOException {
@@ -867,11 +781,53 @@ public class ArcadeStateMachine extends BaseStateMachine {
         && raft.getClient() != null
         && raft.getClient().getId().equals(request.getClientId());
 
-    return TransactionContext.newBuilder()
+    final TransactionContext.Builder context = TransactionContext.newBuilder()
         .setStateMachine(this)
-        .setClientRequest(request)
-        .setStateMachineContext(isLocalOrigin ? Boolean.TRUE : null)
-        .build();
+        .setClientRequest(request);
+
+    // A transaction entry is validated here against the page versions the log has assigned so far (issue #6965):
+    // one validated on its originating node against a version the log has already moved past is refused before Ratis
+    // touches it, through the context's exception. That reply is exactly the retryable
+    // ConcurrentModificationException a single node raises, and refusing at this stage costs Ratis nothing - a
+    // refusal thrown from preAppendTransaction, by contrast, leaks the leader's pending-write permit in Ratis 3.3.0,
+    // and enough of them would wedge the leader for good. An accepted entry reserves its versions, so the next entry
+    // on the same pages is checked against them rather than against a local copy that has not caught up yet.
+    final ByteString data = request.getMessage() != null ? request.getMessage().getContent() : null;
+    if (data == null || data.isEmpty() || RaftLogEntryType.fromId(data.byteAt(0)) != RaftLogEntryType.TX_ENTRY)
+      return context.setStateMachineContext(isLocalOrigin ? Boolean.TRUE : null).build();
+
+    final RaftLogEntryCodec.DecodedEntry decoded;
+    try {
+      decoded = RaftLogEntryCodec.decode(data);
+    } catch (final RuntimeException e) {
+      // Refuse rather than append an entry no node will be able to read; not a fault of this leader.
+      return context.build().setException(e);
+    }
+
+    final PageVersionLedger.EntryId entryId = new PageVersionLedger.EntryId(request.getClientId(), request.getCallId());
+    // Decoded once: the same page list serves the validation here, the confirmation at append and the release at apply.
+    final PageVersionLedger.Pages pages;
+    try {
+      pages = PageVersionLedger.parse(decoded.walData());
+    } catch (final RuntimeException e) {
+      return context.build().setException(e);
+    }
+    final DatabaseInternal db = databaseForValidation(decoded.databaseName());
+    if (db == null)
+      // An entry that cannot be validated must not enter the log: applied unvalidated it would take the very
+      // equal-version merge path this validation exists to close. The database is not open on this leader right
+      // now (still installing, or being dropped), which is a transient the originator can retry.
+      return context.build().setException(new NeedRetryException(
+          "Database '" + decoded.databaseName() + "' is not available on the leader to validate the transaction. Please retry"));
+    try {
+      validateBeforeAppend(db, pages, entryId);
+    } catch (final NeedRetryException e) {
+      HALog.log(this, HALog.DETAILED, "Refusing tx %d on database '%s': %s",
+          peekWalTransactionId(decoded.walData()), decoded.databaseName(), e.getMessage());
+      return context.build().setException(e);
+    }
+
+    return context.setStateMachineContext(new AppendedEntry(isLocalOrigin, decoded, entryId, pages)).build();
   }
 
   /**
@@ -927,7 +883,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // genuine replication error that must still be logged loudly. Null until decode succeeds.
     String targetDatabase = null;
     try {
-      final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(data);
+      // Decoded once, at append time on the leader (preAppendTransaction); everywhere else decoded here.
+      final Object context = trx.getStateMachineContext();
+      final RaftLogEntryCodec.DecodedEntry decoded = context instanceof AppendedEntry appended ?
+          appended.decoded() :
+          RaftLogEntryCodec.decode(data);
       targetDatabase = decoded.databaseName();
 
       if (decoded.type() == null) {
@@ -946,11 +906,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
             "Unknown Raft log entry type at index " + index + "; node halted to prevent silent divergence"));
       }
 
-      final boolean originatedLocally = Boolean.TRUE.equals(trx.getStateMachineContext());
+      final boolean originatedLocally = context instanceof AppendedEntry appended ?
+          appended.originatedLocally() :
+          Boolean.TRUE.equals(context);
 
       applyWithRetry(index, decoded.databaseName(), () -> {
         switch (decoded.type()) {
-        case TX_ENTRY -> applyTxEntry(decoded, index, originatedLocally);
+        case TX_ENTRY -> applyTxEntry(decoded, index, context instanceof AppendedEntry appended ? appended.pages() : null);
         case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
         case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
         case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
@@ -1248,34 +1210,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   @Override
   public long takeSnapshot() {
-    long currentIndex = lastAppliedIndex.get();
+    final long currentIndex = lastAppliedIndex.get();
     if (currentIndex < 0)
       return RaftLog.INVALID_LOG_INDEX;
 
-    // Never checkpoint past an entry whose leader-side phase 2 has not confirmed (issue #5407): the
-    // entry is Raft-committed and lastAppliedIndex has moved past it, but its pages reach disk only
-    // when commit2ndPhase runs. Clamping to the oldest in-flight commit's floor keeps such an entry
-    // above the checkpoint, so a restart replays it (with originatedLocally=false) instead of
-    // treating it as durable and dropping it permanently.
-    final long pendingFloor = lowestPendingLocalPhase2Floor();
-    if (pendingFloor < currentIndex) {
-      currentIndex = pendingFloor;
-      final long oldestStartedAtMs = oldestPendingLocalPhase2StartMs();
-      if (oldestStartedAtMs != Long.MAX_VALUE)
-        warnIfPhase2StallingCompaction(oldestStartedAtMs, currentIndex);
-    }
-    if (currentIndex < 0)
-      return RaftLog.INVALID_LOG_INDEX;
+    // The pages of an entry this node originated are published by the apply thread before lastAppliedIndex moves past
+    // it (issue #6965), so the applied position is the durable position on the leader exactly as it is on a follower,
+    // and no clamp for an in-flight leader-side phase 2 is needed any more (the #5407 ticket this replaced).
 
     // Regressing the marker below an existing one would let Ratis replay from an index whose log
     // entries a previous checkpoint already authorised for purging. Skip this round instead; the
-    // next snapshot after phase 2 drains (or after a pending stale-snapshot resync lands, issue #6111)
-    // advances it normally.
+    // next snapshot (after a pending stale-snapshot resync lands, issue #6111) advances it normally.
     final var latest = storage.getLatestSnapshot();
     if (latest != null && currentIndex < latest.getIndex()) {
       HALog.log(this, HALog.BASIC,
           "Skipping snapshot checkpoint at index %d: the applied position trails the existing marker at %d "
-              + "(phase-2 apply in flight, or a stale-snapshot resync still pending)",
+              + "(a stale-snapshot resync still pending)",
           currentIndex, latest.getIndex());
       return RaftLog.INVALID_LOG_INDEX;
     }
@@ -1478,16 +1428,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
     electionCount.incrementAndGet();
     lastElectionTime = now;
 
-    if (raftHAServer == null || newLeaderId == null)
+    // One read of the volatile for the whole callback: the null check below is worth nothing if each of the
+    // dereferences after it re-reads a field a concurrent teardown can null (issue #7253).
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || newLeaderId == null)
       return;
 
     final RaftPeerId prevId = previousLeaderId;
     previousLeaderId = newLeaderId;
 
-    final String leaderName = raftHAServer.getPeerDisplayName(newLeaderId);
+    final String leaderName = raftHA.getPeerDisplayName(newLeaderId);
     // Use the actual Raft term (not the lagging last-applied term) so we can tell a genuine
     // re-election (term advanced) from a same-term re-notification that Ratis sometimes fires.
-    final long currentTerm = raftHAServer.getCurrentTerm();
+    final long currentTerm = raftHA.getCurrentTerm();
     final long prevTerm = lastNotifiedLeaderTerm;
     lastNotifiedLeaderTerm = currentTerm;
 
@@ -1525,7 +1478,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
     } else {
       // Different node became leader. Normal failover (network, server restart, etc.).
-      final String prevName = raftHAServer.getPeerDisplayName(prevId);
+      final String prevName = raftHA.getPeerDisplayName(prevId);
       LogManager.instance().log(this, Level.INFO, "Leader changed: %s -> %s (term=%d)",
           prevName, leaderName, currentTerm);
     }
@@ -1536,12 +1489,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // ensures the client can reach all peers as soon as the partition heals.
     // Pass the newly elected leader's peer ID so the fresh client routes its very first
     // write directly to the leader rather than probing peers.
-    raftHAServer.refreshRaftClient(newLeaderId);
+    raftHA.refreshRaftClient(newLeaderId);
 
-    if (newLeaderId.equals(raftHAServer.getLocalPeerId())) {
+    if (newLeaderId.equals(raftHA.getLocalPeerId())) {
       LogManager.instance().log(this, Level.INFO, "This node is now LEADER");
-      raftHAServer.startLagMonitor();
-      raftHAServer.printClusterConfiguration();
+      raftHA.startLagMonitor();
+      raftHA.printClusterConfiguration();
 
       // Clear the follower-side reconcile states (LEADER_MISSING / FAILED) and failure counters now that this node
       // is the leader, so their cluster alerts do not linger (issue #4727). ACQUIRED is harmless history and kept.
@@ -1556,7 +1509,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // (e.g. the snapshot download below) queue behind it in that rare worst case.
       lifecycleExecutor.submit(() -> {
         try {
-          raftHAServer.runBootstrapIfEligible();
+          raftHA.runBootstrapIfEligible();
         } catch (final Throwable t) {
           LogManager.instance().log(this, Level.WARNING,
               "Bootstrap election threw on leader-change handler: %s", null, t.getMessage());
@@ -1564,7 +1517,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       });
     } else {
       LogManager.instance().log(this, Level.INFO, "This node is now REPLICA (leader: %s)", leaderName);
-      raftHAServer.stopLagMonitor();
+      raftHA.stopLagMonitor();
     }
 
     // If a snapshot gap was detected during reinitialize(), trigger the download now
@@ -1576,7 +1529,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     // Wake up any threads waiting for leadership change (e.g. leaveCluster)
-    final Object notifier = raftHAServer.getLeaderChangeNotifier();
+    final Object notifier = raftHA.getLeaderChangeNotifier();
     synchronized (notifier) {
       notifier.notifyAll();
     }
@@ -1638,6 +1591,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throw new RuntimeException("Interrupted while waiting for an in-flight resync to finish", e);
     }
     try {
+      // Read the volatile ONCE for this whole install: resolveSnapshotSource() reads it into its own local so it
+      // can refuse instead of throwing, and reading the field again below for the cluster token would reopen the
+      // window that read is written to close - a teardown nulling it between the two turns a refusal into a
+      // NullPointerException on the automatic resync path (issue #7253).
+      final RaftHAServer raftHA = this.raftHAServer;
       final RaftPeerId leaderId = RaftPeerId.valueOf(
           roleInfoProto.getFollowerInfo().getLeaderInfo().getId().getId());
 
@@ -1654,7 +1612,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // threads it into every branch, so a raw HTTPS address here would walk this path - the automatic one, the
       // one that had no checks at all before #6202 - straight back into the bug (issue #6221).
       final String leaderHttpsAddr = source.httpsAddress();
-      final String clusterToken = raftHAServer.getClusterToken();
+      final String clusterToken = raftHA != null ? raftHA.getClusterToken() : null;
 
       // Databases the reconciler gave up on: it stopped failing the install for them, so they are NOT at the
       // snapshot index and must not be recorded as if they were (issue #6760).
@@ -1721,7 +1679,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // index, which already equals snapshotIndex, and a LINEARIZABLE or read-your-writes read of a database
       // this install did NOT refresh passes its wait and is served from the stale copy. That is precisely the
       // outcome issue #6760 exists to prevent, so the notify has to come after the re-arm, not before it.
-      final RaftHAServer raftHA = this.raftHAServer;
       if (raftHA != null)
         raftHA.notifyApplied();
 
@@ -1803,145 +1760,53 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Applies a committed WAL transaction to the local database.
-   * <p>
-   * <b>Origin-skip optimization:</b> On the leader, the transaction was already applied locally
-   * via {@link RaftReplicatedDatabase#commit}'s Phase 2 ({@code commit2ndPhase}), so the state
-   * machine skips it. On replicas, this is the primary path for applying transaction data.
-   * <p>
-   * <b>Ordering guarantee:</b> WAL capture (Phase 1) happens before Raft replication. Local
-   * apply (Phase 2) happens after Raft commit. The leader skips the state machine apply because
-   * Phase 2 already wrote the pages when replication succeeded.
-   * <p>
-   * <b>{@code ignoreErrors=true} rationale:</b> During Raft log replay on restart, log entries
-   * may already be applied to the database files (Ratis last-applied tracking can lag behind
-   * durable page writes). Page-version guards in {@code applyChanges} detect and skip
-   * already-applied pages; version-gap warnings are still logged.
+   * Registers a transaction this node originated, right before its entry is dispatched to Raft: the apply thread will
+   * claim it when the entry reaches its position in the log and publish the prepared pages there (issue #6965).
    */
+  boolean registerLocalCommit(final LocalCommit commit) {
+    return localCommits.register(commit);
+  }
+
   /**
-   * Marks a locally-originated transaction as abandoned by the leader's phase 2 because replication
-   * returned an indeterminate result ({@link ReplicationDispatchedTimeoutException}). If the entry
-   * later commits, {@link #applyTxEntry} applies it here instead of origin-skipping it (issue #4790).
-   * Called from {@link RaftReplicatedDatabase#commit()} on the dispatched-timeout path.
-   * <p>
-   * {@code phase2Ticket} is the still-held ticket of the commit that abandoned this transaction, or
-   * {@link #NO_PHASE2_TICKET} when it took none. Recording it here is the correlation the ticket
-   * lacks at {@link #beginLocalPhase2()} time (the WAL txId does not exist yet), and it is what lets
-   * the eventual apply release the ticket instead of pinning the checkpoint until restart (#5410).
+   * Takes a registered transaction back from the apply thread.
    *
-   * @return {@code true} when the mark now stands, so {@link #applyTxEntry} will write this entry's
-   * pages; {@code false} when the Raft apply thread had already passed the entry and origin-skipped
-   * it, which leaves the caller holding a committed entry nothing else will ever apply here - it must
-   * apply the transaction itself (issue #6848).
+   * @return {@code false} when the apply thread already claimed it: the entry committed, and the committing thread must
+   * wait for the outcome of the publication instead of rolling back
    */
-  boolean markLocalTransactionAbandoned(final String databaseName, final long walTxId, final long phase2Ticket) {
-    final long now = System.currentTimeMillis();
-    // Prune stale marks (entries that were dispatched but never committed, e.g. the slot was
-    // overwritten by a new leader) so the map cannot grow unbounded. A pruned mark deliberately does
-    // NOT release its ticket: pruning is not proof the entry never committed, and if it does commit
-    // later it will now be origin-skipped (unapplied here), so it must stay inside the replay window.
-    if (!abandonedLocalTransactions.isEmpty())
-      abandonedLocalTransactions.values().removeIf(abandoned -> now - abandoned.insertedAt() > ABANDONED_TX_TTL_MS);
-
-    final String key = abandonedKey(databaseName, walTxId);
-    final LocalTxOutcome existing = abandonedLocalTransactions.putIfAbsent(key, new AbandonedPhase2(phase2Ticket, now));
-    if (existing == null) {
-      // The common case: the apply thread has not reached this entry yet, or the entry will never
-      // commit. Either way the mark now stands and applyTxEntry is the one that will write the pages.
-      HALog.log(this, HALog.BASIC,
-          "Marked locally-originated tx %d on database '%s' for local apply on commit (replication was indeterminate, #4790)",
-          walTxId, databaseName);
-      return true;
-    }
-
-    if (existing instanceof final AbandonedPhase2 firstMark) {
-      // Two commits abandoned the SAME transaction id, which the WAL counter is supposed to make
-      // impossible. putIfAbsent keeps the first mark, so THIS caller's ticket is now held by nobody's
-      // apply - the #5410 pinned-checkpoint condition, for one ticket. Keeping the first mark is the
-      // safe direction (a held ticket costs log compaction, a wrongly released one costs a write), but
-      // it must not be silent: a future change that breaks the uniqueness assumption has to be
-      // diagnosable from the log rather than from an unexplained checkpoint that stops advancing.
-      LogManager.instance().log(this, Level.WARNING,
-          "Transaction id %d on database '%s' was marked abandoned twice (phase-2 tickets %d then %d). "
-              + "WAL transaction ids are expected to be unique per commit; keeping the first mark, so ticket %d "
-              + "stays held until this node restarts (#5410 checkpoint pinning).",
-          walTxId, databaseName, firstMark.phase2Ticket(), phase2Ticket, phase2Ticket);
-      return true;
-    }
-
-    // The apply thread got here first: it already passed this entry and origin-skipped it, so the
-    // entry IS committed and nothing else is ever going to write its pages on this node. Clear the
-    // slot and tell the caller it owns the apply (issue #6848).
-    abandonedLocalTransactions.remove(key, existing);
-    HALog.log(this, HALog.BASIC,
-        "Locally-originated tx %d on database '%s' was origin-skipped before its abandoned mark was published; "
-            + "the committing thread must apply it locally (#6848)",
-        walTxId, databaseName);
-    return false;
+  boolean withdrawLocalCommit(final LocalCommit commit) {
+    return localCommits.withdraw(commit);
   }
 
   /**
-   * Claims a committed, locally-originated entry on the Raft apply thread and reports what to do with
-   * it: {@link #NO_ABANDONED_MARK} to origin-skip (phase 2 owns the pages), or the phase-2 ticket to
-   * release after applying when the committing thread already abandoned this transaction.
-   * <p>
-   * The origin-skip answer is not merely returned, it is <b>published</b>: the slot left behind is how
-   * a committing thread that abandons later discovers that the apply already happened without it and
-   * that it must write the pages itself. Without that publication the two threads raced with no
-   * arbiter and the leader silently dropped the write (issue #6848).
+   * What the apply thread does when it reaches the entry of a registered transaction. Exposed for unit tests that
+   * drive the committing thread through {@code RaftReplicatedDatabase.replicateAndCommitLocally} against a bare state
+   * machine, where no Ratis apply thread exists to claim the transaction.
    */
-  // @VisibleForTesting - the handshake with markLocalTransactionAbandoned is the load-bearing part
-  // of #6848, and driving it through applyTransaction would need a whole Ratis division stubbed out.
-  long claimLocalOriginatedEntry(final String databaseName, final long walTxId) {
-    final long now = System.currentTimeMillis();
-    final String key = abandonedKey(databaseName, walTxId);
-    final LocalTxOutcome existing = abandonedLocalTransactions.putIfAbsent(key, new OriginSkipped(now));
-    if (existing instanceof final AbandonedPhase2 abandoned) {
-      abandonedLocalTransactions.remove(key, abandoned);
-      return abandoned.phase2Ticket();
-    }
-    if (existing == null)
-      pruneStrandedLocalTxOutcomes(now);
-    return NO_ABANDONED_MARK;
+  // @VisibleForTesting
+  LocalCommit claimLocalCommit(final String databaseName, final long walTxId, final byte[] walData) {
+    return localCommits.claim(databaseName, walTxId, walData);
   }
 
-  /**
-   * Drops origin-skip slots nothing came back for, at most once per
-   * {@link #ORIGIN_SKIP_PRUNE_EVERY_MS}. Throttled because this runs on the leader's commit path,
-   * where the unthrottled full scan {@link #markLocalTransactionAbandoned} can afford would be
-   * charged to every transaction. See {@link #ORIGIN_SKIP_PRUNE_EVERY_MS} for why the slots it
-   * collects are the exception rather than the rule, and why their TTL stays long.
-   */
-  // @VisibleForTesting - a backstop nothing reaches on a healthy path is exactly the code that rots
-  // unnoticed, and the invariant that matters (it must never evict an abandoned mark, whose ticket
-  // only the apply may release) is not observable through the handshake alone.
-  void pruneStrandedLocalTxOutcomes(final long now) {
-    final long last = lastOriginSkipPruneMs.get();
-    if (now - last < ORIGIN_SKIP_PRUNE_EVERY_MS || !lastOriginSkipPruneMs.compareAndSet(last, now))
-      return;
-    abandonedLocalTransactions.values()
-        .removeIf(outcome -> outcome instanceof OriginSkipped && now - outcome.insertedAt() > ABANDONED_TX_TTL_MS);
+  /** Transactions this node originated whose entry the apply thread has not reached yet. */
+  int pendingLocalCommits() {
+    return localCommits.size();
   }
 
-  /**
-   * Drops the slot a locally-originated transaction may hold once its outcome is settled by any exit
-   * other than "abandoned". A no-op when no slot exists, which is the common case: the slot only
-   * materializes when the Raft apply thread reached the entry before this method ran.
-   */
-  void forgetLocalOriginatedEntry(final String databaseName, final long walTxId) {
-    if (abandonedLocalTransactions.isEmpty())
-      return;
-    final String key = abandonedKey(databaseName, walTxId);
-    final LocalTxOutcome existing = abandonedLocalTransactions.get(key);
-    if (existing instanceof OriginSkipped)
-      abandonedLocalTransactions.remove(key, existing);
+  /** Age in milliseconds of the oldest such transaction, {@code 0} when none is in flight. */
+  long oldestPendingLocalCommitMs() {
+    return localCommits.oldestRegisteredMs();
+  }
+
+  /** Pages of the database whose next version the log assigned to an entry this node has not applied yet. */
+  int reservedPageVersions(final String databaseName) {
+    return pageVersions.reservedPages(databaseName);
   }
 
   /**
    * Reads a replicated WAL transaction's id without deserializing the pages behind it: the id is the
    * first field {@link #deserializeWalTransaction(byte[])} writes, so it is the leading 8 bytes of the
-   * payload. Used on the leader's commit path, where the full deserialization would be pure waste for
-   * an entry that is about to be origin-skipped.
+   * payload. It is the key the committing thread and the apply thread meet on (see {@link LocalCommit}),
+   * read without materializing the pages behind it.
    */
   static long peekWalTransactionId(final byte[] walData) {
     if (walData == null || walData.length < Long.BYTES)
@@ -1950,177 +1815,240 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Consumes the abandoned mark for a locally-originated transaction, returning the phase-2 ticket
-   * to release once its pages are written (possibly {@link #NO_PHASE2_TICKET} when its commit held
-   * none), or {@link #NO_ABANDONED_MARK} when the transaction was not abandoned at all - the
-   * origin-skip case, where phase 2 already wrote the pages and released its own ticket.
-   * <p>
-   * Consuming is one-shot so a later replay of the same entry correctly origin-skips again.
-   * <p>
-   * <b>This is NOT the branch {@link #applyTxEntry} takes</b> - it stopped being that in #6848.
-   * Reading the mark is only half of what the apply thread has to do; the other half is publishing
-   * its own decision, and only {@link #claimLocalOriginatedEntry} does both atomically. What survives
-   * here is the read-and-clear on its own, for callers that want to inspect or drain one mark without
-   * claiming the entry: the map's own unit tests, which pin the mark/ticket correlation #5410 added,
-   * and which must keep testing exactly that and not the arbitration on top of it. Do not call this
-   * from an apply path - it would decide without publishing, which is precisely the shape of the
-   * #6848 lost write.
+   * Ratis calls this on the leader for every client entry, under the log's write lock and in exactly the order the
+   * entries take in the log. The validation already happened in {@link #startTransaction}; what remains is to confirm
+   * the reservation at the point that fixes the entry's position, which is what tells a reservation backed by the log
+   * from one left behind by a request Ratis dropped before appending it (issue #6965).
    */
-  long consumeAbandonedLocalTransaction(final String databaseName, final long walTxId) {
-    final LocalTxOutcome outcome = abandonedLocalTransactions.remove(abandonedKey(databaseName, walTxId));
-    return outcome instanceof final AbandonedPhase2 abandoned ? abandoned.phase2Ticket() : NO_ABANDONED_MARK;
-  }
-
-  private static String abandonedKey(final String databaseName, final long walTxId) {
-    return databaseName + "/" + walTxId;
+  @Override
+  public TransactionContext preAppendTransaction(final TransactionContext trx) throws IOException {
+    if (trx.getStateMachineContext() instanceof AppendedEntry appended
+        && !pageVersions.confirmAppended(appended.decoded().databaseName(), appended.pages(), appended.entryId())) {
+      // The entry was delayed between its reservation and this append for longer than the ledger trusts an
+      // unconfirmed reservation, and another entry took the page over in between: appending it now would put two
+      // entries with the same target version in the log, the exact splice this ledger exists to prevent. Refusing
+      // from here costs one Ratis pending-write permit (see startTransaction), which is why every other refusal
+      // lives there; this one is the last line of defence for a window that only a wedged leader opens.
+      final ConcurrentModificationException conflict = new ConcurrentModificationException(
+          "Concurrent modification on database '" + appended.decoded().databaseName()
+              + "': the transaction was delayed on the leader and its pages were taken over by a later transaction. "
+              + "Please retry the operation");
+      LogManager.instance().log(this, Level.WARNING,
+          "Refusing to append tx %d on database '%s' whose page reservation expired before the append: %s",
+          peekWalTransactionId(appended.decoded().walData()), appended.decoded().databaseName(), conflict.getMessage());
+      throw new StateMachineException(conflict.getMessage(), conflict, false);
+    }
+    return trx;
   }
 
   /**
-   * Registers a leader-side phase 2 that is about to start replicating, and returns the ticket that
-   * {@link #endLocalPhase2(long)} must release. The recorded floor is the applied index observed
-   * now, i.e. BEFORE this transaction's entry exists in the Raft log, so the entry is guaranteed to
-   * land above it and stay inside the replay window that {@link #takeSnapshot()} preserves.
-   * <p>
-   * Reading a floor that is lower than the eventual entry index is always safe: it only widens the
-   * replay window, and replay is idempotent (page-version guards in {@code applyChanges} skip pages
-   * that are already at or beyond the WAL version).
+   * The validation {@link #startTransaction} performs on a transaction entry, against the pages of the given
+   * database: refuses the entry with a {@link ConcurrentModificationException} when any of its pages was validated
+   * against a version the log already moved past, reserves its versions otherwise.
    */
-  long beginLocalPhase2() {
-    final long ticket = pendingLocalPhase2Ticket.incrementAndGet();
-    pendingLocalPhase2.put(ticket, new PendingPhase2(lastAppliedIndex.get(), System.currentTimeMillis()));
-    return ticket;
+  // @VisibleForTesting
+  void validateBeforeAppend(final DatabaseInternal db, final byte[] walData, final PageVersionLedger.EntryId entryId) {
+    validateBeforeAppend(db, PageVersionLedger.parse(walData), entryId);
   }
 
   /**
-   * Releases a ticket returned by {@link #beginLocalPhase2()}. Call it only once the entry's local
-   * pages are settled - or once the entry provably never committed. A ticket left held keeps the
-   * snapshot checkpoint pinned until the node restarts, which is the intended outcome when this node
-   * is holding a committed entry it never applied.
+   * Never lets anything but a {@link NeedRetryException} out: an entry {@link #startTransaction} cannot validate is
+   * refused through the context, never by an exception escaping the hook. A page that cannot be read on the leader
+   * (an I/O error, a database closing under the read) is therefore a retryable refusal too, with the cause attached.
    */
-  void endLocalPhase2(final long ticket) {
-    if (ticket == NO_PHASE2_TICKET)
-      return;
-    pendingLocalPhase2.remove(ticket);
+  private void validateBeforeAppend(final DatabaseInternal db, final PageVersionLedger.Pages pages,
+      final PageVersionLedger.EntryId entryId) {
+    try {
+      pageVersions.validateAndReserve(db.getName(), pages, entryId, localVersionsOf(db));
+    } catch (final NeedRetryException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new NeedRetryException(
+          "Cannot validate the transaction on the leader against database '" + db.getName() + "': " + e.getMessage()
+              + ". Please retry", e);
+    }
   }
 
-  /** Number of leader-side phase 2 applies still holding the snapshot checkpoint back. */
-  int pendingLocalPhase2Count() {
-    return pendingLocalPhase2.size();
+  /** Releases the page versions an entry reserved, as the apply thread does once the entry is applied. */
+  // @VisibleForTesting
+  void releaseReservedVersions(final String databaseName, final byte[] walData) {
+    pageVersions.release(databaseName, null, walData);
   }
 
   /**
-   * How long (ms) the oldest in-flight phase 2 has been holding the snapshot checkpoint, or {@code 0}
-   * when none is in flight. Exposed for the {@code arcadedb.ha.phase2.*} gauges so a node whose log
-   * compaction is pinned is visible on a dashboard rather than only in the throttled WARNING (#5410).
+   * The reservations the engine's phase-1 check consults, resolved through the Raft server on every call: an in-place
+   * Ratis restart replaces the state machine, and with it the ledger, without closing the databases, so a hook bound
+   * to one state machine instance would keep consulting a ledger nothing writes to any more.
    */
-  long oldestPendingLocalPhase2HeldMs() {
-    final long oldest = oldestPendingLocalPhase2StartMs();
-    return oldest == Long.MAX_VALUE ? 0L : Math.max(0L, System.currentTimeMillis() - oldest);
-  }
+  private static final class LedgerReservations implements PageVersionReservations {
+    private final String             databaseName;
+    private final RaftHAServer       raft;
+    private final ArcadeStateMachine fallback;
 
-  /**
-   * The Raft replay floor currently pinning the snapshot checkpoint, or {@code -1} when nothing is
-   * in flight. Companion gauge to {@link #oldestPendingLocalPhase2HeldMs()}: it names the index past
-   * which the Raft log cannot be purged.
-   */
-  long lowestPendingLocalPhase2ReplayFloor() {
-    final long lowest = lowestPendingLocalPhase2Floor();
-    return lowest == Long.MAX_VALUE ? -1L : lowest;
-  }
-
-  /**
-   * The lowest replay floor among the currently in-flight leader-side phase 2 applies, or
-   * {@link Long#MAX_VALUE} when none is in flight. Scanned on demand rather than maintained
-   * incrementally: {@link #takeSnapshot()} is the only reader and runs rarely (periodic compaction
-   * or shutdown), while the map is sized by concurrent commits.
-   */
-  private long lowestPendingLocalPhase2Floor() {
-    long lowest = Long.MAX_VALUE;
-    for (final PendingPhase2 pending : pendingLocalPhase2.values())
-      if (pending.replayFloor() < lowest)
-        lowest = pending.replayFloor();
-    return lowest;
-  }
-
-  /**
-   * When the oldest in-flight phase 2 started, or {@link Long#MAX_VALUE} when none is in flight.
-   * Kept separate from {@link #lowestPendingLocalPhase2Floor()} so both stay pure queries; the extra
-   * pass costs nothing on the rare {@link #takeSnapshot()} path.
-   */
-  private long oldestPendingLocalPhase2StartMs() {
-    long oldest = Long.MAX_VALUE;
-    for (final PendingPhase2 pending : pendingLocalPhase2.values())
-      if (pending.startedAtMs() < oldest)
-        oldest = pending.startedAtMs();
-    return oldest;
-  }
-
-  /**
-   * Surfaces the one failure mode of the #5407 guard: a ticket held long enough to be stuck (its
-   * commit neither settled its pages nor proved the entry absent) pins the checkpoint, so the Raft
-   * log stops being purged until this node restarts. Throttled so a checkpoint attempt during a
-   * genuinely long-running commit does not spam the log.
-   * <p>
-   * Evaluated on a snapshot attempt, not on a timer: the condition is only interesting when a
-   * checkpoint is actually being held back, but it does mean the warning can lag a stuck ticket by
-   * up to one compaction interval ({@code arcadedb.ha.snapshotInterval}, 5 min by default).
-   */
-  private void warnIfPhase2StallingCompaction(final long oldestStartedAtMs, final long lowestFloor) {
-    final long heldForMs = System.currentTimeMillis() - oldestStartedAtMs;
-    if (heldForMs < STALLED_PHASE2_WARN_AFTER_MS)
-      return;
-    final long now = System.currentTimeMillis();
-    final long lastWarn = lastStalledPhase2WarnMs.get();
-    if (now - lastWarn < STALLED_PHASE2_WARN_EVERY_MS || !lastStalledPhase2WarnMs.compareAndSet(lastWarn, now))
-      return;
-    LogManager.instance().log(this, Level.WARNING,
-        """
-        A local phase-2 apply has been unconfirmed for %d s (%d in flight): holding the Raft snapshot \
-        checkpoint at index %d so the entry stays replayable. The Raft log will not be purged past that \
-        index until this node restarts and replays it - watch disk usage on the Raft storage volume.""",
-        heldForMs / 1000, pendingLocalPhase2.size(), lowestFloor);
-  }
-
-  private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
-      final boolean originatedLocally) {
-    // Origin skip (the leader's hot path): a locally-originated entry is normally applied via
-    // commit2ndPhase() in RaftReplicatedDatabase, so skip it here to avoid a double-apply. Using
-    // originatedLocally (set by startTransaction) instead of isLeader() avoids TOCTOU races when
-    // leadership changes between entry submission and state machine apply. After a crash and
-    // restart, originatedLocally is always false (startTransaction was not called in this lifecycle),
-    // so replayed entries are correctly re-applied with page-version guards providing idempotency.
-    //
-    // EXCEPTION (issue #4790): commit() may have abandoned its phase 2 because replication returned
-    // an indeterminate result (entry dispatched to Ratis but the quorum wait timed out before quorum
-    // was confirmed). For such an entry phase 2 never ran, so it must be applied HERE instead of
-    // origin-skipped, otherwise this leader silently loses a write the followers already have. The
-    // mark is consumed (removed) so a later replay of the same entry correctly skips again.
-    //
-    // The claim below is a handshake, not a lookup (issue #6848): skipping also PUBLISHES the skip,
-    // so a committing thread that abandons after this point can see that the apply already happened
-    // without it and take over the write itself. Only the 8-byte transaction id is read here - the
-    // WAL is deserialized further down, on the branch that actually applies it, so the skip stays as
-    // cheap as the pre-#6848 short-circuit it replaces.
-    // The ticket that commit() is still holding for this entry, when it was abandoned. Released
-    // below once applyChanges has written the pages - never on the origin-skip branch, where
-    // releasing would reintroduce #5407.
-    long abandonedPhase2Ticket = NO_PHASE2_TICKET;
-    if (originatedLocally) {
-      final long abandoned = claimLocalOriginatedEntry(decoded.databaseName(), peekWalTransactionId(decoded.walData()));
-      if (abandoned == NO_ABANDONED_MARK) {
-        HALog.log(this, HALog.TRACE, "Skipping tx apply on originator for database '%s'", decoded.databaseName());
-        return;
-      }
-      abandonedPhase2Ticket = abandoned;
+    private LedgerReservations(final String databaseName, final RaftHAServer raft, final ArcadeStateMachine fallback) {
+      this.databaseName = databaseName;
+      this.raft = raft;
+      this.fallback = fallback;
     }
 
-    final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
-    final WALFile.WALTransaction walTx = deserializeWalTransaction(decoded.walData());
+    @Override
+    public int reservedVersion(final PageId pageId) {
+      final ArcadeStateMachine current = raft != null ? raft.getStateMachine() : null;
+      return (current != null ? current : fallback).pageVersions.reservedVersion(databaseName, pageId.getFileId(),
+          pageId.getPageNumber());
+    }
+  }
 
-    if (originatedLocally)
-      HALog.log(this, HALog.BASIC,
-          "Applying locally-originated tx %d on database '%s' whose phase 2 was abandoned (replication indeterminate, #4790)",
-          walTx.txId, decoded.databaseName());
+  /** The database an entry targets, or {@code null} when it cannot be resolved here (the entry is then refused). */
+  private DatabaseInternal databaseForValidation(final String databaseName) {
+    if (databaseName == null)
+      return null;
+    try {
+      return databaseFor(databaseName);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Cannot resolve database '%s' to validate a transaction entry before append: %s", databaseName, e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * The local page versions of a database, as the ledger's seed for pages no in-flight entry reserved. Also installs
+   * the ledger on the database, so the leader's own phase-1 validation refuses a page an in-flight entry reserved
+   * without waiting for the round trip (see {@link com.arcadedb.engine.PageVersionReservations}).
+   */
+  private PageVersionLedger.LocalVersions localVersionsOf(final DatabaseInternal db) {
+    if (db.getEmbedded() instanceof LocalDatabase local && !(local.getPageVersionReservations() instanceof LedgerReservations))
+      local.setPageVersionReservations(new LedgerReservations(local.getName(), raftHAServer, this));
+
+    final FileManager fileManager = db.getFileManager();
+    final PageManager pageManager = db.getPageManager();
+    return (fileId, pageNumber) -> {
+      // A file that is gone, or that a racing schema change replaced with something that is not paged, is the same
+      // retryable conflict the engine's own version check raises for it.
+      if (!fileManager.existsFile(fileId) || !(fileManager.getFile(fileId) instanceof PaginatedComponentFile file))
+        throw new ConcurrentModificationException(
+            "Concurrent modification on page " + fileId + "/" + pageNumber + " of database '" + db.getName() + "': the file with id "
+                + fileId + " does not exist anymore. Please retry the operation");
+      return pageManager.getMostRecentVersionOfPage(new PageId(db, fileId, pageNumber), file.getPageSize());
+    };
+  }
+
+  /**
+   * The reservations of a leader that steps down are dropped: an entry Ratis still had pending either commits under the
+   * next leader and is applied here like any other, or is truncated and never reaches the pages, and either way the
+   * local copies are the truth by the time this node can lead again (Ratis makes a leader ready only once it has
+   * applied every earlier entry).
+   */
+  @Override
+  public void notifyNotLeader(final Collection<TransactionContext> pendingEntries) throws IOException {
+    super.notifyNotLeader(pendingEntries);
+    pageVersions.clearAll();
+  }
+
+  @Override
+  public void notifyLeaderReady() {
+    super.notifyLeaderReady();
+    pageVersions.clearAll();
+  }
+
+
+  /**
+   * Applies a committed transaction entry to the local database, at its position in the log.
+   * <p>
+   * A transaction this node originated is published from the pages its committing thread prepared, right here, by
+   * the apply thread (issue #6965): every node then writes its pages in log order, the leader included, and the
+   * leader's own commit can no longer race the apply of a neighbouring entry. Should the committing thread have
+   * withdrawn the transaction in the meantime (it gave up on an unknown replication outcome and rolled back), or
+   * should this be a replay after a restart, the entry is applied from its own WAL bytes like any follower does: the
+   * page-version guards in {@code applyChanges} make that idempotent. The context's origin marker plays no part
+   * here: the entry is matched to the registered transaction by its bytes.
+   */
+  private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
+      final PageVersionLedger.Pages pages) {
+    final String databaseName = decoded.databaseName();
+    // A transaction this node originated is recognised by its own bytes: the registered transaction carries the WAL
+    // it shipped, and an entry is claimed only when it carries the same. No origin marker, client id or context is
+    // needed for that, so it holds whatever happened to the leadership, the Raft client or the context in between.
+    final LocalCommit local = localCommits.claim(databaseName, peekWalTransactionId(decoded.walData()), decoded.walData());
+    try {
+      if (local != null)
+        publishLocalCommit(local, decoded, entryIndex);
+      else
+        applyReplicatedTransaction(decoded, entryIndex);
+    } finally {
+      // Applied, published or reconciled, the local copy of every page of this entry now carries its version, so the
+      // reservation taken at append time has done its job. A no-op on a follower, whose ledger is empty.
+      pageVersions.release(databaseName, pages, decoded.walData());
+    }
+  }
+
+  /**
+   * The local database a transaction entry targets. The one seam the apply of a transaction entry resolves a database
+   * through, so a unit test can drive {@link #applyTransaction} against a database it opened itself.
+   */
+  // @VisibleForTesting
+  DatabaseInternal databaseFor(final String databaseName) {
+    return (DatabaseInternal) server.getDatabase(databaseName);
+  }
+
+  /**
+   * Publishes the prepared pages of a transaction this node originated. A failure is recorded on the claim for the
+   * committing thread to surface, and the pages are reconciled from the entry's WAL bytes, which are what every other
+   * node applied.
+   */
+  private void publishLocalCommit(final LocalCommit local, final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
+    HALog.log(this, HALog.DETAILED, "Publishing locally-originated tx %d on database '%s' at log index %d",
+        local.walTxId(), decoded.databaseName(), entryIndex);
+    boolean published = false;
+    Throwable failure = null;
+    boolean reconciled = false;
+    try {
+      final Consumer<String> phase2Fault = RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT;
+      if (phase2Fault != null)
+        phase2Fault.accept(decoded.databaseName());
+
+      local.transaction().publishCommittedPages(local.phase1());
+      published = true;
+    } catch (final Throwable t) {
+      failure = t;
+      if (t instanceof Error error)
+        // An Error (out of memory, a linkage failure) is not something to reconcile from: the claim is still resolved
+        // in the finally so the committing thread wakes, then the Error reaches applyTransaction's fatal-halt path.
+        throw error;
+      try {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Publishing the pages of locally-originated tx %d on database '%s' failed at log index %d after the entry was "
+                + "committed cluster-wide; reconciling the local pages from the replicated payload: %s",
+            local.walTxId(), decoded.databaseName(), entryIndex, t.getMessage());
+        databaseFor(decoded.databaseName()).getTransactionManager()
+            .applyChanges(deserializeWalTransaction(decoded.walData()), decoded.bucketRecordDelta(), true);
+        reconciled = true;
+      } catch (final Error reconcileError) {
+        throw reconcileError;
+      } catch (final Exception reconcileError) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Reconciling the pages of tx %d on database '%s' from the replicated payload also failed: %s",
+            local.walTxId(), decoded.databaseName(), reconcileError.getMessage());
+      }
+    } finally {
+      // The committing thread waits on this claim without a timeout: whatever happened above, it is resolved here.
+      if (published)
+        local.published();
+      else
+        local.failed(failure, reconciled);
+    }
+  }
+
+  /**
+   * Applies a transaction entry from its WAL bytes, the path every follower takes.
+   * <p>
+   * <b>{@code ignoreErrors=false} rationale:</b> a version gap here means an intermediate entry was never applied on
+   * this node, which is state divergence: it triggers a snapshot resync instead of being skipped.
+   */
+  private void applyReplicatedTransaction(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
+    final DatabaseInternal db = databaseFor(decoded.databaseName());
+    final WALFile.WALTransaction walTx = deserializeWalTransaction(decoded.walData());
 
     HALog.log(this, HALog.DETAILED, "Applying tx %d to database '%s' (pages=%d)",
         walTx.txId, decoded.databaseName(), walTx.pages.length);
@@ -2158,22 +2086,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throw new ReplicationException(
           "WAL version gap detected - snapshot resync required (db=" + decoded.databaseName() + ")", e);
     }
-
-    // The abandoned entry's pages are now on disk, so the commit that gave up on it in phase 2 no
-    // longer needs to hold the Raft replay window open: release its ticket and let log compaction
-    // resume (#5410). Reached only when applyChanges returned normally - a failed apply leaves the
-    // entry unapplied here and the ticket deliberately held. A no-op for every other entry.
-    // lastAppliedIndex still trails this entry at this point (applyTransaction advances it after we
-    // return), so a concurrent takeSnapshot cannot yet checkpoint over what we just applied.
-    //
-    // Residual edge: a WAL version gap above consumed the mark but threw, so the ticket stays held
-    // and the entry origin-skips on every later replay - the snapshot resync the gap triggers is what
-    // makes it durable, and nothing releases the ticket afterwards. The checkpoint then stays pinned
-    // until this node restarts. Retaining is the safe direction (the resync may itself fail), and the
-    // pinned checkpoint is surfaced by warnIfPhase2StallingCompaction and the arcadedb.ha.phase2.*
-    // gauges rather than being silent.
-    endLocalPhase2(abandonedPhase2Ticket);
   }
+
 
   /**
    * Applies a committed DDL (schema change) entry to the local database.
@@ -2856,6 +2770,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
     final String databaseName = decoded.databaseName();
     final boolean forceSnapshot = decoded.forceSnapshot();
+    // An install replaces the database's files, so no reservation taken against the previous copy can still hold.
+    pageVersions.clear(databaseName);
 
     if (forceSnapshot) {
       // Replay guard (issue #7143). Ratis re-feeds every entry between the last snapshot marker and
@@ -2904,24 +2820,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // resolveDatabasePath itself, since six other call sites lean on it without saying so.
       final ArcadeDBServer localServer = this.server;
 
-      final long persistedApplied = readPersistedAppliedIndex(databaseName);
-      if (persistedApplied >= entryIndex) {
-        if (localServer != null && localServer.existsDatabase(databaseName)) {
-          LogManager.instance().log(this, Level.INFO,
-              "Database '%s' already reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
-                  + "entryIndex=%d) and is registered on this node; skipping the snapshot re-download",
-              databaseName, persistedApplied, entryIndex);
-          return;
-        }
-        LogManager.instance().log(this, Level.WARNING,
-            "Database '%s' was reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
-                + "entryIndex=%d) but is not registered on this node now; reinstalling it from the leader",
-            databaseName, persistedApplied, entryIndex);
-      }
-
-      // Restore flow: replace files from the leader's snapshot even if the DB exists.
-      // The leader's own files are already authoritative, so the leader skips the reinstall;
-      // replicas close their local copy and pull the fresh snapshot from the leader.
+      // Restore flow: replace files from the leader's snapshot even if the DB exists. The leader's own files are
+      // already authoritative, so the leader skips the reinstall; replicas close their local copy and pull the
+      // fresh snapshot from the leader.
+      //
+      // Checked FIRST, ahead of the replay guard below, because it is unconditional: a leader takes no action
+      // whatever the guard decides, and the guard's own WARNING announces a reinstall from the leader. Logged
+      // before the skip, that line recorded an action that never happened - on the node whose log an operator
+      // reads to find out what the cluster did with the entry (issue #7302).
       //
       // The volatile field is read ONCE into a local. resolveSnapshotSource guards a null HA server and refuses
       // cleanly, but evaluating raftHAServer.getLeaderId() as its ARGUMENT dereferenced the field before that
@@ -2937,6 +2843,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (raftHA != null && raftHA.isLeader()) {
         HALog.log(this, HALog.TRACE, "Leader skips forceSnapshot reinstall for '%s'", databaseName);
         return;
+      }
+
+      final long persistedApplied = readPersistedAppliedIndex(databaseName);
+      if (persistedApplied >= entryIndex) {
+        if (localServer != null && localServer.existsDatabase(databaseName)) {
+          LogManager.instance().log(this, Level.INFO,
+              "Database '%s' already reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
+                  + "entryIndex=%d) and is registered on this node; skipping the snapshot re-download",
+              databaseName, persistedApplied, entryIndex);
+          return;
+        }
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s' was reinstalled by this entry in a previous session (persistedAppliedIndex=%d >= "
+                + "entryIndex=%d) but is not registered on this node now; reinstalling it from the leader",
+            databaseName, persistedApplied, entryIndex);
       }
 
       // Same refusals as every other path that pulls a snapshot, through the same helper (issue #6202): a
@@ -3237,7 +3158,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * snapshot install machinery as {@code applyInstallDatabaseEntry(forceSnapshot=true)}.
    */
   private void installFromLeaderForBootstrap(final String dbName) {
-    if (raftHAServer != null && raftHAServer.isLeader()) {
+    // One read for both the leader check and the cluster token below (issue #7253).
+    final RaftHAServer raft = this.raftHAServer;
+    if (raft != null && raft.isLeader()) {
       // The leader has the chosen baseline by definition (it's the source). No need to install.
       HALog.log(this, HALog.TRACE, "Leader skips bootstrap snapshot install for '%s'", dbName);
       return;
@@ -3248,7 +3171,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // during Raft log replay on startup, which can race ahead of leader election on this peer.
       // install() keeps the local copy open during the download and rolls back on failure, so a
       // failed bootstrap install never leaves the database closed.
-      final RaftHAServer raft = raftHAServer;
       final String clusterToken = raft != null ? raft.getClusterToken() : null;
       // Resolved through the same guard as every other snapshot pull: the supplier answers null - which
       // install() treats as "no leader to pull from" and retries - rather than handing back an address that
@@ -3563,6 +3485,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // @VisibleForTesting
   void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String databaseName = decoded.databaseName();
+    // Whatever the database's pages were reserved at, the pages are going away: evict its ledger here so the
+    // per-database map does not keep the names of dropped databases for the node's lifetime (same rule as the
+    // persisted applied index above), and a database recreated under the same name starts from a clean ledger.
+    pageVersions.clear(databaseName);
 
     // Idempotent on replay: if the database is already gone, nothing to do beyond evicting any
     // persisted baseline. applyBootstrapFingerprintEntry records a baseline by name even when the
@@ -3648,9 +3574,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <b>reissue the user change on the leader</b> once the volume is fixed. Reapplying a list the node already
    * holds is a no-op, and waiting for a replay that may never come leaves the file stale indefinitely - which
    * is what the SEVERE below and the contract note on {@code ServerSecurity.applyReplicatedUsers} say too.
-   * Pinned by {@code Issue7227SecurityEntryAppliedPositionMovesPastFailureTest}, which covers the
-   * in-process half; the restart half needs a snapshot-and-replay integration test and does not have one
-   * (issue #7252).
+   * Pinned by {@code Issue7227SecurityEntryAppliedPositionMovesPastFailureTest} for the in-process half and by
+   * {@code Issue7252SecurityEntryReplayAfterRestartTest} for BOTH branches of the restart, so a later change that
+   * made the replay deterministic - or removed it - would fail one of them rather than leave this paragraph
+   * quietly wrong in one direction (issue #7252).
    * <p>
    * The classification lives here, at the apply site, rather than in the generic handler: whether a failure
    * can diverge replicated state is a property of the apply, not of the entry's database scoping, so a future
@@ -4156,7 +4083,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   // @VisibleForTesting
   void triggerSnapshotDownload() {
-    if (raftHAServer == null || server == null)
+    // Read once and use that local everywhere below, including inside downloadAllDatabasesFrom, which needs the
+    // cluster token: the guard here is only a guard if nothing after it re-reads the field (issue #7253).
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || server == null)
       return;
     // Single-flight guard: multiple recovery paths (reinitialize watchdog, notifyLeaderChanged,
     // stale-follower recovery from the HealthMonitor) can request a download. Only one may run at
@@ -4180,12 +4110,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return;
       }
       try {
-        final PeerDialAddress source = resolveSnapshotSource(raftHAServer.getLeaderId());
+        final PeerDialAddress source = resolveSnapshotSource(raftHA.getLeaderId());
         if (source.refused()) {
           LogManager.instance().log(this, Level.WARNING, "Refusing a snapshot resync: %s", source.refusal());
           return;
         }
-        downloadAllDatabasesFrom(source);
+        downloadAllDatabasesFrom(source, raftHA.getClusterToken());
       } finally {
         snapshotDownloadLock.unlock();
       }
@@ -4210,10 +4140,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * too (issue #6221). The caller has already established that it may be pulled from
    * ({@link #resolveSnapshotSource}) and holds {@link #snapshotDownloadLock}.
    */
-  private void downloadAllDatabasesFrom(final PeerDialAddress source) throws IOException {
+  private void downloadAllDatabasesFrom(final PeerDialAddress source, final String clusterToken) throws IOException {
     final String leaderHttpAddr = source.httpAddress();
     final String leaderHttpsAddr = source.httpsAddress();
-    final String clusterToken = raftHAServer.getClusterToken();
     int resynced = 0;
     for (final String dbName : server.getDatabaseNames()) {
       // install() keeps the database open during the download and rolls back on failure, so a
@@ -4401,10 +4330,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * No-op when there is no leader/server context or the lifecycle executor is shutting down.
    */
   private void triggerDatabaseResync(final String dbName) {
+    // A cheap early-out, not the guard: nothing below relies on this read, which is why it may be a separate one.
     if (raftHAServer == null || server == null)
       return;
     try {
       lifecycleExecutor.submit(() -> {
+        // The one read for this operation, taken HERE and not at submit time. This is the only place the
+        // read-once rule crosses an async boundary, and capturing the reference when the task was QUEUED would
+        // buy the thing the rule exists to prevent: a resync running against an instance a teardown replaced
+        // while it sat in the queue. Reading it when the work actually starts gives both halves - one instance
+        // for the whole operation, and that instance current as of the operation (issue #7253).
+        final RaftHAServer raftHA = this.raftHAServer;
+        if (raftHA == null) {
+          HALog.log(this, HALog.BASIC,
+              "Skipping targeted resync of '%s': the HA server was torn down before the task ran", dbName);
+          return;
+        }
         if (!snapshotDownloadInProgress.compareAndSet(false, true)) {
           HALog.log(this, HALog.BASIC, "Snapshot download already in progress, skipping targeted resync of '%s'", dbName);
           return;
@@ -4420,7 +4361,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
             // Same refusals as the two full-resync paths, through the same helper: a targeted resync reinstalls a
             // whole database from the resolved address, so an address naming this node or the wrong peer does the
             // same durable damage here (issue #6202).
-            final PeerDialAddress source = resolveSnapshotSource(raftHAServer.getLeaderId());
+            final PeerDialAddress source = resolveSnapshotSource(raftHA.getLeaderId());
             if (source.refused()) {
               LogManager.instance().log(this, Level.WARNING,
                   "Refusing a targeted snapshot resync of quarantined database '%s': %s", dbName, source.refusal());
@@ -4428,7 +4369,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
             }
             final String leaderHttpAddr = source.httpAddress();
             final String leaderHttpsAddr = source.httpsAddress();
-            final String clusterToken = raftHAServer.getClusterToken();
+            final String clusterToken = raftHA.getClusterToken();
             // install() keeps the database open during the download and rolls back on failure, so a
             // targeted resync never leaves it closed.
             if (server.existsDatabase(dbName)) {

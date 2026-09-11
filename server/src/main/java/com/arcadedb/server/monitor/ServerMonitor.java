@@ -34,7 +34,16 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Monitor ArcadeDB's server health.
+ * Monitor ArcadeDB's server health: free disk space on the databases' filesystem, available heap, and the
+ * average JVM safepoint pause. A degradation is reported as a WARNING in the server event log.
+ * <p>
+ * Started by {@link ArcadeDBServer} unless {@code arcadedb.server.healthCheck.enabled} is false. Issue #7160:
+ * for a long time nothing constructed this class - the field that would have held it was commented out - so
+ * none of the three checks ran, including the low-disk warning that is the signal preceding a database that
+ * can no longer write.
+ * <p>
+ * Every warning is rate limited so a server that stays degraded reports it periodically rather than on every
+ * 10-second sampling interval: 24h for low disk, 30 minutes for heap pressure and for safepoint spikes.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -49,9 +58,13 @@ public class ServerMonitor {
 	private AtomicBoolean running = new AtomicBoolean(false);
 	// READ AND WRITTEN ONLY BY THE MONITOR THREAD.
 	private final SafepointSpikeDetector safepointSpikeDetector = new SafepointSpikeDetector();
-	// WRITTEN BY THE MONITOR THREAD, READ BY getStatus() FROM ANY THREAD: volatile GUARANTEES VISIBILITY.
-	private volatile long lastHeapWarningReported = 0L;
-	private volatile long lastDiskSpaceWarningReported = 0L;
+	// ONE THROTTLE PER CHECK. Issue #7160: the safepoint check ran on the same 10s loop as the other two with NO
+	// limit at all, so a JVM whose pauses stay elevated wrote a WARNING to the event log every interval - 8640 a
+	// day against the 2 and 48 the others are capped at. Rather than a third hand-rolled timestamp comparison,
+	// the rule the two working checks already implemented is one tested object they all share.
+	private final WarningThrottle diskSpaceWarnings = new WarningThrottle(HOURS_24);
+	private final WarningThrottle heapWarnings      = new WarningThrottle(MINS_30);
+	private final WarningThrottle safepointWarnings = new WarningThrottle(MINS_30);
 
 	// JMX related fields
 	private MBeanServer mBeanServer;
@@ -116,7 +129,7 @@ public class ServerMonitor {
 	}
 
 	private void checkDiskSpace() {
-		if (System.currentTimeMillis() - lastDiskSpaceWarningReported < HOURS_24) {
+		if (!diskSpaceWarnings.wouldReport(System.currentTimeMillis())) {
 			// REPORT ONLY EVERY 24H FROM THE LAST WARNING
 			return;
 		}
@@ -133,7 +146,7 @@ public class ServerMonitor {
 					server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null,
 							String.format("Available space on disk is only %.1f%% (%.2f GB free of %.2f GB total) on '%s'", freeSpacePerc,
 									freeSpace / (1024.0 * 1024.0 * 1024.0), totalSpace / (1024.0 * 1024.0 * 1024.0), monitoredDir.getPath()));
-					lastDiskSpaceWarningReported = System.currentTimeMillis();
+					diskSpaceWarnings.reported(System.currentTimeMillis());
 				}
 			}
 		}
@@ -159,7 +172,7 @@ public class ServerMonitor {
 	}
 
 	private void checkHeapRAM() {
-		if (System.currentTimeMillis() - lastHeapWarningReported < MINS_30) {
+		if (!heapWarnings.wouldReport(System.currentTimeMillis())) {
 			// REPORT ONLY EVERY 30 MINS FROM THE LAST WARNING
 			return;
 		}
@@ -179,7 +192,7 @@ public class ServerMonitor {
 					server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null,
 							String.format("Server overloaded: available heap RAM is only %.1f%% (%.2f GB used of %.2f GB max)",
 									heapAvailablePerc, heapUsed / (1024.0 * 1024.0 * 1024.0), heapMax / (1024.0 * 1024.0 * 1024.0)));
-					lastHeapWarningReported = System.currentTimeMillis();
+					heapWarnings.reported(System.currentTimeMillis());
 
 					// Do NOT force System.gc() here: a stop-the-world collection triggered precisely when the
 					// server is already under memory pressure can cascade into HA election timeouts. Log the
@@ -206,8 +219,10 @@ public class ServerMonitor {
 			Long hotspotSafepointCount = (Long) mBeanServer.getAttribute(hotspotRuntimeMBean, "SafepointCount");
 
 			if (hotspotSafepointTime != null && hotspotSafepointCount != null && hotspotSafepointCount > 0) {
+				// SAMPLE UNCONDITIONALLY: THE DETECTOR NEEDS EVERY INTERVAL TO KEEP ITS BASELINE, SO THE RATE
+				// LIMIT BELONGS ON THE REPORT AND NOT ON THE MEASUREMENT.
 				final SafepointSpike spike = safepointSpikeDetector.sample(hotspotSafepointTime, hotspotSafepointCount);
-				if (spike != null)
+				if (spike != null && safepointWarnings.tryReport(System.currentTimeMillis()))
 					// REPORT THE SPIKE
 					server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null, String.format(
 							"Server overloaded: JVM Safepoint spiked up %.1f%% from the last sampling (avg time: %.2fms -> %.2fms)",
@@ -218,30 +233,6 @@ public class ServerMonitor {
 			// If we can't access safepoint metrics, disable future attempts
 			safepointMonitoringAvailable = false;
 			LOGGER.log(Level.FINE, "Cannot access HotSpot safepoint metrics, disabling this monitoring", e);
-		}
-	}
-
-	/**
-	 * Alternative monitoring using GC metrics if safepoint monitoring is not
-	 * available
-	 */
-	private void checkGCMetrics() {
-		try {
-			var gcBeans = ManagementFactory.getGarbageCollectorMXBeans();
-			long totalGCTime = 0;
-			long totalGCCount = 0;
-
-			for (var gcBean : gcBeans) {
-				totalGCTime += gcBean.getCollectionTime();
-				totalGCCount += gcBean.getCollectionCount();
-			}
-
-			// You can add logic here to track and report on GC spikes
-			// similar to safepoint monitoring
-
-		}
-		catch (Exception e) {
-			LOGGER.log(Level.FINE, "Error checking GC metrics", e);
 		}
 	}
 
@@ -264,8 +255,69 @@ public class ServerMonitor {
 	 * Get current monitoring status
 	 */
 	public MonitoringStatus getStatus() {
-		return new MonitoringStatus(running.get(), safepointMonitoringAvailable, System.currentTimeMillis() - lastHeapWarningReported < MINS_30,
-				System.currentTimeMillis() - lastDiskSpaceWarningReported < HOURS_24);
+		final long now = System.currentTimeMillis();
+		return new MonitoringStatus(running.get(), safepointMonitoringAvailable, heapWarnings.reportedWithinWindow(now),
+				diskSpaceWarnings.reportedWithinWindow(now));
+	}
+
+	/**
+	 * Bounds how often one kind of warning reaches the server event log.
+	 * <p>
+	 * A degraded server stays degraded, and every check here runs on a 10-second loop, so without this a single
+	 * lasting condition writes 8640 event-log entries a day. The window is per kind - a day for low disk, half an
+	 * hour for heap pressure and safepoint spikes - and always applies to the REPORT, never to the measurement:
+	 * the safepoint detector needs every sample to keep its interval baseline.
+	 * <p>
+	 * Time is a parameter rather than read inside, so the rule is testable without waiting half an hour.
+	 * <p>
+	 * The monitor thread is the only WRITER - all three instances belong to it - but {@link #getStatus()} is
+	 * public and reads two of them from whatever thread asks, so the state it reads is published through a single
+	 * volatile rather than left as plain fields.
+	 */
+	static final class WarningThrottle {
+		/**
+		 * When the last report was made, or {@code null} before the first one. A sentinel TIMESTAMP was the
+		 * obvious alternative and is a trap: {@code Long.MIN_VALUE} makes {@code nowMs - lastReportedMs} overflow
+		 * to a negative number, which suppresses the very first warning of every kind.
+		 */
+		private record LastReport(long atMs) {
+		}
+
+		private final    long       windowMs;
+		// WRITTEN BY THE MONITOR THREAD, READ BY getStatus() FROM ANY THREAD: volatile GUARANTEES VISIBILITY. The
+		// "whether" and the "when" travel as ONE immutable object behind that single volatile, so a reader can
+		// never pair one with the other's previous value - the pattern GetPrometheusMetricsHandler uses for its
+		// cached authentication decision.
+		private volatile LastReport last;
+
+		WarningThrottle(final long windowMs) {
+			this.windowMs = windowMs;
+		}
+
+		/** Whether a report right now would be let through, without consuming the window. */
+		boolean wouldReport(final long nowMs) {
+			final LastReport current = last;
+			return current == null || nowMs - current.atMs() >= windowMs;
+		}
+
+		/** Lets a report through and opens a new window, or refuses it because the last one is still open. */
+		boolean tryReport(final long nowMs) {
+			if (!wouldReport(nowMs))
+				return false;
+			reported(nowMs);
+			return true;
+		}
+
+		/** Opens a new window for a report the caller has already decided to make. */
+		void reported(final long nowMs) {
+			last = new LastReport(nowMs);
+		}
+
+		/** Whether a report was made inside the window ending now - what {@code getStatus()} surfaces. */
+		boolean reportedWithinWindow(final long nowMs) {
+			final LastReport current = last;
+			return current != null && nowMs - current.atMs() < windowMs;
+		}
 	}
 
 	/**

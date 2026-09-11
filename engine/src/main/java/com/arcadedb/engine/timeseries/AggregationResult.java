@@ -100,8 +100,12 @@ public final class AggregationResult {
   private static double mergeValue(final double v1, final long c1, final double v2, final long c2,
       final AggregationType type) {
     return switch (type) {
-      case SUM, COUNT -> v1 + v2;
-      case AVG -> (v1 * c1 + v2 * c2) / (c1 + c2);
+      case COUNT -> v1 + v2;
+      // NaN policy (issue #7089): an absent partial sum is skipped rather than added, so it cannot poison the
+      // other side's real total. A partial AVG is weighted by the real samples it averaged, and a side whose
+      // count is zero is absent by definition - its NaN value must not be multiplied into the merge.
+      case SUM -> TimeSeriesNaN.mergeSum(v1, c1, v2, c2);
+      case AVG -> c1 + c2 > 0 ? TimeSeriesNaN.mergeSum(v1 * c1, c1, v2 * c2, c2) / (c1 + c2) : TimeSeriesNaN.ABSENT;
       // NaN policy (issue #4596): NaN is treated as absent and skipped, so a real value always
       // wins over a NaN running value. Order-independent and consistent with the other MIN/MAX paths.
       case MIN -> Double.isNaN(v2) ? v1 : Double.isNaN(v1) ? v2 : Math.min(v1, v2);

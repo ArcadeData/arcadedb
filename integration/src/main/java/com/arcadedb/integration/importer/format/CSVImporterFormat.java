@@ -308,13 +308,16 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   /**
    * {@code transactionActiveOnEntry}: the live transaction state, used by {@link #beginRowTransaction} to decide
    * whether to begin, reuse, or replace it. {@code ownsTransaction}: see
-   * {@link ImporterContext#callerTransactionActiveOnEntry}.
+   * {@link ImporterContext#importOwnsTransaction}.
    */
   private record TransactionOwnership(boolean transactionActiveOnEntry, boolean ownsTransaction) {
   }
 
   private TransactionOwnership computeTransactionOwnership(final Database database, final ImporterContext context) {
-    return new TransactionOwnership(database.isTransactionActive(), !context.callerTransactionActiveOnEntry);
+    // importOwnsTransaction() rather than the raw flag: a caller transaction recorded on entry that is no longer
+    // live leaves nothing for beginRowTransaction() to reuse, so the transaction it pushes instead is the import's
+    // own and has to be gated as such, or it stays on the stack with nothing allowed to resolve it (issue #7328).
+    return new TransactionOwnership(database.isTransactionActive(), context.importOwnsTransaction(database));
   }
 
   private void loadVertices(final SourceSchema sourceSchema, final Parser parser, final Database database,
@@ -588,29 +591,83 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // database.begin() nests rather than reusing an already-active transaction (see LocalDatabase#begin()), so a
       // caller's own pre-existing transaction is never touched by this method's own commits below.
       database.begin();
+      // Whether the transaction just opened (or the one begun after a periodic commit below) is still the current
+      // one. Cleared right before every commit - which pops it in a finally even if it throws - so a rollback below
+      // can never pop a transaction this method has already committed away, let alone the caller's own (issue #7272).
+      boolean txOpen = true;
+      // Edges an intermediate commit already made durable. context.createdEdges counts every edge
+      // createEdgeFromRow() creates, the ones still inside the transaction a failure rolls back included.
+      long committedEdges = context.createdEdges.get();
+      // Whether the loop ran to its own trailing commit. Distinct from txOpen: a commit() that throws pops the
+      // transaction in its own finally, so txOpen is already false there, yet the batch it failed to make
+      // durable still has to come back off the counter.
+      boolean completed = false;
       int txCount = 0;
-      for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
-        context.parsed.incrementAndGet();
+      try {
+        for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
+          context.parsed.incrementAndGet();
 
-        if (skipEntries > 0 && line < skipEntries)
-          continue;
+          if (skipEntries > 0 && line < skipEntries)
+            continue;
 
-        try {
-          createEdgeFromRow(database, row, properties, from, to, context, settings);
-          txCount++;
+          try {
+            createEdgeFromRow(database, row, properties, from, to, context, settings);
+            txCount++;
+          } catch (final Exception e) {
+            // Unlike loadDocuments/loadVertices, edge rows are always skipped-and-logged regardless of -onRowError:
+            // a "bad" edge row here is typically just an unresolved from/to vertex reference, expected during graph
+            // imports rather than a data-corruption case.
+            LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
+          }
+
+          // Deliberately outside the per-row catch above: a commit failure is not a row error. Caught there it
+          // would be logged under a "parsing line N" message, and the loop would carry on with no transaction
+          // active - LocalDatabase#commit() pops in its own finally and the begin() below never runs - turning
+          // one failure into one more for every remaining row. Left to escape, it reaches the finally below,
+          // which corrects the counter and lets the real cause propagate.
           if (txCount >= settings.commitEvery) {
+            txOpen = false;
             database.commit();
+            committedEdges = context.createdEdges.get();
             database.begin();
+            txOpen = true;
             txCount = 0;
           }
-        } catch (final Exception e) {
-          // Unlike loadDocuments/loadVertices, edge rows are always skipped-and-logged regardless of -onRowError: a
-          // "bad" edge row here is typically just an unresolved from/to vertex reference, expected during graph
-          // imports rather than a data-corruption case.
-          LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
+        }
+        txOpen = false;
+        database.commit();
+        completed = true;
+      } finally {
+        // A row-content failure is already caught and logged above without escaping; what reaches here is a
+        // source-level failure - typically csvParser.parseNext() itself throwing on a malformed row - that the loop
+        // never had a chance to catch.
+        if (txOpen && database.isTransactionActive()) {
+          try {
+            database.rollback();
+          } catch (final Exception rollbackFailure) {
+            // Swallowed: a throw here would replace the failure the caller can actually act on with one about the
+            // cleanup, and would skip the counter correction below.
+            LogManager.instance().log(this, Level.SEVERE,
+                "Could not roll back after the edge import failed: the transaction it opened may still be on the stack",
+                rollbackFailure);
+          }
+        }
+
+        // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
+        // and would otherwise leave the batch it failed to write counted as if it had survived.
+        if (!completed) {
+          // What the report calls "created" has to be what survived: leaving the counter at the number of edges
+          // read would credit the import with the ones the rollback just took away.
+          final long readEdges = context.createdEdges.get();
+          context.createdEdges.set(committedEdges);
+
+          if (committedEdges > 0)
+            LogManager.instance().log(this, Level.WARNING,
+                "Edge import failed after %,d edges: the import is PARTIAL - %,d of them an earlier batch commit made "
+                    + "durable and they stay on the disk, the other %,d were rolled back", null, readEdges,
+                committedEdges, readEdges - committedEdges);
         }
       }
-      database.commit();
 
     } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);

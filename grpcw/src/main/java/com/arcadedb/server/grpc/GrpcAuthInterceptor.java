@@ -22,6 +22,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.google.protobuf.Descriptors.FieldDescriptor;
 import com.google.protobuf.Message;
 import io.grpc.Context;
@@ -33,6 +34,7 @@ import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -49,6 +51,14 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> DATABASE_HEADER      =
       Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
+  /**
+   * Admin methods that are reachable without credentials. Matched on the full method name so a
+   * future RPC whose name merely starts with "Health" is not exempted by accident.
+   */
+  private static final Set<String> UNAUTHENTICATED_ADMIN_METHODS = Set.of(
+      ArcadeDbAdminServiceGrpc.getHealthMethod().getFullMethodName(),
+      ArcadeDbAdminServiceGrpc.getReadyMethod().getFullMethodName());
+
   private final        ServerSecurity          security;
   private final        boolean                 securityEnabled;
   private final        HttpAuthSessionManager  authSessionManager;
@@ -78,6 +88,17 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       return next.startCall(call, headers);
     }
 
+    // The two container probes, exempt for the same reason the HTTP ones are: GetHealthHandler and
+    // GetReadyHandler both return false from isRequireAuthentication(), so an orchestrator can probe
+    // the node without holding server credentials. Requiring credentials here would leave a gRPC-only
+    // deployment unable to express a liveness or readiness probe at all (issue #7304).
+    //
+    // Neither answer discloses anything an unauthenticated caller could not already establish by
+    // opening the port: Health is constant, and Ready reports only whether this node is serving and,
+    // when it is not, which of the three published readiness gates it is behind.
+    if (UNAUTHENTICATED_ADMIN_METHODS.contains(methodName))
+      return next.startCall(call, headers);
+
     // Admin service: enforce authentication centrally from the request-body credentials instead of
     // trusting every RPC to authenticate itself. This is the central authentication choke point: a
     // missing, malformed or invalid credential closes the call before the request reaches the
@@ -89,8 +110,15 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       if (!securityEnabled)
         return next.startCall(call, headers);
 
-      // All admin RPCs are unary, so onMessage fires exactly once with the full request carrying the
-      // credentials. If a client-streaming admin RPC is ever added, revisit this per-message logic.
+      // Every admin RPC takes exactly one request message - the unary ones, and the server-streaming
+      // RestoreBackup / RestoreDatabase / ImportDatabase added in issue #7308, whose stream is on the
+      // response side only. So onMessage fires exactly once, with the full request carrying the
+      // credentials, and authenticating there closes the call before the handler runs.
+      //
+      // A CLIENT-streaming admin RPC would break that: onMessage would fire per chunk, the first
+      // chunk would be the only one carrying credentials, and this listener would either re-check
+      // every chunk or trust chunks it never checked. Nothing in the service is client-streaming
+      // today; adding one means reworking this, not extending it.
       return new ForwardingServerCallListener.SimpleForwardingServerCallListener<>(next.startCall(call, headers)) {
         private boolean halted = false;
 
@@ -130,11 +158,14 @@ class GrpcAuthInterceptor implements ServerInterceptor {
     }
 
     try {
-      // Get database name from header (required for authentication)
-      String database = headers.get(DATABASE_HEADER);
-      if (database == null || database.isEmpty()) {
-        database = "default"; // Use default database if not specified
-      }
+      // The database the caller named, or null when it named none. An absent header used to resolve to
+      // the literal name "default", which ServerSecurity.authenticate treats as a real grant check: a
+      // principal configured with "databases": { "graph": [...] } was refused on its first RPC because
+      // it holds no grant on a database called "default" (issue #7320). Authenticating a header-less
+      // call at server level instead grants nothing extra - per-database authorization is enforced
+      // downstream in ArcadeDbGrpcService.validateCredentials against the database named in the REQUEST
+      // BODY, which is the gate Issue4794GrpcPerDbAuthorizationIT pins.
+      final String database = normalizeDatabase(headers.get(DATABASE_HEADER));
 
       // Try Bearer token authentication first
       final String authorization = headers.get(AUTHORIZATION_HEADER);
@@ -160,9 +191,11 @@ class GrpcAuthInterceptor implements ServerInterceptor {
           return new ServerCall.Listener<ReqT>() {
           };
         } else {
-          // Validate credentials
-          if (!validateCredentials(username, password, database)) {
-            call.close(Status.UNAUTHENTICATED.withDescription("Invalid credentials"), new Metadata());
+          // Validate credentials. The refusal repeats the reason security gave, so a missing grant does
+          // not read as a mistyped password - the complaint in issue #7320.
+          final String failure = authenticationFailure(username, password, database);
+          if (failure != null) {
+            call.close(Status.UNAUTHENTICATED.withDescription(failure), new Metadata());
             return new ServerCall.Listener<ReqT>() {
             };
           }
@@ -242,19 +275,42 @@ class GrpcAuthInterceptor implements ServerInterceptor {
     return session;
   }
 
-  private boolean validateCredentials(String username, String password, String database) {
-    if (security == null) {
-      return true; // No security configured
-    }
+  /**
+   * Treats a blank database name as no database at all, so an empty header is never handed to the grant
+   * check as the database {@code ""}.
+   */
+  private static String normalizeDatabase(final String database) {
+    return database == null || database.isBlank() ? null : database;
+  }
+
+  private boolean validateCredentials(final String username, final String password, final String database) {
+    return authenticationFailure(username, password, database) == null;
+  }
+
+  /**
+   * Authenticates {@code username}/{@code password}, additionally requiring a grant on {@code database}
+   * when one is named. Returns {@code null} when the caller is authenticated, otherwise the reason to
+   * report - the message {@link ServerSecurity} itself produced, so "user has no access to database X"
+   * is not reported as a bad password (issue #7320).
+   */
+  private String authenticationFailure(final String username, final String password, final String database) {
+    if (security == null)
+      return null; // No security configured
 
     try {
-      // ArcadeDB's authenticate method requires database name as well
-      // Returns a SecurityUser object if authentication succeeds, null otherwise
-      Object authenticatedUser = security.authenticate(username, password, database);
-      return authenticatedUser != null;
-    } catch (Exception e) {
+      // ArcadeDB's authenticate method takes the database name as well, and enforces the grant only when
+      // it is non-null.
+      return security.authenticate(username, password, database) != null ? null : "Invalid credentials";
+    } catch (final ServerSecurityException e) {
+      // Expected refusal (bad password, missing grant, lockout): FINE, not SEVERE, and the caller is told
+      // which of them it was. A blank message would read as SUCCESS to the caller of this method, so it
+      // falls back to the generic wording rather than to null.
+      LogManager.instance().log(this, Level.FINE, "Failed to authenticate user: %s for database: %s", username, database);
+      final String reason = e.getMessage();
+      return reason == null || reason.isBlank() ? "Invalid credentials" : reason;
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Failed to authenticate user: %s for database: %s", e, username, database);
-      return false;
+      return "Invalid credentials";
     }
   }
 

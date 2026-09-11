@@ -18,6 +18,7 @@
  */
 package com.arcadedb.network.binary;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import jdk.net.ExtendedSocketOptions;
@@ -42,10 +43,18 @@ public abstract class Channel {
   private final        AtomicLong   metricFlushes                = new AtomicLong();
   private static final boolean      EXTENDED_KEEP_ALIVE_AVAILABLE = extendedKeepAliveAvailable();
 
+  /**
+   * For a caller with no server configuration in reach (unit tests). An empty {@link ContextConfiguration} reads
+   * through to the enum's value, which is what the keepalive settings were always read from.
+   */
   public Channel(final Socket iSocket) throws IOException {
+    this(iSocket, new ContextConfiguration());
+  }
+
+  public Channel(final Socket iSocket, final ContextConfiguration configuration) throws IOException {
     socket = iSocket;
     socket.setTcpNoDelay(true);
-    enableKeepAlive(socket);
+    enableKeepAlive(socket, configuration);
     // THIS TIMEOUT IS CORRECT BUT CREATE SOME PROBLEM ON REMOTE, NEED CHECK BEFORE BE ENABLED
     // timeout = iConfig.getValueAsLong(OGlobalConfiguration.NETWORK_REQUEST_TIMEOUT);
   }
@@ -65,8 +74,11 @@ public abstract class Channel {
    * stand, which still detect the dead peer, just far later. Failures are non-fatal: keepalive is a backstop, and a
    * platform that refuses an option must not stop the connection from being served.
    */
-  private static void enableKeepAlive(final Socket socket) {
-    if (!GlobalConfiguration.NETWORK_SOCKET_KEEP_ALIVE.getValueAsBoolean())
+  private static void enableKeepAlive(final Socket socket, final ContextConfiguration configuration) {
+    // Through the caller's ContextConfiguration: all four settings are SCOPE.SERVER, so they are authoritative in
+    // the server's own overlay - where the configuration file, SET SERVER SETTING and the MCP tool write - and the
+    // GlobalConfiguration enum carries only a system property or an environment variable (issue #7233).
+    if (!configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_SOCKET_KEEP_ALIVE))
       return;
 
     try {
@@ -80,11 +92,11 @@ public abstract class Channel {
       return; // keepalive is on, just with the system-wide probe timings
 
     setKeepAliveOption(socket, ExtendedSocketOptions.TCP_KEEPIDLE,
-        GlobalConfiguration.NETWORK_SOCKET_KEEP_ALIVE_IDLE.getValueAsInteger());
+        configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_KEEP_ALIVE_IDLE));
     setKeepAliveOption(socket, ExtendedSocketOptions.TCP_KEEPINTERVAL,
-        GlobalConfiguration.NETWORK_SOCKET_KEEP_ALIVE_INTERVAL.getValueAsInteger());
+        configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_KEEP_ALIVE_INTERVAL));
     setKeepAliveOption(socket, ExtendedSocketOptions.TCP_KEEPCOUNT,
-        GlobalConfiguration.NETWORK_SOCKET_KEEP_ALIVE_COUNT.getValueAsInteger());
+        configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_KEEP_ALIVE_COUNT));
   }
 
   /**

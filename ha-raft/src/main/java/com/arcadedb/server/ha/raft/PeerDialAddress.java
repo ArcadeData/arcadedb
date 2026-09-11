@@ -41,14 +41,41 @@ import java.util.logging.Level;
  * They are answered here once, next to the resolution, so a new caller inherits the rule instead of restating
  * it: {@code ArcadeStateMachine} before a snapshot resync, and {@code PostVerifyDatabaseHandler} before it fans
  * a consistency check out to a peer.
+ * <p>
+ * A refusal also says WHICH of the two it is, through {@link #sharedEndpoint()}: an address shared with another
+ * peer is a different fact from no address at all, and one caller can act on the difference (issue #7256).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public record PeerDialAddress(String httpAddress, String httpsAddress, String refusal) {
+public record PeerDialAddress(String httpAddress, String httpsAddress, String refusal, SharedEndpoint sharedEndpoint) {
+
+  /**
+   * The endpoint a refused peer resolves to, when the refusal was "this address is shared with another peer"
+   * rather than "there is no address at all" (issue #7256).
+   * <p>
+   * Present only on that one refusal, and it is <b>not</b> an address to dial: it names at most one of the peers
+   * that resolve to it and nothing here can say which. It is offered for the single kind of request that does not
+   * need to know - one that is read-only and whose ANSWER identifies its author, so the caller can bind the reply
+   * to whoever gave it instead of to whoever it was meant for. The peer-capability probe is the one such request
+   * today ({@code RaftHAServer.refreshPeerCapabilities}); anything that acts on the peer it addressed must keep
+   * treating this refusal as a refusal.
+   * <p>
+   * Never this node's own endpoint: dialling that comes straight back here whatever else is true of it, so it is
+   * withheld at the source rather than left for each caller to re-check.
+   * <p>
+   * On the one deployment shape where withholding it leaves nothing at all - a cluster whose peers differ by port,
+   * where the derived address is this node's own <em>by construction</em> for every peer - what is offered instead
+   * is the port-offset candidate {@link RaftHAServer#getPortOffsetPeerHttpAddress} derives, so the recovery is not
+   * dead on its own target (issue #7332). That is a guess, but a guess is exactly what this field's contract
+   * already permits: the address never identified a particular peer to begin with, and the one caller allowed to
+   * act on it binds the reply to whoever gave it.
+   */
+  public record SharedEndpoint(String httpAddress, String httpsAddress) {
+  }
 
   /** A refusal carrying {@code reason}, phrased to be appended to a caller's "refusing to ..." log line. */
   public static PeerDialAddress refuse(final String reason) {
-    return new PeerDialAddress(null, null, reason);
+    return new PeerDialAddress(null, null, reason, null);
   }
 
   /** True when there is no address this node may dial, and {@link #refusal()} says why. */
@@ -96,10 +123,12 @@ public record PeerDialAddress(String httpAddress, String httpsAddress, String re
 
     final String httpAddress = raft.getUnambiguousPeerHttpAddress(peerId);
     if (httpAddress == null)
-      return refuse("no HTTP address identifies " + role + " " + peerId + " on its own - it is either unresolvable "
-          + "or shared with another peer, and a request sent to the wrong node answers for a node that was never "
-          + "asked. Declare each node's 'http' port explicitly in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
-          + " (issue #6202)");
+      return new PeerDialAddress(null, null,
+          "no HTTP address identifies " + role + " " + peerId + " on its own - it is either unresolvable "
+              + "or shared with another peer, and a request sent to the wrong node answers for a node that was never "
+              + "asked. Declare each node's 'http' port explicitly in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
+              + " (issue #6202)",
+          sharedEndpointOf(raft, peerId));
 
     // Resolved once and compared once: reading it twice would let the two comparisons disagree.
     final String localHttpAddress = raft.getLocalHttpAddress();
@@ -114,7 +143,47 @@ public record PeerDialAddress(String httpAddress, String httpsAddress, String re
           + "come straight back here. Declare each node's 'http' port explicitly in "
           + GlobalConfiguration.HA_SERVER_LIST.getKey() + " (issue #6191)");
 
-    return new PeerDialAddress(httpAddress, encryptedEndpointOf(raft, peerId), null);
+    return new PeerDialAddress(httpAddress, encryptedEndpointOf(raft, peerId), null, null);
+  }
+
+  /**
+   * The endpoint the two-or-more peers that resolve to it share, or {@code null} when there is nothing worth
+   * probing: no address at all (an unknown peer, an unresolvable one), or this node's own with no candidate
+   * behind it.
+   * <p>
+   * Reads the raw resolver rather than the unambiguous accessor, which by construction has just answered
+   * {@code null}: the whole point is to recover the address the ambiguity check withheld. The self-address check
+   * is repeated here because it guards a different question - the one above asks whether an <em>unambiguous</em>
+   * address is ours, and a shared one never reaches it.
+   * <p>
+   * <b>The self-address arm falls back rather than giving up (issue #7332).</b> Withholding our own address is
+   * right - dialling it comes straight back here and the second pass would discard the self-answer anyway - but on
+   * a cluster whose peers differ by port and declare no {@code http} port, the derived address IS this node's own
+   * for every peer, so this method used to answer {@code null} every time and the second pass had nothing to ask.
+   * The recovery was dead on precisely the shape it was written for. {@link RaftHAServer#getPortOffsetPeerHttpAddress}
+   * carries the peer's Raft-port offset over to the HTTP port and names its listener whenever the cluster follows
+   * the convention that puts both ports in step, which is the shape in question; it answers {@code null} when it
+   * cannot, and the refusal stands exactly as before.
+   * <p>
+   * The candidate carries no HTTPS half. The offset that holds between two Raft ports says nothing about a third
+   * port, and the plain-HTTP listener is the one that is always there - the same reasoning that makes
+   * {@link #encryptedEndpointOf} withhold rather than refuse.
+   */
+  private static SharedEndpoint sharedEndpointOf(final RaftHAServer raft, final RaftPeerId peerId) {
+    final String httpAddress = raft.getPeerHttpAddress(peerId);
+    if (httpAddress == null)
+      return null;
+    final String localHttpAddress = raft.getLocalHttpAddress();
+    if (localHttpAddress != null && RaftHAServer.isSameHttpEndpoint(localHttpAddress, httpAddress)) {
+      final String candidate = raft.getPortOffsetPeerHttpAddress(peerId);
+      return candidate != null ? new SharedEndpoint(candidate, null) : null;
+    }
+
+    final String httpsAddress = raft.getPeerHttpsAddress(peerId);
+    final String localHttpsAddress = raft.getLocalHttpsAddress();
+    final boolean httpsIsOurs = httpsAddress != null && localHttpsAddress != null
+        && RaftHAServer.isSameHttpEndpoint(localHttpsAddress, httpsAddress);
+    return new SharedEndpoint(httpAddress, httpsIsOurs ? null : httpsAddress);
   }
 
   /**

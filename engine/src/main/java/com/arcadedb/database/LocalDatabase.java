@@ -33,6 +33,7 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
@@ -116,7 +117,6 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -127,6 +127,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -145,6 +146,8 @@ import java.util.stream.Stream;
  */
 public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public static final int EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
+  // #6965: page versions the replication log assigned but this node has not applied yet (HA leader only)
+  private volatile PageVersionReservations pageVersionReservations;
   public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
   /** Header ({@code MutableEdgeSegment.CONTENT_START_POSITION}) plus room for a couple of maximum-width entries. */
   public static final int MIN_EDGE_LIST_CHUNK_SIZE             = 32;
@@ -214,7 +217,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private final      File                                      configurationFile;
   private            DatabaseInternal                          wrappedDatabaseInstance   = this;
   private final      SecurityManager                           security;
-  private final      Map<String, Object>                       wrappers                  = new HashMap<>();
+  /**
+   * Per-database attachments, keyed by name: the lazily built query engine of each language, and the server's
+   * {@link com.arcadedb.engine.MaintenanceCoordinator} when one is bound.
+   * <p>
+   * CONCURRENT, and that is not decoration. The query-engine factories write here from a request thread the
+   * first time a language is used on this database, so two requests in two languages already raced on a plain
+   * {@code HashMap} - and a put concurrent with a get on one is not merely lost, it can corrupt the table. Since
+   * issue #7443 the server also writes here when it wraps a live database (HA rewraps one that is already
+   * serving requests) and {@code BACKUP DATABASE} / {@code IMPORT DATABASE} read it, so the exposure is wider
+   * than it was. A {@link ConcurrentHashMap} read is no slower than a {@code HashMap} one and takes no lock.
+   */
+  private final      Map<String, Object>                       wrappers                  = new ConcurrentHashMap<>();
   private            File                                      lockFile;
   private            RandomAccessFile                          lockFileIO;
   private            FileChannel                               lockFileIOChannel;
@@ -1036,18 +1050,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void registerCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
-    final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new ArrayList<>());
+    // COPY-ON-WRITE: SCHEMA_AFTER_FILE_CHANGES FIRES ON EVERY DDL (#7457), SO A CALLBACK REGISTERED OR REMOVED FROM
+    // ANOTHER THREAD MUST NOT RACE THE ITERATION IN executeCallbacks
+    final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new CopyOnWriteArrayList<>());
     callbacks.add(callback);
   }
 
   @Override
   public void unregisterCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
-    final List<Callable<Void>> callbacks = this.callbacks.get(event);
-    if (callbacks != null) {
+    this.callbacks.computeIfPresent(event, (k, callbacks) -> {
       callbacks.remove(callback);
-      if (callbacks.isEmpty())
-        this.callbacks.remove(event);
-    }
+      return callbacks.isEmpty() ? null : callbacks;
+    });
   }
 
   @Override
@@ -1821,6 +1835,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return serializer;
   }
 
+  /**
+   * Page versions the replication log has already assigned but this node has not applied yet (issue #6965), or
+   * {@code null} on a standalone database. See {@link PageVersionReservations}.
+   */
+  public PageVersionReservations getPageVersionReservations() {
+    return pageVersionReservations;
+  }
+
+  public void setPageVersionReservations(final PageVersionReservations reservations) {
+    this.pageVersionReservations = reservations;
+  }
+
   @Override
   public PageManager getPageManager() {
     checkDatabaseIsOpen();
@@ -2558,6 +2584,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   private void closeInternal(final boolean drop) {
+    // #7458: a point-in-time snapshot window (a backup) reads this database's files without holding its lock, so
+    // the close waits for the open windows to be released BEFORE tearing anything down - the database keeps serving
+    // in the meantime - and marks itself so no new window opens on it. The mark is lifted at the end whatever
+    // happened: this instance is closed by then, and a later open of the same path is a new instance. The mark is
+    // set inside the try so that a wait that threw could not leak it either.
+    try {
+      PageManager.INSTANCE.beginDatabaseClose(this);
+      closeSteps(drop);
+    } finally {
+      PageManager.INSTANCE.endDatabaseClose(this);
+    }
+  }
+
+  private void closeSteps(final boolean drop) {
     // Graceful async drain FIRST, with the caller's interrupt flag INTACT so an interrupted caller bails
     // this wait fast; the warning distinguishes an interrupt from a real timeout.
     if (async != null) {

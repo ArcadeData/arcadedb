@@ -18,12 +18,14 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CodeUtils;
@@ -83,8 +85,22 @@ import java.util.zip.ZipOutputStream;
  */
 public class SnapshotHttpHandler implements HttpHandler {
 
-  private static final Semaphore CONCURRENCY_SEMAPHORE =
-      new Semaphore(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger(), true);
+  /**
+   * How many snapshots this server serves at once, and the permits enforcing it.
+   * <p>
+   * Both used to be {@code static final}, sized at class-initialisation from the {@link GlobalConfiguration} enum -
+   * which is populated by a system property or an environment variable and by nothing else, and which at that
+   * moment has not seen a line of the server's configuration anyway. A cluster that set
+   * {@code arcadedb.ha.snapshotMaxConcurrent} in its server configuration file therefore ran on the compiled-in
+   * default, and the rejection message below read the enum a SECOND time, so it would have misreported even a
+   * value that had reached the semaphore (issue #7233). Per-instance also makes the cap what it says it is - a
+   * bound on THIS server - rather than one shared by every server in the JVM.
+   */
+  private final int       maxConcurrentSnapshots;
+  private final Semaphore concurrencySemaphore;
+
+  /** Bounds the misconfiguration warning in {@link #sanitizedMaxConcurrent} to once per JVM. */
+  private static final AtomicBoolean WARNED_MISCONFIGURED_LIMIT = new AtomicBoolean();
 
   /** Sub-path selecting the checksums view of a database instead of its snapshot ZIP. */
   static final String CHECKSUMS_SUFFIX = "/checksums";
@@ -111,7 +127,7 @@ public class SnapshotHttpHandler implements HttpHandler {
   // double the read I/O and, with refcounted suspension, keep flushing suspended for the UNION of both
   // windows, growing the deferred-page backlog toward the #4728 backpressure cap and throttling commits
   // for longer. Serializing keeps each suspension window as short as possible. Requests beyond the
-  // CONCURRENCY_SEMAPHORE limit (HA_SNAPSHOT_MAX_CONCURRENT, default 2) still get a fast 503.
+  // concurrencySemaphore limit (HA_SNAPSHOT_MAX_CONCURRENT, default 2) still get a fast 503.
   // Entries are never pruned by design: one small ReentrantLock per database NAME ever snapshotted, bounded
   // by the server's database count (a dropped-and-recreated database safely reuses its lock). Pruning on
   // drop would need lifecycle callbacks this handler does not have, for negligible memory.
@@ -130,6 +146,34 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   public SnapshotHttpHandler(final HttpServer httpServer) {
     this.httpServer = httpServer;
+    // The tests build a handler with no server; an empty overlay reads through to the setting's default.
+    final ContextConfiguration configuration =
+        httpServer != null ? httpServer.getServer().getConfiguration() : new ContextConfiguration();
+    this.maxConcurrentSnapshots = sanitizedMaxConcurrent(configuration);
+    this.concurrencySemaphore = new Semaphore(maxConcurrentSnapshots, true);
+  }
+
+  /**
+   * The configured snapshot concurrency, floored at 1.
+   * <p>
+   * {@code new Semaphore(n)} accepts a negative {@code n} - it simply means every {@code tryAcquire} fails - so a
+   * limit of 0 or below does not fail loudly, it silently answers every snapshot request with 503 and leaves a
+   * follower that has fallen behind the compacted log unable to resync at all. That was only reachable through a
+   * {@code -D} before; since #7233 read this from the server configuration it is reachable from the configuration
+   * file too, which is where a typo actually happens. Treated as a misconfiguration rather than an intentional
+   * (if impractical) lockdown, and reported once, the same way the Redis and BOLT protocol limits are.
+   */
+  private static int sanitizedMaxConcurrent(final ContextConfiguration configuration) {
+    final int configured = configuration.getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT);
+    if (configured >= 1)
+      return configured;
+
+    final int fallback = ((Number) GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getDefValue()).intValue();
+    if (WARNED_MISCONFIGURED_LIMIT.compareAndSet(false, true))
+      LogManager.instance().log(SnapshotHttpHandler.class, Level.WARNING,
+          "'%s' is set to %d, below the minimum usable value (1); falling back to the default (%d)",
+          GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getKey(), configured, fallback);
+    return fallback;
   }
 
   /**
@@ -202,9 +246,9 @@ public class SnapshotHttpHandler implements HttpHandler {
           "Serving database snapshots over plain HTTP. Consider enabling SSL for production clusters.");
     }
 
-    if (!CONCURRENCY_SEMAPHORE.tryAcquire()) {
+    if (!concurrencySemaphore.tryAcquire()) {
       LogManager.instance().log(this, Level.WARNING, "Snapshot rejected: concurrency limit of %d reached",
-          GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger());
+          maxConcurrentSnapshots);
       exchange.setStatusCode(503);
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
       exchange.getResponseSender().send("{\"error\":\"Too many concurrent snapshots\"}");
@@ -287,7 +331,7 @@ public class SnapshotHttpHandler implements HttpHandler {
         dbSuspendLock.unlock();
       }
     } finally {
-      CONCURRENCY_SEMAPHORE.release();
+      concurrencySemaphore.release();
     }
   }
 
@@ -501,11 +545,8 @@ public class SnapshotHttpHandler implements HttpHandler {
       // the FileManager, so they are absent from getFiles(). Add them explicitly so a snapshot-syncing
       // follower also receives the compacted time-series data instead of only the mutable buckets
       // (issue #4382).
-      final File dbDir = new File(db.getDatabasePath());
-      final File[] sealedFiles = dbDir.listFiles((d, name) -> name.endsWith(".ts.sealed"));
-      if (sealedFiles != null)
-        for (final File sealedFile : sealedFiles)
-          addFileToZip(zipOut, sealedFile, manifest);
+      for (final File sealedFile : TimeSeriesSealedStore.listSealedFiles(new File(db.getDatabasePath())))
+        addFileToZip(zipOut, sealedFile, manifest);
 
       // Ship the recency marker (issue #5277). last-tx-id.bin is written on a clean close and on WAL
       // rotation, but a follower that receives this database via snapshot and is later force-killed
@@ -606,10 +647,8 @@ public class SnapshotHttpHandler implements HttpHandler {
         if (file != null)
           total += file.getOSFile().length();
 
-    final File[] sealedFiles = new File(db.getDatabasePath()).listFiles((d, name) -> name.endsWith(".ts.sealed"));
-    if (sealedFiles != null)
-      for (final File sealedFile : sealedFiles)
-        total += sealedFile.length();
+    for (final File sealedFile : TimeSeriesSealedStore.listSealedFiles(new File(db.getDatabasePath())))
+      total += sealedFile.length();
 
     return total + Long.BYTES; // the last-tx-id marker
   }

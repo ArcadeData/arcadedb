@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
@@ -39,6 +40,7 @@ import org.apache.ratis.metrics.RatisMetricRegistry;
 import org.apache.ratis.metrics.impl.RatisMetricRegistryImpl;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.ClientId;
+import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftGroup;
@@ -57,6 +59,8 @@ import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.thirdparty.com.codahale.metrics.MetricRegistry;
 import org.apache.ratis.thirdparty.com.codahale.metrics.Timer;
+import org.apache.ratis.thirdparty.io.grpc.ServerInterceptor;
+import org.apache.ratis.thirdparty.io.grpc.ServerTransportFilter;
 import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.TimeDuration;
 
@@ -76,6 +80,7 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -94,6 +99,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -150,6 +156,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile ArcadeStateMachine      stateMachine;
   private final    ClusterMonitor          clusterMonitor;
   private final    Quorum                  quorum;
+  /**
+   * The RPC timeout of this node's own Raft client: a request unanswered for this long is retried with the same call
+   * id. {@link PageVersionLedger#STALE_RESERVATION_MS} is derived from it, since a retry refreshes the reservation.
+   */
+  public static final long CLIENT_REQUEST_TIMEOUT_MS = 10_000L;
+
   private final    long                    quorumTimeout;
   private final    RaftGroup               raftGroup;
   private final    RaftPeerId              localPeerId;
@@ -191,6 +203,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // not advertised. Re-reported whenever the verdict changes, see {@code isNewAmbiguityVerdict} (issue #6297).
   private final    Map<HAServerPlugin.ROUTING_PROTOCOL, AtomicReference<String>> routingAmbiguityReported = createRoutingProtocolVerdicts();
   private final    Map<RaftPeerId, String> peerDisplayNames   = new ConcurrentHashMap<>();
+  // The server list as configured, in order, and the names the operator gave its entries: what
+  // resolvePeerIdByServerName() applies the local-peer resolution rules to (issue #7424).
+  private final    List<RaftPeer>          configuredPeerList;
+  private final    Map<RaftPeerId, String> configuredPeerNames;
   private final    String                  clusterName;
 
   // volatile: reassigned by the recovery path (restartRatis) and cleared by stop(), while background
@@ -209,16 +225,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // channelRecoveryExecutor off the resync executor below.
   private          ScheduledExecutorService  capabilityMonitorExecutor;
   private final    PeerCapabilityRegistry    peerCapabilities = new PeerCapabilityRegistry();
+  // How one capability probe is made (see CapabilityProber). A method reference rather than a lambda reading
+  // arcadeServer, which is a blank final the constructor has not assigned yet at this point.
+  private volatile CapabilityProber          capabilityProber = this::queryPeerCapabilities;
   // What THIS node tells its peers it can decode. A field rather than PeerCapabilities.LOCAL read directly, so an
   // integration test can stand a node up that behaves like a build predating a section - which is the only way to
   // exercise a mixed-version cluster inside one JVM.
   private volatile Set<String>               advertisedCapabilities = PeerCapabilities.LOCAL;
-  // Last capability set logged per peer, so the refresh reports a CHANGE (first observation, a peer losing a
-  // capability, an advertisement expiring) instead of a line per peer per five seconds.
-  private final    Map<String, Set<String>>  lastLoggedCapabilities = new ConcurrentHashMap<>();
-  // Sentinel stored in lastLoggedCapabilities for a peer whose last probe FAILED, so a repeated failure is
-  // distinguishable from a first one by identity. Not a capability set anyone reads - only ever compared with ==.
-  private static final Set<String>           PROBE_FAILED = Set.of("<probe-failed>");
+  // This node's HTTPS client for the capability probe, rebuilt only when its truststore changes (issue #7301).
+  // Per server and not static: several ArcadeDBServer instances share a JVM in every HA test, and a shared cache
+  // would rebuild on each probe and could close a client another server was still sending on.
+  private final    TrustedHttpClientCache    capabilityHttpsClients = new TrustedHttpClientCache();
   // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728). One worker is
   // enough since at most one resync fires per replica per stall streak; a small bounded queue with a
   // caller-runs policy degrades to running on the lag-monitor thread under the (unlikely) burst.
@@ -246,6 +263,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Inbound Raft gRPC peer allowlist, recreated on each Ratis (re)start. Periodically refreshed by the
   // health monitor tick so a returned peer's new pod IP is admitted proactively (issue #4696).
   private volatile PeerAddressAllowlistFilter allowlistFilter;
+  // Installed alongside allowlistFilter and null for exactly the same reasons (issue #7250): the two are the
+  // connection-time and the per-RPC half of one decision.
+  private volatile PeerAllowlistCallInterceptor allowlistInterceptor;
   // Ratis transport parameters (gRPC TLS conf and the inbound-allowlist services customizer) built by
   // buildParameters() on each Ratis (re)start. Kept so refreshRaftClient() can rebuild the leader's
   // self-client with the SAME transport configuration: a client built with an empty Parameters would
@@ -349,6 +369,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           serverName, configuredPeers, synthesized.getId());
     }
     this.localPeerId = resolvedLocalPeerId;
+    this.configuredPeerList = peers;
+    this.configuredPeerNames = configuredPeerNames;
 
     // If this node is configured as a replica, override its Raft peer priority to 0
     // so Ratis never elects it as leader (useful for read-scale or witness nodes).
@@ -944,6 +966,31 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * The peer whose {@code arcadedb.server.name} is {@code serverName}, or {@code null} when no peer of the
+   * configured server list answers to it (issue #7424). Applies the rules a node uses to find ITSELF in the list
+   * ({@link RaftPeerAddressResolver#findLocalPeerId}) to another node's name: a configured {@code name@host}
+   * entry, a host equal to the name, or a {@code -N}/{@code _N} suffix naming the position in the list. Those
+   * rules hold on every node because every node reads the same list, so the answer here is the peer that node
+   * resolved itself to.
+   */
+  public RaftPeerId resolvePeerIdByServerName(final String serverName) {
+    if (serverName == null || serverName.isBlank())
+      return null;
+    try {
+      return RaftPeerAddressResolver.findLocalPeerId(configuredPeerList, configuredPeerNames, serverName, arcadeServer);
+    } catch (final IllegalArgumentException e) {
+      return null;
+    }
+  }
+
+  /**
+   * The HTTPS clients this node uses for its peer-to-peer RPCs, built once per server and reused (issue #7301).
+   */
+  TrustedHttpClientCache getHttpsClients() {
+    return capabilityHttpsClients;
+  }
+
+  /**
    * Returns a human-readable display name for a peer, e.g. "arcadedb-0 (localhost:2480)".
    * Falls back to the raw peer ID string if the peer is unknown.
    */
@@ -961,6 +1008,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // Drop the one by-design SimpleStateMachineStorage warning about the missing snapshot digest,
     // without silencing that logger's genuine failures (issue #6991).
     RatisSnapshotDigestWarningFilter.install();
+    // Drop the Ratis client's SEVERE for an entry the leader refused before appending it: that is an ordinary
+    // retryable conflict since issue #6965, not a send failure.
+    RatisRefusedEntryErrorFilter.install();
 
     final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
 
@@ -1583,6 +1633,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       logCompactionScheduler = null;
     }
     stopLagMonitor();
+    // After stopLagMonitor(), which ends the capability refresh: nothing asks for the client past this point, and
+    // an HttpClient left behind holds a connection pool and a selector thread for the life of the JVM - which in
+    // the HA suites outlives many server start/stop cycles (PR #7314 review).
+    //
+    // This can BLOCK BRIEFLY, and that is deliberate rather than an oversight: the refresh sends its request
+    // outside the cache's monitor, so a probe already in flight when this runs holds HttpClient.close()'s orderly
+    // shutdown until it finishes - bounded by PeerCapabilityRegistry.PROBE_TIMEOUT_MS on a round that has already
+    // been told to stand down. Making the close asynchronous to avoid that wait would hand the shutdown path a
+    // client that outlives the server it belongs to, which is the leak this call exists to prevent.
+    capabilityHttpsClients.close();
     stalledResyncExecutor.shutdownNow();
     channelRecoveryExecutor.shutdownNow();
     if (transactionBroker != null) {
@@ -1730,6 +1790,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public RaftClient getClient() {
     return raftClient;
   }
+
 
   public RaftTransactionBroker getTransactionBroker() {
     return transactionBroker;
@@ -2531,6 +2592,85 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * A <b>candidate</b> HTTP endpoint for a peer whose derived address collapsed onto this node's own, obtained by
+   * carrying the peer's Raft-port offset over to the HTTP port (issue #7332).
+   * <p>
+   * It exists because the collapse is total on the very deployment shape the shared-endpoint recovery was written
+   * for. With no {@code http} port declared, {@link #resolveHttpAddress(RaftPeerId)} derives every peer's endpoint
+   * as <em>its</em> Raft host plus <em>this</em> node's HTTP port; on a cluster whose nodes differ by port rather
+   * than by host that address is this node's own for every peer, so {@code sharedEndpointOf} withheld it - rightly,
+   * dialling ourselves comes straight back - and the second pass never had an endpoint to probe at all.
+   * <p>
+   * The offset is the only signal left: a multi-node cluster on one host is configured by moving both ports
+   * together ({@code 2424/2480}, {@code 2425/2481}, {@code 2426/2482} is what the docs, the examples and the test
+   * fixtures all use), so {@code localHttpPort + (peerRaftPort - localRaftPort)} names the peer's listener whenever
+   * that convention holds and names nothing at all when it does not.
+   * <p>
+   * <b>Only the capability probe's second pass may use it, and that is what makes a guess acceptable here.</b>
+   * Every other caller acts on the peer it addressed and must never dial an address that might belong to someone
+   * else. The second pass does not: it is read-only, its reply names its own author, and it credits the answer to
+   * whoever actually answered - a peer of the current configuration, never this node, never one that already
+   * answered for itself. A wrong guess therefore reaches a socket that is not in the cluster and fails, or reaches
+   * one that is and is credited correctly. It is offered through {@link PeerDialAddress#sharedEndpoint()} for that
+   * reason, and never through {@link PeerDialAddress#httpAddress()}.
+   * <p>
+   * {@code null} - no candidate - when the peer declared its HTTP port (there is nothing to guess, and a declared
+   * address that still collides is a configuration fault to report rather than to work around), when either Raft
+   * port is unknown, when the two Raft ports are equal (the peers differ by host, so the derivation did not
+   * collapse them in the first place), when the arithmetic leaves the port range, or when the result is this
+   * node's own address after all.
+   */
+  public String getPortOffsetPeerHttpAddress(final RaftPeerId peerId) {
+    if (peerId == null || peerId.equals(localPeerId) || httpAddresses.containsKey(peerId))
+      return null;
+
+    final String peerRaft = peerRaftAddress(peerId);
+    final int peerRaftPort = extractPort(peerRaft);
+    final int localRaftPort = extractPort(peerRaftAddress(localPeerId));
+    if (peerRaftPort <= 0 || localRaftPort <= 0 || peerRaftPort == localRaftPort)
+      return null;
+
+    final HttpServer httpServer = arcadeServer.getHttpServer();
+    final int localHttpPort = httpServer != null ? httpServer.getPort() : -1;
+    if (localHttpPort <= 0)
+      return null;
+
+    // long because extractPort returns whatever integer the address carries, port range or not: a peer whose
+    // address ends in 2147483647 would wrap int arithmetic round to a small, plausible-looking port. Nothing
+    // between here and there validates it, so the range check below is done in a type that cannot wrap first.
+    final long candidatePort = (long) localHttpPort + peerRaftPort - localRaftPort;
+    if (candidatePort <= 0 || candidatePort > 65535)
+      return null;
+
+    final String host = extractHost(peerRaft);
+    if (host == null)
+      return null;
+
+    final String candidate = host + ":" + candidatePort;
+    return isSameHttpEndpoint(getLocalHttpAddress(), candidate) ? null : candidate;
+  }
+
+  /**
+   * Extracts the port from a {@code host:port} or {@code [ipv6]:port} address, or {@code -1} when the address
+   * carries none, is blank, or the port is not a number. The mirror of {@link #extractHost}, and it takes the
+   * LAST colon for the same reason: an unbracketed IPv6 literal carries colons of its own. Package-private for
+   * testing.
+   */
+  static int extractPort(final String address) {
+    if (address == null || address.isEmpty())
+      return -1;
+    final int closeBracket = address.lastIndexOf(']');
+    final int colon = address.lastIndexOf(':');
+    if (colon <= 0 || colon < closeBracket)
+      return -1;
+    try {
+      return Integer.parseInt(address.substring(colon + 1));
+    } catch (final NumberFormatException e) {
+      return -1;
+    }
+  }
+
+  /**
    * Extracts the host portion from a {@code host:port} or {@code [ipv6]:port} address. Returns the
    * input unchanged when it carries no port, or {@code null} when blank. Package-private for testing.
    */
@@ -2755,7 +2895,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final Parameters parameters, final RaftPeerId knownLeaderId) {
     // Set the client-side RPC timeout to match the quorum timeout so a slow leader response
     // does not trigger a premature TimeoutIOException before the commit completes.
-    RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
+    RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(CLIENT_REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS));
     final RaftClient.Builder builder = RaftClient.newBuilder()
         .setRaftGroup(group)
         .setProperties(properties)
@@ -2884,6 +3024,26 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     synchronized (applyNotifier) {
       applyNotifier.notifyAll();
     }
+  }
+
+  /**
+   * Waits until the condition holds, re-evaluating it whenever the state machine applies an entry.
+   *
+   * @return {@code false} when the timeout elapsed first
+   */
+  public boolean awaitApplied(final BooleanSupplier condition, final long timeoutMs) throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + timeoutMs;
+    // The condition may read a page (a disk read on a cache miss), so it is evaluated OUTSIDE the monitor that the
+    // apply thread takes after every entry: the monitor is only used to park between evaluations.
+    while (!condition.getAsBoolean()) {
+      final long remaining = deadline - System.currentTimeMillis();
+      if (remaining <= 0)
+        return false;
+      synchronized (applyNotifier) {
+        applyNotifier.wait(Math.min(remaining, 50L));
+      }
+    }
+    return true;
   }
 
   /**
@@ -3372,16 +3532,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * In-flight leader-side phase-2 holds on the Raft snapshot checkpoint (issue #5410). Reported on
-   * every node, not just the leader: a ticket taken while this node WAS the leader keeps pinning log
-   * compaction after it steps down, which is exactly the case an operator needs to see.
+   * Transactions this node originated whose pages the Raft apply thread has not published yet (issue #6965): the
+   * leader-side phase 2 in flight. Since the apply thread publishes them at the entry's log position, before the
+   * applied index moves past it, no snapshot checkpoint is ever held back by them any more: the replay floor is
+   * always {@code -1} (kept in the record for the gauge's stability).
    */
   public HAReplicationStatsProvider.PendingPhase2Stats getPendingPhase2Stats() {
     final ArcadeStateMachine sm = stateMachine;
     if (sm == null)
       return new HAReplicationStatsProvider.PendingPhase2Stats(0, 0, -1);
-    return new HAReplicationStatsProvider.PendingPhase2Stats(
-        sm.pendingLocalPhase2Count(), sm.oldestPendingLocalPhase2HeldMs(), sm.lowestPendingLocalPhase2ReplayFloor());
+    return new HAReplicationStatsProvider.PendingPhase2Stats(sm.pendingLocalCommits(), sm.oldestPendingLocalCommitMs(), -1);
   }
 
   /**
@@ -3888,13 +4048,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * leader ships whole schema documents: correct, but it is the state the whole mechanism exists to leave, and a
    * leader that has just been elected is precisely when a burst of DDL tends to arrive.
    */
-  private void startCapabilityMonitor() {
+  // @VisibleForTesting - the invalidation below is asserted through this method, not through the field it clears
+  void startCapabilityMonitor() {
     if (capabilityMonitorExecutor != null)
       return;
     // A fresh term says nothing about what the peers can decode - a build does not change because an election
     // happened - but the advertisements were observed under the previous leadership and their timestamps are
-    // what the TTL is measured against, so they are re-asked immediately rather than inherited silently.
-    lastLoggedCapabilities.clear();
+    // what the TTL is measured against, so they are re-asked immediately rather than inherited silently. Until
+    // #7301 only the log-throttle shadow was cleared and the advertisements themselves were inherited, so a node
+    // that led again believed the previous term's answers - and could write an optional wire-format section on
+    // them - for the length of one refresh round.
+    peerCapabilities.clear();
     capabilityMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
       final Thread t = new Thread(r, "arcadedb-raft-capability-monitor");
       t.setDaemon(true);
@@ -3904,8 +4068,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         PeerCapabilityRegistry.REFRESH_PERIOD_MS, TimeUnit.MILLISECONDS);
   }
 
-  /** Stops the peer-capability refresh. Called when this node loses leadership. */
-  private void stopCapabilityMonitor() {
+  /**
+   * Stops the peer-capability refresh. Called when this node loses leadership.
+   * <p>
+   * The advertisements are deliberately left in place rather than dropped here: they age out on their own, and
+   * {@code unknownReasonOf} has a sentence for exactly that window. Whatever survives it is cleared the moment
+   * this node leads again, which is where the invalidation belongs (issue #7301).
+   */
+  // @VisibleForTesting
+  void stopCapabilityMonitor() {
     if (capabilityMonitorExecutor != null) {
       capabilityMonitorExecutor.shutdownNow();
       capabilityMonitorExecutor = null;
@@ -3921,20 +4092,47 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * <p>
    * <b>Every failure forgets rather than keeps.</b> A peer that stopped answering may have been replaced by an
    * older build, so continuing to believe its last answer until the TTL expires would be believing it for a
-   * reason that no longer holds.
+   * reason that no longer holds. The reason is kept alongside, for {@code GET /api/v1/cluster} to report: an
+   * absent {@code capabilities} field otherwise reads the same whether the peer runs an older build or was never
+   * asked at all, and those have nothing in common as remedies (issue #7256).
+   * <p>
+   * <b>Two passes, because a shared address is still worth asking.</b> On a cluster that declares no {@code http}
+   * ports, peers sharing a host have their endpoints derived onto one address (#6202, #6267) and
+   * {@link PeerDialAddress} withholds it - correctly, for a request that acts on the peer it addressed. This one
+   * does not: it is read-only, and its reply names its own author. So a second pass asks each distinct withheld
+   * address ONCE and credits the answer to whichever configured peer actually answered, which is the only peer it
+   * can be true of. Everything the second pass does not account for stays a "no", so the mechanism still fails the
+   * cheap way; what changes is that such a cluster can reach the negotiated feature at all (issue #7256).
+   * <p>
+   * On the sharpest form of that shape - every node on ONE host, differing only by port - the collapsed address is
+   * this node's own for every peer, and withholding it left the second pass with nothing to ask: the recovery was
+   * dead on its own target until {@code getPortOffsetPeerHttpAddress} gave it a candidate to probe there
+   * (issue #7332).
    */
   // @VisibleForTesting
   void refreshPeerCapabilities() {
     try {
+      // The term this round belongs to, read once and handed to every write it makes. stopCapabilityMonitor()
+      // does not wait for a round in flight, so this round can still be dialling when leadership is lost and come
+      // back after the next term cleared the registry; the stamp is what stops it recording the previous term's
+      // answer over the new one, without blocking the transition on a network timeout (issue #7314 review).
+      final long generation = peerCapabilities.generation();
       final List<RaftPeer> peers = configuredPeers();
       final List<String> peerIds = new ArrayList<>(peers.size());
       for (final RaftPeer peer : peers)
         peerIds.add(peer.getId().toString());
-      // Bound the map by the live configuration: a long-lived leader of a cluster that has added and removed
-      // peers must not accumulate their advertisements for its whole uptime.
-      peerCapabilities.retainOnly(peerIds);
+      // Bound the registry by the live configuration: a long-lived leader of a cluster that has added and removed
+      // peers must not accumulate their advertisements - nor what it last reported about them - for its whole
+      // uptime (issue #7301).
+      peerCapabilities.retainOnly(generation, peerIds);
 
       final String clusterToken = getClusterToken();
+      // Why each peer has no answer yet, and the withheld addresses worth one more question. Both are resolved in
+      // the first pass and settled after the second, so a peer that identifies itself there is never also
+      // forgotten for the refusal that sent us looking for it.
+      final Map<String, String> unanswered = new LinkedHashMap<>();
+      final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints = new LinkedHashSet<>();
+
       for (final RaftPeer peer : peers) {
         final RaftPeerId peerId = peer.getId();
         if (peerId.equals(localPeerId))
@@ -3945,26 +4143,35 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // the reply, so the two halves of the guard are independent.
         final PeerDialAddress dial = PeerDialAddress.resolve(this, peerId, "peer");
         if (dial.refused()) {
-          forgetPeerCapabilities(peerId.toString(), dial.refusal());
+          unanswered.put(peerId.toString(), dial.refusal());
+          // A SET of the whole endpoint, so N peers collapsed onto one cost one probe and not N identical ones -
+          // and two peers whose HTTP halves collide while their declared HTTPS halves do not still get a probe
+          // each. Deduplicating on the HTTP address alone would have dropped the second peer's HTTPS endpoint,
+          // which on an SSL cluster is the endpoint actually dialled (issue #7256).
+          if (dial.sharedEndpoint() != null)
+            sharedEndpoints.add(dial.sharedEndpoint());
           continue;
         }
 
         try {
-          final PeerCapabilityQuery.Advertisement advertisement = PeerCapabilityQuery.fetch(peerId.toString(),
-              dial.httpAddress(), dial.httpsAddress(), clusterToken, PeerCapabilityRegistry.PROBE_TIMEOUT_MS,
-              arcadeServer);
-          recordPeerCapabilities(peerId.toString(), advertisement);
+          recordPeerCapabilities(generation, peerId.toString(), capabilityProber.probe(peerId.toString(),
+              dial.httpAddress(), dial.httpsAddress(), clusterToken));
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
-          forgetPeerCapabilities(peerId.toString(), "the capability query was interrupted");
+          unanswered.put(peerId.toString(), "the capability query was interrupted");
+          forgetUnanswered(generation, unanswered);
           return;
         } catch (final Exception e) {
           // A peer running a build without the capability route answers 404 and lands here, which is exactly the
           // discriminator this mechanism turns on - so this arm is the NORMAL one during a rolling upgrade, not
           // an error. forgetPeerCapabilities logs it once per change rather than once per round.
-          forgetPeerCapabilities(peerId.toString(), e.getMessage());
+          unanswered.put(peerId.toString(), describeProbeFailure(e));
         }
       }
+
+      if (!probeSharedEndpoints(generation, sharedEndpoints, peerIds, unanswered, clusterToken))
+        return;
+      forgetUnanswered(generation, unanswered);
     } catch (final Exception e) {
       // Never let the scheduled task die: scheduleWithFixedDelay cancels the schedule on an escaped throwable,
       // and a cancelled refresh is a leader that silently stops re-checking its peers.
@@ -3972,24 +4179,88 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
-  private void recordPeerCapabilities(final String peerId, final PeerCapabilityQuery.Advertisement advertisement) {
-    peerCapabilities.record(peerId, advertisement.capabilities(), advertisement.version());
-    final Set<String> previous = lastLoggedCapabilities.put(peerId, Set.copyOf(advertisement.capabilities()));
-    if (!advertisement.capabilities().equals(previous))
+  /**
+   * Asks each address that {@link PeerDialAddress} withheld as shared, and records the answer against the peer
+   * that gave it (issue #7256). Removes every peer it accounted for from {@code unanswered}.
+   * <p>
+   * Three conditions on the answerer, all of them about not believing an answer for a node that never gave one:
+   * it has to name a peer of the current configuration, it must not be this node, and it must not already have
+   * answered for itself in the first pass - a peer whose own address is unambiguous is not the peer living behind
+   * a collapsed one.
+   *
+   * @return {@code false} when the round was interrupted and the caller must stand down without settling.
+   */
+  private boolean probeSharedEndpoints(final long generation,
+      final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints, final List<String> peerIds,
+      final Map<String, String> unanswered, final String clusterToken) {
+    for (final PeerDialAddress.SharedEndpoint endpoint : sharedEndpoints) {
+      try {
+        final PeerCapabilityQuery.Advertisement advertisement = capabilityProber.probe(null, endpoint.httpAddress(),
+            endpoint.httpsAddress(), clusterToken);
+        final String answeringPeer = advertisement.peerId();
+        if (answeringPeer.equals(localPeerId.toString()) || !peerIds.contains(answeringPeer)
+            || !unanswered.containsKey(answeringPeer))
+          continue;
+        LogManager.instance().log(this, Level.FINE,
+            "Peer '%s' identified itself at the shared address %s, so its capabilities can be negotiated after all",
+            answeringPeer, endpoint.httpAddress());
+        unanswered.remove(answeringPeer);
+        recordPeerCapabilities(generation, answeringPeer, advertisement);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        forgetUnanswered(generation, unanswered);
+        return false;
+      } catch (final Exception e) {
+        // Nothing answers at a collapsed address that no peer is actually listening on, and a peer on an older
+        // build answers 404 here exactly as it does on the guarded route. Either way the peers behind this address
+        // keep the refusal already recorded against them, which is the more useful of the two reasons.
+        // describeProbeFailure, not getMessage(): a bare SocketTimeoutException carries no message, and that is
+        // exactly the failure the helper was written for - reporting it as "null" here left the second pass
+        // saying nothing about the one failure mode that motivated it (issue #7332).
+        LogManager.instance().log(this, Level.FINE,
+            "No peer identified itself at the shared address %s: %s", endpoint.httpAddress(),
+            describeProbeFailure(e));
+      }
+    }
+    return true;
+  }
+
+  /**
+   * A probe failure as an operator-facing reason, never {@code null}. Some exceptions carry no message - a bare
+   * {@code SocketTimeoutException} among them - and a null there would CLEAR the recorded reason rather than set
+   * one, leaving the peer unknown with nothing to say why: the one thing {@code capabilitiesUnknownReason} exists
+   * to provide (issue #7256).
+   */
+  private static String describeProbeFailure(final Exception e) {
+    final String message = e.getMessage();
+    return message != null && !message.isBlank() ? message : e.getClass().getSimpleName();
+  }
+
+  /** Records every peer this round could not get an answer for as incapable, each with the reason it failed. */
+  private void forgetUnanswered(final long generation, final Map<String, String> unanswered) {
+    for (final Map.Entry<String, String> entry : unanswered.entrySet())
+      forgetPeerCapabilities(generation, entry.getKey(), entry.getValue());
+  }
+
+  private void recordPeerCapabilities(final long generation, final String peerId,
+      final PeerCapabilityQuery.Advertisement advertisement) {
+    if (peerCapabilities.record(generation, peerId, advertisement.capabilities(), advertisement.version()))
       LogManager.instance().log(this, Level.INFO,
           "Peer '%s' (version %s) advertises the cluster capabilities %s", peerId, advertisement.version(),
           new TreeSet<>(advertisement.capabilities()));
   }
 
-  private void forgetPeerCapabilities(final String peerId, final String reason) {
-    peerCapabilities.forget(peerId);
+  private void forgetPeerCapabilities(final long generation, final String peerId, final String reason) {
     // Reported on the TRANSITION into the failed state and not once per refresh period: a peer that is
     // permanently on an older build is the steady state of a half-finished rolling upgrade, and a line every five
     // seconds about it would be noise. It is reported the FIRST time as well as on a regression from a known-good
     // answer, because "no peer ever answered" and "a peer stopped answering" are both things an operator who has
     // noticed their entries are not shrinking needs told - and the first of the two is otherwise completely
     // silent, which is the failure mode this whole issue is about.
-    if (lastLoggedCapabilities.put(peerId, PROBE_FAILED) != PROBE_FAILED)
+    // The registry answers that question, because the shadow map deciding it has to be pruned by whatever prunes
+    // the entry it shadows - held here, nothing pruned it, and a re-added peer's first advertisement was
+    // suppressed against what it said before it left (issue #7301).
+    if (peerCapabilities.forget(generation, peerId, reason))
       LogManager.instance().log(this, Level.WARNING,
           "Peer '%s' does not advertise any cluster capability (%s); optional wire-format sections will not be "
               + "written to this cluster until it answers again", peerId, reason);
@@ -4041,6 +4312,39 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * How one capability probe is made. A seam, not a strategy: the only production implementation is
+   * {@link PeerCapabilityQuery}, and it exists so the two-pass fan-out of {@link #refreshPeerCapabilities} - whose
+   * whole point is which peer an answer is credited to - can be pinned without standing up a mixed-address
+   * cluster and a network (issue #7256).
+   */
+  @FunctionalInterface
+  interface CapabilityProber {
+    /**
+     * @param expectedPeerId the peer this address is believed to name, or {@code null} to accept whichever peer
+     *                       answers - the shared-endpoint route.
+     */
+    PeerCapabilityQuery.Advertisement probe(String expectedPeerId, String httpAddress, String httpsAddress,
+        String clusterToken) throws IOException, InterruptedException;
+  }
+
+  /** Substitutes how a capability probe is made, so the fan-out can be driven without a network. */
+  // @VisibleForTesting
+  void setCapabilityProber(final CapabilityProber prober) {
+    this.capabilityProber = prober;
+  }
+
+  /** The production {@link CapabilityProber}: one HTTP call, on the guarded route or the shared-endpoint one. */
+  private PeerCapabilityQuery.Advertisement queryPeerCapabilities(final String expectedPeerId,
+      final String httpAddress, final String httpsAddress, final String clusterToken)
+      throws IOException, InterruptedException {
+    return expectedPeerId != null
+        ? PeerCapabilityQuery.fetch(expectedPeerId, httpAddress, httpsAddress, clusterToken,
+            PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer, capabilityHttpsClients)
+        : PeerCapabilityQuery.fetchFromSharedEndpoint(httpAddress, httpsAddress, clusterToken,
+            PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer, capabilityHttpsClients);
+  }
+
+  /**
    * Builds a {@link Parameters} instance with the gRPC services customizer installed.
    * The customizer adds a {@link PeerAddressAllowlistFilter} that rejects inbound Raft gRPC
    * connections from IPs not listed in {@code arcadedb.ha.serverList}.
@@ -4049,6 +4353,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // raftParameters becomes visible - the property this method exists to get right.
   Parameters buildParameters(final ContextConfiguration configuration) {
     this.allowlistFilter = null;
+    this.allowlistInterceptor = null;
     final Parameters parameters = new Parameters();
 
     // mTLS first: it is the cryptographic peer identity the allowlist below cannot provide. Throws a
@@ -4059,7 +4364,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       LogManager.instance().log(this, Level.INFO,
           "Raft gRPC transport secured with TLS (mutual authentication: %s)", tlsConfig.getMtlsEnabled());
 
-    installPeerAllowlist(configuration, parameters);
+    installGrpcServerCustomizations(configuration, parameters);
 
     // Last line on every path: see the field's comment. Nothing above may publish a partially-configured
     // Parameters, and nothing below may add to it.
@@ -4067,9 +4372,48 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return parameters;
   }
 
-  private void installPeerAllowlist(final ContextConfiguration configuration, final Parameters parameters) {
-    if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED))
+  /**
+   * Installs the one {@code GrpcServices.Customizer} the Raft listener gets: the peer allowlist's transport filter
+   * and call interceptor (issues #7132, #7225, #7250), the connection-idle window (issue #7316) and the
+   * connection-age window (issue #7339).
+   * <p>
+   * All three are configured independently, so this method is not gated on any of them: gating it on
+   * {@code arcadedb.ha.peerAllowlist.enabled}, which is where the allowlist install used to live, would have made
+   * {@code arcadedb.ha.grpcMaxConnectionIdleMs} a setting that silently does nothing on exactly the clusters that
+   * turned the allowlist off. When none is configured no customizer is installed at all, which leaves Ratis's
+   * builder exactly as it was.
+   */
+  private void installGrpcServerCustomizations(final ContextConfiguration configuration, final Parameters parameters) {
+    final PeerAddressAllowlistFilter filter = buildPeerAllowlistFilter(configuration);
+    final PeerAllowlistCallInterceptor interceptor = filter == null ? null : new PeerAllowlistCallInterceptor();
+    // The filter gates a connection once, when it is established. The interceptor enforces the same decision on
+    // every RPC, which is what revokes a transport already open when its address stopped being admitted (#7250):
+    // it reads the session the filter attached to the transport and refuses the call when that session is revoked.
+    this.allowlistFilter = filter;
+    this.allowlistInterceptor = interceptor;
+
+    // Neither surface can close the connection itself, so the socket of a revoked peer outlived its reach (#7316).
+    final long maxConnectionIdleMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_IDLE_MS);
+    // ...and the idle window only reaps a peer that goes quiet: gRPC restarts it from the last moment the
+    // connection's active-stream count hit zero, so a peer that keeps starting RPCs - a removed peer still
+    // campaigning, or a squatter - pushes it forward forever, refused RPCs included (#7339). The age window is the
+    // unconditional bound for that case, off by default because it recycles healthy connections on the same period.
+    final long maxConnectionAgeMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_MS);
+    final long maxConnectionAgeGraceMs = configuration.getValueAsLong(
+        GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_GRACE_MS);
+    if (filter == null && maxConnectionIdleMs <= 0 && maxConnectionAgeMs <= 0)
       return;
+
+    GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(
+        filter == null ? new ServerTransportFilter[0] : new ServerTransportFilter[] { filter },
+        interceptor == null ? new ServerInterceptor[0] : new ServerInterceptor[] { interceptor },
+        maxConnectionIdleMs, maxConnectionAgeMs, maxConnectionAgeGraceMs));
+  }
+
+  /** The inbound peer allowlist filter, or {@code null} when it is disabled or has no host to admit. */
+  private PeerAddressAllowlistFilter buildPeerAllowlistFilter(final ContextConfiguration configuration) {
+    if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED))
+      return null;
 
     final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
     final long refreshMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_ALLOWLIST_REFRESH_MS);
@@ -4088,7 +4432,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (peerHosts.isEmpty()) {
       LogManager.instance().log(this, Level.WARNING,
           "arcadedb.ha.peerAllowlist.enabled=true but arcadedb.ha.serverList is empty; allowlist not installed");
-      return;
+      return null;
     }
     final PeerAddressAllowlistFilter filter = new PeerAddressAllowlistFilter(peerHosts, refreshMs, startupGraceMs,
         stickyTtlMs);
@@ -4106,8 +4450,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (serviceDomain != null)
       filter.learnPeerHosts(List.of(serviceDomain));
 
-    this.allowlistFilter = filter;
-    GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(filter));
+    return filter;
   }
 
   /**
@@ -4131,6 +4474,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /** Package-private test hook: the inbound Raft gRPC peer allowlist, or null when disabled. */
   PeerAddressAllowlistFilter allowlistFilterForTest() {
     return allowlistFilter;
+  }
+
+  /** Package-private test hook: the per-RPC half of the peer allowlist (issue #7250), or null when disabled. */
+  PeerAllowlistCallInterceptor allowlistInterceptorForTest() {
+    return allowlistInterceptor;
   }
 
   /**

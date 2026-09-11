@@ -18,6 +18,7 @@
  */
 package com.arcadedb.bolt.packstream;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
@@ -103,8 +104,14 @@ public class PackStreamReader {
    * even a bare HELLO struct, since its extra map is already one level deeper than the top-level struct itself -
    * so it is treated as a misconfiguration rather than an intentional (if impractical) lockdown.
    */
-  private static int sanitizedLimit(final GlobalConfiguration setting) {
-    final int configured = setting.getValueAsInteger();
+  // The setting arrives as a PARAMETER, so the SCOPE.SERVER guard test (Issue7233ServerScopeSettingReadsTest)
+  // cannot see this read: it matches the literal GlobalConfiguration.NAME.getValueAs* shape. This site, and any
+  // future helper of the same shape, has to be checked by hand - reading through the ContextConfiguration here is
+  // not something the build will keep true for you.
+  private static int sanitizedLimit(final ContextConfiguration configuration, final GlobalConfiguration setting) {
+    // Through the caller's ContextConfiguration: every setting passed here is SCOPE.SERVER, so the enum only ever
+    // carries what a system property or an environment variable put there (issue #7233).
+    final int configured = configuration.getValueAsInteger(setting);
     if (configured < 1) {
       final int fallback = ((Number) setting.getDefValue()).intValue();
       if (WARNED_MISCONFIGURED_LIMITS.add(setting))
@@ -116,10 +123,18 @@ public class PackStreamReader {
     return configured;
   }
 
+  /**
+   * For a caller with no server configuration in reach - the protocol unit tests. An empty
+   * {@link ContextConfiguration} reads through to the settings' process-wide values.
+   */
   public PackStreamReader(final byte[] data) {
-    this(data, sanitizedLimit(GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH),
-        sanitizedLimit(GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS),
-        sanitizedLimit(GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH));
+    this(data, new ContextConfiguration());
+  }
+
+  public PackStreamReader(final byte[] data, final ContextConfiguration configuration) {
+    this(data, sanitizedLimit(configuration, GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH),
+        sanitizedLimit(configuration, GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS),
+        sanitizedLimit(configuration, GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH));
   }
 
   /**
@@ -142,9 +157,13 @@ public class PackStreamReader {
    * that bound to a false sense of safety rather than the exact one it provides today.
    */
   public PackStreamReader(final DataInputStream in) {
-    this(in, sanitizedLimit(GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH),
-        sanitizedLimit(GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS),
-        sanitizedLimit(GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH));
+    this(in, new ContextConfiguration());
+  }
+
+  public PackStreamReader(final DataInputStream in, final ContextConfiguration configuration) {
+    this(in, sanitizedLimit(configuration, GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH),
+        sanitizedLimit(configuration, GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS),
+        sanitizedLimit(configuration, GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH));
   }
 
   /**

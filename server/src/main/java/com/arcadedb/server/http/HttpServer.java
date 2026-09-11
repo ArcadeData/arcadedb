@@ -47,10 +47,14 @@ import com.arcadedb.server.http.handler.PostBatchHandler;
 import com.arcadedb.server.http.handler.PostBeginHandler;
 import com.arcadedb.server.http.handler.PostGroupHandler;
 import com.arcadedb.server.http.handler.PostUserHandler;
+import com.arcadedb.server.http.handler.PostVectorFullTextSearchHandler;
+import com.arcadedb.server.http.handler.PostVectorHybridSearchHandler;
+import com.arcadedb.server.http.handler.PostVectorSearchHandler;
 import com.arcadedb.server.http.handler.PutUserHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
 import com.arcadedb.server.http.handler.PostLoginHandler;
+import com.arcadedb.server.http.handler.PostClusterAuthSessionHandler;
 import com.arcadedb.server.http.handler.PostLogoutHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
 import com.arcadedb.server.http.handler.PostRollbackHandler;
@@ -72,6 +76,8 @@ import com.arcadedb.server.http.ssl.SslUtils;
 import com.arcadedb.server.http.ssl.TlsProtocol;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
+import com.arcadedb.server.http.ws.insert.WebSocketInsertProtocol;
+import com.arcadedb.server.http.ws.insert.WebSocketInsertSessionManager;
 import com.arcadedb.server.ai.AiActivateHandler;
 import com.arcadedb.server.ai.AiAnalyzeProfilerHandler;
 import com.arcadedb.server.ai.AiChatHandler;
@@ -119,7 +125,10 @@ public class HttpServer implements ServerPlugin {
   private final    ArcadeDBServer         server;
   private final    HttpSessionManager     sessionManager;
   private final    HttpAuthSessionManager authSessionManager;
+  private final    ClusterAuthSessionResolver clusterAuthSessionResolver;
   private final    WebSocketEventBus      webSocketEventBus;
+  private final    WebSocketInsertSessionManager  insertSessionManager;
+  private final    WebSocketInsertProtocol        insertProtocol;
   private final    IdempotencyCache       idempotencyCache;
   private          ScheduledExecutorService idempotencyCleanupExecutor;
   private          Undertow               undertow;
@@ -136,8 +145,16 @@ public class HttpServer implements ServerPlugin {
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_EXPIRE_TIMEOUT) * 1_000L,
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_ABSOLUTE_TIMEOUT) * 1_000L,
         server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX),
-        server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER));
+        server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER),
+        server.getServerName());
+    this.clusterAuthSessionResolver = new ClusterAuthSessionResolver(server, authSessionManager);
     this.webSocketEventBus = new WebSocketEventBus(this.server);
+    // A /ws insert session holds a transaction between frames, so an abandoned one has to expire the way an
+    // 'arcadedb-session-id' transaction does - on its own budget, because a bulk loader pauses between chunks
+    // for reasons an HTTP command never does (issue #7382).
+    this.insertSessionManager = new WebSocketInsertSessionManager(this.server,
+        server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_WS_INSERT_SESSION_EXPIRE_TIMEOUT) * 1_000L);
+    this.insertProtocol = new WebSocketInsertProtocol(this.insertSessionManager);
     final long ttlMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_TTL_MS);
     final int maxEntries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_ENTRIES);
     final long maxBytes = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_BYTES);
@@ -151,6 +168,7 @@ public class HttpServer implements ServerPlugin {
   @Override
   public void stopService() {
     webSocketEventBus.stop();
+    insertSessionManager.close();
 
     if (idempotencyCleanupExecutor != null) {
       idempotencyCleanupExecutor.shutdown();
@@ -230,10 +248,14 @@ public class HttpServer implements ServerPlugin {
         .get("/progress/{database}", new GetProgressHandler(this))
         .post("/login", new PostLoginHandler(this))
         .post("/logout", new PostLogoutHandler(this))
+        .post("/cluster/auth-session", new PostClusterAuthSessionHandler(this))
         .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))
         .get("/sessions", new GetSessionsHandler(this))
         .post("/query/{database}", new PostQueryHandler(this))
         .post("/rollback/{database}", new PostRollbackHandler(this))
+        .post("/vector/{database}/search", new PostVectorSearchHandler(this))
+        .post("/vector/{database}/hybrid", new PostVectorHybridSearchHandler(this))
+        .post("/vector/{database}/fulltext", new PostVectorFullTextSearchHandler(this))
         .get("/server", new GetServerHandler(this))
         .post("/server", new PostServerCommandHandler(this))
         .get("/ready", new GetReadyHandler(this))
@@ -282,9 +304,15 @@ public class HttpServer implements ServerPlugin {
         .delete("/chats/{id}", aiChatsHandler)//
     );
 
-    // Studio (static content) is served in development/test mode, and in production only when explicitly force-enabled
-    if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())
-        || GlobalConfiguration.STUDIO_ENABLED.getValueAsBoolean()) {
+    // Studio (static content) is served in development/test mode, and in production only when explicitly
+    // force-enabled. Read through the SERVER's configuration, never off the GlobalConfiguration enum: both settings
+    // are SCOPE.SERVER, and the enum is populated by system properties and environment variables ALONE - so a
+    // deployment that declares them in the server configuration file, or through SET SERVER SETTING, used to get
+    // this gate decided by the compiled-in default instead of by what it asked for, silently and in the permissive
+    // direction (issue #7233).
+    final ContextConfiguration configuration = server.getConfiguration();
+    if (!"production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE))
+        || configuration.getValueAsBoolean(GlobalConfiguration.STUDIO_ENABLED)) {
       routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new GetDynamicContentHandler(this)));
     }
 
@@ -420,6 +448,10 @@ public class HttpServer implements ServerPlugin {
     return authSessionManager;
   }
 
+  public ClusterAuthSessionResolver getClusterAuthSessionResolver() {
+    return clusterAuthSessionResolver;
+  }
+
   public ArcadeDBServer getServer() {
     return server;
   }
@@ -438,6 +470,14 @@ public class HttpServer implements ServerPlugin {
    */
   public int getHttpsPort() {
     return httpsPortListening;
+  }
+
+  public WebSocketInsertSessionManager getInsertSessionManager() {
+    return insertSessionManager;
+  }
+
+  public WebSocketInsertProtocol getInsertProtocol() {
+    return insertProtocol;
   }
 
   public WebSocketEventBus getWebSocketEventBus() {

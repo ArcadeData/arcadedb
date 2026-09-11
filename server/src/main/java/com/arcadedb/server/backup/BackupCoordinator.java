@@ -18,10 +18,14 @@
  */
 package com.arcadedb.server.backup;
 
+import com.arcadedb.engine.MaintenanceCoordinator;
+
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Set;
+import java.util.EnumSet;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -51,10 +55,39 @@ import java.util.regex.Pattern;
  * This is an admission policy, not the integrity guarantee. A backup started outside this server (the CLI, another
  * node writing into a shared directory) cannot be seen from here; what keeps THAT from corrupting an archive is
  * {@code FullBackupFormat} creating the target file atomically, so the loser of any race fails before it writes.
+ * <h2>Restores and imports</h2>
+ * The slot admits more than backups now. A restore is the one operation that <i>destroys</i> a database directory -
+ * it restores into a temporary sibling and then drops the target and moves the temporary one over it - and it used to
+ * take nothing at all, so two restores of one database both passed the existence pre-check and both reached the swap,
+ * and a restore could drop the directory a backup was reading (issue #7384). Restores and imports therefore take the
+ * same per-database slot, and {@link Operation} says which one holds it so the refusal can name it.
+ * <p>
+ * Two operations on one database conflict unless they are a backup and an import: those two coexist by construction,
+ * because an import is ordinary transactions against a live database and backing a live database up is what the
+ * auto-backup schedule does all day. Everything else is refused - see {@link Operation#conflictsWith}.
+ * <p>
+ * An HA snapshot install takes {@link Operation#RESTORE} too, and for the same reason: it closes this node's copy of
+ * the database, swaps its directory for the leader's snapshot and reopens it, which is a restore of this node's copy
+ * whoever asked for it. That is what closes the one pair the per-server scoping above cannot see - a restore on the
+ * leader replicates as an install entry, and a follower running its own scheduled backup of that database answers
+ * the entry by replacing the directory the backup is reading (issue #7444). Unlike every other holder the install
+ * cannot simply be refused, because it applies a committed Raft entry: it uses
+ * {@link #begin(String, Operation, long)}, which waits out a conflicting operation for a bounded time first.
+ * <p>
+ * The class name predates restores and is kept so that the callers and tests written against
+ * {@code getBackupCoordinator()} keep compiling; what it coordinates is now every whole-database maintenance
+ * operation this server runs, not only backups.
+ * <h2>The engine's view of it</h2>
+ * {@link Operation} and the reservation contract live in {@link MaintenanceCoordinator}, in the engine, and this
+ * class is its only implementation. {@code BACKUP DATABASE} and {@code IMPORT DATABASE} are SQL statements the
+ * ENGINE executes, so until issue #7443 they could not reach this policy at all and took nothing: a SQL backup
+ * ran unseen by a concurrent restore, and a second SQL backup of one database was not refused either. The server
+ * binds this instance to every database it opens (see {@code ServerDatabase}), which is how a statement finds it
+ * without the engine depending on the server.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class BackupCoordinator {
+public class BackupCoordinator implements MaintenanceCoordinator {
   private static final DateTimeFormatter ARCHIVE_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS");
   /**
    * Matches the archives this class names, and the second-precision ones every release before it wrote: retention and
@@ -64,26 +97,159 @@ public class BackupCoordinator {
   private static final Pattern           ARCHIVE_NAME_PATTERN     = Pattern.compile(".*-backup-(\\d{8})-(\\d{6}(?:\\d{3})?)\\.zip$");
   private static final DateTimeFormatter ARCHIVE_TIMESTAMP_PARSER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss[SSS]");
 
-  private final Set<String> inProgress = ConcurrentHashMap.newKeySet();
+  /**
+   * The operations currently running per database. A value is never an empty set - the entry is removed instead -
+   * so {@code containsKey} answers "is anything running on it".
+   * <p>
+   * {@link EnumSet} is exact here rather than merely convenient: every kind conflicts with itself, so at most one
+   * operation of each kind is ever admitted for one database and a set needs no multiplicity.
+   * <p>
+   * Every value is replaced rather than mutated in place, so a set a reader has already been handed is never written
+   * to by another thread: {@code EnumSet} is not thread-safe, and {@link #isInProgress(String, Operation)} reads one
+   * outside the map's own per-entry lock.
+   */
+  private final Map<String, EnumSet<Operation>> inProgress = new ConcurrentHashMap<>();
 
   /**
-   * Reserves this database for a backup. Returns {@code false} when one is already running, in which case the caller
-   * must not start a backup and must not call {@link #end(String)}.
+   * The monitor a bounded wait parks on, notified by every {@link #end(String, Operation)}.
+   * <p>
+   * One monitor for the whole coordinator rather than one per database: a server runs a handful of these
+   * operations a day, so the spurious wakeups a release on an unrelated database causes cost a re-check of a
+   * {@link ConcurrentHashMap} entry and nothing else, and a per-database monitor would need its own lifecycle to
+   * avoid leaking an entry per database name ever waited on.
+   */
+  private final Object slotReleased = new Object();
+
+  /**
+   * Reserves this database for a backup. Returns {@code false} when a backup, restore or import of it is already
+   * running, in which case the caller must not start a backup and must not call {@link #end(String)}.
+   * <p>
+   * The shorthand every backup entry point uses. {@link #begin(String, Operation)} is the same reservation for a
+   * caller that wants to name the operation already holding the slot in its refusal.
    */
   public boolean begin(final String databaseName) {
-    return inProgress.add(databaseName);
+    return begin(databaseName, Operation.BACKUP) == null;
   }
 
   /**
-   * Releases the reservation taken by a successful {@link #begin(String)}. Always call it from a {@code finally}: a
-   * reservation leaked by a failed backup would block every later backup of that database until the server restarts.
+   * Reserves this database for {@code operation}.
+   * <p>
+   * When more than one operation is running - which only {@link Operation#BACKUP} and {@link Operation#IMPORT}
+   * together can be - the one named is whichever the iteration reaches first, not a ranking: both refuse the caller
+   * equally, and the message is true of either.
+   *
+   * @return {@code null} when the reservation was taken - the caller must then release it with
+   * {@link #end(String, Operation)} from a {@code finally} - or the operation already running that refuses this one.
    */
-  public void end(final String databaseName) {
-    inProgress.remove(databaseName);
+  @Override
+  public Operation begin(final String databaseName, final Operation operation) {
+    final AtomicReference<Operation> conflict = new AtomicReference<>();
+
+    inProgress.compute(databaseName, (name, running) -> {
+      if (running == null)
+        return EnumSet.of(operation);
+
+      for (final Operation active : running)
+        if (active.conflictsWith(operation)) {
+          conflict.set(active);
+          return running;
+        }
+
+      final EnumSet<Operation> updated = EnumSet.copyOf(running);
+      updated.add(operation);
+      return updated;
+    });
+
+    return conflict.get();
   }
 
+  /**
+   * Reserves this database for {@code operation}, waiting up to {@code timeoutMs} for a conflicting operation to
+   * finish rather than refusing straight away.
+   * <p>
+   * Every other caller may simply be refused: a scheduled backup is covered again on the next tick, and a restore or
+   * an import is an operator command that can be retried. An HA snapshot install cannot - it applies a committed
+   * Raft entry, and a follower that declines to apply one diverges from the cluster (issue #7444). So it needs a
+   * third answer between taking the slot and giving up: wait for whatever is in the way, and take the slot the
+   * moment it lets go.
+   * <p>
+   * The wait is bounded because the caller's own operation is: a timeout expiring means the caller proceeds without
+   * the slot, loudly, which is the same outcome it had before this existed. Bounding it is also what keeps a caller
+   * that already holds a conflicting reservation on this database from waiting on itself - these reservations are
+   * not reentrant.
+   *
+   * @param timeoutMs how long to wait; zero or negative does not wait at all and is exactly
+   *                  {@link #begin(String, Operation)}
+   *
+   * @return {@code null} when the reservation was taken - the caller must then release it with
+   * {@link #end(String, Operation)} from a {@code finally} - or the operation that was still refusing this one when
+   * the wait ran out. A non-null answer means nothing was reserved and {@link #end} must NOT be called.
+   */
+  public Operation begin(final String databaseName, final Operation operation, final long timeoutMs) {
+    Operation conflict = begin(databaseName, operation);
+    if (conflict == null || timeoutMs <= 0)
+      return conflict;
+
+    final long deadline = System.currentTimeMillis() + timeoutMs;
+    synchronized (slotReleased) {
+      // Re-checked inside the monitor before every wait, and end() takes the same monitor to notify AFTER it has
+      // updated the map: a release that lands between the check and the wait therefore cannot be missed.
+      while ((conflict = begin(databaseName, operation)) != null) {
+        final long remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0)
+          return conflict;
+
+        try {
+          slotReleased.wait(remaining);
+        } catch (final InterruptedException e) {
+          // Restore the flag and report the conflict: an interrupted caller took nothing and must not release.
+          Thread.currentThread().interrupt();
+          return conflict;
+        }
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Releases the backup reservation taken by a successful {@link #begin(String)}. Always call it from a
+   * {@code finally}: a reservation leaked by a failed backup would block every later backup of that database until
+   * the server restarts.
+   */
+  public void end(final String databaseName) {
+    end(databaseName, Operation.BACKUP);
+  }
+
+  /**
+   * Releases the reservation a successful {@link #begin(String, Operation)} took. Always call it from a
+   * {@code finally}: a leaked reservation blocks every later operation of that database until the server restarts.
+   */
+  @Override
+  public void end(final String databaseName, final Operation operation) {
+    inProgress.computeIfPresent(databaseName, (name, running) -> {
+      if (!running.contains(operation))
+        return running;
+
+      final EnumSet<Operation> updated = EnumSet.copyOf(running);
+      updated.remove(operation);
+      return updated.isEmpty() ? null : updated;
+    });
+    // AFTER the map update, so a waiter that re-checks on waking sees the release that woke it. Unconditional: a
+    // release that changed nothing costs one uncontended monitor and a notify nobody is parked on.
+    synchronized (slotReleased) {
+      slotReleased.notifyAll();
+    }
+  }
+
+  /** Whether any backup, restore or import of this database is currently running. */
   public boolean isInProgress(final String databaseName) {
-    return inProgress.contains(databaseName);
+    return inProgress.containsKey(databaseName);
+  }
+
+  /** Whether an operation of this kind is currently running on this database. */
+  public boolean isInProgress(final String databaseName, final Operation operation) {
+    final EnumSet<Operation> running = inProgress.get(databaseName);
+    return running != null && running.contains(operation);
   }
 
   /**

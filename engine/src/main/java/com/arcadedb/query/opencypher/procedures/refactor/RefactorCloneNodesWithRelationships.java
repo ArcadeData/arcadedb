@@ -26,6 +26,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -139,7 +140,12 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
       if (!cloneOf.containsKey(original.getIdentity()))
         continue;
 
-      for (final Edge edge : original.getEdges()) {
+      // The instance the row carries was loaded before the rows ahead of it applied their writes, and the
+      // clone of another node appends its copy of an edge to whichever endpoint was NOT cloned - which is
+      // this node, on the row that reaches it. Appending rewrites the vertex record's edge-list head pointer,
+      // so enumerating the row's own instance reads a pre-append snapshot and skips the edges earlier rows
+      // added (issue #7177, the defect #7174 fixed in merge.relationship).
+      for (final Edge edge : CypherVertexReload.latest(database, original).getEdges()) {
         if (!processedEdges.add(edge.getIdentity()))
           continue;
         try {
@@ -155,6 +161,18 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
     return results.stream();
   }
 
+  /**
+   * A clone this call created is reused as an endpoint of every edge cloned onto it, and each append moves its
+   * edge-list head while the map still holds the instance as it was when the clone was saved. Neither end is
+   * re-read here all the same, and deliberately: the APPEND path already substitutes the transaction's own
+   * written copy of a vertex by RID ({@code GraphEngine.getOrCreateEdgeList}), so a stale handle self-heals
+   * there. Verified both ways by the two single-call tests in {@code CypherRefactorProceduresStaleVertexIssue7177Test}
+   * - many edges out of one clone, and many edges into one clone - which stay green with no reload on either end.
+   * <p>
+   * What has no such safety net is READING a vertex's edge list, which is why the caller re-reads the node whose
+   * edges it enumerates (issue #7177). Adding a reload here as well would only look like the two were the same
+   * problem.
+   */
   private void cloneEdge(final Edge edge, final Map<RID, Vertex> cloneOf) {
     final RID originalOut = edge.getOut();
     final RID originalIn = edge.getIn();

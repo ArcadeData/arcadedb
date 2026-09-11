@@ -108,10 +108,15 @@ public class BackupTask implements Runnable {
     // and compress the same database twice for one usable archive - and, when they resolve to the same archive name,
     // write into the same file (issue #6753). A refused tick costs nothing: the schedule covers this database again
     // on the next one.
+    //
+    // The same slot now also refuses a tick while a RESTORE of this database runs, which is the case worth naming in
+    // the log: a restore drops and replaces the database directory, so a backup started alongside it reads a
+    // directory that is about to be deleted (issue #7384).
     final BackupCoordinator coordinator = server.getBackupCoordinator();
-    if (!coordinator.begin(databaseName)) {
+    final BackupCoordinator.Operation running = coordinator.begin(databaseName, BackupCoordinator.Operation.BACKUP);
+    if (running != null) {
       LogManager.instance().log(this, Level.WARNING,
-          "Skipping backup for database '%s' - a backup of it is already in progress", databaseName);
+          "Skipping backup for database '%s' - %s of it is already in progress", databaseName, running.phrase());
       return;
     }
 
@@ -145,7 +150,7 @@ public class BackupTask implements Runnable {
       server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.CRITICAL, "Auto-Backup", databaseName,
           "Scheduled backup failed: " + e.getMessage());
     } finally {
-      coordinator.end(databaseName);
+      coordinator.end(databaseName, BackupCoordinator.Operation.BACKUP);
     }
   }
 

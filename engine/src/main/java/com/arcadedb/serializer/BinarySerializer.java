@@ -39,6 +39,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
@@ -83,6 +84,12 @@ import java.util.logging.Level;
  * TODO: efficient, because it doesn't need to unmarshall all the values first.
  */
 public class BinarySerializer {
+  /**
+   * Header bytes a property-less record written by {@code GraphBatch} before #7448 is short of: its header end offset
+   * points at the property count instead of past it. See {@link #checkPropertyCount}.
+   */
+  private static final int LEGACY_EMPTY_HEADER_SHORTFALL = -1;
+
   private final BinaryComparator comparator = new BinaryComparator();
   private       Class<?>         dateImplementation;
   private       Class<?>         dateTimeImplementation;
@@ -105,7 +112,12 @@ public class BinarySerializer {
     return externalRidScanFailures.get();
   }
 
-  public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
+  /**
+   * Issue #7163: no longer declares a checked {@code ClassNotFoundException}. An unresolvable date-implementation
+   * class name is a configuration error and is reported as {@link ConfigurationException}, so no caller has to
+   * decide what to do with a checked exception that only ever meant "this server is misconfigured".
+   */
+  public BinarySerializer(final ContextConfiguration configuration) {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
     setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
   }
@@ -553,10 +565,12 @@ public class BinarySerializer {
             content.putByte(entryType);
             serializeValue(database, content, entryType, valueToWrite, applyEncryption);
           } catch (Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on serializing array value for element %d = '%s'",
+            // The element's own toString() is not a substitute for knowing which nested serializeValue() threw and
+            // why, so the cause travels on both paths - the log and the exception (issue #7247).
+            LogManager.instance().log(this, Level.SEVERE, "Error on serializing array value for element %d = '%s'", e,
                 i, entryValue);
             throw new SerializationException(
-                "Error on serializing array value for element " + i + " = '" + entryValue + "'");
+                "Error on serializing array value for element " + i + " = '" + entryValue + "'", e);
           }
         }
       }
@@ -972,11 +986,19 @@ public class BinarySerializer {
     final int properties = checkDeserializedCount(buffer.getUnsignedNumber(), buffer);
 
     final int headerBytesLeft = headerEndOffset - buffer.position();
-    if (headerBytesLeft < properties * 2L)
+    if (headerBytesLeft < properties * 2L) {
+      // Property-less edges written by GraphBatch before #7448 carry a header end offset that points AT the count byte
+      // rather than past it: exactly one byte short, with exactly zero properties. Nothing is read past the count of
+      // such a record, so it is well-formed for every purpose but this check, and databases bulk-loaded before the fix
+      // keep that layout on disk. Accept that one shape; any other shortfall is still corruption
+      if (properties == 0 && headerBytesLeft == LEGACY_EMPTY_HEADER_SHORTFALL)
+        return 0;
+
       throw new SerializationException(
           "Error on deserialize record. It may be corrupted (properties=" + properties + " do not fit in the "
               + headerBytesLeft + " header bytes before headerEndOffset=" + headerEndOffset + " at position " + initialPosition
               + ")");
+    }
 
     return properties;
   }
@@ -1425,20 +1447,40 @@ public class BinarySerializer {
     return dateImplementation;
   }
 
-  public void setDateImplementation(final Object dateImplementation) throws ClassNotFoundException {
-    this.dateImplementation = dateImplementation instanceof Class<?> c ?
-        c :
-        Class.forName(dateImplementation.toString());
+  /**
+   * Points the serializer at the class dates deserialize into, given either the {@link Class} itself or its name.
+   * <p>
+   * Issue #7163: no longer a CHECKED {@code ClassNotFoundException}. Every caller that holds a name got it from a
+   * setting, and a setting's value now passes through {@code GlobalConfiguration.coerce}, which resolves and
+   * refuses a class name where it enters - so the callers left here either hold a resolved {@link Class} already
+   * (and were writing a catch block that could not fire) or hold a name that has been validated once. A name
+   * that still fails to resolve is a configuration error, and this reports it as one.
+   * <p>
+   * Deliberately ONE method taking {@link Object} rather than an {@code Object}/{@code Class} overload pair:
+   * {@code ContextConfiguration.getValue} is generic in its return type, so at an overloaded call site Java
+   * infers {@code Class<?>} and inserts a cast that fails on the perfectly legal stored class NAME.
+   */
+  public void setDateImplementation(final Object dateImplementation) {
+    this.dateImplementation = toClass(dateImplementation);
   }
 
   public Class<?> getDateTimeImplementation() {
     return dateTimeImplementation;
   }
 
-  public void setDateTimeImplementation(final Object dateTimeImplementation) throws ClassNotFoundException {
-    this.dateTimeImplementation = dateTimeImplementation instanceof Class<?> c ?
-        c :
-        Class.forName(dateTimeImplementation.toString());
+  /** See {@link #setDateImplementation(Object)}. */
+  public void setDateTimeImplementation(final Object dateTimeImplementation) {
+    this.dateTimeImplementation = toClass(dateTimeImplementation);
+  }
+
+  private static Class<?> toClass(final Object implementation) {
+    if (implementation instanceof Class<?> c)
+      return c;
+    try {
+      return Class.forName(implementation.toString());
+    } catch (final ClassNotFoundException e) {
+      throw new ConfigurationException("Date implementation '" + implementation + "' not found", e);
+    }
   }
 
   public BinaryComparator getComparator() {

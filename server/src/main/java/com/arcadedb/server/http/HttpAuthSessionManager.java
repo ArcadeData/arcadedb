@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -25,6 +26,7 @@ import com.arcadedb.utility.RWLockContext;
 
 import java.util.*;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -38,6 +40,14 @@ import java.util.logging.Level;
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/1691">GitHub Issue #1691</a>
  */
 public class HttpAuthSessionManager extends RWLockContext {
+  public static final  String TOKEN_PREFIX            = "AU-";
+  /** Length of the random part of a token: a {@link UUID} in its canonical text form. */
+  static final         int    TOKEN_RANDOM_LENGTH     = 36;
+  /** Upper bound on the issuer segment of a token, see {@link #sanitizeIssuerName(String)}. */
+  static final         int    MAX_ISSUER_NAME_LENGTH  = 64;
+  /** Cap on how often a remote copy is confirmed with its issuer, whatever the idle timeout says. */
+  static final         long   MAX_RENEWAL_INTERVAL_MS = 60_000L;
+
   private final Map<String, HttpAuthSession> sessions = new HashMap<>();
   // Per-principal index of the tokens above, in insertion order. A LinkedHashSet (not a Deque) so both the
   // "which is the oldest session of this user" lookup the per-user cap needs and the arbitrary removal an
@@ -51,15 +61,30 @@ public class HttpAuthSessionManager extends RWLockContext {
   private final       int                          maxSessionsPerUser;
   private final       LongSupplier                 clock;
   private final       Timer                        timer;
+  /**
+   * Written into every token this node mints, between the prefix and the random part, so a peer that has never
+   * seen the token can tell which node to ask about it (issue #7424). {@code null} keeps the legacy
+   * {@code AU-<uuid>} form, which no peer can resolve.
+   */
+  private final       String                       issuerName;
+  /**
+   * Stands in for a server that was not supplied - the test-only constructors below; reads through to each
+   * setting's process-wide value. Shared rather than built per read: it holds nothing per instance.
+   */
+  private static final ContextConfiguration        NO_SERVER_CONFIGURATION = new ContextConfiguration();
 
   public HttpAuthSessionManager(final long sessionTimeoutInMs) {
     this(sessionTimeoutInMs, 0);
   }
 
+  /**
+   * Convenience form for a caller with no server configuration in reach - the tests; {@code HttpServer} passes both
+   * caps explicitly, read from the server's own configuration. The empty {@link ContextConfiguration} says exactly
+   * that: both settings are SCOPE.SERVER, so reading them off the {@link GlobalConfiguration} enum would have been
+   * reading a value only a system property or an environment variable can have written (issue #7233).
+   */
   public HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs) {
-    this(sessionTimeoutInMs, absoluteTimeoutInMs,
-        GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX.getValueAsInteger(),
-        GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER.getValueAsInteger(), System::currentTimeMillis);
+    this(sessionTimeoutInMs, absoluteTimeoutInMs, System::currentTimeMillis);
   }
 
   public HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final int maxSessions,
@@ -72,16 +97,32 @@ public class HttpAuthSessionManager extends RWLockContext {
    * wall clock, so idle/absolute timeout behavior can be asserted without sleeping (see #6398).
    */
   HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final LongSupplier clock) {
-    this(sessionTimeoutInMs, absoluteTimeoutInMs, GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX.getValueAsInteger(),
-        GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER.getValueAsInteger(), clock);
+    this(sessionTimeoutInMs, absoluteTimeoutInMs,
+        NO_SERVER_CONFIGURATION.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX),
+        NO_SERVER_CONFIGURATION.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER), clock);
   }
 
   HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final int maxSessions,
       final int maxSessionsPerUser, final LongSupplier clock) {
+    this(sessionTimeoutInMs, absoluteTimeoutInMs, maxSessions, maxSessionsPerUser, null, clock);
+  }
+
+  /**
+   * The form {@code HttpServer} uses: {@code issuerName} is this node's {@code arcadedb.server.name}, written into
+   * every token so the other nodes of a cluster can resolve it (issue #7424).
+   */
+  public HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final int maxSessions,
+      final int maxSessionsPerUser, final String issuerName) {
+    this(sessionTimeoutInMs, absoluteTimeoutInMs, maxSessions, maxSessionsPerUser, issuerName, System::currentTimeMillis);
+  }
+
+  HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final int maxSessions,
+      final int maxSessionsPerUser, final String issuerName, final LongSupplier clock) {
     this.sessionTimeoutInMs = sessionTimeoutInMs;
     this.absoluteTimeoutInMs = absoluteTimeoutInMs;
     this.maxSessions = maxSessions;
     this.maxSessionsPerUser = maxSessionsPerUser;
+    this.issuerName = sanitizeIssuerName(issuerName);
     this.clock = clock;
 
     timer = new Timer("HttpAuthSessionManager-Cleanup", true);
@@ -186,6 +227,78 @@ public class HttpAuthSessionManager extends RWLockContext {
    */
   public HttpAuthSession createSession(final ServerSecurityUser user, final String sourceIp,
       final String userAgent, final String country, final String city) {
+    final String token = issuerName != null ? TOKEN_PREFIX + issuerName + "-" + UUID.randomUUID()
+        : TOKEN_PREFIX + UUID.randomUUID();
+    return insert(user, () -> new HttpAuthSession(user, token, sourceIp, userAgent, country, city, clock));
+  }
+
+  /**
+   * Installs the local copy of a session another node of the cluster issued (issue #7424), once that node has
+   * confirmed the token. The copy is subject to the same caps and timeouts as a local session: it counts against
+   * the principal's and the server's limits, idles out when unused HERE, and inherits the issuer's creation time
+   * so the absolute timeout is measured from the original login.
+   *
+   * @return the installed copy, or {@code null} when the global cap refused it (the caller answers 401: the token
+   * is valid, but this node has no room to honour it)
+   */
+  public HttpAuthSession addRemoteSession(final String token, final ServerSecurityUser user, final long createdAt,
+      final String issuer) {
+    return insert(user, () -> new HttpAuthSession(user, token, issuer, createdAt, clock));
+  }
+
+  /**
+   * Which node minted {@code token}, read from the {@code AU-<issuer>-<uuid>} form; {@code null} for the legacy
+   * {@code AU-<uuid>} form, for anything that is not a session token, or for an issuer segment that is not a
+   * sanitized name. Parsed from the END, because the issuer is a server name and server names carry dashes
+   * ({@code arcadedb-0}), while the random part has a fixed length.
+   */
+  public static String issuerOf(final String token) {
+    if (token == null || !token.startsWith(TOKEN_PREFIX))
+      return null;
+    final int issuerEnd = token.length() - TOKEN_RANDOM_LENGTH - 1;
+    if (issuerEnd <= TOKEN_PREFIX.length() || token.charAt(issuerEnd) != '-')
+      return null;
+    final String issuer = token.substring(TOKEN_PREFIX.length(), issuerEnd);
+    return issuer.equals(sanitizeIssuerName(issuer)) ? issuer : null;
+  }
+
+  /**
+   * The issuer segment a server name becomes inside a token: any character outside {@code [A-Za-z0-9._-]} is
+   * replaced with {@code _} and the result is capped at {@link #MAX_ISSUER_NAME_LENGTH}, so the token stays a
+   * plain header value whatever the operator called the node. Applied on BOTH sides - when minting and when a
+   * peer maps the segment back to a node - so the mapping is stable. {@code null} and blank stay {@code null}.
+   */
+  public static String sanitizeIssuerName(final String name) {
+    if (name == null || name.isBlank())
+      return null;
+    final StringBuilder out = new StringBuilder(Math.min(name.length(), MAX_ISSUER_NAME_LENGTH));
+    for (int i = 0; i < name.length() && out.length() < MAX_ISSUER_NAME_LENGTH; i++) {
+      final char c = name.charAt(i);
+      final boolean allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+          || c == '.' || c == '_' || c == '-';
+      out.append(allowed ? c : '_');
+    }
+    return out.toString();
+  }
+
+  /**
+   * How long a remote copy is served before it is confirmed with its issuer again: a third of the idle timeout,
+   * capped at {@link #MAX_RENEWAL_INTERVAL_MS}. The confirmation touches the session on the issuer, so a token in
+   * use anywhere in the cluster never idles out at its source; a third leaves two attempts before it would.
+   */
+  public long getRemoteRenewalIntervalMs() {
+    return Math.max(1, Math.min(sessionTimeoutInMs / 3, MAX_RENEWAL_INTERVAL_MS));
+  }
+
+  public long getSessionTimeoutInMs() {
+    return sessionTimeoutInMs;
+  }
+
+  public String getIssuerName() {
+    return issuerName;
+  }
+
+  private HttpAuthSession insert(final ServerSecurityUser user, final Supplier<HttpAuthSession> factory) {
     if (maxSessions > 0 && getActiveSessionCount() >= maxSessions)
       // Reclaim first: a map full of idle-expired sessions must not refuse a legitimate login just because
       // the background sweep has not fired yet. Done outside the write lock below (it takes its own).
@@ -223,12 +336,12 @@ public class HttpAuthSessionManager extends RWLockContext {
             userName, maxSessionsPerUser);
       }
 
-      final String token = "AU-" + UUID.randomUUID();
-      final HttpAuthSession session = new HttpAuthSession(user, token, sourceIp, userAgent, country, city, clock);
+      final HttpAuthSession session = factory.get();
+      final String token = session.token;
       sessions.put(token, session);
       userTokens.add(token);
       LogManager.instance().log(this, Level.FINE, "Created authentication session %s for user %s from %s", token,
-          user.getName(), sourceIp);
+          user.getName(), session.isRemote() ? "peer " + session.getIssuer() : session.getSourceIp());
       return session;
     });
   }

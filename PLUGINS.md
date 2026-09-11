@@ -247,6 +247,10 @@ Check that:
 2. `META-INF/services/com.arcadedb.server.ServerPlugin` file exists
 3. Service file contains correct plugin class name
 4. Plugin class implements `ServerPlugin` interface
+5. The plugin is opted in - it is named in `arcadedb.server.plugins`, or it overrides
+   `ServerPlugin.isAutoDiscovered(ContextConfiguration)` to return `true`. Being on the class path is not by itself
+   enough: the default answer is `false`, so a plugin nobody asked for is found and then skipped (issue #7281).
+   Both loaders apply the same rule - a jar in `lib/plugins/` and one in `lib/` are asked the same question
 
 ### ClassNotFoundException
 
@@ -277,7 +281,10 @@ arcadedb.server.plugins=gremlin:com.arcadedb.server.gremlin.GremlinServerPlugin
 ### New Method (recommended)
 1. Place plugin JAR in `lib/plugins/`
 2. Include `META-INF/services` file
-3. No configuration needed
+3. Override `isAutoDiscovered(ContextConfiguration)` to return `true` - typically only when the plugin's own enable
+   setting is on, the way `OtlpMetricsPlugin` and `TracingPlugin` read their `arcadedb.serverMetrics.*` flags. A
+   plugin that keeps the default `false` still needs an `arcadedb.server.plugins` entry, which is what makes the
+   legacy method above the way to install a plugin you do not control
 
 ## Best Practices
 

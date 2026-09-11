@@ -36,6 +36,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IndexMaintenanceSuspension;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -372,6 +373,12 @@ public class GraphBatch implements AutoCloseable {
    */
   private int[] flushDurableOutRanges;
 
+  /**
+   * This batch's hold on the speculative background maintenance of the database's indexes for the duration of the
+   * load (issue #7357). Lifted exactly once, on every way out of the batch.
+   */
+  private final IndexMaintenanceSuspension maintenanceSuspension;
+
   // --- Saved state for restore after close ---
   private final boolean savedReadYourWrites;
   private final boolean savedUseWAL;
@@ -508,6 +515,18 @@ public class GraphBatch implements AutoCloseable {
       savedAsyncUseWAL = false;
       savedAsyncWALFlush = null;
     }
+
+    // LAST: nothing below can throw, so a suspension taken here always has a live instance to lift it. Held for as
+    // long as this batch is open (issue #7357). The maintenance that matters today is the LSM vector index's
+    // inactivity graph rebuild: it reads the index going quiet as "the writer is done", which during a bulk load is
+    // produced by the load stalling on a compaction or a flush burst, and the rebuild it starts then covers only
+    // what has been loaded so far and is superseded by the rest of the load. A 4.2M-record load paid four full
+    // graph rebuilds that way and had not finished after six and a half hours; the same load with no vector index
+    // took twenty-six minutes. Suspending is a pure deferral - the writes stay searchable through the index's own
+    // delta path meanwhile - and close()/abandon() lift it, which is when the one rebuild the load is actually
+    // worth gets scheduled. A loader that runs several batches in a row holds its own suspension around all of
+    // them (issue #7432); the counts compose, so this one nests inside it.
+    maintenanceSuspension = IndexMaintenanceSuspension.suspend(database, "GraphBatch");
   }
 
   /**
@@ -1107,9 +1126,13 @@ public class GraphBatch implements AutoCloseable {
     buffer.putNumber(inPos);
 
     if (propCount == 0) {
-      // No properties — write empty header
-      buffer.putInt(buffer.position() + Binary.INT_SERIALIZED_SIZE);
+      // No properties: the header is the count alone and the header end offset points PAST it, where the values section
+      // would start, the same layout BinarySerializer.serializeProperties() writes. Pointing at the count instead (one
+      // byte short) made the reader's property-count validation reject every such edge as corrupted (#7448)
+      final int headerSizePos = buffer.position();
+      buffer.putInt(0);
       buffer.putUnsignedNumber(0);
+      buffer.putInt(headerSizePos, buffer.position());
       buffer.flip();
       return buffer;
     }
@@ -1356,17 +1379,22 @@ public class GraphBatch implements AutoCloseable {
     try {
       RuntimeException flushFailure = null;
 
-      // Flush any remaining outgoing edges. Capture rather than rethrow so we can still drain the
-      // deferred IN buffer for previously-flushed edges; otherwise a unique-constraint violation
-      // on the trailing buffer (issue #4113) would leave already-persisted edges with no
-      // back-pointer and trip the database integrity checker.
       try {
-        flush();
-      } catch (final RuntimeException e) {
-        flushFailure = e;
-      }
+        // Flush any remaining outgoing edges. Capture rather than rethrow so we can still drain the
+        // deferred IN buffer for previously-flushed edges; otherwise a unique-constraint violation
+        // on the trailing buffer (issue #4113) would leave already-persisted edges with no
+        // back-pointer and trip the database integrity checker.
+        //
+        // INSIDE the try whose finally restores the settings, not before it (PR #7360 review). Only a
+        // RuntimeException is caught here, so an Error out of flush() used to skip the restore entirely and leave
+        // this database with a relaxed WAL policy, read-your-writes off, and - since issue #7357 - the vector
+        // indexes' background rebuilds suspended, silently, until the process reopened it.
+        try {
+          flush();
+        } catch (final RuntimeException e) {
+          flushFailure = e;
+        }
 
-      try {
         // Connect all deferred incoming edges in one sorted pass. On a large load this is minutes of work and it
         // runs on the way out of a FAILED batch too - it has to, or the edges already persisted keep no back-pointer
         // and the integrity checker trips (see #4113 above). That is why a rejected batch can take a while to answer
@@ -1412,6 +1440,7 @@ public class GraphBatch implements AutoCloseable {
   public void abandon() {
     database.setReadYourWrites(savedReadYourWrites);
     restoreAsyncSettings();
+    maintenanceSuspension.close();
     releaseBatchGuard();
   }
 
@@ -1432,6 +1461,7 @@ public class GraphBatch implements AutoCloseable {
   private void restoreDatabaseSettings() {
     database.setReadYourWrites(savedReadYourWrites);
     restoreAsyncSettings();
+    maintenanceSuspension.close();
 
     // If the thread still has no TransactionContext (the batch never began a transaction), nothing leaked.
     final TransactionContext tx = database.getTransactionIfExists();

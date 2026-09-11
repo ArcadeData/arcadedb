@@ -22,6 +22,8 @@ import com.arcadedb.utility.StringUtils;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.OperationType;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.QueryStatistics;
@@ -131,6 +133,12 @@ public class PostCommandHandler extends AbstractQueryHandler {
     return true;
   }
 
+  /** Answers {@code Accept: application/x-ndjson} with a streamed result set (issue #7306). */
+  @Override
+  protected boolean supportsNdJsonEncoding() {
+    return true;
+  }
+
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
       final JSONObject json)
@@ -167,6 +175,18 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // Issue #5812: off unless the caller explicitly asks for the @props type hint on non-element rows.
     final boolean includeTypeHints = requestMap.get("typeHints") instanceof Boolean b && b;
 
+    // Negotiated up front (issue #7306) so a request the stream cannot express is refused before the command
+    // runs rather than after. A streamed response is rows and a trailer: the buffered envelope's 'explain',
+    // 'explainPlan', 'stats' and 'profile' properties have nowhere to go in it, and silently dropping the one
+    // the caller explicitly asked for would be worse than saying so.
+    final boolean streaming = isNdJsonRequested(exchange);
+    if (streaming) {
+      ndJsonRowSerializer(serializer, includeTypeHints);
+      if (profileExecution != null)
+        throw new IllegalArgumentException("'profileExecution' reports the plan and the timings in the response "
+            + "envelope, which the streaming encoding does not have: request it with 'Accept: application/json'");
+    }
+
     if (command == null || command.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
 
@@ -174,6 +194,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"Language is null\"}");
 
     command = command.trim();
+
+    if (streaming)
+      requireStreamableStatement(database, language, command);
 
     final Object rawParams = requestMap.get("params");
     Map<String, Object> paramMap;
@@ -254,6 +277,14 @@ public class PostCommandHandler extends AbstractQueryHandler {
         final int limit = resolveLimit(requestLimit, planLimit);
         final SerializationOutcome outcome;
 
+        if (streaming && qResult instanceof ExplainResultSet)
+          // The same rule as the 'profileExecution' refusal above, for the spelling that carries no request
+          // field: EXPLAIN returns no rows at all, so streaming it would be an empty stream that told the
+          // caller nothing about the plan it asked for. Checked here because only the result set says so - the
+          // statement can be nested in a script.
+          throw new IllegalArgumentException("EXPLAIN produces a plan, not a row stream: request it with "
+              + "'Accept: application/json'");
+
         if (qResult instanceof ExplainResultSet) {
           // EXPLAIN (or SQL PROFILE): extract plan, then drain the single record
           // so serializeResultSet produces an empty result structure
@@ -286,6 +317,21 @@ public class PostCommandHandler extends AbstractQueryHandler {
           profile.addEngineNanos(System.nanoTime() - engineStart);
 
           final long serializationStart = System.nanoTime();
+          if (streaming) {
+            // Streamed responses carry the rows and the stats trailer only: 'stats', 'explain' and 'explainPlan'
+            // below are properties of the buffered envelope, which no longer exists here. A caller that wants
+            // them asks for the buffered encoding, where nothing changed.
+            outcome = streamResultSetAsNdJson(exchange, database, serializer, limit, maxResultRows, qResult,
+                includeTypeHints);
+            profile.addSerializationNanos(System.nanoTime() - serializationStart);
+            logIfTruncatedByDefault(database.getName(), originalCommand, limit, requestLimit, planLimit, outcome);
+
+            Metrics.counter("http.command").increment();
+            recordProfilerMetrics("http.command", profile);
+            recordServerProfile(database.getName(), language, command, profile, qResult);
+            return null;
+          }
+
           outcome = serializeResultSetBounded(database, serializer, limit, maxResultRows, response, qResult,
               includeTypeHints);
 
@@ -418,4 +464,58 @@ public class PostCommandHandler extends AbstractQueryHandler {
     else
       database.async().command(language, command, callback, (Map<String, Object>) params);
   }
+
+  /**
+   * Refuses to stream a statement that is not provably read-only (issue #7306).
+   * <p>
+   * This is a correctness gate, not a policy one. {@code POST /command} runs inside the auto-commit wrapper
+   * ({@code requiresTransaction()} is true, and {@code PostQueryHandler} inherits it), which means two things
+   * that only bite once rows leave before the commit does:
+   * <ul>
+   * <li>A failure raised part-way through iterating the result set cannot change a status code that is already
+   * on the wire, so {@code streamResultSetAsNdJson} reports it in band and returns normally. The wrapper sees a
+   * clean return and commits whatever the half-executed statement already wrote. The buffered encoding
+   * propagates the exception and rolls back.</li>
+   * <li>{@code database.transaction(..., retries)} re-runs the whole lambda when its own commit throws
+   * {@link com.arcadedb.exception.NeedRetryException} or a duplicated-key conflict. The second attempt would
+   * re-execute the statement and stream into an exchange whose 200, rows and trailer have already been written
+   * and whose output stream is closed.</li>
+   * </ul>
+   * Both hazards exist only for a statement that writes. A read-only statement leaves the transaction empty, so
+   * there is nothing to commit wrongly and nothing for the commit to conflict over. Refusing the rest up front -
+   * rather than after the first byte, when nothing can be said any more - is what keeps the streaming encoding
+   * from being a weaker transactional contract than the buffered one.
+   * <p>
+   * A statement whose language cannot analyze it is refused too: "not provably read-only" is the safe reading,
+   * and the buffered encoding remains available for every case this turns away.
+   */
+  private static void requireStreamableStatement(final Database database, final String language,
+      final String command) {
+    boolean idempotent;
+    try {
+      final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine(language).analyze(command);
+      // isIdempotent() is not quite "read-only". BACKUP DATABASE answers true - it mutates no record, and takes
+      // the per-database maintenance slot rather than any record or page lock (issue #7443) - while writing a
+      // whole archive to the server filesystem, and it is the only writer among the eight
+      // SQL statements that answer true. Streaming it would hit both hazards above for real: a NeedRetryException
+      // on the wrapper's commit re-runs the backup from the start and streams into an exchange whose 200, rows and
+      // trailer are already written. So the declared operation types have to agree that nothing is written, which
+      // is a property of the parsed statement rather than of the command text - 'backup database' in any casing or
+      // spacing is caught (issue #7306, claude-review).
+      final Set<OperationType> operations = analyzed.getOperationTypes();
+      idempotent = analyzed.isIdempotent() && !analyzed.isDDL() && !operations.contains(OperationType.CREATE)
+          && !operations.contains(OperationType.UPDATE) && !operations.contains(OperationType.DELETE)
+          && !operations.contains(OperationType.SCHEMA);
+    } catch (final Exception e) {
+      LogManager.instance().log(PostCommandHandler.class, Level.FINE,
+          "Could not analyze a streamed statement in language '%s'; refusing to stream it", e, language);
+      idempotent = false;
+    }
+
+    if (!idempotent)
+      throw new IllegalArgumentException("The streaming encoding is available only for a read-only statement, "
+          + "because its rows reach the client before the transaction commits: run this one with "
+          + "'Accept: application/json'");
+  }
+
 }

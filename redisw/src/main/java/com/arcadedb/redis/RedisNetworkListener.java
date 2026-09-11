@@ -37,7 +37,7 @@ public class RedisNetworkListener extends Thread {
   private static final int                 protocolVersion = -1;
   private              ClientConnected     callback;
   /** Bounds how many accepted connections can sit un-authenticated at once (issue #6412). */
-  private final        PreAuthConnectionGate preAuthGate = new PreAuthConnectionGate("Redis wrapper");
+  private final        PreAuthConnectionGate preAuthGate;
 
   public interface ClientConnected {
     void connected();
@@ -48,6 +48,10 @@ public class RedisNetworkListener extends Thread {
 
     this.server = server;
     this.socketFactory = iSocketFactory;
+    // Built here rather than at field initialisation so the cap comes from THIS server's configuration; the
+    // setting is SCOPE.SERVER and the GlobalConfiguration enum only ever carries a -D or an environment
+    // variable (issue #7233).
+    this.preAuthGate = new PreAuthConnectionGate("Redis wrapper", server.getConfiguration());
 
     listen(iHostName, iHostPortRange);
 

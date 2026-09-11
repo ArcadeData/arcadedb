@@ -35,7 +35,12 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -48,6 +53,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 class ServerQueryProfilerTest extends StaticBaseServerTest {
+  private static final String CONSISTENCY_QUERY = "UNWIND $data AS row"
+      + " MATCH (source:`Entity` {id: row.source_id})"
+      + " MATCH (target:`Entity` {id: row.target_id})"
+      + " MERGE (source)-[:`RELATES` {name: row.name}]->(target)";
+
   private ArcadeDBServer server;
 
   @BeforeEach
@@ -505,5 +515,309 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
       server.removeDatabase("profiler-pm-db1");
       server.removeDatabase("profiler-pm-db2");
     }
+  }
+
+  /**
+   * Issue #7291: the query total reported by the profiler must cover the whole engine execution, so it can never
+   * come out below the timings of the steps that ran inside it.
+   * <p>
+   * The wrapper that records the entry used to start its clock in its own constructor, which runs only after the
+   * engine call has returned. Everything a non-streaming plan does had already happened by then - and while the
+   * profiler is recording, an OpenCypher statement is always non-streaming, because the recorder asks for per-step
+   * timings and that routes the statement through the plan's profiling path, which drains it eagerly. The recorded
+   * total was therefore the cost of walking an already-materialized iterator: microseconds, next to step rows
+   * reporting seconds.
+   * <p>
+   * The assertions are relational rather than wall-clock bounds: the defect is an inconsistency between two numbers
+   * measured in the same run, so a GC pause moves both and cannot make this flake.
+   */
+  @Test
+  void queryTotalCoversTheStepsItContains() {
+    server.createDatabase("profiler-consistency-db", ComponentFile.MODE.READ_WRITE);
+    final ServerDatabase db = server.getDatabase("profiler-consistency-db");
+    try {
+      db.command("sql", "CREATE VERTEX TYPE Entity");
+      db.command("sql", "CREATE PROPERTY Entity.id STRING");
+      db.command("sql", "CREATE INDEX ON Entity (id) UNIQUE");
+      db.command("sql", "CREATE EDGE TYPE RELATES");
+      for (int i = 0; i < 20; i++)
+        db.command("sql", "INSERT INTO Entity SET id = '" + i + "'");
+
+      final List<Map<String, Object>> rows = new ArrayList<>();
+      for (int i = 0; i < 15; i++)
+        rows.add(Map.of("source_id", String.valueOf(i), "target_id", String.valueOf(i + 1), "name", "r" + i));
+      final Map<String, Object> params = Map.of("data", rows);
+
+      final ServerQueryProfiler profiler = server.getQueryProfiler();
+      profiler.start();
+      try {
+        for (int run = 0; run < 3; run++)
+          try (final ResultSet rs = db.command("cypher", CONSISTENCY_QUERY, params)) {
+            while (rs.hasNext())
+              rs.next();
+          }
+      } finally {
+        if (profiler.isRecording())
+          profiler.stop();
+      }
+
+      final JSONObject query = findQuery(profiler.getResults(), CONSISTENCY_QUERY);
+      assertThat(query).as("the profiled Cypher statement must be in the results").isNotNull();
+      assertThat(query.getInt("executionCount")).isEqualTo(3);
+
+      final JSONArray steps = query.getJSONArray("steps");
+      assertThat(steps.length()).as("the plan of a profiled Cypher statement must carry its steps").isGreaterThan(0);
+
+      double stepsTotalMs = 0;
+      double slowestStepMs = 0;
+      for (int i = 0; i < steps.length(); i++) {
+        final JSONObject step = steps.getJSONObject(i);
+
+        // A never-timed step reports the -1 "not calculated" sentinel; the aggregation must not sum it as a duration.
+        assertThat(step.getDouble("totalCostMs")).as("step %s total", step.getString("name")).isGreaterThanOrEqualTo(0);
+        assertThat(step.getDouble("minCostMs")).as("step %s min", step.getString("name")).isGreaterThanOrEqualTo(0);
+
+        // An anonymous step class has an empty simple name, which used to surface as a nameless row.
+        assertThat(step.getString("name")).as("every step row must be named").isNotBlank();
+
+        stepsTotalMs += step.getDouble("totalCostMs");
+        slowestStepMs = Math.max(slowestStepMs, step.getDouble("maxCostMs"));
+      }
+
+      assertThat(stepsTotalMs).as("the profiled run must have timed at least one step").isGreaterThan(0);
+
+      // The reported inconsistency, expressed exactly: the engine total is the wall time of the executions the steps
+      // ran inside, so it cannot be smaller than what those steps spent.
+      assertThat(query.getDouble("engineTotalTimeMs")).as("engine total vs. summed step cost").isGreaterThanOrEqualTo(stepsTotalMs);
+      assertThat(query.getDouble("totalTimeMs")).as("query total vs. summed step cost").isGreaterThanOrEqualTo(stepsTotalMs);
+      assertThat(query.getDouble("maxTimeMs")).as("slowest execution vs. slowest step").isGreaterThanOrEqualTo(slowestStepMs);
+    } finally {
+      db.getEmbedded().drop();
+      server.removeDatabase("profiler-consistency-db");
+    }
+  }
+
+  /**
+   * Issue #7291: a step the engine never timed reports cost -1 ("not calculated"). Summing that sentinel as a
+   * duration produced negative step costs, so it is excluded from the statistics while still being counted as an
+   * occurrence. A step whose class is anonymous has an empty simple name and must not surface as a nameless row.
+   */
+  @Test
+  void untimedAndUnnamedStepsAreReportedHonestly() {
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+    profiler.start();
+
+    final JSONObject plan = new JSONObject();
+    plan.put("steps", new JSONArray()
+        .put(new JSONObject().put("name", "TimedStep").put("cost", 4_000_000L))
+        .put(new JSONObject().put("name", "UntimedStep").put("cost", -1L))
+        .put(new JSONObject().put("name", "NoCostStep"))
+        .put(new JSONObject().put("name", "").put("cost", -1L)));
+
+    profiler.recordQuery("testdb", "sql", "SELECT FROM Person", 10_000_000L, plan);
+
+    final JSONArray steps = findQuery(profiler.stop(), "SELECT FROM Person").getJSONArray("steps");
+
+    final JSONObject timed = findStep(steps, "TimedStep");
+    assertThat(timed.getInt("executionCount")).isEqualTo(1);
+    assertThat(timed.getInt("measuredCount")).isEqualTo(1);
+    assertThat(timed.getDouble("totalCostMs")).isEqualTo(4.0);
+
+    final JSONObject untimed = findStep(steps, "UntimedStep");
+    assertThat(untimed.getInt("executionCount")).isEqualTo(1);
+    assertThat(untimed.getInt("measuredCount")).isEqualTo(0);
+    assertThat(untimed.getDouble("totalCostMs")).isEqualTo(0.0);
+    assertThat(untimed.getDouble("minCostMs")).isEqualTo(0.0);
+    assertThat(untimed.getDouble("p99CostMs")).isEqualTo(0.0);
+
+    // A plan that omits the field entirely is untimed too, not a step that measurably took no time at all.
+    final JSONObject noCost = findStep(steps, "NoCostStep");
+    assertThat(noCost.getInt("measuredCount")).isEqualTo(0);
+    assertThat(noCost.getDouble("totalCostMs")).isEqualTo(0.0);
+
+    assertThat(findStep(steps, "unknown")).as("a blank step name must be labelled, not left empty").isNotNull();
+  }
+
+  /**
+   * Issue #7332: a run saved by a build older than #7291 carries no {@code measuredCount}, so every step in it read
+   * as fully timed and the negative costs that build produced rendered as written. A saved run is exactly what
+   * somebody compares a later one against, so it says what it is on load instead.
+   */
+  @Test
+  void aRunSavedBeforeMeasuredCountIsMarkedAndItsNegativeCostsAreNeutralised() throws Exception {
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+
+    final File dir = new File("./target/profiler");
+    dir.mkdirs();
+    final String fileName = "profiler-run-19700101-000000.json";
+    Files.writeString(new File(dir, fileName).toPath(), new JSONObject()
+        .put("totalQueries", 1)
+        .put("queries", new JSONArray().put(new JSONObject()
+            .put("queryText", "SELECT FROM Person")
+            .put("steps", new JSONArray()
+                .put(legacyStep("PlausibleStep", 2, 4.0))
+                .put(legacyStep("SentinelSummedStep", 2, -0.000001)))))
+        .toString(), StandardCharsets.UTF_8);
+
+    final JSONObject loaded = profiler.loadSavedRun(fileName);
+
+    assertThat(loaded.getBoolean("stepTimingComplete"))
+        .as("nothing in the file says which occurrences were timed, and inventing a coverage would be worse")
+        .isFalse();
+
+    final JSONArray steps = loaded.getJSONArray("queries").getJSONObject(0).getJSONArray("steps");
+
+    final JSONObject sentinel = findStep(steps, "SentinelSummedStep");
+    assertThat(sentinel.getInt("measuredCount"))
+        .as("a negative cost can only be the -1 'not calculated' sentinel summed as a duration, so it is untimed")
+        .isZero();
+    assertThat(sentinel.getDouble("totalCostMs")).isZero();
+    assertThat(sentinel.getDouble("minCostMs")).isZero();
+    assertThat(sentinel.getDouble("p99CostMs")).isZero();
+
+    final JSONObject plausible = findStep(steps, "PlausibleStep");
+    assertThat(plausible.has("measuredCount"))
+        .as("a positive total may still be partly measured, and nothing in the file can tell - so it is left alone "
+            + "and the recording-level flag is what says so")
+        .isFalse();
+    assertThat(plausible.getDouble("totalCostMs")).isEqualTo(4.0);
+  }
+
+  /** A run this build saves says its step coverage is complete, and re-loading it changes nothing. */
+  @Test
+  void aRunSavedByThisBuildIsCompleteAndSurvivesARoundTrip() {
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+    profiler.start();
+    profiler.recordQuery("testdb", "sql", "SELECT 1", 1_000_000,
+        new JSONObject().put("steps", new JSONArray().put(new JSONObject().put("name", "S").put("cost", -1L))));
+
+    assertThat(profiler.stop().getBoolean("stepTimingComplete")).isTrue();
+
+    final String fileName = profiler.listSavedRuns().getJSONObject(0).getString("fileName");
+    final JSONObject loaded = profiler.loadSavedRun(fileName);
+
+    assertThat(loaded.getBoolean("stepTimingComplete")).isTrue();
+    assertThat(findStep(findQuery(loaded, "SELECT 1").getJSONArray("steps"), "S").getInt("measuredCount")).isZero();
+  }
+
+  /** One step of a recording written before {@code measuredCount} existed. */
+  private static JSONObject legacyStep(final String name, final int executionCount, final double costMs) {
+    return new JSONObject().put("name", name).put("executionCount", executionCount)
+        .put("totalCostMs", costMs).put("minCostMs", costMs).put("avgCostMs", costMs)
+        .put("maxCostMs", costMs).put("p99CostMs", costMs);
+  }
+
+  /**
+   * Issue #7329: a container step's cost used to be the sum of its children's, emitted as the container's own
+   * {@code cost} in the very node that also carries each child with its own {@code cost}. The recorder records the
+   * container and then recurses, so the same nanoseconds landed in the table twice and a plain type scan was
+   * counted twice over - which is what made the Studio caption ("contained in the Engine total") false.
+   * <p>
+   * A container has no self time, so it is now recorded as an occurrence with nothing measured, and the roll-up it
+   * used to claim travels separately as {@code totalCost}, which this table deliberately does not read.
+   */
+  @Test
+  void aContainerStepDoesNotDoubleCountItsChildrensTime() {
+    server.createDatabase("profiler-container-db", ComponentFile.MODE.READ_WRITE);
+    final ServerDatabase db = server.getDatabase("profiler-container-db");
+    try {
+      db.command("sql", "CREATE DOCUMENT TYPE Item");
+      db.transaction(() -> {
+        for (int i = 0; i < 200; i++)
+          db.command("sql", "INSERT INTO Item SET idx = " + i);
+      });
+
+      final ServerQueryProfiler profiler = server.getQueryProfiler();
+      profiler.start();
+      try (final ResultSet rs = db.query("sql", "SELECT FROM Item", Map.of())) {
+        while (rs.hasNext())
+          rs.next();
+      }
+
+      final JSONObject query = findQuery(profiler.stop(), "SELECT FROM Item");
+      assertThat(query).as("the profiled scan must have been recorded").isNotNull();
+      final JSONArray steps = query.getJSONArray("steps");
+
+      final JSONObject container = findStep(steps, "FetchFromTypeExecutionStep");
+      assertThat(container).as("the type scan container step must be in the aggregated table").isNotNull();
+      assertThat(container.getInt("executionCount")).as("the container is still an occurrence").isEqualTo(1);
+      assertThat(container.getInt("measuredCount")).as("but it times nothing of its own").isZero();
+      assertThat(container.getDouble("totalCostMs")).isZero();
+
+      final JSONObject buckets = findStep(steps, "FetchFromClusterExecutionStep");
+      assertThat(buckets).as("the bucket steps are the ones that carry the scan's time").isNotNull();
+      assertThat(buckets.getInt("measuredCount")).isPositive();
+
+      // The invariant the Studio caption states: the rows add up to at most the Engine total, never more. Before the
+      // fix the container claimed its children's time as well as the children, so the table came out roughly twice
+      // the scan's real cost and could exceed the total it is supposed to be contained in.
+      double stepsTotalMs = 0;
+      for (int i = 0; i < steps.length(); i++)
+        stepsTotalMs += steps.getJSONObject(i).getDouble("totalCostMs");
+
+      assertThat(stepsTotalMs).isGreaterThan(0d);
+      assertThat(query.getDouble("engineTotalTimeMs"))
+          .as("the summed step costs must be contained in the Engine total")
+          .isGreaterThanOrEqualTo(stepsTotalMs);
+    } finally {
+      db.getEmbedded().drop();
+      server.removeDatabase("profiler-container-db");
+    }
+  }
+
+  /**
+   * Issue #7330: while the profiler is recording, an OpenCypher statement used to be rerouted onto
+   * {@code CypherExecutionPlan.profile()}, which drains the whole plan into heap before returning. The reported
+   * cost then described a materialising execution the statement never performs otherwise, and every Cypher read on
+   * the server was materialised for the length of the recording window.
+   * <p>
+   * Probed by consuming exactly one row of many: a streaming run has produced one row at that point, a drained one
+   * had already produced them all before {@code query()} returned.
+   */
+  @Test
+  void recordingDoesNotTurnACypherReadIntoAnEagerDrain() {
+    server.createDatabase("profiler-cypher-streaming-db", ComponentFile.MODE.READ_WRITE);
+    final ServerDatabase db = server.getDatabase("profiler-cypher-streaming-db");
+    try {
+      db.command("sql", "CREATE VERTEX TYPE Item");
+      db.transaction(() -> {
+        for (int i = 0; i < 100; i++)
+          db.command("sql", "INSERT INTO Item SET idx = " + i);
+      });
+
+      final ServerQueryProfiler profiler = server.getQueryProfiler();
+      profiler.start();
+      try (final ResultSet rs = db.query("opencypher", "MATCH (i:Item) RETURN i.idx AS idx", Map.of())) {
+        assertThat(rs.hasNext()).isTrue();
+        rs.next();
+
+        assertThat(rs.getExecutionPlan()).isPresent();
+        assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2))
+            .as("the profiled statement must describe the streaming run the caller drove, not a full drain")
+            .contains("Rows Returned: 1");
+      } finally {
+        profiler.stop();
+      }
+    } finally {
+      db.getEmbedded().drop();
+      server.removeDatabase("profiler-cypher-streaming-db");
+    }
+  }
+
+  private static JSONObject findQuery(final JSONObject results, final String queryText) {
+    final JSONArray queries = results.getJSONArray("queries");
+    for (int i = 0; i < queries.length(); i++) {
+      final JSONObject query = queries.getJSONObject(i);
+      if (ServerQueryProfiler.normalizeQuery(queryText).equals(ServerQueryProfiler.normalizeQuery(query.getString("queryText"))))
+        return query;
+    }
+    return null;
+  }
+
+  private static JSONObject findStep(final JSONArray steps, final String name) {
+    for (int i = 0; i < steps.length(); i++)
+      if (name.equals(steps.getJSONObject(i).getString("name")))
+        return steps.getJSONObject(i);
+    return null;
   }
 }

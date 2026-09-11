@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.timeseries.TimeSeriesCompactionPause;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.integration.backup.BackupException;
 import com.arcadedb.integration.backup.BackupSettings;
@@ -40,6 +42,7 @@ import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -54,6 +57,14 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class FullBackupFormat extends AbstractBackupFormat {
+  /**
+   * How long the backup waits to pause TimeSeries compaction before giving up. A tripwire, not a latency bound:
+   * the compaction write lock is only ever held across one brief transaction, so a budget this size expiring
+   * means something is wrong rather than merely slow. Expiring FAILS the backup - proceeding unpaused would risk
+   * the one outcome worth failing over, an archive that restores with duplicated samples and reports success.
+   */
+  private static final long COMPACTION_PAUSE_TIMEOUT_MS = 60_000L;
+
   private interface BackupCallback {
     void backup(BackupArchiveWriter archive) throws Exception;
   }
@@ -119,12 +130,12 @@ public class FullBackupFormat extends AbstractBackupFormat {
       final AtomicReference<Exception> failure = new AtomicReference<>();
       final boolean snapshotAttempt = useSnapshot;
 
-      try {
+      try (final TimeSeriesCompactionPause pause = pauseCompaction()) {
         writeArchive(backupFile, compressionLevel, compressionThreads, maxMBPerSecond, failure, archive ->
           // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
           database.executeInReadLock(() -> {
             if (snapshotAttempt)
-              databaseOrigSize.set(backupFromSnapshot(archive));
+              databaseOrigSize.set(backupFromSnapshot(archive, pause));
             else
               // FORCE FLUSHING BEFORE THE BACKUP AND AVOID FLUSHING OF DATA PAGES TO DISK
               database.getPageManager().suspendFlushAndExecute(database, () -> {
@@ -142,8 +153,11 @@ public class FullBackupFormat extends AbstractBackupFormat {
         // SAFETY NETS ONLY TEACH THE NEXT READER THAT THE THROW ABOVE MIGHT NOT HAPPEN
         break;
       } catch (final PageSnapshotException e) {
-        if (!snapshotAttempt) {
-          // A PARTIAL ARCHIVE MUST NOT SURVIVE: LEAVING ONE BEHIND INVITES A RESTORE FROM IT
+        if (!snapshotAttempt || e.getReason() == PageSnapshotException.Reason.CLOSING) {
+          // A PARTIAL ARCHIVE MUST NOT SURVIVE: LEAVING ONE BEHIND INVITES A RESTORE FROM IT.
+          // #7458: A WINDOW REFUSED BECAUSE THE DATABASE IS CLOSED, OR BECAUSE A CLOSE IS WAITING FOR THE WINDOWS
+          // ALREADY OPEN, IS NOT THE TRANSIENT SHADOW PROBLEM THE RETRY BELOW EXISTS FOR - THE DATABASE IS GOING
+          // AWAY, AND A FROZEN-FILES RETRY WOULD ONLY RACE ITS TEARDOWN. FAIL NOW, AND SAY WHY
           backupFile.delete();
           throw e;
         }
@@ -173,19 +187,32 @@ public class FullBackupFormat extends AbstractBackupFormat {
   }
 
   /**
-   * Archives the two configuration files plus every PAGE file as it stood at the snapshot's t0 (issue #6075).
+   * Archives the two configuration files and the TimeSeries sealed stores, plus every PAGE file as it stood at the
+   * snapshot's t0 (issue #6075).
    * <p>
    * The configuration files are still read straight off the filesystem: they are not page files, so the snapshot
    * does not cover them, and the database read lock this runs under is what keeps them consistent with the page
    * files - it excludes the DDL that rewrites them. Files created after t0 are absent from the snapshot by
    * construction, which is correct: they did not exist at the point in time being archived. Files DROPPED after t0
    * are still readable, because their physical deletion is deferred until the window closes.
+   * <p>
+   * The sealed stores are read straight off the filesystem for the same reason and are NOT covered by the read
+   * lock, which is why the caller's compaction pause is held until they have been read (issue #7280).
    */
-  private long backupFromSnapshot(final BackupArchiveWriter archive) throws Exception {
+  private long backupFromSnapshot(final BackupArchiveWriter archive, final TimeSeriesCompactionPause pause)
+      throws Exception {
     long origSize = 0L;
     try (final PageSnapshot snapshot = database.getPageManager().openSnapshot(database)) {
       origSize += compressFile(archive, ((LocalDatabase) database.getEmbedded()).getConfigurationFile());
       origSize += compressFile(archive, ((LocalSchema) database.getSchema()).getConfigurationFile());
+      origSize += compressSealedStores(archive);
+      // RELEASED HERE AND NOT AT THE END: THE SPAN THAT HAS TO EXCLUDE A COMPACTION ENDS WITH THE LAST SEALED
+      // BYTE READ, BECAUSE THE PAGE IMAGE IS ALREADY FIXED AT THE WINDOW'S t0 NO MATTER WHEN ITS BYTES ARE
+      // STREAMED. HOLDING IT FOR THE WHOLE BACKUP WOULD POSTPONE TIMESERIES COMPACTION FOR THE WHOLE BACKUP,
+      // WHICH IS EXACTLY THE COST #6075 REMOVED FOR EVERY OTHER BACKGROUND JOB. addFile/addEntry READ THEIR
+      // INPUT TO THE END BEFORE RETURNING - THE WORKER THREADS ONLY COMPRESS - SO NOTHING IS STILL READING A
+      // SEALED FILE AT THIS POINT
+      pause.close();
 
       for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
         origSize += compressEntry(archive, file.fileName(), file.lastModified(), snapshot.newInputStream(file.fileId()));
@@ -207,6 +234,10 @@ public class FullBackupFormat extends AbstractBackupFormat {
     long origSize = 0L;
     origSize += compressFile(archive, ((LocalDatabase) database.getEmbedded()).getConfigurationFile());
     origSize += compressFile(archive, ((LocalSchema) database.getSchema()).getConfigurationFile());
+    // THE CALLER'S PAUSE IS NOT RELEASED EARLY ON THIS PATH, UNLIKE THE SNAPSHOT ONE: HERE THE PAGE IMAGE IS THE
+    // ON-DISK ONE THE FLUSH SUSPENSION IS FREEZING, SO IT IS ONLY FIXED FOR AS LONG AS THE SUSPENSION LASTS AND
+    // THE PAUSE HAS TO SPAN THE WHOLE CALLBACK - WHICH THIS PATH ALREADY THROTTLES WRITERS FOR ANYWAY
+    origSize += compressSealedStores(archive);
 
     final Collection<ComponentFile> files = database.getFileManager().getFiles();
 
@@ -215,6 +246,54 @@ public class FullBackupFormat extends AbstractBackupFormat {
         origSize += compressFile(archive, file.getOSFile());
 
     return origSize;
+  }
+
+  /**
+   * Archives the TimeSeries sealed stores, which neither backup path can reach through its own file
+   * enumeration: {@code TimeSeriesSealedStore} opens {@code <base>.ts.sealed} with raw {@code FileChannel} I/O
+   * and never registers it as a {@code ComponentFile}, so it is absent from {@code FileManager.getFiles()} and
+   * from the page snapshot alike. Without this a restored backup returns the schema, the graph, the tag
+   * dictionary and whatever samples had not been compacted yet, and reports success (issue #7280).
+   * <p>
+   * The restore side needs no counterpart: {@code FullRestoreFormat} extracts every archive entry by name into
+   * the database directory, so a {@code .ts.sealed} entry lands where the reopened database looks for it.
+   */
+  private long compressSealedStores(final BackupArchiveWriter archive) throws IOException {
+    long origSize = 0L;
+    for (final File sealedFile : TimeSeriesSealedStore.listSealedFiles(new File(database.getDatabasePath())))
+      try {
+        origSize += compressFile(archive, sealedFile);
+      } catch (final FileNotFoundException e) {
+        // THE LISTING AND THE READ ARE NOT ONE OPERATION. A COMPACTION CANNOT REPLACE THE FILE HERE - THE PAUSE
+        // IS HELD - BUT RETENTION AND DOWNSAMPLING REWRITE A SEALED STORE WITHOUT THE COMPACTION LOCK, AND THEY
+        // DO IT BY ATOMIC RENAME, SO THE PATH ALWAYS RESOLVES TO A COMPLETE FILE. WHAT IS LEFT IS A STORE THAT
+        // WENT AWAY ENTIRELY BETWEEN THE TWO, WHICH IS NOT WORTH FAILING A BACKUP OVER
+        logger.logLine(2, "- File '%s' disappeared while being archived, skipped", sealedFile.getName());
+      }
+    return origSize;
+  }
+
+  /**
+   * Holds TimeSeries compaction back while the sealed stores are paired with the page image. See
+   * {@link TimeSeriesCompactionPause} for why a whole compaction landing inside that span - and only a whole one
+   * - would restore as duplicated samples.
+   * <p>
+   * Called OUTSIDE {@code executeInReadLock} and outside the flush suspension, and both matter.
+   * <p>
+   * Outside the read lock, because compaction's own order is compaction-write-lock first and database read lock
+   * second (Phase 0/4a/4c take the write lock and then commit, and {@code LocalDatabase.commit()} runs under the
+   * database READ lock). Taking them the other way round here would close a cycle with any waiting DDL: the
+   * database lock is a {@code ReentrantReadWriteLock}, so a queued writer stops new readers from barging, which
+   * would leave the compaction unable to commit, this backup unable to take the compaction lock it is waiting
+   * for, and the DDL unable to take the write lock this backup's read lock is holding. Acquiring the pause first
+   * puts both this backup and compaction in the same order and there is no cycle to close.
+   * <p>
+   * Outside the flush suspension, because a compaction already in its Phase 4c holds the compaction write lock
+   * while it commits, and a commit throttled by a suspension this thread has already taken would never release
+   * it. Taken first, this waits for that compaction and only then closes the door.
+   */
+  private TimeSeriesCompactionPause pauseCompaction() {
+    return TimeSeriesCompactionPause.acquire(database, COMPACTION_PAUSE_TIMEOUT_MS);
   }
 
   private long compressEntry(final BackupArchiveWriter archive, final String name, final long lastModified,

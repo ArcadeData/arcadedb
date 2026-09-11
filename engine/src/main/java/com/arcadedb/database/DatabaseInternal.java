@@ -50,7 +50,18 @@ import java.util.concurrent.Callable;
 @ExcludeFromJacocoGeneratedReport
 public interface DatabaseInternal extends Database {
   enum CALLBACK_EVENT {
-    TX_AFTER_WAL_WRITE, DB_NOT_CLOSED, DB_AFTER_OPEN
+    TX_AFTER_WAL_WRITE, DB_NOT_CLOSED, DB_AFTER_OPEN,
+    /**
+     * Fired on the thread that ran a schema mutation, as the LAST step of the outermost
+     * {@code LocalSchema.recordFileChanges} frame, still under the database write lock: the change is applied, its
+     * files are registered or dropped and {@code schema.json} is saved, and nothing else happens before the lock is
+     * released. Exists for tests that need to check the file set and the schema file agree before any other thread
+     * can observe them (issue #7457). A callback must not wait for another thread to take the database lock, and it
+     * must not throw: the change is applied and saved by the time it runs, so a throw would report as failed a DDL
+     * that fully succeeded. "Saved" has the one exception every schema save has: a DDL run by a thread with a
+     * transaction open has its save postponed to the commit, so at that moment the file still predates the change.
+     */
+    SCHEMA_AFTER_FILE_CHANGES
   }
 
   default TransactionContext getTransaction() {

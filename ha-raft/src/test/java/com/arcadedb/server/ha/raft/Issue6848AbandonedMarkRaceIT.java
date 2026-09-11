@@ -47,6 +47,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Here the ordering is made deterministic instead of hoped for: the injected predicate sleeps before
  * returning {@code true}, which parks the committing thread past the point where Ratis has committed
  * and applied the entry on the leader. Before the fix the leader origin-skips it and never converges.
+ * Since #6965 the apply thread claims the registered transaction and publishes its pages at the entry's
+ * log position, so a timeout learned afterwards is not an unknown outcome: commit() completes.
  *
  * @see Issue5410AbandonedTicketReleaseIT for the ticket-release half of the #4790/#5410 contract
  */
@@ -140,9 +142,11 @@ class Issue6848AbandonedMarkRaceIT extends BaseRaftHATest {
     }
 
     assertThat(faultFired.get()).as("The dispatched-timeout fault must have fired").isTrue();
-    assertThat(threw).as("commit() must surface the indeterminate replication error").isTrue();
+    // The committing thread was parked past the apply of its own entry, so the state machine had already claimed the
+    // transaction and published its pages (#6965): the timeout is not an unknown outcome any more, commit() completes.
+    assertThat(threw).as("commit() must complete when the entry was applied locally before the timeout fired").isFalse();
 
-    // The whole point: the LEADER must hold the abandoned entry too. Before the fix it origin-skipped
+    // The whole point: the LEADER must hold the entry too. Before the fix it origin-skipped
     // the entry (the mark did not exist yet when applyTxEntry ran) and stayed one vertex behind the
     // followers for the rest of its uptime.
     for (int i = 0; i < getServerCount(); i++)
@@ -150,21 +154,22 @@ class Issue6848AbandonedMarkRaceIT extends BaseRaftHATest {
           .as("Node %d must hold both vertices", i)
           .isEqualTo(2L);
 
-    // And the #5410 contract still holds: whoever applied the entry released its phase-2 ticket.
-    assertThat(awaitNoPendingPhase2(leaderStateMachine))
-        .as("applying the abandoned entry must release its phase-2 ticket, unpinning log compaction")
+    // And nothing lingers: the registration was consumed by the claim, and the page versions the leader reserved for
+    // the entry at append time were released once it was published.
+    assertThat(awaitNoPendingLocalCommit(leaderStateMachine))
+        .as("applying the entry must consume its registration")
         .isTrue();
-    assertThat(leaderStateMachine.lowestPendingLocalPhase2ReplayFloor())
-        .as("no replay floor may remain pinned once the abandoned entry is applied")
-        .isEqualTo(-1L);
+    assertThat(leaderStateMachine.reservedPageVersions(getDatabaseName()))
+        .as("no page version may stay reserved once the entry is applied")
+        .isZero();
 
     assertClusterConsistency();
   }
 
-  private static boolean awaitNoPendingPhase2(final ArcadeStateMachine stateMachine) throws InterruptedException {
+  private static boolean awaitNoPendingLocalCommit(final ArcadeStateMachine stateMachine) throws InterruptedException {
     final long deadline = System.currentTimeMillis() + 30_000;
     while (System.currentTimeMillis() < deadline) {
-      if (stateMachine.pendingLocalPhase2Count() == 0)
+      if (stateMachine.pendingLocalCommits() == 0)
         return true;
       Thread.sleep(100);
     }

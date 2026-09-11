@@ -200,6 +200,8 @@ public class LocalSchema implements Schema {
    * suppression has to cross that public-API boundary; save/restore around the cascade, matching {@link #multipleUpdate}.
    */
   private             String                                 typeBeingDropped              = null;
+  /** Nesting depth of {@link #recordFileChanges} frames. Read and written under the database write lock only. */
+  private             int                                    recordingDepth                = 0;
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
@@ -1278,26 +1280,40 @@ public class LocalSchema implements Schema {
   }
 
   @Override
-  public synchronized void dropMaterializedView(final String viewName) {
+  public void dropMaterializedView(final String viewName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    final MaterializedViewImpl view = materializedViews.get(viewName);
-    if (view == null)
-      throw new SchemaException("Materialized view '" + viewName + "' not found");
-
-    // Cancel periodic scheduler if active
-    if (materializedViewScheduler != null)
-      materializedViewScheduler.cancel(viewName);
-
-    // Unregister incremental listeners from source types
-    if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
-      MaterializedViewBuilder.unregisterListeners(this, view);
+    // #7457: THE MONITOR IS NEVER HELD ACROSS THE recordFileChanges CALL. That call waits for the database write lock,
+    // and every schema save runs under that lock and takes this monitor (saveConfiguration is synchronized): a thread
+    // holding the monitor while waiting for the write lock is the reverse order, and it deadlocks against any
+    // concurrent DDL that is saving. The same shape is kept by alterMaterializedView and dropContinuousAggregate.
+    synchronized (this) {
+      if (!materializedViews.containsKey(viewName))
+        throw new SchemaException("Materialized view '" + viewName + "' not found");
+    }
 
     // Wrap in recordFileChanges so that the MV metadata removal and backing type
-    // drop are replicated atomically to HA replicas
+    // drop are replicated atomically to HA replicas. THE WHOLE LIFECYCLE TRANSITION - REMOVAL, SCHEDULER, LISTENERS,
+    // BACKING TYPE - RUNS UNDER THE WRITE LOCK, SO IT CANNOT INTERLEAVE WITH A CREATE OR AN ALTER OF THE SAME VIEW
+    // THAT IS STILL INSTALLING ITS REFRESH RESOURCES: WHAT IS TORN DOWN HERE IS WHAT THE VIEW REMOVED HERE OWNED
     recordFileChanges(() -> {
-      // Remove the view definition
-      materializedViews.remove(viewName);
+      final MaterializedViewImpl view;
+      final MaterializedViewScheduler scheduler;
+      synchronized (this) {
+        // Two drops of the same view can both pass the check above: the second loses here
+        view = materializedViews.remove(viewName);
+        if (view == null)
+          throw new SchemaException("Materialized view '" + viewName + "' not found");
+        scheduler = materializedViewScheduler;
+      }
+
+      // Cancel periodic scheduler if active
+      if (scheduler != null)
+        scheduler.cancel(viewName);
+
+      // Unregister incremental listeners from source types
+      if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+        MaterializedViewBuilder.unregisterListeners(this, view);
 
       // Drop the backing type (which drops buckets and indexes)
       if (existsType(view.getBackingTypeName()))
@@ -1309,24 +1325,37 @@ public class LocalSchema implements Schema {
   }
 
   @Override
-  public synchronized void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
+  public void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
       final long newIntervalMs) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    final MaterializedViewImpl oldView = materializedViews.get(viewName);
-    if (oldView == null)
-      throw new SchemaException("Materialized view '" + viewName + "' not found");
-
-    // Tear down old refresh infrastructure
-    if (oldView.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
-      MaterializedViewBuilder.unregisterListeners(this, oldView);
-    if (materializedViewScheduler != null)
-      materializedViewScheduler.cancel(viewName);
+    // See dropMaterializedView for why the monitor is not held across recordFileChanges, and why the teardown of the
+    // old refresh resources and the setup of the new ones both run inside it (#7457)
+    synchronized (this) {
+      if (!materializedViews.containsKey(viewName))
+        throw new SchemaException("Materialized view '" + viewName + "' not found");
+    }
 
     recordFileChanges(() -> {
-      // Create new view instance with updated refresh mode
-      final MaterializedViewImpl newView = oldView.copyWithRefreshMode(newMode, newIntervalMs);
-      materializedViews.put(viewName, newView);
+      final MaterializedViewImpl oldView;
+      final MaterializedViewImpl newView;
+      final MaterializedViewScheduler scheduler;
+      synchronized (this) {
+        oldView = materializedViews.get(viewName);
+        if (oldView == null)
+          throw new SchemaException("Materialized view '" + viewName + "' not found");
+        // Create new view instance with updated refresh mode
+        newView = oldView.copyWithRefreshMode(newMode, newIntervalMs);
+        materializedViews.put(viewName, newView);
+        scheduler = materializedViewScheduler;
+      }
+
+      // Tear down old refresh infrastructure
+      if (oldView.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+        MaterializedViewBuilder.unregisterListeners(this, oldView);
+      if (scheduler != null)
+        scheduler.cancel(viewName);
+
       saveConfiguration();
 
       // Set up new refresh infrastructure
@@ -1365,15 +1394,22 @@ public class LocalSchema implements Schema {
   }
 
   @Override
-  public synchronized void dropContinuousAggregate(final String name) {
+  public void dropContinuousAggregate(final String name) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    final ContinuousAggregateImpl ca = continuousAggregates.get(name);
-    if (ca == null)
-      throw new SchemaException("Continuous aggregate '" + name + "' not found");
+    // See dropMaterializedView for why the monitor is not held across recordFileChanges (#7457)
+    final ContinuousAggregateImpl ca;
+    synchronized (this) {
+      ca = continuousAggregates.get(name);
+      if (ca == null)
+        throw new SchemaException("Continuous aggregate '" + name + "' not found");
+    }
 
     recordFileChanges(() -> {
-      continuousAggregates.remove(name);
+      synchronized (this) {
+        if (continuousAggregates.remove(name) == null)
+          throw new SchemaException("Continuous aggregate '" + name + "' not found");
+      }
 
       if (existsType(ca.getBackingTypeName()))
         dropType(ca.getBackingTypeName());
@@ -2919,14 +2955,43 @@ public class LocalSchema implements Schema {
     if (suspendIntermediateSaves)
       multipleUpdate = true;
 
-    boolean executed = false;
+    final boolean[] executed = new boolean[1];
     try {
-      final RET result = database.getWrappedDatabaseInstance().recordFileChanges(callback);
-      executed = true;
+      final RET result = database.getWrappedDatabaseInstance().recordFileChanges(() -> {
+        // UNDER THE WRITE LOCK, SO THE DEPTH IS CONSISTENT: A NESTED FRAME (A TYPE CREATION AND THE BUCKET CREATIONS
+        // INSIDE IT) SEES THE FRAME ENCLOSING IT
+        final boolean outermost = recordingDepth++ == 0;
+        try {
+          final Object callbackResult = callback.call();
+          executed[0] = true;
 
-      if (suspendIntermediateSaves)
-        multipleUpdate = false;
-      saveConfiguration();
+          // #7457: SAVE schema.json BEFORE THE WRITE LOCK IS RELEASED, NOT AFTER. The callback registered or dropped
+          // files in the FileManager, and until the schema file names exactly those files an observer that lists
+          // the files and then reads the schema - a backup - archives a schema naming buckets it did not copy. The
+          // database write lock is what excludes such an observer, so the save has to happen under it. Taking this
+          // schema's monitor under the write lock is the order every DDL that saves from inside its own callback
+          // (dropType, dropBucket, the materialized view ones) had already established; the reverse order - the
+          // monitor held while waiting for the write lock - is the one no method may take, see dropMaterializedView.
+          if (suspendIntermediateSaves)
+            multipleUpdate = false;
+          // UNCONDITIONAL, AS IT WAS OUTSIDE THE LOCK: NOT EVERY IN-MEMORY MUTATION MARKS A GENERATION DIRTY (A TYPE
+          // INDEX REGISTERING ITS BUCKET SUB-INDEXES AFTER THEIR OWN SAVES DOES NOT), SO "NOTHING TO SAVE" CANNOT BE
+          // READ OFF isDirty() HERE. AND AT EVERY NESTING LEVEL, ALSO AS BEFORE: A NESTED FRAME SAVES UNLESS
+          // multipleUpdate POSTPONES IT (bulkChange, dropType), SO A DDL OVER N BUCKETS STILL WRITES THE FILE N TIMES
+          saveConfiguration();
+
+          // THE LAST STEP UNDER THE WRITE LOCK OF THE OUTERMOST FRAME: THE CHANGE IS APPLIED, ITS FILES REGISTERED OR
+          // DROPPED AND schema.json SAVED, AND NOTHING ELSE HAPPENS BEFORE THE LOCK IS RELEASED. A TEST ASSERTING
+          // HERE THAT THE SCHEMA FILE AGREES WITH THE FILE SET PROVES THE SAVE RUNS UNDER THE LOCK (#7457) - MOVED
+          // AFTER THE RELEASE, IT WOULD ALSO BE AFTER THIS HOOK. A NESTED FRAME HAD ITS SAVE POSTPONED TO THE FRAME
+          // ENCLOSING IT, SO IT DOES NOT FIRE
+          if (outermost)
+            database.executeCallbacks(DatabaseInternal.CALLBACK_EVENT.SCHEMA_AFTER_FILE_CHANGES);
+          return callbackResult;
+        } finally {
+          --recordingDepth;
+        }
+      });
 
       // INVALIDATE EXECUTION PLAN IN CASE TYPE OR INDEX CONCUR IN THE GENERATED PLANS
       database.getExecutionPlanCache().invalidate();
@@ -2941,7 +3006,7 @@ public class LocalSchema implements Schema {
     } finally {
       if (suspendIntermediateSaves)
         multipleUpdate = false;
-      if (!executed && prevGeneration <= savedGeneration)
+      if (!executed[0] && prevGeneration <= savedGeneration)
         // ROLLBACK THE DIRTY STATUS - restore only if we were the ones who made it dirty
         savedGeneration = dirtyGeneration.get();
     }

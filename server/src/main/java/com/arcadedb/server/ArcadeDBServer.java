@@ -48,6 +48,7 @@ import com.arcadedb.server.monitor.MicrometerQueryMetricsRecorder;
 import com.arcadedb.server.monitor.MicrometerQueryTracer;
 import com.arcadedb.server.monitor.HAReplicationMetrics;
 import com.arcadedb.server.monitor.PoolMetrics;
+import com.arcadedb.server.monitor.ServerMonitor;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.plugin.PluginManager;
 import com.arcadedb.server.security.ServerSecurity;
@@ -164,6 +165,13 @@ public class ArcadeDBServer {
   // half-swapped directory or reopens it from disk mid-swap (issue #4832). Kept distinct from the map so it can be
   // exposed via getDatabasesLock() without leaking the registry itself.
   private final       Object                                databasesLock                        = new Object();
+  // Database names an in-flight restore has claimed, guarded by databasesLock (issue #7441). A restore checks its
+  // target up front and replaces it minutes later, in swapRestoredDatabase; without a claim held across that window
+  // a database created inside it was dropped and overwritten with no error reported to either caller. Sampling the
+  // name a second time would not have helped - the two samples are not atomic with each other either - so the name
+  // is reserved in the same databasesLock section as the pre-check and released when the restore ends. Creators are
+  // refused, not parked: waiting here would block a create behind a multi-GB download.
+  private final       Set<String>                           restoringDatabaseNames               = new HashSet<>();
   // Serialises start() and stop(). Deliberately an explicit lock rather than `synchronized` on the
   // instance: the JVM shutdown hook must be able to give up on it (see stopFromShutdownHook), because a
   // startup failure that calls System.exit() from inside start() would otherwise deadlock the JVM
@@ -197,12 +205,12 @@ public class ArcadeDBServer {
   // Holds the per-follower gauge refresh scheduler open; must be closed on stop or the daemon
   // thread it starts leaks one instance per restart (issue #5850).
   private              HAReplicationMetrics haReplicationMetrics;
-  // The server-health monitor (low disk, heap pressure, JVM safepoint spikes) is NOT started: nothing constructs
-  // ServerMonitor, so none of its checks run. Issue #7124 fixed two defects in it - the low-disk warning measured
-  // the JVM working directory rather than the configured database directory, and the safepoint "spike" check
-  // compared two lifetime cumulative averages - which means the class is now correct but still inert. Re-enabling it
-  // is a separate decision: it starts one more daemon thread and begins writing WARNING events to the event log.
-//  private             ServerMonitor                         serverMonitor;
+  // The server-health monitor (low disk, heap pressure, JVM safepoint spikes). Issue #7124 fixed two defects in
+  // it - the low-disk warning measured the JVM working directory rather than the configured database directory,
+  // and the safepoint "spike" check compared two lifetime cumulative averages - on a class nothing constructed:
+  // the field used to be commented out here, so none of its checks ran. Issue #7160 turned it back on, behind
+  // arcadedb.server.healthCheck.enabled. Written under the lifecycle lock, read by stopInternal.
+  private volatile    ServerMonitor                         serverMonitor;
 
   static {
     // must be called before any Logger method is used.
@@ -234,6 +242,14 @@ public class ArcadeDBServer {
 
   public ContextConfiguration getConfiguration() {
     return configuration;
+  }
+
+  /**
+   * The server-health monitor, or {@code null} when the server is not running or
+   * {@code arcadedb.server.healthCheck.enabled} is false (issue #7160).
+   */
+  public ServerMonitor getServerMonitor() {
+    return serverMonitor;
   }
 
   /**
@@ -303,19 +319,24 @@ public class ArcadeDBServer {
     try {
       lifecycleEvent(ReplicationCallback.TYPE.SERVER_STARTING, null);
     } catch (final Exception e) {
-      throw new ServerException("Error on starting the server '" + serverName + "'");
+      throw new ServerException("Error on starting the server '" + serverName + "'", e);
     }
 
     // Discover plugins from lib/plugins directory
     pluginManager.discoverPlugins();
 
     LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server in %s mode with plugins %s ...",
-        GlobalConfiguration.SERVER_MODE.getValueAsString(),
+        configuration.getValueAsString(GlobalConfiguration.SERVER_MODE),
         pluginManager != null && !pluginManager.getPluginNames().isEmpty() ?
             pluginManager.getPluginNames() : getAllPluginNames());
 
-    // IN PRODUCTION MODE, APPLY SAFE DEFAULTS
-    if ("production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
+    // IN PRODUCTION MODE, APPLY SAFE DEFAULTS.
+    // arcadedb.server.mode is SCOPE.SERVER, so it is authoritative in THIS server's configuration and only
+    // incidentally in the process-wide enum, which nothing but a -D or an environment variable ever writes: a
+    // server configuration file naming production mode used to leave every default below unapplied (issue #7233).
+    // The two defaults themselves are SCOPE.DATABASE and stay on the enum on purpose - that is what a database
+    // opened by this server inherits, since DatabaseFactory is handed a path and no ContextConfiguration.
+    if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE))) {
       // WAL FLUSH: DEFAULT TO 1 FOR DURABILITY
       if (!GlobalConfiguration.TX_WAL_FLUSH.isChanged()) {
         GlobalConfiguration.TX_WAL_FLUSH.setValue(1);
@@ -403,7 +424,7 @@ public class ArcadeDBServer {
     LogManager.instance().log(this, Level.INFO, "Available query languages: %s",
         QueryEngineManager.getInstance().getAvailableLanguages());
 
-    final String mode = GlobalConfiguration.SERVER_MODE.getValueAsString();
+    final String mode = configuration.getValueAsString(GlobalConfiguration.SERVER_MODE);
 
     final String msg = "ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)".formatted(mode,
         Runtime.getRuntime().availableProcessors(), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
@@ -416,7 +437,7 @@ public class ArcadeDBServer {
     if ("production".equals(mode))
       logProductionChecklist();
 
-    if (!"production".equals(mode) || GlobalConfiguration.STUDIO_ENABLED.getValueAsBoolean()) {
+    if (!"production".equals(mode) || configuration.getValueAsBoolean(GlobalConfiguration.STUDIO_ENABLED)) {
       final InputStream file = getClass().getClassLoader().getResourceAsStream("static/index.html");
       if (file != null) {
         final String studioHost = getStudioDisplayHost();
@@ -425,12 +446,31 @@ public class ArcadeDBServer {
       }
     }
 
+    startHealthCheck();
+
     try {
       lifecycleEvent(ReplicationCallback.TYPE.SERVER_UP, null);
     } catch (final Exception e) {
       stop();
-      throw new ServerException("Error on starting the server '" + serverName + "'");
+      throw new ServerException("Error on starting the server '" + serverName + "'", e);
     }
+  }
+
+  /**
+   * Starts the server-health monitor (issue #7160), unless {@code arcadedb.server.healthCheck.enabled} is false.
+   * <p>
+   * Last in the startup sequence, after the databases are open: the low-disk check measures the filesystem the
+   * CONFIGURED database directory sits on, and the whole point of the warning is that it precedes a database
+   * that can no longer write. Its thread is a daemon, so a monitor left running cannot hold the JVM up; it is
+   * stopped explicitly in {@link #stopInternal()} all the same, because an embedded start/stop cycle would
+   * otherwise leak one thread per restart.
+   */
+  private void startHealthCheck() {
+    if (!configuration.getValueAsBoolean(GlobalConfiguration.SERVER_HEALTH_CHECK_ENABLED))
+      return;
+
+    serverMonitor = new ServerMonitor(this);
+    serverMonitor.start();
   }
 
   private void logProductionChecklist() {
@@ -481,7 +521,7 @@ public class ArcadeDBServer {
           "  - Root password: set via configuration [WARNING]. Consider using server-users.json instead");
 
     // STUDIO
-    if (GlobalConfiguration.STUDIO_ENABLED.getValueAsBoolean())
+    if (configuration.getValueAsBoolean(GlobalConfiguration.STUDIO_ENABLED))
       LogManager.instance().log(this, Level.WARNING,
           "  - Studio web tool: force-enabled (arcadedb.studio.enabled=true) [WARNING]. Restrict network access to it");
     else
@@ -872,10 +912,17 @@ public class ArcadeDBServer {
     try {
       lifecycleEvent(ReplicationCallback.TYPE.SERVER_SHUTTING_DOWN, null);
     } catch (final Exception e) {
-      throw new ServerException("Error on stopping the server '" + serverName + "'");
+      throw new ServerException("Error on stopping the server '" + serverName + "'", e);
     }
 
     status = STATUS.SHUTTING_DOWN;
+
+    // Before anything it reports on goes away: the monitor reads the event log and the configured database
+    // directory, and one restart per leaked daemon thread is what an embedded start/stop cycle would cost.
+    if (serverMonitor != null) {
+      CodeUtils.executeIgnoringExceptions(serverMonitor::stop, "Error on stopping the server health monitor", false);
+      serverMonitor = null;
+    }
 
     // Stop plugins managed by PluginManager first
     if (pluginManager != null)
@@ -905,7 +952,7 @@ public class ArcadeDBServer {
     try {
       lifecycleEvent(ReplicationCallback.TYPE.SERVER_DOWN, null);
     } catch (final Exception e) {
-      throw new ServerException("Error on stopping the server '" + serverName + "'");
+      throw new ServerException("Error on stopping the server '" + serverName + "'", e);
     }
 
     LogManager.instance().setContext(null);
@@ -955,11 +1002,81 @@ public class ArcadeDBServer {
     return databasesLock;
   }
 
+  /**
+   * Claims {@code databaseName} for a restore that is about to start, so that no database can be created under that
+   * name until the restore has swapped its result into place (issue #7441).
+   * <p>
+   * The caller takes this in the same {@link #getDatabasesLock()} section as its own "does the target already exist"
+   * check and releases it from a {@code finally} around the whole restore - {@link ServerControlPlane#restoreDatabase}
+   * and {@link ServerControlPlane#restoreBackup} are the two that do. Taking it separately would leave the same
+   * window the claim exists to close, only narrower.
+   * <p>
+   * The caller's existence check runs inside that same lock section, which puts a {@code File.exists()} stat under
+   * the monitor every open and create on this server contends on. That is deliberate - sampling the name outside the
+   * lock is the bug - and it is one stat on a path taken once per restore, against a lock that
+   * {@link #createDatabase} already holds across the creation of a whole database.
+   * <p>
+   * A claim is not a lock a creator waits on. {@link #createDatabase} is refused immediately with
+   * {@link ServerControlPlane.OperationInProgressException}, which HTTP answers with a 409 and gRPC with
+   * {@code ABORTED}: parking a create behind a multi-GB download would be a worse answer than telling the caller to
+   * retry. It is also per server instance rather than per JVM, matching {@link BackupCoordinator}: an HA test and a
+   * co-located pair of nodes run several servers with the same database names in one process.
+   * <p>
+   * Re-claiming a name already claimed is not rejected here. Two restores of one database cannot get this far - the
+   * {@link BackupCoordinator} slot refuses the second one before it reaches the pre-check (issue #7384) - so a
+   * rejection would be unreachable code standing in for an invariant that is enforced elsewhere.
+   */
+  public void reserveDatabaseNameForRestore(final String databaseName) {
+    synchronized (databasesLock) {
+      restoringDatabaseNames.add(databaseName);
+    }
+  }
+
+  /**
+   * Releases the claim {@link #reserveDatabaseNameForRestore} took. Always call it from a {@code finally}: a claim
+   * leaked by a failed restore would refuse every later create of that name until the server restarts, turning one
+   * bad URL into an outage.
+   */
+  public void releaseDatabaseNameReservedForRestore(final String databaseName) {
+    synchronized (databasesLock) {
+      restoringDatabaseNames.remove(databaseName);
+    }
+  }
+
+  /** Whether a restore on this server currently holds {@code databaseName}. */
+  public boolean isDatabaseNameReservedForRestore(final String databaseName) {
+    synchronized (databasesLock) {
+      return restoringDatabaseNames.contains(databaseName);
+    }
+  }
+
+  /**
+   * Refuses to bring a database into existence under a name an in-flight restore has claimed. Called from the two
+   * places in this class that reach {@code DatabaseFactory.create()}, both already holding {@link #databasesLock},
+   * which is what makes the refusal atomic with the claim rather than another unsynchronised sample.
+   * <p>
+   * The exception type is {@link ServerControlPlane.OperationInProgressException} rather than a new one of this
+   * class's own because it is what the transports already translate - {@code AbstractServerHttpHandler} answers it
+   * with a 409 and {@code ArcadeDbGrpcAdminService} with {@code ABORTED} - and because it is the same answer a
+   * caller gets when the {@link BackupCoordinator} slot refuses them: "well formed, and it will work once the other
+   * operation finishes". Naming the outer class here reads as this class reaching up into the one that wraps it, and
+   * it is: hoisting the type out of {@code ServerControlPlane} would be the tidier arrangement, but it is public API
+   * that {@code BackupInProgressException} extends and that handlers and tests across three modules already catch by
+   * that name, so moving it belongs in its own change rather than riding along with a bug fix.
+   */
+  private void checkDatabaseNameIsNotBeingRestored(final String databaseName) {
+    if (restoringDatabaseNames.contains(databaseName))
+      throw new ServerControlPlane.OperationInProgressException(
+          "Cannot create database '" + databaseName + "': a restore of it is already in progress");
+  }
+
   public ServerDatabase createDatabase(final String databaseName, final ComponentFile.MODE mode) {
     checkDatabaseNameIsValid(databaseName);
 
     ServerDatabase serverDatabase;
     synchronized (databasesLock) {
+      checkDatabaseNameIsNotBeingRestored(databaseName);
+
       serverDatabase = databases.get(databaseName);
       if (serverDatabase != null)
         throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
@@ -1244,9 +1361,18 @@ public class ArcadeDBServer {
           defaultDbMode = READ_WRITE;
 
         DatabaseInternal embDatabase;
-        if (createIfNotExists)
-          embDatabase = (DatabaseInternal) (factory.exists() ? factory.open(defaultDbMode) : factory.create());
-        else {
+        if (createIfNotExists) {
+          if (factory.exists())
+            embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
+          else {
+            // The second of the two places a database comes into existence on a server - createDatabase above is the
+            // other - so the restore claim has to be honoured here too (issue #7441). Only the create arm asks: an
+            // OPEN of a directory that is already there is what 'restore backup ... overwrite' means to replace, and
+            // refusing it would take a live database away from its readers for the duration of the restore.
+            checkDatabaseNameIsNotBeingRestored(databaseName);
+            embDatabase = (DatabaseInternal) factory.create();
+          }
+        } else {
           final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
           if (!activeDatabases.isEmpty()) {
             embDatabase = null;

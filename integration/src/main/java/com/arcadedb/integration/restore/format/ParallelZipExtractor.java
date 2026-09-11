@@ -21,6 +21,7 @@ package com.arcadedb.integration.restore.format;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.restore.RestoreException;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.ProgressCallback;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -112,13 +113,23 @@ public class ParallelZipExtractor {
   private final int                        threads;
   private final ConsoleLogger              logger;
   private final ArrayBlockingQueue<byte[]> bufferPool;
+  private final ProgressCallback           progressCallback;
 
   public ParallelZipExtractor(final int threads, final ConsoleLogger logger) {
+    this(threads, logger, null);
+  }
+
+  /**
+   * @param progressCallback fed one report per extracted entry, against the entry count this extractor reads out
+   *                         of the central directory before any worker starts (issue #7385), or null for none
+   */
+  public ParallelZipExtractor(final int threads, final ConsoleLogger logger, final ProgressCallback progressCallback) {
     if (threads < 1)
       throw new IllegalArgumentException("At least one restore thread is required");
     this.threads = threads;
     this.logger = logger;
     this.bufferPool = new ArrayBlockingQueue<>(threads);
+    this.progressCallback = progressCallback;
   }
 
   public ExtractStats extract(final File archive, final File databaseDirectory) throws IOException {
@@ -148,9 +159,16 @@ public class ParallelZipExtractor {
       // DURATION IS DECIDED BY HOW LATE THE BIGGEST ENTRY STARTS
       plan.sort(Comparator.comparingLong(planned -> -entryWeight(planned.entry())));
 
-      final int poolSize = Math.min(threads, plan.size());
+      final int totalEntries = plan.size();
+
+      final int poolSize = Math.min(threads, totalEntries);
       if (poolSize < 1)
         return new ExtractStats(0, 0L);
+
+      // THE ENTRY COUNT IS KNOWN HERE AND NOWHERE ELSE IN A RESTORE: THE CENTRAL DIRECTORY GIVES IT UP FRONT,
+      // WHICH IS WHY THIS PATH CAN REPORT A PERCENTAGE AND THE SEQUENTIAL WALK CANNOT (ISSUE #7385)
+      final AtomicInteger extracted = new AtomicInteger();
+      report(0, totalEntries);
 
       final AtomicInteger threadId = new AtomicInteger();
       // THE QUEUE IS UNBOUNDED, WHERE THE #6072 BACKUP WRITER THIS OTHERWISE MIRRORS USES A BOUNDED ONE WITH
@@ -168,15 +186,21 @@ public class ParallelZipExtractor {
       });
 
       try {
-        final List<Future<Long>> results = new ArrayList<>(plan.size());
+        final List<Future<Long>> results = new ArrayList<>(totalEntries);
         for (final PlannedEntry planned : plan)
-          results.add(executor.submit(uncompressEntry(zipFile, planned)));
+          results.add(executor.submit(uncompressEntry(zipFile, planned, extracted, totalEntries)));
 
         long databaseOrigSize = 0L;
         for (final Future<Long> result : results)
           databaseOrigSize += drain(result);
 
-        return new ExtractStats(plan.size(), databaseOrigSize);
+        // THE CLOSING REPORT, MADE BY THIS THREAD ONCE EVERY WORKER HAS BEEN COLLECTED. THE PER-ENTRY REPORTS
+        // ABOVE COME FROM THE WORKERS AND CAN INTERLEAVE - TWO THREADS THAT FINISH TOGETHER CAN PUBLISH n THEN
+        // n-1 - SO WITHOUT THIS A COMPLETED EXTRACTION COULD BE LEFT SHOWING ONE ENTRY SHORT FOR THE REST OF THE
+        // OPERATION. IT COSTS ONE CALL PER RESTORE
+        report(totalEntries, totalEntries);
+
+        return new ExtractStats(totalEntries, databaseOrigSize);
       } finally {
         // shutdownNow() ALONE IS NOT ENOUGH ON THE FAILURE PATH. IT DRAINS THE QUEUE, SO NO FURTHER ENTRY STARTS, BUT
         // THE INTERRUPT IT SENDS DOES NOT COME BACK OUT OF A FileOutputStream.write() OR A ZipFile READ - NEITHER IS
@@ -202,7 +226,14 @@ public class ParallelZipExtractor {
     }
   }
 
-  private Callable<Long> uncompressEntry(final ZipFile zipFile, final PlannedEntry planned) {
+  /** No-op when the caller installed no callback, which is every caller but the server's control plane. */
+  private void report(final long done, final long total) {
+    if (progressCallback != null)
+      progressCallback.onProgress(AbstractRestoreFormat.RESTORE_STEP_NAME, 1, 1, done, total);
+  }
+
+  private Callable<Long> uncompressEntry(final ZipFile zipFile, final PlannedEntry planned,
+      final AtomicInteger extracted, final int totalEntries) {
     return () -> {
       final ZipEntry entry = planned.entry();
       final File uncompressedFile = planned.target();
@@ -229,6 +260,11 @@ public class ParallelZipExtractor {
       } finally {
         bufferPool.offer(buffer);
       }
+
+      // BEFORE THE LOG LINE, NOT AFTER IT. A CALLER THAT WATCHES BOTH - THE SERVER'S CONTROL PLANE FEEDS THE LOG
+      // LINES TO ITS ProgressListener AND THE COUNTERS TO ITS OperationProgress - THEN NEVER SEES A LINE SAYING AN
+      // ENTRY IS DONE WHILE THE COUNTER STILL SAYS IT IS NOT (ISSUE #7385)
+      report(extracted.incrementAndGet(), totalEntries);
 
       final long compressedSize = entry.getCompressedSize();
       // ONE CALL, NOT THE log()+logLine() PAIR THE SEQUENTIAL PATH USES: SEVERAL THREADS LOG HERE AND A HALF-LINE

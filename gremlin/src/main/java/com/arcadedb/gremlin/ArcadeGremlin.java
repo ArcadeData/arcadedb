@@ -76,7 +76,7 @@ public class ArcadeGremlin extends ArcadeQuery {
       final Iterator<?> resultSet = executeStatement();
 
       ExecutionPlan executionPlan = null;
-      if (profileExecution) {
+      if (profileExecution && canBeProfiledWithoutRunningItAgain(resultSet)) {
         final String originalQuery = query;
         query += ".profile()";
         try {
@@ -158,6 +158,47 @@ public class ArcadeGremlin extends ArcadeQuery {
     } catch (final Exception e) {
       throw new CommandExecutionException("Error on executing command", e);
     }
+  }
+
+  /**
+   * Whether the {@code .profile()} pass may be run for this statement.
+   * <p>
+   * {@code $profileExecution} asks for the statement to be TIMED, not for it to be run differently - the rule
+   * #7330 established when it stopped rerouting recording-server OpenCypher onto an eager
+   * {@code CypherExecutionPlan.profile()}. Gremlin cannot honour that rule the same way: there is no per-step
+   * timer accumulating during the ordinary run, so {@code .profile()} genuinely is a SECOND execution of the
+   * statement. What can be honoured is the part that matters - the second run must not reach storage.
+   * <p>
+   * {@code ServerDatabase.command(language, query, parameters)} injects the flag for every statement in every
+   * language while the server profiler is recording, so this is not a Studio-only path: without this gate a
+   * {@code g.addV('Person')} issued against a recording server built the traversal twice and drained both,
+   * creating two vertices (issue #7394).
+   * <p>
+   * Two shapes are refused:
+   * <ul>
+   *   <li>a traversal carrying a {@link Mutating} step - the second run would apply the mutation again;</li>
+   *   <li>anything that is not an un-iterated traversal at all - {@code eval()} answers a plain value when the
+   *   statement ended in an eager terminal step such as {@code .next()}, which means the statement has already
+   *   run once and its steps can no longer be inspected. Whether that run mutated cannot be established here,
+   *   so the pass is skipped rather than guessed at. No plan is lost by that: appending {@code .profile()} to a
+   *   statement that already ended in a terminal step does not parse, so the attempt only ever landed in the
+   *   {@code // NO EXECUTION PLAN} catch below.</li>
+   * </ul>
+   * Read-only traversals are unaffected and keep their execution plan; the cost of profiling those is issue
+   * #7408.
+   */
+  private static boolean canBeProfiledWithoutRunningItAgain(final Iterator<?> resultSet) {
+    if (!(resultSet instanceof final GraphTraversal<?, ?> traversal))
+      return false;
+
+    // Strategies have not been applied yet, so this is the same raw step list parse() inspects - and the
+    // gremlin-lang placeholder step types (AddVertexStartStepPlaceholder and friends) implement Mutating just
+    // as the concrete steps do, which is what makes the check reliable on both engines (see #5838).
+    for (final Object step : traversal.asAdmin().getSteps())
+      if (step instanceof Mutating)
+        return false;
+
+    return true;
   }
 
   /**

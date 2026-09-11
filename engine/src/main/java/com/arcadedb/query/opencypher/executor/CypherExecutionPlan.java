@@ -150,6 +150,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
@@ -169,6 +170,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -287,14 +289,52 @@ public class CypherExecutionPlan {
    * @return result set
    */
   public ResultSet execute(final CommandContext outerContext) {
+    return execute(outerContext, false);
+  }
+
+  /**
+   * Executes the query plan with per-step timing turned on, and <b>without changing what it executes</b>: the same
+   * streaming chain {@link #execute(CommandContext)} builds, pulled by the caller at the caller's own pace.
+   * <p>
+   * This is what the server profiler and Studio's {@code profileExecution: "detailed"} use, and it is the whole
+   * point of the overload. They used to be routed onto {@link #profile()}, which drains the plan into heap before
+   * returning: the number they then reported was the cost of a materialising execution the statement never performs
+   * otherwise, and switching the diagnostic on turned every Cypher read on the server into a full in-heap
+   * materialisation for the length of the recording window (issue #7330). The step timers accumulate during
+   * {@code syncPull}, so no drain is needed to collect them - {@code profile()}'s drain exists to produce a result
+   * <i>shape</i>, not to time anything.
+   * <p>
+   * The returned set carries an {@link ExecutionPlan} built on demand from the live step chain, so a consumer that
+   * asks for it after streaming (which is what {@code ProfilingResultSet} and the HTTP handler both do) sees the
+   * costs the run actually accumulated. Asking earlier is legal and reports what has been measured so far.
+   *
+   * @param outerContext the enclosing statement's context, or {@code null} for a top-level statement
+   * @param profiling    whether to time each step and attach the plan; {@code false} is the plain streaming path
+   *
+   * @return result set
+   */
+  public ResultSet execute(final CommandContext outerContext, final boolean profiling) {
+    if (!profiling)
+      return executeStreaming(outerContext, null);
+
+    final StreamingProfile profile = new StreamingProfile();
+    return profile.attach(executeStreaming(outerContext, profile));
+  }
+
+  /**
+   * @param profile when not null, per-step timing is on and this collector is handed the root step the run built,
+   *                so the plan can be reconstructed from it once the caller has finished streaming
+   */
+  private ResultSet executeStreaming(final CommandContext outerContext, final StreamingProfile profile) {
     // Handle UNION queries specially
     if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty())
-      return executeUnion(outerContext);
+      return executeUnion(outerContext, profile);
 
     // Build execution context
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
+    context.setProfiling(profile != null);
     setupFunctionResolver(context);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
 
@@ -304,6 +344,9 @@ public class CypherExecutionPlan {
     // Must be checked BEFORE the optimizer dispatch, because the optimizer produces
     // GAVExpandAll operators that still materialize individual rows (O(paths) memory).
     rootStep = tryCountPushDown(context, false);
+
+    if (profile != null)
+      profile.countPushedDown = rootStep != null;
 
     if (rootStep == null) {
       // Phase 4: Use optimized physical plan if available
@@ -318,6 +361,11 @@ public class CypherExecutionPlan {
         // This path correctly handles clause ordering (UNWIND before MATCH), VLP patterns, etc.
         rootStep = buildExecutionSteps(context);
       }
+    }
+
+    if (profile != null) {
+      profile.rootStep = rootStep;
+      profile.context = context;
     }
 
     if (rootStep == null) {
@@ -491,6 +539,16 @@ public class CypherExecutionPlan {
         for (final String prop : seedRow.getPropertyNames())
           seedResult.setProperty(prop, seedRow.getProperty(prop));
         return new IteratorResultSet(List.of(seedResult).iterator());
+      }
+
+      @Override
+      public String getName() {
+        return "SubquerySeedRowStep";
+      }
+
+      @Override
+      public String getType() {
+        return getName();
       }
 
       @Override
@@ -700,14 +758,17 @@ public class CypherExecutionPlan {
    * Executes a UNION query by combining results from all subqueries.
    *
    * @param outerContext the enclosing statement's context, or {@code null} for a top-level statement
+   * @param profile      when not null, per-step timing is on and this collector is handed the UnionStep as the
+   *                     plan's root, so the profiled plan describes the same streaming run (issue #7330)
    *
    * @return combined result set
    */
-  private ResultSet executeUnion(final CommandContext outerContext) {
+  private ResultSet executeUnion(final CommandContext outerContext, final StreamingProfile profile) {
     // Use UnionStep to combine results from all subqueries
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
+    context.setProfiling(profile != null);
     setupFunctionResolver(context);
     // Every branch runs on a context of its own, so the statement clock has to travel from here into each of
     // them - and into here from an enclosing statement when this UNION is a CALL body (issue #7052).
@@ -715,6 +776,11 @@ public class CypherExecutionPlan {
 
     final UnionStep unionStep =
         new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
+
+    if (profile != null) {
+      profile.rootStep = unionStep;
+      profile.context = context;
+    }
 
     // Read UNION: stay lazy/streaming, no statistics to surface.
     if (statement.isReadOnly())
@@ -964,13 +1030,17 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * Executes the query with profiling enabled.
-   * The query is executed to collect real metrics, but only the profiling
-   * information is returned (actual query results are discarded).
-   * Returns an {@link ExplainResultSet} so the server handler populates the
-   * dedicated {@code explain} field in the JSON response.
+   * Executes the query with profiling enabled and <b>eagerly</b>: every row is pulled into heap before this method
+   * returns, and the rows are returned alongside the profile via {@code getExecutionPlan()}. The javadoc here used
+   * to claim the results were discarded and that the return was an {@code ExplainResultSet}; neither has been true
+   * of this implementation, and the drain is precisely what a caller has to know about (issue #7330).
+   * <p>
+   * This is the {@code PROFILE <statement>} path - a user asking, in the statement itself, for the whole execution
+   * to be run and summarised, which is what Neo4j's PROFILE does too. It is deliberately NOT the path taken by the
+   * server profiler or by Studio's {@code profileExecution: "detailed"}: those must not change how the statement
+   * executes, and use {@link #execute(CommandContext, boolean)} instead, which times the ordinary streaming run.
    *
-   * @return result set containing profiling metrics via {@code getExecutionPlan()}
+   * @return result set carrying the rows and, via {@code getExecutionPlan()}, the profiling metrics
    */
   public ResultSet profile() {
     final long startTime = System.nanoTime();
@@ -1016,15 +1086,36 @@ public class CypherExecutionPlan {
     }
 
     final long endTime = System.nanoTime();
-    final double executionTimeMs = (endTime - startTime) / 1_000_000.0;
     final long rowCount = results.countEntries();
 
+    results.setPlan(buildProfilePlan(context, rootStep, countPushedDown, endTime - startTime, rowCount, errorMessage));
+    // Surface the CRUD-count accumulator built up by the mutation steps during the profiled run,
+    // mirroring execute()'s write path so a profiled write still reports its counters. Read-only
+    // statements never attach a statistics accumulator, matching execute()'s read path.
+    if (!statement.isReadOnly())
+      results.setStatistics(context.getStatistics());
+    return results;
+  }
+
+  /**
+   * The profile of a run that has just finished: the human-readable report plus the live step chain that carries
+   * the per-step costs. Shared by the eager {@link #profile()} and the streaming
+   * {@link #execute(CommandContext, boolean)} so the two describe the same run the same way, and one of them cannot
+   * quietly grow a section the other lacks.
+   *
+   * @param elapsedNanos wall clock of the run being described
+   * @param rowCount     rows the run produced - for the streaming path, rows the caller actually pulled
+   * @param errorMessage the failure that ended the run, or {@code null}
+   */
+  private OpenCypherExplainExecutionPlan buildProfilePlan(final CommandContext context,
+      final AbstractExecutionStep rootStep, final boolean countPushedDown, final long elapsedNanos, final long rowCount,
+      final String errorMessage) {
     final StringBuilder profileOutput = new StringBuilder();
     profileOutput.append("OpenCypher Query Profile\n");
     profileOutput.append("========================\n\n");
     if (Boolean.TRUE.equals(context.getVariable(CommandContext.CSR_ACCELERATED_VAR)))
       profileOutput.append("CSR-accelerated via Graph Analytical View\n");
-    profileOutput.append(String.format("Execution Time: %.3f ms\n", executionTimeMs));
+    profileOutput.append(String.format("Execution Time: %.3f ms\n", elapsedNanos / 1_000_000.0));
     profileOutput.append(String.format("Rows Returned: %d\n", rowCount));
 
     if (errorMessage != null)
@@ -1057,13 +1148,88 @@ public class CypherExecutionPlan {
         profileOutput.append("No execution steps generated\n");
     }
 
-    results.setPlan(new OpenCypherExplainExecutionPlan(profileOutput.toString(), executionSteps, endTime - startTime));
-    // Surface the CRUD-count accumulator built up by the mutation steps during the profiled run,
-    // mirroring execute()'s write path so a profiled write still reports its counters. Read-only
-    // statements never attach a statistics accumulator, matching execute()'s read path.
-    if (!statement.isReadOnly())
-      results.setStatistics(context.getStatistics());
-    return results;
+    return new OpenCypherExplainExecutionPlan(profileOutput.toString(), executionSteps, elapsedNanos);
+  }
+
+  /**
+   * Times a streaming execution without altering it: the caller pulls the rows it wants, at its own pace, and the
+   * plan is reconstructed from the live step chain whenever it is asked for.
+   * <p>
+   * The alternative - the one this replaces - was to reroute the statement onto {@link #profile()}, whose drain
+   * changes the execution mode: what got reported was then the cost of materialising every row, which is not what
+   * the statement costs when nobody is watching, and every Cypher read on the server was materialised in heap for
+   * as long as the recording window lasted (issue #7330).
+   * <p>
+   * The clock stops at the first of the delegate reporting exhaustion and {@code close()} - never at the plan
+   * being asked for, so inspecting the plan mid-stream does not freeze the number a later ask reports. Consumers
+   * ask for it after streaming ({@code ProfilingResultSet} at close, {@code PostCommandHandler} after draining),
+   * so the elapsed they see covers the whole run.
+   */
+  private final class StreamingProfile implements ResultSet {
+    private final long                  startNanos = System.nanoTime();
+    private       ResultSet             delegate;
+    private       CommandContext        context;
+    private       AbstractExecutionStep rootStep;
+    private       boolean               countPushedDown;
+    private       long                  rowCount;
+    private       long                  elapsedNanos = -1;
+
+    private ResultSet attach(final ResultSet delegate) {
+      this.delegate = delegate;
+      return this;
+    }
+
+    @Override
+    public boolean hasNext() {
+      final boolean hasNext = delegate.hasNext();
+      if (!hasNext)
+        stopClock();
+      return hasNext;
+    }
+
+    @Override
+    public Result next() {
+      final Result row = delegate.next();
+      ++rowCount;
+      return row;
+    }
+
+    @Override
+    public void close() {
+      stopClock();
+      delegate.close();
+    }
+
+    @Override
+    public void reset() {
+      delegate.reset();
+    }
+
+    @Override
+    public Optional<QueryStatistics> getStatistics() {
+      return delegate.getStatistics();
+    }
+
+    @Override
+    public Optional<ExecutionPlan> getExecutionPlan() {
+      // Built here rather than at construction: the step timers accumulate while the caller streams, so a plan
+      // snapshotted before the first row would report a chain that had not run yet.
+      //
+      // Reading the clock rather than stopping it: a caller that inspects progress mid-stream and asks again at
+      // the end must get the elapsed of the whole run the second time, not the reading frozen by the first ask.
+      return Optional.of(buildProfilePlan(context, rootStep, countPushedDown, elapsedSoFar(), rowCount, null));
+    }
+
+    /** The run's elapsed: final once the run has ended, and how long it has been going otherwise. */
+    private long elapsedSoFar() {
+      return elapsedNanos < 0 ? System.nanoTime() - startNanos : elapsedNanos;
+    }
+
+    /** Ends the run's clock, at the first of the delegate reporting exhaustion and {@code close()}. */
+    private void stopClock() {
+      if (elapsedNanos < 0)
+        elapsedNanos = System.nanoTime() - startNanos;
+    }
   }
 
   /**
@@ -1113,6 +1279,16 @@ public class CypherExecutionPlan {
             operatorResults.close();
         }
         super.close();
+      }
+
+      @Override
+      public String getName() {
+        return "OptimizedMatchStep";
+      }
+
+      @Override
+      public String getType() {
+        return getName();
       }
 
       @Override
@@ -1463,6 +1639,19 @@ public class CypherExecutionPlan {
           }
           consumed = true;
           return new IteratorResultSet(singleRow.iterator());
+        }
+
+        // Both sites that build this step produce the same thing - one dummy row for a statement whose
+        // expressions stand on their own - so they deliberately share a name and aggregate together in the
+        // profiler's per-step statistics.
+        @Override
+        public String getName() {
+          return "DummyRowStep";
+        }
+
+        @Override
+        public String getType() {
+          return getName();
         }
 
         @Override
@@ -2394,15 +2583,17 @@ public class CypherExecutionPlan {
                 currentStep = scanStep;
               }
               // Swap source/target and reverse direction: go OUT from scanned target to bound source
+              // reversePathOrder: this hop is walked from the pattern's right-hand node back to its left-hand
+              // one, so a named path has to be assembled the other way round (#7290).
               nextStep = new MatchRelationshipStep(effectiveTargetVar, relVar, effectiveSourceVar, relPattern,
                   pathVariable, sourceNode, boundWithSource, matchVariables, clauseRelVariables, Direction.OUT,
-                  context);
+                  true, context);
             } else {
               // Normal case: pass target node pattern for label filtering and bound variables for identity
               // checking. The relationship-uniqueness scope is published once the clause is complete.
               nextStep = new MatchRelationshipStep(effectiveSourceVar, relVar, effectiveTargetVar, relPattern,
                   pathVariable, effectiveTargetNode, targetIdentityVars, matchVariables, clauseRelVariables,
-                  directionOverride, context);
+                  directionOverride, reversed, context);
             }
           }
 
@@ -3191,6 +3382,19 @@ public class CypherExecutionPlan {
           }
           consumed = true;
           return new IteratorResultSet(singleRow.iterator());
+        }
+
+        // Both sites that build this step produce the same thing - one dummy row for a statement whose
+        // expressions stand on their own - so they deliberately share a name and aggregate together in the
+        // profiler's per-step statistics.
+        @Override
+        public String getName() {
+          return "DummyRowStep";
+        }
+
+        @Override
+        public String getType() {
+          return getName();
         }
 
         @Override

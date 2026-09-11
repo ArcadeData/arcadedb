@@ -21,7 +21,9 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -338,69 +340,140 @@ public class Neo4jImporter {
         .withCommitEvery(0)
         .build()) {
 
+      // Whether the transaction opened below is still the current one. Cleared right before every commit -
+      // LocalDatabase#commit() pops the transaction in a finally, so a commit that throws still leaves this
+      // method's transaction off the stack, and rolling back after that would discard the CALLER's instead
+      // (issue #7272).
+      final boolean[] txOpen = { false };
+
+      // The transaction this method pushed, so the commit and the rollback below can prove that the live one is
+      // still it. The flag alone cannot prove that: parsingCallback belongs to the caller and runs inside the
+      // loop, so it can resolve this method's transaction and leave the flag set - and because begin() nests,
+      // what commit() would then find and resolve is the CALLER's outer transaction (issue #7328). Re-read after
+      // every begin(), never assumed to survive one.
+      final TransactionContext[] ownTx = { null };
+
+      // Vertices an intermediate commit already made durable. context.createdVertices counts every vertex the
+      // batch allocated, the ones still inside the transaction a failure rolls back included. Seeded from the
+      // counter rather than from 0: the embedding constructor takes an ImporterContext from its caller, so a
+      // context that already carries durable vertices would otherwise be zeroed by the correction below.
+      final long[] committedVertices = { context.createdVertices.get() };
+
+      // Whether the loop ran to its own trailing commit. Distinct from txOpen: a commit() that throws pops the
+      // transaction in its own finally, so txOpen is already false there, yet the batch it failed to make
+      // durable still has to come back off the counter.
+      boolean completed = false;
+
       database.begin();
+      txOpen[0] = true;
+      ownTx[0] = currentTransaction();
 
-      readFileSimple(json -> {
-        lineNumber.incrementAndGet();
+      try {
+        readFileSimple(json -> {
+          lineNumber.incrementAndGet();
 
-        switch (json.getString("type")) {
-        case "node":
-          context.parsed.incrementAndGet();
-          ++totalVerticesParsed;
-          if (context.parsed.get() > 0 && context.parsed.get() % 1_000_000 == 0) {
-            final long elapsed = System.currentTimeMillis() - beginTimeVerticesCreation;
-            log("- Status update: created %,d vertices, skipped %,d edges (%,d vertices/sec)", context.createdVertices.get(),
-                context.skippedEdges.get(), context.createdVertices.get() / elapsed * 1000);
+          switch (json.getString("type")) {
+          case "node":
+            context.parsed.incrementAndGet();
+            ++totalVerticesParsed;
+            if (context.parsed.get() > 0 && context.parsed.get() % 1_000_000 == 0) {
+              final long elapsed = System.currentTimeMillis() - beginTimeVerticesCreation;
+              log("- Status update: created %,d vertices, skipped %,d edges (%,d vertices/sec)", context.createdVertices.get(),
+                  context.skippedEdges.get(), context.createdVertices.get() / elapsed * 1000);
+            }
+
+            final Pair<String, List<String>> type = typeNameFromLabels(json);
+            if (type == null) {
+              log("- found vertex in line %d without labels. Importing it as '%s'.", lineNumber.get(), ROOT_NODE_TYPE);
+              context.warnings.incrementAndGet();
+            }
+
+            final String typeName = type != null ? type.getFirst() : ROOT_NODE_TYPE;
+            final String id = json.getString("id");
+
+            try {
+              final Map<String, Object> props;
+              if (json.has("properties"))
+                props = setProperties(json.getJSONObject("properties"), schemaProperties.get(typeName));
+              else
+                props = new HashMap<>();
+              props.put("id", id);
+
+              final MutableVertex vertex = batch.createVertex(typeName, props);
+              final long packedRID = packRID(vertex.getIdentity());
+              putId(id, packedRID);
+              context.createdVertices.incrementAndGet();
+
+              incrementVerticesByType(typeName);
+            } catch (Exception e) {
+              error("- Error on saving vertex with id %s: %s", id, e.getMessage());
+              context.errors.incrementAndGet();
+            }
+
+            if (context.createdVertices.get() > 0 && context.createdVertices.get() % batchSize == 0) {
+              txOpen[0] = false;
+              database.commit();
+              committedVertices[0] = context.createdVertices.get();
+              database.begin();
+              txOpen[0] = true;
+              ownTx[0] = currentTransaction();
+            }
+
+            break;
+
+          case "relationship":
+            context.skippedEdges.incrementAndGet();
+            break;
           }
 
-          final Pair<String, List<String>> type = typeNameFromLabels(json);
-          if (type == null) {
-            log("- found vertex in line %d without labels. Importing it as '%s'.", lineNumber.get(), ROOT_NODE_TYPE);
-            context.warnings.incrementAndGet();
-          }
+          if (parsingCallback != null)
+            parsingCallback.call(json);
 
-          final String typeName = type != null ? type.getFirst() : ROOT_NODE_TYPE;
-          final String id = json.getString("id");
+          return null;
+        });
 
-          try {
-            final Map<String, Object> props;
-            if (json.has("properties"))
-              props = setProperties(json.getJSONObject("properties"), schemaProperties.get(typeName));
-            else
-              props = new HashMap<>();
-            props.put("id", id);
-
-            final MutableVertex vertex = batch.createVertex(typeName, props);
-            final long packedRID = packRID(vertex.getIdentity());
-            putId(id, packedRID);
-            context.createdVertices.incrementAndGet();
-
-            incrementVerticesByType(typeName);
-          } catch (Exception e) {
-            error("- Error on saving vertex with id %s: %s", id, e.getMessage());
-            context.errors.incrementAndGet();
-          }
-
-          if (context.createdVertices.get() > 0 && context.createdVertices.get() % batchSize == 0) {
-            database.commit();
-            database.begin();
-          }
-
-          break;
-
-        case "relationship":
-          context.skippedEdges.incrementAndGet();
-          break;
+        // Gated on this method's own transaction being the live one, and NOT on the ambient
+        // database.isTransactionActive(): begin() nests, so a live transaction here is no evidence that the live
+        // one is the one this method pushed. Once that one is gone - a parsingCallback of the caller's that
+        // resolved it, say - the ambient test sees the CALLER's outer transaction instead and commits that
+        // (issue #7328, the same asymmetry #7272 fixed on the four other row loops).
+        if (ownTransactionIsResolvable(txOpen[0], ownTx[0])) {
+          txOpen[0] = false;
+          database.commit();
         }
+        txOpen[0] = false;
+        committedVertices[0] = context.createdVertices.get();
+        completed = true;
+      } finally {
+        // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import
+        // can realistically raise - resolves the transaction too.
+        if (ownTransactionIsResolvable(txOpen[0], ownTx[0])) {
+          txOpen[0] = false;
+          try {
+            database.rollback();
+          } catch (final Exception rollbackFailure) {
+            // Swallowed: a throw here would replace the failure the caller can actually act on with one about
+            // the cleanup, and would skip the counter correction below.
+            error("- Could not roll back after the vertex import failed: the transaction it opened may still be "
+                + "on the stack: %s", rollbackFailure.getMessage());
+          }
+        }
+        txOpen[0] = false;
 
-        if (parsingCallback != null)
-          parsingCallback.call(json);
+        // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
+        // and would otherwise leave the batch it failed to write counted as if it had survived.
+        if (!completed) {
+          // What the report calls "created" has to be what survived: leaving the counter at the number of
+          // vertices read would credit the import with the ones the rollback just took away.
+          final long readVertices = context.createdVertices.get();
+          context.createdVertices.set(committedVertices[0]);
 
-        return null;
-      });
-
-      if (database.isTransactionActive())
-        database.commit();
+          if (committedVertices[0] > 0)
+            log("- Vertex import failed after %,d vertices: the import is PARTIAL - %,d of them an earlier batch "
+                    + "commit made durable and they stay on the disk, the other %,d were rolled back", readVertices,
+                committedVertices[0], readVertices - committedVertices[0]);
+        }
+      }
     }
 
     final long elapsedInSecs = (System.currentTimeMillis() - context.startedOn) / 1000;
@@ -638,35 +711,114 @@ public class Neo4jImporter {
    * Reads the JSONL file line by line, calling the callback for each valid JSON record.
    * Used by syncSchema (which only reads, no record creation) with its own transaction management.
    */
+  /**
+   * The transaction currently on top of this thread's stack, or {@code null} when there is none - and also when the
+   * {@link Database} implementation does not expose its stack at all (a remote database), which the guard below
+   * treats as "cannot tell" rather than as "not mine".
+   */
+  private TransactionContext currentTransaction() {
+    return database instanceof final DatabaseInternal internal ? internal.getTransactionIfExists() : null;
+  }
+
+  /**
+   * Whether a commit or a rollback issued right now would resolve THIS import's transaction, and not somebody
+   * else's.
+   * <p>
+   * The flag is not enough on its own. {@code begin()} nests, so the stack can hold a caller's transaction under
+   * this import's, and everything that runs inside the row loop - {@code parsingCallback} above all, which belongs
+   * to the caller - can resolve this import's transaction without the flag ever hearing about it. A commit issued
+   * on that stale flag pops and commits the caller's work instead, silently, which is the defect #7272 fixed on
+   * the other row loops and this one kept (issue #7328).
+   * <p>
+   * Identity plus liveness is what settles it: a resolved nested transaction is off the stack, so the top is a
+   * different object; a resolved bottom transaction is still there but inactive; and a fresh {@code begin()} by
+   * the callback pushes a new object rather than reviving this one. The only case identity cannot separate is a
+   * bottom transaction resolved and re-begun, and a bottom transaction means there is no caller transaction
+   * underneath to protect.
+   *
+   * The contract this puts on {@code parsingCallback}, which is the one thing running in here that the caller
+   * writes: it must not return with an extra transaction of its own left open. A callback that resolves this
+   * import's transaction is handled - that is the case this guard exists for - but one that pushes a transaction
+   * on top of it and never resolves that leaves the import's own buried, and the guard will then correctly refuse
+   * to touch what is on top rather than resolving the wrong one. Nothing here unwinds a stack somebody else grew:
+   * popping transactions this importer did not push is precisely the defect being fixed.
+   *
+   * @param txOpen        this loop's own flag: false once the loop has resolved its transaction itself
+   * @param ownTransaction the transaction the loop's last {@code begin()} left current, or {@code null} when the
+   *                       implementation does not expose it - in which case the flag is all there is, as before
+   */
+  private boolean ownTransactionIsResolvable(final boolean txOpen, final TransactionContext ownTransaction) {
+    if (!txOpen)
+      return false;
+    if (ownTransaction == null)
+      return database.isTransactionActive();
+    return ownTransaction.isActive() && currentTransaction() == ownTransaction;
+  }
+
   private void readFile(final Callable<Void, JSONObject> callback) throws IOException {
     database.begin();
+    // Whether the transaction just opened is still the current one - cleared right before the commit below so a
+    // rollback in the finally can never pop a transaction this method has already committed away, let alone the
+    // caller's own (issue #7272).
+    boolean txOpen = true;
+    // The transaction this method pushed, so the commit and the rollback below can prove the live one is still it.
+    // See the same pair in parseVertices(): begin() nests, and the callback can resolve this transaction from
+    // under us (issue #7328).
+    final TransactionContext ownTx = currentTransaction();
 
-    try (InputStream inputStream = openInputStream()) {
-      try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()))) {
-        for (long lineNumber = 0; ; ++lineNumber) {
-          try {
-            final String line = reader.readLine();
-            if (line == null)
-              break;
+    try {
+      try (InputStream inputStream = openInputStream()) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()))) {
+          for (long lineNumber = 0; ; ++lineNumber) {
+            try {
+              final String line = reader.readLine();
+              if (line == null)
+                break;
 
-            final JSONObject json = new JSONObject(line);
-            final String type = json.getString("type");
-            if ("node".equals(type) || "relationship".equals(type))
-              callback.call(json);
-            else {
-              log("Invalid 'type' content on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
+              final JSONObject json = new JSONObject(line);
+              final String type = json.getString("type");
+              if ("node".equals(type) || "relationship".equals(type))
+                callback.call(json);
+              else {
+                log("Invalid 'type' content on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
+                context.errors.incrementAndGet();
+              }
+            } catch (final JSONException e) {
+              log("Error on parsing json on line %d of the input JSONL file. The line will be ignored.", lineNumber);
               context.errors.incrementAndGet();
             }
-          } catch (final JSONException e) {
-            log("Error on parsing json on line %d of the input JSONL file. The line will be ignored.", lineNumber);
-            context.errors.incrementAndGet();
           }
         }
       }
-    }
 
-    if (database.isTransactionActive())
-      database.commit();
+      // Gated on this method's own transaction being the live one rather than on the ambient
+      // database.isTransactionActive(), for the reason spelled out at the same point in parseVertices(): begin()
+      // nests, so ambient liveness is no evidence that the live transaction is the one this method pushed
+      // (issue #7328).
+      //
+      // The flag is cleared BEFORE the commit, not after, and parseVertices() does the same: a commit that throws
+      // skips everything below it, so clearing afterwards would leave the flag set and hand the finally below a
+      // transaction this method no longer owns - which on a Database that does not expose its stack degrades to
+      // the ambient test and rolls back the CALLER's.
+      if (ownTransactionIsResolvable(txOpen, ownTx)) {
+        txOpen = false;
+        database.commit();
+      }
+      txOpen = false;
+    } finally {
+      // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import
+      // can realistically raise - resolves the transaction too.
+      if (ownTransactionIsResolvable(txOpen, ownTx)) {
+        try {
+          database.rollback();
+        } catch (final Exception rollbackFailure) {
+          // Swallowed: a throw here would replace the failure the caller can actually act on - the I/O error that
+          // aborted the read - with one about the cleanup.
+          error("- Could not roll back after reading the input failed: the transaction it opened may still be on "
+              + "the stack: %s", rollbackFailure.getMessage());
+        }
+      }
+    }
   }
 
   /**

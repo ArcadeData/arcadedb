@@ -19,15 +19,23 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
+/**
+ * {@code DELETE /server/api-tokens?token=<hash>}: revokes a token by its hash. The refusal to accept
+ * a plaintext token here - it would land in whatever logged the request, which is the exposure the
+ * revocation is ending - lives in {@link ServerControlPlane#deleteApiToken} so the gRPC
+ * {@code DeleteApiToken} RPC refuses it too (issue #7309).
+ */
 public class DeleteApiTokenHandler extends AbstractServerHttpHandler {
+  private final ServerControlPlane controlPlane;
 
   public DeleteApiTokenHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.controlPlane = new ServerControlPlane(httpServer.getServer());
   }
 
   @Override
@@ -35,20 +43,14 @@ public class DeleteApiTokenHandler extends AbstractServerHttpHandler {
       final JSONObject payload) {
     checkRootUser(user);
 
-    final String tokenHash = getQueryParameter(exchange, "token");
-    if (tokenHash == null || tokenHash.isBlank())
-      return new ExecutionResponse(400, new JSONObject().put("error", "Token hash parameter is required").toString());
+    try {
+      controlPlane.deleteApiToken(getQueryParameter(exchange, "token"));
+    } catch (final ServerControlPlane.NotFoundException e) {
+      return new ExecutionResponse(404, new JSONObject().put("result", "Token not found").toString());
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
+    }
 
-    // Only accept token hashes, not plaintext tokens — plaintext tokens in query parameters could leak in server logs and URL history
-    if (ApiTokenConfiguration.isApiToken(tokenHash))
-      return new ExecutionResponse(400,
-          new JSONObject().put("error", "Use token hash (from list endpoint) instead of plaintext token for deletion").toString());
-
-    final ApiTokenConfiguration tokenConfig = httpServer.getServer().getSecurity().getApiTokenConfiguration();
-    final boolean deleted = tokenConfig.deleteToken(tokenHash);
-
-    final JSONObject response = new JSONObject();
-    response.put("result", deleted ? "Token deleted" : "Token not found");
-    return new ExecutionResponse(deleted ? 200 : 404, response.toString());
+    return new ExecutionResponse(200, new JSONObject().put("result", "Token deleted").toString());
   }
 }

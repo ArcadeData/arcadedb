@@ -489,26 +489,74 @@ public class OrientDBImporter {
       logger.logLine(1, "Updating LINKs in %,d documents...", documentsWithLinksToUpdate.size());
 
       database.begin();
+      // Whether the transaction just opened (or the one begun after a periodic commit below) is still the current
+      // one. Cleared right before every commit - which pops it in a finally even if it throws - so a rollback below
+      // can never pop a transaction this method has already committed away (issue #7272).
+      boolean txOpen = true;
 
-      for (RID rid : documentsWithLinksToUpdate) {
-        final MutableDocument record = database.lookupByRID(rid, true).asDocument().modify();
-        for (String pName : record.getPropertyNames()) {
-          final Object pValue = record.get(pName);
-          final RID converted = convertRIDs(pValue);
-          if (converted != null)
-            record.set(pName, converted);
+      // Documents an intermediate commit already made durable. context.updatedDocuments counts every document
+      // touched, the ones still inside the transaction a failure rolls back included.
+      long committedDocuments = context.updatedDocuments.get();
+
+      // Whether the loop ran to its own trailing commit. Distinct from txOpen: a commit() that throws pops the
+      // transaction in its own finally, so txOpen is already false there, yet the batch it failed to make
+      // durable still has to come back off the counter.
+      boolean completed = false;
+
+      try {
+        for (RID rid : documentsWithLinksToUpdate) {
+          final MutableDocument record = database.lookupByRID(rid, true).asDocument().modify();
+          for (String pName : record.getPropertyNames()) {
+            final Object pValue = record.get(pName);
+            final RID converted = convertRIDs(pValue);
+            if (converted != null)
+              record.set(pName, converted);
+          }
+          record.save();
+
+          context.updatedDocuments.incrementAndGet();
+
+          if (context.updatedDocuments.get() > 0 && context.updatedDocuments.get() % batchSize == 0) {
+            txOpen = false;
+            database.commit();
+            committedDocuments = context.updatedDocuments.get();
+            database.begin();
+            txOpen = true;
+          }
         }
-        record.save();
+        txOpen = false;
+        database.commit();
+        completed = true;
+        logger.logLine(1, "- Updated LINKs in %,d records", context.updatedDocuments.get());
+      } finally {
+        // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import
+        // can realistically raise - resolves the transaction too.
+        if (txOpen && database.isTransactionActive()) {
+          try {
+            database.rollback();
+          } catch (final Exception rollbackFailure) {
+            // Swallowed: a throw here would replace the failure the caller can actually act on with one about the
+            // cleanup, and would skip the counter correction below.
+            logger.errorLine("- Could not roll back after the LINK update failed: the transaction it opened may still "
+                + "be on the stack: %s", rollbackFailure.getMessage());
+          }
+        }
 
-        context.updatedDocuments.incrementAndGet();
+        // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
+        // and would otherwise leave the batch it failed to write counted as if it had survived.
+        if (!completed) {
+          // What the report calls "updated" has to be what survived: leaving the counter at the number of documents
+          // touched would credit the import with the ones the rollback just took away.
+          final long readDocuments = context.updatedDocuments.get();
+          context.updatedDocuments.set(committedDocuments);
 
-        if (context.updatedDocuments.get() > 0 && context.updatedDocuments.get() % batchSize == 0) {
-          database.commit();
-          database.begin();
+          if (committedDocuments > 0)
+            logger.logLine(1,
+                "- LINK update failed after %,d documents: the update is PARTIAL - %,d of them an earlier batch commit "
+                    + "made durable and they stay on the disk, the other %,d were rolled back", readDocuments,
+                committedDocuments, readDocuments - committedDocuments);
         }
       }
-      database.commit();
-      logger.logLine(1, "- Updated LINKs in %,d records", context.updatedDocuments.get());
     }
   }
 

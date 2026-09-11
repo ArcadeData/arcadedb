@@ -345,6 +345,10 @@ public class FileManager {
         // during a backup instead of being postponed for its whole duration. The file leaves this manager either
         // way - the LIVE database must see it as gone immediately.
         final DroppedFileHandler handler = droppedFileHandler;
+        // Raised here as well as inside drop() so the deferred branch - where the physical delete is postponed but
+        // the file has still left this manager - reads as dropped to a writer racing it (issue #7363). Before the
+        // drop, so no window exists in which the file is being removed and does not say so.
+        file.markDropped();
         if (handler == null || !handler.deferDrop(file))
           file.drop();
 
@@ -421,6 +425,18 @@ public class FileManager {
       throw new IllegalArgumentException("File with id " + fileId + " was not found");
 
     return f;
+  }
+
+  /**
+   * Same lookup as {@link #getFile(int)} but answering {@code null} instead of throwing, for a caller that has to
+   * tolerate a file disappearing under it - the async flush thread, which resolves a file id long after the
+   * transaction that queued the page and can legitimately find it dropped by an index compaction meanwhile
+   * (issue #7363).
+   *
+   * @return the file registered under {@code fileId}, or {@code null} when nothing is
+   */
+  public ComponentFile getFileIfExists(final int fileId) {
+    return fileIdMap.get(fileId);
   }
 
   /**

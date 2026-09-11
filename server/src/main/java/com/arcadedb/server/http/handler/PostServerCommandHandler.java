@@ -18,31 +18,18 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ServerDatabase;
-import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.monitor.ServerQueryProfiler;
-import com.arcadedb.server.backup.AutoBackupConfig;
-import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
-import com.arcadedb.server.backup.BackupCoordinator;
-import com.arcadedb.server.backup.BackupRetentionManager;
-import com.arcadedb.server.HAReplicatedDatabase;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
-import com.arcadedb.utility.FileUtils;
-import com.arcadedb.utility.IPAddressBlocklist;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
@@ -51,23 +38,13 @@ import io.undertow.util.HttpString;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.InetAddress;
 import java.net.URI;
-import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
@@ -103,10 +80,18 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String IMPORT_DATABASE      = "import database";
   private static final String PROFILER             = "profiler";
 
-  private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
+  /**
+   * The transport-independent implementation of these commands, shared with gRPC's
+   * {@code ArcadeDbAdminService} so the two protocols cannot drift apart on what an administrative
+   * operation does (issue #7304). What stays in this handler is the command-string grammar, the
+   * leader forwarding, the mapping onto HTTP status codes, and the operations that stream progress
+   * over the exchange.
+   */
+  private final ServerControlPlane controlPlane;
 
   public PostServerCommandHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.controlPlane = new ServerControlPlane(httpServer.getServer());
   }
 
   @Override
@@ -155,10 +140,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       createUser(extractTarget(command, CREATE_USER));
     else if (command_lc.startsWith(DROP_USER))
       dropUser(extractTarget(command, DROP_USER));
-    else if (command_lc.startsWith(CONNECT_CLUSTER)) {
-      if (!connectCluster(extractTarget(command, CONNECT_CLUSTER), exchange))
-        return null;
-    } else if (DISCONNECT_CLUSTER.equals(command_lc))
+    else if (command_lc.startsWith(CONNECT_CLUSTER))
+      connectCluster(extractTarget(command, CONNECT_CLUSTER));
+    else if (DISCONNECT_CLUSTER.equals(command_lc))
       disconnectCluster();
     else if (command_lc.startsWith(SET_DATABASE_SETTING))
       setDatabaseSetting(extractTarget(command, SET_DATABASE_SETTING));
@@ -195,12 +179,194 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     return new ExecutionResponse(200, response.toString());
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // The commands whose implementation moved to ServerControlPlane (issue #7304). Each wrapper runs
+  // the shared implementation and then increments this command's http.* counter.
+  //
+  // The counters stay on this side of the split because they count HTTP requests, and
+  // ServerControlPlane now serves gRPC as well: incrementing them there would fold gRPC admin
+  // traffic into the HTTP dashboards. gRPC counts its own admin calls per method in
+  // GrpcMetricsInterceptor.
+  //
+  // The increment comes AFTER the call, never before it. Every one of these counters used to be
+  // incremented inside the moved method, past that method's own validation, so a command rejected
+  // for an empty database name or a password the policy refuses was never counted. Chaining the
+  // increment onto the receiver would have counted attempts instead, because Java evaluates the
+  // receiver first.
+  // ---------------------------------------------------------------------------------------------
+
+  private void shutdownServer(final String serverName) throws IOException {
+    controlPlane.shutdownServer(serverName);
+    Metrics.counter("http.server-shutdown").increment();
+  }
+
+  private void closeDatabase(final String databaseName) {
+    controlPlane.closeDatabase(databaseName);
+    Metrics.counter("http.close-database").increment();
+  }
+
+  private void openDatabase(final String databaseName) {
+    controlPlane.openDatabase(databaseName);
+    Metrics.counter("http.open-database").increment();
+  }
+
+  private void createUser(final String payload) {
+    controlPlane.createUser(new JSONObject(payload));
+    Metrics.counter("http.create-user").increment();
+  }
+
+  private void dropUser(final String userName) {
+    controlPlane.dropUser(userName);
+    Metrics.counter("http.drop-user").increment();
+  }
+
+  private void connectCluster(final String serverAddress) {
+    // Always throws: the current HA implementation does not support it. Counted first, because there
+    // is no success to count after - which is what the moved implementation did too.
+    Metrics.counter("http.connect-cluster").increment();
+    controlPlane.connectCluster(serverAddress);
+  }
+
+  private void disconnectCluster() {
+    controlPlane.disconnectCluster();
+    Metrics.counter("http.server-disconnect").increment();
+  }
+
+  private void alignDatabase(final String databaseName) {
+    controlPlane.alignDatabase(databaseName);
+    Metrics.counter("http.align-database").increment();
+  }
+
+  private JSONObject getServerEvents(final String fileName) {
+    final JSONObject events = controlPlane.getServerEvents(fileName);
+    Metrics.counter("http.get-server-events").increment();
+    return events;
+  }
+
+  private ExecutionResponse getBackupConfig() {
+    final JSONObject config = controlPlane.getBackupConfig();
+    Metrics.counter("http.get-backup-config").increment();
+    return new ExecutionResponse(200, config.toString());
+  }
+
+  private ExecutionResponse listBackups(final String databaseName) {
+    final JSONObject backups = controlPlane.listBackups(databaseName);
+    Metrics.counter("http.list-backups").increment();
+    return new ExecutionResponse(200, backups.toString());
+  }
+
   private String extractTarget(String command, String keyword) {
     final int pos = command.toLowerCase().indexOf(keyword);
     if (pos == -1)
       return "";
 
     return command.substring(pos + keyword.length()).trim();
+  }
+
+  /**
+   * {@code set database setting <database> <key> <value>}. The command is tokenized on the first
+   * space(s) before {@link ServerControlPlane#applySetting} strips quotes, so quoting cannot make a
+   * space part of the database name or of the key.
+   */
+  private void setDatabaseSetting(final String triple) throws IOException {
+    final String tripleTrimmed = triple.trim();
+    final int firstSpace = tripleTrimmed.indexOf(" ");
+    if (firstSpace == -1)
+      throw new IllegalArgumentException("Expected <database> <key> <value>");
+
+    final String pairTrimmed = tripleTrimmed.substring(firstSpace).trim();
+    final int secondSpace = pairTrimmed.indexOf(" ");
+    if (secondSpace == -1)
+      throw new IllegalArgumentException("Expected <database> <key> <value>");
+
+    controlPlane.setDatabaseSetting(tripleTrimmed.substring(0, firstSpace), pairTrimmed.substring(0, secondSpace),
+        pairTrimmed.substring(secondSpace + 1));
+  }
+
+  /**
+   * {@code set server setting <key> <value>}.
+   */
+  private void setServerSetting(final String pair) {
+    final String pairTrimmed = pair.trim();
+
+    final int firstSpace = pairTrimmed.indexOf(" ");
+    if (firstSpace == -1)
+      throw new IllegalArgumentException("Expected <key> <value>");
+
+    controlPlane.setServerSetting(pairTrimmed.substring(0, firstSpace), pairTrimmed.substring(firstSpace + 1));
+  }
+
+  private ExecutionResponse setBackupConfig(final JSONObject payload) throws IOException {
+    if (!payload.has("config"))
+      throw new IllegalArgumentException("Missing 'config' in payload");
+
+    final JSONObject result = controlPlane.setBackupConfig(payload.getJSONObject("config"));
+    Metrics.counter("http.set-backup-config").increment();
+    return new ExecutionResponse(200, result.toString());
+  }
+
+  /**
+   * {@code trigger backup <database>}. A backup - or, since #7384, a restore - already running for the
+   * same database is a 409 here and an {@code ABORTED} on gRPC; both carry the message the shared
+   * implementation raised.
+   */
+  private ExecutionResponse triggerBackup(final String databaseName) {
+    try {
+      final JSONObject result = controlPlane.triggerBackup(databaseName);
+      Metrics.counter("http.trigger-backup").increment();
+      return new ExecutionResponse(200, result.toString());
+    } catch (final ServerControlPlane.OperationInProgressException e) {
+      return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
+    }
+  }
+
+  /**
+   * {@code delete backup <database> <fileName>}.
+   */
+  private ExecutionResponse deleteBackup(final String args) {
+    final int space = args.indexOf(' ');
+    if (space <= 0)
+      throw new IllegalArgumentException("Usage: delete backup <database> <fileName>");
+
+    final String databaseName = args.substring(0, space).trim();
+    final String fileName = args.substring(space + 1).trim();
+
+    final JSONObject result = controlPlane.deleteBackup(databaseName, fileName);
+    Metrics.counter("http.delete-backup").increment();
+    return new ExecutionResponse(200, result.toString());
+  }
+
+  /**
+   * {@code profiler <start [timeout] | stop | reset | results | list | load <file>>}. Only the
+   * sub-command grammar lives here; every branch runs the shared implementation.
+   */
+  private ExecutionResponse handleProfilerCommand(final String subCommand) {
+    final String sub = subCommand.toLowerCase(Locale.ENGLISH).trim();
+
+    if ("start".equals(sub) || sub.startsWith("start ")) {
+      final String timeoutStr = sub.substring(5).trim();
+      int timeoutSec = 0;
+      if (!timeoutStr.isEmpty()) {
+        try {
+          timeoutSec = Integer.parseInt(timeoutStr);
+        } catch (final NumberFormatException e) {
+          return new ExecutionResponse(400, "{ \"error\" : \"Invalid timeout value: " + timeoutStr + "\"}");
+        }
+      }
+      return new ExecutionResponse(200, controlPlane.profilerStart(timeoutSec).toString());
+
+    } else if ("stop".equals(sub))
+      return new ExecutionResponse(200, controlPlane.profilerStop().toString());
+    else if ("reset".equals(sub))
+      return new ExecutionResponse(200, controlPlane.profilerReset().toString());
+    else if ("results".equals(sub))
+      return new ExecutionResponse(200, controlPlane.profilerResults().toString());
+    else if ("list".equals(sub))
+      return new ExecutionResponse(200, new JSONObject().put("result", controlPlane.profilerList()).toString());
+    else if (sub.startsWith("load "))
+      return new ExecutionResponse(200, controlPlane.profilerLoad(sub.substring(5).trim()).toString());
+    else
+      return new ExecutionResponse(400, "{ \"error\" : \"Unknown profiler command: " + subCommand + "\"}");
   }
 
   private ExecutionResponse listDatabases(final ServerSecurityUser user) {
@@ -214,22 +380,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     return new ExecutionResponse(200, response.toString());
   }
 
-  private void shutdownServer(final String serverName) throws IOException {
-    Metrics.counter("http.server-shutdown").increment();
-
-    if (serverName.isEmpty()) {
-      // SHUTDOWN CURRENT SERVER
-      new Timer().schedule(new TimerTask() {
-        @Override
-        public void run() {
-          httpServer.getServer().stop();
-          System.exit(0);
-        }
-      }, 1000);
-    } else {
-      getHA().shutdownRemoteServer(serverName);
-    }
-  }
 
   private void createDatabase(final String databaseName) {
     if (databaseName.isEmpty())
@@ -237,19 +387,20 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     checkServerIsLeaderIfInHA();
 
-    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.create-database").increment();
 
-    final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
-
-    final DatabaseInternal wrappedDb = db.getWrappedDatabaseInstance();
-    if (wrappedDb instanceof HAReplicatedDatabase haDb)
-      haDb.createInReplicas();
+    // The cluster-wide create lives in the control plane so gRPC's CreateDatabase runs the same
+    // thing rather than a second implementation that forgot the replication half (issue #7389).
+    controlPlane.createDatabase(databaseName);
   }
 
   /**
    * Restores a database from a backup URL. Format: {@code restore database <name> <url>}.
-   * Supports SSE progress streaming when the client sends {@code Accept: text/event-stream}.
+   * Streams progress as SSE when the client sends {@code Accept: text/event-stream}.
+   * <p>
+   * The restore itself lives in {@link ServerControlPlane#restoreDatabase}, shared with the gRPC
+   * {@code RestoreDatabase} RPC (issue #7308); what is left here is the command grammar and the
+   * choice of progress sink.
    */
   private ExecutionResponse restoreDatabase(final String args, final HttpServerExchange exchange) {
     final int space = args.indexOf(' ');
@@ -262,23 +413,15 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (databaseName.isEmpty() || url.isEmpty())
       throw new IllegalArgumentException("Usage: restore database <name> <url>");
 
-    validateClientRestoreImportUrl(url);
-
+    // The leader gate now precedes the URL guard, which the shared implementation applies (it used to
+    // run here, first). Deliberate: a node that is going to refuse the command should not first
+    // resolve a hostname the caller chose, and the caller has to take the command to the leader
+    // either way, where the URL refusal is what they will get. Issue #7308.
     checkServerIsLeaderIfInHA();
-
-    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.restore-database").increment();
 
-    // Prevent path traversal via the caller-supplied database name (GHSA-qwgr-2c45-63xx).
-    server.checkDatabaseNameIsValid(databaseName);
-
-    final String dbPath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
-        + File.separator + databaseName;
-
-    if (new File(dbPath).exists())
-      throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
-
-    return performRestore(databaseName, dbPath, url, exchange);
+    return streamOrRun(exchange, databaseName + " restored successfully",
+        listener -> { controlPlane.restoreDatabase(databaseName, url, listener); return null; });
   }
 
   /**
@@ -287,6 +430,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * filesystem path. Format: {@code restore backup <database> <fileName> as <targetDatabase>}.
    * The optional payload flag {@code "overwrite": true} drops the target database first if it
    * already exists; without it the command fails when the target database exists.
+   * <p>
+   * Shared with the gRPC {@code RestoreBackup} RPC through {@link ServerControlPlane#restoreBackup}.
    */
   private ExecutionResponse restoreBackup(final String args, final JSONObject payload, final HttpServerExchange exchange) {
     final int asIdx = args.toLowerCase(Locale.ENGLISH).lastIndexOf(" as ");
@@ -307,25 +452,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final boolean overwrite = payload.getBoolean("overwrite", false);
 
     checkServerIsLeaderIfInHA();
-
-    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.restore-backup").increment();
 
-    final Path backupFile = resolveBackupFile(server, databaseName, fileName);
-
-    final String dbPath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
-        + File.separator + targetDatabase;
-
-    final boolean exists = server.existsDatabase(targetDatabase) || new File(dbPath).exists();
-    if (exists && !overwrite)
-      throw new IllegalArgumentException(
-          "Database '" + targetDatabase + "' already exists. Enable overwrite to replace it with the backup");
-
-    // Note: any existing target is dropped by performRestore only AFTER the restore into a temporary
-    // directory succeeds, so a failed restore leaves the original database intact (issue #5027).
-    // The backup file is resolved server-side, so this internal file:// URL bypasses the SSRF guard.
-    final String url = "file://" + backupFile.toAbsolutePath();
-    return performRestore(targetDatabase, dbPath, url, exchange);
+    return streamOrRun(exchange, targetDatabase + " restored successfully",
+        listener -> { controlPlane.restoreBackup(databaseName, fileName, targetDatabase, overwrite, listener); return null; });
   }
 
   /**
@@ -333,254 +463,24 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * validated and resolved server-side to prevent path traversal. Format:
    * {@code delete backup <database> <fileName>}.
    */
-  private ExecutionResponse deleteBackup(final String args) {
-    final int space = args.indexOf(' ');
-    if (space <= 0)
-      throw new IllegalArgumentException("Usage: delete backup <database> <fileName>");
-
-    final String databaseName = args.substring(0, space).trim();
-    final String fileName = args.substring(space + 1).trim();
-    if (databaseName.isEmpty() || fileName.isEmpty())
-      throw new IllegalArgumentException("Usage: delete backup <database> <fileName>");
-
-    Metrics.counter("http.delete-backup").increment();
-
-    final ArcadeDBServer server = httpServer.getServer();
-    final Path backupFile = resolveBackupFile(server, databaseName, fileName);
-
-    try {
-      Files.delete(backupFile);
-    } catch (final IOException e) {
-      throw new CommandExecutionException("Error deleting backup file '" + fileName + "'", e);
-    }
-
-    return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
-  }
-
-  /**
-   * Resolves a backup file name to an absolute path inside the configured auto-backup directory for
-   * the given database, rejecting any name that contains path separators or traversal sequences.
-   */
-  private Path resolveBackupFile(final ArcadeDBServer server, final String databaseName, final String fileName) {
-    if (databaseName.isEmpty())
-      throw new IllegalArgumentException("Database name empty");
-
-    // Reject anything that is not a plain backup file name.
-    if (fileName.contains("/") || fileName.contains("\\") || fileName.contains("..") || fileName.isBlank()
-        || !fileName.endsWith(".zip") || !fileName.contains("-backup-"))
-      throw new IllegalArgumentException("Invalid backup file name: " + fileName);
-
-    final AutoBackupSchedulerPlugin plugin = getBackupPlugin(server);
-    if (plugin == null || !plugin.isEnabled() || plugin.getBackupConfig() == null)
-      throw new IllegalArgumentException("Auto-backup is not configured");
-
-    String backupDirectory = plugin.getBackupConfig().getBackupDirectory();
-    final Path backupPath = Paths.get(backupDirectory);
-    if (!backupPath.isAbsolute())
-      backupDirectory = Paths.get(server.getRootPath(), backupDirectory).toString();
-
-    final Path dbBackupDir = Paths.get(backupDirectory, databaseName).normalize();
-    final Path resolved = dbBackupDir.resolve(fileName).normalize();
-
-    // Defence in depth: the resolved file must still live inside the database backup directory.
-    if (!resolved.startsWith(dbBackupDir))
-      throw new IllegalArgumentException("Invalid backup file path");
-
-    if (!Files.exists(resolved) || !Files.isRegularFile(resolved))
-      throw new IllegalArgumentException("Backup file not found: " + fileName);
-
-    return resolved;
-  }
-
-  /**
-   * Shared restore execution used by {@code restore database} and {@code restore backup}. Performs
-   * the actual restore from {@code url} into {@code dbPath}, streaming progress via SSE when
-   * requested and replicating the restored database in HA mode. The caller is responsible for any
-   * pre-restore existence/overwrite checks.
-   */
-  private ExecutionResponse performRestore(final String databaseName, final String dbPath, final String url,
-      final HttpServerExchange exchange) {
-    final ArcadeDBServer server = httpServer.getServer();
-
-    // Restore into a temporary sibling directory first, then atomically swap it into place only on
-    // success. This keeps an existing target database intact when the restore fails (issue #5027).
-    // The temp directory name is prefixed with the reserved-database marker ('.') so that, if the
-    // process dies mid-restore, loadDatabases() skips the orphan at next startup instead of trying
-    // to open it as a user database.
-    final File finalDir = new File(dbPath);
-    final File tempDir = new File(finalDir.getParentFile(),
-        ArcadeDBServer.RESERVED_DATABASE_PREFIX + "restore-tmp-" + databaseName + "-" + System.nanoTime());
-
-    if (isSSERequested(exchange)) {
-      startSSE(exchange);
-      final OutputStream out = exchange.getOutputStream();
-
-      try {
-        final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-        final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
-        // SAME BOOLEAN validateClientRestoreImportUrl ALREADY VALIDATED THIS URL AGAINST: THE FETCH INSIDE
-        // FullRestoreFormat MUST AGREE WITH THIS SERVER'S OWN CONFIGURATION RATHER THAN FALLING BACK TO THE STATIC
-        // DEFAULT, OR A PER-SERVER OVERRIDE THAT LET THE COMMAND THROUGH WOULD STILL HAVE THE FETCH REFUSE IT.
-        clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(restorer, isRestoreImportLocalUrlsAllowed());
-
-        // Set a logger with SSE callback for progress
-        final Class<?> loggerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger");
-        final Class<?> listenerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger$LogListener");
-        final Object listener = java.lang.reflect.Proxy.newProxyInstance(
-            listenerClass.getClassLoader(), new Class<?>[]{ listenerClass },
-            (proxy, method, methodArgs) -> {
-              if ("onLogLine".equals(method.getName()))
-                sendSSE(out, new JSONObject().put("status", "progress").put("message", (String) methodArgs[0]));
-              return null;
-            });
-        final Object logger = loggerClass.getConstructor(int.class, listenerClass).newInstance(2, listener);
-        clazz.getMethod("setLogger", loggerClass).invoke(restorer, logger);
-
-        sendSSE(out, new JSONObject().put("status", "progress").put("message", "Downloading and restoring " + databaseName + "..."));
-        clazz.getMethod("restoreDatabase").invoke(restorer);
-        swapRestoredDatabase(server, databaseName, finalDir, tempDir);
-        final ServerDatabase restoredSse = server.getDatabase(databaseName);
-        replicateRestoredDatabase(server, restoredSse, databaseName);
-        sendSSE(out, new JSONObject().put("status", "completed").put("message", databaseName + " restored successfully"));
-      } catch (final Exception e) {
-        FileUtils.deleteRecursively(tempDir);
-        final Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ? e.getCause() : e;
-        sendSSE(out, new JSONObject().put("status", "error").put("message", cause.getMessage()));
-      } finally {
-        closeSSE(out);
-      }
-      return null; // response already sent via SSE
-    }
-
-    // Synchronous fallback (no SSE)
-    try {
-      final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-      final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
-      clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(restorer, isRestoreImportLocalUrlsAllowed());
-      clazz.getMethod("restoreDatabase").invoke(restorer);
-    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException
-                   | InstantiationException e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw new CommandExecutionException("Restore libs not found in classpath", e);
-    } catch (final java.lang.reflect.InvocationTargetException e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw new CommandExecutionException("Error restoring database", e.getTargetException());
-    }
-
-    swapRestoredDatabase(server, databaseName, finalDir, tempDir);
-    final ServerDatabase restored = server.getDatabase(databaseName);
-    replicateRestoredDatabase(server, restored, databaseName);
-    return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
-  }
-
-  /**
-   * Swaps a freshly-restored temporary directory into the final database directory. The existing
-   * target database (if any) is dropped only now that the restore into {@code tempDir} has
-   * succeeded, so a failed restore never destroys the original data (issue #5027).
-   */
-  private void swapRestoredDatabase(final ArcadeDBServer server, final String databaseName, final File finalDir,
-      final File tempDir) {
-    try {
-      // Drop the previous target (HA-aware) BEFORE taking the registry lock and only after a
-      // successful restore into tempDir. In HA mode dropDatabase() round-trips through Raft and the
-      // apply thread itself acquires databasesLock, so holding that lock here would deadlock; only the
-      // pure-local file swap below runs under the lock, matching the snapshot-installer pattern (#4832).
-      if (server.existsDatabase(databaseName))
-        dropDatabase(databaseName);
-
-      // Serialise the on-disk swap against concurrent getDatabase / createDatabase so no concurrent
-      // open observes the transient half-swapped directory.
-      synchronized (server.getDatabasesLock()) {
-        if (finalDir.exists())
-          FileUtils.deleteRecursively(finalDir);
-
-        try {
-          Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.ATOMIC_MOVE);
-        } catch (final AtomicMoveNotSupportedException e) {
-          Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        }
-      }
-    } catch (final CommandExecutionException e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw e;
-    } catch (final Exception e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw new CommandExecutionException("Error activating restored database '" + databaseName + "'", e);
-    }
-  }
-
-  /**
-   * Validates a client-supplied restore/import URL to prevent SSRF and local-file reads. Unless the
-   * operator enables {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS}, only
-   * {@code http}/{@code https} URLs to non-private hosts are accepted; {@code file://} and any
-   * private, loopback, link-local, site-local, multicast, wildcard or unresolvable host is rejected.
-   */
-  private void validateClientRestoreImportUrl(final String url) {
-    if (isRestoreImportLocalUrlsAllowed())
-      return;
-
-    final URI uri;
-    try {
-      uri = URI.create(url.trim());
-    } catch (final IllegalArgumentException e) {
-      throw new SecurityException("Invalid restore/import URL");
-    }
-
-    final String scheme = uri.getScheme() == null ? null : uri.getScheme().toLowerCase(Locale.ENGLISH);
-    if (scheme == null)
-      throw new SecurityException("Restore/import URL must use the 'http' or 'https' scheme");
-
-    if (!"http".equals(scheme) && !"https".equals(scheme))
-      throw new SecurityException("Restore/import URL scheme '" + scheme + "' is not allowed. Enable '"
-          + GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getKey()
-          + "' to permit local-file and non-HTTP URLs");
-
-    final String host = uri.getHost();
-    if (host == null || host.isBlank())
-      throw new SecurityException("Restore/import URL host is missing");
-
-    if (isBlockedHost(host))
-      throw new SecurityException("Restore/import from private, loopback or link-local hosts is blocked. Enable '"
-          + GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getKey() + "' to override");
-  }
-
-  /**
-   * The single source of truth for {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS} on this server
-   * instance, read from the server's own (possibly per-instance-overridden) {@link
-   * com.arcadedb.ContextConfiguration} rather than the static default. {@link #validateClientRestoreImportUrl} and
-   * {@link #performRestore} must agree on this value: the pre-check here decides whether to accept the command at
-   * all, and the actual fetch inside {@code FullRestoreFormat} decides whether to follow it, and letting them read
-   * from two different configuration sources would let one permit what the other refuses on the very same server.
-   */
-  private boolean isRestoreImportLocalUrlsAllowed() {
-    return httpServer.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS);
-  }
-
   /**
    * Returns true when {@code host} resolves to (or is) an address in a range that must not be reached
-   * from a client-supplied restore/import URL. Every resolved address is checked so a hostname that
-   * resolves to a mix of public and private addresses is still rejected. An unresolvable host is
-   * treated as blocked.
+   * from a client-supplied restore/import URL.
    * <p>
-   * Delegates to {@link IPAddressBlocklist#defaultReservedRanges()}, the single shared implementation also used
-   * by {@code ImportSecurityValidator.isBlockedAddress} in the integration module and by {@code LOAD CSV}. A
-   * previous version duplicated this logic ad-hoc; see {@code ImportSecurityValidator.isBlockedAddress} for why
-   * that was the root cause of GHSA-67m7-7w7g-mpmh. Package-private for direct unit testing.
+   * Delegates to {@link ServerControlPlane#isBlockedRestoreImportHost}, which is where the guard moved
+   * when restore and import became transport-independent (issue #7308). Kept here, package-private, so
+   * the SSRF unit test keeps naming the class whose command surface the guard protects.
    */
   static boolean isBlockedHost(final String host) {
-    try {
-      for (final InetAddress addr : InetAddress.getAllByName(host))
-        if (RESERVED_ADDRESSES.isBlocked(addr))
-          return true;
-      return false;
-    } catch (final UnknownHostException e) {
-      return true;
-    }
+    return ServerControlPlane.isBlockedRestoreImportHost(host);
   }
 
   /**
    * Creates and imports a database in one step. Format: {@code import database <name> <url>}.
-   * Supports SSE progress streaming when the client sends {@code Accept: text/event-stream}.
+   * Streams progress as SSE when the client sends {@code Accept: text/event-stream}.
+   * <p>
+   * The import itself lives in {@link ServerControlPlane#importDatabase}, shared with the gRPC
+   * {@code ImportDatabase} RPC (issue #7308).
    */
   private ExecutionResponse importDatabase(final String args, final HttpServerExchange exchange) {
     final int space = args.indexOf(' ');
@@ -593,159 +493,147 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (databaseName.isEmpty() || url.isEmpty())
       throw new IllegalArgumentException("Usage: import database <name> <url>");
 
-    // Validate BEFORE creating the database so a rejected URL leaves no empty database behind.
-    validateClientRestoreImportUrl(url);
-
+    // The leader gate now precedes the URL guard, which the shared implementation applies (it used to
+    // run here, first). Deliberate: a node that is going to refuse the command should not first
+    // resolve a hostname the caller chose, and the caller has to take the command to the leader
+    // either way, where the URL refusal is what they will get. Issue #7308.
     checkServerIsLeaderIfInHA();
-
-    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.import-database").increment();
 
-    // Create the database cluster-wide. In HA mode this submits an INSTALL_DATABASE_ENTRY
-    // via Raft so every replica creates the database locally before we start importing.
-    // The importer's subsequent transactions then replicate as normal TX_ENTRY stream.
-    final ServerDatabase createdDb = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
-    final DatabaseInternal wrapped = createdDb.getWrappedDatabaseInstance();
-    if (wrapped instanceof HAReplicatedDatabase haDb) {
-      try {
-        haDb.createInReplicas();
-      } catch (final RuntimeException e) {
-        // Compensate: drop the just-created local database so the operator can retry cleanly.
-        try {
-          createdDb.getEmbedded().drop();
-          server.removeDatabase(databaseName);
-        } catch (final Exception ignored) {
-          // best-effort
-        }
-        throw e;
-      }
-    }
-    final Database database = createdDb;
-
-    if (isSSERequested(exchange)) {
-      startSSE(exchange);
-      final OutputStream out = exchange.getOutputStream();
-
-      try {
-        final Class<?> clazz = Class.forName("com.arcadedb.integration.importer.Importer");
-        final Object importer = clazz.getConstructor(Database.class, String.class).newInstance(database, url);
-        // SAME BOOLEAN validateClientRestoreImportUrl ALREADY VALIDATED THIS URL AGAINST: THE FETCH INSIDE
-        // SourceDiscovery MUST AGREE WITH THIS SERVER'S OWN CONFIGURATION RATHER THAN FALLING BACK TO THE STATIC
-        // DEFAULT, OR A PER-SERVER OVERRIDE THAT LET THE COMMAND THROUGH WOULD STILL HAVE THE FETCH REFUSE IT (#6474).
-        clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(importer, isRestoreImportLocalUrlsAllowed());
-
-        // Set a logger with SSE callback
-        final Class<?> loggerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger");
-        final Class<?> listenerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger$LogListener");
-        final Object listener = java.lang.reflect.Proxy.newProxyInstance(
-            listenerClass.getClassLoader(), new Class<?>[]{ listenerClass },
-            (proxy, method, methodArgs) -> {
-              if ("onLogLine".equals(method.getName()))
-                sendSSE(out, new JSONObject().put("status", "progress").put("message", (String) methodArgs[0]));
-              return null;
-            });
-        final Object logger = loggerClass.getConstructor(int.class, listenerClass).newInstance(2, listener);
-        clazz.getMethod("setLogger", loggerClass).invoke(importer, logger);
-
-        sendSSE(out, new JSONObject().put("status", "progress").put("message", "Importing " + databaseName + "..."));
-
-        // Start import in current thread (we're already on a worker thread)
-        // Poll ImporterContext for structured progress every second in a separate thread
-        final AtomicReference<Object> contextRef = new AtomicReference<>();
-        try { contextRef.set(clazz.getMethod("getContext").invoke(importer)); } catch (final Exception ignored) {}
-
-        final Timer progressTimer = new Timer(true);
-        if (contextRef.get() != null) {
-          progressTimer.schedule(new TimerTask() {
-            @Override
-            public void run() {
-              try {
-                final Object ctx = contextRef.get();
-                final Class<?> ctxClass = ctx.getClass();
-                final long vertices = ((AtomicLong) ctxClass.getField("createdVertices").get(ctx)).get();
-                final long edges = ((AtomicLong) ctxClass.getField("createdEdges").get(ctx)).get();
-                final long parsed = ((AtomicLong) ctxClass.getField("parsed").get(ctx)).get();
-                if (parsed > 0)
-                  sendSSE(out, new JSONObject().put("status", "progress")
-                      .put("parsed", parsed).put("vertices", vertices).put("edges", edges));
-              } catch (final Exception ignored) {}
-            }
-          }, 1000, 1000);
-        }
-
-        try {
-          @SuppressWarnings("unchecked")
-          final Map<String, Object> result = (Map<String, Object>) clazz.getMethod("load").invoke(importer);
-          progressTimer.cancel();
-          final JSONObject done = new JSONObject().put("status", "completed")
-              .put("message", databaseName + " imported successfully");
-          if (result != null)
-            for (final Map.Entry<String, Object> e : result.entrySet())
-              done.put(e.getKey(), e.getValue());
-          sendSSE(out, done);
-        } catch (final Exception e) {
-          progressTimer.cancel();
-          final Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ? e.getCause() : e;
-          sendSSE(out, new JSONObject().put("status", "error").put("message", cause.getMessage()));
-        }
-      } catch (final Exception e) {
-        final Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ? e.getCause() : e;
-        sendSSE(out, new JSONObject().put("status", "error").put("message", cause.getMessage()));
-      } finally {
-        closeSSE(out);
-      }
-      return null;
-    }
-
-    // Synchronous fallback. Threads the same resolved boolean validateClientRestoreImportUrl() already validated
-    // this URL against into the SQL command's execution context, so ImportDatabaseStatement's deep fetch cannot
-    // disagree with the pre-check that accepted the command (#6474, mirroring the setAllowLocalUrls call above).
-    final ContextConfiguration importConfiguration = new ContextConfiguration();
-    importConfiguration.setValue(GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS, !isRestoreImportLocalUrlsAllowed());
-    try (final var rs = database.command("sql", "import database " + url, importConfiguration, Map.of())) {
-      // try-with-resources releases the execution-plan state held by the import ResultSet.
-    }
-    return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
+    return streamOrRun(exchange, databaseName + " imported successfully",
+        listener -> controlPlane.importDatabase(databaseName, url, listener));
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  //  SSE helpers
+  //  Progress streaming (SSE)
   // ═══════════════════════════════════════════════════════════════════
+
+  /** One long-running control-plane operation, run against a progress sink this handler supplies. */
+  @FunctionalInterface
+  private interface ProgressingOperation {
+    /** @return the operation's final report, merged into the completion event, or null when it has none. */
+    JSONObject run(ServerControlPlane.ProgressListener listener);
+  }
+
+  /**
+   * Runs a restore or import, reporting its progress the way the client asked for it (issue #7308).
+   * <p>
+   * Without {@code Accept: text/event-stream} the operation runs to completion and answers with the
+   * usual JSON body. With it, every progress event becomes an SSE frame and the answer is the stream
+   * itself.
+   * <p>
+   * The stream is started <b>lazily</b>, on the first event rather than up front, which is what keeps
+   * a rejected request an HTTP error instead of a 200 carrying an error frame: an invalid URL, an
+   * invalid database name or an existing target all fail before the operation produces its first
+   * progress line, so they still propagate to {@code AbstractServerHttpHandler}'s status mapping. A
+   * failure <i>during</i> the restore or import - by which point the response has already begun - can
+   * only be reported inside the stream, and becomes an {@code error} frame as before.
+   */
+  private ExecutionResponse streamOrRun(final HttpServerExchange exchange, final String completionMessage,
+      final ProgressingOperation operation) {
+    if (!isSSERequested(exchange)) {
+      // Nothing to catch: a failure propagates to AbstractServerHttpHandler, which is what maps it
+      // onto a status code, and every control-plane failure is unchecked.
+      operation.run(ServerControlPlane.ProgressListener.NOOP);
+      return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
+    }
+
+    final SSEProgressSink sink = new SSEProgressSink(exchange);
+    try {
+      final JSONObject report = operation.run(sink);
+
+      final JSONObject completed = new JSONObject().put("status", "completed").put("message", completionMessage);
+      if (report != null)
+        for (final String key : report.keySet())
+          completed.put(key, report.get(key));
+      sink.send(completed);
+    } catch (final RuntimeException e) {
+      // Nothing has been written yet, so the request can still be answered with a status code.
+      if (!sink.started())
+        throw e;
+      sink.send(new JSONObject().put("status", "error").put("message", failureMessage(e)));
+    } finally {
+      sink.close();
+    }
+    return null; // response already sent via SSE
+  }
+
+  /**
+   * The message an SSE {@code error} frame carries. The control plane wraps a failure raised inside
+   * the restore or import machinery in a {@link CommandExecutionException}, so the cause is the one
+   * that names what actually went wrong - the same message the pre-#7308 handler read straight off
+   * the {@code InvocationTargetException}.
+   */
+  private static String failureMessage(final RuntimeException e) {
+    final Throwable cause = e.getCause();
+    return cause != null && cause.getMessage() != null ? cause.getMessage() : e.getMessage();
+  }
+
+  /**
+   * A {@link ServerControlPlane.ProgressListener} that writes each event to the exchange as an SSE
+   * frame, starting the stream on the first event.
+   * <p>
+   * An SSE event is two writes plus a flush, and the stream it goes to is the exchange's own -
+   * shared, and not safe for concurrent use. More than one thread reaches here: an import polls
+   * {@code ImporterContext} for counters on a timer thread while the importer logs on the calling
+   * thread, and since #6086 a parallel restore logs one line per archive entry from its worker pool.
+   * Without the lock two events interleave into a single corrupt {@code data:} frame, which the
+   * client cannot parse, rather than merely arriving in an unexpected order.
+   */
+  private static final class SSEProgressSink implements ServerControlPlane.ProgressListener {
+    private final HttpServerExchange exchange;
+    private       OutputStream       out;
+
+    private SSEProgressSink(final HttpServerExchange exchange) {
+      this.exchange = exchange;
+    }
+
+    @Override
+    public void onProgress(final String message) {
+      send(new JSONObject().put("status", "progress").put("message", message));
+    }
+
+    @Override
+    public void onImportCounters(final long parsed, final long vertices, final long edges) {
+      send(new JSONObject().put("status", "progress").put("parsed", parsed).put("vertices", vertices).put("edges", edges));
+    }
+
+    synchronized boolean started() {
+      return out != null;
+    }
+
+    synchronized void send(final JSONObject data) {
+      try {
+        if (out == null) {
+          exchange.getResponseHeaders().put(new HttpString("Content-Type"), "text/event-stream");
+          exchange.getResponseHeaders().put(new HttpString("Cache-Control"), "no-cache");
+          exchange.getResponseHeaders().put(new HttpString("X-Accel-Buffering"), "no");
+          exchange.setStatusCode(200);
+          if (!exchange.isBlocking())
+            exchange.startBlocking();
+          out = exchange.getOutputStream();
+        }
+        out.write(("data: " + data + "\n\n").getBytes(StandardCharsets.UTF_8));
+        out.flush();
+      } catch (final IOException ignored) {
+        // Client disconnected
+      }
+    }
+
+    synchronized void close() {
+      if (out == null)
+        return;
+      try {
+        out.close();
+      } catch (final IOException ignored) {
+        // Client disconnected
+      }
+    }
+  }
 
   private static boolean isSSERequested(final HttpServerExchange exchange) {
     final String accept = exchange.getRequestHeaders().getFirst("Accept");
     return accept != null && accept.contains("text/event-stream");
-  }
-
-  private static void startSSE(final HttpServerExchange exchange) {
-    exchange.getResponseHeaders().put(new HttpString("Content-Type"), "text/event-stream");
-    exchange.getResponseHeaders().put(new HttpString("Cache-Control"), "no-cache");
-    exchange.getResponseHeaders().put(new HttpString("X-Accel-Buffering"), "no");
-    exchange.setStatusCode(200);
-    if (!exchange.isBlocking())
-      exchange.startBlocking();
-  }
-
-  /**
-   * An SSE event is two writes plus a flush, and the stream it goes to is the exchange's own - shared, and not safe
-   * for concurrent use. More than one thread reaches here: the import path polls {@code ImporterContext} for progress
-   * on a thread of its own while the importer logs on another, and since #6086 a parallel restore logs one line per
-   * archive entry from its worker pool. Without the lock two events interleave into a single corrupt {@code data:}
-   * frame - which the client cannot parse - rather than merely arriving in an unexpected order.
-   */
-  private static void sendSSE(final OutputStream out, final JSONObject data) {
-    try {
-      synchronized (out) {
-        out.write(("data: " + data + "\n\n").getBytes(StandardCharsets.UTF_8));
-        out.flush();
-      }
-    } catch (final IOException ignored) {
-      // Client disconnected
-    }
-  }
-
-  private static void closeSSE(final OutputStream out) {
-    try { out.close(); } catch (final IOException ignored) {}
   }
 
   private void dropDatabase(final String databaseName) {
@@ -754,502 +642,14 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     checkServerIsLeaderIfInHA();
 
-    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.drop-database").increment();
 
-    if (!server.existsDatabase(databaseName))
-      throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
-
-    final ServerDatabase database = server.getDatabase(databaseName);
-    final DatabaseInternal wrappedDb = database.getWrappedDatabaseInstance();
-
-    if (wrappedDb instanceof HAReplicatedDatabase haDb) {
-      // Raft-first: do NOT drop locally. The state machine apply on every peer
-      // (including this leader) performs the actual drop once the entry is committed.
-      haDb.dropInReplicas();
-    } else {
-      // Non-HA mode: drop locally as before.
-      database.getEmbedded().drop();
-      server.removeDatabase(databaseName);
-    }
+    // Raft-first on a replicated database, local otherwise: shared with gRPC's DropDatabase, which
+    // took the local branch unconditionally until issue #7389.
+    controlPlane.dropDatabase(databaseName);
   }
 
-  private void closeDatabase(final String databaseName) {
-    if (databaseName.isEmpty())
-      throw new IllegalArgumentException("Database name empty");
 
-    final ServerDatabase database = httpServer.getServer().getDatabase(databaseName);
-    database.getEmbedded().close();
-
-    Metrics.counter("http.close-database").increment();
-
-    httpServer.getServer().removeDatabase(database.getName());
-  }
-
-  private void openDatabase(final String databaseName) {
-    if (databaseName.isEmpty())
-      throw new IllegalArgumentException("Database name empty");
-
-    httpServer.getServer().getDatabase(databaseName);
-    Metrics.counter("http.open-database").increment();
-  }
-
-  private void createUser(final String payload) {
-    final JSONObject json = new JSONObject(payload);
-
-    if (!json.has("name"))
-      throw new IllegalArgumentException("User name is null");
-
-    final String userPassword = json.getString("password");
-
-    final ArcadeDBServer server = httpServer.getServer();
-    // Enforce the single shared credentials policy (min length 8, correct message) used by the REST
-    // create-user path, instead of a divergent off-by-one length check.
-    server.getSecurity().getCredentialsValidator().validateCredentials(json.getString("name"), userPassword);
-
-    json.put("password", server.getSecurity().encodePassword(userPassword));
-
-    Metrics.counter("http.create-user").increment();
-
-    // The HA-vs-local decision, and the read-compute-submit serialisation it needs, live in ServerSecurity
-    // so the REST /api/v1/server/users handlers replicate through exactly the same path (issue #6808).
-    server.getSecurity().createUserClusterWide(json);
-  }
-
-  private void dropUser(final String userName) {
-    if (userName.isEmpty())
-      throw new IllegalArgumentException("User name was missing");
-
-    Metrics.counter("http.drop-user").increment();
-
-    if (!httpServer.getServer().getSecurity().dropUserClusterWide(userName))
-      throw new IllegalArgumentException("User '" + userName + "' not found on server");
-  }
-
-  private boolean connectCluster(final String serverAddress, final HttpServerExchange exchange) {
-    Metrics.counter("http.connect-cluster").increment();
-
-    throw new CommandExecutionException(
-        "Connect cluster operation is not supported by the current HA implementation. Use the cluster configuration to join nodes.");
-  }
-
-  private void disconnectCluster() {
-    Metrics.counter("http.server-disconnect").increment();
-
-    getHA().disconnectCluster();
-  }
-
-  private void setDatabaseSetting(final String triple) throws IOException {
-
-    final String tripleTrimmed = triple.trim();
-    final int firstSpace = tripleTrimmed.indexOf(" ");
-    if (firstSpace == -1)
-      throw new IllegalArgumentException("Expected <database> <key> <value>");
-
-    final String pairTrimmed = tripleTrimmed.substring(firstSpace).trim();
-    final int secondSpace = pairTrimmed.indexOf(" ");
-    if (secondSpace == -1)
-      throw new IllegalArgumentException("Expected <database> <key> <value>");
-
-    final String db = tripleTrimmed.substring(0, firstSpace);
-
-    final DatabaseInternal database = httpServer.getServer().getDatabase(db);
-    applySetting(database.getConfiguration(), pairTrimmed.substring(0, secondSpace), pairTrimmed.substring(secondSpace + 1));
-    database.saveConfiguration();
-  }
-
-  private void setServerSetting(final String pair) {
-
-    final String pairTrimmed = pair.trim();
-
-    final int firstSpace = pairTrimmed.indexOf(" ");
-    if (firstSpace == -1)
-      throw new IllegalArgumentException("Expected <key> <value>");
-
-    applySetting(httpServer.getServer().getConfiguration(), pairTrimmed.substring(0, firstSpace),
-        pairTrimmed.substring(firstSpace + 1));
-  }
-
-  /**
-   * Stores one {@code <key> <value>} pair of a "set ... setting" command into {@code configuration}.
-   * <p>
-   * Issue #6875: both callers used to hand the raw tokens to {@link ContextConfiguration#setValue(String, Object)},
-   * which is a plain map put. Three things went wrong there and are fixed here:
-   * <ul>
-   * <li>the value kept the separating space that {@code substring(firstSpace)} left on it, so every value was
-   * stored with a leading blank;</li>
-   * <li>the tokens kept the backticks and quotes the documented command syntax uses
-   * ({@code SET SERVER SETTING `arcadedb.foo` 10}), so a quoted key was stored under a name nothing reads - a
-   * silent no-op answered with a 200;</li>
-   * <li>nothing checked the value against the setting's declared type, so an unparseable one was accepted here and
-   * threw later, inside whichever component read the setting next.</li>
-   * </ul>
-   * A key that names no declared setting is still stored verbatim, as it always has been: it carries no type to
-   * validate against, and rejecting it would change behaviour this endpoint has long allowed. The {@code
-   * set_server_setting} MCP tool is stricter on that point only - for a DECLARED setting the two now accept and
-   * refuse exactly the same values, both through {@link GlobalConfiguration#coerceFromAdminCommand(Object)}.
-   * <p>
-   * Issue #7124: that conversion is the STRICT one. A typo in a {@code Boolean} value used to reach
-   * {@code Boolean.parseBoolean} and read as {@code false}, so {@code ... requireAuthentication ture} was answered
-   * with a 200 and quietly published the metrics endpoint unauthenticated. Every other type already refused what it
-   * could not read; a boolean now does too, with the same 400.
-   * <p>
-   * The command is still tokenized on the first space(s) BEFORE the quotes are stripped, so quoting does not make a
-   * space part of a token: a database name or a setting key containing one would split wrong. That is unchanged
-   * here and harmless for what the grammar can address - every {@link GlobalConfiguration} key is a dotted
-   * identifier - and only the trailing {@code <value>}, which is whatever remains after the last split, can hold a
-   * quoted space.
-   */
-  private void applySetting(final ContextConfiguration configuration, final String rawKey, final String rawValue) {
-    final String key = FileUtils.getStringContent(rawKey.trim());
-    final String value = FileUtils.getStringContent(rawValue.trim());
-
-    final GlobalConfiguration setting = GlobalConfiguration.findByKey(key);
-    if (setting == null) {
-      configuration.setValue(key, value);
-      return;
-    }
-
-    if (value.isEmpty() && setting.getType() != String.class)
-      throw new IllegalArgumentException(
-          "'value' must not be empty for setting '" + setting.getKey() + "' of type " + setting.getType().getSimpleName());
-
-    // setValue also runs the side effect of a declared SCOPE.SERVER setting, so one whose effect is not a value
-    // somebody later reads - arcadedb.server.logFormat swapping the console formatter - takes effect here too
-    // rather than being stored and ignored (issue #7121).
-    configuration.setValue(setting.getKey(), setting.coerceFromAdminCommand(value));
-  }
-
-  private JSONObject getServerEvents(final String fileName) {
-    final ArcadeDBServer server = httpServer.getServer();
-    Metrics.counter("http.get-server-events").increment();
-
-    final JSONArray events = fileName.isEmpty() ?
-        server.getEventLog().getCurrentEvents() :
-        server.getEventLog().getEvents(fileName);
-    final JSONArray files = server.getEventLog().getFiles();
-
-    return new JSONObject().put("events", events).put("files", files);
-  }
-
-  private void alignDatabase(final String databaseName) {
-    if (databaseName.isEmpty())
-      throw new IllegalArgumentException("Database name empty");
-
-    final Database database = httpServer.getServer().getDatabase(databaseName);
-
-    Metrics.counter("http.align-database").increment();
-
-    try (final var rs = database.command("sql", "align database")) {
-      // align database is fire-and-forget here; close releases the ResultSet's plan state.
-    }
-  }
-
-  private ExecutionResponse getBackupConfig() {
-    Metrics.counter("http.get-backup-config").increment();
-
-    final ArcadeDBServer server = httpServer.getServer();
-    final AutoBackupSchedulerPlugin plugin = getBackupPlugin(server);
-
-    final JSONObject response = new JSONObject();
-
-    if (plugin != null && plugin.isEnabled()) {
-      response.put("enabled", true);
-      final AutoBackupConfig config = plugin.getBackupConfig();
-      response.put("config", config != null ? config.toJSON() : JSONObject.NULL);
-    } else {
-      // Plugin not enabled at startup - try to read config from file directly
-      final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
-      if (Files.exists(configPath)) {
-        try {
-          final String content = Files.readString(configPath);
-          final JSONObject configJson = new JSONObject(content);
-          response.put("enabled", false); // Plugin not running, but config exists
-          response.put("config", configJson);
-          response.put("message", "Configuration saved but requires server restart to take effect");
-        } catch (final IOException e) {
-          response.put("enabled", false);
-          response.put("config", JSONObject.NULL);
-        }
-      } else {
-        response.put("enabled", false);
-        response.put("config", JSONObject.NULL);
-      }
-    }
-
-    return new ExecutionResponse(200, response.toString());
-  }
-
-  private ExecutionResponse setBackupConfig(final JSONObject payload) throws IOException {
-    Metrics.counter("http.set-backup-config").increment();
-
-    if (!payload.has("config"))
-      throw new IllegalArgumentException("Missing 'config' in payload");
-
-    final JSONObject configJson = payload.getJSONObject("config");
-
-    // Validate backup directory - must be relative path without traversal
-    if (configJson.has("backupDirectory")) {
-      final String backupDir = configJson.getString("backupDirectory");
-      validateBackupDirectory(backupDir);
-    }
-
-    final ArcadeDBServer server = httpServer.getServer();
-
-    // Save configuration to file
-    final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
-
-    // Write configuration atomically so a crash mid-write leaves the previous valid file intact.
-    // atomicWriteFile also creates the parent config directory if needed.
-    FileUtils.atomicWriteFile(configPath.toFile(), configJson.toString(2));
-
-    // Reload configuration in the plugin
-    final AutoBackupSchedulerPlugin plugin = getBackupPlugin(server);
-    if (plugin != null && plugin.isEnabled())
-      plugin.reloadConfiguration();
-
-    final JSONObject response = new JSONObject().put("result", "ok");
-    return new ExecutionResponse(200, response.toString());
-  }
-
-  private void validateBackupDirectory(final String backupDir) {
-    // Use consolidated validation from AutoBackupSchedulerPlugin
-    final Path serverRoot = Paths.get(httpServer.getServer().getRootPath()).toAbsolutePath().normalize();
-    AutoBackupSchedulerPlugin.validateAndResolveBackupPath(backupDir, serverRoot);
-  }
-
-  private ExecutionResponse listBackups(final String databaseName) {
-    if (databaseName.isEmpty())
-      throw new IllegalArgumentException("Database name empty");
-
-    Metrics.counter("http.list-backups").increment();
-
-    final ArcadeDBServer server = httpServer.getServer();
-    final AutoBackupSchedulerPlugin plugin = getBackupPlugin(server);
-
-    final JSONArray backups = new JSONArray();
-
-    if (plugin != null && plugin.isEnabled()) {
-      final AutoBackupConfig config = plugin.getBackupConfig();
-      if (config != null) {
-        // Resolve backup directory
-        String backupDirectory = config.getBackupDirectory();
-        final Path backupPath = Paths.get(backupDirectory);
-        if (!backupPath.isAbsolute())
-          backupDirectory = Paths.get(server.getRootPath(), backupDirectory).toString();
-
-        final Path dbBackupDir = Paths.get(backupDirectory, databaseName);
-        if (Files.exists(dbBackupDir) && Files.isDirectory(dbBackupDir)) {
-          try (var stream = Files.list(dbBackupDir)) {
-            stream.filter(p -> p.toString().endsWith(".zip") && p.getFileName().toString().contains("-backup-"))
-                .sorted(Comparator.reverseOrder())
-                .forEach(p -> {
-                  final JSONObject backup = new JSONObject();
-                  backup.put("fileName", p.getFileName().toString());
-                  try {
-                    backup.put("size", Files.size(p));
-                    backup.put("lastModified", Files.getLastModifiedTime(p).toMillis());
-                  } catch (final IOException e) {
-                    backup.put("size", 0);
-                    backup.put("lastModified", 0);
-                  }
-
-                  // Parse timestamp from filename, through the same convention that wrote it (issue #6753)
-                  final LocalDateTime timestamp = BackupCoordinator.parseArchiveTimestamp(p.getFileName().toString());
-                  backup.put("timestamp", timestamp != null ? timestamp.toString() : JSONObject.NULL);
-
-                  backups.put(backup);
-                });
-          } catch (final IOException e) {
-            throw new RuntimeException("Error listing backups for database '" + databaseName + "'", e);
-          }
-        }
-      }
-    }
-
-    final JSONObject response = new JSONObject();
-    response.put("database", databaseName);
-    response.put("backups", backups);
-
-    // Get retention manager stats if available
-    if (plugin != null && plugin.getRetentionManager() != null) {
-      final BackupRetentionManager retentionManager = plugin.getRetentionManager();
-      response.put("totalSize", retentionManager.getBackupSizeBytes(databaseName));
-      response.put("totalCount", retentionManager.getBackupCount(databaseName));
-    }
-
-    return new ExecutionResponse(200, response.toString());
-  }
-
-  private ExecutionResponse triggerBackup(final String databaseName) {
-    if (databaseName.isEmpty())
-      throw new IllegalArgumentException("Database name empty");
-
-    Metrics.counter("http.trigger-backup").increment();
-
-    final ArcadeDBServer server = httpServer.getServer();
-
-    // This command runs the backup inline, so it is one of the entry points that can have a database being backed up
-    // at the same time as the auto-backup schedule does - down to resolving to the same archive name and writing into
-    // the same file. Refusing outright is the honest answer to "back up a database that is already being backed up":
-    // a second full backup of the same data produces nothing the first one will not, and the caller gets told rather
-    // than silently handed the other run's archive (issue #6753).
-    final BackupCoordinator coordinator = server.getBackupCoordinator();
-    if (!coordinator.begin(databaseName))
-      return new ExecutionResponse(409, new JSONObject().put("error",
-          "A backup of database '" + databaseName + "' is already in progress").toString());
-
-    try {
-      return executeImmediateBackup(server, databaseName);
-    } finally {
-      coordinator.end(databaseName);
-    }
-  }
-
-  private ExecutionResponse executeImmediateBackup(final ArcadeDBServer server, final String databaseName) {
-    final AutoBackupSchedulerPlugin plugin = getBackupPlugin(server);
-
-    // Try to get backup directory from config (plugin or file)
-    String backupDirectory = null;
-
-    if (plugin != null && plugin.isEnabled()) {
-      final AutoBackupConfig config = plugin.getBackupConfig();
-      backupDirectory = config != null ? config.getBackupDirectory() : null;
-    }
-
-    // If plugin not enabled, try to read from config file directly
-    if (backupDirectory == null) {
-      final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
-      if (Files.exists(configPath)) {
-        try {
-          final String content = Files.readString(configPath);
-          final JSONObject configJson = new JSONObject(content);
-          if (configJson.has("backupDirectory"))
-            backupDirectory = configJson.getString("backupDirectory");
-        } catch (final IOException ignored) {
-        }
-      }
-    }
-
-    // Use config directory if available
-    if (backupDirectory != null) {
-      try {
-        // Validate the directory
-        validateBackupDirectory(backupDirectory);
-
-        // Resolve relative path
-        final Path backupPath = Paths.get(backupDirectory);
-        if (!backupPath.isAbsolute())
-          backupDirectory = Paths.get(server.getRootPath(), backupDirectory).toString();
-
-        // Perform backup using reflection (same as BackupTask)
-        final Database database = server.getDatabase(databaseName);
-        final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
-
-        final String backupFileName = server.getBackupCoordinator().newArchiveName(databaseName);
-
-        final Path dbBackupPath = Paths.get(backupDirectory, databaseName);
-        // Use Files.createDirectories to avoid TOCTOU race condition
-        Files.createDirectories(dbBackupPath);
-        final String dbBackupDir = dbBackupPath.toString();
-
-        final Object backup = clazz.getConstructor(Database.class, String.class)
-            .newInstance(database, backupFileName);
-        clazz.getMethod("setDirectory", String.class).invoke(backup, dbBackupDir);
-        clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 1);
-
-        final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
-
-        final JSONObject response = new JSONObject();
-        response.put("result", "ok");
-        response.put("backupFile", backupFile);
-        return new ExecutionResponse(200, response.toString());
-
-      } catch (final ClassNotFoundException e) {
-        throw new RuntimeException("Backup libs not found in classpath. Make sure arcadedb-integration module is included.", e);
-      } catch (final Exception e) {
-        final Throwable cause = e.getCause() != null ? e.getCause() : e;
-        throw new RuntimeException("Error triggering backup for database '" + databaseName + "': " + cause.getMessage(), cause);
-      }
-    }
-
-    // Fallback: use SQL command (uses GlobalConfiguration.SERVER_BACKUP_DIRECTORY). This one does not name the
-    // archive through the coordinator: with no target the SQL statement lets BackupSettings apply its own default,
-    // which is the same convention down to the milliseconds - the coordinator is where that convention was copied
-    // from in the first place.
-    try {
-      final Database database = server.getDatabase(databaseName);
-      try (final var result = database.command("sql", "backup database")) {
-
-        final JSONObject response = new JSONObject();
-        response.put("result", "ok");
-        // The SQL "backup database" command sets backupFile as a property on a Result row
-        // (see BackupDatabaseStatement). Read it via Result.getProperty rather than the
-        // pre-existing dead instanceof Map check, which never matched.
-        while (result.hasNext()) {
-          final var row = result.next();
-          final Object backupFile = row.getProperty("backupFile");
-          if (backupFile != null) {
-            response.put("backupFile", backupFile.toString());
-            break;
-          }
-        }
-        return new ExecutionResponse(200, response.toString());
-      }
-    } catch (final Exception e) {
-      throw new RuntimeException("Error triggering backup for database '" + databaseName + "': " + e.getMessage(), e);
-    }
-  }
-
-  private ExecutionResponse handleProfilerCommand(final String subCommand) {
-    final ServerQueryProfiler profiler = httpServer.getServer().getQueryProfiler();
-    final String sub = subCommand.toLowerCase(Locale.ENGLISH).trim();
-
-    if ("start".equals(sub) || sub.startsWith("start ")) {
-      final String timeoutStr = sub.substring(5).trim();
-      if (!timeoutStr.isEmpty()) {
-        try {
-          profiler.start(Integer.parseInt(timeoutStr));
-        } catch (final NumberFormatException e) {
-          return new ExecutionResponse(400, "{ \"error\" : \"Invalid timeout value: " + timeoutStr + "\"}");
-        }
-      } else
-        profiler.start();
-      return new ExecutionResponse(200, new JSONObject().put("result", "ok").put("recording", true).toString());
-
-    } else if ("stop".equals(sub)) {
-      final JSONObject results = profiler.stop();
-      return new ExecutionResponse(200, results != null ? results.toString() : new JSONObject().put("result", "ok").toString());
-
-    } else if ("reset".equals(sub)) {
-      profiler.reset();
-      return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
-
-    } else if ("results".equals(sub)) {
-      final JSONObject results = profiler.getResults();
-      return new ExecutionResponse(200, results != null ? results.toString() : new JSONObject().put("result", "ok").toString());
-
-    } else if ("list".equals(sub)) {
-      final JSONArray files = profiler.listSavedRuns();
-      return new ExecutionResponse(200, new JSONObject().put("result", files).toString());
-
-    } else if (sub.startsWith("load ")) {
-      final String fileName = sub.substring(5).trim();
-      final JSONObject run = profiler.loadSavedRun(fileName);
-      return new ExecutionResponse(200, run.toString());
-
-    } else {
-      return new ExecutionResponse(400, "{ \"error\" : \"Unknown profiler command: " + subCommand + "\"}");
-    }
-  }
-
-  private AutoBackupSchedulerPlugin getBackupPlugin(final ArcadeDBServer server) {
-    for (final ServerPlugin plugin : server.getPlugins()) {
-      if (plugin instanceof AutoBackupSchedulerPlugin)
-        return (AutoBackupSchedulerPlugin) plugin;
-    }
-    return null;
-  }
 
   /**
    * If this node is an HA replica, forwards the server command to the leader and returns its response.
@@ -1338,38 +738,5 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha != null && !ha.isLeader())
       throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderName());
-  }
-
-  private HAServerPlugin getHA() {
-    final HAServerPlugin ha = httpServer.getServer().getHA();
-    if (ha == null)
-      throw new CommandExecutionException(
-          "ArcadeDB is not running with High Availability module enabled. Please add this setting at startup: -Darcadedb.ha.enabled=true");
-    return ha;
-  }
-
-  /**
-   * Post-restore HA hook. In HA mode, submits an install-database Raft entry with
-   * forceSnapshot=true so every replica pulls the restored files. On any failure,
-   * drops the just-restored local database so the operator can retry cleanly.
-   */
-  private void replicateRestoredDatabase(final ArcadeDBServer server, final ServerDatabase restored,
-      final String databaseName) {
-    if (!(restored.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb))
-      return;
-
-    try {
-      haDb.createInReplicas(true);
-    } catch (final RuntimeException e) {
-      // Compensate: drop the locally-restored database so the operator can retry cleanly.
-      try {
-        restored.getEmbedded().drop();
-        server.removeDatabase(databaseName);
-      } catch (final Exception inner) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Compensating drop after failed restore replication failed for '%s'", inner, databaseName);
-      }
-      throw e;
-    }
   }
 }

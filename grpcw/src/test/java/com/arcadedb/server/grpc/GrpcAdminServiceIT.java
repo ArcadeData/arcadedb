@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -186,37 +187,79 @@ public class GrpcAdminServiceIT extends BaseGraphServerTest {
     assertThat(adminStub.existsDatabase(existsRequest).getExists()).isFalse();
   }
 
+  /**
+   * Issue #7413: a name already taken is refused as the HTTP command refuses it, and the idempotent form says
+   * whether it created anything, so a client can tell "created for me" from "already there".
+   */
   @Test
-  void createDatabaseIsIdempotent() {
-    String testDbName = "grpc_idempotent_db_" + System.currentTimeMillis();
-
-    CreateDatabaseRequest request = CreateDatabaseRequest.newBuilder()
+  void createDatabaseRefusesATakenNameUnlessAskedToTolerateIt() {
+    final String testDbName = "grpc_exists_db_" + System.currentTimeMillis();
+    final CreateDatabaseRequest strict = CreateDatabaseRequest.newBuilder()
         .setCredentials(credentials())
         .setName(testDbName)
         .setType("document")
         .build();
+    try {
+      assertThat(adminStub.createDatabase(strict).getCreated()).isTrue();
 
-    // Create twice - should not throw
-    adminStub.createDatabase(request);
-    adminStub.createDatabase(request);
+      assertThatThrownBy(() -> adminStub.createDatabase(strict))
+          .isInstanceOf(StatusRuntimeException.class)
+          .satisfies(e -> assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.ALREADY_EXISTS))
+          .hasMessageContaining(testDbName);
 
-    // Cleanup
-    DropDatabaseRequest dropRequest = DropDatabaseRequest.newBuilder()
-        .setCredentials(credentials())
-        .setName(testDbName)
-        .build();
-    adminStub.dropDatabase(dropRequest);
+      final CreateDatabaseResponse tolerated = adminStub.createDatabase(strict.toBuilder().setIfNotExists(true).build());
+      assertThat(tolerated.getCreated()).isFalse();
+    } finally {
+      adminStub.dropDatabase(DropDatabaseRequest.newBuilder().setCredentials(credentials()).setName(testDbName)
+          .setIfExists(true).build());
+    }
   }
 
   @Test
-  void dropNonExistentDatabaseIsIdempotent() {
-    DropDatabaseRequest request = DropDatabaseRequest.newBuilder()
+  void dropDatabaseRefusesAMissingNameUnlessAskedToTolerateIt() {
+    final DropDatabaseRequest strict = DropDatabaseRequest.newBuilder()
         .setCredentials(credentials())
         .setName("nonexistent_db_for_drop_test")
         .build();
 
-    // Should not throw
-    adminStub.dropDatabase(request);
+    assertThatThrownBy(() -> adminStub.dropDatabase(strict))
+        .isInstanceOf(StatusRuntimeException.class)
+        .satisfies(e -> assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.NOT_FOUND))
+        .hasMessageContaining("nonexistent_db_for_drop_test");
+
+    assertThat(adminStub.dropDatabase(strict.toBuilder().setIfExists(true).build()).getDropped()).isFalse();
+  }
+
+  /** A database that IS there is dropped and the answer says so, in both forms. */
+  @Test
+  void dropDatabaseReportsWhatItDropped() {
+    final String testDbName = "grpc_dropped_db_" + System.currentTimeMillis();
+    adminStub.createDatabase(CreateDatabaseRequest.newBuilder().setCredentials(credentials()).setName(testDbName).build());
+    assertThat(adminStub.dropDatabase(DropDatabaseRequest.newBuilder().setCredentials(credentials()).setName(testDbName)
+        .setIfExists(true).build()).getDropped()).isTrue();
+    assertThat(adminStub.existsDatabase(ExistsDatabaseRequest.newBuilder().setCredentials(credentials())
+        .setName(testDbName).build()).getExists()).isFalse();
+  }
+
+  /**
+   * Names are exact. The guard used to be case-folded while the registry and the operation were not, so a
+   * differently-cased name was reported as existing by one and unknown by the other.
+   */
+  @Test
+  void databaseNamesAreExactNotCaseFolded() {
+    final String testDbName = "grpc_Cased_db_" + System.currentTimeMillis();
+    adminStub.createDatabase(CreateDatabaseRequest.newBuilder().setCredentials(credentials()).setName(testDbName).build());
+    try {
+      final String otherCase = testDbName.toLowerCase();
+      assertThat(adminStub.existsDatabase(ExistsDatabaseRequest.newBuilder().setCredentials(credentials())
+          .setName(otherCase).build()).getExists()).isFalse();
+      assertThatThrownBy(() -> adminStub.dropDatabase(DropDatabaseRequest.newBuilder().setCredentials(credentials())
+          .setName(otherCase).build()))
+          .isInstanceOf(StatusRuntimeException.class)
+          .satisfies(e -> assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.NOT_FOUND));
+    } finally {
+      adminStub.dropDatabase(DropDatabaseRequest.newBuilder().setCredentials(credentials()).setName(testDbName).build());
+    }
   }
 
   @Test

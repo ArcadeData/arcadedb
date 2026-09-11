@@ -32,6 +32,11 @@ import io.undertow.server.handlers.PathHandler;
 import java.util.logging.Level;
 
 public class PrometheusMetricsPlugin implements ServerPlugin {
+  // Deliberately does NOT override isAutoDiscovered, unlike its OTLP and tracing siblings (issue #7281). Their
+  // enable flags default to false, so auto-discovery only honours something an operator asked for; this plugin's
+  // gate is arcadedb.serverMetrics, which defaults to TRUE, so the same change would publish /prometheus on every
+  // default server. What that endpoint exposes and who may read it is the subject of #7124 and #7222; changing its
+  // default exposure is a decision of its own, not a symmetry to restore.
 
   private PrometheusMeterRegistry registry;
   private boolean                 enabled;
@@ -69,7 +74,9 @@ public class PrometheusMetricsPlugin implements ServerPlugin {
     if (!enabled)
       return;
 
-    routes.addExactPath("/prometheus", new GetPrometheusMetricsHandler(httpServer, registry, isAuthenticationRequired(configuration)));
+    // The CONFIGURATION travels to the handler, not the decision taken from it: the setting is authoritative
+    // in the server's overlay and can be changed at runtime, so the route must read it per request (#7159).
+    routes.addExactPath("/prometheus", new GetPrometheusMetricsHandler(httpServer, registry, configuration));
 
     LogManager.instance().log(this, Level.INFO, "Prometheus backend metrics http handler configured");
 
@@ -103,13 +110,31 @@ public class PrometheusMetricsPlugin implements ServerPlugin {
    * @return {@code true} unless the configured value is unambiguously {@code false}
    */
   static boolean isAuthenticationRequired(final ContextConfiguration configuration) {
+    return isAuthenticationRequired(readConfiguredValue(configuration));
+  }
+
+  /**
+   * The value {@code arcadedb.serverMetrics.prometheus.requireAuthentication} currently holds for this server:
+   * the server's own overlay when it has one, the {@link GlobalConfiguration} enum otherwise.
+   * <p>
+   * Separate from the parse below because {@link GetPrometheusMetricsHandler} re-reads it on every scrape
+   * (issue #7159) and caches the decision against it: what a scrape needs cheaply is the RAW value, so it can
+   * tell whether anything changed before paying for the strict parse again.
+   */
+  static Object readConfiguredValue(final ContextConfiguration configuration) {
     final String key = GlobalConfiguration.SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION.getKey();
 
     // READ AS Object: THE CONTEXT MAP CAN HOLD EITHER THE RAW STRING FROM THE SERVER CONFIGURATION OR A Boolean SET
     // PROGRAMMATICALLY, AND getValue() BLINDLY CASTS TO THE TYPE OF THE DEFAULT IT IS GIVEN.
-    Object value = configuration != null ? configuration.getValue(key, (Object) null) : null;
-    if (value == null)
-      value = GlobalConfiguration.SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION.getValue();
+    final Object value = configuration != null ? configuration.getValue(key, (Object) null) : null;
+    return value != null ? value : GlobalConfiguration.SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION.getValue();
+  }
+
+  /**
+   * Applies the strict, fail-closed parse to an already-read value - see {@link #isAuthenticationRequired(ContextConfiguration)}.
+   */
+  static boolean isAuthenticationRequired(final Object value) {
+    final String key = GlobalConfiguration.SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION.getKey();
 
     // ONE DEFINITION OF WHAT COUNTS AS BOOLEAN TEXT, SHARED WITH THE WRITE SITES: A SECOND COPY HERE COULD DRIFT
     // FROM THEIRS AND REOPEN THIS BUG ON WHICHEVER SIDE FELL BEHIND. THE ONLY DIFFERENCE IS THE ANSWER TO A VALUE

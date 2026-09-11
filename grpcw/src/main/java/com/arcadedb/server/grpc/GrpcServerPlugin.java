@@ -160,7 +160,10 @@ public class GrpcServerPlugin implements ServerPlugin {
 
   private void startStandardServer(ContextConfiguration config) throws IOException {
 
-    int port = getConfigInt(config, CONFIG_PORT, GlobalConfiguration.GRPC_PORT.getValueAsInteger());
+    // The default comes from the SERVER's configuration, not from the GlobalConfiguration enum, which carries
+    // only what a system property or an environment variable put there: arcadedb.grpc.port is SCOPE.SERVER, so a
+    // port named in the server configuration file used to be ignored in favour of the compiled-in one (#7233).
+    int port = getConfigInt(config, CONFIG_PORT, config.getValueAsInteger(GlobalConfiguration.GRPC_PORT));
     String host = getConfigString(config, CONFIG_HOST, "0.0.0.0");
 
     NettyServerBuilder serverBuilder;
@@ -302,6 +305,11 @@ public class GrpcServerPlugin implements ServerPlugin {
 
     // Add interceptors for logging, metrics, auth, etc.
     serverBuilder.intercept(new GrpcLoggingInterceptor());
+    // Records whether each call's transport can carry secret material back to the caller. Registered
+    // unconditionally, and on this shared path so both the standard and the xDS builder get it:
+    // CreateApiToken refuses to mint when its context key is absent, so dropping this line disables
+    // the minting of API tokens rather than silently disabling the check (issue #7309).
+    serverBuilder.intercept(new GrpcTransportSecurityInterceptor());
     // Publish gRPC metrics into the server's shared JVM-wide registry so the same exporters that
     // scrape the rest of the server (Prometheus, OTLP, JMX, Studio) also see gRPC telemetry.
     serverBuilder.intercept(new GrpcMetricsInterceptor(Metrics.globalRegistry));

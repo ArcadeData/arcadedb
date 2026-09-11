@@ -85,6 +85,17 @@ public interface VertexRefResolver {
    */
   void forEach(EntryConsumer consumer);
 
+  /**
+   * The reference by which the payload names the vertex just recorded at {@code ordinal}, keyed exactly as
+   * {@link #forEach} keys it, or {@code null} when this resolver cannot name that vertex - a vertex that
+   * declared no {@code @id} under {@code refMode=tempId}.
+   * <p>
+   * Exists so the mapping can be handed to the client one committed chunk at a time instead of being
+   * accumulated into a single terminal object (issue #7353). Keying it here rather than at the call site is
+   * what keeps the streamed mapping and the echoed one from ever disagreeing about how a vertex is named.
+   */
+  String refOf(String tempId, long ordinal);
+
   @FunctionalInterface
   interface EntryConsumer {
     void accept(String ref, RID rid);

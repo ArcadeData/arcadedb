@@ -74,7 +74,11 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
    */
   private static final Object UNKNOWN_STORED_FORM = new Object();
 
-  private       LocalDocumentType type;
+  // Dereferenced on the lock-free read paths (getBucketIdByRecord, getBucketIdByKeys) while setType rebinds it on
+  // every bucket add and every index add. Volatile because the publication edge cannot be borrowed from the
+  // volatile 'total' write in super.setType(): that write happens BEFORE this one, so it orders nothing here
+  // (issue #7299).
+  private volatile LocalDocumentType type;
   private final List<String>      propertyNames;
 
   public PartitionedBucketSelectionStrategy(final List<String> propertyNames) {

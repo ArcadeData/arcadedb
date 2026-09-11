@@ -32,6 +32,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -42,14 +43,15 @@ public class DatabaseFactory implements AutoCloseable {
   private static final Map<Path, Database>                                        ACTIVE_INSTANCES     = new ConcurrentHashMap<>();
   private final        ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
   private final        String                                                     databasePath;
-  private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new HashMap<>();
+  private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new ConcurrentHashMap<>();
 
   /**
    * Milliseconds the JVM shutdown hook waits for the graceful close of the databases still open. On expiry the
    * hook returns anyway so the JVM can complete its shutdown: the close it abandons is exactly a crash, which the
    * WAL replay of the next open repairs. Only pathological states can reach it - the flush itself is already
-   * bounded by {@code arcadedb.flushAllPagesTimeout} and the only unbounded step is acquiring the database lock
-   * from a daemon thread that never releases it.
+   * bounded by {@code arcadedb.flushAllPagesTimeout} and the only unbounded steps are acquiring the database lock
+   * from a daemon thread that never releases it, and waiting for a snapshot window (a backup) that never closes
+   * (#7458).
    */
   private static final long SHUTDOWN_CLOSE_TIMEOUT_MS = 30_000;
 
@@ -173,7 +175,7 @@ public class DatabaseFactory implements AutoCloseable {
    * Test only API
    */
   public void registerCallback(final DatabaseInternal.CALLBACK_EVENT event, final Callable<Void> callback) {
-    final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new ArrayList<>());
+    final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new CopyOnWriteArrayList<>());
     callbacks.add(callback);
   }
 

@@ -65,6 +65,10 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
             }
           }
           nextItem = prevResult.next();
+          // This region runs a plan built from the very sub-steps published by getSubSteps(), so its time is the
+          // subtree's time. That is only correct while none of those sub-steps keeps a timer of its own: today the one
+          // child is a MatchStep, which reports -1 and is dropped from every roll-up. Give a sub-step a timer and this
+          // measurement has to become a self cost (subtract the children) or the tree double counts (issue #7329).
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (!matchesPattern(nextItem, context)) {
@@ -128,6 +132,16 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
     final SelectExecutionPlan plan = new SelectExecutionPlan(context, 0);
     plan.chain(new AbstractExecutionStep(context) {
       private boolean executed = false;
+
+      @Override
+      public String getName() {
+        return "NotMatchPatternInputStep";
+      }
+
+      @Override
+      public String getType() {
+        return getName();
+      }
 
       @Override
       public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
