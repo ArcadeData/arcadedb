@@ -323,12 +323,11 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     if (item instanceof Identifiable id)
       return id.getIdentity();
     if (item instanceof String s) {
-      try {
-        return db.newRID(s);
-      } catch (final IllegalArgumentException e) {
+      // VALIDATED UP FRONT: RID(String) THROWS A DIFFERENT EXCEPTION FOR EACH WAY A STRING CAN BE MALFORMED
+      if (!RID.is(s))
         throw new CommandSQLParsingException(
-            "Option 'filter' for function '" + functionName + "' must contain RIDs, got: '" + s + "'", e);
-      }
+            "Option 'filter' for function '" + functionName + "' must contain RIDs, got: '" + s + "'");
+      return db.newRID(s);
     }
     if (item instanceof Result row) {
       // THE ROW A SUBQUERY PRODUCED: EITHER A RECORD (SELECT FROM ...) OR A SINGLE RID-VALUED PROJECTION (SELECT @rid ...)

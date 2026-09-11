@@ -131,10 +131,10 @@ public class MatchExecutionPlanner {
 
     if (subPatterns.size() > 1) {
       final CartesianProductStep step = new CartesianProductStep(context);
-      final List<Set<Integer>> subPatternDependencies = orderSubPatternsByDependencies();
+      final List<Boolean> correlatedSubPatterns = orderSubPatternsByDependencies();
       for (int i = 0; i < subPatterns.size(); i++) {
         final Pattern subPattern = subPatterns.get(i);
-        final boolean correlated = !subPatternDependencies.get(i).isEmpty();
+        final boolean correlated = correlatedSubPatterns.get(i);
         final InternalExecutionPlan subPlan = createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch,
             correlated);
         // A CORRELATED LEG IS PLANNED AGAIN FOR EVERY OUTER TUPLE: THE FETCH AND FILTER STEPS OF ITS ROOT SELECT DO NOT RESTART
@@ -369,6 +369,10 @@ public class MatchExecutionPlanner {
     for (int i = startIdx; i < edges.size(); i++) {
       final EdgeTraversal et = edges.get(i);
       if (!isFusibleEdge(et))
+        break;
+      // THE FUSED CSR WALK BINDS THE ALIASES IT REACHES WITHOUT EVALUATING THEIR where:, SO A FILTERED HOP STAYS ON THE
+      // REGULAR MatchStep, WHICH DOES (AND BINDS $matched FOR IT, ISSUE #7434)
+      if (aliasFilters.get(et.out ? et.edge.in.alias : et.edge.out.alias) != null)
         break;
 
       // Find provider for this edge's labels
@@ -668,9 +672,10 @@ public class MatchExecutionPlanner {
    * before it, with {@code $matched} bound to that tuple, which turns the comma-pattern into a correlated nested loop
    * (issue #7434). Sub-patterns without cross dependencies keep their original relative order.
    *
-   * @return for each sub-pattern, in the reordered position, the indexes of the sub-patterns it depends on
+   * @return for each sub-pattern, in its reordered position, whether it depends on another sub-pattern and so must run
+   * correlated
    */
-  private List<Set<Integer>> orderSubPatternsByDependencies() {
+  private List<Boolean> orderSubPatternsByDependencies() {
     final Map<String, Integer> owner = new HashMap<>();
     for (int i = 0; i < subPatterns.size(); i++)
       for (final String alias : subPatterns.get(i).aliasToNode.keySet())
@@ -690,7 +695,7 @@ public class MatchExecutionPlanner {
 
     // KAHN'S ALGORITHM, TAKING THE FIRST READY SUB-PATTERN IN ORIGINAL ORDER SO INDEPENDENT ONES KEEP THEIR PLACE
     final List<Pattern> ordered = new ArrayList<>(subPatterns.size());
-    final List<Set<Integer>> orderedDependencies = new ArrayList<>(subPatterns.size());
+    final List<Boolean> correlated = new ArrayList<>(subPatterns.size());
     final Set<Integer> scheduled = new HashSet<>();
     while (ordered.size() < subPatterns.size()) {
       int next = -1;
@@ -705,10 +710,10 @@ public class MatchExecutionPlanner {
 
       scheduled.add(next);
       ordered.add(subPatterns.get(next));
-      orderedDependencies.add(dependencies.get(next));
+      correlated.add(!dependencies.get(next).isEmpty());
     }
     subPatterns = ordered;
-    return orderedDependencies;
+    return correlated;
   }
 
   private void splitDisjointPatterns(final CommandContext context) {

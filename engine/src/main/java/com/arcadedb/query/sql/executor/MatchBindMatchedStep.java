@@ -32,6 +32,12 @@ import com.arcadedb.exception.TimeoutException;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class MatchBindMatchedStep extends AbstractExecutionStep {
+  /**
+   * Name of the context variable behind {@code $matched}. Every step that binds it does so only for the span in which it
+   * evaluates something, and restores it afterwards; this step is the one that binds it for the RETURN clause.
+   */
+  public static final String MATCHED_VARIABLE = "matched";
+
 
   public MatchBindMatchedStep(final CommandContext context) {
     super(context);
@@ -53,7 +59,7 @@ public class MatchBindMatchedStep extends AbstractExecutionStep {
         final Result row = upstream.next();
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
-          context.setVariable("matched", row);
+          context.setVariable(MATCHED_VARIABLE, row);
           return row;
         } finally {
           if (context.isProfiling())

@@ -197,6 +197,17 @@ class Issue7434MatchedAliasPropertyTest extends TestHelper {
     assertThat(out).containsExactlyInAnyOrder("s1|a.ts", "s1|a.ts", "s2|b.ts", "s2|b.ts");
   }
 
+  @Test
+  void anIndependentLegWithNoRowEmptiesTheProduct() {
+    // WHETHER THE EMPTY LEG COMES FIRST OR AFTER OTHER LEGS, THE ANSWER IS EMPTY, WITH OR WITHOUT A CORRELATED LEG BEHIND IT
+    assertThat(paths("""
+        MATCH {type: F, as: g, where: (path = 'none')}, {type: S, as: s, where: (id = 's1')}
+        RETURN g.path AS p""")).isEmpty();
+    assertThat(paths("""
+        MATCH {type: S, as: s, where: (id = 's1')}, {type: F, as: g, where: (path = 'none')}, {type: F, as: f, where: (path = $matched.s.filePath)}
+        RETURN f.path AS p""")).isEmpty();
+  }
+
   private static List<String> rows(final ResultSet rs) {
     final List<String> out = new ArrayList<>();
     while (rs.hasNext()) {

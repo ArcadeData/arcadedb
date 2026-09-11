@@ -23,6 +23,9 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -92,6 +95,52 @@ class MatchGAVFusedStepDirectionTest extends TestHelper {
       assertThat(row.<String>getProperty("cName")).isEqualTo("Eve");
       assertThat(row.<String>getProperty("dName")).isEqualTo("Dave");
       assertThat(rs.hasNext()).isFalse();
+      database.commit();
+    } finally {
+      gav.drop();
+    }
+  }
+
+  @Test
+  void aHopWithAWhereFilterIsNotFusedSoTheFilterIsHonoured() {
+    // THE FUSED CSR WALK BINDS THE ALIASES IT REACHES WITHOUT EVALUATING THEIR where:, SO A FILTERED HOP MUST STAY ON THE
+    // REGULAR MatchStep. HOPS 1-2 (KNOWS, KNOWS2) ARE A FUSIBLE CHAIN; THE FILTER ON c, WHICH READS $matched (ISSUE #7434),
+    // KEEPS EVE'S BRANCH ONLY, SO d IS FRANK AND NOT ALSO GINA
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("KNOWS");
+    database.getSchema().createEdgeType("KNOWS2");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").set("wants", "Eve").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex eve = database.newVertex("Person").set("name", "Eve").save();
+    final MutableVertex dave = database.newVertex("Person").set("name", "Dave").save();
+    final MutableVertex frank = database.newVertex("Person").set("name", "Frank").save();
+    final MutableVertex gina = database.newVertex("Person").set("name", "Gina").save();
+    alice.newEdge("FOLLOWS", bob);
+    bob.newEdge("KNOWS", eve);
+    bob.newEdge("KNOWS", dave);
+    eve.newEdge("KNOWS2", frank);
+    dave.newEdge("KNOWS2", gina);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS", "KNOWS", "KNOWS2")
+        .build();
+    try {
+      database.begin();
+      final List<String> names = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql",
+          """
+          MATCH {type: Person, as: a, where: (name = 'Alice')}.out('FOLLOWS'){as: b}\
+          .out('KNOWS'){as: c, where: (name = $matched.a.wants)}.out('KNOWS2'){as: d} \
+          RETURN d.name as dName""")) {
+        while (rs.hasNext())
+          names.add(rs.next().getProperty("dName"));
+      }
+      assertThat(names).containsExactly("Frank");
       database.commit();
     } finally {
       gav.drop();
