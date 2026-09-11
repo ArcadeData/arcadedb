@@ -49,8 +49,9 @@ public class DatabaseFactory implements AutoCloseable {
    * Milliseconds the JVM shutdown hook waits for the graceful close of the databases still open. On expiry the
    * hook returns anyway so the JVM can complete its shutdown: the close it abandons is exactly a crash, which the
    * WAL replay of the next open repairs. Only pathological states can reach it - the flush itself is already
-   * bounded by {@code arcadedb.flushAllPagesTimeout} and the only unbounded step is acquiring the database lock
-   * from a daemon thread that never releases it.
+   * bounded by {@code arcadedb.flushAllPagesTimeout} and the only unbounded steps are acquiring the database lock
+   * from a daemon thread that never releases it, and waiting for a snapshot window (a backup) that never closes
+   * (#7458).
    */
   private static final long SHUTDOWN_CLOSE_TIMEOUT_MS = 30_000;
 
