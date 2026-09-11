@@ -69,7 +69,7 @@ import java.util.function.BiFunction;
  * {@link #openSnapshot} walks 1 to 5 in that order; {@link FileManager#dropFile} takes 4 then 5, which agrees. No
  * path takes the FileManager monitor and then this manager's lock, and none takes the registry lock and then
  * anything else - {@code PageSnapshot.close()} unregisters (5) and only then drops its retained files, holding
- * nothing.
+ * nothing. {@link #beginDatabaseClose} waits on (5) holding nothing else (#7458).
  */
 public class PageManager extends LockContext {
   public static final PageManager INSTANCE = new PageManager();
@@ -149,6 +149,23 @@ public class PageManager extends LockContext {
    */
   private volatile PageSnapshot[] activeSnapshots = null;
   private final    Object         snapshotRegistryLock = new Object();
+  /**
+   * Databases whose close is in progress (#7458), with the number of closers in flight: no snapshot window may open
+   * on them, and {@link #beginDatabaseClose} waits until the ones already open are released. Counted rather than a
+   * set, so two concurrent closers of the same database (a shutdown hook racing an explicit drop) keep the mark up
+   * until the LAST of them has finished, not the first. Guarded by {@link #snapshotRegistryLock}, keyed like
+   * {@code LocalDatabase.equals} - by path - so a wrapper and the embedded instance it wraps mark the same database.
+   */
+  private final    Map<Database, Integer> closingDatabases = new HashMap<>();
+  /**
+   * Windows that have left {@link #activeSnapshots} but whose {@code close()} has not finished releasing them: the
+   * shadow may still be open and the files whose deletion they deferred may still be on disk. {@link #beginDatabaseClose}
+   * counts these with the active ones, so a close never proceeds under a release still in progress - the registry
+   * array alone would read zero from the first step of the window's close on. Guarded by {@link #snapshotRegistryLock}.
+   */
+  private final    Set<PageSnapshot> releasingSnapshots = new HashSet<>();
+  /** How long {@link #beginDatabaseClose} waits between re-checks of the open windows; also its logging cadence. */
+  private static final long CLOSE_WAIT_POLL_MILLIS = 10_000L;
   /** Serializes the t0 barrier per database (NOT the windows themselves, which may overlap freely). */
   private final ConcurrentHashMap<Database, Object>              snapshotBarrierLocks = new ConcurrentHashMap<>();
   /**
@@ -626,10 +643,20 @@ public class PageManager extends LockContext {
   }
 
   private PageSnapshot openSnapshotInternal(final DatabaseInternal database) throws IOException, InterruptedException {
+    if (!database.isOpen() || isDatabaseClosing(database))
+      // NOT TIMED AND NOT COUNTED: NOTHING OF THE BARRIER RAN, AND A CALL THAT REFUSED INSTANTLY WOULD OTHERWISE PULL
+      // THE AVERAGE THIS METRIC EXISTS TO REPORT TOWARDS ZERO. ASKED BEFORE THE FLUSH THREAD, WHICH THE LAST CLOSE
+      // TAKES DOWN WITH IT: "THE DATABASE IS CLOSED" IS THE ANSWER THE CALLER CAN ACT ON. THE RACE WITH A CLOSE IN
+      // PROGRESS IS SETTLED BY registerSnapshot, UNDER THE MONITOR THE CLOSE MARKS ITSELF ON - THIS IS ONLY THE
+      // CHEAP EARLY ANSWER (#7458), SO THAT A BACKUP ASKING WHILE A CLOSE IS ALREADY WAITING DOES NOT DRAIN AND
+      // SUSPEND THE FLUSH PIPELINE OF EVERY DATABASE IN THE JVM ONLY TO BE REFUSED AT THE LAST STEP
+      throw new PageSnapshotException(
+          "Cannot open a snapshot of database '" + database.getName() + "': the database is closed or closing",
+          PageSnapshotException.Reason.CLOSING);
+
     final PageManagerFlushThread thread = flushThread;
     if (thread == null)
-      // NOT TIMED AND NOT COUNTED: NOTHING OF THE BARRIER RAN, AND A CALL THAT REFUSED INSTANTLY WOULD OTHERWISE PULL
-      // THE AVERAGE THIS METRIC EXISTS TO REPORT TOWARDS ZERO
+      // NOT TIMED AND NOT COUNTED FOR THE SAME REASON
       throw new PageSnapshotException(
           "Cannot open a snapshot of database '" + database.getName() + "': the page manager is not running",
           PageSnapshotException.Reason.NOT_RUNNING);
@@ -957,14 +984,118 @@ public class PageManager extends LockContext {
   }
 
   private PageSnapshot registerSnapshot(final PageSnapshot snapshot) {
+    final Database database = snapshot.getDatabase();
+    final boolean refused;
     synchronized (snapshotRegistryLock) {
-      final PageSnapshot[] current = activeSnapshots;
-      final PageSnapshot[] updated = current == null ? new PageSnapshot[1] : Arrays.copyOf(current, current.length + 1);
-      updated[updated.length - 1] = snapshot;
-      activeSnapshots = updated;
+      // #7458: DECIDED UNDER THE SAME MONITOR beginDatabaseClose MARKS AND WAITS UNDER, SO A WINDOW IS EITHER SEEN BY
+      // THE WAITING CLOSE OR REFUSED HERE - NEVER NEITHER. A CLOSE THAT IS WAITING FOR THE OPEN WINDOWS TO DRAIN MUST
+      // NOT BE POSTPONED BY NEW ONES, AND A WINDOW MUST NOT OPEN ON FILES A CLOSE IS ABOUT TO SHUT
+      refused = closingDatabases.containsKey(database) || !database.isOpen();
+      if (!refused) {
+        final PageSnapshot[] current = activeSnapshots;
+        final PageSnapshot[] updated = current == null ? new PageSnapshot[1] : Arrays.copyOf(current, current.length + 1);
+        updated[updated.length - 1] = snapshot;
+        activeSnapshots = updated;
+      }
     }
+
+    if (refused) {
+      // NOTHING WAS PUBLISHED AND THE SHADOW HAS NOT TOUCHED THE DISK YET: CLOSING THE WINDOW ONLY RELEASES THE
+      // OBJECT, AND IT IS DONE OUTSIDE THE REGISTRY MONITOR LIKE EVERY OTHER WINDOW CLOSE
+      snapshot.close();
+      throw new PageSnapshotException("Cannot open a snapshot of database '" + database.getName()
+          + "': the database is closed or closing", PageSnapshotException.Reason.CLOSING);
+    }
+
     totalSnapshotWindowsOpened.incrementAndGet();
     return snapshot;
+  }
+
+  /**
+   * Marks {@code database} as closing and waits until every snapshot window open on it has been released (#7458).
+   * <p>
+   * A window is a backup reading the page files without holding the database lock, so a close that went ahead would
+   * shut the files underneath it: the window failed, the backup fell back to the frozen-files path against a closed
+   * database and failed loudly. That was the safe direction, but the database read lock the snapshot path used to
+   * hold made the close simply WAIT for the backup, and this restores that - better than before, in fact, because
+   * the wait holds no database lock, so the database keeps serving while the backup finishes. From this call on and
+   * until {@link #endDatabaseClose}, {@link #openSnapshot} refuses the database, so a stream of backups cannot
+   * postpone the close indefinitely.
+   * <p>
+   * The wait is unbounded and NOT cut short by an interrupt, exactly like the write lock acquisition it replaces
+   * ({@code ReentrantReadWriteLock.lock()} is uninterruptible), and like the durable part of the close that follows it,
+   * which runs with the interrupt flag cleared on purpose: an interrupt that let the close go ahead would shut the
+   * files under the backups still reading them, which is the failure this method exists to prevent. The interrupt is
+   * remembered and restored on the way out, so the caller still sees it. Called holding no lock of this manager - it
+   * waits on the registry monitor, which is last in the lock order.
+   */
+  public void beginDatabaseClose(final Database database) {
+    boolean interrupted = false;
+    synchronized (snapshotRegistryLock) {
+      closingDatabases.merge(database, 1, Integer::sum);
+
+      boolean logged = false;
+      for (int open; (open = countSnapshotWindows(database)) > 0; ) {
+        LogManager.instance().log(this, logged ? Level.FINE : Level.INFO,
+            "Close of database '%s' is waiting for %d open snapshot window(s) to be released (a backup is reading them)",
+            null, database.getName(), open);
+        logged = true;
+        try {
+          snapshotRegistryLock.wait(CLOSE_WAIT_POLL_MILLIS);
+        } catch (final InterruptedException e) {
+          if (!interrupted)
+            LogManager.instance().log(this, Level.WARNING,
+                "Close of database '%s' interrupted while waiting for %d open snapshot window(s): the wait goes on until they are released, the interrupt is restored afterwards",
+                null, database.getName(), open);
+          interrupted = true;
+        }
+      }
+    }
+    if (interrupted)
+      Thread.currentThread().interrupt();
+  }
+
+  private boolean isDatabaseClosing(final Database database) {
+    synchronized (snapshotRegistryLock) {
+      return closingDatabases.containsKey(database);
+    }
+  }
+
+  /**
+   * Releases one closer's mark set by {@link #beginDatabaseClose}; the last one lifts it. Called once the close has
+   * completed, whatever its outcome.
+   */
+  public void endDatabaseClose(final Database database) {
+    synchronized (snapshotRegistryLock) {
+      closingDatabases.computeIfPresent(database, (k, closers) -> closers > 1 ? closers - 1 : null);
+    }
+  }
+
+  /**
+   * The window's {@code close()} is done: the shadow is closed and the files it retained are released. Wakes a
+   * {@link #beginDatabaseClose} waiting for it. A window that was never registered (refused) is not being tracked and
+   * this is a no-op for it.
+   */
+  void snapshotReleased(final PageSnapshot snapshot) {
+    synchronized (snapshotRegistryLock) {
+      // ONLY A CLOSE OF THIS WINDOW'S DATABASE CAN BE WAITING FOR IT: A RELEASE ON ANOTHER DATABASE WAKES NOBODY
+      if (releasingSnapshots.remove(snapshot) && closingDatabases.containsKey(snapshot.getDatabase()))
+        snapshotRegistryLock.notifyAll();
+    }
+  }
+
+  /** Windows still open on the database, plus the ones whose release is in progress. Under the registry lock. */
+  private int countSnapshotWindows(final Database database) {
+    int count = 0;
+    final PageSnapshot[] snapshots = activeSnapshots;
+    if (snapshots != null)
+      for (final PageSnapshot snapshot : snapshots)
+        if (snapshot.isFor(database))
+          ++count;
+    for (final PageSnapshot snapshot : releasingSnapshots)
+      if (snapshot.isFor(database))
+        ++count;
+    return count;
   }
 
   void unregisterSnapshot(final PageSnapshot snapshot) {
@@ -980,6 +1111,8 @@ public class PageManager extends LockContext {
         }
       if (found < 0)
         return;
+      // FROM HERE UNTIL snapshotReleased THE WINDOW IS RELEASING: STILL COUNTED BY A WAITING CLOSE (#7458)
+      releasingSnapshots.add(snapshot);
       if (current.length == 1) {
         activeSnapshots = null;
         return;
