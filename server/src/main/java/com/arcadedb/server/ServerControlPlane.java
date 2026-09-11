@@ -23,9 +23,12 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.MaintenanceCoordinator;
+import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -33,7 +36,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupCoordinator;
-import com.arcadedb.server.backup.BackupCoordinator.Operation;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.http.HttpServer;
@@ -52,6 +54,7 @@ import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -952,9 +955,13 @@ public class ServerControlPlane {
       throw new OperationInProgressException(refusal(operation, databaseName, running));
   }
 
+  /**
+   * One wording for every entry point. It is built in {@link MaintenanceCoordinator} rather than here because the
+   * SQL {@code BACKUP DATABASE} and {@code IMPORT DATABASE} statements raise the same refusal from the engine, and
+   * a client must not be able to tell the two apart (issue #7443).
+   */
   private static String refusal(final Operation refused, final String databaseName, final Operation running) {
-    return "Cannot " + refused.verb() + " database '" + databaseName + "': " + running.phrase()
-        + " of it is already in progress";
+    return MaintenanceCoordinator.refusal(refused, databaseName, running);
   }
 
   public JSONObject deleteBackup(final String databaseName, final String fileName) {
@@ -1139,10 +1146,14 @@ public class ServerControlPlane {
    * operation on it is already running - the per-database slot {@link BackupCoordinator} hands out.
    * HTTP answers it with a 409 and gRPC with {@code ABORTED}; both carry this message verbatim.
    * <p>
+   * It extends {@link DatabaseOperationInProgressException}, which is the engine's name for the same refusal and
+   * what the SQL {@code BACKUP DATABASE} and {@code IMPORT DATABASE} statements raise: both transports match on
+   * the engine type, so the SQL path gets the same status as this one without a second arm (issue #7443).
+   * <p>
    * The request is well formed and authorized, and retrying once the other operation finishes is the
    * fix, which is what separates it from every other refusal these commands can produce (issue #7384).
    */
-  public static class OperationInProgressException extends RuntimeException {
+  public static class OperationInProgressException extends DatabaseOperationInProgressException {
     public OperationInProgressException(final String message) {
       super(message);
     }
@@ -1275,6 +1286,11 @@ public class ServerControlPlane {
    * which is the only thing that made the check meaningful: two restores could both pass it, both
    * restore into their own temporary directory and both reach the swap, and the loser's caller was
    * still told it had succeeded (issue #7384).
+   * <p>
+   * The name itself is claimed for the duration - see {@link #reserveRestoreTarget} - so the existence check and the
+   * swap that acts on it are two ends of one reservation rather than two independent samples taken a download apart
+   * (issue #7441). A {@code create database} of the same name inside that window is refused rather than created and
+   * then silently destroyed.
    *
    * @throws IllegalArgumentException     when the name is invalid or the database already exists
    * @throws SecurityException            when the URL is not one this server accepts from a client
@@ -1292,10 +1308,12 @@ public class ServerControlPlane {
     beginExclusive(databaseName, Operation.RESTORE);
     try {
       final String dbPath = databaseDirectory(databaseName);
-      if (databaseNameIsTaken(databaseName, dbPath))
-        throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
-
-      performRestore(databaseName, dbPath, url, "restore database", listener);
+      reserveRestoreTarget(databaseName, dbPath, false, "Database '" + databaseName + "' already exists");
+      try {
+        performRestore(databaseName, dbPath, url, "restore database", false, listener);
+      } finally {
+        server.releaseDatabaseNameReservedForRestore(databaseName);
+      }
     } finally {
       server.getBackupCoordinator().end(databaseName, Operation.RESTORE);
     }
@@ -1315,6 +1333,11 @@ public class ServerControlPlane {
    * overwrite pre-check as well as the restore itself (issue #7384). The source is only read - its
    * archive is a file this server wrote, and a concurrent backup of it writes a different archive -
    * so it is not reserved, which also keeps this from needing a lock order between two names.
+   * <p>
+   * The target name is claimed for the duration as {@link #restoreDatabase} claims its own (issue #7441). Without
+   * {@code overwrite} this command makes {@code restore database}'s promise and keeps it the same way; with it, the
+   * claim still stands - the caller accepted that the target is replaced, not that something else may create one
+   * underneath the restore.
    *
    * @throws IllegalArgumentException     when a name is invalid, or the target exists and {@code overwrite} is false
    * @throws OperationInProgressException when a backup, restore or import of the target is already running
@@ -1335,13 +1358,43 @@ public class ServerControlPlane {
     beginExclusive(targetDatabase, Operation.RESTORE);
     try {
       final String dbPath = databaseDirectory(targetDatabase);
-      if (databaseNameIsTaken(targetDatabase, dbPath) && !overwrite)
-        throw new IllegalArgumentException(
-            "Database '" + targetDatabase + "' already exists. Enable overwrite to replace it with the backup");
-
-      performRestore(targetDatabase, dbPath, "file://" + backupFile.toAbsolutePath(), "restore backup", listener);
+      reserveRestoreTarget(targetDatabase, dbPath, overwrite,
+          "Database '" + targetDatabase + "' already exists. Enable overwrite to replace it with the backup");
+      try {
+        performRestore(targetDatabase, dbPath, "file://" + backupFile.toAbsolutePath(), "restore backup", overwrite,
+            listener);
+      } finally {
+        server.releaseDatabaseNameReservedForRestore(targetDatabase);
+      }
     } finally {
       server.getBackupCoordinator().end(targetDatabase, Operation.RESTORE);
+    }
+  }
+
+  /**
+   * Decides whether this restore may go ahead against its target and, in the same breath, claims the name for as
+   * long as the restore runs (issue #7441).
+   * <p>
+   * The two halves are one step on purpose. Asking the question and acting on the answer minutes later, in
+   * {@link #swapRestoredDatabase}, is what let a {@code create database} of the same name land in between and be
+   * dropped and overwritten without a word - by the command whose whole contract is that it never replaces an
+   * existing database. Both run under {@link ArcadeDBServer#getDatabasesLock()}, the monitor
+   * {@link ArcadeDBServer#createDatabase} already holds for its own check-then-act, so a creator either loses the
+   * race before the check and is seen by it, or arrives after the claim and is refused by it.
+   * <p>
+   * {@code overwrite} does not skip the claim, only the refusal: {@code restore backup ... overwrite} means the
+   * caller accepts that the target is replaced, not that anything else may create one underneath it.
+   *
+   * @param refusal the message for the caller when the target is taken and {@code overwrite} is not set - the two
+   *                commands word it differently, because only one of them has an overwrite flag to point at
+   */
+  private void reserveRestoreTarget(final String databaseName, final String dbPath, final boolean overwrite,
+      final String refusal) {
+    synchronized (server.getDatabasesLock()) {
+      if (databaseNameIsTaken(databaseName, dbPath) && !overwrite)
+        throw new IllegalArgumentException(refusal);
+
+      server.reserveDatabaseNameForRestore(databaseName);
     }
   }
 
@@ -1512,14 +1565,18 @@ public class ServerControlPlane {
    * {@code loadDatabases()} skips the orphan at next startup instead of opening it as a user
    * database.
    * <p>
-   * The caller is responsible for the pre-restore existence and overwrite checks.
+   * The caller is responsible for the pre-restore existence and overwrite checks, and for holding the name
+   * reservation that keeps the answer true until the swap.
    *
-   * @param operation the label the operation is published under - the command the operator typed, so that a
-   *                  reader of the progress endpoint sees {@code restore backup} or {@code restore database}
-   *                  rather than one name standing for both
+   * @param operation       the label the operation is published under - the command the operator typed, so that a
+   *                        reader of the progress endpoint sees {@code restore backup} or {@code restore database}
+   *                        rather than one name standing for both
+   * @param replaceExisting whether the caller has already accepted that an existing target is destroyed, which only
+   *                        {@code restore backup ... overwrite} does. When it is false the swap re-checks the target
+   *                        and fails rather than replace one that appeared meanwhile (issue #7441)
    */
   private void performRestore(final String databaseName, final String dbPath, final String url,
-      final String operation, final ProgressListener listener) {
+      final String operation, final boolean replaceExisting, final ProgressListener listener) {
     final File finalDir = new File(dbPath);
     final File tempDir = new File(finalDir.getParentFile(),
         ArcadeDBServer.RESERVED_DATABASE_PREFIX + "restore-tmp-" + databaseName + "-" + System.nanoTime());
@@ -1556,7 +1613,7 @@ public class ServerControlPlane {
       }
 
       progress.onProgress(RestoreProgress.STEP_ACTIVATE, 2, RESTORE_STEPS, 0, -1);
-      swapRestoredDatabase(databaseName, finalDir, tempDir);
+      swapRestoredDatabase(databaseName, finalDir, tempDir, replaceExisting);
 
       // A no-op outside HA, and minutes inside it: forceSnapshot makes every replica pull the restored files.
       progress.onProgress(RESTORE_STEP_REPLICATE, 3, RESTORE_STEPS, 0, -1);
@@ -1572,26 +1629,69 @@ public class ServerControlPlane {
    * Swaps a freshly-restored temporary directory into the final database directory. The existing
    * target database (if any) is dropped only now that the restore into {@code tempDir} has
    * succeeded, so a failed restore never destroys the original data (issue #5027).
+   * <p>
+   * {@code replaceExisting} is the caller saying it accepted, when the command was issued, that an existing target is
+   * destroyed - only {@code restore backup ... overwrite} does. Without it, nothing here may destroy anything: the
+   * target did not exist when the command was accepted, so the branch below neither drops, nor deletes, nor moves
+   * with {@code REPLACE_EXISTING}, and a target that appeared since fails the restore instead (issue #7441).
+   * <p>
+   * With it there is no tripwire at all, deliberately and not by omission: a database that appeared out of band
+   * during an {@code overwrite} restore is destroyed without a word, because replacing whatever is at that name is
+   * the entire content of the flag. Reserving the name still keeps every creator that goes through
+   * {@link ArcadeDBServer} out of the way; what is unprotected here is only what a reservation cannot see.
    */
-  private void swapRestoredDatabase(final String databaseName, final File finalDir, final File tempDir) {
+  private void swapRestoredDatabase(final String databaseName, final File finalDir, final File tempDir,
+      final boolean replaceExisting) {
     try {
       // Drop the previous target (HA-aware) BEFORE taking the registry lock and only after a
       // successful restore into tempDir. In HA mode dropDatabase() round-trips through Raft and the
       // apply thread itself acquires databasesLock, so holding that lock here would deadlock; only the
       // pure-local file swap below runs under the lock, matching the snapshot-installer pattern (#4832).
-      if (server.existsDatabase(databaseName))
+      //
+      // Gated on replaceExisting (issue #7441): a restore that promised not to replace anything has nothing here to
+      // drop, because the target did not exist when the command was accepted. A registered database at this point is
+      // therefore one that appeared during the restore - exactly what the guard below refuses to destroy - and
+      // dropping it here, outside the lock and before that guard runs, would destroy it first.
+      if (replaceExisting && server.existsDatabase(databaseName))
         dropDatabaseForRestore(databaseName);
 
       // Serialise the on-disk swap against concurrent getDatabase / createDatabase so no concurrent
       // open observes the transient half-swapped directory.
       synchronized (server.getDatabasesLock()) {
-        if (finalDir.exists())
-          FileUtils.deleteRecursively(finalDir);
+        if (replaceExisting) {
+          // The caller asked for the target to be replaced, so replace it.
+          if (finalDir.exists())
+            FileUtils.deleteRecursively(finalDir);
 
-        try {
-          Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.ATOMIC_MOVE);
-        } catch (final AtomicMoveNotSupportedException e) {
-          Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.REPLACE_EXISTING);
+          try {
+            Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.ATOMIC_MOVE);
+          } catch (final AtomicMoveNotSupportedException e) {
+            Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.REPLACE_EXISTING);
+          }
+        } else {
+          // Nothing on this branch may destroy anything: the target did not exist when the command was accepted,
+          // and this command has no way for the caller to say they meant to replace one (issue #7441). So it does
+          // not delete and it does not move with REPLACE_EXISTING - it asks, and then it lets the move be the
+          // second half of the answer.
+          //
+          // The two halves are split that way because a name is taken on two independent registers and only one of
+          // them can be tested and acted on in a single step. The server registry is checked here; the filesystem
+          // is not checked at all, because a check would be a sample and a directory can appear between it and the
+          // move however tightly they are written - the monitor held here binds every creator that goes through
+          // ArcadeDBServer, not an embedded DatabaseFactory elsewhere in this JVM or another process. A move with
+          // no options fails with FileAlreadyExistsException instead, which is the filesystem answering the
+          // question rather than being asked it. ATOMIC_MOVE is deliberately not set: combined with no
+          // REPLACE_EXISTING its behaviour over an existing target is implementation-specific, and on POSIX
+          // rename(2) would silently clobber - the exact outcome this branch exists to prevent. The move is a
+          // single rename regardless, tempDir being a sibling of finalDir and so always on the same filesystem.
+          if (server.existsDatabase(databaseName))
+            throw new CommandExecutionException(restoreTargetAppeared(databaseName));
+
+          try {
+            Files.move(tempDir.toPath(), finalDir.toPath());
+          } catch (final FileAlreadyExistsException e) {
+            throw new CommandExecutionException(restoreTargetAppeared(databaseName), e);
+          }
         }
       }
     } catch (final CommandExecutionException e) {
@@ -1601,6 +1701,15 @@ public class ServerControlPlane {
       FileUtils.deleteRecursively(tempDir);
       throw new CommandExecutionException("Error activating restored database '" + databaseName + "'", e);
     }
+  }
+
+  /**
+   * What a restore that promised not to replace anything says when it finds something there anyway - from either of
+   * the two registers a name can be taken on, so a caller cannot tell which one answered and does not need to.
+   */
+  private static String restoreTargetAppeared(final String databaseName) {
+    return "Cannot activate the restored database '" + databaseName
+        + "': a database by that name appeared while the restore was running";
   }
 
   /**

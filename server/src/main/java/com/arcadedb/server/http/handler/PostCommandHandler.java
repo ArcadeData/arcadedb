@@ -494,8 +494,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
     boolean idempotent;
     try {
       final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine(language).analyze(command);
-      // isIdempotent() is not quite "read-only". BACKUP DATABASE answers true - it mutates no record and takes no
-      // lock - while writing a whole archive to the server filesystem, and it is the only writer among the eight
+      // isIdempotent() is not quite "read-only". BACKUP DATABASE answers true - it mutates no record, and takes
+      // the per-database maintenance slot rather than any record or page lock (issue #7443) - while writing a
+      // whole archive to the server filesystem, and it is the only writer among the eight
       // SQL statements that answer true. Streaming it would hit both hazards above for real: a NeedRetryException
       // on the wrapper's commit re-runs the backup from the start and streams into an exchange whose 200, rows and
       // trailer are already written. So the declared operation types have to agree that nothing is written, which

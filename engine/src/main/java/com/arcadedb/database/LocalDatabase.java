@@ -33,6 +33,7 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
@@ -145,6 +146,8 @@ import java.util.stream.Stream;
  */
 public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public static final int EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
+  // #6965: page versions the replication log assigned but this node has not applied yet (HA leader only)
+  private volatile PageVersionReservations pageVersionReservations;
   public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
   /** Header ({@code MutableEdgeSegment.CONTENT_START_POSITION}) plus room for a couple of maximum-width entries. */
   public static final int MIN_EDGE_LIST_CHUNK_SIZE             = 32;
@@ -214,7 +217,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private final      File                                      configurationFile;
   private            DatabaseInternal                          wrappedDatabaseInstance   = this;
   private final      SecurityManager                           security;
-  private final      Map<String, Object>                       wrappers                  = new HashMap<>();
+  /**
+   * Per-database attachments, keyed by name: the lazily built query engine of each language, and the server's
+   * {@link com.arcadedb.engine.MaintenanceCoordinator} when one is bound.
+   * <p>
+   * CONCURRENT, and that is not decoration. The query-engine factories write here from a request thread the
+   * first time a language is used on this database, so two requests in two languages already raced on a plain
+   * {@code HashMap} - and a put concurrent with a get on one is not merely lost, it can corrupt the table. Since
+   * issue #7443 the server also writes here when it wraps a live database (HA rewraps one that is already
+   * serving requests) and {@code BACKUP DATABASE} / {@code IMPORT DATABASE} read it, so the exposure is wider
+   * than it was. A {@link ConcurrentHashMap} read is no slower than a {@code HashMap} one and takes no lock.
+   */
+  private final      Map<String, Object>                       wrappers                  = new ConcurrentHashMap<>();
   private            File                                      lockFile;
   private            RandomAccessFile                          lockFileIO;
   private            FileChannel                               lockFileIOChannel;
@@ -1819,6 +1833,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public BinarySerializer getSerializer() {
     return serializer;
+  }
+
+  /**
+   * Page versions the replication log has already assigned but this node has not applied yet (issue #6965), or
+   * {@code null} on a standalone database. See {@link PageVersionReservations}.
+   */
+  public PageVersionReservations getPageVersionReservations() {
+    return pageVersionReservations;
+  }
+
+  public void setPageVersionReservations(final PageVersionReservations reservations) {
+    this.pageVersionReservations = reservations;
   }
 
   @Override

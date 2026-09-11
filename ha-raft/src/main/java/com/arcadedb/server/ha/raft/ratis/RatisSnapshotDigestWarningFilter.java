@@ -21,7 +21,6 @@ package com.arcadedb.server.ha.raft.ratis;
 import java.util.logging.Filter;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
-import java.util.logging.Logger;
 
 /**
  * Suppresses the single by-design WARNING that Apache Ratis's
@@ -74,7 +73,7 @@ import java.util.logging.Logger;
  *
  * @see com.arcadedb.server.ha.raft.ArcadeStateMachine
  */
-public final class RatisSnapshotDigestWarningFilter implements Filter {
+public final class RatisSnapshotDigestWarningFilter extends RatisLogRecordFilter {
   /** The Ratis logger that emits the warning. Matches the class name Ratis logs under. */
   public static final String RATIS_SNAPSHOT_STORAGE_LOGGER = "org.apache.ratis.statemachine.impl.SimpleStateMachineStorage";
 
@@ -84,20 +83,8 @@ public final class RatisSnapshotDigestWarningFilter implements Filter {
    */
   static final String MISSING_DIGEST_TEXT = "has missing MD5 file";
 
-  private static final Object INSTALL_LOCK = new Object();
-
-  /**
-   * A strong reference to the configured logger. {@code java.util.logging.LogManager} keeps only a weak
-   * reference to it, so without this an unreferenced logger can be collected and re-created without the
-   * filter, silently bringing the noise back.
-   */
-  @SuppressWarnings("unused")
-  private static Logger pinnedLogger;
-
-  private final Filter delegate;
-
   RatisSnapshotDigestWarningFilter(final Filter delegate) {
-    this.delegate = delegate;
+    super(delegate);
   }
 
   /**
@@ -106,33 +93,14 @@ public final class RatisSnapshotDigestWarningFilter implements Filter {
    * already-filtered logger is a no-op, so filters never stack.
    */
   public static void install() {
-    synchronized (INSTALL_LOCK) {
-      final Logger logger = Logger.getLogger(RATIS_SNAPSHOT_STORAGE_LOGGER);
-      pinnedLogger = logger;
-      if (logger.getFilter() instanceof RatisSnapshotDigestWarningFilter)
-        return;
-      logger.setFilter(new RatisSnapshotDigestWarningFilter(logger.getFilter()));
-    }
+    install(RATIS_SNAPSHOT_STORAGE_LOGGER, RatisSnapshotDigestWarningFilter.class, RatisSnapshotDigestWarningFilter::new);
   }
 
   @Override
-  public boolean isLoggable(final LogRecord record) {
-    if (isMissingDigestWarning(record))
-      return false;
-    return delegate == null || delegate.isLoggable(record);
-  }
-
-  private static boolean isMissingDigestWarning(final LogRecord record) {
+  protected boolean drops(final LogRecord record) {
     if (record.getLevel().intValue() > Level.WARNING.intValue())
       return false;
     final String message = record.getMessage();
     return message != null && message.contains(MISSING_DIGEST_TEXT);
-  }
-
-  /**
-   * The filter this one chains to, or {@code null} when the logger carried none.
-   */
-  Filter getDelegate() {
-    return delegate;
   }
 }
