@@ -905,7 +905,15 @@ public class PageManager extends LockContext {
         // ABSENT IS A LEGITIMATE STATE, NOT AN ERROR: configuration.json only exists once a setting has been
         // persisted, and schema.json only once the schema has been saved. The consumers already treated a missing
         // file as "nothing to archive", so the entry is simply left out - no entry rather than an empty one, which
-        // a restore would extract as a zero-length file where none belongs
+        // a restore would extract as a zero-length file where none belongs.
+        //
+        // LOGGED HERE AND NOT AT THE CONSUMER. The backup used to print "- File 'configuration.json'... not found"
+        // because it was the one naming the two files; now that it archives whatever the window carries, only this
+        // method knows which file was expected and was not there. Saying so here keeps that line's information
+        // without handing the filenames back to every consumer
+        LogManager.instance().log(this, Level.FINE,
+            "Snapshot of database '%s': configuration file '%s' did not exist at t0, so it is not part of the window",
+            null, database.getName(), fileName);
       }
     }
     return captured;
