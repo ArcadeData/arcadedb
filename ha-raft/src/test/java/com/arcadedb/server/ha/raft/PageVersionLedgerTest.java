@@ -158,6 +158,28 @@ class PageVersionLedgerTest {
         .isInstanceOf(ConcurrentModificationException.class);
   }
 
+  /**
+   * The local phase-1 check on the leader sees the reservations too, and a transaction it refuses never reaches the
+   * ledger's own cleanup: a dropped request's reservation must expire on that path as well, or a page only the leader
+   * writes stays fenced until the next leadership change.
+   */
+  @Test
+  void theLocalCheckIgnoresAnExpiredUnconfirmedReservation() throws Exception {
+    final byte[] dropped = wal(1, new Page(3, 0, 1));
+    final byte[] appended = wal(2, new Page(4, 0, 1));
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(dropped), entry(1), localVersions);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(appended), entry(2), localVersions);
+    ledger.confirmAppended(DB, PageVersionLedger.parse(appended), entry(2));
+    assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(1);
+
+    backdate(DB, 3, 0, PageVersionLedger.STALE_RESERVATION_MS + 1);
+    backdate(DB, 4, 0, PageVersionLedger.STALE_RESERVATION_MS + 1);
+
+    assertThat(ledger.reservedVersion(DB, 3, 0)).as("the dropped request's reservation is gone").isEqualTo(-1);
+    assertThat(ledger.reservedPages(DB)).isEqualTo(1);
+    assertThat(ledger.reservedVersion(DB, 4, 0)).as("the appended entry's reservation stays until applied").isEqualTo(1);
+  }
+
   @Test
   void aPageSplitInSeveralSegmentsIsOnePage() throws IOException {
     // Two disjoint modified intervals of the same page ship as two consecutive segments at the same target version.

@@ -817,14 +817,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return context.build().setException(e);
     }
     final DatabaseInternal db = databaseForValidation(decoded.databaseName());
-    if (db != null)
-      try {
-        pageVersions.validateAndReserve(db.getName(), pages, entryId, localVersionsOf(db));
-      } catch (final ConcurrentModificationException e) {
-        HALog.log(this, HALog.DETAILED, "Refusing tx %d on database '%s': %s",
-            peekWalTransactionId(decoded.walData()), decoded.databaseName(), e.getMessage());
-        return context.build().setException(e);
-      }
+    if (db == null)
+      // An entry that cannot be validated must not enter the log: applied unvalidated it would take the very
+      // equal-version merge path this validation exists to close. The database is not open on this leader right
+      // now (still installing, or being dropped), which is a transient the originator can retry.
+      return context.build().setException(new NeedRetryException(
+          "Database '" + decoded.databaseName() + "' is not available on the leader to validate the transaction. Please retry"));
+    try {
+      pageVersions.validateAndReserve(db.getName(), pages, entryId, localVersionsOf(db));
+    } catch (final ConcurrentModificationException e) {
+      HALog.log(this, HALog.DETAILED, "Refusing tx %d on database '%s': %s",
+          peekWalTransactionId(decoded.walData()), decoded.databaseName(), e.getMessage());
+      return context.build().setException(e);
+    }
 
     return context.setStateMachineContext(new AppendedEntry(isLocalOrigin, decoded, entryId, pages)).build();
   }
@@ -1847,7 +1852,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     pageVersions.release(databaseName, null, walData);
   }
 
-  /** The database an entry targets, or {@code null} when it cannot be resolved here (it is then validated at apply). */
+  /** The database an entry targets, or {@code null} when it cannot be resolved here (the entry is then refused). */
   private DatabaseInternal databaseForValidation(final String databaseName) {
     if (server == null || databaseName == null)
       return null;
