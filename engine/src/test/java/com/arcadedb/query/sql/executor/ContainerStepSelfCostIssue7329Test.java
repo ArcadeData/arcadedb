@@ -53,7 +53,8 @@ class ContainerStepSelfCostIssue7329Test {
   @BeforeEach
   void setup() {
     database = new DatabaseFactory(DATABASE_DIR).create();
-    database.getSchema().createDocumentType("Item");
+    // Two buckets, so a bucket-list target plans the multi-bucket container and not the single-bucket step.
+    database.getSchema().createDocumentType("Item", 2);
     database.transaction(() -> {
       for (int i = 0; i < 200; i++)
         database.newDocument("Item").set("idx", i).save();
@@ -82,6 +83,39 @@ class ContainerStepSelfCostIssue7329Test {
     assertThat(buckets).as("the container must carry the bucket steps that do the timing").isNotEmpty();
     assertThat(buckets.stream().anyMatch(s -> s.getLong("cost", -1) >= 0))
         .as("at least one bucket step must have been timed").isTrue();
+  }
+
+  /**
+   * The other two containers the fix changed, planned by a filtered type scan and by a bucket-list target: each must
+   * report the same shape as the plain type scan - no self cost, timed children, the roll-up under
+   * {@code totalCost} - or a regression in one of them would go unnoticed by a test that only scans a type (#7391).
+   */
+  @Test
+  void theFilteredTypeScanAndTheBucketListContainersReportTheSameShape() {
+    assertContainerShape(profiledPlanOf("select from Item where idx > 100"), "FetchFromTypeWithFilterStep");
+    assertContainerShape(profiledPlanOf("select from bucket:[Item_0, Item_1]"), "FetchFromClustersExecutionStep");
+  }
+
+  private void assertContainerShape(final JSONObject plan, final String containerName) {
+    final JSONObject container = findStep(plan, containerName);
+    assertThat(container).as("%s must be in the plan: %s", containerName, plan).isNotNull();
+    assertThat(container.getLong("cost", 0)).as("%s times nothing itself", containerName).isEqualTo(-1L);
+
+    final List<JSONObject> children = collectSteps(container.getJSONArray("subSteps"));
+    assertThat(children).as("%s must carry the bucket steps that do the timing", containerName).isNotEmpty();
+    assertThat(children.stream().anyMatch(s -> s.getLong("cost", -1) >= 0))
+        .as("at least one child of %s must have been timed", containerName).isTrue();
+
+    // The roll-up is the sum of the direct children's totals: the container adds nothing of its own.
+    long childrenTotal = 0;
+    final JSONArray direct = container.getJSONArray("subSteps");
+    for (int i = 0; i < direct.length(); i++) {
+      final long cost = direct.getJSONObject(i).getLong("totalCost", -1);
+      if (cost >= 0)
+        childrenTotal += cost;
+    }
+    assertThat(childrenTotal).as("the children of %s must have been timed", containerName).isGreaterThan(0L);
+    assertThat(container.getLong("totalCost", -1)).isEqualTo(childrenTotal);
   }
 
   /**
