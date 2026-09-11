@@ -155,6 +155,26 @@ class Issue7434MatchedAliasPropertyTest extends TestHelper {
     }
   }
 
+  @Test
+  void correlatedLegAnsweringNoRowForSomeOuterTuplesSkipsThemAndGoesOn() {
+    // THE OUTER LEG BINDS s1 (a.ts), s2 (NO SUCH FILE) AND s3 (b.ts) IN THIS ORDER: THE CORRELATED LEG ANSWERS ONE ROW,
+    // THEN NONE, THEN ONE AGAIN, WHICH IS WHAT THE BACKTRACK-AND-RETRY LOOP OF THE PRODUCT EXISTS FOR
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO S SET id = 's2', filePath = 'none.ts'");
+      database.command("sql", "INSERT INTO S SET id = 's3', filePath = 'b.ts'");
+    });
+    final List<String> out = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", """
+        MATCH {type: S, as: s}, {type: F, as: f, where: (path = $matched.s.filePath)}
+        RETURN s.id AS id, f.path AS p""")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        out.add(row.getProperty("id") + "|" + row.getProperty("p"));
+      }
+    }
+    assertThat(out).containsExactlyInAnyOrder("s1|a.ts", "s3|b.ts");
+  }
+
   private static List<String> rows(final ResultSet rs) {
     final List<String> out = new ArrayList<>();
     while (rs.hasNext()) {

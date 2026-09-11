@@ -640,7 +640,9 @@ public class MatchExecutionPlanner {
         // AN ALIAS BOUND BY ANOTHER DISJOINT SUB-PATTERN IS SATISFIED BY THE ORDER THE CARTESIAN PRODUCT RUNS THE SUB-PLANS IN
         // (SEE orderSubPatternsByDependencies()), NOT BY THIS SCHEDULE. AN ALIAS NO PATTERN BINDS STAYS, SO THAT THE SCHEDULE
         // STILL REPORTS IT AS UNDEFINED
-        if (pattern.aliasToNode.containsKey(dependency) || !this.pattern.aliasToNode.containsKey(dependency))
+        final boolean boundByAnotherSubPattern = !pattern.aliasToNode.containsKey(dependency)
+            && this.pattern.aliasToNode.containsKey(dependency);
+        if (!boundByAnotherSubPattern)
           currentDependencies.add(dependency);
       }
 
