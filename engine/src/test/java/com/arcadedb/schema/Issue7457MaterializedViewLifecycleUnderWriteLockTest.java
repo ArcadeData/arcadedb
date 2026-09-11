@@ -24,7 +24,10 @@ import com.arcadedb.exception.SchemaException;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.Callable;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -90,6 +93,49 @@ class Issue7457MaterializedViewLifecycleUnderWriteLockTest extends TestHelper {
     schema.dropMaterializedView("View");
     assertThatThrownBy(() -> schema.dropMaterializedView("View")).isInstanceOf(SchemaException.class)
         .hasMessageContaining("not found");
+  }
+
+  /** Two concurrent drops of the same view: exactly one succeeds, the other fails as not found, nothing deadlocks. */
+  @Test
+  void concurrentDropsOfTheSameViewProduceOneSuccessAndOneNotFound() throws Exception {
+    final Schema schema = database.getSchema();
+    schema.buildMaterializedView().withName("View").withQuery("SELECT value FROM Source")
+        .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL).create();
+    final MaterializedViewImpl view = (MaterializedViewImpl) schema.getMaterializedView("View");
+
+    final int droppers = 4;
+    final CyclicBarrier start = new CyclicBarrier(droppers);
+    final AtomicInteger succeeded = new AtomicInteger();
+    final AtomicInteger notFound = new AtomicInteger();
+    final AtomicReference<Throwable> unexpected = new AtomicReference<>();
+    final Thread[] threads = new Thread[droppers];
+    for (int i = 0; i < droppers; i++) {
+      threads[i] = new Thread(() -> {
+        try {
+          start.await(10, TimeUnit.SECONDS);
+          schema.dropMaterializedView("View");
+          succeeded.incrementAndGet();
+        } catch (final SchemaException e) {
+          if (e.getMessage().contains("not found"))
+            notFound.incrementAndGet();
+          else
+            unexpected.set(e);
+        } catch (final Throwable e) {
+          unexpected.set(e);
+        }
+      }, "dropper-" + i);
+      threads[i].start();
+    }
+    for (final Thread thread : threads)
+      thread.join(30_000);
+
+    assertThat(unexpected.get()).isNull();
+    assertThat(succeeded.get()).isEqualTo(1);
+    assertThat(notFound.get()).isEqualTo(droppers - 1);
+    assertThat(view.getChangeListener()).as("the one drop that won tore the listener down").isNull();
+    assertThat(schema.existsMaterializedView("View")).isFalse();
+    assertThat(schema.existsType("View")).isFalse();
+    database.transaction(() -> database.newDocument("Source").set("value", 3).save());
   }
 
   /** The transition runs inside one outermost recording frame, whichever resources it installs or tears down. */
