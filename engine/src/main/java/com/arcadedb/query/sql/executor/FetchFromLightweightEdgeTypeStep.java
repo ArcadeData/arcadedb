@@ -262,7 +262,12 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
         final Edge edge = currentVertexEdges.next();
         // Only the entries with no record of their own: the ones that do were already served from the bucket scan
         // above, and serving them again here would double every edge of a mixed type.
-        if (edge.getIdentity() != null && edge.getIdentity().getPosition() < 0) {
+        //
+        // getIdentity() is read without a null guard on purpose. An edge-list walk only ever yields an edge that is
+        // IN a list, so it has an identity - a null one belongs to a MutableEdge that was never saved, which cannot
+        // reach here. Guarding anyway would turn a broken invariant into an edge silently dropped from the result,
+        // which is the failure this whole step exists to remove; without the guard it would be an NPE that says so.
+        if (edge.getIdentity().getPosition() < 0) {
           nextEdge = edge;
           return true;
         }

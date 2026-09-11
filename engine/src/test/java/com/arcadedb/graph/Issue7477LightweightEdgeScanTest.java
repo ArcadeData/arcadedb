@@ -255,6 +255,37 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     assertThat(query("traverse in, out from Wrote while $depth < 1")).hasSize(1);
   }
 
+  /**
+   * The walk opens every vertex type in the schema, not only the ones the edge type connects - nothing records
+   * which vertex types an edge type has endpoints in. That is the documented cost, and this pins the correctness
+   * half of it: an unrelated vertex type, including one carrying edges of a different type, changes neither what
+   * the scan returns nor what the count says.
+   */
+  @Test
+  void anUnrelatedVertexTypeIsWalkedWithoutDisturbingTheResult() {
+    database.transaction(() -> {
+      database.getSchema().buildVertexType().withName("Author").create();
+      database.getSchema().buildEdgeType().withName("Knows").withLightweight(true).create();
+    });
+
+    final RID[] works = newWorks(2);
+    connect("Cite", works[0], works[1]);
+
+    final RID[] authors = new RID[2];
+    database.transaction(() -> {
+      for (int i = 0; i < authors.length; i++)
+        authors[i] = database.newVertex("Author").set("id", i).save().getIdentity();
+    });
+    connect("Knows", authors[0], authors[1]);
+
+    assertThat(pairs("select from Cite")).containsExactly(works[0] + "->" + works[1]);
+    assertThat(query("select count(*) as c from Cite").getFirst().<Long>getProperty("c")).isEqualTo(1L);
+
+    // ...and symmetrically, from the other type's point of view
+    assertThat(pairs("select from Knows")).containsExactly(authors[0] + "->" + authors[1]);
+    assertThat(query("select count(*) as c from Knows").getFirst().<Long>getProperty("c")).isEqualTo(1L);
+  }
+
   /** The walk is the plan, so EXPLAIN has to name it: it is O(V + E) where a bucket scan reads O(E). */
   @Test
   void explainNamesTheVertexWalk() {
