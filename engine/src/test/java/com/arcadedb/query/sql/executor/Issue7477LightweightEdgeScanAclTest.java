@@ -139,6 +139,27 @@ class Issue7477LightweightEdgeScanAclTest {
     assertThat(pairs.getFirst()).startsWith(secretSource + "->");
   }
 
+  /**
+   * The walk emits a lightweight subtype's edges out of a scan of its supertype, so the subtype has to be gated
+   * too. It is today, and it would still be by accident even without the explicit check - the record scan opens a
+   * BucketIterator per bucket of the hierarchy, and each of those checks. This pins the guarantee to the walk so
+   * that skipping the record scan on a purely lightweight type could not silently take the ACL with it
+   * (PR #7478 review).
+   */
+  @Test
+  void aDeniedLightweightSubtypeIsRefusedThroughItsSupertype() {
+    database.command("sql", "CREATE EDGE TYPE Mentions");
+    database.command("sql", "CREATE EDGE TYPE Quotes EXTENDS Mentions LIGHTWEIGHT");
+    database.transaction(() -> database.lookupByRID(secretSource, true).asVertex().modify()
+        .newEdge("Quotes", workSource));
+
+    bindUser(Set.of("Quotes"));
+
+    final Throwable thrown = catchThrowable(() -> database.query("sql", "SELECT FROM Mentions").hasNext());
+    assertThat(thrown).as("a subtype the caller cannot read must not be reachable through its supertype's scan")
+        .isInstanceOf(SecurityException.class);
+  }
+
   @Test
   void anUnrestrictedUserSeesEveryEdge() {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) as c FROM Cite")) {
