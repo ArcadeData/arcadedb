@@ -20,13 +20,15 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -99,9 +101,44 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
   }
 
   @Test
+  void committedBatchIsNotReplayedAfterLocalApplyFailure() {
+    final int leader = waitForAnyLeader(-1);
+    assertThat(leader).isGreaterThanOrEqualTo(0);
+    final var database = getServerDatabase(leader, getDatabaseName());
+    database.transaction(() -> database.getSchema().createVertexType("Issue4081"));
+    writeBatch("warmup", 0);
+    assertClusterConsistency();
+
+    final AtomicBoolean fired = new AtomicBoolean();
+    RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT = name -> {
+      if (name.equals(getDatabaseName()) && fired.compareAndSet(false, true))
+        throw new ConcurrentModificationException("single-shot phase-2 failure for rejoin workload");
+    };
+    try {
+      writeBatch("committed-remotely", 0);
+    } finally {
+      RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT = null;
+    }
+    assertThat(fired).isTrue();
+    writeBatch("after-recovery", 0);
+    assertClusterConsistency();
+    for (int i = 0; i < getServerCount(); i++) {
+      final var replica = getServerDatabase(i, getDatabaseName());
+      assertThat(replica.countType("Issue4081", true)).isEqualTo(30);
+      try (final var records = replica.query("sql", "SELECT idx FROM Issue4081 WHERE phase = 'committed-remotely' ORDER BY idx")) {
+        for (int idx = 0; idx < 10; idx++) {
+          assertThat(records.hasNext()).isTrue();
+          assertThat(((Number) records.next().getProperty("idx")).intValue()).isEqualTo(idx);
+        }
+        assertThat(records.hasNext()).isFalse();
+      }
+    }
+  }
+
+  @Test
   void leaderRestartThenReplicaRestartConverges() {
     // Step 1: write some data with all nodes online.
-    final int firstLeader = findLeaderIndex();
+    final int firstLeader = waitForAnyLeader(-1);
     assertThat(firstLeader).as("a Raft leader must be elected at startup").isGreaterThanOrEqualTo(0);
 
     final var leaderDb = getServerDatabase(firstLeader, getDatabaseName());
@@ -113,14 +150,7 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
     // Many small transactions so the Raft log has plenty of entries to replicate.
     for (int t = 0; t < 50; t++) {
       final int base = t * 10;
-      leaderDb.transaction(() -> {
-        for (int i = 0; i < 10; i++) {
-          final MutableVertex v = leaderDb.newVertex("Issue4081");
-          v.set("phase", "initial");
-          v.set("idx", base + i);
-          v.save();
-        }
-      });
+      writeBatch("initial", base);
     }
 
     assertClusterConsistency();
@@ -137,17 +167,9 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
     assertThat(interimLeader).isNotEqualTo(0);
 
     // Write more so the interim leader's log advances beyond the killed leader's snapshot point.
-    final var interimDb = getServerDatabase(interimLeader, getDatabaseName());
     for (int t = 0; t < 30; t++) {
       final int base = t * 10;
-      interimDb.transaction(() -> {
-        for (int i = 0; i < 10; i++) {
-          final MutableVertex v = interimDb.newVertex("Issue4081");
-          v.set("phase", "after-leader-stop");
-          v.set("idx", base + i);
-          v.save();
-        }
-      });
+      writeBatch("after-leader-stop", base);
     }
 
     // Step 4: restart server 0. Its Raft storage was wiped (persistStorage=false) so it joins fresh.
@@ -159,17 +181,9 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
     assertThat(reLeader).as("server 0 should reclaim leadership via priority").isEqualTo(0);
 
     // Confirm the cluster is functional with server 0 as leader.
-    final var reLeaderDb = getServerDatabase(0, getDatabaseName());
     for (int t = 0; t < 30; t++) {
       final int base = t * 10;
-      reLeaderDb.transaction(() -> {
-        for (int i = 0; i < 10; i++) {
-          final MutableVertex v = reLeaderDb.newVertex("Issue4081");
-          v.set("phase", "after-leader-rejoin");
-          v.set("idx", base + i);
-          v.save();
-        }
-      });
+      writeBatch("after-leader-rejoin", base);
     }
 
     // Step 6: stop the replica (server 3).
@@ -182,14 +196,7 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
     // Aim for enough entries to cross the snapshot threshold so the leader's log gets purged.
     for (int t = 0; t < 30; t++) {
       final int base = t * 10;
-      reLeaderDb.transaction(() -> {
-        for (int i = 0; i < 10; i++) {
-          final MutableVertex v = reLeaderDb.newVertex("Issue4081");
-          v.set("phase", "while-replica-down");
-          v.set("idx", base + i);
-          v.save();
-        }
-      });
+      writeBatch("while-replica-down", base);
     }
 
     // Step 7: restart the replica. Storage is wiped so it joins as a fresh peer.
@@ -202,14 +209,7 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
     // Final write to confirm the cluster is fully operational.
     for (int t = 0; t < 30; t++) {
       final int base = t * 10;
-      reLeaderDb.transaction(() -> {
-        for (int i = 0; i < 10; i++) {
-          final MutableVertex v = reLeaderDb.newVertex("Issue4081");
-          v.set("phase", "final");
-          v.set("idx", base + i);
-          v.save();
-        }
-      });
+      writeBatch("final", base);
     }
 
     assertClusterConsistency();
@@ -222,6 +222,22 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
     }
   }
 
+  private void writeBatch(final String phase, final int base) {
+    final int leader = waitForAnyLeader(-1);
+    assertThat(leader).as("a leader must be available for the next batch").isGreaterThanOrEqualTo(0);
+    final var database = getServerDatabase(leader, getDatabaseName());
+    try {
+      database.transaction(() -> {
+        for (int i = 0; i < 10; i++)
+          database.newVertex("Issue4081").set("phase", phase).set("idx", base + i).save();
+      });
+    } catch (final TransactionCommittedRemotelyException committed) {
+      // The quorum committed this batch. Retrying inserts duplicates; the next batch resolves a fresh
+      // leader/handle after phase-2 recovery. Final replica equality and exact counts still verify every write.
+      LogManager.instance().log(this, Level.INFO, "Batch %s/%d committed remotely; continuing without replay", phase, base);
+    }
+  }
+
   private int waitForAnyLeader(final int excludeIndex) {
     final long deadline = System.currentTimeMillis() + 30_000;
     while (System.currentTimeMillis() < deadline) {
@@ -229,7 +245,7 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
         if (i == excludeIndex)
           continue;
         final RaftHAPlugin plugin = getRaftPlugin(i);
-        if (plugin != null && plugin.isLeader())
+        if (plugin != null && plugin.getRaftHAServer().getLeadershipState().leaderReady())
           return i;
       }
       CodeUtils.sleep(250);
@@ -241,7 +257,7 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
     final long deadline = System.currentTimeMillis() + timeoutMs;
     while (System.currentTimeMillis() < deadline) {
       final RaftHAPlugin plugin = getRaftPlugin(expectedIndex);
-      if (plugin != null && plugin.isLeader())
+      if (plugin != null && plugin.getRaftHAServer().getLeadershipState().leaderReady())
         return expectedIndex;
       CodeUtils.sleep(500);
     }

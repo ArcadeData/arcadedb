@@ -67,7 +67,8 @@ class Issue5569SlotMergeDeleteRaftIT extends BaseRaftHATest {
 
   @Test
   void mergedDeletesReplicateIntact() throws Exception {
-    final int leaderIndex = 0;
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
 
     executeCommand(leaderIndex, "sql", "CREATE document TYPE Doc BUCKETS 1");
     executeCommand(leaderIndex, "sql", "CREATE PROPERTY Doc.id INTEGER");
@@ -75,6 +76,15 @@ class Issue5569SlotMergeDeleteRaftIT extends BaseRaftHATest {
     for (int r = 0; r < SURVIVORS; r++)
       executeCommand(leaderIndex, "sql", "INSERT INTO Doc SET id = " + r + ", tag = '" + String.format("%08d", 0) + "'");
     waitForReplicationIsCompleted(leaderIndex);
+
+    // Target the owned slots directly. Scanning Doc by id also materializes short-lived records that
+    // another worker may already have deleted; that read race is not the slot-merge invariant under test.
+    final List<String> survivorRids = new ArrayList<>();
+    for (int r = 0; r < SURVIVORS; r++) {
+      final JSONObject record = executeCommand(leaderIndex, "sql", "SELECT @rid AS rid FROM Doc WHERE id = " + r);
+      assertThat(record).isNotNull();
+      survivorRids.add(record.getJSONObject("result").getJSONArray("records").getJSONObject(0).getString("rid"));
+    }
 
     final AtomicInteger updates = new AtomicInteger();
     final AtomicInteger deletes = new AtomicInteger();
@@ -88,7 +98,8 @@ class Issue5569SlotMergeDeleteRaftIT extends BaseRaftHATest {
         for (int i = 1; i <= UPDATES_PER_RECORD; i++) {
           try {
             assertThat(executeCommand(leaderIndex, "sqlscript",
-                "BEGIN;UPDATE Doc SET tag = '" + String.format("%08d", i) + "' WHERE id = " + recordId + ";commit retry 100;"))
+                "BEGIN;UPDATE " + survivorRids.get(recordId) + " SET tag = '" + String.format("%08d", i)
+                    + "';commit retry 100;"))
                 .withFailMessage("Update returned null: record=%d seq=%d", recordId, i).isNotNull();
             updates.incrementAndGet();
           } catch (final Exception e) {
@@ -106,9 +117,13 @@ class Issue5569SlotMergeDeleteRaftIT extends BaseRaftHATest {
         for (int i = 0; i < CHURN_ROUNDS; i++) {
           final int id = churnId + i;
           try {
-            executeCommand(leaderIndex, "sqlscript",
-                "BEGIN;INSERT INTO Doc SET id = " + id + ", tag = '" + String.format("%08d", id) + "';commit retry 100;");
-            executeCommand(leaderIndex, "sqlscript", "BEGIN;DELETE FROM Doc WHERE id = " + id + ";commit retry 100;");
+            final JSONObject inserted = executeCommand(leaderIndex, "sqlscript",
+                "BEGIN;LET victim = INSERT INTO Doc SET id = " + id + ", tag = '" + String.format("%08d", id)
+                    + "';COMMIT RETRY 100;RETURN $victim;");
+            assertThat(inserted).as("churn insert %d", id).isNotNull();
+            final String rid = inserted.getJSONObject("result").getJSONArray("records").getJSONObject(0).getString("@rid");
+            assertThat(executeCommand(leaderIndex, "sqlscript", "BEGIN;DELETE FROM " + rid + ";commit retry 100;"))
+                .as("churn delete %d", id).isNotNull();
             deletes.incrementAndGet();
           } catch (final Exception e) {
             fail("Churn failed: id=" + id + " error=" + e.getMessage());
@@ -117,10 +132,13 @@ class Issue5569SlotMergeDeleteRaftIT extends BaseRaftHATest {
       }));
     }
 
-    for (final Future<?> f : futures)
-      f.get(180, TimeUnit.SECONDS);
-    executor.shutdown();
-    assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+    try {
+      for (final Future<?> f : futures)
+        f.get(180, TimeUnit.SECONDS);
+    } finally {
+      executor.shutdownNow();
+      assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+    }
     assertThat(updates.get()).isEqualTo(SURVIVORS * UPDATES_PER_RECORD);
     assertThat(deletes.get()).isEqualTo(CHURN_THREADS * CHURN_ROUNDS);
 
