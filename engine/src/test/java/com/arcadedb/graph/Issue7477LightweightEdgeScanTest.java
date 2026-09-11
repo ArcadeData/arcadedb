@@ -21,6 +21,7 @@ package com.arcadedb.graph;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -228,14 +229,14 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
   }
 
   /**
-   * Documents what TRAVERSE does TODAY on a lightweight edge type, which is nothing - issue #7480, deliberately not
-   * fixed here. Pinned rather than left unstated for two reasons: a reader who sees SELECT working could otherwise
-   * assume TRAVERSE does too, and whoever fixes #7480 has to route the planner AND replace the dedup that keys on
-   * {@code (bucketId, position)} - a pair every lightweight edge of a type shares. Routing alone makes this test go
-   * from 0 rows to 1 of 3, not to 3, so it fails either way and says which half is missing.
+   * TRAVERSE is not routed to the walk (issue #7480 - its dedup keys on {@code (bucketId, position)}, which every
+   * lightweight edge of a type shares, so routing alone would hand back one edge of three). Until that is fixed it
+   * refuses rather than reporting a clean empty traversal: answering zero rows for data the graph holds is the
+   * defect this issue is about, and it would read as "this type has no edges" to someone who just watched SELECT
+   * prove it does.
    */
   @Test
-  void traverseOnALightweightEdgeTypeIsStillEmpty() {
+  void traverseOnALightweightEdgeTypeRefusesRatherThanAnsweringNothing() {
     final RID[] works = newWorks(3);
     connect("Cite", works[0], works[1]);
     connect("Cite", works[0], works[2]);
@@ -243,10 +244,15 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
 
     assertThat(query("select from Cite")).as("precondition: the SELECT side is fixed").hasSize(3);
 
-    assertThat(query("traverse in, out from Cite while $depth < 1"))
-        .as("issue #7480: TRAVERSE still roots on the empty bucket. When this goes green with 3 rows, delete the "
-            + "test; with 1, the planner was routed without replacing AbstractTraverseStep's dedup")
-        .isEmpty();
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.query("sql", "traverse in, out from Cite").hasNext()))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("LIGHTWEIGHT")
+        .hasMessageContaining("#7480");
+
+    // a regular edge type is untouched
+    connect("Wrote", works[0], works[2]);
+    assertThat(query("traverse in, out from Wrote while $depth < 1")).hasSize(1);
   }
 
   /** The walk is the plan, so EXPLAIN has to name it: it is O(V + E) where a bucket scan reads O(E). */

@@ -186,7 +186,7 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
     if (vertexSetSize <= FetchFromTypeExecutionStep.LARGE_TYPE_BYTES)
       return;
 
-    final int counter = CommandWarnings.occurrencesWhenDue(edgeTypeName + ".lightweightWalk");
+    final int counter = CommandWarnings.occurrencesWhenDue(database, edgeTypeName + ".lightweightWalk");
     if (counter > 0)
       LogManager.instance().log(this, Level.WARNING,
           "Query on LIGHTWEIGHT edge type '%s' in database '%s' walked the whole vertex set (%s) %d times, because a "

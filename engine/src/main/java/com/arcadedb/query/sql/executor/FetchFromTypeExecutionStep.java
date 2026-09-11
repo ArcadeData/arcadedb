@@ -137,7 +137,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
           typeFileSize += f.getTotalPages() * (long) f.getPageSize();
 
     if (typeFileSize > LARGE_TYPE_BYTES) {
-      final int counter = CommandWarnings.occurrencesWhenDue(typeName + ".scan");
+      final int counter = CommandWarnings.occurrencesWhenDue((DatabaseInternal) context.getDatabase(), typeName + ".scan");
       if (counter > 0) {
         final Set<String> filteredProperties = planningInfo != null ?
             extractFilteredProperties(planningInfo.whereClause) : Collections.emptySet();

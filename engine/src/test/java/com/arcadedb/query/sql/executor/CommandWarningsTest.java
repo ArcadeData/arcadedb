@@ -19,6 +19,10 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,17 +39,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class CommandWarningsTest {
+class CommandWarningsTest extends TestHelper {
   private int saved;
 
   @BeforeEach
-  void setUp() {
+  void rememberTheInterval() {
     saved = GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger();
     CommandWarnings.resetForTests();
   }
 
   @AfterEach
-  void tearDown() {
+  void restoreTheInterval() {
     GlobalConfiguration.COMMAND_WARNINGS_EVERY.setValue(saved);
     CommandWarnings.resetForTests();
   }
@@ -83,18 +87,47 @@ class CommandWarningsTest {
   void eachKeyIsCountedOnItsOwn() {
     GlobalConfiguration.COMMAND_WARNINGS_EVERY.setValue(2);
 
-    assertThat(CommandWarnings.occurrencesWhenDue("Person.scan")).isEqualTo(1);
-    assertThat(CommandWarnings.occurrencesWhenDue("Invoice.scan")).as("a different situation starts its own count")
+    assertThat(CommandWarnings.occurrencesWhenDue(db(), "Person.scan")).isEqualTo(1);
+    assertThat(CommandWarnings.occurrencesWhenDue(db(), "Invoice.scan")).as("a different situation starts its own count")
         .isEqualTo(1);
-    assertThat(CommandWarnings.occurrencesWhenDue("Person.scan")).as("second of two: not due").isZero();
-    assertThat(CommandWarnings.occurrencesWhenDue("Person.scan")).isEqualTo(3);
+    assertThat(CommandWarnings.occurrencesWhenDue(db(), "Person.scan")).as("second of two: not due").isZero();
+    assertThat(CommandWarnings.occurrencesWhenDue(db(), "Person.scan")).isEqualTo(3);
+  }
+
+  /**
+   * Two tenants on one server can both have a {@code Person} type. Sharing a counter between them would throttle
+   * one database's warning on the other's traffic, while each message names its own database.
+   */
+  @Test
+  void eachDatabaseIsCountedOnItsOwn() {
+    GlobalConfiguration.COMMAND_WARNINGS_EVERY.setValue(2);
+
+    try (final DatabaseFactory factory = new DatabaseFactory("target/databases/CommandWarningsTest-other")) {
+      if (factory.exists())
+        factory.open().drop();
+      final Database other = factory.create();
+      try {
+        assertThat(CommandWarnings.occurrencesWhenDue(db(), "Person.scan")).isEqualTo(1);
+        assertThat(CommandWarnings.occurrencesWhenDue((DatabaseInternal) other, "Person.scan"))
+            .as("the same type name in another database starts its own count").isEqualTo(1);
+        assertThat(CommandWarnings.occurrencesWhenDue(db(), "Person.scan")).as("second of two here: not due").isZero();
+        assertThat(CommandWarnings.occurrencesWhenDue((DatabaseInternal) other, "Person.scan"))
+            .as("...and the other database is still on its own second").isZero();
+      } finally {
+        other.drop();
+      }
+    }
+  }
+
+  private DatabaseInternal db() {
+    return (DatabaseInternal) database;
   }
 
   /** The occurrence counts reported as due over {@code times} occurrences of {@code key}. */
-  private static List<Integer> due(final String key, final int times) {
+  private List<Integer> due(final String key, final int times) {
     final List<Integer> reported = new ArrayList<>();
     for (int i = 0; i < times; i++) {
-      final int occurrences = CommandWarnings.occurrencesWhenDue(key);
+      final int occurrences = CommandWarnings.occurrencesWhenDue(db(), key);
       if (occurrences > 0)
         reported.add(occurrences);
     }
