@@ -41,6 +41,7 @@ import java.util.function.Supplier;
  */
 public class CartesianProductStep extends AbstractExecutionStep {
 
+  // THE PLANS AS BUILT BY THE PLANNER, WHAT EXPLAIN PRINTS; A CORRELATED LEVEL RUNS A FRESH ONE PER OUTER TUPLE INSTEAD
   private final List<InternalExecutionPlan>           subPlans  = new ArrayList<>();
   // NON-NULL FOR A CORRELATED LEVEL: PLANS THE SUB-PATTERN AGAIN FOR EVERY OUTER TUPLE
   private final List<Supplier<InternalExecutionPlan>> factories = new ArrayList<>();
@@ -173,9 +174,11 @@ public class CartesianProductStep extends AbstractExecutionStep {
   private void open(final int level) {
     final Supplier<InternalExecutionPlan> factory = factories.get(level);
     if (factory != null) {
+      // BOUND FOR AS LONG AS THE LEVEL IS PULLED, NOT JUST FOR THIS CALL: THE SUB-PLAN READS IT LAZILY, ROW BY ROW, SO THERE
+      // IS NOTHING TO RESTORE HERE. MatchBindMatchedStep REBINDS IT TO EVERY ROW THE PRODUCT EMITS BEFORE ANYTHING ELSE READS
+      // IT, AND A LEVEL IS ONE CONNECTED SUB-PATTERN, NEVER A PRODUCT OF ITS OWN, SO THE BINDINGS DO NOT NEST
       context.setVariable("matched", partialTuple(level));
       final InternalExecutionPlan plan = factory.get();
-      subPlans.set(level, plan);
       resultSets.set(level, new LocalResultSet(plan));
     } else if (firstPass.get(level))
       resultSets.set(level, new LocalResultSet(subPlans.get(level)));
