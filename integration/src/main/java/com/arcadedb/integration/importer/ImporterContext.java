@@ -125,9 +125,9 @@ public class ImporterContext {
    * accumulating them.
    */
   public void beginParsingPhase() {
-    // getAndSet rather than a read followed by set(0): every one of the eleven sites that increments this counter
-    // today runs on the thread inside FormatImporter.load(), so nothing races this call as the code stands - but
-    // the atomic form costs the same and cannot lose a row to a future writer that does not.
+    // getAndSet rather than a read followed by set(0): the fold is then correct whichever thread is incrementing
+    // `parsed` at the time, rather than only because all eleven increment sites happen to run on the thread inside
+    // FormatImporter.load() today. Same cost, and a future off-thread writer cannot lose a row to it.
     totalParsed.addAndGet(parsed.getAndSet(0L));
     // lastLapOn is deliberately NOT reset with it. printProgress divides every delta on the line by the same
     // window, and the createdDocuments/Vertices/Edges counters it also prints are import-wide and never reset -
@@ -146,15 +146,17 @@ public class ImporterContext {
    * The report {@link Importer#load()} returns.
    * <p>
    * {@code parsedRecords} is the row count of the <b>last phase that ran</b>, which is what nine of the ten
-   * {@code FormatImporter} implementations already reported and what callers of this map read today. {@code totalParsedRecords} is the whole
-   * run. On a single-phase import - every {@code IMPORT DATABASE} without a {@code documents}/{@code vertices}/
-   * {@code edges} setting, and the whole HTTP/gRPC {@code import database} command - the two are equal.
+   * {@code FormatImporter} implementations already reported and what callers of this map read today.
+   * {@code totalParsedRecords} is the whole run. On a single-phase import - every {@code IMPORT DATABASE}
+   * without a {@code documents}/{@code vertices}/{@code edges} setting, and the whole HTTP/gRPC
+   * {@code import database} command - the two are equal.
    */
   public Map<String, Object> toMap() {
     final LinkedHashMap<String, Object> map = new LinkedHashMap<>();
 
-    // Read once each: an import that failed mid-phase can still have an async thread incrementing while the report
-    // is built, and a key must not be tested against one value and published with another.
+    // Read once each, and summed here rather than through totalParsedRecords(): the two keys must agree, so the
+    // run total has to be built from the same reading of `parsed` that the phase key was, and neither key may be
+    // tested against one value and published with another.
     final long phaseParsed = parsed.get();
     if (phaseParsed > 0)
       map.put("parsedRecords", phaseParsed);
