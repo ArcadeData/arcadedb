@@ -119,6 +119,25 @@ class CommandWarningsTest extends TestHelper {
     }
   }
 
+  /**
+   * The key carries the database name, so a server that creates and drops databases would otherwise keep a counter
+   * per (database, situation) pair forever. The table is bounded; losing counts costs one extra warning per key,
+   * which is the cheapest way to be wrong about a throttle.
+   */
+  @Test
+  void theCounterTableIsBounded() {
+    GlobalConfiguration.COMMAND_WARNINGS_EVERY.setValue(1000);
+
+    for (int i = 0; i < 12_000; i++)
+      CommandWarnings.occurrencesWhenDue(db(), "type" + i + ".scan");
+
+    assertThat(CommandWarnings.keyCountForTests())
+        .as("a counter per vanished database must not accumulate forever").isLessThan(12_000);
+
+    // ...and it still counts after the drop
+    assertThat(CommandWarnings.occurrencesWhenDue(db(), "AfterTheDrop.scan")).isEqualTo(1);
+  }
+
   private DatabaseInternal db() {
     return (DatabaseInternal) database;
   }

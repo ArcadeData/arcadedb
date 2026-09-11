@@ -39,6 +39,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class CommandWarnings {
   private static final ConcurrentHashMap<String, AtomicInteger> OCCURRENCES = new ConcurrentHashMap<>();
 
+  /**
+   * Entries above which the whole table is dropped and counting restarts.
+   * <p>
+   * The key includes the database name, so a server that creates and drops databases - a multi-tenant one, a test
+   * suite - would otherwise accumulate a counter per (database, situation) pair forever, for databases that no
+   * longer exist. Throttle counts are best-effort by definition: losing them costs one extra warning per surviving
+   * key, which is the cheapest possible way to be wrong here. The bound is high enough that a fixed set of
+   * databases never reaches it.
+   */
+  private static final int MAX_KEYS = 10_000;
+
   private CommandWarnings() {
   }
 
@@ -70,12 +81,21 @@ public final class CommandWarnings {
     if (every <= 0)
       return 0;
 
+    // Checked before the insert rather than after, so the table cannot be observed above the bound.
+    if (OCCURRENCES.size() >= MAX_KEYS)
+      OCCURRENCES.clear();
+
     final int occurrences =
         OCCURRENCES.computeIfAbsent(database.getName() + "/" + key, k -> new AtomicInteger()).incrementAndGet();
 
     // Zero-based, so the FIRST occurrence is always reported and every Nth after it: at every = 1 that is all of
     // them, which is what "every occurrence" has to mean.
     return (occurrences - 1) % every == 0 ? occurrences : 0;
+  }
+
+  /** How many keys the table holds. For the test that pins the bound. */
+  static int keyCountForTests() {
+    return OCCURRENCES.size();
   }
 
   /** Forgets every count. For tests, which must not inherit a counter from whatever ran before them. */

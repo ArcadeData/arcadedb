@@ -286,6 +286,40 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     assertThat(query("select count(*) as c from Knows").getFirst().<Long>getProperty("c")).isEqualTo(1L);
   }
 
+  /**
+   * UPDATE over a MIXED hierarchy reaches both shapes, so it modifies the record-backed edges and then refuses at
+   * the first lightweight one. The statement is therefore not atomic on its own - it is the transaction that makes
+   * it so, which is the ordinary ArcadeDB contract and is what this pins: the refusal names the reason, and the
+   * rollback leaves the record half as it was rather than half-updated.
+   */
+  @Test
+  void updateOverAMixedHierarchyRefusesAndRollsBackWholly() {
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Mentions").create());
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Quotes").withLightweight(true)
+        .withSuperType("Mentions").create());
+
+    final RID[] works = newWorks(3);
+    connect("Mentions", works[0], works[1]);
+    connect("Quotes", works[0], works[2]);
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("sql", "update Mentions set since = 2020").close()))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Lightweight edges cannot be modified");
+
+    // the record-backed half was modified before the refusal, and the transaction took it back with everything else
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "select since from Mentions")) {
+        while (rs.hasNext())
+          assertThat(rs.next().<Object>getProperty("since"))
+              .as("no edge of a mixed hierarchy may survive a refused UPDATE half-written").isNull();
+      }
+    });
+
+    // ...and the scan itself is unharmed
+    assertThat(query("select from Mentions")).hasSize(2);
+  }
+
   /** The walk is the plan, so EXPLAIN has to name it: it is O(V + E) where a bucket scan reads O(E). */
   @Test
   void explainNamesTheVertexWalk() {
