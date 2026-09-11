@@ -79,7 +79,7 @@ public interface EdgeType extends DocumentType {
   static boolean holdsLightweightEdges(final DocumentType type) {
     // Vertex, edge and document hierarchies are disjoint - the kind byte is fixed through inheritance - so nothing
     // under a non-edge root can be a lightweight edge, and walking its subtypes to find that out is pure cost on a
-    // planning hot path that asks this of every SELECT target (PR #7478 review).
+    // planning hot path that asks this of every SELECT target.
     if (type == null || type.getType() != Edge.RECORD_TYPE)
       return false;
     if (type instanceof EdgeType edgeType && edgeType.isLightweight())

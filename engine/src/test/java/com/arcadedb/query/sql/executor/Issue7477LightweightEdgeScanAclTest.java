@@ -115,7 +115,7 @@ class Issue7477LightweightEdgeScanAclTest {
    * A type-level check answers yes as soon as ONE bucket of the type is readable, so a vertex type with several
    * buckets and a per-bucket ACL would pass it and then fail inside {@code BucketIterator} on the first denied
    * bucket - failing the whole statement over a type it never named, which is exactly what leaving a denied type
-   * out of the walk is meant to avoid. The walk therefore checks one bucket at a time (PR #7478 review).
+   * out of the walk is meant to avoid. The walk therefore checks one bucket at a time (issue #7477).
    */
   @Test
   void oneDeniedBucketOfAReadableVertexTypeIsSkipped() {
@@ -144,7 +144,7 @@ class Issue7477LightweightEdgeScanAclTest {
    * too. It is today, and it would still be by accident even without the explicit check - the record scan opens a
    * BucketIterator per bucket of the hierarchy, and each of those checks. This pins the guarantee to the walk so
    * that skipping the record scan on a purely lightweight type could not silently take the ACL with it
-   * (PR #7478 review).
+   * (issue #7477).
    */
   @Test
   void aDeniedLightweightSubtypeIsRefusedThroughItsSupertype() {

@@ -1917,7 +1917,7 @@ public class SelectExecutionPlanner {
     // type precisely because they do: a `@rid` filter can only ever name a record-backed edge - a lightweight one
     // has no addressable identity, its RID carries the placeholder position -1 - so handleTypeWithRidFilter above
     // selects exactly the right rows and keeps its short-circuit, including on a mixed hierarchy where the record
-    // half is the only half a RID can reach (PR #7478 review). The @out/@in rewrite below reaches the same edges
+    // half is the only half a RID can reach (issue #7477, keeping the short-circuit of #5824). The @out/@in rewrite below reaches the same edges
     // this step would, through ONE vertex instead of all of them.
     if (EdgeType.holdsLightweightEdges(docType)) {
       if (handleEdgeTypeWithVertexRidFilter(plan, docType, info, context))
