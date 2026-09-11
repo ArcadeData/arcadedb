@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
@@ -137,7 +138,7 @@ class Issue7129PendingSnapshotStartupTest {
     @Override
     public void startService() {
       try (final var executor = Executors.newSingleThreadExecutor()) {
-        executor.submit(() -> probe.accept(server)).get(10, TimeUnit.SECONDS);
+        executor.submit(() -> probe.accept(server)).get(60, TimeUnit.SECONDS);
         executed = true;
       } catch (final Exception e) {
         throw new RuntimeException(e);
@@ -258,6 +259,112 @@ class Issue7129PendingSnapshotStartupTest {
       } finally {
         server.stop();
       }
+    }
+  }
+
+  @Test
+  void pendingDirectoryIsStillRefusedOnceTheServerIsOnline() throws Exception {
+    final Path live = root.resolve("databases").resolve("Universe");
+    createDatabase(live, "old");
+    Files.writeString(live.resolve(".snapshot-pending"), "");
+    final ArcadeDBServer server = newServer();
+    try {
+      server.start();
+      assertThat(server.getStatus()).isEqualTo(ArcadeDBServer.STATUS.ONLINE);
+      assertThat(server.existsDatabase("Universe")).isFalse();
+
+      // The marker says the directory is mid-install, and nothing about the server reaching ONLINE reconciled it.
+      // A guard scoped to STATUS.STARTING would have expired here and served the torn directory to the first
+      // request that named it, which is the very failure mode issue #7129 describes.
+      assertThatThrownBy(() -> server.getDatabase("Universe"))
+          .as("an unrecovered pending directory must stay closed for the whole server lifetime, not just startup")
+          .isInstanceOf(DatabaseNotAvailableException.class)
+          .hasMessageContaining(".snapshot-pending");
+      assertThat(server.existsDatabase("Universe")).isFalse();
+      assertThat(live.resolve(".snapshot-pending")).exists();
+    } finally {
+      server.stop();
+    }
+  }
+
+  @Test
+  void creatingOverAPendingDirectoryIsRefused() throws Exception {
+    final Path live = root.resolve("databases").resolve("Universe");
+    Files.createDirectories(live);
+    Files.writeString(live.resolve(".snapshot-pending"), "");
+    // A torn directory whose schema the swap already took away: DatabaseFactory.exists() answers false for it,
+    // so "already exists" is not what stops a create from landing on top of the interrupted install.
+    Files.writeString(live.resolve("partial.bucket"), "incomplete");
+    final ArcadeDBServer server = newServer();
+    try {
+      server.start();
+      assertThatThrownBy(() -> server.createDatabase("Universe", ComponentFile.MODE.READ_WRITE))
+          .isInstanceOf(DatabaseNotAvailableException.class).hasMessageContaining(".snapshot-pending");
+      assertThat(server.existsDatabase("Universe")).isFalse();
+      assertThat(Files.readString(live.resolve("partial.bucket"))).isEqualTo("incomplete");
+      assertThat(live.resolve(".snapshot-pending")).exists();
+    } finally {
+      server.stop();
+    }
+  }
+
+  @Test
+  void unrecoverableDefaultDatabaseIsNotRecreatedOverTheInterruptedInstall() throws Exception {
+    final Path live = root.resolve("databases").resolve("Universe");
+    Files.createDirectories(live);
+    Files.writeString(live.resolve(".snapshot-pending"), "");
+    Files.writeString(live.resolve("partial.bucket"), "incomplete");
+    final ArcadeDBServer server = newServer();
+    server.getConfiguration().setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Universe[root]");
+    try {
+      server.start();
+      assertThat(server.existsDatabase("Universe")).isFalse();
+      // The default-database pass must not read the deferred directory as "absent" and create a fresh database
+      // into it: that would overwrite the only evidence snapshot recovery has to reason from.
+      assertThat(live.resolve("partial.bucket")).exists();
+      assertThat(Files.readString(live.resolve("partial.bucket"))).isEqualTo("incomplete");
+      assertThat(live.resolve("schema.json")).doesNotExist();
+      assertThat(live.resolve(".snapshot-pending")).exists();
+    } finally {
+      server.stop();
+    }
+  }
+
+  @Test
+  @Timeout(120)
+  void aSnapshotSwapWhileTheServerIsStartingReopensTheInstalledCopy() throws Exception {
+    final Path live = root.resolve("databases").resolve("Universe");
+    createDatabase(live, "old");
+    final ArcadeDBServer server = newServer(StartupLoadProbe.class.getName());
+    // A bootstrap-mismatch install is applied during Raft log replay, i.e. while the server is still STARTING.
+    // Its swapAndReopen has to reopen the freshly installed copy with the pending marker still on disk - the
+    // marker is cleared only after that open proves the snapshot loads. A refusal there is read as "the snapshot
+    // will not open" and answered by rolling a perfectly good snapshot back to the previous copy.
+    StartupLoadProbe.probe = running -> {
+      assertThat(running.getStatus()).isEqualTo(ArcadeDBServer.STATUS.STARTING);
+      final Path staged = live.resolve(".snapshot-new");
+      final Path backup = live.resolve(".snapshot-backup");
+      final Path pendingMarker = live.resolve(".snapshot-pending");
+      try {
+        createDatabase(staged, "new");
+        Files.writeString(pendingMarker, "");
+        SnapshotInstaller.swapAndReopen("Universe", live, staged, backup, pendingMarker, running);
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+      assertThat(pendingMarker).as("a successful swap clears its own marker").doesNotExist();
+      assertValue(running, "Universe", "new");
+    };
+    StartupLoadProbe.executed = false;
+    try {
+      server.start();
+      assertThat(StartupLoadProbe.executed).isTrue();
+      assertThat(server.existsDatabase("Universe")).isTrue();
+      assertValue(server, "Universe", "new");
+      assertThat(live.resolve(".snapshot-pending")).doesNotExist();
+    } finally {
+      server.stop();
+      StartupLoadProbe.probe = null;
     }
   }
 
