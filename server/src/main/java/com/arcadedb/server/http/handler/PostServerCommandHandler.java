@@ -19,18 +19,13 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ServerControlPlane;
-import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
@@ -391,14 +386,11 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     checkServerIsLeaderIfInHA();
 
-    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.create-database").increment();
 
-    final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
-
-    final DatabaseInternal wrappedDb = db.getWrappedDatabaseInstance();
-    if (wrappedDb instanceof HAReplicatedDatabase haDb)
-      haDb.createInReplicas();
+    // The cluster-wide create lives in the control plane so gRPC's CreateDatabase runs the same
+    // thing rather than a second implementation that forgot the replication half (issue #7389).
+    controlPlane.createDatabase(databaseName);
   }
 
   /**
@@ -649,24 +641,11 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     checkServerIsLeaderIfInHA();
 
-    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.drop-database").increment();
 
-    if (!server.existsDatabase(databaseName))
-      throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
-
-    final ServerDatabase database = server.getDatabase(databaseName);
-    final DatabaseInternal wrappedDb = database.getWrappedDatabaseInstance();
-
-    if (wrappedDb instanceof HAReplicatedDatabase haDb) {
-      // Raft-first: do NOT drop locally. The state machine apply on every peer
-      // (including this leader) performs the actual drop once the entry is committed.
-      haDb.dropInReplicas();
-    } else {
-      // Non-HA mode: drop locally as before.
-      database.getEmbedded().drop();
-      server.removeDatabase(databaseName);
-    }
+    // Raft-first on a replicated database, local otherwise: shared with gRPC's DropDatabase, which
+    // took the local branch unconditionally until issue #7389.
+    controlPlane.dropDatabase(databaseName);
   }
 
 

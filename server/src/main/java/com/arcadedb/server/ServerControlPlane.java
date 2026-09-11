@@ -277,6 +277,65 @@ public class ServerControlPlane {
   // Database lifecycle
   // ---------------------------------------------------------------------------------------------
 
+  /**
+   * Creates {@code databaseName} on the whole cluster: locally first, then - when the resulting
+   * database is replicated - through the Raft install-database entry, so every peer installs it too.
+   * <p>
+   * Lives here rather than in a transport because a create that skips the second half is a cluster
+   * that disagrees about which databases exist, with no error reported to the caller. gRPC's
+   * {@code CreateDatabase} called {@code server.createDatabase} alone until issue #7389, so the same
+   * operation replicated over HTTP and did not over gRPC.
+   *
+   * @return the created database, so a caller that has more to do with it - the {@code graph} variant
+   * of the gRPC RPC, which initialises the default {@code V} and {@code E} types - does not have to
+   * look it up again
+   */
+  public ServerDatabase createDatabase(final String databaseName) {
+    requireDatabaseName(databaseName);
+
+    final ServerDatabase database = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+
+    if (database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb)
+      haDb.createInReplicas();
+
+    return database;
+  }
+
+  /**
+   * Drops {@code databaseName} on the whole cluster.
+   * <p>
+   * On a replicated database the drop is Raft-first: the entry is submitted and the state machine
+   * apply performs the actual delete on every peer, this one included, once it commits. Deleting the
+   * files here instead - which is what {@code getEmbedded().drop()} does, unwrapping past the Raft
+   * wrapper - takes the database out from under the cluster and leaves it on every follower
+   * (issue #7389).
+   *
+   * @throws IllegalArgumentException when no database by that name is registered on this server
+   */
+  public void dropDatabase(final String databaseName) {
+    requireDatabaseName(databaseName);
+
+    if (!server.existsDatabase(databaseName))
+      throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
+
+    dropDatabaseClusterWide(server.getDatabase(databaseName), databaseName);
+  }
+
+  /**
+   * The HA-aware half of {@link #dropDatabase}, without the name and existence checks, for the
+   * callers that have already resolved the database - {@link #dropDatabase} itself and the drop a
+   * restore performs on the database it is about to replace.
+   */
+  private void dropDatabaseClusterWide(final ServerDatabase database, final String databaseName) {
+    if (database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb)
+      haDb.dropInReplicas();
+    else {
+      // Non-HA: there is no cluster to tell, so delete the files here.
+      database.getEmbedded().drop();
+      server.removeDatabase(databaseName);
+    }
+  }
+
   public void openDatabase(final String databaseName) {
     requireDatabaseName(databaseName);
 
@@ -1408,13 +1467,7 @@ public class ServerControlPlane {
    * every peer including this one, rather than performed locally behind the cluster's back.
    */
   private void dropDatabaseForRestore(final String databaseName) {
-    final ServerDatabase database = server.getDatabase(databaseName);
-    if (database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb)
-      haDb.dropInReplicas();
-    else {
-      database.getEmbedded().drop();
-      server.removeDatabase(databaseName);
-    }
+    dropDatabaseClusterWide(server.getDatabase(databaseName), databaseName);
   }
 
   /**
