@@ -152,6 +152,23 @@ class Issue7392OnDemandBackupWithoutAutoBackupIT extends BaseGraphServerTest {
     final String fileFromServerSetting = triggerAndExpectVisible(databaseName, new File(serverBackupDir, databaseName));
     deleteAndExpectGone(databaseName, fileFromServerSetting, new File(serverBackupDir, databaseName));
 
+    // A database name is a path segment under the backup directory: a traversal in it is refused by every command
+    // before any path is built, and trigger in particular must not create a directory outside the tree.
+    for (final String command : new String[] { "trigger backup ../escaped", "list backups ../escaped",
+        "delete backup ../escaped " + databaseName + "-backup-19700101-000000000.zip" }) {
+      final HttpResponse<String> traversal = postCommand(command);
+      assertThat(traversal.statusCode()).as(command + " -> " + traversal.body()).isEqualTo(400);
+    }
+    assertThat(new File(serverBackupDir.getParentFile(), "escaped")).doesNotExist();
+
+    // A malformed config file is not the caller's fault: the chain falls through to the server setting.
+    try (final FileWriter writer = new FileWriter(backupConfigFile)) {
+      writer.write("{ not json");
+    }
+    final String fileWithBrokenConfig = triggerAndExpectVisible(databaseName, new File(serverBackupDir, databaseName));
+    deleteAndExpectGone(databaseName, fileWithBrokenConfig, new File(serverBackupDir, databaseName));
+    assertThat(backupConfigFile.delete()).isTrue();
+
     // A file name that was never written is still refused, through the same resolution.
     final HttpResponse<String> missing = postCommand("delete backup " + databaseName + " " + databaseName + "-backup-19700101-000000000.zip");
     assertThat(missing.statusCode()).isEqualTo(400);
