@@ -272,13 +272,20 @@ What this does NOT cover:
    and replays the prefix, and `Parser.reset()` goes through `Source.reset()`, which for an HTTP
    source re-opens the connection. The reset itself is not new - the `parser.reset()` this replaces
    was unconditional at the same point - but the prefix that gets read before it is. Bounded by
-   `MAX_COMMENT_LINES`.
-6. **The rest of `SourceDiscovery`'s line handling is still `'\n'`-only.** `skipLine()` now ends a
+   `MAX_COMMENT_LINES`, and that constant's Javadoc now says so, so raising it is a decision taken
+   with the cost visible.
+6. **`Parser.isAvailable()` can say "no more input" mid-stream on a slow remote source.** It is
+   `reader.ready() || is.available() > 0`, and neither answers "not at EOF" - both answer "readable
+   without blocking", which for a socket is `false` between packets. Pre-existing, and every caller
+   is in this class, so the blast radius is content sniffing rather than the import - but the
+   comment-skipping loops call it per character and so lean on it harder than what they replace.
+   Filed as **#7494**.
+7. **The rest of `SourceDiscovery`'s line handling is still `'\n'`-only.** `skipLine()` now ends a
    line on a bare `'\r'`, but the separator scan and `analyzeChar()` do not, so a classic-Mac source
    has its comment block skipped and then its whole remainder read as one line. Not made worse by
    this change and not fixed by it either; `aSourceTerminatedOnlyByCarriageReturnsStillHasItsCommentBlockSkipped`
    pins the half that is.
-7. **`Parser.mark()` is now dead.** `grep -rn "\.mark()" integration/src` finds no call site. It was
+8. **`Parser.mark()` is now dead.** `grep -rn "\.mark()" integration/src` finds no call site. It was
    already inert: `Parser.reset()` rebuilds the stream from `Source.reset()` and never reads the
    mark. Left in place because it is public API on a public class; removing it is a larger change
    than this bugfix.
@@ -376,5 +383,18 @@ Mutation-tested to confirm each branch is pinned by a distinct test:
 [ERROR]   aSourceTerminatedOnlyByCarriageReturnsStillHasItsCommentBlockSkipped:337
 [ERROR]   theCharacterAfterABareCarriageReturnIsNotEatenWithIt:375
 ```
+
+No deferred items.
+
+### cycle 3 - `0320efb`
+
+`claude`, same surface; CodeRabbit still rate-limited with zero reviews, inline comments and threads.
+Verdict: **"No blocking issues found from an independent pass."** Three notes, none blocking:
+
+| Item | Disposition |
+|---|---|
+| `Parser.isAvailable()` is `reader.ready() \|\| is.available() > 0`, and neither means "not at EOF" - both mean "readable without blocking", which for a socket is false between packets. Pre-existing, but the new per-character loops call it far more often. "Worth a mental note, not a blocker." | **Filed as #7494.** Verified rather than taken on trust: every caller of `isAvailable()` is in `SourceDiscovery` (grep in the issue), so the blast radius is a misidentified format rather than a truncated import, and `getSourceFromURL()` is the entry point that makes it reachable. Real, pre-existing, and worth its own issue rather than a line in this doc. Residual risk 6. |
+| `rewindTo()`'s replay makes a remote source's comment prefix a second fetch. "Fine as shipped, just flagging so it doesn't get forgotten if `MAX_COMMENT_LINES` is ever raised." | **Applied.** That is the right place for it, so the note now lives on `MAX_COMMENT_LINES`'s own Javadoc rather than only in this doc - whoever raises the constant reads that, not this file. |
+| `CSVImporterFormat.getDelimiter()` is permanent public API on a class outside the test's package, for a value that was previously write-only. | **Argued, no change.** The reviewer's own alternative - reflection into a private field - is worse, and the accessor is symmetric with the constructor that takes the value. Package-private would not reach the test, which lives in `com.arcadedb.integration.importer` while the class is in `...importer.format`. |
 
 No deferred items.

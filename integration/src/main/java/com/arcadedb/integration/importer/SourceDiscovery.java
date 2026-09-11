@@ -57,6 +57,10 @@ public class SourceDiscovery {
    * The number of leading comment or blank lines content sniffing is willing to skip before it concludes the source
    * is not a commented data file. A bound and not a limit anyone is expected to reach: without it a source that is
    * comments all the way down would be read end to end just to decide its format.
+   * <p>
+   * Raising it costs more than it looks: {@link #rewindTo} replays the skipped prefix after a {@link Parser#reset()},
+   * and for a remote source that reset re-opens the connection - so the prefix is fetched TWICE, and this constant is
+   * what bounds the second fetch.
    */
   private static final int    MAX_COMMENT_LINES  = 10_000;
   private static final String RESOURCE_SEPARATOR = ":::";
