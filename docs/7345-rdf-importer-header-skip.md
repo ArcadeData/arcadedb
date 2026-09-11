@@ -239,3 +239,48 @@ Tests run: 64, Failures: 0, Errors: 0, Skipped: 0
   on the vertices). Verified by `theAnalysisDoesNotNameTheEdgeTypesPropertiesAfterTheFirstTriple`, which imports
   into a type the run creates itself and then asserts the four edges landed.
 - **Everything else the table lists is covered.** There is no entry point in it left blank.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7489
+
+## Review cycles
+
+**Cycle 1** - `12aba44ee4`
+
+Two findings, both actionable and clear, both about a claim wider than the code. Applied in `a189078959`:
+
+- *CodeRabbit* (inline, `docs/7345-rdf-importer-header-skip.md`, thread 3994011463): the invariant sentence said
+  "an explicit `-edgesSkipEntries`/`-verticesSkipEntries`/`-documentsSkipEntries` is still honoured exactly as
+  given". Verified against `RDFImporterFormat.load()` before agreeing: it ignores the `entityType` it is handed and
+  reads `settings.edgesSkipEntries` alone, so the other two govern nothing on an RDF source. The sentence was
+  narrowed to `-edgesSkipEntries` with the reason and the #7487 link spelled out. Replied on the thread; CodeRabbit
+  re-verified on the next push and resolved it.
+- *claude* (PR comment): `analyze()`'s pre-existing `!fieldNames.isEmpty()` guard on the skip branch means an
+  explicit `-...SkipEntries` is inert inside `analyze()` for a headerless format. Verified by reading the loop.
+  Documented in place. The review's wording said "regardless of `skipEntries`"; that is true only when no
+  `-...Header` was given - with one, `fieldNames` is non-empty and the skip does apply - so the comment written
+  carries the accurate form rather than the reviewed one. Behaviour unchanged.
+
+No finding was skipped and none was deferred.
+
+**Cycle 2** - `a189078959`
+
+The `claude-review` run on this head completed `success` and posted nothing, which is the known
+`permission_denials_count > 0` pattern; `gh run rerun 34655993565` produced a real review on the same commit.
+
+- *claude*: no actionable items. Independently re-derived the `GraphMLImporterFormat`/`GraphSONImporterFormat`
+  unreachability claim, cross-checked every fixture's triple count against its expected `createdEdges` ("no
+  off-by-ones"), and confirmed the cycle-1 `analyze()` note. Closed with "I'd consider this ready pending green CI."
+- *CodeRabbit*: no new findings; its one thread from cycle 1 is resolved.
+
+Working tree clean, nothing applied, no deferred items.
+
+## Deferred items
+
+None. No `review-deferred-*.md` file was produced by either cycle. (The two such files already in `docs/` are
+tracked on `main` from PR #7442 and are unrelated to this branch.)
+
+## Final state
+
+`clean-approval` after 2 cycles.
