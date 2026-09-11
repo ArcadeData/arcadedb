@@ -70,7 +70,11 @@ public interface EdgeType extends DocumentType {
    * <p>
    * Every read path that resolves edges by type name rather than by walking a vertex has to ask this before
    * trusting a record count or a bucket scan: the Cypher planner's count push-down, the SQL planner's, and the SQL
-   * type scan itself (issues #5071, #7477). A {@code null} type, or one that is not an edge type, answers false.
+   * type scan itself (issues #5071, #7477).
+   * <p>
+   * A {@code null} type, or one that is not an edge type, answers false without looking at its hierarchy: vertex,
+   * edge and document hierarchies are disjoint, so nothing under a non-edge root can be a lightweight edge. That
+   * is the guard each caller would otherwise have to remember, and both of them ask this of every query target.
    */
   static boolean holdsLightweightEdges(final DocumentType type) {
     // Vertex, edge and document hierarchies are disjoint - the kind byte is fixed through inheritance - so nothing
