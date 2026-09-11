@@ -88,8 +88,16 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     final long fromTs = payload.getLong("from", Long.MIN_VALUE);
     final long toTs = payload.getLong("to", Long.MAX_VALUE);
 
-    // Build tag filter
-    final TagFilter tagFilter = buildTagFilter(payload, columns);
+    // Build tag filter. A tag name that resolves to no TAG column, or a value that could never have been
+    // written, is refused with a 400 naming it rather than dropped (issues #7334, #7394): a dropped term
+    // WIDENS the conjunction, and a query over every row of the range is indistinguishable, to the caller,
+    // from a correct filter that happened to match everything.
+    final TagFilter tagFilter;
+    try {
+      tagFilter = buildTagFilter(payload, columns);
+    } catch (final IllegalArgumentException e) {
+      return TimeSeriesHandlerUtils.tagFilterError(e);
+    }
 
     // Check if aggregation is requested
     if (payload.has("aggregation"))

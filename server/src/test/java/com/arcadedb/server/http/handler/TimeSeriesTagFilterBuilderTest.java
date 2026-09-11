@@ -29,6 +29,7 @@ import java.util.Deque;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7321: {@code GET /ts/{database}/latest} honoured only the first {@code tag} query parameter, so a
@@ -139,31 +140,69 @@ class TimeSeriesTagFilterBuilderTest {
   }
 
   /**
-   * An occurrence that resolves to no TAG column contributes nothing, and - the part that matters - does
-   * not discard the occurrences that did resolve. The pre-fix handler returned a null filter outright when
-   * the single tag it read was unresolvable. Reporting such an occurrence instead of ignoring it is #7334.
+   * Issue #7334: an occurrence that resolves to no TAG column is REFUSED, and so is one that is not in
+   * {@code name:value} form.
+   * <p>
+   * It used to be skipped, which is the worst of the three possible answers on this endpoint. {@code latest}
+   * returns ONE row, so dropping a term does not merely widen a result set the caller can inspect - it hands
+   * back the newest sample of some other series as if it were the one asked for. And on a multi-tag type a
+   * single typo could drop the only term that was narrowing anything, so the answer was the newest sample of
+   * the whole type.
    */
   @Test
-  void anUnresolvableOccurrenceIsSkippedWithoutDiscardingTheOthers() {
+  void anUnresolvableOccurrenceIsRefusedRatherThanDropped() {
     for (final String unresolvable : new String[] {
         "nosuchtag:x",     // no column of that name
         "cpu:1.0",         // a FIELD column, not a TAG
-        "ts:1000",         // the timestamp column
-        "host",            // no ':' at all
-        ":web1",           // empty name
-        "" }) {            // empty occurrence
-      final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
-          occurrences("host:web1", unresolvable), COLUMNS);
-
-      assertThat(filter.getConditionCount()).as("'%s' must not add a condition", unresolvable).isEqualTo(1);
-      assertThat(filter.matches(row("web1", "eu"))).as("'%s' must not discard host=web1", unresolvable)
-          .isTrue();
-      assertThat(filter.matches(row("web2", "eu"))).as("'%s' must not widen the filter", unresolvable)
-          .isFalse();
+        "ts:1000" }) {     // the timestamp column
+      assertThatThrownBy(() -> TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+          occurrences("host:web1", unresolvable), COLUMNS))
+          .as("'%s' names no TAG column and must not be dropped", unresolvable)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining(unresolvable.substring(0, unresolvable.indexOf(':')))
+          .as("the message names what the type DOES declare, because the name is almost always a misspelling "
+              + "of one of them")
+          .hasMessageContaining("host")
+          .hasMessageContaining("region");
     }
+  }
 
-    assertThat(TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(occurrences("nosuchtag:x"), COLUMNS))
-        .as("nothing resolvable at all still means no filter").isNull();
+  /** A malformed occurrence is refused for the same reason, and says which form was expected. */
+  @Test
+  void anOccurrenceWithNoSeparatorIsRefused() {
+    for (final String malformed : new String[] {
+        "host",            // no ':' at all
+        ":web1" }) {       // empty name
+      assertThatThrownBy(() -> TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+          occurrences("host:web1", malformed), COLUMNS))
+          .as("'%s' is not a tag selection and must not be read as one", malformed)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("name:value");
+    }
+  }
+
+  /**
+   * A blank occurrence is still ignored, and deliberately: {@code ?tag=} or {@code &tag=&} is what an empty
+   * form field produces, and it states nothing at all rather than stating something malformed.
+   */
+  @Test
+  void aBlankOccurrenceIsStillIgnored() {
+    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+        occurrences("host:web1", "", "   "), COLUMNS);
+
+    assertThat(filter.getConditionCount()).isEqualTo(1);
+    assertThat(filter.matches(row("web1", "eu"))).isTrue();
+    assertThat(filter.matches(row("web2", "eu"))).isFalse();
+  }
+
+  /** The 'tags' object of POST /ts/{database}/query is refused the same way, through the same resolver. */
+  @Test
+  void anUnresolvableNameInTheTagsObjectIsRefusedToo() {
+    assertThatThrownBy(() -> TimeSeriesHandlerUtils.buildTagFilter(
+        new JSONObject().put("hsot", "web1"), COLUMNS))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("hsot")
+        .hasMessageContaining("host");
   }
 
   /**

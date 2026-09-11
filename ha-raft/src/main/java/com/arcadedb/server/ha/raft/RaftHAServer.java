@@ -4090,11 +4090,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * round {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} and nothing else - {@code scheduleWithFixedDelay} (not
    * {@code AtFixedRate}) keeps a slow round from queueing the next one behind it.
    * <p>
-   * <b>Every failure forgets rather than keeps.</b> A peer that stopped answering may have been replaced by an
-   * older build, so continuing to believe its last answer until the TTL expires would be believing it for a
-   * reason that no longer holds. The reason is kept alongside, for {@code GET /api/v1/cluster} to report: an
-   * absent {@code capabilities} field otherwise reads the same whether the peer runs an older build or was never
-   * asked at all, and those have nothing in common as remedies (issue #7256).
+   * <b>Every failure forgets rather than keeps, at the moment it fails.</b> A peer that stopped answering may
+   * have been replaced by an older build, so continuing to believe its last answer until the TTL expires would be
+   * believing it for a reason that no longer holds - and so would continuing to believe it merely until the end
+   * of this round, which is what buffering the failure until after the second pass amounted to (issue #7331). The
+   * reason is kept alongside, for {@code GET /api/v1/cluster} to report: an absent {@code capabilities} field
+   * otherwise reads the same whether the peer runs an older build or was never asked at all, and those have
+   * nothing in common as remedies (issue #7256). What IS deferred to the end of the round is only the log line:
+   * {@link PeerCapabilityRegistry#suspend} drops the belief without settling the report shadow, and
+   * {@link #forgetUnanswered} settles it for whatever the second pass did not recover.
    * <p>
    * <b>Two passes, because a shared address is still worth asking.</b> On a cluster that declares no {@code http}
    * ports, peers sharing a host have their endpoints derived onto one address (#6202, #6267) and
@@ -4127,9 +4131,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       peerCapabilities.retainOnly(generation, peerIds);
 
       final String clusterToken = getClusterToken();
-      // Why each peer has no answer yet, and the withheld addresses worth one more question. Both are resolved in
-      // the first pass and settled after the second, so a peer that identifies itself there is never also
-      // forgotten for the refusal that sent us looking for it.
+      // Why each peer has no answer yet, and the withheld addresses worth one more question. The belief is
+      // already dropped by the time a peer lands in here (issue #7331); what this map defers is the REPORT, so a
+      // peer that identifies itself in the second pass is never also WARNED ABOUT for the refusal that sent us
+      // looking for it.
       final Map<String, String> unanswered = new LinkedHashMap<>();
       final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints = new LinkedHashSet<>();
 
@@ -4143,6 +4148,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // the reply, so the two halves of the guard are independent.
         final PeerDialAddress dial = PeerDialAddress.resolve(this, peerId, "peer");
         if (dial.refused()) {
+          // Same rule as the probe failure below (issue #7331): an address that cannot be dialled is a peer this
+          // round has no answer from, so whatever it said last is dropped now rather than after pass 2.
+          peerCapabilities.suspend(generation, peerId.toString(), dial.refusal());
           unanswered.put(peerId.toString(), dial.refusal());
           // A SET of the whole endpoint, so N peers collapsed onto one cost one probe and not N identical ones -
           // and two peers whose HTTP halves collide while their declared HTTPS halves do not still get a probe
@@ -4158,14 +4166,26 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
               dial.httpAddress(), dial.httpsAddress(), clusterToken));
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
-          unanswered.put(peerId.toString(), "the capability query was interrupted");
+          final String reason = "the capability query was interrupted";
+          peerCapabilities.suspend(generation, peerId.toString(), reason);
+          unanswered.put(peerId.toString(), reason);
           forgetUnanswered(generation, unanswered);
           return;
         } catch (final Exception e) {
           // A peer running a build without the capability route answers 404 and lands here, which is exactly the
           // discriminator this mechanism turns on - so this arm is the NORMAL one during a rolling upgrade, not
-          // an error. forgetPeerCapabilities logs it once per change rather than once per round.
-          unanswered.put(peerId.toString(), describeProbeFailure(e));
+          // an error.
+          //
+          // The belief is dropped HERE and not after the second pass (issue #7331). Buffering the whole failure
+          // left freshAdvertisementOf() still answering the previous advertisement for the rest of the round, so
+          // a peer that had just answered 404 - having been restarted onto an older build, the one scenario this
+          // exists for - was still believed capable and could be sent a schema delta it cannot decode, for as
+          // long as the second pass took. What stays buffered is only the REPORT: suspend() moves the belief
+          // without settling what was last logged, so a peer the second pass identifies at a shared address is
+          // neither warned about nor re-announced, which is the log churn the buffering was protecting against.
+          final String reason = describeProbeFailure(e);
+          peerCapabilities.suspend(generation, peerId.toString(), reason);
+          unanswered.put(peerId.toString(), reason);
         }
       }
 
@@ -4236,7 +4256,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return message != null && !message.isBlank() ? message : e.getClass().getSimpleName();
   }
 
-  /** Records every peer this round could not get an answer for as incapable, each with the reason it failed. */
+  /**
+   * Settles the REPORT for every peer this round could not get an answer for, each with the reason it failed. The
+   * belief itself was already dropped at the failure (issue #7331), so this is what turns a persistent failure
+   * into one log line rather than one per refresh period - {@link #forgetPeerCapabilities} answers on the
+   * transition only.
+   */
   private void forgetUnanswered(final long generation, final Map<String, String> unanswered) {
     for (final Map.Entry<String, String> entry : unanswered.entrySet())
       forgetPeerCapabilities(generation, entry.getKey(), entry.getValue());

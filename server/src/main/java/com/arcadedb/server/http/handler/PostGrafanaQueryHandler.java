@@ -111,10 +111,20 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
       }
       final List<ColumnDefinition> columns = tsType.getTsColumns();
 
-      // Build tag filter
-      final TagFilter tagFilter = target.has("tags")
-          ? TimeSeriesHandlerUtils.buildTagFilter(target.getJSONObject("tags"), columns)
-          : null;
+      // Build tag filter. A name that resolves to no TAG column is refused (issue #7334) - it used to be
+      // dropped, which turned a typo into a query over every series of the type, and a Grafana panel showing a
+      // plausible wrong series is the worst possible answer. Rendered as this target's error frame rather than
+      // as a 400 for the whole request, the same per-target treatment #7325 gave the aggregation name: one
+      // mistyped tag must not blank the panels that are fine.
+      final TagFilter tagFilter;
+      try {
+        tagFilter = target.has("tags")
+            ? TimeSeriesHandlerUtils.buildTagFilter(target.getJSONObject("tags"), columns)
+            : null;
+      } catch (final IllegalArgumentException e) {
+        results.put(refId, buildErrorFrame(e.getMessage()));
+        continue;
+      }
 
       final JSONObject frameResult;
       if (target.has("aggregation"))

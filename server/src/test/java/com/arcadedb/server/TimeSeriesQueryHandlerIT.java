@@ -387,18 +387,60 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
   }
 
   /**
-   * Issue #7321: an occurrence that resolves to no TAG column contributes no condition and must not
-   * discard the occurrences that did resolve. Before the fix the handler returned a null filter outright
-   * in that situation. Rejecting such an occurrence instead of ignoring it is issue #7334.
+   * Issue #7334: an occurrence that resolves to no TAG column is refused with a 400 naming it and listing the
+   * type's declared tags, not silently dropped.
+   * <p>
+   * On this endpoint dropping it was worse than anywhere else, because {@code latest} answers ONE row: the
+   * caller got the newest sample of some other series as if it were the one they asked for. The refusal has to
+   * carry its message in {@code error} rather than in {@code detail}, which the handler mapper conceals outside
+   * development mode - a concealed reason would leave the caller with a bare 400 and nothing to fix.
    */
   @Test
-  void latestKeepsTheResolvedTagsWhenAnOccurrenceNamesNoTagColumn() throws Exception {
+  void latestRefusesAnOccurrenceThatNamesNoTagColumn() throws Exception {
     testEachServer(serverIndex -> {
       createMultiTagTypeAndIngestData(serverIndex);
 
-      final JSONObject result = getTsLatestWithTags(serverIndex, "machines", "host:web1", "region:eu", "nosuchtag:x");
-      assertThat(result.getJSONArray("latest").getLong(0))
-          .as("the two resolvable occurrences still apply").isEqualTo(3000L);
+      final JSONObject error = getTsLatestError(serverIndex, "machines", "host:web1", "region:eu", "nosuchtag:x");
+      assertThat(error.getString("error"))
+          .contains("nosuchtag")
+          .as("the message lists what the type DOES declare, because the name is almost always a misspelling")
+          .contains("host")
+          .contains("region");
+
+      // The correct spelling of the same request still answers, so this is a refusal and not a breakage.
+      assertThat(getTsLatestWithTags(serverIndex, "machines", "host:web1", "region:eu")
+          .getJSONArray("latest").getLong(0)).isEqualTo(3000L);
+    });
+  }
+
+  /** Issue #7334: an occurrence that is not in name:value form is refused for the same reason. */
+  @Test
+  void latestRefusesAnOccurrenceWithNoSeparator() throws Exception {
+    testEachServer(serverIndex -> {
+      createMultiTagTypeAndIngestData(serverIndex);
+
+      assertThat(getTsLatestError(serverIndex, "machines", "host").getString("error"))
+          .contains("name:value");
+    });
+  }
+
+  /**
+   * Issue #7334: the {@code tags} object of POST /ts/{database}/query is refused the same way. This is the
+   * widening case - a mistyped name used to leave a conjunction one term short, so the query returned every row
+   * of the range, indistinguishable from a filter that legitimately matched everything.
+   */
+  @Test
+  void queryRefusesATagNameThatMatchesNoTagColumn() throws Exception {
+    testEachServer(serverIndex -> {
+      createMultiTagTypeAndIngestData(serverIndex);
+
+      final JSONObject request = new JSONObject();
+      request.put("type", "machines");
+      request.put("tags", new JSONObject().put("host", "web1").put("hsot", "web1"));
+
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("hsot")
+          .contains("host");
     });
   }
 
@@ -592,6 +634,28 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
       os.write(request.toString().getBytes(StandardCharsets.UTF_8));
       os.flush();
     }
+
+    assertThat(connection.getResponseCode()).isEqualTo(400);
+    return new JSONObject(readError(connection));
+  }
+
+  /**
+   * Issue #7334: the 400 body of a refused {@code tag} occurrence. Separate from
+   * {@link #getTsLatestWithTags} because that one asserts a 200 - a refusal has to be read from the error
+   * stream, and the message has to be in {@code error} rather than the concealed {@code detail}.
+   */
+  private JSONObject getTsLatestError(final int serverIndex, final String type, final String... tags)
+      throws Exception {
+    final StringBuilder url = new StringBuilder(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/latest?type=" + type);
+    for (final String tag : tags)
+      url.append("&tag=").append(URLEncoder.encode(tag, StandardCharsets.UTF_8));
+
+    final HttpURLConnection connection = (HttpURLConnection) new URI(url.toString()).toURL().openConnection();
+
+    connection.setRequestMethod("GET");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
 
     assertThat(connection.getResponseCode()).isEqualTo(400);
     return new JSONObject(readError(connection));
