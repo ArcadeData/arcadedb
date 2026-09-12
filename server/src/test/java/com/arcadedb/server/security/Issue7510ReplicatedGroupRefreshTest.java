@@ -37,9 +37,13 @@ import java.io.File;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -145,32 +149,99 @@ class Issue7510ReplicatedGroupRefreshTest {
    * so the refresh has to have been scheduled before the throw, not after it.
    */
   @Test
-  void aRefreshIsStillScheduledWhenTheReplicatedWriteFails() {
+  void aRefreshIsStillScheduledWhenTheReplicatedWriteFails() throws Exception {
     security.applyReplicatedGroups(documentGranting(new JSONArray().put("updateSchema")));
 
     final ServerSecurityUser alice = createAlice();
     final ServerSecurityDatabaseUser cached = alice.getDatabaseUser(database);
     assertThat(cached.requestAccessOnDatabase(DATABASE_ACCESS.UPDATE_SCHEMA)).isTrue();
 
-    // Make the write fail the way a read-only or full volume does: put a DIRECTORY where the temp file and the
-    // target both have to go. Files.createTempFile() in that directory then fails and persist() throws.
+    // Make the write fail deterministically, on every platform and for root too: replace the configuration
+    // DIRECTORY with a regular file of the same name. SecurityGroupFileRepository.persist() then calls
+    // Files.createTempFile() with that file as the parent directory, which cannot succeed whatever the
+    // permissions say - where chmod 0555 is merely usually enough, and is not enough at all for a privileged
+    // process, which would let this test pass without ever reaching the branch it is named after.
     final File blocker = new File(CONFIG_PATH);
     FileUtils.deleteRecursively(blocker);
-    assertThat(blocker.mkdirs()).isTrue();
-    assertThat(blocker.setWritable(false)).isTrue();
-
     try {
-      try {
-        security.applyReplicatedGroups(documentGranting(new JSONArray()));
-      } catch (final ReplicatedSecurityConfigPersistenceException expected) {
-        // The durability half failed; the enforcement half must still happen. Asserted below either way, so a
-        // platform on which the write unexpectedly succeeds (running as root) still exercises the refresh.
-      }
+      assertThat(blocker.createNewFile()).isTrue();
+
+      // Asserted, not tolerated: the durability half MUST have failed, or the enforcement assertion below would
+      // be the ordinary success path wearing this test's name.
+      assertThatThrownBy(() -> security.applyReplicatedGroups(documentGranting(new JSONArray())))
+          .isInstanceOf(ReplicatedSecurityConfigPersistenceException.class);
 
       assertThat(await(() -> !cached.requestAccessOnDatabase(DATABASE_ACCESS.UPDATE_SCHEMA)))
           .as("the revocation is enforced on the peer even though persisting it failed").isTrue();
     } finally {
-      blocker.setWritable(true);
+      blocker.delete();
+    }
+  }
+
+  /**
+   * The refresh's read-and-publish must be one critical section. Several threads refresh independently - the group
+   * file's watcher, {@code ServerControlPlane} on an admin request, {@code LocalDatabase.open()}, and the worker
+   * this issue added - and an unsynchronised read let the slower of two publish the OLDER document last, writing a
+   * widened grant back over a narrowed one (CWE-863).
+   * <p>
+   * Asserted as mutual exclusion rather than by trying to lose a race on purpose: the overlap is what the lock
+   * forbids, and a lost update is only its consequence. The override sleeps inside the configuration read, so
+   * without the lock several sweeps are inside it at once and the peak count exceeds one.
+   */
+  @Test
+  void concurrentRefreshesNeverOverlapTheirReadAndPublish() throws Exception {
+    final String path = CONFIG_PATH + "-exclusion";
+    final File dir = new File(path);
+    FileUtils.deleteRecursively(dir);
+    assertThat(dir.mkdirs()).isTrue();
+
+    final AtomicInteger inside = new AtomicInteger();
+    final AtomicInteger peak = new AtomicInteger();
+
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getDatabaseNames()).thenReturn(Set.of(DATABASE));
+    when(server.getDatabase(DATABASE)).thenReturn(database);
+
+    final ServerSecurity counting = new ServerSecurity(server, new ContextConfiguration(), path) {
+      @Override
+      protected JSONObject getDatabaseGroupsConfiguration(final String databaseName) {
+        peak.accumulateAndGet(inside.incrementAndGet(), Math::max);
+        try {
+          Thread.sleep(50);
+          return super.getDatabaseGroupsConfiguration(databaseName);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new IllegalStateException(e);
+        } finally {
+          inside.decrementAndGet();
+        }
+      }
+    };
+    when(server.getSecurity()).thenReturn(counting);
+
+    final int threads = 4;
+    final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch done = new CountDownLatch(threads);
+    try {
+      for (int i = 0; i < threads; i++)
+        new Thread(() -> {
+          try {
+            start.await();
+            counting.updateSchema(database);
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          } finally {
+            done.countDown();
+          }
+        }, "refresh-" + i).start();
+
+      start.countDown();
+      assertThat(done.await(30, TimeUnit.SECONDS)).as("every refresh finished").isTrue();
+      assertThat(peak.get())
+          .as("no two refreshes were ever inside the read-and-publish section together").isEqualTo(1);
+    } finally {
+      counting.stopService();
+      FileUtils.deleteRecursively(dir);
     }
   }
 

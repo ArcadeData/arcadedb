@@ -99,10 +99,11 @@ server/.../ServerSecurity.java:110
 | 5 | Serving node: `ServerControlPlane.saveGroup`/`deleteGroup` (HTTP `PostGroupHandler`/`DeleteGroupHandler`, gRPC `ArcadeDbGrpcAdminService`) | pre-existing `refreshPermissionsOf`, unchanged | existing `Issue7373*` / control-plane tests |
 | 6 | Non-HA single node: `saveGroupClusterWide`/`deleteGroupClusterWide` fall back to local `saveGroup`/`deleteGroup`, refreshed by row 5's caller | pre-existing, unchanged | existing tests |
 | 7 | Hand-edited `server-groups.json` -> watcher -> `reloadCallback` | pre-existing; now calls the same extracted `refreshAllDatabasePermissions()` | yes - `theReloadWatcherBodyRefreshesEveryOpenDatabase` |
-| 8 | Peer: `applyReplicatedUsers` | argued: it builds **new** `ServerSecurityUser` instances and swaps the map, and `databaseCache` is a `private final` per-instance field (`ServerSecurityUser:38`), so no derived state survives the swap |
-| 9 | Peer: `applyReplicatedApiTokens` | argued: a token principal carries a `syntheticGroupConfig`, and `ServerSecurityUser:156` / `:213` take that branch *instead of* the file group configuration, so a group document cannot change its answer |
-| 10 | `ServerSecurity.saveGroups()` (public, writes the whole document with no refresh) | argued: sweep C shows the definition and **no** production call site |
+| 8 | Peer: `applyReplicatedUsers` | argued: it builds **new** `ServerSecurityUser` instances and swaps the map, and `databaseCache` is a `private final` per-instance field (`ServerSecurityUser:38`), so no derived state survives the swap | n/a - nothing to refresh |
+| 9 | Peer: `applyReplicatedApiTokens` | argued: a token principal carries a `syntheticGroupConfig`, and `ServerSecurityUser:156` / `:213` take that branch *instead of* the file group configuration, so a group document cannot change its answer | n/a - a group document cannot reach it |
+| 10 | `ServerSecurity.saveGroups()` (public, writes the whole document with no refresh) | argued: sweep C shows the definition and **no** production call site | n/a - unreachable in production |
 | 11 | The refresh sweep itself, when one database in it cannot be handed over (dropped under the iteration, or refused with `DatabaseNotAvailableException` because its directory still carries the interrupted-snapshot marker) | **yes** - guarded per database rather than once around the loop | yes - `oneUnavailableDatabaseDoesNotStopTheOthersFromBeingRefreshed` (added by the adversarial pass) |
+| 12 | Concurrent refreshers publishing out of order (watcher timer vs `ServerControlPlane` vs `LocalDatabase.open()` vs the new worker) | **yes** - `updateSchema` reads the document and publishes it under one dedicated monitor | yes - `concurrentRefreshesNeverOverlapTheirReadAndPublish` |
 
 ### Residual risk
 
@@ -273,3 +274,38 @@ each verified against the tree:
    `ServerSecurity.java:1549` declares that method `protected JSONObject getDatabaseGroupsConfiguration(...)` -
    not `synchronized` - while `updateSchema` (`:587`) is not synchronized either. The worker never contends for
    that monitor, and the apply thread never waits for the worker.
+
+## Review cycle 3 - the lost update CodeRabbit found
+
+CodeRabbit flagged `updateSchema` as CWE-863, and it was right. The method read the group document and then
+published it to every cached `ServerSecurityDatabaseUser` with nothing serialising the two halves, while several
+threads refresh independently: the group file's watcher timer, `ServerControlPlane` on an HTTP or gRPC admin
+request, `LocalDatabase.open()`, `LocalSchema` after a schema change - and, as of this PR, the replicated-apply
+worker. The slower of two refreshes could therefore publish the OLDER document last, writing a widened grant back
+over a permission another thread had just narrowed, where it would stand until the next refresh.
+
+The comment that used to sit on that read said *"the configuration cannot change under a single refresh"*, which
+is precisely the thing the code did not guarantee - the shape `CLAUDE.md` warns about, a comment asserting an
+invariant the code does not hold.
+
+Fixed by taking one dedicated monitor across the read and the publish. Two deliberate choices:
+
+- **Per database, not around a whole sweep**, so the lock never spans `server.getDatabase()`, which can open a
+  database.
+- **A dedicated monitor, not this object's.** `saveGroupClusterWide` holds the `ServerSecurity` monitor across a
+  Raft round trip; putting a database open behind that round trip is exactly the coupling
+  `applyReplicatedGroups`' non-blocking invariant exists to prevent.
+
+Lock-order safety was checked rather than assumed: `SecurityGroupFileRepository`'s timer calls `load()` (which is
+`synchronized`) and then invokes `reloadCallback` **outside** it, so no thread holds the repository monitor while
+entering `updateSchema`; and `ServerSecurityDatabaseUser.refresh` is a `synchronized` leaf that calls nothing back.
+
+The regression test asserts **mutual exclusion** rather than trying to lose the race on purpose: the overlap is
+what the lock forbids, and the lost update is only its consequence, so the overlap is the thing that can be
+asserted deterministically. Proved able to fail by replacing the `synchronized` block with `if (true)`:
+`Tests run: 6, Failures: 1 - concurrentRefreshesNeverOverlapTheirReadAndPublish`.
+
+The persistence-failure test was also made deterministic in this cycle: it now replaces the configuration
+directory with a regular **file**, so `Files.createTempFile()` cannot succeed whatever the process's privileges
+are, and it asserts the `ReplicatedSecurityConfigPersistenceException` instead of tolerating its absence. Under
+the previous `setWritable(false)` a privileged run would have passed the test down the ordinary success path.

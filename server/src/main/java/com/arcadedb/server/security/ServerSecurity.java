@@ -128,6 +128,13 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    */
   private final        ThreadPoolExecutor                 permissionsRefreshExecutor = createPermissionsRefreshExecutor();
 
+  /**
+   * Serialises {@link #updateSchema}, so the document a refresh read and the permissions it publishes cannot be
+   * separated by another refresh. See that method for why an unsynchronised read-then-publish is a lost update on
+   * an authorization decision rather than a benign one.
+   */
+  private final        Object                             permissionsPublishLock     = new Object();
+
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
     this.algorithm = configuration.getValueAsString(SERVER_SECURITY_ALGORITHM);
@@ -643,12 +650,29 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     if (database == null)
       return;
 
-    // Resolved once for the whole sweep instead of once per user: the lookup merges the wildcard and the
-    // per-database group objects, and the configuration cannot change under a single refresh.
-    final JSONObject groupConfiguration = getDatabaseGroupsConfiguration(database.getName());
+    // The read and the publish are ONE critical section, and that is the whole point of the lock.
+    //
+    // Several threads refresh independently - the group file's watcher timer, ServerControlPlane on an HTTP or
+    // gRPC admin request, LocalDatabase.open(), LocalSchema after a schema change, and now the replicated-apply
+    // worker this class added for issue #7510. Reading the document outside a lock let the slower of two
+    // refreshes publish the OLDER document last: a sweep that had read the previous definitions, preempted
+    // mid-walk, would finish by writing them over a narrowed permission another thread had already published, and
+    // the widened grant then stood until the next refresh. That is a lost update on an authorization decision
+    // (CWE-863), and the comment that used to sit here - "the configuration cannot change under a single refresh"
+    // - asserted the opposite of what the code did.
+    //
+    // Taken per DATABASE rather than around a whole sweep, so it never spans server.getDatabase(), which can open
+    // one. A dedicated monitor and emphatically not this object's: saveGroupClusterWide holds the ServerSecurity
+    // monitor across a Raft round trip, and putting a database open behind that round trip is exactly the kind of
+    // coupling applyReplicatedGroups' invariant exists to prevent.
+    synchronized (permissionsPublishLock) {
+      // Resolved once for the whole sweep instead of once per user: the lookup merges the wildcard and the
+      // per-database group objects, and under this lock it genuinely cannot change while the sweep publishes it.
+      final JSONObject groupConfiguration = getDatabaseGroupsConfiguration(database.getName());
 
-    for (final ServerSecurityUser user : users.values())
-      user.refreshDatabaseConfiguration(database, groupConfiguration);
+      for (final ServerSecurityUser user : users.values())
+        user.refreshDatabaseConfiguration(database, groupConfiguration);
+    }
   }
 
   private static ThreadPoolExecutor createPermissionsRefreshExecutor() {
