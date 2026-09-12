@@ -141,8 +141,16 @@ public class ImporterContext {
    * made the very next progress line compute {@code (wholeImportSoFar - 0) / oneSecond} - a rate spike as visible
    * as the negative-rate bug zeroing used to fix, just inflated instead of negative. Rebasing to the cumulative
    * total AS OF this boundary keeps the subtraction measuring only what the new phase parses after it.
+   * <p>
+   * {@code synchronized}, with {@link #getParsedTotal()}: {@code parsed.getAndSet(0)} and
+   * {@code parsedInPreviousPhases.addAndGet(...)} are each individually atomic but not atomic AS A PAIR, so a
+   * concurrent reader - {@code ServerControlPlane}'s progress-polling {@code Timer} thread runs on a different
+   * thread than the import itself - could land between the two: {@code parsed} already zeroed,
+   * {@code parsedInPreviousPhases} not yet credited with what it held. That reads as a total LOWER than the one
+   * reported a moment before, the exact symptom this issue (#7483) exists to eliminate, just from a race instead
+   * of from the reset this method already fixed.
    */
-  public void beginPhase() {
+  public synchronized void beginPhase() {
     parsedInPreviousPhases.addAndGet(parsed.getAndSet(0));
     lastParsed = parsedInPreviousPhases.get();
     lastLapOn = System.currentTimeMillis();
@@ -150,9 +158,10 @@ public class ImporterContext {
 
   /**
    * The rows this IMPORT parsed: the phases already finished plus the one still running. This is what
-   * {@code parsedRecords} reports (issue #7342).
+   * {@code parsedRecords} reports (issue #7342). {@code synchronized} with {@link #beginPhase()} - see there for
+   * the race it closes.
    */
-  public long getParsedTotal() {
+  public synchronized long getParsedTotal() {
     return parsedInPreviousPhases.get() + parsed.get();
   }
 

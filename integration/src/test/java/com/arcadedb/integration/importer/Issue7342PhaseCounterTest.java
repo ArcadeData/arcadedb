@@ -30,6 +30,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -83,6 +86,56 @@ class Issue7342PhaseCounterTest {
             + "cumulative 10")
         .isEqualTo(3);
     assertThat(context.toMap()).containsEntry("parsedRecords", 10L);
+  }
+
+  /**
+   * A code-review finding on #7483's own fix: {@code parsed.getAndSet(0)} and
+   * {@code parsedInPreviousPhases.addAndGet(...)} inside {@code beginPhase()} are each individually atomic but not
+   * atomic AS A PAIR, so a concurrent {@code getParsedTotal()} - exactly what {@code ServerControlPlane}'s
+   * progress-polling {@code Timer} thread does, on a thread other than the import's own - could land between the
+   * two: {@code parsed} already zeroed, {@code parsedInPreviousPhases} not yet credited. That reads as a total
+   * LOWER than the one reported a moment before - the same "progress went backwards" symptom this issue exists to
+   * eliminate, just from a race instead of from the reset the rest of this fix already covers. {@code beginPhase()}
+   * and {@code getParsedTotal()} are now both {@code synchronized} on the instance to close it.
+   * <p>
+   * Hammers both methods from separate threads long enough that, before the fix, the race reliably reproduces
+   * within the loop count below; the assertion is simply that {@code getParsedTotal()} never returns less than the
+   * highest value already observed.
+   */
+  @Test
+  void getParsedTotalNeverGoesBackwardsUnderConcurrentBeginPhase() throws Exception {
+    final ImporterContext context = new ImporterContext();
+    final int             phases  = 20_000;
+    final AtomicBoolean stop    = new AtomicBoolean(false);
+    final AtomicLong    maxSeen = new AtomicLong(0);
+    final AtomicReference<AssertionError> failure = new AtomicReference<>();
+
+    final Thread reader = new Thread(() -> {
+      while (!stop.get()) {
+        final long total = context.getParsedTotal();
+        final long previousMax = maxSeen.getAndUpdate(current -> Math.max(current, total));
+        if (total < previousMax)
+          failure.compareAndSet(null,
+              new AssertionError("getParsedTotal() returned " + total + " after already having reported " + previousMax));
+      }
+    });
+
+    reader.start();
+    try {
+      for (int i = 0; i < phases; i++) {
+        context.parsed.incrementAndGet();
+        context.beginPhase();
+      }
+    } finally {
+      stop.set(true);
+      reader.join();
+    }
+
+    if (failure.get() != null)
+      throw failure.get();
+
+    assertThat(context.getParsedTotal()).as("every one of the phases' single row must still be accounted for")
+        .isEqualTo(phases);
   }
 
   /**
