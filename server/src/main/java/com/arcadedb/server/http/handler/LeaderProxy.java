@@ -90,6 +90,29 @@ public final class LeaderProxy {
       return false;
     }
 
+    // Which scheme the leader is dialled on. The caller passes the plain-HTTP address it read from the HA
+    // plugin; when the cluster has an HTTPS endpoint for the leader, that one is preferred and the proxied
+    // request - which carries the cluster token and the client's whole body - is encrypted (issue #7508). Only
+    // the encrypted half is taken from the dial, so the address the caller vetted is the one dialled otherwise.
+    final HAServerPlugin ha = httpServer.getServer().getHA();
+    final LeaderDial dial = ha != null ? LeaderDial.resolve(ha, client) : null;
+
+    // The cluster named an HTTPS endpoint for the leader and this node cannot reach it. Proxying the request over
+    // the plain listener would put its body and the cluster token injected below in the clear, so the proxy stands
+    // down and the caller answers with its own error instead (issue #7508).
+    //
+    // Decided BEFORE the body is read, like the loop-prevention refusal above and for the same reason: buffering
+    // an upload up to 'arcadedb.ha.proxyMaxBodySize' for a request that was never going to be relayed costs a held
+    // request thread and that much heap per attempt.
+    if (dial != null && dial.refused()) {
+      LogManager.instance().log(this, Level.WARNING, "Leader proxy refused: %s", dial.refusal());
+      return false;
+    }
+
+    final boolean https = dial != null && dial.https();
+    final String targetAddress = https ? dial.address() : leaderAddress;
+    final HttpClient targetClient = https ? dial.client() : client;
+
     final byte[] body;
     try {
       body = readBodyCapped(exchange);
@@ -101,25 +124,6 @@ public final class LeaderProxy {
           "Leader proxy refused to forward request: body too large (> %d bytes)", maxBodySize);
       return false;
     }
-
-    // Which scheme the leader is dialled on. The caller passes the plain-HTTP address it read from the HA
-    // plugin; when the cluster has an HTTPS endpoint for the leader, that one is preferred and the proxied
-    // request - which carries the cluster token and the client's whole body - is encrypted (issue #7508). Only
-    // the encrypted half is taken from the dial, so the address the caller vetted is the one dialled otherwise.
-    final HAServerPlugin ha = httpServer.getServer().getHA();
-    final LeaderDial dial = ha != null ? LeaderDial.resolve(ha, client) : null;
-
-    // The cluster named an HTTPS endpoint for the leader and this node cannot reach it. Proxying the request over
-    // the plain listener would put its body and the cluster token injected below in the clear, so the proxy stands
-    // down and the caller answers with its own error instead (issue #7508).
-    if (dial != null && dial.refused()) {
-      LogManager.instance().log(this, Level.WARNING, "Leader proxy refused: %s", dial.refusal());
-      return false;
-    }
-
-    final boolean https = dial != null && dial.https();
-    final String targetAddress = https ? dial.address() : leaderAddress;
-    final HttpClient targetClient = https ? dial.client() : client;
 
     final String path = exchange.getRequestPath();
     final String query = exchange.getQueryString();

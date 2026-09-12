@@ -108,7 +108,7 @@ Same-shape siblings - every unattended peer dial, whether or not it is a leader 
 | `LeaderCommandForwarder.forwardIfReplica` - `POST /api/v1/server`, `POST`/`PUT`/`DELETE /api/v1/server/users` | yes | yes |
 | `PostBatchHandler.forwardBatchToLeader` - `POST /api/v1/batch/{db}` | yes | yes |
 | `RaftReplicatedDatabase.forwardCommandToLeaderViaRaft` - SQL write on a follower | yes | yes |
-| `LeaderProxy.tryProxy` | yes, but **nothing constructs LeaderProxy** - see Reachability (#7547) | yes (scheme choice only) |
+| `LeaderProxy.tryProxy` | yes, but **nothing constructs LeaderProxy** - see Reachability (#7547) | the refusal branch only; its HTTPS dial reads the body through `exchange.startBlocking()`, which a detached exchange cannot serve |
 | `RaftHAPlugin.shutdownRemoteServer` - peer dial, not a leader forward | no - filed as #7546 | no |
 | `BootstrapElection.bootstrapStateRequest` - peer dial before any leader exists | no - filed as #7546 | no |
 | `LeaderDatabaseQuery`, `PeerCapabilityQuery`, `PeerAuthSessionQuery`, `SnapshotInstaller`, `RaftHAServer.forceResyncStalledReplica`, `PostVerifyDatabaseHandler` | argued: already select the scheme with the same rule | n/a |
@@ -328,8 +328,37 @@ The `claude` review found no bugs and said nothing blocks the merge. Its five po
    recorded here, so it is now labelled as correspondence instead of reading as design.
 5. **`LeaderProxy` is dead code.** Already declared, tracked as #7547. No change.
 
+## Review cycle 3 - `8bae0665e1`
+
+The `claude` review found no bugs and nothing blocking. Three minor findings, all applied:
+
+1. **Fully-qualified names in the new test fixtures.** `CLAUDE.md` asks for imports. Mechanical; the
+   `RecordingHttpClient`/`CannedResponse` members now use `SSLContext`, `SSLParameters`, `SSLSession`,
+   `CookieHandler`, `ProxySelector`, `Authenticator`, `Duration`, `CompletableFuture` and `Executor` by name.
+2. **The coverage table overclaimed `LeaderProxy`.** It said "yes (scheme choice only)" while nothing
+   exercised the branch at all - `LeaderProxyTest` is a placeholder that never calls `tryProxy`. Corrected,
+   and a test was added for the half that can be driven: the refusal short-circuit.
+   **That test found a real ordering flaw.** The refusal was checked *after* `readBodyCapped`, so a request
+   that was never going to be relayed still buffered an upload of up to `arcadedb.ha.proxyMaxBodySize`,
+   holding a request thread and that much heap. The dial resolution and its refusal now sit before the body
+   read, next to the loop-prevention refusal that is there for the same reason.
+3. **A theoretical "just became leader" window** in `RaftReplicatedDatabase`, where the refusal is checked
+   before the `raft.isLeader()` branch. It cannot produce a false positive, and the reasoning is now a
+   comment rather than an assumption: a refusal needs `getLeaderHttpsAddress()` to have named an endpoint,
+   and on a node that has just become the leader `getLeaderId()` and `localPeerId` are the same id, so that
+   method compares one `resolveHttpsAddress()` against itself and withholds. The existing
+   `nothingIsOfferedWhenTheResolvedHttpsEndpointIsThisNodesOwn` pins exactly that input.
+
+### Regression re-run after cycle 3
+
+`mvn -o -pl ha-raft test -DexcludedGroups=benchmark,vector,slow` reached 1409 tests this time - the earlier
+449 was cut short by `LeaveClusterTest` crashing its fork - with 2 failures in
+`ArcadeStateMachinePerDatabaseHaltTest`, a WAL-entry-parsing assertion that touches nothing in this change.
+Reproduced identically on base commit `99b6692780`.
+
 ## Final state
 
 `clean-approval` - the latest review from each bot says nothing blocks the merge, the one CodeRabbit
 thread was re-verified and answered by CodeRabbit itself, and the three known gaps carry issue numbers
-(#7546, #7547, #7563).
+(#7546, #7547, #7563). Every review finding across the three cycles is either applied or answered with
+evidence; none is deferred.

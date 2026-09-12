@@ -59,6 +59,11 @@ class Issue7508LeaderHttpsEndpointTest {
     // What the derive fallback produces on a cluster whose peers share a host and declare no 'https' port: every
     // peer's HTTPS endpoint collapses onto this node's own, and dialling it comes straight back here. The caller
     // cannot catch this itself - isOwnHttpAddress compares against the HTTP listener, not the HTTPS one.
+    //
+    // It is also the state a node that has JUST BECOME the leader is in: getLeaderHttpsAddress() then resolves
+    // getLeaderId() and localPeerId to the same peer, so both arguments are one resolve() of one id. That is why a
+    // write arriving during that window cannot be refused for "the cluster requires TLS and I cannot reach it" -
+    // there is no endpoint to require (PR #7554 review).
     assertThat(RaftHAServer.preferredLeaderHttpsAddress(true, LOCAL_HTTPS, LOCAL_HTTPS)).isNull();
 
     // Loopback spelled two ways on one port is one socket, which isSameHttpEndpoint already knows (issue #6204).

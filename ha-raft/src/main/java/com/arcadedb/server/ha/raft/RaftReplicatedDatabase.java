@@ -3492,6 +3492,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // The cluster named an HTTPS endpoint for the leader and this node cannot reach it. Posting the write to the
     // plain listener instead would put it, and the cluster token below, on the wire in clear; refuse with the
     // typed error the caller already retries on (issue #7508).
+    //
+    // Ahead of the "this node became the leader while waiting" branch below, and it cannot steal a write from it:
+    // a refusal needs getLeaderHttpsAddress() to have named an endpoint, and that method resolves the LEADER's
+    // HTTPS address and withholds it when it is this node's own. On a node that has just become the leader those
+    // are the same resolve() of the same peer id, so it answers null and no refusal can be raised (PR #7554 review).
     if (dial != null && dial.refused())
       throw new ServerIsNotTheLeaderException("Cannot forward the command: " + dial.refusal(), raft.getLeaderName());
 

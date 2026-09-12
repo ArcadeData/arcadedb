@@ -30,18 +30,27 @@ import io.undertow.util.HttpString;
 import io.undertow.util.Methods;
 import org.junit.jupiter.api.Test;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSession;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.net.Authenticator;
+import java.net.CookieHandler;
+import java.net.ProxySelector;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiPredicate;
 
@@ -274,6 +283,24 @@ class Issue7508LeaderForwardSchemeTest {
   }
 
   // ---------------------------------------------------------------------------------------------------------------
+  // Entry point 3: LeaderProxy - unreachable in production today (nothing constructs it, issue #7547), so only the
+  // branch that needs no request body is driven here. The HTTPS dial itself reads the body through
+  // exchange.startBlocking(), which a detached HttpServerExchange cannot serve.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  @Test
+  void theProxyStandsDownRatherThanRelayingInClearWhenTheHttpsEndpointCannotBeReached() {
+    final StubHA ha = new StubHA(LEADER_HTTP, LEADER_HTTPS, null);
+
+    final LeaderProxy proxy = new LeaderProxy(httpServerWith(ha));
+
+    // Returning false hands the request back to the caller's own error path, which is what the proxy already did
+    // for an unusable leader address - and it happens before the body is read, so no upload is buffered for a
+    // request that was never going to be relayed.
+    assertThat(proxy.tryProxy(new HttpServerExchange(null), LEADER_HTTP, user("root"))).isFalse();
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
   // Fixtures
   // ---------------------------------------------------------------------------------------------------------------
 
@@ -413,24 +440,24 @@ class Issue7508LeaderForwardSchemeTest {
     }
 
     @Override
-    public <T> java.util.concurrent.CompletableFuture<HttpResponse<T>> sendAsync(final HttpRequest request,
+    public <T> CompletableFuture<HttpResponse<T>> sendAsync(final HttpRequest request,
         final HttpResponse.BodyHandler<T> responseBodyHandler) {
-      return java.util.concurrent.CompletableFuture.completedFuture(send(request, responseBodyHandler));
+      return CompletableFuture.completedFuture(send(request, responseBodyHandler));
     }
 
     @Override
-    public <T> java.util.concurrent.CompletableFuture<HttpResponse<T>> sendAsync(final HttpRequest request,
+    public <T> CompletableFuture<HttpResponse<T>> sendAsync(final HttpRequest request,
         final HttpResponse.BodyHandler<T> responseBodyHandler, final HttpResponse.PushPromiseHandler<T> pushHandler) {
       return sendAsync(request, responseBodyHandler);
     }
 
     @Override
-    public Optional<java.net.CookieHandler> cookieHandler() {
+    public Optional<CookieHandler> cookieHandler() {
       return Optional.empty();
     }
 
     @Override
-    public Optional<java.time.Duration> connectTimeout() {
+    public Optional<Duration> connectTimeout() {
       return Optional.empty();
     }
 
@@ -440,26 +467,26 @@ class Issue7508LeaderForwardSchemeTest {
     }
 
     @Override
-    public Optional<java.net.ProxySelector> proxy() {
+    public Optional<ProxySelector> proxy() {
       return Optional.empty();
     }
 
     @Override
-    public javax.net.ssl.SSLContext sslContext() {
+    public SSLContext sslContext() {
       try {
-        return javax.net.ssl.SSLContext.getDefault();
+        return SSLContext.getDefault();
       } catch (final Exception e) {
         throw new IllegalStateException(e);
       }
     }
 
     @Override
-    public javax.net.ssl.SSLParameters sslParameters() {
-      return new javax.net.ssl.SSLParameters();
+    public SSLParameters sslParameters() {
+      return new SSLParameters();
     }
 
     @Override
-    public Optional<java.net.Authenticator> authenticator() {
+    public Optional<Authenticator> authenticator() {
       return Optional.empty();
     }
 
@@ -469,7 +496,7 @@ class Issue7508LeaderForwardSchemeTest {
     }
 
     @Override
-    public Optional<java.util.concurrent.Executor> executor() {
+    public Optional<Executor> executor() {
       return Optional.empty();
     }
   }
@@ -504,7 +531,7 @@ class Issue7508LeaderForwardSchemeTest {
     }
 
     @Override
-    public Optional<javax.net.ssl.SSLSession> sslSession() {
+    public Optional<SSLSession> sslSession() {
       return Optional.empty();
     }
 
