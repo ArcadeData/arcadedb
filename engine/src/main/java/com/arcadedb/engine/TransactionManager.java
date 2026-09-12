@@ -258,50 +258,61 @@ public class TransactionManager {
       // nobody holds open acquires it and is deleted as before; a file another instance still has open
       // fails the lock and is left alone, with one clear warning instead of silent data loss elsewhere.
       final File dir = new File(database.getDatabasePath());
-      File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
-      if (walFiles != null) {
+      final File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
+      int unremovable = 0;
+      if (walFiles != null)
         for (final File walFile : walFiles)
-          deleteWALFileIfNotHeldByAnotherInstance(walFile);
-        walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
-      }
+          if (deleteWALFileIfNotHeldByAnotherInstance(walFile) == WalFileSweepOutcome.ERROR)
+            ++unremovable;
 
-      if (walFiles != null && walFiles.length > 0)
+      // A file skipped because another instance still holds it is expected and already logged its own
+      // warning above: it must not also inflate this count, or an operator sees two warnings for what is,
+      // in that case, correct behaviour rather than an actual error.
+      if (unremovable > 0)
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, walFiles.length);
+            .log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, unremovable);
     }
     return preserve;
   }
+
+  private enum WalFileSweepOutcome {DELETED, SKIPPED_LOCKED, ERROR}
 
   /**
    * Deletes {@code walFile} only if an exclusive lock on it can be acquired first (issue #7479). A file
    * this instance's own pool never tracked is either a genuine orphan from an earlier unclean shutdown
    * of THIS SAME database - nothing holds it open, the lock succeeds instantly, and it is deleted exactly
-   * as before - or a WAL file another live process/instance still has open, in which case the lock fails
-   * and the file is left untouched instead of being deleted out from under that other instance.
+   * as before - or a WAL file another live instance still has open (every {@link WALFile} has held an
+   * exclusive lock on itself for its whole life since this same issue), in which case the lock fails and
+   * the file is left untouched instead of being deleted out from under that other instance.
    */
-  private void deleteWALFileIfNotHeldByAnotherInstance(final File walFile) {
+  private WalFileSweepOutcome deleteWALFileIfNotHeldByAnotherInstance(final File walFile) {
     try (final RandomAccessFile raf = new RandomAccessFile(walFile, "rw")) {
       final FileLock lock;
       try {
         lock = raf.getChannel().tryLock();
       } catch (final OverlappingFileLockException e) {
         // This JVM itself already holds a lock on this file elsewhere: definitely still in use.
-        LogManager.instance().log(this, Level.WARNING,
-            "Skipped removing WAL file '%s': it is still locked, presumably by another database instance", null, walFile);
-        return;
+        logSkippedLockedWALFile(walFile);
+        return WalFileSweepOutcome.SKIPPED_LOCKED;
       }
 
       if (lock == null) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Skipped removing WAL file '%s': it is still locked, presumably by another database instance", null, walFile);
-        return;
+        logSkippedLockedWALFile(walFile);
+        return WalFileSweepOutcome.SKIPPED_LOCKED;
       }
 
       lock.release();
       walFile.delete();
+      return WalFileSweepOutcome.DELETED;
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error on removing WAL file '%s'", e, walFile);
+      return WalFileSweepOutcome.ERROR;
     }
+  }
+
+  private void logSkippedLockedWALFile(final File walFile) {
+    LogManager.instance().log(this, Level.WARNING,
+        "Skipped removing WAL file '%s': it is still locked, presumably by another database instance", null, walFile);
   }
 
   public Binary createTransactionBuffer(final long txId, final List<MutablePage> pages) {
@@ -1134,14 +1145,18 @@ public class TransactionManager {
           // stack traces while the database kept silently accepting writes into a WAL pool that can no
           // longer be trusted. Fence it once instead, the same way a post-WAL-append commit failure
           // already does (#5053): fenceForRecovery() logs a single clear SEVERE line, and the
-          // housekeeping timer cancels itself on its next tick (the isFencedForRecovery() guard above).
-          if (database.getEmbedded() instanceof LocalDatabase localDatabase)
+          // housekeeping timer cancels itself on its next tick (the isFencedForRecovery() guard above) -
+          // there is no point checking the rest of the pool, the whole database is about to stop being
+          // usable anyway.
+          if (database.getEmbedded() instanceof LocalDatabase localDatabase) {
             localDatabase.fenceForRecovery(
                 "WAL file '" + file + "' became inaccessible while still open; check whether another process or "
                     + "database instance is writing to this database's files", e);
-          else
-            LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, file);
-          return;
+            return;
+          }
+          // No LocalDatabase to fence (a wrapper this issue does not otherwise reach): fall back to the
+          // original behaviour of logging and continuing to check the rest of the pool.
+          LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, file);
         }
       }
   }

@@ -23,9 +23,6 @@ import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.RandomAccessFile;
-import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -37,8 +34,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * does not enforce across the container boundary - whose own clean close then swept away the still
  * running server's active WAL files, surfacing there as repeated "No such file or directory" errors.
  * <p>
- * A file the OS reports as still locked by someone else must survive the sweep; an orphan nobody
- * holds must still be removed exactly as before.
+ * The stand-in for "another live instance's WAL file" here is a real {@link WALFile}, not a hand-rolled
+ * lock: since this same issue, every {@code WALFile} takes an exclusive OS-level lock on itself for its
+ * whole life (see {@code WALFile.acquireLock}), which is the actual mechanism that now protects it - not
+ * an artifact of how this test happens to simulate a second process. An orphan nobody holds open must
+ * still be removed exactly as before.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -54,33 +54,31 @@ class TransactionManagerCloseSkipsLockedForeignWalFileTest extends TestHelper {
   void lockedForeignWalFileSurvivesCloseButOrphanedOneIsRemoved() throws Exception {
     final String dbPath = database.getDatabasePath();
 
-    final File lockedForeign = new File(dbPath, "txlog_9999.wal");
     final File orphanForeign = new File(dbPath, "txlog_9998.wal");
-    assertThat(lockedForeign.createNewFile()).isTrue();
     assertThat(orphanForeign.createNewFile()).isTrue();
 
-    try (final RandomAccessFile raf = new RandomAccessFile(lockedForeign, "rw")) {
-      final FileChannel channel = raf.getChannel();
-      final FileLock heldByAnotherInstance = channel.lock();
-      try {
-        database.close();
+    // Stands in for a second, still-running embedded instance/process that has this WAL file open -
+    // exactly what happens today, the moment a second instance opens the same directory this issue is
+    // about in the first place.
+    final File anotherInstanceFile = new File(dbPath, "txlog_9999.wal");
+    final WALFile anotherInstanceWAL = new WALFile(anotherInstanceFile.getPath());
+    try {
+      database.close();
 
-        assertThat(lockedForeign)
-            .as("a WAL-named file another instance still has locked must survive this instance's close()")
-            .exists();
-        assertThat(orphanForeign)
-            .as("an orphaned WAL-named file nobody holds must still be removed, as before")
-            .doesNotExist();
+      assertThat(anotherInstanceFile)
+          .as("a WAL file another live instance still has open must survive this instance's close()")
+          .exists();
+      assertThat(orphanForeign)
+          .as("an orphaned WAL-named file nobody holds must still be removed, as before")
+          .doesNotExist();
 
-        final File[] remainingWalFiles = new File(dbPath).listFiles((dir, name) -> name.endsWith(".wal"));
-        assertThat(remainingWalFiles)
-            .as("the only WAL file left behind must be the one still locked by 'another instance'")
-            .containsExactly(lockedForeign);
-      } finally {
-        heldByAnotherInstance.release();
-      }
+      final File[] remainingWalFiles = new File(dbPath).listFiles((dir, name) -> name.endsWith(".wal"));
+      assertThat(remainingWalFiles)
+          .as("the only WAL file left behind must be the one still open in 'another instance'")
+          .containsExactly(anotherInstanceFile);
     } finally {
-      lockedForeign.delete();
+      anotherInstanceWAL.close();
+      anotherInstanceFile.delete();
     }
 
     // Reopen so TestHelper.afterTest() can drop the database normally.
