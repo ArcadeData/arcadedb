@@ -640,7 +640,7 @@ public class ServerControlPlane {
     normalized.put("access", groupConfig.has("access") ? groupConfig.getJSONArray("access") : new JSONArray());
     normalized.put("types", groupConfig.has("types") ? groupConfig.getJSONObject("types") : new JSONObject());
 
-    server.getSecurity().saveGroup(database, name, normalized);
+    server.getSecurity().saveGroupClusterWide(database, name, normalized);
     refreshPermissionsOf(database);
   }
 
@@ -660,7 +660,7 @@ public class ServerControlPlane {
     if ("admin".equals(name) && "*".equals(database))
       throw new IllegalArgumentException("Cannot delete the admin group from the default (*) database");
 
-    if (!server.getSecurity().deleteGroup(database, name))
+    if (!server.getSecurity().deleteGroupClusterWide(database, name))
       throw new NotFoundException("Group '" + name + "' not found in database '" + database + "'");
 
     refreshPermissionsOf(database);
@@ -743,8 +743,8 @@ public class ServerControlPlane {
     final String effectiveDatabase = database == null || database.isBlank() ? "*" : database;
 
     try {
-      return server.getSecurity().getApiTokenConfiguration()
-          .createToken(name, effectiveDatabase, expiresAt, effectivePermissions);
+      return server.getSecurity()
+          .createApiTokenClusterWide(name, effectiveDatabase, expiresAt, effectivePermissions);
     } catch (final IllegalArgumentException e) {
       // ApiTokenConfiguration.createToken raises this for exactly one reason - a duplicate name - and
       // that is a conflict (409 / ALREADY_EXISTS), not a malformed request. Re-typing it here keeps
@@ -768,7 +768,7 @@ public class ServerControlPlane {
     if (ApiTokenConfiguration.isApiToken(tokenHash))
       throw new IllegalArgumentException("Use token hash (from list endpoint) instead of plaintext token for deletion");
 
-    if (!server.getSecurity().getApiTokenConfiguration().deleteToken(tokenHash))
+    if (!server.getSecurity().deleteApiTokenClusterWide(tokenHash))
       throw new NotFoundException("Token not found");
   }
 
