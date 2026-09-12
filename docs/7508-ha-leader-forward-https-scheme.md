@@ -356,9 +356,28 @@ The `claude` review found no bugs and nothing blocking. Three minor findings, al
 `ArcadeStateMachinePerDatabaseHaltTest`, a WAL-entry-parsing assertion that touches nothing in this change.
 Reproduced identically on base commit `99b6692780`.
 
+## Review cycle 4 - `358563ce76`
+
+One real bug, applied. `RaftReplicatedDatabase.forwardCommandToLeaderViaRaft` still named
+`leaderHttpAddress` in both `TransactionException` messages on the failure paths, while the request had
+been sent to `leaderHttpsAddress` whenever one was resolved - so a TLS handshake failure, the one error an
+operator would take straight to a truststore, reported the plain-HTTP address it was never sent to. The two
+server-module entry points already reported the dialled URL; this third site was the oversight. The URL is
+now built once and used for the request and both messages.
+
+The review's other points restate tradeoffs already recorded above (the `synchronized` cache on the forward
+path) or scope boundaries already filed (#7547, #7563). The reviewer notes it could not run Maven, so its
+pass was static.
+
+This was the last cycle the run was budgeted for, so the loop stopped here rather than polling for a
+verification pass on the fix above. It is a two-line message change with both regression suites green
+(14 in `server`, 5 in `ha-raft`).
+
 ## Final state
 
-`clean-approval` - the latest review from each bot says nothing blocks the merge, the one CodeRabbit
-thread was re-verified and answered by CodeRabbit itself, and the three known gaps carry issue numbers
-(#7546, #7547, #7563). Every review finding across the three cycles is either applied or answered with
-evidence; none is deferred.
+`max-cycles-reached` - four cycles ran, the budget. No finding is outstanding: the latest review from each
+bot says nothing blocks the merge, the one CodeRabbit thread was re-verified and answered by CodeRabbit
+itself, and the three known gaps carry issue numbers (#7546, #7547, #7563). Every review finding across the
+four cycles is either applied or answered with evidence; none is deferred, and no
+`review-deferred-*.md` file was produced. What the label marks is that the final commit did not itself get
+a verification pass, not that anything was left unaddressed.

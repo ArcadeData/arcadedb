@@ -3544,10 +3544,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       body.put("params", ordinalParams);
     }
 
+    // Built once and used for both the request and the failure messages below: a TLS handshake error reported
+    // against the plain-HTTP address the request was never sent to is the message an operator would take to a
+    // truststore problem (PR #7554 review).
+    final String leaderUrl = (leaderHttpsAddress != null
+        ? "https://" + leaderHttpsAddress
+        : "http://" + leaderHttpAddress) + "/api/v1/command/" + getName();
+
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create((leaderHttpsAddress != null
-            ? "https://" + leaderHttpsAddress
-            : "http://" + leaderHttpAddress) + "/api/v1/command/" + getName()))
+        .uri(URI.create(leaderUrl))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(body.toString()));
 
@@ -3591,9 +3596,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw e;
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new TransactionException("Interrupted while forwarding command to leader at " + leaderHttpAddress, e);
+      throw new TransactionException("Interrupted while forwarding command to leader at " + leaderUrl, e);
     } catch (final Exception e) {
-      throw new TransactionException("Error forwarding command to leader at " + leaderHttpAddress, e);
+      throw new TransactionException("Error forwarding command to leader at " + leaderUrl, e);
     }
   }
 
