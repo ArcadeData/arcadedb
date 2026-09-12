@@ -95,6 +95,26 @@ class Issue7485XmlAnalysisLimitTest {
     assertThat(analyzedSchema.getEntity("item").getProperties()).hasSize(limit);
   }
 
+  /**
+   * Both flags passed together: the deprecated one still wins (a caller who bothered to pass it almost certainly
+   * means it), and it is read with the same range as the field it overrides - {@code getLongValue}, not
+   * {@code getIntValue} - so a caller cannot silently lose precision by using the deprecated spelling.
+   */
+  @Test
+  void whenBothFlagsAreSetTheDeprecatedAliasWinsAtFullLongRange() throws Exception {
+    final ImporterSettings settings = new ImporterSettings();
+    settings.parseParameter("analysisLimitEntries", "5");
+    settings.options.put("analyzingLimitEntries", "2");
+
+    final AnalyzedSchema analyzedSchema = new AnalyzedSchema(100);
+    new XMLImporterFormat().analyze(AnalyzedEntity.EntityType.DOCUMENT, parserOf(distinctlyPropertiedXml()), settings,
+        analyzedSchema);
+
+    assertThat(analyzedSchema.getEntity("item").getProperties())
+        .as("the deprecated -analyzingLimitEntries (2) must win over -analysisLimitEntries (5) when both are set")
+        .hasSize(2);
+  }
+
   @Test
   void analysisLimitBytesCapsXmlSchemaAnalysisToo() throws Exception {
     final String xml = distinctlyPropertiedXml();
