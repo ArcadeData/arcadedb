@@ -152,7 +152,9 @@ public final class LeaderCommandForwarder {
       // 26.10.1 server: '?x=a{b}' is answered 400 by the parser, and URI.create rejects the same string).
       // What is guarded is the gap between those two allowances drifting apart - an Undertow upgrade, that
       // option being turned on, or an HTTP/2 ':path' that does not travel through the same parser.
-      // LeaderProxy already guards the identical call the same way, which is why this is not left to chance.
+      // LeaderProxy guards the identical call the same way, which is why this is not left to chance - though
+      // that class is never constructed, so it is a precedent for the shape of the guard and not evidence
+      // anything has exercised it (issue #7551).
       return new ExecutionResponse(400, new JSONObject()
           .put("error", "The request target cannot be forwarded to the cluster leader: " + e.getMessage())
           .toString());

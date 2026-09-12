@@ -52,8 +52,10 @@ package com.arcadedb.server;
  * {@code arcadedb.ha.serverList} in which two peers name each other: there each node dials the <em>other</em>
  * one, so no node ever recognizes its own address and the request ping-pongs.
  * <p>
- * {@code LeaderProxy} enforces the same one-hop rule for the requests it relays, reading the exchange
- * directly since it still has one.
+ * {@code LeaderProxy} is written to enforce a one-hop rule of its own for the requests it relays, reading the
+ * exchange directly since it still has one - but nothing constructs it ({@code grep -rn "new LeaderProxy"}
+ * has no hit under {@code src/main}), so no request has ever travelled that path. Do not count it as one of
+ * the places the rule is enforced; issue #7551 tracks reviving or deleting it.
  * <p>
  * The rule generalizes past the follower-to-leader direction, and so does the marker: the cluster-verify
  * endpoint's leader-to-peer fan-out sets it too (issue #6221), because a peer address that names the wrong node
