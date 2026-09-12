@@ -44,16 +44,17 @@ import static org.mockito.Mockito.when;
  * <b>authorization decision</b> on a peer, rather than to a file.
  * <p>
  * The two halves are deliberately separate in the fix, and this test is what makes that separation visible.
- * {@link ServerSecurity#applyReplicatedGroups} installs the document and nothing else - it runs on the Raft
- * state-machine apply thread, which may not block, and {@link ServerSecurity#updateSchema} opens and walks every
- * database. The cached {@code ServerSecurityDatabaseUser} of an already-connected principal therefore keeps
- * answering from the PREVIOUS document until the refresh runs: on the node that served the request
- * {@code ServerControlPlane} runs it immediately, and on a peer the group file's watcher does, on the
- * {@code arcadedb.server.security.reloadEvery} tick (issue #7510 is about closing that lag).
+ * {@link ServerSecurity#applyReplicatedGroups} installs the document; it does not walk the databases ON the
+ * calling thread, because that thread is the Raft state-machine apply thread and {@link ServerSecurity#updateSchema}
+ * opens and walks every database. The cached {@code ServerSecurityDatabaseUser} of an already-connected principal
+ * therefore keeps answering from the PREVIOUS document until a refresh runs, and the refresh is somebody else's
+ * call: {@code ServerControlPlane} makes it inline on the node that served the request, and on a peer issue #7510
+ * hands it to a dedicated worker (with the group file's watcher left behind it as the safety net).
  * <p>
- * So both assertions below matter, and the first one is not a bug being pinned as a feature - it is the reason
- * #7510 exists, stated in a form that will fail if someone makes the apply blocking by calling
- * {@code updateSchema} from it.
+ * So both assertions below matter, and the first one is not a bug being pinned as a feature - it is the statement
+ * that the apply itself stays non-blocking, and it will fail if someone calls {@code updateSchema} directly from
+ * it. The mocked server here reports no open database, so #7510's asynchronous refresh has nothing to walk and
+ * the assertion is not a race against it.
  */
 class Issue7373ReplicatedGroupAuthorizationTest {
 
@@ -109,16 +110,17 @@ class Issue7373ReplicatedGroupAuthorizationTest {
     assertThat(security.getDatabaseGroupsConfiguration(DATABASE).getJSONObject(GROUP).getJSONArray("access"))
         .as("the document itself is revoked immediately on the peer").isEmpty();
 
-    // ...but the apply does not walk the databases, so the principal that was already connected still answers
-    // from its cache. That is the lag issue #7510 tracks, and asserting it here is what would fail if someone
-    // "fixed" it by calling updateSchema() from the state-machine apply thread.
+    // ...but the apply itself does not walk the databases, so the principal that was already connected still
+    // answers from its cache. This is what would fail if someone called updateSchema() directly from the
+    // state-machine apply thread; #7510's off-thread refresh finds no open database on this mocked server.
     assertThat(alice.getDatabaseUser(database))
         .as("getDatabaseUser caches per database, and nothing in the apply clears it").isSameAs(cached);
     assertThat(cached.requestAccessOnDatabase(DATABASE_ACCESS.UPDATE_SCHEMA))
         .as("the cached principal has not been refreshed yet").isTrue();
 
-    // The refresh is the second half: ServerControlPlane runs it on the serving node, the group file's watcher
-    // runs it on a peer. Once it has run, the replicated revocation is enforced against the live principal.
+    // The refresh is the second half: ServerControlPlane runs it inline on the serving node, and on a peer the
+    // worker added by #7510 does. Once it has run, the replicated revocation is enforced against the live
+    // principal.
     security.updateSchema(database);
 
     assertThat(cached.requestAccessOnDatabase(DATABASE_ACCESS.UPDATE_SCHEMA))
