@@ -219,10 +219,10 @@ public class XMLImporterFormat implements FormatImporter {
     // `analyzingLimitEntries` WAS THIS FORMAT'S OWN MISSPELLED, DEFAULT-LESS COPY: KEPT HERE, IF EXPLICITLY PASSED,
     // AS A DEPRECATED ALIAS SO A SCRIPT THAT SET IT STILL WORKS (ISSUE #7485). getLongValue, NOT getIntValue: THE
     // FIELD IT FALLS BACK TO IS A long, AND THE DEPRECATED ALIAS SHOULD ACCEPT THE SAME RANGE.
-    final boolean deprecatedAliasSet = settings.getValue("analyzingLimitEntries", null) != null;
+    final boolean deprecatedAliasSet = settings.options.containsKey("analyzingLimitEntries");
     final long analyzingLimitEntries = deprecatedAliasSet ?
         settings.getLongValue("analyzingLimitEntries", 0) : settings.analysisLimitEntries;
-    if (deprecatedAliasSet && settings.getValue("analysisLimitEntries", null) != null)
+    if (deprecatedAliasSet && settings.options.containsKey("analysisLimitEntries"))
       LogManager.instance().log(this, Level.WARNING,
           "Both the deprecated -analyzingLimitEntries and the current -analysisLimitEntries were set; using the "
               + "deprecated -analyzingLimitEntries value (%d)", null, analyzingLimitEntries);
