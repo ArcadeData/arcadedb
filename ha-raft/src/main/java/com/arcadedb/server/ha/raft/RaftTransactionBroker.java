@@ -444,6 +444,22 @@ public class RaftTransactionBroker {
   }
 
   /**
+   * Replicates a security-groups entry so all nodes update their group document (issue #7373).
+   */
+  public void replicateSecurityGroups(final String groupsJson) {
+    final ByteString entry = RaftLogEntryCodec.encodeSecurityGroupsEntry(groupsJson);
+    groupCommitter.submitAndWait(entry.toByteArray());
+  }
+
+  /**
+   * Replicates a security API-tokens entry so all nodes update their token store (issue #7373).
+   */
+  public void replicateSecurityApiTokens(final String apiTokensJson) {
+    final ByteString entry = RaftLogEntryCodec.encodeSecurityApiTokensEntry(apiTokensJson);
+    groupCommitter.submitAndWait(entry.toByteArray());
+  }
+
+  /**
    * Stops the underlying group committer, draining pending entries.
    */
   public void stop() {

@@ -37,7 +37,10 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
+import com.arcadedb.server.security.ApiTokenConfiguration;
+import com.arcadedb.server.security.ReplicatedSecurityConfigPersistenceException;
 import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
+import com.arcadedb.server.security.SecurityGroupFileRepository;
 import com.arcadedb.server.security.SecurityUserFileRepository;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.proto.RaftProtos;
@@ -103,6 +106,8 @@ import java.util.zip.CRC32;
  *   <li>{@code INSTALL_DATABASE_ENTRY} - create a new database or force-restore from leader snapshot</li>
  *   <li>{@code DROP_DATABASE_ENTRY} - drop a database (idempotent on replay)</li>
  *   <li>{@code SECURITY_USERS_ENTRY} - replicate user/role changes across the cluster</li>
+ *   <li>{@code SECURITY_GROUPS_ENTRY} - replicate the group document across the cluster (issue #7373)</li>
+ *   <li>{@code SECURITY_API_TOKENS_ENTRY} - replicate the API-token document across the cluster (issue #7373)</li>
  * </ul>
  * <p>
  * <b>Threading model:</b> {@link #applyTransaction} is called sequentially by Ratis on a single
@@ -955,6 +960,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
         case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
         case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
+        case SECURITY_GROUPS_ENTRY -> applySecurityGroupsEntry(decoded);
+        case SECURITY_API_TOKENS_ENTRY -> applySecurityApiTokensEntry(decoded);
         case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index, originatedLocally);
         }
       });
@@ -3698,6 +3705,74 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // read a committed entry its peers applied", and it still reaches the node-wide halt - the case #4798
     // argues must never be skipped quietly. Catching RuntimeException here would have downgraded it silently.
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_USERS_ENTRY (%d bytes)", payload.length());
+  }
+
+  /**
+   * Applies a replicated {@code server-groups.json} document (issue #7373).
+   * <p>
+   * Failure classification is the same split {@link #applySecurityUsersEntry} makes, and for the same reason: a
+   * local WRITE failure happens after the document is already in force on this node, so nothing it replicates can
+   * diverge and halting would turn a full or read-only config volume into a crash loop - report it and stay up.
+   * A document this node cannot READ is the opposite case: it is a committed entry the peers applied and this one
+   * cannot, which must not be skipped quietly (issue #4798), so it is deliberately NOT caught here and reaches the
+   * node-wide halt.
+   * <p>
+   * The durability left outstanding by the caught case does not come back on its own - see the long note on
+   * {@link #applySecurityUsersEntry}, which applies verbatim: reissue the group change on the leader once the
+   * volume is fixed.
+   */
+  private void applySecurityGroupsEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+    final String payload = decoded.usersJson();
+    if (payload == null) {
+      LogManager.instance().log(this, Level.WARNING, "SECURITY_GROUPS_ENTRY has null payload, skipping");
+      return;
+    }
+    try {
+      server.getSecurity().applyReplicatedGroups(payload);
+    } catch (final ReplicatedSecurityConfigPersistenceException e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Could not fully apply a replicated group document on this node: %s. The node keeps running and is "
+              + "already authorizing against the new groups - but they are not durable: a restart before this is "
+              + "fixed reads the previous '%s'. The usual cause is a local write failure: check that the "
+              + "configuration directory holding that file is writable and has free space",
+          e, e.getMessage(), SecurityGroupFileRepository.FILE_NAME);
+      throw new ReplicationException(
+          "Failed to persist the replicated group document locally; the node is already authorizing against the "
+              + "new groups in memory, only their durability to disk failed", e);
+    }
+    HALog.log(this, HALog.DETAILED, "Applied SECURITY_GROUPS_ENTRY (%d bytes)", payload.length());
+  }
+
+  /**
+   * Applies a replicated {@code server-api-tokens.json} document (issue #7373). Same failure classification as
+   * {@link #applySecurityGroupsEntry}.
+   * <p>
+   * Worth being explicit about what the non-halting arm means here, because this entry can carry a REVOCATION: the
+   * new token set is in force on this node from the moment the apply returns, so the revoked token stops
+   * authenticating here even when the write failed. What is outstanding is only that a restart would read the
+   * stale file back - which is why the operator instruction is to reissue the revocation, not to wait.
+   */
+  private void applySecurityApiTokensEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+    final String payload = decoded.usersJson();
+    if (payload == null) {
+      LogManager.instance().log(this, Level.WARNING, "SECURITY_API_TOKENS_ENTRY has null payload, skipping");
+      return;
+    }
+    try {
+      server.getSecurity().applyReplicatedApiTokens(payload);
+    } catch (final ReplicatedSecurityConfigPersistenceException e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Could not fully apply a replicated API-token document on this node: %s. The node keeps running and is "
+              + "already enforcing the new token set - a revoked token does NOT authenticate here any more - but it "
+              + "is not durable: a restart before this is fixed reads the previous '%s' and the revocation has to be "
+              + "reissued. The usual cause is a local write failure: check that the configuration directory holding "
+              + "that file is writable and has free space",
+          e, e.getMessage(), ApiTokenConfiguration.FILE_NAME);
+      throw new ReplicationException(
+          "Failed to persist the replicated API-token document locally; the node is already enforcing the new token "
+              + "set in memory, only its durability to disk failed", e);
+    }
+    HALog.log(this, HALog.DETAILED, "Applied SECURITY_API_TOKENS_ENTRY (%d bytes)", payload.length());
   }
 
   /**

@@ -293,4 +293,34 @@ public interface HAServerPlugin extends ServerPlugin {
   default void replicateSecurityUsers(final String usersJsonArray) {
     // No-op by default; Raft implementation overrides.
   }
+
+  /**
+   * Replicates the full {@code server-groups.json} document across the cluster (issue #7373). Called by
+   * {@code ServerSecurity.saveGroupClusterWide} / {@code deleteGroupClusterWide}, and by
+   * {@code PostAddPeerHandler} to seed newly-joined peers. Default is a no-op for non-HA setups; the Raft
+   * implementation submits a SECURITY_GROUPS_ENTRY via the group committer.
+   * <p>
+   * The whole document, not a delta: a group is a set of permissions the whole cluster authorizes against, and
+   * a peer that missed one delta would diverge silently rather than converge on the next change.
+   *
+   * @param groupsJson the complete group document, as {@code ServerSecurity.getGroupsJsonPayload} builds it
+   */
+  default void replicateSecurityGroups(final String groupsJson) {
+    // No-op by default; Raft implementation overrides.
+  }
+
+  /**
+   * Replicates the full {@code server-api-tokens.json} document across the cluster (issue #7373). Called by
+   * {@code ServerSecurity.createApiTokenClusterWide} / {@code deleteApiTokenClusterWide}, and by
+   * {@code PostAddPeerHandler} to seed newly-joined peers. Default is a no-op for non-HA setups; the Raft
+   * implementation submits a SECURITY_API_TOKENS_ENTRY via the group committer.
+   * <p>
+   * The document carries token HASHES, never token material: the plaintext of a minted token exists only in the
+   * one-time response to the caller that minted it.
+   *
+   * @param apiTokensJson the complete token document, as {@code ServerSecurity.getApiTokensJsonPayload} builds it
+   */
+  default void replicateSecurityApiTokens(final String apiTokensJson) {
+    // No-op by default; Raft implementation overrides.
+  }
 }

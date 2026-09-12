@@ -216,6 +216,36 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public void replicateSecurityGroups(final String groupsJson) {
+    if (raftHAServer == null)
+      throw new TransactionException("Raft HA server not started");
+
+    try {
+      raftHAServer.getTransactionBroker().replicateSecurityGroups(groupsJson);
+    } catch (final TransactionException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new TransactionException("Error sending security-groups entry via Raft", e);
+    }
+    LogManager.instance().log(this, Level.INFO, "Security groups entry committed via Raft");
+  }
+
+  @Override
+  public void replicateSecurityApiTokens(final String apiTokensJson) {
+    if (raftHAServer == null)
+      throw new TransactionException("Raft HA server not started");
+
+    try {
+      raftHAServer.getTransactionBroker().replicateSecurityApiTokens(apiTokensJson);
+    } catch (final TransactionException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new TransactionException("Error sending security-api-tokens entry via Raft", e);
+    }
+    LogManager.instance().log(this, Level.INFO, "Security API-tokens entry committed via Raft");
+  }
+
+  @Override
   public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
     // Always register the endpoint - it returns 503 when Raft is not yet started.
     // Note: registerAPI is called before configure()/startService() for AFTER_HTTP_ON plugins,

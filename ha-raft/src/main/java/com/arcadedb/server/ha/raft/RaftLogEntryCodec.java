@@ -289,6 +289,12 @@ public final class RaftLogEntryCodec {
       Map<Integer, String> filesToRemove,
       List<byte[]> walEntries,
       List<Map<Integer, Integer>> bucketDeltas,
+      /**
+       * The JSON document of a node-scoped security entry: the user list of a {@code SECURITY_USERS_ENTRY}, the
+       * group document of a {@code SECURITY_GROUPS_ENTRY}, or the API-token document of a
+       * {@code SECURITY_API_TOKENS_ENTRY} (issue #7373). Which one it is comes from {@link #type()}; the slot is
+       * shared because the three have the identical wire shape. Null for every other entry type.
+       */
       String usersJson,
       boolean forceSnapshot,
       // BOOTSTRAP_FINGERPRINT_ENTRY fields (issue #4147). Hex-encoded SHA-256 of the bootstrap
@@ -665,20 +671,46 @@ public final class RaftLogEntryCodec {
    * The empty databaseName slot keeps the decoder symmetric with other entry types.
    */
   public static ByteString encodeSecurityUsersEntry(final String usersJson) {
+    return encodeSecurityEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, usersJson);
+  }
+
+  /**
+   * Encodes the whole {@code server-groups.json} document as a {@code SECURITY_GROUPS_ENTRY} (issue #7373).
+   * Same wire shape as {@link #encodeSecurityUsersEntry}; the type byte is what tells the two apart.
+   */
+  public static ByteString encodeSecurityGroupsEntry(final String groupsJson) {
+    return encodeSecurityEntry(RaftLogEntryType.SECURITY_GROUPS_ENTRY, groupsJson);
+  }
+
+  /**
+   * Encodes the whole {@code server-api-tokens.json} document as a {@code SECURITY_API_TOKENS_ENTRY}
+   * (issue #7373). The document carries token hashes, never token material.
+   */
+  public static ByteString encodeSecurityApiTokensEntry(final String apiTokensJson) {
+    return encodeSecurityEntry(RaftLogEntryType.SECURITY_API_TOKENS_ENTRY, apiTokensJson);
+  }
+
+  /**
+   * The shared body of every node-scoped security entry.
+   * <p>
+   * Binary format: type byte, empty databaseName (UTF), jsonLength (int), UTF-8 bytes.
+   * The empty databaseName slot keeps the decoder symmetric with other entry types.
+   */
+  private static ByteString encodeSecurityEntry(final RaftLogEntryType type, final String json) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
 
-      dos.writeByte(RaftLogEntryType.SECURITY_USERS_ENTRY.getId());
+      dos.writeByte(type.getId());
       dos.writeUTF("");
-      final byte[] bytes = usersJson.getBytes(StandardCharsets.UTF_8);
+      final byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
       dos.writeInt(bytes.length);
       dos.write(bytes);
 
       dos.flush();
       return ByteString.copyFrom(baos.toByteArray());
     } catch (final IOException e) {
-      throw new IllegalStateException("Failed to encode SECURITY_USERS entry", e);
+      throw new IllegalStateException("Failed to encode " + type + " entry", e);
     }
   }
 
@@ -782,7 +814,7 @@ public final class RaftLogEntryCodec {
       case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
           null, null, null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false,
           Collections.emptyList(), null);
-      case SECURITY_USERS_ENTRY -> decodeSecurityUsersEntry(dis);
+      case SECURITY_USERS_ENTRY, SECURITY_GROUPS_ENTRY, SECURITY_API_TOKENS_ENTRY -> decodeSecurityEntry(dis, type);
       case BOOTSTRAP_FINGERPRINT_ENTRY -> decodeBootstrapFingerprintEntry(dis, databaseName);
     };
 
@@ -1030,14 +1062,20 @@ public final class RaftLogEntryCodec {
         Collections.emptyList(), null);
   }
 
-  private static DecodedEntry decodeSecurityUsersEntry(final DataInputStream dis) throws IOException {
+  /**
+   * Decodes any of the three node-scoped security entries (users, groups, API tokens - issue #7373). The JSON
+   * document rides in the {@code usersJson} slot for all of them; {@link DecodedEntry#type()} says which
+   * document it is, and the applier dispatches on that.
+   */
+  private static DecodedEntry decodeSecurityEntry(final DataInputStream dis, final RaftLogEntryType type)
+      throws IOException {
     final int length = dis.readInt();
-    checkByteLength(length, dis.available(), "SECURITY_USERS_ENTRY");
+    checkByteLength(length, dis.available(), type.name());
     final byte[] bytes = new byte[length];
     dis.readFully(bytes);
-    final String usersJson = new String(bytes, StandardCharsets.UTF_8);
-    return new DecodedEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, "",
-        null, null, null, null, null, null, null, usersJson, false, null, -1L, Collections.emptyList(), false,
+    final String json = new String(bytes, StandardCharsets.UTF_8);
+    return new DecodedEntry(type, "",
+        null, null, null, null, null, null, null, json, false, null, -1L, Collections.emptyList(), false,
         Collections.emptyList(), null);
   }
 

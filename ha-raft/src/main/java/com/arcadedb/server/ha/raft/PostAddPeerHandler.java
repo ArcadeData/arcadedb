@@ -23,6 +23,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
+import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -60,20 +61,29 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
 
     raftHAServer.addPeer(peerId, address, name.isEmpty() ? null : name);
 
-    // Seed the newly-joined peer with the current users file. Snapshot install does not cover
-    // server-users.jsonl (it lives under <server-root>/config/, outside the database directory),
-    // so without this explicit seed the new peer would start with a stale user set until the
-    // next user mutation happens cluster-wide. Best-effort: a failure here does not roll back
-    // the peer addition.
-    try {
-      final String usersPayload = httpServer.getServer().getSecurity().getUsersJsonPayload();
-      plugin.replicateSecurityUsers(usersPayload);
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Users seed to new peer '%s' failed (best-effort): %s", peerId, e.getMessage());
-    }
+    // Seed the newly-joined peer with the current security files. Snapshot install covers none of them
+    // (they live under <server-root>/config/, outside the database directory), so without this explicit
+    // seed the new peer would start with whatever its own files hold - a stale user set, a stale group
+    // document, a stale token store - until the next mutation of that kind happens cluster-wide. The
+    // groups and tokens half is issue #7373; the users half predates it.
+    //
+    // Best-effort, and each kind is seeded independently: a failure does not roll back the peer addition,
+    // and one failing seed must not skip the other two.
+    final ServerSecurity security = httpServer.getServer().getSecurity();
+    seed(peerId, "users", () -> plugin.replicateSecurityUsers(security.getUsersJsonPayload()));
+    seed(peerId, "groups", () -> plugin.replicateSecurityGroups(security.getGroupsJsonPayload()));
+    seed(peerId, "API tokens", () -> plugin.replicateSecurityApiTokens(security.getApiTokensJsonPayload()));
 
     return new ExecutionResponse(200,
         new JSONObject().put("result", "Peer " + peerId + " added").toString());
+  }
+
+  private void seed(final String peerId, final String what, final Runnable seeding) {
+    try {
+      seeding.run();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "%s seed to new peer '%s' failed (best-effort): %s", what, peerId, e.getMessage());
+    }
   }
 }
