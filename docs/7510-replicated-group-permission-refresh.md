@@ -251,3 +251,34 @@ change to an existing path, not only to the new one.
 ## Known gaps
 
 - **#7529** - no metric, gauge or success-path signal for the refresh; an operator cannot observe convergence.
+
+## Review cycles
+
+### Cycle 1 - `6223154d36`
+
+`claude` reviewed and found no correctness bug. Two items were actioned:
+
+1. *"Worth a quick sanity check that nothing currently depends on the old SEVERE-per-file-reload log line
+   (e.g. alerting rules)."* **Checked, no change needed.**
+   `grep -rn "Error on reloading file"` over the repo returns the log statement itself
+   (`SecurityGroupFileRepository.java:192`) and this tracking doc, and nothing else - no test asserts on it, no
+   chart or rule references it. The concern is also narrower than it reads: that SEVERE line is untouched and
+   still fires when `load()` itself throws (an unreadable or unparseable file). What no longer reaches it is a
+   per-database refresh failure inside the callback, which used to abandon the remaining databases.
+2. *"no test for the executor-rejected-after-`stopService()` fallback path."* **Real, and worth more than it
+   looked.** Added `anEntryAppliedOnceTheRefreshExecutorIsShutDownStillInstallsTheDocument`: the property is
+   not tidiness but that `applyReplicatedGroups` must not throw there, because on the Raft apply path an
+   unexpected `RuntimeException` is not the caught "a local write failed" case - it is the "this node cannot
+   apply a committed entry" case that reaches the node-wide halt (#4798).
+
+   Writing it surfaced a **defect in the first commit**. The test passed even with `throw e` injected into the
+   `catch`, i.e. it never reached the branch it named: `shutdownNow()` DISCARDS the queued refresh task, so
+   `permissionRefreshPending` stayed wedged at `true` and every later `scheduleReplicatedPermissionRefresh()`
+   returned at the compare-and-set without ever touching the executor. Harmless in production - `stopService()`
+   means the server is going down and `ArcadeDBServer.startInternal()` builds a fresh `ServerSecurity` - but it
+   made which of the two shutdown behaviours you got depend on whether a worker had picked the task up yet, and
+   the silent one is the wrong default. `stopService()` now clears the flag next to the `shutdownNow()`, so a
+   group entry applied after shutdown deterministically takes the rejection path that logs the fallback. With
+   that, the injected `throw e` makes the new test fail, which is the proof it reaches the branch.
+
+Re-run after the changes: `Issue7510...Test` 8/8; the connected security suite 90/90.

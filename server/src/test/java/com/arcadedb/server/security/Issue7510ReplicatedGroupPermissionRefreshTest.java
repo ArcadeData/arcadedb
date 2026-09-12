@@ -44,6 +44,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.Mockito.mock;
@@ -271,6 +272,35 @@ class Issue7510ReplicatedGroupPermissionRefreshTest {
     await().atMost(CONVERGENCE).untilAsserted(() -> assertThat(
         cached.requestAccessOnDatabase(DATABASE_ACCESS.UPDATE_SCHEMA))
         .as("the last document wins; a coalesced refresh must not drop it").isFalse());
+  }
+
+  /**
+   * The fallback path, and the reason it is a {@code catch} and not an escaping exception: once the executor is
+   * shut down it rejects, and {@code applyReplicatedGroups} runs on the Raft state-machine apply thread, where
+   * an unexpected {@code RuntimeException} is NOT the "a local write failed" case that is caught and reported -
+   * it is the "this node cannot apply a committed entry" case that reaches the node-wide halt (issue #4798).
+   * A shutdown racing one last group entry must therefore cost the refresh, not the node.
+   */
+  @Test
+  void anEntryAppliedOnceTheRefreshExecutorIsShutDownStillInstallsTheDocument() {
+    security.applyReplicatedGroups(documentGranting(new JSONArray().put("updateSchema")));
+
+    // Wait for the first sweep to have actually run before shutting down. Without this the test passes for the
+    // wrong reason: shutdownNow() would discard a still-queued task, and the schedule below would return at the
+    // coalescing compare-and-set without ever reaching the executor - so the rejection path this test names
+    // would not be exercised at all.
+    await().atMost(CONVERGENCE).untilAsserted(() -> assertThat(server.sweepThreads).isNotEmpty());
+
+    security.stopService();
+
+    final String revoked = documentGranting(new JSONArray());
+    assertThatCode(() -> security.applyReplicatedGroups(revoked))
+        .as("a rejected refresh must not turn into an exception the state machine halts the node on")
+        .doesNotThrowAnyException();
+
+    // And the document itself is still installed, so the node that comes back up reads the revoked definition.
+    assertThat(security.getDatabaseGroupsConfiguration(DATABASE).getJSONObject(GROUP).getJSONArray("access"))
+        .as("the entry is applied even though its refresh could not be scheduled").isEmpty();
   }
 
   // -------------------------------------------------------------------------------------------

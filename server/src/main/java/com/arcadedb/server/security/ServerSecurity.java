@@ -248,6 +248,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // Interrupting rather than draining: a sweep in flight is re-deriving permissions of databases this server
     // is closing anyway, and every task it could still be holding is idempotent and re-run by the next change.
     permissionRefreshExecutor.shutdownNow();
+    // Cleared because shutdownNow() DISCARDS the queued task that would otherwise have cleared it. Leaving it
+    // set would wedge the flag at true, and every later schedule would return at the compare-and-set instead of
+    // reaching the executor - so a group entry applied during shutdown would take the silent path rather than
+    // the rejection path that logs the fallback. The executor is gone either way; which of the two happens
+    // should not depend on whether a worker had picked the task up yet.
+    permissionRefreshPending.set(false);
   }
 
   public ServerSecurityUser authenticate(final String userName, final String userPassword, final String databaseName) {
