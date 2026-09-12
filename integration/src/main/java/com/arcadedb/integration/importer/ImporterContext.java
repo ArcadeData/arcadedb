@@ -25,7 +25,25 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class ImporterContext {
+  /**
+   * The rows the CURRENT phase has parsed. One {@link ImporterContext} serves every phase of an import -
+   * {@link Importer#load()} calls {@code loadFromSource()} for the url, documents, vertices and edges sources
+   * against the same context - and {@link Importer#loadFromSource} zeroes this counter on entry to each of them
+   * (issue #7342), so a format reading it back is always reading its own phase's count. It used to be each
+   * format's job to remember to zero it, which two of the eleven did not, and the two that took a decision off the
+   * value truncated or skipped a whole phase when they inherited a non-zero one (issues #7288, #7313).
+   * <p>
+   * What the import as a whole parsed is {@link #getParsedTotal()}, which is what the returned report carries.
+   */
   public final AtomicLong parsed                     = new AtomicLong();
+  /**
+   * The rows every phase BEFORE the current one parsed, accumulated by {@link #beginPhase()} as each phase ends.
+   * Added to {@link #parsed} by {@link #getParsedTotal()}, because per-phase and import-wide are two different
+   * questions and one counter can only answer one of them: {@code parsedRecords} used to mean "the last phase's
+   * count" for ten formats and "the last phase plus whatever preceded it" for {@code JSONImporterFormat}, so two
+   * adjacent invocations of the same CLI reported the same quantity two different ways (issue #7342).
+   */
+  private final AtomicLong parsedInPreviousPhases    = new AtomicLong();
   public final AtomicLong parsedDocumentAndVertices  = new AtomicLong();
   public final AtomicLong createdDocuments           = new AtomicLong();
   public final AtomicLong createdVertices            = new AtomicLong();
@@ -87,11 +105,40 @@ public class ImporterContext {
     return !callerTransactionActiveOnEntry || !database.isTransactionActive();
   }
 
+  /**
+   * Closes the phase that has just finished and opens the next one: the phase's row count is folded into the
+   * import-wide total and the per-phase counter zeroed, so the format about to run measures {@code -parsingLimitEntries}
+   * and its own commit cadence against its own rows and reports its own count.
+   * <p>
+   * Called by {@link Importer#loadFromSource} immediately before handing the source to the format, rather than by
+   * each format on entry to its own {@code load()}: a format could forget, two of them had, and a format added
+   * later inherits the reset instead of having to know about it (issue #7342).
+   * <p>
+   * {@code lastParsed} - the value {@code FormatImporter#printProgress} subtracts to turn the counter into a rate -
+   * goes with it. Left behind, it made the first progress line of every phase after the first report a NEGATIVE
+   * rate, which is the visible artefact of the per-phase reset and was already true for the nine formats that used
+   * to reset the counter themselves.
+   */
+  public void beginPhase() {
+    parsedInPreviousPhases.addAndGet(parsed.getAndSet(0));
+    lastParsed = 0;
+    lastLapOn = System.currentTimeMillis();
+  }
+
+  /**
+   * The rows this IMPORT parsed: the phases already finished plus the one still running. This is what
+   * {@code parsedRecords} reports (issue #7342).
+   */
+  public long getParsedTotal() {
+    return parsedInPreviousPhases.get() + parsed.get();
+  }
+
   public Map<String, Object> toMap() {
     final LinkedHashMap<String, Object> map = new LinkedHashMap<>();
 
-    if (parsed.get() > 0)
-      map.put("parsedRecords", parsed.get());
+    final long parsedTotal = getParsedTotal();
+    if (parsedTotal > 0)
+      map.put("parsedRecords", parsedTotal);
     if (errors.get() > 0)
       map.put("errors", errors.get());
     if (warnings.get() > 0)

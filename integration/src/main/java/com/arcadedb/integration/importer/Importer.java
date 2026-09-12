@@ -136,6 +136,13 @@ public class Importer extends AbstractImporter {
 
     format = sourceSchema.getContentImporter();
 
+    // ONE ImporterContext SERVES EVERY PHASE OF AN IMPORT, SO THE ROW COUNTER ARRIVES CARRYING WHATEVER THE PREVIOUS
+    // PHASE LEFT IN IT. ZEROED HERE, ONCE, RATHER THAN BY EACH FORMAT ON ENTRY TO ITS OWN load(): TWO OF THE ELEVEN
+    // FORMATS DID NOT, AND THE TWO THAT TOOK A DECISION OFF THE VALUE - THE -parsingLimitEntries CHECK AND THE COMMIT
+    // CADENCE - TRUNCATED OR SKIPPED A WHOLE PHASE WHEN THEY INHERITED A NON-ZERO ONE (ISSUES #7288, #7313). A FORMAT
+    // ADDED LATER NOW INHERITS THE RESET INSTEAD OF HAVING TO REMEMBER IT (ISSUE #7342)
+    context.beginPhase();
+
     format.load(sourceSchema, entityType, parser, database, context, settings);
   }
 

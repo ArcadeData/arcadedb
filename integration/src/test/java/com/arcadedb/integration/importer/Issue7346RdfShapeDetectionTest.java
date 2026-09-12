@@ -275,11 +275,11 @@ class Issue7346RdfShapeDetectionTest {
   // -----------------------------------------------------------------------------------------------------------
 
   /**
-   * Imports {@code content} through the live CLI path and asserts the three triples became two edges.
+   * Imports {@code content} through the live CLI path and asserts the three triples became three edges.
    * <p>
-   * Two and not three because the RDF format skips its first line as a header by default - the behaviour #7345
-   * tracks - which is also what the issue's own repro table records ({@code parsedRecords=3, createdEdges=2}). The
-   * point here is the detection, so the count is asserted as it is rather than as it should perhaps become.
+   * Three and no longer two: the RDF format used to skip its first line as a header, which is what the issue's own
+   * repro table recorded ({@code parsedRecords=3, createdEdges=2}) and what #7345 has since fixed - an RDF source
+   * has no header row, so the first triple is data like every other line.
    */
   private void assertImportsAsRdf(final String name, final String content) throws Exception {
     final String databasePath = "target/databases/test-import-7346-" + name;
@@ -303,11 +303,11 @@ class Issue7346RdfShapeDetectionTest {
       final Map<String, Object> result = new Importer(new String[] { "-url", "file://" + file.getAbsolutePath(),
           "-database", databasePath, "-edgeType", "Related" }).load();
 
-      assertThat(result).as("every line reached the parser, and the ones past the header default became edges")
-          .containsEntry("parsedRecords", 3L).containsEntry("createdEdges", 2L);
+      assertThat(result).as("every line reached the parser and every one of them became an edge (#7345)")
+          .containsEntry("parsedRecords", 3L).containsEntry("createdEdges", 3L);
 
       try (final Database db = new DatabaseFactory(databasePath).open()) {
-        assertThat(db.countType("Related", true)).isEqualTo(2);
+        assertThat(db.countType("Related", true)).isEqualTo(3);
       }
     } finally {
       final DatabaseFactory factory = new DatabaseFactory(databasePath);

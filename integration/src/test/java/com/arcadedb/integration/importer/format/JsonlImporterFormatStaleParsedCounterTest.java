@@ -50,6 +50,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * four {@code loadFromSource()} phases, so a jsonl phase that ran after another one entered with a stale offset
  * {@code k} and committed after {@code COMMIT_EVERY - (k % COMMIT_EVERY)} records instead of after
  * {@code COMMIT_EVERY}.
+ * <p>
+ * The reset itself has since moved OUT of the format and into {@code Importer.loadFromSource()}, where a format
+ * cannot forget it (issue #7342), so the stale-offset case below drives two real phases of one
+ * {@code Importer.load()} rather than handing a format a pre-loaded counter - which no longer expresses anything
+ * the production path does.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
@@ -115,31 +120,47 @@ class JsonlImporterFormatStaleParsedCounterTest {
   }
 
   /**
-   * The reported case: an earlier phase of the same import left 999 in the counter, so the very first record of
-   * this phase pushed it to 1,000 and tripped the boundary. Two valid records then a failing one must leave
-   * nothing durable, because this phase never reached a thousand records of its own.
+   * The reported case, driven through the live CLI path: a first phase of {@code COMMIT_EVERY - 1} records leaves
+   * 999 in the counter, so before the fix the very first record of the jsonl phase pushed it to 1,000 and tripped
+   * the boundary. Two valid records then a failing one must leave nothing of the second phase durable, because it
+   * never reached a thousand records of its own.
    */
   @Test
   void aCounterLeftBehindByAnEarlierPhaseDoesNotShiftTheCommitBoundary() throws Exception {
-    final JsonlImporterFormat format = new JsonlImporterFormat();
-    final ImporterContext context = new ImporterContext();
-    context.callerTransactionActiveOnEntry = false;
+    final Path firstPhase = Path.of("target", "jsonl-stale-boundary-phase1.jsonl").toAbsolutePath();
+    final Path secondPhase = Path.of("target", "jsonl-stale-boundary-phase2.jsonl").toAbsolutePath();
+    Files.createDirectories(firstPhase.getParent());
 
-    // What an earlier -url/-documents phase of the same Importer.load() leaves behind.
-    context.parsed.set(COMMIT_EVERY - 1);
+    final StringBuilder first = new StringBuilder();
+    for (int i = 0; i < COMMIT_EVERY - 1; i++)
+      first.append(documentLine("Doc", i)).append('\n');
+    Files.writeString(firstPhase, first.toString(), StandardCharsets.UTF_8);
+    Files.writeString(secondPhase,
+        documentLine("Doc", COMMIT_EVERY) + "\n" + documentLine("Doc", COMMIT_EVERY + 1) + "\n" + rowThatAbortsTheImport(
+            COMMIT_EVERY + 2) + "\n", StandardCharsets.UTF_8);
 
-    final Parser parser = jsonlParser(documentLine("Doc", 0) + "\n" + documentLine("Doc", 1) + "\n" + rowThatAbortsTheImport(2) + "\n");
+    final String cliDbPath = "target/databases/jsonl-stale-boundary-cli";
+    FileUtils.deleteRecursively(new File(cliDbPath));
+    try (final Database cliDatabase = new DatabaseFactory(cliDbPath).create()) {
+      cliDatabase.transaction(() -> cliDatabase.getSchema().createDocumentType("Doc"));
+    }
 
-    assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settings()))
-        .isInstanceOf(ImportException.class);
+    try {
+      assertThatThrownBy(() -> new Importer(("-url file://" + firstPhase + " -documents file://" + secondPhase
+          + " -database " + cliDbPath).split(" ")).load()).isInstanceOf(ImportException.class);
 
-    assertThat(countOfDoc())
-        .as("the commit boundary is measured from this phase's own first record, not from an inherited offset: "
-            + "two records is far short of COMMIT_EVERY, so the rollback takes both")
-        .isZero();
-    assertThat(context.parsed.get())
-        .as("the counter this phase reports is its own record count, not the previous phase's plus its own")
-        .isEqualTo(2);
+      try (final Database cliDatabase = new DatabaseFactory(cliDbPath).open()) {
+        assertThat(cliDatabase.countType("Doc", true))
+            .as("the jsonl phase's commit boundary is measured from its own first record, not from the 999 the "
+                + "previous phase left behind: two records is far short of COMMIT_EVERY, so the rollback takes both "
+                + "and only the first phase's records survive")
+            .isEqualTo(COMMIT_EVERY - 1);
+      }
+    } finally {
+      FileUtils.deleteRecursively(new File(cliDbPath));
+      Files.deleteIfExists(firstPhase);
+      Files.deleteIfExists(secondPhase);
+    }
   }
 
   /**
@@ -196,8 +217,9 @@ class JsonlImporterFormatStaleParsedCounterTest {
           .as("the import must actually have run: three documents from the first phase and two from the second")
           .isEqualTo(5L);
       assertThat(report.get("parsedRecords"))
-          .as("the jsonl phase's counter starts from zero, so it reports its own two rows rather than five")
-          .isEqualTo(2L);
+          .as("parsedRecords is what the IMPORT parsed: the first phase's three rows plus the jsonl phase's two "
+              + "(issue #7342), while the per-phase counter the commit boundary is taken from starts from zero")
+          .isEqualTo(5L);
     } finally {
       FileUtils.deleteRecursively(new File(cliDbPath));
       Files.deleteIfExists(firstPhase);

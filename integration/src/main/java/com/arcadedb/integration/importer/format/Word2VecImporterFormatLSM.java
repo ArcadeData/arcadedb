@@ -44,8 +44,6 @@ public class Word2VecImporterFormatLSM extends AbstractImporterFormat {
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
-    context.parsed.set(0);
-
     try {
       settings.documentsSkipEntries = 1L; // SKIP 1ST LINE
       importer = new TextEmbeddingsImporterLSM(database, parser.getSource().inputStream, settings).setContext(context);

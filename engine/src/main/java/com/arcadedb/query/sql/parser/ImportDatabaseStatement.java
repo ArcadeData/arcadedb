@@ -60,6 +60,12 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "import database");
 
+    // THE ONE FAILURE THIS STATEMENT REPORTS IN BAND RATHER THAN BY THROWING (SEE THE CATCH BELOW), WHICH MAKES THE
+    // IN-BAND VALUE THE ENTIRE SIGNAL. IT USED TO BE WRITTEN INTO result AND THEN UNCONDITIONALLY OVERWRITTEN WITH
+    // "OK" TWO LINES LATER, SO THE FAIL BRANCH COULD NOT BE OBSERVED BY ANY CALLER: AN IMPORT OF A MALFORMED SOURCE
+    // ANSWERED {"result":"OK"} WITH NO ROWS AND NO STATISTICS, AND ONLY THE SERVER LOG SAID OTHERWISE (ISSUE #7461)
+    String failureReason = null;
+
     if (this.url != null)
       result.setProperty("fromUrl", this.url.getUrlString());
 
@@ -124,16 +130,28 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
           if (cause instanceof SecurityException se)
             throw se;
 
-        if ("IllegalArgumentException".equals(e.getCause().getClass().getSimpleName()))
-          result.setProperty("result", "FAIL");
-        else
-          throw new CommandExecutionException("Error on importing database", e.getTargetException());
+        // AN IllegalArgumentException OUT OF THE IMPORTER IS "THIS SOURCE OR SETTING CANNOT BE USED", NOT "THE
+        // SERVER BROKE": Importer.load() RAISES EXACTLY THAT FOR A PROBE THAT COULD NOT READ ITS SOURCE, AND A
+        // PROBE FAILING IS AN ANSWER RATHER THAN AN ERROR. IT IS REPORTED AS FAIL WITH THE MESSAGE ATTACHED, SO A
+        // CLIENT THAT CHECKS 'result' LEARNS BOTH THAT THE IMPORT FAILED AND WHY. TESTED BY instanceof AND NOT BY
+        // THE CLASS'S SIMPLE NAME, WHICH ALSO LETS A SUBCLASS - A NumberFormatException OUT OF AN UNUSABLE SETTING
+        // VALUE - BE REPORTED WITH ITS REASON INSTEAD OF SURFACING AS AN OPAQUE 500 (ISSUE #7461)
+        final Throwable cause = e.getTargetException();
+        if (cause instanceof IllegalArgumentException) {
+          final String message = cause.getMessage();
+          failureReason = message != null ? message : cause.getClass().getName();
+        } else
+          throw new CommandExecutionException("Error on importing database", cause);
       } finally {
         OperationProgressRegistry.instance().unregister(progress);
       }
     }
 
-    result.setProperty("result", "OK");
+    if (failureReason != null) {
+      result.setProperty("result", "FAIL");
+      result.setProperty("reason", failureReason);
+    } else
+      result.setProperty("result", "OK");
 
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);

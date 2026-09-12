@@ -49,12 +49,6 @@ public class XMLImporterFormat implements FormatImporter {
     try {
       final int objectNestLevel = settings.getIntValue("objectNestLevel", 1);
 
-      // One ImporterContext serves every phase of an import, so this counter arrives carrying whatever an earlier
-      // phase left in it, and -parsingLimitEntries is checked against it below: a phase entered already past the
-      // limit imported nothing at all while still reporting success. Zeroed here the way RDFImporterFormat and the
-      // six other formats zero it, so the limit counts this phase's own objects (issue #7313).
-      context.parsed.set(0);
-
       final XMLInputFactory xmlFactory = XMLInputFactory.newInstance();
       xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
       xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
@@ -192,7 +186,11 @@ public class XMLImporterFormat implements FormatImporter {
           // IGNORE IT
         }
 
-        if (settings.parsingLimitEntries > 0 && context.parsed.get() > settings.parsingLimitEntries)
+        // '>=' AND NOT '>': context.parsed IS INCREMENTED ONCE PER COMPLETED OBJECT, SO A STRICT COMPARISON ONLY
+        // BREAKS ONCE THE COUNT HAS PASSED THE LIMIT - AND THE OBJECT THAT TRIPPED IT HAS ALREADY BEEN HANDED TO
+        // database.async().createRecord(). '-parsingLimitEntries N' IMPORTED N+1 ENTRIES, WHILE THE SAME FLAG ON THE
+        // VECTOR ROUTE (TextEmbeddingsImporterLSM, THROUGH parser.limit()) STOPPED AT N (ISSUE #7341)
+        if (settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
           break;
       }
 
@@ -336,7 +334,9 @@ public class XMLImporterFormat implements FormatImporter {
           // IGNORE IT
         }
 
-        if (analyzingLimitEntries > 0 && parsedObjects > analyzingLimitEntries)
+        // SAME OFF-BY-ONE AND SAME FIX AS load()'S -parsingLimitEntries ABOVE: parsedObjects IS INCREMENTED ONCE PER
+        // COMPLETED OBJECT, SO A STRICT COMPARISON ANALYZED N+1 OF THEM (ISSUE #7341)
+        if (analyzingLimitEntries > 0 && parsedObjects >= analyzingLimitEntries)
           break;
       }
 
