@@ -176,6 +176,13 @@ public class RDFImporterFormat extends CSVImporterFormat {
           txOpen = true;
           txCount = 0;
         }
+
+        // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
+        // ROW, SO STOPPING ONCE IT REACHES THE LIMIT IMPORTS EXACTLY -parsingLimitEntries ROWS, NOT ONE MORE (#7482).
+        // -parsingLimitBytes IS THE SAME IDEA MEASURED IN BYTES READ FROM THE SOURCE RATHER THAN ROWS PARSED.
+        if ((settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
+            || (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes))
+          break;
       }
 
       txOpen = false;

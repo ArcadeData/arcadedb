@@ -49,6 +49,7 @@ import com.arcadedb.utility.IPAddressBlocklist;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.net.InetAddress;
 import java.net.URI;
@@ -70,6 +71,7 @@ import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
 /**
@@ -1523,8 +1525,8 @@ public class ServerControlPlane {
   /**
    * Samples the importer's counters once a second for as long as the import runs.
    * <p>
-   * The three {@code AtomicLong}s are resolved <b>once</b>, here, rather than on every tick: neither
-   * the context nor its class changes for the life of the import, so a reflective lookup per field
+   * The parsed-rows supplier and the two {@code AtomicLong}s are resolved <b>once</b>, here, rather than on every
+   * tick: neither the context nor its class changes for the life of the import, so a reflective lookup per field
    * per second is work with no answer that could differ. A build whose {@code ImporterContext} does
    * not carry all three schedules nothing at all, rather than failing quietly every second.
    */
@@ -1532,12 +1534,12 @@ public class ServerControlPlane {
     if (context == null)
       return;
 
-    final AtomicLong parsedCounter;
+    final LongSupplier parsedCounter;
     final AtomicLong vertexCounter;
     final AtomicLong edgeCounter;
     try {
       final Class<?> ctxClass = context.getClass();
-      parsedCounter = (AtomicLong) ctxClass.getField("parsed").get(context);
+      parsedCounter = parsedTotalSupplier(ctxClass, context);
       vertexCounter = (AtomicLong) ctxClass.getField("createdVertices").get(context);
       edgeCounter = (AtomicLong) ctxClass.getField("createdEdges").get(context);
     } catch (final Exception ignored) {
@@ -1549,11 +1551,37 @@ public class ServerControlPlane {
     timer.schedule(new TimerTask() {
       @Override
       public void run() {
-        final long parsed = parsedCounter.get();
+        final long parsed = parsedCounter.getAsLong();
         if (parsed > 0)
           listener.onImportCounters(parsed, vertexCounter.get(), edgeCounter.get());
       }
     }, 1000, 1000);
+  }
+
+  /**
+   * {@code ImporterContext#getParsedTotal()} - the phases already finished plus the one still running, monotonic
+   * for the life of the import - when this build carries it; the raw per-phase {@code parsed} field otherwise, for
+   * a server running against an {@code arcadedb-integration} jar older than issue #7342.
+   * <p>
+   * {@code parsed} alone is reset to zero at the start of every phase ({@code ImporterContext#beginPhase()}), so on
+   * a multi-phase {@code IMPORT DATABASE} (documents + vertices + edges) sampling it directly made the reported
+   * {@code parsed} figure climb, drop back towards zero at each phase boundary, then climb again - a progress bar
+   * driven off it ran backwards (issue #7483).
+   */
+  private static LongSupplier parsedTotalSupplier(final Class<?> ctxClass, final Object context) throws ReflectiveOperationException {
+    try {
+      final Method getParsedTotal = ctxClass.getMethod("getParsedTotal");
+      return () -> {
+        try {
+          return (long) getParsedTotal.invoke(context);
+        } catch (final ReflectiveOperationException e) {
+          throw new IllegalStateException(e);
+        }
+      };
+    } catch (final NoSuchMethodException e) {
+      final AtomicLong parsed = (AtomicLong) ctxClass.getField("parsed").get(context);
+      return parsed::get;
+    }
   }
 
   /**

@@ -48,11 +48,18 @@ public interface FormatImporter {
       if (deltaInSecs == 0)
         deltaInSecs = 1;
 
+      // context.getParsedTotal(), NOT context.parsed.get(): the latter is per-phase and resets to 0 at every phase
+      // boundary (ImporterContext#beginPhase()), so on a multi-phase import (documents + vertices + edges) this log
+      // line's "Parsed" figure - and the rate computed against context.lastParsed below - would climb, drop back
+      // towards zero, then climb again, exactly the SSE progress stream's #7483 before it was fixed to read the
+      // same monotonic total.
+      final long parsedTotal = context.getParsedTotal();
+
       if (source == null || source.compressed || source.totalSize < 0) {
         logger.logLine(2,//
             "- Parsed %,d (%,d/sec) %,d documents (%,d/sec) %,d vertices (%,d/sec) %,d edges (%,d/sec %,d skipped) %,d linked edges (%,d/sec %,d%%) updated documents %,d (%,d%%)",
 //
-            context.parsed.get(), (context.parsed.get() - context.lastParsed) / deltaInSecs, context.createdDocuments.get(),
+            parsedTotal, (parsedTotal - context.lastParsed) / deltaInSecs, context.createdDocuments.get(),
             (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs, context.createdVertices.get(),
             (context.createdVertices.get() - context.lastVertices) / deltaInSecs, context.createdEdges.get(),
             (context.createdEdges.get() - context.lastEdges) / deltaInSecs, context.skippedEdges.get(), context.linkedEdges.get(),
@@ -64,7 +71,7 @@ public interface FormatImporter {
         final int progressPerc = (int) (parser.getPosition() * 100 / source.totalSize);
         logger.logLine(2,//
             "Parsed %,d (%,d/sec %,d%%) %,d records (%,d/sec) %,d vertices (%,d/sec) %,d edges (%,d/sec %,d skipped) %,d linked edges (%,d/sec %,d%%) updated documents %,d (%,d%%)",
-            context.parsed.get(), (context.parsed.get() - context.lastParsed) / deltaInSecs, progressPerc, context.createdDocuments.get(),
+            parsedTotal, (parsedTotal - context.lastParsed) / deltaInSecs, progressPerc, context.createdDocuments.get(),
             (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs, context.createdVertices.get(),
             (context.createdVertices.get() - context.lastVertices) / deltaInSecs, context.createdEdges.get(),
             (context.createdEdges.get() - context.lastEdges) / deltaInSecs, context.skippedEdges.get(), context.linkedEdges.get(),
@@ -75,7 +82,7 @@ public interface FormatImporter {
 
       }
       context.lastLapOn = System.currentTimeMillis();
-      context.lastParsed = context.parsed.get();
+      context.lastParsed = parsedTotal;
 
       context.lastDocuments = context.createdDocuments.get();
       context.lastVertices = context.createdVertices.get();
