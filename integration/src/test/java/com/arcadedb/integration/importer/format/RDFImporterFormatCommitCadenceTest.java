@@ -371,8 +371,8 @@ class RDFImporterFormatCommitCadenceTest {
           + " -database " + cliDbPath + " " + typeOptions + " -commitEvery 2").split(" ")).load();
 
       assertThat(report.get("createdEdges"))
-          .as("the import must actually have run: all five triples become edges - an RDF source has no header row "
-              + "for the first one to be dropped as (issue #7345)")
+          .as("the import must actually have run: all five triples become edges, because an RDF source has no "
+              + "header row for the first one to be dropped as (issue #7345)")
           .isEqualTo(5L);
       assertThat(report.get("parsedRecords"))
           .as("the five source rows are counted once each, not twice")

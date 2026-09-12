@@ -631,15 +631,29 @@ public class SourceDiscovery {
   }
 
   /**
-   * Whether the parser's CURRENT character opens a comment line: a {@code #}, or the first {@code /} of a
-   * {@code //}. The second character is PEEKED rather than read, so a data line that merely begins with a single
-   * {@code /} keeps its first character and is sniffed whole (issue #7347).
+   * What counts as a leading comment line, in ONE place: a {@code #}, or the first {@code /} of a {@code //}.
+   * <p>
+   * Content sniffing and the row loops have to agree about it exactly, or a line the sniffer skipped arrives as
+   * data - a bogus edge for RDF, a bogus header for CSV - and the two work on different abstractions (the
+   * character-oriented {@link Parser} here, a {@code PushbackReader} in
+   * {@link com.arcadedb.integration.importer.format.CSVImporterFormat#sourceReader}), so the LOOPS cannot be
+   * shared even though the rule must be (issue #7347).
+   *
+   * @param second the character after {@code first}, or {@code 0} when there is none. Only consulted when
+   *               {@code first} is a {@code /}, so a caller with one character in hand can pass {@code 0}.
+   */
+  public static boolean isCommentLineStart(final char first, final char second) {
+    return first == '#' || (first == '/' && second == '/');
+  }
+
+  /**
+   * Whether the parser's CURRENT character opens a comment line. The second character is PEEKED rather than read,
+   * and only when it can matter, so a data line that merely begins with a single {@code /} keeps its first
+   * character and is sniffed whole (issue #7347).
    */
   private boolean isCommentLineStart(final Parser parser) throws IOException {
-    final char c = parser.getCurrentChar();
-    if (c == '#')
-      return true;
-    return c == '/' && parser.peekChar() == '/';
+    final char first = parser.getCurrentChar();
+    return isCommentLineStart(first, first == '/' ? parser.peekChar() : 0);
   }
 
   private void skipLine(final Parser parser) throws IOException {
