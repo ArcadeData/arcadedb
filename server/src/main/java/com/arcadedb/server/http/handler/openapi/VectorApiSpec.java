@@ -164,6 +164,10 @@ public class VectorApiSpec implements OpenApiContributor {
         search already returned every match it could find within 'candidateLimit'."""));
     schema.addProperty("count", SpecBuilders.integer("Number of results returned"));
     schema.addProperty("results", SpecBuilders.arrayOf(hitSchema(), "Hits, nearest or highest-scoring first"));
+    // Every one of these is written unconditionally by VectorSearch.search, so a client that has to null-check
+    // them is null-checking a case the server cannot produce. 'results' is an empty array on a search that
+    // matched nothing, not an absent field.
+    schema.setRequired(List.of("indexName", "sparse", "scoring", "candidateLimit", "truncated", "count", "results"));
     return schema;
   }
 
@@ -186,9 +190,7 @@ public class VectorApiSpec implements OpenApiContributor {
         "Full-text index the full-text leg searches. Required whenever 'fulltextQuery' is given, and refused without it"));
     schema.addProperty("fusionStrategy", SpecBuilders.string(
         "How the legs are combined. Only RRF can consume the graph expansion leg, which is ranked by traversal order"));
-    schema.addProperty("weights", SpecBuilders.object("""
-        Per-leg weight applied to every rank contribution. The only accepted keys are 'vector', 'fulltext' and \
-        'expand', and a weight for a leg the request does not ask for is refused rather than ignored."""));
+    schema.addProperty("weights", weightsSchema());
 
     final Schema<Object> expand = SpecBuilders.object("""
         Optional graph expansion leg, seeded from the union of the retrieval legs and ranked by breadth-first \
@@ -210,8 +212,7 @@ public class VectorApiSpec implements OpenApiContributor {
         "Full-text index that was searched, present whenever the full-text leg ran - including when it matched nothing"));
     schema.addProperty("sparse", SpecBuilders.bool("Whether the vector leg took the sparse path"));
     schema.addProperty("scoring", SpecBuilders.string("Scoring direction of the vector leg"));
-    schema.addProperty("legs", SpecBuilders.object(
-        "Per-leg accounting: how many rows each leg contributed, and whether the expansion hit its seed or fan-out cap"));
+    schema.addProperty("legs", legsSchema());
     schema.addProperty("fused", SpecBuilders.bool("""
         False when only one leg produced rows: fusion needs at least two sources, so the response carries that \
         leg's native distance or score instead of a fused one."""));
@@ -219,7 +220,77 @@ public class VectorApiSpec implements OpenApiContributor {
     schema.addProperty("truncated", SpecBuilders.bool("True when the result window was filled"));
     schema.addProperty("count", SpecBuilders.integer("Number of results returned"));
     schema.addProperty("results", SpecBuilders.arrayOf(fusedHitSchema(), "Fused hits, best first"));
+    // 'fulltextIndexName' and 'fusionStrategy' are the two fields this response genuinely may omit - the first
+    // when no full-text leg ran, the second when fusion did not happen - so they stay optional. Everything else
+    // is written on both the fused and the unfused branch.
+    schema.setRequired(
+        List.of("vectorIndexName", "sparse", "scoring", "legs", "fused", "truncated", "count", "results"));
     return schema;
+  }
+
+  /**
+   * The per-leg weights. Spelled out rather than left an untyped map because {@code HybridSearch.validateWeights}
+   * accepts exactly these three keys and refuses any other outright, so a generated client can reject locally
+   * what the server would reject remotely - the same contract {@link #boundedInteger} carries for the numbers.
+   */
+  private Schema<?> weightsSchema() {
+    final Schema<Object> weights = SpecBuilders.object("""
+        Per-leg weight applied to every rank contribution. The only accepted keys are 'vector', 'fulltext' and \
+        'expand', and a weight for a leg the request does not ask for is refused rather than ignored.""");
+    weights.addProperty("vector", weight("Weight of the vector leg", 1.0f));
+    weights.addProperty("fulltext", weight(
+        "Weight of the full-text leg. Refused unless the request also carries 'fulltextQuery'/'fulltextIndexName'",
+        1.0f));
+    weights.addProperty("expand", weight(
+        "Weight of the graph expansion leg. Refused unless the request also carries 'expand'", 0.5f));
+    weights.setAdditionalProperties(Boolean.FALSE);
+    return weights;
+  }
+
+  /** One leg weight: a finite number that is not negative, carrying the fallback the server applies. */
+  private Schema<?> weight(final String description, final float defaultValue) {
+    final Schema<Number> schema = SpecBuilders.number(description);
+    schema.setMinimum(BigDecimal.ZERO);
+    schema.setDefault(defaultValue);
+    return schema;
+  }
+
+  /**
+   * The per-leg accounting. A fixed set of counters rather than an open map, so a client reads
+   * {@code legs.expand.seedsTruncated} through its own type instead of through an untyped lookup.
+   */
+  private Schema<?> legsSchema() {
+    final Schema<Object> legs = SpecBuilders.object("""
+        Per-leg accounting: how many rows each leg contributed, and whether the expansion hit its seed or \
+        fan-out cap.""");
+
+    final Schema<Object> vector = SpecBuilders.object("The vector leg, which every hybrid search runs");
+    vector.addProperty("count", SpecBuilders.integer("Rows the vector leg contributed to fusion"));
+
+    final Schema<Object> fullText = SpecBuilders.object(
+        "The full-text leg, present whenever it ran - including when it matched nothing");
+    fullText.addProperty("indexName", SpecBuilders.string("Full-text index that was searched"));
+    fullText.addProperty("similarity", SpecBuilders.string("Similarity function that index scores with, e.g. BM25"));
+    fullText.addProperty("count", SpecBuilders.integer("Rows the full-text leg contributed to fusion"));
+
+    final Schema<Object> expand = SpecBuilders.object(
+        "The graph expansion leg, present whenever the request carried 'expand'");
+    expand.addProperty("direction", SpecBuilders.string("Direction walked: out, in or both"));
+    expand.addProperty("edgeTypes", SpecBuilders.arrayOf(SpecBuilders.string(null),
+        "Edge types walked; empty when the request named none, which walks them all"));
+    expand.addProperty("maxDepth", SpecBuilders.integer("Hops walked from a seed"));
+    expand.addProperty("truncated", SpecBuilders.bool("True when the expansion hit its fan-out cap"));
+    expand.addProperty("seedCount", SpecBuilders.integer("Seeds the retrieval legs supplied"));
+    expand.addProperty("seedsTruncated", SpecBuilders.bool("""
+        True when the seed budget capped the seed list, so a thin neighborhood is the cap's doing rather than \
+        the graph's."""));
+    expand.addProperty("count", SpecBuilders.integer("Rows the expansion leg contributed to fusion"));
+
+    legs.addProperty("vector", vector);
+    legs.addProperty("fulltext", fullText);
+    legs.addProperty("expand", expand);
+    legs.setRequired(List.of("vector"));
+    return legs;
   }
 
   private Schema<?> createFullTextRequestSchema() {
@@ -242,6 +313,7 @@ public class VectorApiSpec implements OpenApiContributor {
     schema.addProperty("similarity", SpecBuilders.string("Similarity function the index scores with, e.g. BM25"));
     schema.addProperty("count", SpecBuilders.integer("Number of results returned"));
     schema.addProperty("results", SpecBuilders.arrayOf(hitSchema(), "Hits, highest score first"));
+    schema.setRequired(List.of("indexName", "similarity", "count", "results"));
     return schema;
   }
 
@@ -250,7 +322,12 @@ public class VectorApiSpec implements OpenApiContributor {
     hit.addProperty("rid", SpecBuilders.string("Record id of the hit"));
     hit.addProperty("distance", SpecBuilders.number("Dense vector distance, lower is better. Absent on a scored hit"));
     hit.addProperty("score", SpecBuilders.number("Sparse or full-text score, higher is better. Absent on a distance hit"));
-    hit.addProperty("properties", SpecBuilders.object("The record's properties"));
+    hit.addProperty("properties", SpecBuilders.freeFormObject("""
+        The record's properties. An open map: besides the type's own properties it carries the record's '@rid' \
+        and '@type', which JsonSerializer writes into every serialized document."""));
+    // Which of 'distance' and 'score' a hit carries depends on the index, so neither can be required; the record
+    // id and the properties are on every hit the two callers of this schema produce.
+    hit.setRequired(List.of("rid", "properties"));
     return hit;
   }
 
@@ -268,7 +345,12 @@ public class VectorApiSpec implements OpenApiContributor {
     hit.addProperty("depth", SpecBuilders.integer("Hops from the seed, for a hit the expansion leg contributed"));
     hit.addProperty("path", SpecBuilders.arrayOf(SpecBuilders.string(null),
         "Record ids from the seed to this hit, seed included"));
-    hit.addProperty("properties", SpecBuilders.object("The record's properties"));
+    hit.addProperty("properties", SpecBuilders.freeFormObject("""
+        The record's properties. An open map: besides the type's own properties it carries the record's '@rid' \
+        and '@type', which JsonSerializer writes into every serialized document."""));
+    // 'sources' is written on both the fused and the unfused branch. The three score fields are mutually
+    // exclusive, and 'depth'/'path' belong to an expansion hit only.
+    hit.setRequired(List.of("rid", "sources", "properties"));
     return hit;
   }
 
