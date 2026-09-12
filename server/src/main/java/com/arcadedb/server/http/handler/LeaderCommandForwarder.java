@@ -129,6 +129,13 @@ public final class LeaderCommandForwarder {
     if (dial == null)
       throw new ServerIsNotTheLeaderException("Leader address is unknown", ha.getLeaderName());
 
+    // The cluster named an HTTPS endpoint for the leader and this node cannot reach it. Downgrading to the plain
+    // listener would put the Authorization header relayed below on the wire in clear, which is the failure this
+    // whole change exists to end - so the command is refused instead (issue #7508).
+    if (dial.refused())
+      throw new ServerIsNotTheLeaderException("Cannot forward the server command: " + dial.refusal(),
+          ha.getLeaderName());
+
     // Dialing an address that resolves to this node comes straight back here, and this node is not the
     // leader. That is what the derive fallback produces when the peers share a host and no HTTP port is
     // declared: it pairs the leader's Raft host with THIS node's HTTP port (issue #6191). Asked only of the

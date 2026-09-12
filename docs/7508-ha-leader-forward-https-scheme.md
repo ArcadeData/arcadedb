@@ -241,3 +241,53 @@ is a weaker pass and is recorded as such. Four findings, all fixed before the PR
    HTTPS (a non-SSL cluster never calls it), and it is two `stat`s and one short digest against a
    cross-node HTTP round trip the call is about to make. If the forward ever needs more, the fix is a
    time-bounded revalidation inside that cache, which would serve the capability probe too.
+
+## Review cycle 1 - `7198db162a`
+
+### CodeRabbit, inline on `HAServerPlugin.java:120` - "Fail closed when TLS is required" (Major, CWE-319) - APPLIED, in part
+
+Correct for one of the two fallback branches, and the distinction matters enough to state:
+
+- **No HTTPS endpoint resolves for the leader.** That is what every SSL cluster answers when it left the optional
+  5th field of `arcadedb.ha.serverList` out, and dialling the plain listener is what it did before this PR. Failing
+  closed here would turn a working cluster into a broken one on upgrade, and it is the case `PeerDialAddress`,
+  `LeaderDatabaseQuery`, `PeerCapabilityQuery` and `SnapshotInstaller` all deliberately fall back on (#6221). Left
+  falling back.
+- **An HTTPS endpoint IS named and no client can be built for it.** Here the operator has said where the forward
+  belongs and this PR's new code path silently downgraded it. `SnapshotInstaller.buildSSLContext` already falls
+  back to the JVM default truststore when none is configured, so a null-or-throwing client means the trust
+  material itself could not be loaded - a misconfiguration, not an "undeclared" state. **Now refused.**
+
+`LeaderDial` gained `refusal` / `refused()`, the shape `PeerDialAddress` already uses, and each caller turns it
+into its own error: `ServerIsNotTheLeaderException` for `LeaderCommandForwarder` and `RaftReplicatedDatabase`, a
+503 for `PostBatchHandler`, `false` for `LeaderProxy`. Three tests added - the refusal at the decision, and at each
+of the two reachable entry points - and the two that asserted the old downgrade now assert the refusal. A fourth
+new test pins the branch that must NOT be refused, so a later "make it stricter" cannot quietly break every
+cluster that never declared its `https` ports.
+
+### claude - `LeaderDial.HTTPS_CLIENT_FALLBACK_WARNED` is static, not per-server - NOT APPLIED, with evidence
+
+The premise does not hold. A static one-time latch is the established pattern for exactly this notice:
+
+```
+$ grep -rn "static final AtomicBoolean" --include='*.java' ha-raft/src/main server/src/main
+ha-raft/.../SnapshotHttpHandler.java:104:  private static final AtomicBoolean WARNED_MISCONFIGURED_LIMIT = ...
+ha-raft/.../LeaderDatabaseQuery.java:73:   private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = ...
+ha-raft/.../SnapshotInstaller.java:158:    private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = ...
+ha-raft/.../PeerCapabilityQuery.java:81:   private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = ...
+```
+
+Three of those carry the same "SSL is on but this dial fell back to plain HTTP" notice this one carries.
+`TrustedHttpClientCache` is per-server because it owns a *resource* - an `HttpClient` with a selector thread and a
+connection pool - whose lifetime must match the server's, which is a different question from how often a log line
+repeats. Taking the reviewer's own stated alternative ("or explicitly deciding to leave as-is, since it's
+log-only"): the latch is kept and its Javadoc now names the three precedents and the JVM-wide scope, so the
+decision is on the page rather than implied. The message already says "logged only once".
+
+The reviewer's other points - the per-forward `TrustedHttpClientCache` cost, the `LeaderProxy` dead code, the
+uncovered `RaftReplicatedDatabase` send - restate gaps this PR already declares (#7546, #7547); no change.
+
+### CodeRabbit pre-merge check - "Docstring Coverage 26.92%" - NOT APPLIED
+
+Counts every function in the 10 touched files, not the ones this diff adds; the added members carry Javadoc.
+Writing docstrings for untouched methods to clear a bot threshold is not in scope for a bug fix.

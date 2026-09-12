@@ -1569,6 +1569,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(503,
           "{ \"error\" : \"Cannot forward batch to leader: leader address is not available\"}");
 
+    // The cluster named an HTTPS endpoint for the leader and this node cannot reach it. Relaying the load over
+    // the plain listener would put it, and the cluster token below, on the wire in clear (issue #7508).
+    if (dial.refused())
+      return new ExecutionResponse(503, new JSONObject()
+          .put("error", "Cannot forward batch to leader: " + dial.refusal())
+          .toString());
+
     // The address resolved for the leader is this node's own: dialing it would come straight back here. The
     // derive fallback produces exactly this on a cluster whose peers share a host and declare no HTTP port,
     // because it pairs the leader's Raft host with THIS node's HTTP port (issue #6191). Asked only of the

@@ -51,17 +51,34 @@ import java.util.logging.Level;
  * endpoint sitting unused.</li>
  * </ul>
  *
- * @param address the {@code host:port} to dial
+ * <b>Falling back is not the same as failing open.</b> A cluster that never declared its {@code https} ports
+ * resolves no HTTPS endpoint, and dialling its plain listener is what it did before this class existed - refusing
+ * there would break every SSL cluster that left the optional 5th field of {@code arcadedb.ha.serverList} out. But
+ * a cluster that HAS named an HTTPS endpoint for the leader has said where this forward belongs, and if no client
+ * can be built to reach it the forward is <b>refused</b> rather than sent in the clear:
+ * {@code SnapshotInstaller.buildSSLContext} already falls back to the JVM default truststore when none is
+ * configured, so failing to produce a client means the trust material itself could not be loaded.
+ *
+ * @param address the {@code host:port} to dial, or {@code null} on a refusal
  * @param https   whether {@link #address} speaks TLS
  * @param client  the client to send on - the caller's own for plain HTTP, the plugin's trust-carrying one for HTTPS
+ * @param refusal why this forward may not be sent at all, or {@code null} when it may
  */
-public record LeaderDial(String address, boolean https, HttpClient client) {
+public record LeaderDial(String address, boolean https, HttpClient client, String refusal) {
 
   /**
-   * Said once per JVM: a plugin that advertises an HTTPS leader endpoint but cannot hand out a client for it has
-   * a configuration fault worth naming, and the forward that fell back to cleartext would otherwise be silent.
+   * Said once per JVM: a cluster that names an HTTPS leader endpoint but cannot hand out a client for it has a
+   * configuration fault worth naming in the log of the node that found it, not only in the answer its client gets.
+   * One latch per JVM rather than per server, matching {@code PLAIN_HTTP_FALLBACK_WARNED} in
+   * {@code SnapshotInstaller}, {@code PeerCapabilityQuery} and {@code LeaderDatabaseQuery} - the three other
+   * one-time notices about an SSL cluster's peer transport.
    */
-  private static final AtomicBoolean HTTPS_CLIENT_FALLBACK_WARNED = new AtomicBoolean(false);
+  private static final AtomicBoolean HTTPS_CLIENT_UNAVAILABLE_WARNED = new AtomicBoolean(false);
+
+  /** True when the cluster requires TLS for this forward and it cannot be established; {@link #refusal} says why. */
+  public boolean refused() {
+    return refusal != null;
+  }
 
   /** The URL this dial targets. {@code pathWithQuery} starts with {@code /} and may carry a query string. */
   public String url(final String pathWithQuery) {
@@ -69,13 +86,15 @@ public record LeaderDial(String address, boolean https, HttpClient client) {
   }
 
   /**
-   * Where to dial the current leader, or {@code null} when no leader address is known at all - which the caller
-   * reports as "the leader address is unknown", exactly as it did when it read {@code getLeaderAddress()} itself.
+   * Where to dial the current leader; {@code null} when no leader address is known at all - which the caller
+   * reports as "the leader address is unknown", exactly as it did when it read {@code getLeaderAddress()} itself -
+   * and a {@link #refused()} dial when the cluster requires TLS for this forward and it cannot be established.
    * <p>
-   * The HTTPS endpoint wins when the plugin offers one AND can hand out a client that trusts the cluster's
-   * certificates; anything else falls back to the plain-HTTP address, because that listener is the one that is
-   * always bound. A plugin that offers no HTTPS endpoint - the interface default, and what {@code RaftHAPlugin}
-   * answers whenever SSL is off - therefore leaves the dial exactly where it was.
+   * The HTTPS endpoint wins when the plugin names one AND can hand out a client that trusts the cluster's
+   * certificates. A plugin that names no HTTPS endpoint - the interface default, and what {@code RaftHAPlugin}
+   * answers whenever SSL is off or none resolves - leaves the dial on the plain-HTTP address, the listener that is
+   * always bound, exactly where it was. A plugin that names one and cannot serve a client for it gets a refusal
+   * rather than a downgrade; see the class note on why those two are not the same case.
    * <p>
    * <b>The caller still owns the self-address check, and only on the plain-HTTP branch.</b>
    * {@link HAServerPlugin#isOwnHttpAddress} compares against this node's HTTP listener and cannot speak for an
@@ -92,23 +111,32 @@ public record LeaderDial(String address, boolean https, HttpClient client) {
       try {
         final HttpClient httpsClient = ha.getPeerHttpsClient();
         if (httpsClient != null)
-          return new LeaderDial(httpsAddress, true, httpsClient);
-        warnHttpsFallback("it offers no HTTPS client to dial it with");
+          return new LeaderDial(httpsAddress, true, httpsClient, null);
+        return refuse(httpsAddress, "no HTTPS client is available to dial it with");
       } catch (final IOException e) {
-        warnHttpsFallback("its trust material cannot be read (" + e.getMessage() + ")");
+        return refuse(httpsAddress, "its trust material cannot be read (" + e.getMessage() + ")");
       }
     }
 
     final String httpAddress = ha.getLeaderAddress();
-    return httpAddress == null || httpAddress.isBlank() ? null : new LeaderDial(httpAddress, false, plainClient);
+    return httpAddress == null || httpAddress.isBlank() ? null : new LeaderDial(httpAddress, false, plainClient, null);
   }
 
-  private static void warnHttpsFallback(final String reason) {
-    if (HTTPS_CLIENT_FALLBACK_WARNED.compareAndSet(false, true))
+  /**
+   * A refusal naming the endpoint the cluster asked for and why it could not be reached, phrased to be appended to
+   * a caller's own "cannot forward ..." message. The same shape {@code PeerDialAddress.refuse} uses.
+   */
+  private static LeaderDial refuse(final String httpsAddress, final String reason) {
+    if (HTTPS_CLIENT_UNAVAILABLE_WARNED.compareAndSet(false, true))
       LogManager.instance().log(LeaderDial.class, Level.WARNING,
-          "The HA plugin names an HTTPS endpoint for the cluster leader but %s, so requests forwarded to the leader "
-              + "fall back to the plain-HTTP endpoint and travel in cleartext together with the credentials they "
-              + "relay. Check the truststore named by '%s'. This notice is logged only once.",
-          reason, GlobalConfiguration.NETWORK_SSL_TRUSTSTORE.getKey());
+          "The cluster names an HTTPS endpoint for the leader (%s) but %s, so requests that have to run on the leader "
+              + "are refused rather than forwarded over the plain-HTTP endpoint, which would put what they relay on "
+              + "the wire in cleartext. Check the truststore named by '%s'. This notice is logged only once.",
+          httpsAddress, reason, GlobalConfiguration.NETWORK_SSL_TRUSTSTORE.getKey());
+
+    return new LeaderDial(null, false, null,
+        "the cluster requires the leader to be reached over TLS at " + httpsAddress + ", but " + reason
+            + "; the request is refused rather than forwarded in cleartext. Check the truststore named by '"
+            + GlobalConfiguration.NETWORK_SSL_TRUSTSTORE.getKey() + "'");
   }
 }

@@ -3488,6 +3488,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // further down cannot vet one address and dial another across a leadership change in between.
     final HAServerPlugin haPlugin = server.getHA();
     final LeaderDial dial = haPlugin != null ? LeaderDial.resolve(haPlugin, HTTP_CLIENT) : null;
+
+    // The cluster named an HTTPS endpoint for the leader and this node cannot reach it. Posting the write to the
+    // plain listener instead would put it, and the cluster token below, on the wire in clear; refuse with the
+    // typed error the caller already retries on (issue #7508).
+    if (dial != null && dial.refused())
+      throw new ServerIsNotTheLeaderException("Cannot forward the command: " + dial.refusal(), raft.getLeaderName());
+
     final String leaderHttpsAddress = dial != null && dial.https() ? dial.address() : null;
 
     // The address resolved for the leader is this node's own, and this node is not the leader: the POST would

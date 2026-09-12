@@ -100,20 +100,22 @@ class Issue7508LeaderForwardSchemeTest {
   }
 
   @Test
-  void theDialFallsBackToPlainHttpWhenThePluginNamesAnHttpsEndpointButOffersNoClientForIt() {
+  void theDialIsRefusedWhenTheClusterNamesAnHttpsEndpointButNoClientCanDialIt() {
     final HttpClient plain = HttpClient.newHttpClient();
 
     final LeaderDial dial = LeaderDial.resolve(new StubHA(LEADER_HTTP, LEADER_HTTPS, null), plain);
 
-    // Falling back beats refusing: the plain listener is the one that is always bound.
-    assertThat(dial).isNotNull();
-    assertThat(dial.https()).isFalse();
-    assertThat(dial.address()).isEqualTo(LEADER_HTTP);
-    assertThat(dial.client()).isSameAs(plain);
+    // Fail closed, not open. A cluster that named an HTTPS endpoint for the leader has said where this forward
+    // belongs; sending it to the plain listener instead would put the relayed Authorization header, the cluster
+    // token and the body on the wire in clear, which is the very failure this class exists to end.
+    assertThat(dial.refused()).isTrue();
+    assertThat(dial.refusal()).contains(LEADER_HTTPS).contains("refused rather than forwarded in cleartext");
+    assertThat(dial.address()).isNull();
+    assertThat(dial.client()).isNull();
   }
 
   @Test
-  void theDialFallsBackToPlainHttpWhenTheTrustMaterialCannotBeRead() {
+  void theDialIsRefusedWhenTheTrustMaterialCannotBeRead() {
     final HttpClient plain = HttpClient.newHttpClient();
 
     final LeaderDial dial = LeaderDial.resolve(new StubHA(LEADER_HTTP, LEADER_HTTPS, null) {
@@ -123,7 +125,21 @@ class Issue7508LeaderForwardSchemeTest {
       }
     }, plain);
 
-    assertThat(dial).isNotNull();
+    // Not a reason to downgrade either: buildSSLContext already falls back to the JVM default truststore when none
+    // is configured, so a failure here means the trust material itself could not be loaded.
+    assertThat(dial.refused()).isTrue();
+    assertThat(dial.refusal()).contains("truststore.jks");
+  }
+
+  @Test
+  void aClusterThatNeverDeclaredItsHttpsPortsIsNotRefused() {
+    // The other half of the rule: no HTTPS endpoint resolves at all, which is what every SSL cluster that left the
+    // optional 5th field of arcadedb.ha.serverList out answers. Refusing there would break a cluster that works.
+    final HttpClient plain = HttpClient.newHttpClient();
+
+    final LeaderDial dial = LeaderDial.resolve(new StubHA(LEADER_HTTP, null, null), plain);
+
+    assertThat(dial.refused()).isFalse();
     assertThat(dial.https()).isFalse();
     assertThat(dial.address()).isEqualTo(LEADER_HTTP);
   }
@@ -192,6 +208,21 @@ class Issue7508LeaderForwardSchemeTest {
     assertThat(tls.lastUri.get()).hasToString("https://" + LEADER_HTTPS + "/api/v1/server");
   }
 
+  @Test
+  void theServerCommandForwardIsRefusedRatherThanDowngradedWhenTheHttpsEndpointCannotBeReached() {
+    // The cluster named an HTTPS endpoint and no client can dial it. The forward relays the caller's own
+    // Authorization header, so the plain listener is not an acceptable second choice.
+    final StubHA ha = new StubHA(LEADER_HTTP, LEADER_HTTPS, null);
+
+    final LeaderCommandForwarder forwarder = new LeaderCommandForwarder(httpServerWith(ha));
+    final HttpServerExchange exchange = exchangeFor("/api/v1/server", null);
+
+    assertThatThrownBy(() -> forwarder.forwardIfReplica(exchange, user("root"),
+        LeaderCommandForwarder.currentPathWithQuery(exchange), "{}"))
+        .isInstanceOf(ServerIsNotTheLeaderException.class)
+        .hasMessageContaining("refused rather than forwarded in cleartext");
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
   // Entry point 2: PostBatchHandler - POST /api/v1/batch/{database}
   // ---------------------------------------------------------------------------------------------------------------
@@ -226,6 +257,20 @@ class Issue7508LeaderForwardSchemeTest {
     // Same evidence as above: the plain branch is the only one the HTTP self-address check can refuse.
     assertThat(response.getCode()).isEqualTo(400);
     assertThat(response.getResponse()).contains("is this node's own");
+  }
+
+  @Test
+  void theBatchForwardIsRefusedRatherThanDowngradedWhenTheHttpsEndpointCannotBeReached() throws Exception {
+    final StubHA ha = new StubHA(LEADER_HTTP, LEADER_HTTPS, null);
+
+    final PostBatchHandler handler = new PostBatchHandler(httpServerWith(ha));
+    final HttpServerExchange exchange = exchangeFor("/api/v1/batch/graph", null);
+
+    final ExecutionResponse response = handler.forwardBatchToLeader(exchange, ha, "graph", user("root"),
+        "application/json", body("{\"@type\":\"vertex\"}\n"), false);
+
+    assertThat(response.getCode()).isEqualTo(503);
+    assertThat(response.getResponse()).contains("refused rather than forwarded in cleartext");
   }
 
   // ---------------------------------------------------------------------------------------------------------------
