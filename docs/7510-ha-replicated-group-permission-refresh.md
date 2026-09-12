@@ -323,12 +323,26 @@ https://github.com/ArcadeData/arcadedb/pull/7553
 | 1 | `7d03762b` | the fix as opened | `claude`: "Nothing here blocks merging" - three polish items: register the pool in the `engine-concurrency` inventory, tighten `refreshAllDatabasePermissions` to package-private, prefer `shutdown()` over `shutdownNow()`. CodeRabbit posted nothing on this head |
 | 2 | `977998b2` | pool inventory row added; method package-private; `stopService()` drains the queue then `shutdown()`s (neither plain option was right: `shutdownNow()` interrupts a walk that may be inside `ArcadeDBServer.getDatabase()`, plain `shutdown()` lets a still-QUEUED task start after the service stopped) | `claude`: non-blocking notes - nothing waits for an in-flight refresh before `stopInternal()` closes the databases; say out loud why `Exception` and not `Throwable`; the doc said 4 tests and the class had 5 |
 | 3 | `2c771d22` | bounded `awaitTermination(2s)`; the `Exception`-not-`Throwable` choice stated in the comment; doc count corrected | `claude`: non-blocking. **CodeRabbit's first review**, 4 inline findings, one of them Major (CWE-863) and correct |
-| 4 | `e479a7ac` | `updateSchema`'s read and publish serialised under one dedicated monitor; the persistence-failure test made deterministic and made to assert the exception; coverage-table cells | - |
+| 4 | `e479a7ac` -> `89737649` | `updateSchema`'s read and publish serialised under one dedicated monitor; the persistence-failure test made deterministic and made to assert the exception; coverage-table cells; this tracking doc | `claude`: "Nothing found here blocks merging" - one observation, that `permissionsPublishLock` is server-wide rather than per database, explicitly "not a requested change". CodeRabbit re-reviewed and **resolved all four of its threads** |
+| 5 | `eed3fd1d` | comment only: the lock's javadoc now says why the granularity is server-wide and not per database, which was the half the surrounding note left out | `claude`: **"Bugs: None found"**; repeats the per-database-lock idea as "a 'watch this if it ever becomes hot' note, not something I'd hold the PR on" |
 
 ### Deferred items
 
-None. Every review comment across the four cycles was either applied or answered in the thread with
-evidence - there is no `review-deferred-*.md` file in this branch.
+None. Every review comment across the five cycles was either applied or answered in the thread with evidence -
+there is no `review-deferred-*.md` file in this branch, and all four CodeRabbit inline threads are resolved.
+
+### Skipped with rationale
+
+- **A per-database-name lock instead of the one server-wide monitor** (raised in cycles 4 and 5, both times as
+  explicitly non-blocking). Not taken. A refresh is a walk of cached maps with no I/O, and every trigger for one -
+  a group edit, a schema change, a database open - is rare, so the parallelism it would buy back is not something
+  a workload here would measure. The cost is real: a map of locks keyed by database name is a second lifetime to
+  manage for every name the server has ever seen. The trade is now stated in the lock's javadoc rather than left
+  for the next reader to rediscover.
+- **Two tests build their own `ServerSecurity` instead of reusing the `@BeforeEach` fixture** (cycle 4, "harmless,
+  just a little redundant setup"). Deliberate: both need a *different* server mock - one with two database names
+  where the first throws, one with a subclass that instruments the configuration read - so reusing the fixture
+  would mean making the fixture conditional, which is the more confusing of the two shapes.
 
 The one review suggestion **not** taken as written is CodeRabbit's "add a latch-based regression test for this
 ordering". The reply on that thread says why: the lost update depends on which of two racing threads the
@@ -338,5 +352,5 @@ and was proved able to fail by removing the lock.
 
 ### Final state
 
-`clean-approval` - the last substantive review says nothing blocks the merge, no major issue is open, and every
-CodeRabbit thread has a reply. **The merge is the developer's.**
+`clean-approval` - the last review on `eed3fd1d` reports **"Bugs: None found"**, no major issue is open, and all
+four CodeRabbit threads are resolved. **The merge is the developer's; this workflow does not merge PRs.**
