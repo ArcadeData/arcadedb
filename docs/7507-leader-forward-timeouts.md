@@ -320,3 +320,25 @@ list-users operations, none of which forward.
 | rethrow instead of mapping the timeout to 504 | `aLeaderThatAcceptsAndNeverAnswers... » HttpTimeout request timed out` |
 | widen the future's await to 600 s (an unbounded wait in practice) | `There was a timeout in the fork` under `-Dsurefire.timeout=45` |
 | remove `leaderCommandForwarder.close()` from `stopService()` | `Tests run: 1, Failures: 1` |
+
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7556
+
+## Review cycles
+
+| Cycle | Head | Outcome |
+|---|---|---|
+| 1 | `ea3669cc` | Non-blocking. One substantive finding: the rewritten `HA_PROXY_CONNECT_TIMEOUT` description named two live readers and there are three (`RaftHAPlugin.authSessionRpcTimeoutMs()`). Applied, with the catch-arm ordering comment, the shared OpenAPI constant and the import order. One item declined - a typed 504 for a refused connection - see `docs/review-deferred-ea3669cc.md` |
+| 2 | `e068e59b` | Non-blocking. One nit: a fully-qualified `java.net.InetAddress` in the test. Applied. The review's flagged tradeoff - a forwarded restore still holds a worker for up to an hour - is recorded under Residual risk above |
+| 3 | `d64f71fa` | Non-blocking. Three nits applied (import block, setting keys in the OpenAPI string, a WARNING when a timeout clamps). One question - "does giving up actually close the socket?" - turned into an assertion after measuring it: `docs/review-deferred-d64f71fa.md` |
+| 4 | `734d1c6b` | "No blocking issues found." Two nits applied: the clamp warning is now per setting, and the descriptions no longer present dormant `LeaderProxy` as a live reader. `docs/review-deferred-734d1c6b.md` |
+
+## Final state
+
+`max-cycles-reached` - the loop ran its four cycles. Every review was non-blocking and every
+actionable item was applied; the one declined item is argued in
+`docs/review-deferred-ea3669cc.md`. The cycle-4 commit has not itself been reviewed.
+
+Merge is the developer's.

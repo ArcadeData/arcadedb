@@ -38,7 +38,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -246,8 +248,13 @@ public final class LeaderCommandForwarder {
     private static final long MIN_TIMEOUT_MS = 1L;
 
     private final ContextConfiguration configuration;
-    private final AtomicBoolean        clampWarned = new AtomicBoolean(false);
-    private final HttpClient           client;
+    /**
+     * Which settings have already had their clamp reported. Per setting rather than one flag for the three:
+     * misconfiguring two of them at once is not less confusing than misconfiguring one, and a shared flag would
+     * report only whichever clamped first.
+     */
+    private final Set<GlobalConfiguration> clampWarned = ConcurrentHashMap.newKeySet();
+    private final HttpClient               client;
 
     Transport(final ContextConfiguration configuration) {
       this.configuration = configuration;
@@ -414,12 +421,12 @@ public final class LeaderCommandForwarder {
       if (configuredMs >= MIN_TIMEOUT_MS)
         return Duration.ofMillis(configuredMs);
 
-      if (clampWarned.compareAndSet(false, true))
+      if (clampWarned.add(setting))
         LogManager.instance().log(this, Level.WARNING,
             "%s is set to %,d, which does not switch the bound off - a follower-to-leader forward is never "
                 + "unbounded. It is clamped to %,d ms instead, so forwarded administrative commands on this node "
                 + "will fail almost immediately. Set a positive value in milliseconds. This notice is logged only "
-                + "once.", setting.getKey(), configuredMs, MIN_TIMEOUT_MS);
+                + "once per setting.", setting.getKey(), configuredMs, MIN_TIMEOUT_MS);
 
       return Duration.ofMillis(MIN_TIMEOUT_MS);
     }

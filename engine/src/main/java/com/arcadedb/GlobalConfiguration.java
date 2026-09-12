@@ -2033,8 +2033,9 @@ public enum GlobalConfiguration {
   HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
       """
       Milliseconds a follower waits for the leader to answer a request it forwarded before giving up and \
-      answering the client HTTP 504. Applies to the administrative forwards of LeaderCommandForwarder (the \
-      commands of POST /api/v1/server and the POST/PUT/DELETE /api/v1/server/users routes) and to LeaderProxy. \
+      answering the client HTTP 504. The live reader is LeaderCommandForwarder: the commands of \
+      POST /api/v1/server and the POST/PUT/DELETE /api/v1/server/users routes. LeaderProxy reads it too, but \
+      nothing constructs LeaderProxy, so that path is dormant. \
       The forward runs on an HTTP worker thread, so this is the bound that stops a wedged leader from parking \
       one indefinitely; 0 or a negative value does not disable it. The forwarded commands that legitimately run \
       for minutes - 'restore backup', 'restore database' and 'import database' - use \
@@ -2052,9 +2053,9 @@ public enum GlobalConfiguration {
 
   HA_PROXY_CONNECT_TIMEOUT("arcadedb.ha.proxyConnectTimeout", SCOPE.SERVER,
       """
-      Connect timeout in milliseconds for a follower dialling the leader, used by LeaderCommandForwarder and \
-      LeaderProxy. Bounds the half of the failure the response deadline cannot see: a leader whose host accepts \
-      no connection. Read once when the HTTP client is built, because a java.net.http.HttpClient's connect \
+      Connect timeout in milliseconds for a follower dialling the leader, used by LeaderCommandForwarder (and \
+      by LeaderProxy, which nothing currently constructs). Bounds the half of the failure the response deadline \
+      cannot see: a leader whose host accepts no connection. Read once when the HTTP client is built, because a java.net.http.HttpClient's connect \
       timeout is fixed at build time - a change needs a restart. RaftHAPlugin also reads it, as the budget for \
       one whole peer authentication-session RPC rather than only that RPC's connect phase: those are small \
       requests on a LAN with a client waiting on a 401-or-200, so the connect budget is the right order of \
