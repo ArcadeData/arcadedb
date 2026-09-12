@@ -186,7 +186,7 @@ have their own issue.
 
 | Test | What it pins |
 |---|---|
-| `aLeaderThatAcceptsAndNeverAnswersIsGivenUpOnAndAnswered504` | the reported failure over a real socket: a `ServerSocket` that accepts and never replies. `StallAwareStopwatch.assertGaveUpWithin` is the tripwire between the 1 s deadline and the unbounded wait; the answer is 504 and names the address and the setting |
+| `aLeaderThatAcceptsAndNeverAnswersIsGivenUpOnAndAnswered504` | the reported failure over a real socket: a `ServerSocket` that accepts and never replies. `StallAwareStopwatch.assertGaveUpWithin` is the tripwire between the 1 s deadline and the unbounded wait; the answer is 504, it names the address and the setting, and the connection is torn down rather than leaked |
 | `aLeaderThatAnswersTheHeadersAndThenStallsMidBodyIsAlsoGivenUpOn` | the case `HttpRequest.timeout` alone does not catch: a complete response head promising 100 bytes, then five (adversarial finding 1) |
 | `aLeaderThatCannotBeConnectedToIsAnsweredWithItsOwnGatewayTimeout` | a failure to connect names `HA_PROXY_CONNECT_TIMEOUT`, not the response one, and says the command did not run |
 | `everyForwardedRequestCarriesTheDefaultDeadline` | the `POST` / `PUT` / `DELETE` `/server/users` shapes all come out with the configured deadline attached |
@@ -194,7 +194,7 @@ have their own issue.
 | `onlyRestoreAndImportAreClassifiedAsLongRunning` | all seven forwarded commands, each classified |
 | `theClientCarriesTheConfiguredConnectTimeout` | the connect half of the bound |
 | `responseDeadlineIsReReadOnEveryForward` | `SET SERVER SETTING` moves the deadline without a restart |
-| `zeroOrNegativeTimeoutClampsInsteadOfDisablingTheBound` | 0 is not a back door to the old behaviour |
+| `zeroOrNegativeTimeoutClampsInsteadOfDisablingTheBound` | 0 is not a back door to the old behaviour - it clamps, and says so once in the log |
 
 `Issue7507ForwarderClientLifecycleTest.java`, 1 test: a real server on a free port, started and
 stopped, asserting `stopService()` releases the forwarder's `HttpClient` (adversarial finding 3).

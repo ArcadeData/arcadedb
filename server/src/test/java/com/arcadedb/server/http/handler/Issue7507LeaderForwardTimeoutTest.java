@@ -29,6 +29,8 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -88,6 +90,10 @@ class Issue7507LeaderForwardTimeoutTest {
       assertThat(body.getString("error")).contains(leader.address());
       assertThat(body.getString("error")).contains(GlobalConfiguration.HA_PROXY_READ_TIMEOUT.getKey());
       assertThat(leader.acceptedConnections()).isGreaterThanOrEqualTo(1);
+      assertThat(leader.firstConnectionClosedByClientWithin(10_000L))
+          .as("giving up must tear the connection down, not just release this thread: a leader that wedges "
+              + "repeatedly would otherwise trade a parked worker for a leaked socket")
+          .isTrue();
     }
   }
 
@@ -282,6 +288,34 @@ class Issue7507LeaderForwardTimeoutTest {
 
     String address() {
       return serverSocket.getInetAddress().getHostAddress() + ":" + serverSocket.getLocalPort();
+    }
+
+    /**
+     * Blocks until the client end of the first accepted connection is closed, or the bound expires. Reads from
+     * this side of the socket: EOF means the peer closed it. Only valid in the default mode, where nothing else
+     * touches the socket's input stream.
+     */
+    boolean firstConnectionClosedByClientWithin(final long boundMs) throws IOException {
+      final Socket socket;
+      synchronized (accepted) {
+        if (accepted.isEmpty())
+          return false;
+        socket = accepted.getFirst();
+      }
+      socket.setSoTimeout((int) boundMs);
+      final byte[] drain = new byte[4096];
+      try {
+        int read;
+        while ((read = socket.getInputStream().read(drain)) != -1)
+          if (read == 0)
+            break;
+        return true;
+      } catch (final SocketTimeoutException e) {
+        return false;
+      } catch (final SocketException e) {
+        // "connection reset" is the peer tearing it down just as abruptly, which is the same answer
+        return true;
+      }
     }
 
     int acceptedConnections() {

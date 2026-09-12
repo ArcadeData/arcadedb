@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.http.handler.openapi;
 
+import com.arcadedb.GlobalConfiguration;
+
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.media.Content;
@@ -45,9 +47,10 @@ public final class SpecBuilders {
    * Shared so the two specs that document such a route cannot drift apart on what it means.
    */
   public static final String LEADER_FORWARD_TIMEOUT_DESCRIPTION =
-      "On an HA follower, the command is forwarded to the leader and the leader did not answer within "
-          + "'arcadedb.ha.proxyReadTimeout' (or 'arcadedb.ha.proxyLongCommandTimeout' for a restore or an "
-          + "import). It may still be running on the leader: check there before retrying";
+      "On an HA follower, the command is forwarded to the leader and the leader did not answer within '"
+          + GlobalConfiguration.HA_PROXY_READ_TIMEOUT.getKey() + "' (or '"
+          + GlobalConfiguration.HA_PROXY_LONG_COMMAND_TIMEOUT.getKey() + "' for a restore or an import). It may "
+          + "still be running on the leader: check there before retrying";
 
   private SpecBuilders() {
   }

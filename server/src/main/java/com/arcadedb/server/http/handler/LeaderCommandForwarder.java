@@ -38,7 +38,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
-
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -247,6 +246,7 @@ public final class LeaderCommandForwarder {
     private static final long MIN_TIMEOUT_MS = 1L;
 
     private final ContextConfiguration configuration;
+    private final AtomicBoolean        clampWarned = new AtomicBoolean(false);
     private final HttpClient           client;
 
     Transport(final ContextConfiguration configuration) {
@@ -254,7 +254,8 @@ public final class LeaderCommandForwarder {
       // An HttpClient's connect timeout is fixed at build time, so this one is read once. The response
       // deadlines below are read per request instead, so SET SERVER SETTING moves them without a restart.
       this.client = HttpClient.newBuilder()
-          .connectTimeout(millis(configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT)))
+          .connectTimeout(bounded(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT,
+              configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT)))
           .build();
     }
 
@@ -266,7 +267,8 @@ public final class LeaderCommandForwarder {
      * The deadline a forward of this kind gets, re-read from the configuration on every call.
      */
     Duration responseTimeout(final boolean longRunningCommand) {
-      return millis(configuration.getValueAsLong(deadlineSetting(longRunningCommand)));
+      final GlobalConfiguration setting = deadlineSetting(longRunningCommand);
+      return bounded(setting, configuration.getValueAsLong(setting));
     }
 
     /**
@@ -399,8 +401,27 @@ public final class LeaderCommandForwarder {
           GlobalConfiguration.HA_PROXY_READ_TIMEOUT;
     }
 
-    private static Duration millis(final long configuredMs) {
-      return Duration.ofMillis(Math.max(MIN_TIMEOUT_MS, configuredMs));
+    /**
+     * The configured value as a usable {@code Duration}, clamped rather than allowed to be non-positive.
+     * <p>
+     * 0 conventionally means "no timeout" in some other settings, and here it must not: that is the behaviour
+     * this class exists to remove, and both JDK builders reject a non-positive {@code Duration} outright. What an
+     * operator who typed 0 will actually see is every forwarded administrative command on this follower failing
+     * within a millisecond, so the clamp says so in the log rather than leaving them an unexplained wall of 504s.
+     * Once per {@code Transport}: the response deadline is re-read on every forward.
+     */
+    private Duration bounded(final GlobalConfiguration setting, final long configuredMs) {
+      if (configuredMs >= MIN_TIMEOUT_MS)
+        return Duration.ofMillis(configuredMs);
+
+      if (clampWarned.compareAndSet(false, true))
+        LogManager.instance().log(this, Level.WARNING,
+            "%s is set to %,d, which does not switch the bound off - a follower-to-leader forward is never "
+                + "unbounded. It is clamped to %,d ms instead, so forwarded administrative commands on this node "
+                + "will fail almost immediately. Set a positive value in milliseconds. This notice is logged only "
+                + "once.", setting.getKey(), configuredMs, MIN_TIMEOUT_MS);
+
+      return Duration.ofMillis(MIN_TIMEOUT_MS);
     }
   }
 }
