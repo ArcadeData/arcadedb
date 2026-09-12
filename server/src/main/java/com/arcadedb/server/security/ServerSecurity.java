@@ -242,7 +242,14 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     if (groupRepository != null)
       groupRepository.stop();
 
-    permissionsRefreshExecutor.shutdownNow();
+    // shutdown() rather than shutdownNow(), with the queue drained by hand, because neither one alone is right
+    // here. shutdownNow() interrupts a walk that may be inside ArcadeDBServer.getDatabase(), turning a normal
+    // shutdown into a spurious SEVERE/WARNING from an interrupted channel; plain shutdown() lets a task that is
+    // still QUEUED start afterwards, and a refresh that begins after the security service has stopped can ask
+    // for a database the server is in the middle of closing. Draining first and then refusing new work leaves
+    // exactly one behaviour: an already-running walk finishes, nothing else starts.
+    permissionsRefreshExecutor.shutdown();
+    permissionsRefreshExecutor.getQueue().clear();
   }
 
   public ServerSecurityUser authenticate(final String userName, final String userPassword, final String databaseName) {
@@ -678,8 +685,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * Blocking, by nature: {@link #updateSchema} walks every user that has cached a
    * {@link ServerSecurityDatabaseUser} for each open database. Callers on a thread that may not block - the Raft
    * state-machine apply thread above all - must go through {@link #scheduleDatabasePermissionsRefresh()}.
+   * <p>
+   * Package-private: the two production callers are in this class and the only other caller is the test beside
+   * it. The per-database refresh other packages need is {@link #updateSchema}, which is the {@code SecurityManager}
+   * interface method.
    */
-  public void refreshAllDatabasePermissions() {
+  void refreshAllDatabasePermissions() {
     if (server == null)
       return;
 
