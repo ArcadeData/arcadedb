@@ -57,10 +57,30 @@ class RaftClusterManager {
   }
 
   void addPeer(final String peerId, final String address, final String name) {
-    final RaftPeer newPeer = RaftPeer.newBuilder()
+    addPeer(RaftPeer.newBuilder()
         .setId(RaftPeerId.valueOf(peerId))
         .setAddress(address)
-        .build();
+        .build(), name);
+  }
+
+  /**
+   * Adds {@code newPeer} as it was built, instead of rebuilding one from an id and an address.
+   * <p>
+   * The difference is a field that would otherwise be lost. A {@link RaftPeer} also carries its
+   * leader-election {@code priority}, and {@code connect cluster} (issue #7401) is the first caller
+   * that can name one: it parses a whole {@code arcadedb.ha.serverList} entry, and both the object
+   * form and the four-field positional form declare a priority. Dropping it is not cosmetic -
+   * {@link RaftHAServer#selectStepDownTargets} reads the live {@code getPriority()} of each peer and,
+   * once any peer has a positive priority, skips the priority-0 ones as non-electable witnesses - so a
+   * priority silently reset to the default changes which nodes can take leadership.
+   * <p>
+   * Taking the peer whole rather than adding a fourth argument is deliberate: it makes losing the
+   * next field impossible instead of merely tested for. The three-argument overload above stays for
+   * {@code POST /api/v1/cluster/peer}, whose payload has no priority to pass.
+   */
+  void addPeer(final RaftPeer newPeer, final String name) {
+    final String peerId = newPeer.getId().toString();
+    final String address = newPeer.getAddress();
 
     // Mode.ADD atomically appends this single peer to the CURRENT committed configuration, so two
     // near-simultaneous adds cannot clobber each other. A full setConfiguration(getLivePeers()+peer)
@@ -74,13 +94,13 @@ class RaftClusterManager {
       try {
         final int raftPort = Integer.parseInt(address.substring(colonIdx + 1));
         final int httpPortOffset = getHttpPortOffset();
-        raftHAServer.getHttpAddresses().put(RaftPeerId.valueOf(peerId), host + ":" + (raftPort + httpPortOffset));
+        raftHAServer.getHttpAddresses().put(newPeer.getId(), host + ":" + (raftPort + httpPortOffset));
       } catch (final NumberFormatException ignored) {
       }
     }
 
     if (name != null && !name.isEmpty())
-      raftHAServer.registerPeerDisplayName(RaftPeerId.valueOf(peerId), name);
+      raftHAServer.registerPeerDisplayName(newPeer.getId(), name);
 
     LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster at %s", peerId, address);
   }

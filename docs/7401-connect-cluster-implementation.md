@@ -83,6 +83,7 @@ $ grep -rn "CONNECT_CLUSTER\|connectCluster" --include='*.java' --exclude-dir=ta
 | `ServerControlPlane.connectCluster` -> `HAServerPlugin.connectCluster` default (an HA implementation without dynamic membership) | yes - `UnsupportedOperationException` is converted to `OperationNotAvailableException`, so the refusal keeps HTTP 500 / gRPC `FAILED_PRECONDITION` instead of degrading to `INTERNAL` | yes - `Issue7401ServerControlPlaneConnectClusterTest` |
 | `ServerControlPlane.connectCluster` -> the users seed | yes | yes - `Issue7401ServerControlPlaneConnectClusterTest` asserts the seed runs, runs *after* the join, and that a failing seed does not fail the join |
 | `RaftHAPlugin.connectCluster` -> address parsing / peer-id derivation | yes | yes - `Issue7401JoinTargetTest`, one case per server-list syntax the argument can use |
+| `RaftHAPlugin.connectCluster` -> the declared leader-election **priority** reaching the committed peer | yes - fixed during the review loop, see below | yes - `Issue7401JoinPriorityTest`, which reads the `SetConfigurationRequest` Ratis is asked to commit |
 | `RaftHAPlugin.connectCluster` with the Raft server not started | yes - `ServerException` | **argued**: the same guard, message and call shape as the four sibling membership methods in the same class (`addPeer`, `removePeer`, `transferLeadership`, `stepDown`). None of them has a test for it, and one here would pin the guard rather than the join |
 | `arcadedb.ha.serverList` startup path -> `parsePeerList` peer-id derivation | yes (refactor only - now calls the extracted `peerIdForAddress`) | yes - the 155 existing `ha-raft` resolver/K8s/allowlist tests still pass, and `Issue7401JoinTargetTest.theJoinPathAndTheServerListPathAgreeOnTheSameAddress` compares the two derivations directly |
 | Kubernetes scale-up -> `synthesizeK8sScaleUpPeer` peer-id derivation | yes (refactor only - same extraction) | yes - `Issue4836K8sScaleUpTest` (7 tests, unchanged, still green) |
@@ -132,11 +133,12 @@ Run and green (`-Dmaven.repo.local` isolated):
 | `grpcw` `Issue7304GrpcControlPlaneIT`, `Issue7304GrpcControlPlaneAuthorizationIT`, `Issue7400GrpcConnectClusterIT` | 83 passed |
 | `grpc-client` `Issue7304RemoteGrpcServerControlPlaneIT`, `Issue7400RemoteGrpcConnectClusterIT` | 10 passed |
 
-Two suites could not be re-run at the end of the session, because other agents on this machine held
-the fixed ports these fixtures bind. Both were green earlier in the session on the same code:
-`ha-raft` `Issue7401ConnectClusterJoinsPeerIT` (3 passed, 41 s) and the tail of the `ha-raft` unit lane
-(425 passed before `LeaveClusterTest` crashed its fork on `java.net.BindException: Address already in
-use` for the Raft port). `lsof -nP -iTCP:2434 -sTCP:LISTEN` named a foreign JVM throughout.
+`Issue7401ConnectClusterJoinsPeerIT` ran green twice: before the priority fix (3 passed, 41 s) and
+again after it (3 passed, 37 s). In between, several attempts to run it died in
+`Error occurred in starting fork` on `java.net.BindException: Address already in use` for Raft port
+2434, held by another agent's JVM on this machine (`lsof -nP -iTCP:2434 -sTCP:LISTEN`) - the fixed-port
+collision `CLAUDE.md` documents, not a property of the test. The `ha-raft` unit lane lost its tail the
+same way: 425 passed before `LeaveClusterTest` crashed its fork on the same bind.
 
 `server` `PostServerCommandHandlerIT` reported 4 failures in this environment
 (`createUserRejectsShortPassword`, `userCommandsCaseSensitivity`, `restoreDatabaseCommand`,
@@ -193,6 +195,56 @@ A third finding came from the tests rather than from reading, and is recorded un
 changed about the design** above: the first live IT assumed an unreachable peer could be added, and it
 cannot. That became #7514.
 
+## Review finding: the declared priority was parsed and then dropped
+
+The first `claude` review of PR #7517 found a real defect, and it is the most instructive thing in this
+change.
+
+`parseJoinTarget` parses a whole server-list entry, and both the object form
+(`db2:{raft:2435,priority:7}`) and the four-field positional form (`db2:2435:2481:5`) declare a
+leader-election priority. `Issue7401JoinTargetTest.theObjectFormIsAcceptedToo` asserted
+`target.peer().getPriority()` and passed throughout. One layer down, `RaftHAPlugin.connectCluster`
+handed `addPeer` an id, an address and a name, and `RaftClusterManager.addPeer` built a **fresh**
+`RaftPeer` from those three - so the priority was silently replaced by `RaftPeer.Builder`'s default.
+
+It is not cosmetic. `RaftHAServer.selectStepDownTargets` reads each live peer's `getPriority()` and,
+once any peer has a positive priority, skips the priority-0 ones as non-electable witnesses
+(`RaftHAServer.java`, the `maxPriority > 0 && peer.getPriority() <= 0` guard) - so a priority reset to
+the default changes which nodes can take leadership. Every other assertion about the join held while
+the cluster got a configuration the operator had not asked for.
+
+**Fixed by handing the parsed `RaftPeer` over whole** - a new `RaftClusterManager.addPeer(RaftPeer,
+String)`, a package-private `RaftHAServer` passthrough, and one changed line in
+`RaftHAPlugin.connectCluster` - rather than by adding a fourth `priority` argument. The two are
+equivalent today; taking the peer whole makes losing the *next* field impossible instead of merely
+tested for, and the same defect had by then occurred twice. The three-argument overload stays for
+`POST /api/v1/cluster/peer`, whose payload has no priority to pass.
+
+`Issue7401JoinPriorityTest` pins it from `parseJoinTarget` through to the `SetConfigurationRequest`,
+which is the last point the value can be lost. It was checked against the defect before being trusted:
+reintroducing the rebuild turns three of its four cases red (`expected: 7 but was: 0`), and the fourth -
+an entry with no priority, which must still be 0 - correctly stays green.
+
+`RaftAtomicMembershipTest` was deliberately **not** touched, per this project's rule against modifying
+existing tests; the new coverage lives in its own class.
+
+### What the reviewer got wrong, and the evidence
+
+The same review reported that the PR description "describes a `LeaderCommandForwarder` that forwards
+`POST/PUT/DELETE /api/v1/server/users` to the Raft leader, closing #7380". It does not, and never did:
+`gh pr view 7517 --json body` returns a body whose first line is `Closes #7401` and whose summary is
+this verb. Nothing was changed in response. Reported back on the thread rather than silently ignored.
+
+### A note on how the fix arrived
+
+An automated fix pass wrote its own version of this fix into the worktree while the review was in
+flight. It added the 4-argument plumbing and a javadoc saying "Priority carries through too" - **but
+left `RaftHAPlugin.connectCluster` calling the three-argument overload**, so the priority was still
+dropped and the new javadoc asserted something the code did not do. Its test passed only because it
+called `RaftClusterManager.addPeer` with four arguments directly, bypassing the unwired call site. It
+also edited an existing test method. Those edits were stashed rather than committed, and the fix above
+was written and verified from scratch. The follow-up it filed, **#7523**, is accurate and is kept.
+
 ## Follow-ups filed before the PR opened
 
 - **#7514** - adding an unreachable peer hangs about 60 s and reports a raw Ratis
@@ -202,6 +254,9 @@ cannot. That became #7514.
   for, which is what this verb meant before the Raft stack landed. Out of scope because it is not an
   argument mapping: it has to decide what happens to the local Raft log, and doing it silently is the
   split-brain the leader-side membership change prevents.
+- **#7523** - `POST /api/v1/cluster/peer` still cannot set a joining peer's priority: its JSON payload
+  has no field for one. Raised by the priority fix above, and left there deliberately - extending that
+  HTTP contract is a different surface from this issue's verb.
 
 ## Residual risk
 

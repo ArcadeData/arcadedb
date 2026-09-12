@@ -2839,6 +2839,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     clusterManager.addPeer(peerId, address, name);
   }
 
+  /** See {@link RaftClusterManager#addPeer(RaftPeer, String)}: adds the peer with every field it carries. */
+  void addPeer(final RaftPeer newPeer, final String name) {
+    clusterManager.addPeer(newPeer, name);
+  }
+
   public void removePeer(final String peerId) {
     clusterManager.removePeer(peerId);
   }
