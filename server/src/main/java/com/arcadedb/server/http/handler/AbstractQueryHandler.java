@@ -27,6 +27,8 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.OperationType;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -864,5 +866,65 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       throw new IllegalArgumentException(
           "Parameter '$int8' element at index " + index + " is out of byte range [-128, 127]: " + v);
     return (byte) v;
+  }
+
+  /**
+   * Refuses to stream a statement that is not provably read-only (issue #7306, extended to
+   * {@code GET /query} by issue #7571).
+   * <p>
+   * The reason that holds for every operation that can answer in the {@code application/x-ndjson} encoding is
+   * the encoding itself: the status code is chosen and written before the first row, so a statement that fails
+   * part-way through can no longer be reported as a failure. {@code streamResultSetAsNdJson} says so in band and
+   * returns normally, which is the best a stream can do. For a statement that only reads, that is a complete
+   * answer - it changed nothing, and the caller sees exactly the rows that were produced. For one that writes,
+   * it is not: the caller is told 200 about work that half happened. Refusing up front, while a refusal can
+   * still be a status code, is what keeps the streaming encoding from being a weaker contract than the buffered
+   * one.
+   * <p>
+   * On the two POST operations - whose {@code requiresTransaction()} is true - it also closes two transactional
+   * hazards that {@code GET /query} does not have, since {@code GetQueryHandler.requiresTransaction()} returns
+   * false:
+   * <ul>
+   * <li>A failure reported in band lets the auto-commit wrapper see a clean return, so it commits whatever the
+   * half-executed statement already wrote. The buffered encoding propagates the exception and rolls back.</li>
+   * <li>{@code database.transaction(..., retries)} re-runs the whole lambda when its own commit throws
+   * {@link com.arcadedb.exception.NeedRetryException} or a duplicated-key conflict. The second attempt would
+   * re-execute the statement and stream into an exchange whose 200, rows and trailer have already been written
+   * and whose output stream is closed.</li>
+   * </ul>
+   * <p>
+   * A statement whose language cannot analyze it is refused too: "not provably read-only" is the safe reading,
+   * and the buffered encoding remains available for every case this turns away.
+   * <p>
+   * For {@code sql} the analysis is free: {@code SQLQueryEngine.parse} is a {@code StatementCache} lookup that
+   * the execution about to follow repeats with the same key.
+   */
+  protected static void requireStreamableStatement(final Database database, final String language,
+      final String command) {
+    boolean idempotent;
+    try {
+      final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine(language).analyze(command);
+      // isIdempotent() is not quite "read-only". BACKUP DATABASE answers true - it mutates no record, and takes
+      // the per-database maintenance slot rather than any record or page lock (issue #7443) - while writing a
+      // whole archive to the server filesystem. Among the eight SQL statements that answer isIdempotent() true
+      // it is the only one whose getOperationTypes() declares a write, which is what makes it the statement
+      // that exposed both this gate's absence on GET /query (issue #7571) and the weakness of an idempotency
+      // check on POST /command (issue #7306). So the declared operation types have to agree that nothing is
+      // written, which is a property of the parsed statement rather than of the command text - 'backup
+      // database' in any casing or spacing is caught.
+      final Set<OperationType> operations = analyzed.getOperationTypes();
+      idempotent = analyzed.isIdempotent() && !analyzed.isDDL() && !operations.contains(OperationType.CREATE)
+          && !operations.contains(OperationType.UPDATE) && !operations.contains(OperationType.DELETE)
+          && !operations.contains(OperationType.SCHEMA);
+    } catch (final Exception e) {
+      LogManager.instance().log(AbstractQueryHandler.class, Level.FINE,
+          "Could not analyze a streamed statement in language '%s'; refusing to stream it", e, language);
+      idempotent = false;
+    }
+
+    if (!idempotent)
+      throw new IllegalArgumentException("The streaming encoding is available only for a read-only statement, "
+          + "because its rows reach the client before the statement has finished: run this one with "
+          + "'Accept: application/json'");
   }
 }

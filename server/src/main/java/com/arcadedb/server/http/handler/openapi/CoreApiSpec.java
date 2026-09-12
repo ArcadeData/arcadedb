@@ -79,14 +79,23 @@ public class CoreApiSpec implements OpenApiContributor {
       "Database not found, or the session id header names a transaction that no longer resolves "
           + "(\"Remote transaction session not found or expired\")";
 
-  // Shared by POST query and POST command: PostQueryHandler extends PostCommandHandler and overrides only
-  // executeCommand(), so both reach the very same requireStreamableStatement() call in execute() before the
-  // statement runs. Held in one place so the two operations cannot describe the same gate differently (issue #7569).
+  // Shared by all three operations that advertise 'application/x-ndjson' under their 200. PostQueryHandler
+  // extends PostCommandHandler and overrides only executeCommand(), and GetQueryHandler - a sibling under
+  // AbstractQueryHandler, not a subclass - calls the same relocated requireStreamableStatement() before its own
+  // query runs, so the three reach one gate. Held in one place so they cannot describe it differently
+  // (issue #7569 documented it for the two POST operations, issue #7571 brought GET under the same gate and the
+  // same words).
+  //
+  // BACKUP DATABASE is named explicitly because it is the one statement a reader would otherwise expect to
+  // stream: it is idempotent, it mutates no record, and it reads as a query everywhere else in the SQL
+  // reference - it is refused here because its declared operation types report the archive it writes to the
+  // server filesystem.
   private static final String NDJSON_READ_ONLY_DESCRIPTION = """
       When 'Accept' requests the ndjson encoding, only a statement provably read-only may stream: one that \
-      writes - INSERT, UPDATE, DELETE, DDL, or one this analysis cannot classify - is refused with 400 before \
-      it runs, because its rows would otherwise reach the client before the transaction that produced them \
-      commits. Request the buffered 'application/json' encoding for it instead.""";
+      writes - INSERT, UPDATE, DELETE, DDL, BACKUP DATABASE, or one this analysis cannot classify - is refused \
+      with 400 before it runs, because a streamed response puts its status code on the wire ahead of the rows \
+      and so cannot report a statement that fails half-way through. Request the buffered 'application/json' \
+      encoding for it instead.""";
 
   @Override
   public void contribute(final OpenAPI openAPI) {
@@ -233,7 +242,7 @@ public class CoreApiSpec implements OpenApiContributor {
 
     final Operation getOp = new Operation();
     getOp.setSummary("Execute query via GET");
-    getOp.setDescription("Executes a query using GET method with parameters in URL");
+    getOp.setDescription("Executes a query using GET method with parameters in URL. " + NDJSON_READ_ONLY_DESCRIPTION);
     getOp.setOperationId("executeQueryGet");
     getOp.addTagsItem("Query");
     getOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
