@@ -29,6 +29,7 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.utility.FileUtils;
 
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.server.protocol.TermIndex;
 
 import java.io.File;
 import java.util.Arrays;
@@ -299,6 +300,7 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
         final RaftHAPlugin plugin = getRaftPlugin(i);
         if (plugin != null && plugin.isLeader()) {
           LogManager.instance().log(this, Level.INFO, "Raft leader elected on server %d", i);
+          waitForClusterBootstrapToSettle();
           serversSynchronized = true;
           return;
         }
@@ -313,6 +315,165 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     LogManager.instance().log(this, Level.WARNING, "Timeout waiting for Raft leader election");
     // Set true to unblock test setup; individual tests will fail if no leader is actually present.
     serversSynchronized = true;
+  }
+
+  /**
+   * Second half of the setup gate: an elected leader is not a ready cluster (issue #7259).
+   * <p>
+   * After the election the leader runs {@code BootstrapElection} on its lifecycle executor - it samples every
+   * peer's {@code (fingerprint, lastTxId)} for each database, picks a baseline, and commits one
+   * {@code BOOTSTRAP_FINGERPRINT_ENTRY} per database. Every peer whose copy does not match that baseline then
+   * <b>replaces its entire database directory</b> with a full snapshot pulled from the leader, inside the
+   * {@code applyTransaction} call for that entry. That reinstall is not an exceptional path here: in the CI run
+   * that produced #7259 BOTH followers took it, on a fixture whose database directory
+   * {@code BaseGraphServerTest.prepareDatabase} had byte-copied from server 0 to every peer before startup
+   * (local fp {@code 92f3e044...} against the chosen baseline {@code f7484120...}).
+   * <p>
+   * Without this gate a test body starts the moment the election finishes and races all of it. In the run that
+   * produced issue #7259 the election landed at {@code 12.020}, the baseline was chosen at {@code 12.465} and
+   * both followers finished reinstalling at {@code 12.812} / {@code 12.824}, so the test's
+   * {@code createVertexType} and its Bolt write both fell inside the window, and one follower came out of it
+   * without the type - permanently, and with no error logged on either side.
+   * <p>
+   * The gate is in two parts, and the first is what makes the second safe to wait on:
+   * <ol>
+   *   <li>Wait for the leader's bootstrap pass to report a terminal outcome
+   *       ({@link RaftHAServer#getLastBootstrapOutcome()}). Anything other than {@code COMMITTED} means the
+   *       pass committed nothing, so there is nothing to wait for and the gate returns immediately - a cluster
+   *       that disables bootstrap pays no part of the budget. {@code TRANSFERRED} means leadership moved to the
+   *       elected source, whose own pass re-runs the protocol, so the gate re-resolves the leader and asks
+   *       again.</li>
+   *   <li>On {@code COMMITTED}, wait for every started peer's last-applied index to reach the highest applied
+   *       index in the cluster. Ratis publishes a peer's applied index only after {@code applyTransaction} has
+   *       RETURNED for it, so a peer still downloading and swapping in a snapshot inside that call is still
+   *       reported behind - which is exactly the state that must not be released into a test body.</li>
+   * </ol>
+   * The baseline recorded by {@code ArcadeStateMachine} is deliberately NOT the signal:
+   * {@code recordBootstrapBaseline} runs at the TOP of the apply, before {@code installFromLeaderForBootstrap},
+   * so a peer answers a non-null baseline while the reinstall it triggered is still in flight. It is also never
+   * recorded at all on the "superseded" path, so a null baseline cannot tell "not yet" from "never will".
+   * <p>
+   * The gate is deliberately NOT an assertion. A cluster on which the pass never reports is a cluster whose
+   * tests must keep working: the wait falls through after its budget, and {@link #slowWaitReport} turns that
+   * into a GAVE UP line so the case leaves a trace rather than being mistaken for a fast one.
+   */
+  protected void waitForClusterBootstrapToSettle() {
+    final long startMs = System.currentTimeMillis();
+    // RESYNC_RETRY_TIMEOUT_MS and not a budget of its own: slowWaitReport names that constant in every line
+    // it emits, so a caller that waits on a different one reports a budget it never had. Sharing it is also
+    // the right size - the settle took 2.5-7.7 s across the ha-raft bootstrap ITs on a loaded workstation and
+    // 804 ms on the CI runner of #7259 - and overshooting costs nothing here, since exhausting the budget
+    // falls through rather than failing.
+    final long deadline = startMs + RESYNC_RETRY_TIMEOUT_MS;
+
+    final BootstrapElection.Outcome outcome = awaitTerminalBootstrapOutcome(deadline);
+    if (outcome == null) {
+      // The pass never reported inside the budget. That IS a give-up, and it is reported as one: a line reading
+      // "satisfied" here would hide a 15 s burn behind the word the instrument uses for a wait that finished.
+      reportSlowWait("cluster bootstrap settle", startMs, false);
+      return;
+    }
+    if (outcome != BootstrapElection.Outcome.COMMITTED) {
+      // The pass finished and committed nothing - bootstrap disabled, not first formation, no databases. There
+      // is no entry to wait for, so this is a wait that finished, not one that gave up.
+      reportSlowWait("cluster bootstrap settle", startMs, true);
+      return;
+    }
+
+    while (System.currentTimeMillis() < deadline) {
+      if (everyStartedServerAppliedTheHighestIndex()) {
+        reportSlowWait("cluster bootstrap settle", startMs, true);
+        return;
+      }
+      if (!sleepQuietly(100))
+        return;
+    }
+    reportSlowWait("cluster bootstrap settle", startMs, false);
+  }
+
+  /**
+   * Waits for the leader's bootstrap pass to report an outcome the cluster will not revise, and returns it -
+   * or {@code null} when none showed up inside {@code deadline} (or the wait was interrupted).
+   * <p>
+   * Two outcomes are not terminal for the CLUSTER even though they are terminal for the pass that produced
+   * them, and both are waited through rather than returned:
+   * <ul>
+   *   <li>{@code TRANSFERRED} - the old leader handed leadership to the elected source without committing
+   *       anything, and the source's own leader-change callback re-runs the protocol. The loop re-resolves the
+   *       leader and reads the new one's outcome.</li>
+   *   <li>{@code NOT_LEADER} - the pass found it was no longer leader by the time it ran. The node this loop is
+   *       reading IS the leader now, so the pass that matters is a later one that has not finished yet.</li>
+   * </ul>
+   */
+  private BootstrapElection.Outcome awaitTerminalBootstrapOutcome(final long deadline) {
+    while (System.currentTimeMillis() < deadline) {
+      final RaftHAPlugin leader = currentLeaderPlugin();
+      final BootstrapElection.Outcome outcome =
+          leader == null ? null : leader.getRaftHAServer().getLastBootstrapOutcome();
+      if (outcome != null && outcome != BootstrapElection.Outcome.TRANSFERRED
+          && outcome != BootstrapElection.Outcome.NOT_LEADER)
+        return outcome;
+      if (!sleepQuietly(100))
+        return null;
+    }
+    return null;
+  }
+
+  /**
+   * The plugin of the peer that currently reports itself leader, or {@code null} while none does. Unlike
+   * {@link #findLeaderIndex()} this does not wait: the callers here are already inside their own bounded loop
+   * and a nested 30 s wait would make the budget they think they are spending a fiction.
+   */
+  private RaftHAPlugin currentLeaderPlugin() {
+    for (int i = 0; i < getServerCount(); i++) {
+      final RaftHAPlugin plugin = getRaftPlugin(i);
+      if (plugin != null && plugin.isLeader() && plugin.getRaftHAServer() != null)
+        return plugin;
+    }
+    return null;
+  }
+
+  /**
+   * Whether every started peer has published an applied index equal to the highest one any started peer
+   * publishes. Reads {@code startedServers()} rather than every configured index so a test that deliberately
+   * leaves a server down is not held here for the full budget.
+   * <p>
+   * Comparing the lowest reading against the highest, rather than every reading against the leader's, keeps the
+   * answer honest whichever peer is ahead: the reinstalling follower is the one that lags, and it lags whoever
+   * applied the bootstrap entry first, which is not always the leader. An empty started set leaves both at their
+   * sentinels and compares unequal, which is the safe answer - there is nothing to release a test against.
+   */
+  private boolean everyStartedServerAppliedTheHighestIndex() {
+    long lowest = Long.MAX_VALUE;
+    long highest = Long.MIN_VALUE;
+    for (final int i : startedServers()) {
+      final RaftHAPlugin plugin = getRaftPlugin(i);
+      if (plugin == null || plugin.getRaftHAServer() == null)
+        return false;
+      final TermIndex termIndex = plugin.getRaftHAServer().getStateMachine().getLastAppliedTermIndex();
+      if (termIndex == null)
+        return false;
+      final long applied = termIndex.getIndex();
+      if (applied < lowest)
+        lowest = applied;
+      if (applied > highest)
+        highest = applied;
+    }
+    return lowest == highest;
+  }
+
+  /**
+   * Sleeps, answering {@code false} when the wait was interrupted so the caller abandons its loop rather than
+   * spinning on an already-interrupted thread.
+   */
+  private static boolean sleepQuietly(final long millis) {
+    try {
+      Thread.sleep(millis);
+      return true;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
   }
 
   /**
