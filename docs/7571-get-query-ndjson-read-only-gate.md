@@ -280,3 +280,31 @@ instead of after, it is the price #7306 already accepted for the two POST operat
 down where the next reader will find it instead of inferred from a claim about `sql`.
 
 **Not applied.** Nothing else; the rest of the review was confirmation.
+
+### Cycle 3 - `3ad27c7`
+
+| Reviewer | Outcome |
+|---|---|
+| `claude` | **No actionable items.** "Overall: solid, well-tested fix." Three non-blocking observations, all of them acknowledgements of decisions already recorded here: the double-parse cost (now documented in the gate's javadoc, cycle 2), the two filed gaps (#7575 and #7576, with the reviewer independently agreeing #7576 deserves a fast follow because it reaches MCP's `checkPermission`), and this document's length, which the reviewer checked against the repo's existing `docs/75xx-*.md` convention and did not object to. |
+| `coderabbitai` | Rate-limited for this commit; its review of the substantive diff at `a5a09db` returned "No actionable comments were generated", merge risk minimal. The two later commits are an import removal and a javadoc edit. |
+| `codacy-production` | 0 new issues, 0 complexity. |
+
+No changes were applied in this cycle, no deferred-items notes file was produced, and the working tree is
+empty - the loop's clean-approval condition. (`docs/review-deferred-*.md` files exist in this tree, but
+`git log -1 --` on each shows all five belong to earlier merged PRs: #7210, #7442 and #7556. None was
+produced by this run.)
+
+## Outcome
+
+- **PR:** https://github.com/ArcadeData/arcadedb/pull/7582
+- **Final state:** `clean-approval` after 3 review cycles.
+- **Deferred items:** none. Every review point was either applied or answered here with its reasoning.
+- **Follow-ups filed before the PR opened:** #7575 (`EXPLAIN` GET/POST divergence), #7576 (`sqlscript`
+  discards the declared write, weakening the gate on all three operations and reaching MCP's permission
+  check - the one the reviewer flagged as worth prioritizing).
+
+| Cycle | Head | What changed |
+|---|---|---|
+| 1 | `a5a09db` | Initial implementation. One actionable finding: two imports left unused in `PostCommandHandler`, verified and removed. |
+| 2 | `1e23fc3` | No blocking issues. One non-blocking point applied as documentation: the gate's javadoc now states `analyze()`'s cost per language instead of claiming it is free on the strength of `sql` alone. |
+| 3 | `3ad27c7` | No actionable items. Clean approval. |
