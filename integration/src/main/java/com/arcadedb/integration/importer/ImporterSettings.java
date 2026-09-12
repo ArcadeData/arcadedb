@@ -156,6 +156,17 @@ public class ImporterSettings {
     return defaultValue;
   }
 
+  public long getLongValue(final String name, final long defaultValue) {
+    final Object v = options.get(name);
+    if (v != null) {
+      if (v instanceof Number number)
+        return number.longValue();
+      else
+        return Long.parseLong(v.toString());
+    }
+    return defaultValue;
+  }
+
   protected void parseParameters(final String[] args) {
     if (args != null)
       for (int i = 0; i < args.length - 1; i += 2) {
