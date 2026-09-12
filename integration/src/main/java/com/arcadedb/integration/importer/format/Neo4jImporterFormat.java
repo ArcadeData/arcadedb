@@ -36,8 +36,6 @@ public class Neo4jImporterFormat extends AbstractImporterFormat {
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
-    context.parsed.set(0);
-
     try {
       new Neo4jImporter(database, context) {
         @Override

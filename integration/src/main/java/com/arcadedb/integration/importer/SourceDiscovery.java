@@ -336,34 +336,43 @@ public class SourceDiscovery {
   private FormatImporter analyzeText(final Parser parser, final ImporterSettings settings, final ConsoleLogger logger,
       final String userDelimiter) throws IOException {
     FormatImporter format = null;
-    parser.mark();
 
-    // SKIP COMMENTS '#' IF ANY
-    while (parser.isAvailable() && parser.getCurrentChar() == '#') {
+    // SKIP THE LEADING COMMENT LINES, '#' AND '//' ALIKE. THIS USED TO BE TWO LOOPS THAT BETWEEN THEM SKIPPED
+    // NOTHING: skipLine() LEFT THE PARSER ON THE '\n' THAT ENDED THE COMMENT, SO BOTH THE LOOP CONDITION AND THE
+    // analyzeChar() CALL INSIDE IT SAW '\n' - NEITHER CAN MATCH ONE - AND THE LOOP GAVE UP AFTER A SINGLE PASS,
+    // WHILE THE parser.reset() BETWEEN THEM PUT THE ONE LINE IT HAD CONSUMED BACK ANYWAY. A '#'-COMMENTED SOURCE
+    // WAS THEREFORE SNIFFED ON ITS COMMENT: THE COMMENT'S OWN SPACES BECAME THE DELIMITER CANDIDATES AND AN
+    // N-TRIPLES FILE WAS IMPORTED AS CSV (ISSUE #7347)
+    int commentLines = 0;
+    while (parser.isAvailable() && isCommentLineStart(parser)) {
       skipLine(parser);
-      format = analyzeChar(parser, settings, userDelimiter);
-      if (format != null)
-        return format;
+      ++commentLines;
     }
 
-    // SKIP COMMENTS '//' IF ANY
+    if (commentLines > 0) {
+      // THE FIRST DATA LINE IS REACHABLE BY THE FIRST-CHARACTER DISPATCH ONLY HERE: THE CALL getSchema() MADE RAN ON
+      // THE COMMENT'S OWN FIRST CHARACTER AND COULD ONLY RETURN NULL
+      format = analyzeChar(parser, settings, userDelimiter);
+      if (format != null) {
+        logger.logLine(1, "Recognized format %s", format.getFormat());
+        return format;
+      }
+    }
+
+    // analyzeChar() CONSUMES THE LINE IT SNIFFS - THE CALL ABOVE AND THE ONE getSchema() MADE BOTH DO - AND THE
+    // SEPARATOR SCAN BELOW HAS TO SEE THAT SAME LINE. parser.reset() IS THE ONLY WAY BACK AND IT REWINDS TO THE HEAD
+    // OF THE SOURCE, COMMENTS INCLUDED, SO THEY ARE STEPPED OVER AGAIN
     parser.reset();
+    for (int i = 0; i < commentLines; ++i)
+      skipLine(parser);
 
     try {
-      while (parser.getCurrentChar() == '/' && parser.nextChar() == '/') {
-        skipLine(parser);
-        format = analyzeChar(parser, settings, userDelimiter);
-        if (format != null)
-          return format;
-      }
-
       // CHECK FOR CSV-LIKE FILES
       final Map<Character, AtomicInteger> candidateSeparators = new HashMap<>();
 
-      final StringBuilder line = new StringBuilder();
-      while (parser.isAvailable() && parser.nextChar() != '\n') {
-        final char c = parser.getCurrentChar();
-        line.append(c);
+      final String line = readLine(parser);
+      for (int i = 0; i < line.length(); ++i) {
+        final char c = line.charAt(i);
 
         if (isSeparator(c)) {
           final AtomicInteger sep = candidateSeparators.get(c);
@@ -389,12 +398,10 @@ public class SourceDiscovery {
         // CARRIES INSIDE ITS VALUES (ISSUE #6946)
         if (bestSeparator.getKey() == ' ' && userDelimiter == null) {
           // CHECK IF IS A VECTOR EMBEDDING TEXT FILE
-          final StringBuilder line2 = new StringBuilder();
-          while (parser.isAvailable() && parser.nextChar() != '\n')
-            line2.append(parser.getCurrentChar());
+          final String line2 = parser.isAvailable() ? readLine(parser) : "";
 
-          final String[] fields1 = line.toString().split(" ");
-          final String[] fields2 = line2.toString().split(" ");
+          final String[] fields1 = line.split(" ");
+          final String[] fields2 = line2.split(" ");
 
           if (fields1.length == 2 && fields2.length > 2)
             format = new Word2VecImporterFormat();
@@ -623,9 +630,76 @@ public class SourceDiscovery {
     };
   }
 
+  /**
+   * What counts as a leading comment line, in ONE place: a {@code #}, or the first {@code /} of a {@code //}.
+   * <p>
+   * Content sniffing and the row loops have to agree about it exactly, or a line the sniffer skipped arrives as
+   * data - a bogus edge for RDF, a bogus header for CSV - and the two work on different abstractions (the
+   * character-oriented {@link Parser} here, a {@code PushbackReader} in
+   * {@link com.arcadedb.integration.importer.format.CSVImporterFormat#sourceReader}), so the LOOPS cannot be
+   * shared even though the rule must be (issue #7347).
+   *
+   * @param second the character after {@code first}, or {@code 0} when there is none. Only consulted when
+   *               {@code first} is a {@code /}, so a caller with one character in hand can pass {@code 0}.
+   */
+  public static boolean isCommentLineStart(final char first, final char second) {
+    return first == '#' || (first == '/' && second == '/');
+  }
+
+  /**
+   * Whether the parser's CURRENT character opens a comment line. The second character is PEEKED rather than read,
+   * and only when it can matter, so a data line that merely begins with a single {@code /} keeps its first
+   * character and is sniffed whole (issue #7347).
+   */
+  private boolean isCommentLineStart(final Parser parser) throws IOException {
+    final char first = parser.getCurrentChar();
+    return isCommentLineStart(first, first == '/' ? parser.peekChar() : 0);
+  }
+
   private void skipLine(final Parser parser) throws IOException {
-    while (parser.isAvailable() && parser.nextChar() != '\n')
-      ;
+    readLine(parser);
+  }
+
+  /**
+   * Reads from the parser's CURRENT character INCLUSIVE to the end of the line, WITHOUT the line terminator, and
+   * leaves the parser on the first character of the NEXT line.
+   * <p>
+   * That trailing step is the whole of issue #7347: what this replaces stopped on the {@code '\n'} that ended the
+   * line, so every caller that went on to look at {@code getCurrentChar()} - the comment loops in
+   * {@link #analyzeText} and the {@link #analyzeChar} dispatch they call - was looking at a newline rather than at
+   * the first character of the line they had just uncovered.
+   * <p>
+   * A parser that has read nothing yet ({@link Parser#getCurrentChar()} is {@code 0}, which is the state
+   * {@link Parser#reset()} leaves) starts from the first character of the source.
+   */
+  private String readLine(final Parser parser) throws IOException {
+    final char first = parser.getCurrentChar();
+    if (first == '\n') {
+      // AN EMPTY LINE: THE PARSER IS ALREADY ON ITS TERMINATOR
+      if (parser.isAvailable())
+        parser.nextChar();
+      return "";
+    }
+
+    final StringBuilder line = new StringBuilder(128);
+    if (first != 0)
+      line.append(first);
+
+    boolean terminated = false;
+    while (parser.isAvailable()) {
+      if (parser.nextChar() == '\n') {
+        terminated = true;
+        break;
+      }
+      line.append(parser.getCurrentChar());
+    }
+
+    // A LINE THE SOURCE ENDED WITHOUT TERMINATING LEAVES THE PARSER WHERE IT IS: THERE IS NO NEXT LINE TO STEP ONTO,
+    // AND isAvailable() IS ALREADY FALSE FOR EVERY CALLER THAT ASKS
+    if (terminated && parser.isAvailable())
+      parser.nextChar();
+
+    return line.toString();
   }
 
   /**

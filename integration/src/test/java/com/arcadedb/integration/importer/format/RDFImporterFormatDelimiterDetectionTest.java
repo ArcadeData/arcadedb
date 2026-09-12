@@ -116,12 +116,12 @@ class RDFImporterFormatDelimiterDetectionTest {
         ("-url file://" + rdf + " -database " + DB_PATH + " -edgeType Related").split(" ")).load();
 
     assertThat(report.get("createdEdges"))
-        .as("the detected space delimiter must reach the parser: three of the four triples become edges, the first "
-            + "being skipped as the header row RDF sources default to")
-        .isEqualTo(3L);
+        .as("the detected space delimiter must reach the parser: all four triples become edges, because an RDF "
+            + "source has no header row for the first one to be dropped as (issue #7345)")
+        .isEqualTo(4L);
     assertThat(countOf("Related"))
         .as("and the edges are durable, not merely counted")
-        .isEqualTo(3L);
+        .isEqualTo(4L);
   }
 
   /**
@@ -141,7 +141,7 @@ class RDFImporterFormatDelimiterDetectionTest {
 
     assertThat(report.get("createdEdges"))
         .as("the -edges route resolves the delimiter through the same branch")
-        .isEqualTo(2L);
+        .isEqualTo(3L);
   }
 
   /**
@@ -160,7 +160,7 @@ class RDFImporterFormatDelimiterDetectionTest {
 
     assertThat(report.get("createdEdges"))
         .as("a tab detected on an RDF source has to reach the TsvParser branch of createCSVParser()")
-        .isEqualTo(2L);
+        .isEqualTo(3L);
   }
 
   /**
@@ -213,7 +213,7 @@ class RDFImporterFormatDelimiterDetectionTest {
 
     assertThat(report.get("createdEdges"))
         .as("the RDF source still imports on its own detected space")
-        .isEqualTo(2L);
+        .isEqualTo(3L);
 
     try (final Database database = new DatabaseFactory(DB_PATH).open()) {
       final List<String> names = database.query("sql", "select from Doc order by id").stream()

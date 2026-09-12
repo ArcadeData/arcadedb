@@ -24,6 +24,12 @@ import java.io.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class Parser {
+  /**
+   * {@link #peeked}'s "nothing is buffered" value. Distinct from {@code -1}, which {@link java.io.Reader#read()}
+   * returns at the end of the stream and which {@link #peekChar()} has to be able to hand back more than once.
+   */
+  private static final int NOTHING_PEEKED = -2;
+
   private final Source            source;
   private       InputStream       is;
   private       InputStreamReader reader;
@@ -31,6 +37,7 @@ public class Parser {
   private final AtomicLong        position = new AtomicLong();
   private final long              total;
   private       char              currentChar;
+  private       int               peeked   = NOTHING_PEEKED;
   private final boolean           compressed;
 
   public Parser(final Source source, final long limit) throws IOException {
@@ -47,23 +54,49 @@ public class Parser {
   }
 
   public char nextChar() throws IOException {
+    if (peeked != NOTHING_PEEKED) {
+      currentChar = (char) peeked;
+      peeked = NOTHING_PEEKED;
+      return currentChar;
+    }
+
     position.incrementAndGet();
     currentChar = (char) reader.read();
     return currentChar;
   }
 
-  public void mark() {
-    is.mark(0);
+  /**
+   * The character AFTER the current one, without advancing: {@link #getCurrentChar()} still answers what it
+   * answered before, and the next {@link #nextChar()} returns this same character and makes it current. Repeated
+   * calls return the same character.
+   * <p>
+   * The one-character lookahead content sniffing needs to tell a {@code //} comment line from a data line that
+   * merely starts with a single {@code /}: reading the second character to find out and then discovering it is data
+   * loses it, and {@link #reset()} is the only way back and rewinds the whole source (issue #7347).
+   */
+  public char peekChar() throws IOException {
+    if (peeked == NOTHING_PEEKED) {
+      position.incrementAndGet();
+      peeked = reader.read();
+    }
+    return (char) peeked;
   }
 
   public void reset() throws IOException {
     currentChar = 0;
+    peeked = NOTHING_PEEKED;
     position.set(0);
     source.reset();
     resetInput();
   }
 
   public boolean isAvailable() throws IOException {
+    if (peeked != NOTHING_PEEKED)
+      // A PEEKED CHARACTER IS STILL TO BE CONSUMED BY nextChar(), SO THE SOURCE IS AVAILABLE WHEN THAT CHARACTER IS
+      // NOT THE END-OF-STREAM MARKER - AND, WHEN A LIMIT IS SET, WHEN THE LIMIT STILL ALLOWS IT. peekChar() HAS
+      // ALREADY ADVANCED position FOR THE BUFFERED CHARACTER, SO THE COMPARISON IS AGAINST position - 1: THIS ANSWERS
+      // EXACTLY WHAT THE BRANCH BELOW WOULD HAVE ANSWERED HAD THE PEEK NOT HAPPENED
+      return peeked >= 0 && (limit <= 0 || position.get() - 1 < limit);
     if (limit > 0)
       return position.get() < limit && is.available() > 0;
     if (reader.ready())

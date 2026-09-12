@@ -18,9 +18,10 @@
  */
 package com.arcadedb.integration.importer.format;
 
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.AnalyzedEntity;
+import com.arcadedb.integration.importer.AnalyzedProperty;
+import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
@@ -30,11 +31,17 @@ import com.arcadedb.log.LogManager;
 import com.univocity.parsers.common.AbstractParser;
 
 import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.Reader;
 import java.util.logging.Level;
 
 public class RDFImporterFormat extends CSVImporterFormat {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
+
+  /**
+   * The one property {@link #load} puts on the edges it creates: the statement's predicate. Named here because
+   * {@link #analyze} declares it and the loop below writes it, and the two must agree.
+   */
+  private static final String LABEL_PROPERTY = "label";
 
   /**
    * No delimiter, so the inherited {@code createCSVParser}/{@code analyze} fall back to the generic
@@ -68,17 +75,9 @@ public class RDFImporterFormat extends CSVImporterFormat {
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
     final AbstractParser csvParser = createCSVParser(settings);
 
-    // One ImporterContext serves every phase of an import - Importer.load() calls loadFromSource() for the url,
-    // documents, vertices and edges sources against the same context - so this counter arrives carrying whatever an
-    // earlier phase left in it. Zeroed here the way CSVImporterFormat, Neo4jImporterFormat, OrientDBImporterFormat,
-    // GloVeImporterFormat, Word2VecImporterFormat and Word2VecImporterFormatLSM all zero it, so the number this
-    // phase reports is its own row count (issue #7288).
-    context.parsed.set(0);
-
-    long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
-    if (settings.edgesSkipEntries == null)
-      // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-      skipEntries = 1l;
+    // defaultHeaderSkipEntries() answers 0 here (see the override below): an RDF source has no header row, so
+    // nothing is skipped unless the caller asked for it (issue #7345).
+    final long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : defaultHeaderSkipEntries();
 
     // Whether the transaction this method is about to use belongs to the import, as opposed to predating it.
     // Not the same as "this call pushed it": in the CLI pipeline AbstractImporter.openDatabase() ends with a
@@ -113,7 +112,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // what -commitEvery actually asks for, and is the same shape CSVImporterFormat.loadEdges() uses (issue #7288).
     int txCount = 0;
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
+    try (final Reader inputFileReader = sourceReader(parser)) {
       csvParser.beginParsing(inputFileReader);
 
       if (!database.isTransactionActive())
@@ -141,7 +140,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
             new Object[] { v2Id }, true,
             settings.edgeTypeName,
             true,
-            "label",
+            LABEL_PROPERTY,
             edgeLabel);
 
         context.createdEdges.incrementAndGet();
@@ -207,6 +206,47 @@ public class RDFImporterFormat extends CSVImporterFormat {
               readEdges - committedEdges);
       }
     }
+  }
+
+  /**
+   * The type an RDF source maps to, registered WITHOUT reading a statement: every statement of every RDF source has
+   * the same three terms, and {@link #load} turns each into one edge of {@code settings.edgeTypeName} carrying the
+   * predicate as {@value #LABEL_PROPERTY}. There is nothing in the source to discover.
+   * <p>
+   * Inheriting {@link CSVImporterFormat#analyze} instead meant the source's FIRST statement was consumed as the
+   * column names, which is the same "the first line is a header" convention {@link #defaultHeaderSkipEntries()}
+   * corrects on the load side and is just as wrong here, in two ways that {@code -edgesSkipEntries} cannot reach:
+   * a one-statement source registered no type at all, so the import died with "Type ... was not found"; and a
+   * longer one registered the EDGE type with a property per term of the first statement - {@code <http://a/s1>},
+   * {@code <http://a/rel>}, {@code <http://a/o1>} and {@code .} - none of which any edge ever carries
+   * (issue #7345, raised in review of #7497).
+   * <p>
+   * The property is declared with a {@code null} sample deliberately: {@link AnalyzedProperty#endParsing()} infers
+   * a numeric type only from a sample it has actually seen, so no sample leaves it the {@code STRING} a predicate
+   * IRI is, while an empty-string sample would have made it a {@code LONG}.
+   */
+  @Override
+  public SourceSchema analyze(final AnalyzedEntity.EntityType entityType, final Parser parser,
+      final ImporterSettings settings, final AnalyzedSchema analyzedSchema) {
+    analyzedSchema.getOrCreateEntity(settings.edgeTypeName, AnalyzedEntity.EntityType.EDGE)
+        .getOrCreateProperty(LABEL_PROPERTY, null);
+    analyzedSchema.endParsing();
+
+    return new SourceSchema(this, parser.getSource(), analyzedSchema);
+  }
+
+  /**
+   * Zero: N-Triples, N-Quads and Turtle have no header row at all - every line of the source is a statement.
+   * <p>
+   * Inheriting {@link CSVImporterFormat}'s default of one meant the first triple of every RDF file was dropped as a
+   * header, silently: nothing in the report told "N rows, one was a header" from "N rows, one was malformed", since
+   * {@code parsedRecords} counted all N and {@code createdEdges} said N-1. The convention is right for CSV and wrong
+   * here for the very reason the format was selected - content sniffing recognised the first line BECAUSE it is a
+   * triple (issue #7345).
+   */
+  @Override
+  protected long defaultHeaderSkipEntries() {
+    return 0L;
   }
 
   @Override

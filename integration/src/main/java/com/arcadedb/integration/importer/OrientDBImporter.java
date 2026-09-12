@@ -407,6 +407,9 @@ public class OrientDBImporter {
 
     final AtomicLong processedItems = new AtomicLong();
     context.skippedEdges.set(0);
+    // Kept even though Importer.loadFromSource() now zeroes this counter on entry to every phase (issue #7342):
+    // this importer is also a standalone CLI of its own (see main()), and that entry point never goes through
+    // loadFromSource(). Redundant on the OrientDBImporterFormat route, load-bearing on the other one.
     context.parsed.set(0);
 
     final List<Map<String, Object>> batch = new ArrayList<>(batchSize);
