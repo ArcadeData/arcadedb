@@ -57,7 +57,28 @@ public class ImporterContext {
   public final AtomicLong linkedEdges                = new AtomicLong();
   public final AtomicLong updatedDocuments           = new AtomicLong();
   public final AtomicLong documentsWithLinksToUpdate = new AtomicLong();
+  /**
+   * Rows a row loop DECLINED because their from/to reference resolved to no vertex - the failure half of the
+   * shortfall between {@code parsedRecords} and {@code createdEdges}. Counted since long before it was reported;
+   * {@link #toMap()} now carries it, because a report that shows only the two totals leaves the user to guess which
+   * of three unrelated causes ate the difference (issue #7488).
+   */
   public final AtomicLong skippedEdges               = new AtomicLong();
+  /**
+   * Rows a row loop skipped ON PURPOSE, because {@code -documentsSkipEntries} / {@code -verticesSkipEntries} /
+   * {@code -edgesSkipEntries} (or the header-row default behind them) told it to.
+   * <p>
+   * The third cause of a short count, and the one that is not a defect in the source at all - which is exactly why
+   * it needs its own number. {@code parsedRecords=4, createdEdges=3} used to read identically whether the missing
+   * row was a header the user asked to skip, an edge whose endpoints did not resolve, or a row
+   * {@code -onRowError skip} dropped after a save failure, and the usual guess - "my file has a bad row" - is wrong
+   * for the first of those (issue #7488). Deliberately NOT folded into {@link #errors}: a skip is not an error.
+   * <p>
+   * Import-wide, like {@link #skippedEdges} and unlike {@link #parsed}: it is reported next to
+   * {@link #getParsedTotal()}, and the identity that makes the report add up - every source row is created, skipped,
+   * declined or counted as an error - is a statement about the whole run.
+   */
+  public final AtomicLong skippedRecords             = new AtomicLong();
   public final AtomicLong errors                     = new AtomicLong();
   public final AtomicLong warnings                   = new AtomicLong();
   /**
@@ -139,6 +160,10 @@ public class ImporterContext {
     final long parsedTotal = getParsedTotal();
     if (parsedTotal > 0)
       map.put("parsedRecords", parsedTotal);
+    if (skippedRecords.get() > 0)
+      map.put("skippedRecords", skippedRecords.get());
+    if (skippedEdges.get() > 0)
+      map.put("skippedEdges", skippedEdges.get());
     if (errors.get() > 0)
       map.put("errors", errors.get());
     if (warnings.get() > 0)

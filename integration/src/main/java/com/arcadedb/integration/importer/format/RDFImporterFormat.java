@@ -75,9 +75,25 @@ public class RDFImporterFormat extends CSVImporterFormat {
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
     final AbstractParser csvParser = createCSVParser(settings);
 
-    // defaultHeaderSkipEntries() answers 0 here (see the override below): an RDF source has no header row, so
-    // nothing is skipped unless the caller asked for it (issue #7345).
-    final long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : defaultHeaderSkipEntries();
+    // THE OPTION THAT GOVERNS THIS ROUTE, NOT ALWAYS -edgesSkipEntries. AN RDF SOURCE REACHES load() ON ANY OF THE
+    // FOUR ROUTES Importer.load() DISPATCHES - -url, -documents, -vertices AND -edges - AND THIS READ
+    // settings.edgesSkipEntries WHICHEVER ONE IT HAD ARRIVED ON, SO ON THE -vertices AND -documents ROUTES
+    // -verticesSkipEntries WAS SILENTLY INERT WHILE -edgesSkipEntries, THE OPTION A USER THERE HAS NO REASON TO
+    // REACH FOR, WAS THE ONE THAT WORKED - AND analyze() HAD ALWAYS SELECTED BY ENTITY TYPE, SO THE ANALYSIS AND THE
+    // LOAD DISAGREED ABOUT THE SAME FILE (ISSUE #7487). THE SOURCE STILL BECOMES EDGES WHATEVER THE ROUTE: THE ENTITY
+    // TYPE PICKS THE OPTION, NOT WHAT IS BUILT FROM THE ROWS.
+    // defaultHeaderSkipEntries() ANSWERS 0 HERE (SEE THE OVERRIDE BELOW): AN RDF SOURCE HAS NO HEADER ROW, SO NOTHING
+    // IS SKIPPED UNLESS THE CALLER ASKED FOR IT (ISSUE #7345).
+    // A CALLER THAT DRIVES load() DIRECTLY MAY SUPPLY NO ENTITY TYPE - THE FORMAT'S OWN TESTS DO, AND THE CODE THIS
+    // REPLACES COULD NOT TELL, SINCE IT IGNORED THE PARAMETER. EDGE IS WHAT IT BEHAVED AS, AND STAYS SO.
+    final AnalyzedEntity.EntityType route = entityType != null ? entityType : AnalyzedEntity.EntityType.EDGE;
+
+    final long skipEntries = skipEntries(route, settings);
+
+    // Rows this loop dropped because skipEntries said to, reported apart from the failures: createdEdges being short
+    // of parsedRecords used to mean any of "a header the caller asked to skip", "an unresolved reference" or "a row
+    // -onRowError skip dropped", with nothing in the report to tell them apart (issue #7488).
+    long skipped = 0;
 
     // Whether the transaction this method is about to use belongs to the import, as opposed to predating it.
     // Not the same as "this call pushed it": in the CLI pipeline AbstractImporter.openDatabase() ends with a
@@ -123,9 +139,11 @@ public class RDFImporterFormat extends CSVImporterFormat {
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
 
-        if (skipEntries > 0 && line < skipEntries)
+        if (skipEntries > 0 && line < skipEntries) {
           // SKIP IT
+          ++skipped;
           continue;
+        }
 
         final String v1Id = getStringContent(row[0], STRING_CONTENT_SKIP);
         final String edgeLabel = getStringContent(row[1], STRING_CONTENT_SKIP);
@@ -173,6 +191,8 @@ public class RDFImporterFormat extends CSVImporterFormat {
     } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
     } finally {
+      reportSkippedEntries(route, context, skipped);
+
       // In a finally rather than in a catch: a malformed row (csvParser.parseNext() itself throwing) or a
       // newEdgeByKeys() failure escapes uncaught otherwise, leaving the transaction opened above on the stack,
       // and an Error - an OutOfMemoryError is the one a large import can realistically raise - would too.
