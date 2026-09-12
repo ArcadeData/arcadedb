@@ -31,6 +31,7 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAReplicatedDatabase;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.ClusterAuthSessionResolver;
 import com.arcadedb.server.http.HttpAuthSession;
@@ -1197,18 +1198,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * nothing about who the request is for. What the caller does with that answer - resolve a forwarded
    * identity, honor the one-hop marker, or both - is the caller's decision (issue #7516).
    * <p>
-   * Prefers the HA plugin's effective token, which is PBKDF2-derived at startup when
-   * {@code arcadedb.ha.clusterToken} is left empty and is never written back into the configuration, over
-   * the raw setting. The raw setting is the fallback for non-Raft setups.
+   * Resolved through {@link HAServerPlugin#effectiveClusterToken}, the same helper the sending side uses, so
+   * the two ends of a forwarded hop cannot disagree about which token is current.
    */
   private boolean isValidClusterToken(final String providedToken) {
-    String clusterToken = null;
-    final var ha = httpServer.getServer().getHA();
-    if (ha != null)
-      clusterToken = ha.getClusterToken();
-    if (clusterToken == null || clusterToken.isBlank())
-      clusterToken = httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
-
+    final String clusterToken = HAServerPlugin.effectiveClusterToken(httpServer.getServer());
     return clusterToken != null && !clusterToken.isBlank() && constantTimeEquals(clusterToken, providedToken);
   }
 

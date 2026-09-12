@@ -169,12 +169,11 @@ public final class LeaderCommandForwarder {
       builder.method(exchange.getRequestMethod().toString(), HttpRequest.BodyPublishers.noBody());
 
     // The secret cluster members authenticate to each other with, and the only thing that makes the one-hop
-    // marker below believable on the far end. Read through the HA plugin, which holds the EFFECTIVE token:
-    // when arcadedb.ha.clusterToken is left empty, ClusterTokenProvider derives one at startup and stores it
-    // on itself WITHOUT writing it back into the configuration, so the raw setting reads empty on every
-    // cluster that did not declare a token explicitly. The receiving node validates against the effective
-    // token, so reading the raw setting here left the two ends of the same hop disagreeing (issue #7516).
-    final String clusterToken = effectiveClusterToken(ha);
+    // marker below believable on the far end. Resolved through the shared helper the receiving node uses, so
+    // the two ends of the same hop cannot read different values - this used to read the raw
+    // arcadedb.ha.clusterToken setting, which is empty on every cluster that did not declare a token
+    // explicitly, while the receiver checked the token derived at startup (issue #7516).
+    final String clusterToken = HAServerPlugin.effectiveClusterToken(httpServer.getServer());
     if (clusterToken != null && !clusterToken.isBlank()) {
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
       // One hop only: whichever node this address really names refuses the command if it is not the leader,
@@ -207,18 +206,5 @@ public final class LeaderCommandForwarder {
       Thread.currentThread().interrupt();
       throw new IOException("Interrupted while forwarding server command to leader at " + leaderHttpAddress, e);
     }
-  }
-
-  /**
-   * The token this node's peers actually accept: the plugin's derived one whenever
-   * {@code arcadedb.ha.clusterToken} was not declared, and the raw setting otherwise. Mirrors the resolution
-   * order the receiving side uses in {@code AbstractServerHttpHandler}, so a forward this node sends and the
-   * check the peer runs on it cannot read two different values.
-   */
-  private String effectiveClusterToken(final HAServerPlugin ha) {
-    final String fromPlugin = ha != null ? ha.getClusterToken() : null;
-    if (fromPlugin != null && !fromPlugin.isBlank())
-      return fromPlugin;
-    return httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
   }
 }
