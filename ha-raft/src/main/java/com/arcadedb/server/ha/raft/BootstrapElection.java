@@ -450,8 +450,12 @@ class BootstrapElection {
         || statusCode == 429 || statusCode >= 500;
   }
 
-  /** Whether this cluster is configured for SSL; the same key every other peer dial reads. */
-  private static boolean useSSL(final RaftHAServer haServer) {
+  /**
+   * Whether this cluster is configured for SSL; the same key every other peer dial reads. Package-private
+   * so a caller that resolves a peer's HTTPS address for this probe reads the flag from here, rather than
+   * from a second copy of the key that could disagree with what {@link #fetchBootstrapState} then uses.
+   */
+  static boolean useSSL(final RaftHAServer haServer) {
     return haServer.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
   }
 

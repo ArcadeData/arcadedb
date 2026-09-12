@@ -86,6 +86,36 @@ class BootstrapStateProbeParsingTest {
   }
 
   /**
+   * The divergence check resolves the leader's HTTPS endpoint itself, so it owes the same self-check it
+   * already runs on the HTTP one. On a cluster that declares no HTTPS endpoints, a peer's HTTPS address is
+   * derived from that peer's Raft host plus this node's HTTPS port - so on a single-machine cluster the
+   * leader's HTTPS address collapses onto our own listener even though its HTTP address plainly does not
+   * (issue #6204). Probing ourselves would return our own bootstrap state, which matches the local
+   * comparison every time, so the divergence the check exists to find would stop being reported.
+   */
+  @Test
+  void aLeaderHTTPSAddressThatCollapsedOntoThisNodeIsNotProbed() {
+    final String localHttps = "localhost:2490";
+    // What resolveHttpsAddress derives for the leader when the 5th server-list field is absent and both
+    // nodes run on one host: the leader's Raft host with THIS node's HTTPS port.
+    final String derivedForLeader = "localhost:2490";
+
+    final String leaderHttps = RaftHAServer.preferredLeaderHttpsAddress(true, derivedForLeader, localHttps);
+    assertThat(leaderHttps).isNull();
+    // Which leaves the leader's own HTTP port - vetted as neither ambiguous nor ours - and not an HTTPS
+    // dial at this node's own listener.
+    assertThat(BootstrapElection.bootstrapStateUrl("localhost:2481", leaderHttps, true))
+        .isEqualTo("http://localhost:2481/api/v1/cluster/bootstrap-state");
+
+    // The guard is not a blanket refusal of HTTPS: a leader that resolves to a different socket is still
+    // probed over TLS, which is what issue #7546 was about.
+    assertThat(RaftHAServer.preferredLeaderHttpsAddress(true, "localhost:2491", localHttps))
+        .isEqualTo("localhost:2491");
+    assertThat(BootstrapElection.bootstrapStateUrl("localhost:2481", "localhost:2491", true))
+        .isEqualTo("https://localhost:2491/api/v1/cluster/bootstrap-state");
+  }
+
+  /**
    * The same endpoint is reached by {@link LeaderDatabaseQuery}, and the two must not disagree about the
    * scheme for one address pair - that disagreement is what left this probe on plain HTTP.
    */

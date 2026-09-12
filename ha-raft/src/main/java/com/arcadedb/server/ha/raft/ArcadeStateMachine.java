@@ -3389,7 +3389,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // leadership can move between this check and the probe, and an HTTPS address resolved from a second
     // getLeaderId() could then name a different node than the HTTP address these two questions were
     // asked about (issue #7546 review).
-    final String leaderHttpsAddr = raftHA.getPeerHttpsAddress(leaderId);
+    // The HTTPS endpoint needs the self-check of its own that the HTTP one just passed: on a cluster that
+    // declares no HTTPS endpoints, a peer's HTTPS address is derived from that peer's Raft host plus THIS
+    // node's HTTPS port, so a leader whose HTTP address is plainly not ours can still collapse onto our own
+    // HTTPS listener on a single-machine cluster (issue #6204). A node that probed itself would read back
+    // its own bootstrap state, which matches the local comparison every time, and a real divergence would
+    // stop being detected. preferredLeaderHttpsAddress is the pure decision behind getLeaderHttpsAddress();
+    // used directly because that method re-derives getLeaderId() internally, which is the very window this
+    // call site closes by capturing leaderId once.
+    final String leaderHttpsAddr = RaftHAServer.preferredLeaderHttpsAddress(BootstrapElection.useSSL(raftHA),
+        raftHA.getPeerHttpsAddress(leaderId), raftHA.getLocalHttpsAddress());
 
     // Floored at the snapshot cadence so a WAN cluster that has widened its watchdog does not get probed
     // more often than it resyncs.
