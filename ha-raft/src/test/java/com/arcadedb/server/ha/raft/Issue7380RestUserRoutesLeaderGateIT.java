@@ -149,6 +149,7 @@ class Issue7380RestUserRoutesLeaderGateIT extends BaseRaftHATest {
     assertThat(created.statusCode()).as("POST on a follower, body: %s", created.body()).isEqualTo(201);
     awaitUserOnEveryServer(name, true);
 
+    // Read after awaitUserOnEveryServer above, so every node already holds this same hash.
     final String originalHash = passwordHashOn(leader, name);
 
     final HttpResponse<String> updated = asRoot(follower, "PUT", "/api/v1/server/users?name=" + name,
@@ -156,7 +157,16 @@ class Issue7380RestUserRoutesLeaderGateIT extends BaseRaftHATest {
     assertThat(updated.statusCode()).as("PUT on a follower, body: %s", updated.body()).isEqualTo(200);
     // The stored hash rather than a login attempt: five failed logins in 30 seconds lock a principal out, so
     // polling for the new password to take effect would be a test that sabotages itself.
-    await().atMost(30, TimeUnit.SECONDS).until(() -> !originalHash.equals(passwordHashOn(leader, name)));
+    //
+    // On EVERY node, not just the leader. The claim being tested is that the forwarded update replicates,
+    // and a version that only reached the node it executed on would satisfy a leader-only wait and then be
+    // swept away by the DELETE below before anything noticed.
+    await().atMost(30, TimeUnit.SECONDS).until(() -> {
+      for (int i = 0; i < getServerCount(); i++)
+        if (originalHash.equals(passwordHashOn(i, name)))
+          return false;
+      return true;
+    });
     assertThat(canLogIn(leader, name, NEW_PASSWORD))
         .as("the password the forwarded PUT set must authenticate on the leader").isTrue();
 

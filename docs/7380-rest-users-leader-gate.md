@@ -232,3 +232,15 @@ nothing in this configuration reaches it.
 The reviewer's other two points were acknowledged, not changed: forwarding before validation is the
 documented tradeoff that matches the command path, and `UserManagementIT` is confirmed green in CI
 rather than locally (see **Not verified here**).
+
+## Review cycle 2 - CodeRabbit, five findings
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | The control test waits for the forwarded PUT only on the leader, so a version that never replicated would satisfy it and then be swept away by the DELETE | **Fixed here.** The POST and DELETE legs already waited on every node; the PUT leg was the odd one out. It now waits until every node's stored hash differs from the one captured before the PUT |
+| 2 | `HTTP_CLIENT.send` has neither a connect timeout nor a request timeout, so an unresponsive leader retains handler workers | **Already filed as #7507** (before the review). Pre-existing on the command path. Two details from the review added to that issue: the connect timeout is the half that is unconditionally safe, because it cannot abort a slow `restore`/`import` forward; and the deadline should map to 503 by catching `HttpTimeoutException`, not fall through to the generic 500 |
+| 3, 5 | Cleartext transmission (CWE-319): the cluster token, the caller's `Authorization` header and the new user's plaintext password all travel over a hard-coded `http://` | **Already filed as #7508** (before the review). The review's framing is sharper than the issue's original one and was added to it: the defect is not only that HTTPS-only clusters break, it is that credentials travel unencrypted on every cluster, and the forwarder should withhold them rather than fall back to a plaintext port |
+| 4 | A Basic / API-token request carries no one-hop marker, so two followers whose resolved leader addresses name each other forward it back and forth unbounded | **Verified and filed as #7516.** Both ends of the rule are scoped to cluster-token auth - the forwarder sets the marker only on that branch, and `AbstractServerHttpHandler:373` honours it only inside it - and `isOwnHttpAddress` cannot see a cycle in which each node dials the *other*. `LeaderForwardContext`'s Javadoc already records this as accepted from #6191, on an argument that covers the self-address misconfiguration and not a serverList in which two peers name each other. Out of scope: closing it means revisiting #6191's decision to scope the marker to peer-authenticated requests |
+
+Nothing in this cycle changed the fix itself; one test assertion was widened and three follow-up
+issues now carry the rest.
