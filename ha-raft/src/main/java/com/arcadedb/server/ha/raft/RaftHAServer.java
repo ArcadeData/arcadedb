@@ -316,6 +316,20 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private          ClusterTokenProvider      tokenProvider;
   private volatile int                       restartFailureCount   = 0;
   private volatile BootstrapElection         bootstrapElection;
+  /**
+   * Outcome of the most recent {@link #runBootstrapIfEligible()} pass on this node, or {@code null} while no
+   * pass has finished yet.
+   * <p>
+   * The distinction it publishes is "the bootstrap pass has not finished" versus "it finished and here is what
+   * it decided", which nothing else on this server answers: {@link ArcadeStateMachine#getBootstrapBaseline}
+   * turns non-null in the MIDDLE of the apply that may still be replacing the whole database directory from a
+   * leader-shipped snapshot, and a peer on which the bootstrap was never eligible records no baseline at all,
+   * so a null baseline cannot tell "not yet" from "never will".
+   * <p>
+   * Written only through {@link #recordBootstrapOutcome}, which never lets a later pass overwrite a recorded
+   * {@code COMMITTED}. Issue #7259.
+   */
+  private final AtomicReference<BootstrapElection.Outcome> lastBootstrapOutcome = new AtomicReference<>();
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
@@ -1137,9 +1151,60 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public BootstrapElection.Outcome runBootstrapIfEligible() {
     final BootstrapElection election = bootstrapElection;
     if (election == null)
-      return BootstrapElection.Outcome.SKIPPED_DISABLED;
-    election.onLeaderChanged();
-    return election.runIfEligible();
+      return recordBootstrapOutcome(BootstrapElection.Outcome.SKIPPED_DISABLED);
+    try {
+      // onLeaderChanged() is INSIDE the try on purpose: runIfEligible() swallows its own Throwable into
+      // FAILED, so the only way out of this method without an outcome is a throw from onLeaderChanged, and
+      // leaving it outside would mean the one case this catch exists for is the one it does not cover.
+      election.onLeaderChanged();
+      return recordBootstrapOutcome(election.runIfEligible());
+    } catch (final RuntimeException | Error e) {
+      // Publish a terminal outcome anyway: a caller waiting for the pass to finish must not be left waiting
+      // out its whole budget on a pass that already died.
+      recordBootstrapOutcome(BootstrapElection.Outcome.FAILED);
+      throw e;
+    }
+  }
+
+  /**
+   * Records {@code outcome} as this node's last bootstrap result, except that a recorded
+   * {@link BootstrapElection.Outcome#COMMITTED} is never overwritten.
+   * <p>
+   * A later pass on the same node CANNOT commit a second baseline - {@code isFirstFormation} closes the moment
+   * the first one is applied - so every outcome that follows a {@code COMMITTED} is a report that there was
+   * nothing left to do, not a revision of what happened. Letting one overwrite would turn "this cluster
+   * committed a baseline" into "it did not", and a reader waiting on the reinstall that baseline triggers would
+   * be released in the middle of it.
+   * <p>
+   * That is not hypothetical. {@code ArcadeStateMachine.notifyLeaderChanged} submits
+   * {@link #runBootstrapIfEligible()} on every notification naming this node leader, with no term guard, and
+   * its own comment records that Ratis sometimes fires a same-term re-notification; the second pass then
+   * returns {@code SKIPPED_NOT_FIRST_FORMATION}. Tests reach the same shape deliberately by calling
+   * {@code runBootstrapIfEligible()} a second time. Issue #7259.
+   */
+  private BootstrapElection.Outcome recordBootstrapOutcome(final BootstrapElection.Outcome outcome) {
+    // An AtomicReference rather than a volatile with a check-then-set: production only reaches this from the
+    // single-threaded lifecycleExecutor, but runBootstrapIfEligible() is public and several tests call it
+    // directly from their own thread while that executor may still be running the automatic pass. A lost
+    // update there would drop the COMMITTED this method exists to protect.
+    lastBootstrapOutcome.updateAndGet(
+        current -> current == BootstrapElection.Outcome.COMMITTED ? current : outcome);
+    return outcome;
+  }
+
+  /**
+   * The outcome of the most recent bootstrap pass that finished on this node, or {@code null} while none has.
+   * <p>
+   * Only the leader runs a pass ({@link ArcadeStateMachine#notifyLeaderChanged} submits it), so on a follower
+   * this stays {@code null} for the node's whole life. A non-null value means a pass RETURNED: for
+   * {@link BootstrapElection.Outcome#COMMITTED} at least one {@code BOOTSTRAP_FINGERPRINT_ENTRY} was committed -
+   * the commit goes through {@code RaftGroupCommitter.submitAndWait}, which blocks on the quorum reply - and
+   * every other value means no pass on this node has committed anything.
+   * <p>
+   * {@code COMMITTED} is sticky for the node's life; see {@link #recordBootstrapOutcome}. Issue #7259.
+   */
+  public BootstrapElection.Outcome getLastBootstrapOutcome() {
+    return lastBootstrapOutcome.get();
   }
 
   @Override
