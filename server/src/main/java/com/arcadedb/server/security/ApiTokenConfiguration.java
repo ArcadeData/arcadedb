@@ -129,14 +129,19 @@ public class ApiTokenConfiguration {
    * @return the failure, or {@code null} when the document reached the disk
    */
   private Exception persist(final JSONObject document) {
+    // Serialised BEFORE the try, so only the write is classified as a persistence failure. A RuntimeException out
+    // of toString() is a bug in the document, not a full disk, and reporting it with disk-full wording would send
+    // an operator to look at the volume.
+    final String serialized = document.toString(2);
+
     final File file = new File(filePath);
     if (!file.getParentFile().exists())
       file.getParentFile().mkdirs();
 
     Exception failure = null;
     try (final OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(file), UTF_8)) {
-      writer.write(document.toString(2));
-    } catch (final IOException | RuntimeException e) {
+      writer.write(serialized);
+    } catch (final IOException e) {
       failure = e;
     }
 
@@ -245,13 +250,25 @@ public class ApiTokenConfiguration {
   public synchronized Exception applyReplicated(final String documentJson) {
     final JSONObject document = new JSONObject(documentJson);
 
+    // A document with no 'tokens' key is NOT "every token revoked" - an empty set is spelled "tokens": [], and
+    // every writer here emits the key unconditionally. Treating the absent key as an empty set would let a
+    // truncated or foreign payload revoke every token on every peer, which is the loudest possible way to fail
+    // an entry nobody meant to send. Checked before the swap, so the store is left alone.
+    //
+    // The version is deliberately NOT pinned, unlike the group document's: documentOf() stamps "version": 1 on
+    // every write regardless of what arrived, so there is no equivalent "a versionless file is discarded at the
+    // next restart" hazard here, and refusing an unknown version would make this node halt on an entry a newer
+    // peer will eventually write.
+    if (!document.has("tokens"))
+      throw new IllegalArgumentException(
+          "Replicated API-token document has no 'tokens' array; refusing to install it, because treating that as "
+              + "an empty set would revoke every token on this node");
+
+    final JSONArray tokenArray = document.getJSONArray("tokens");
     final ConcurrentHashMap<String, JSONObject> next = new ConcurrentHashMap<>();
-    if (document.has("tokens")) {
-      final JSONArray tokenArray = document.getJSONArray("tokens");
-      for (int i = 0; i < tokenArray.length(); i++) {
-        final JSONObject tokenJson = tokenArray.getJSONObject(i);
-        next.put(tokenJson.getString("tokenHash"), tokenJson);
-      }
+    for (int i = 0; i < tokenArray.length(); i++) {
+      final JSONObject tokenJson = tokenArray.getJSONObject(i);
+      next.put(tokenJson.getString("tokenHash"), tokenJson);
     }
 
     // Published in a single reference swap, so a concurrent authentication never sees a half-rebuilt store.

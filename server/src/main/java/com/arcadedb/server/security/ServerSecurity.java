@@ -1097,11 +1097,73 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
-   * The whole group document as the JSON string {@link #applyReplicatedGroups} takes, for seeding a peer that
-   * has just joined the cluster (issue #7373).
+   * The whole group document as the JSON string {@link #applyReplicatedGroups} takes. Intentionally NOT
+   * {@code synchronized}, for the same reason {@link #getUsersJsonPayload} is not: the caller holds this
+   * monitor across the read-compute-submit sequence. To seed a joining peer, call {@link #seedGroupsClusterWide}
+   * rather than pairing this with a bare {@code replicateSecurityGroups}.
    */
   public String getGroupsJsonPayload() {
     return groupsToJSON().toString();
+  }
+
+  /**
+   * Submits the current users, group and API-token documents so a newly-joined peer converges on them, each read
+   * and submitted <b>under this monitor</b> (issue #7373).
+   * <p>
+   * The monitor is the point. Snapshot restores state, so a snapshot taken before a revocation and submitted
+   * after it puts the revoked token - or the deleted group - back on every node in the cluster. Reading outside
+   * the monitor leaves exactly that window open, and it is not hypothetical: {@code addPeer} is precisely the
+   * moment an operator is also likely to be rotating credentials. {@link #getUsersJsonPayload}'s javadoc has
+   * always said the caller must hold this monitor; {@code PostAddPeerHandler} did not, which this closes for the
+   * users seed as well as for the two new ones.
+   * <p>
+   * Each document is seeded under its own acquisition rather than all three under one, so an unrelated user
+   * change is not blocked for three consecutive Raft round trips. Each is best-effort and independent: the
+   * failures are collected and returned rather than thrown, so one failing seed does not skip the other two.
+   *
+   * @return the names of the documents that could not be seeded, empty when all three were submitted
+   */
+  public List<String> seedSecurityStateClusterWide() {
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha == null)
+      return List.of();
+
+    final List<String> failed = new ArrayList<>(3);
+    seed(failed, "users", () -> seedUsersClusterWide(ha));
+    seed(failed, "groups", () -> seedGroupsClusterWide(ha));
+    seed(failed, "API tokens", () -> seedApiTokensClusterWide(ha));
+    return failed;
+  }
+
+  private void seed(final List<String> failed, final String what, final Runnable seeding) {
+    try {
+      seeding.run();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Could not seed the %s document to the cluster: %s", e, what,
+          e.getMessage());
+      failed.add(what);
+    }
+  }
+
+  /** Reads and submits the user list under this monitor. See {@link #seedSecurityStateClusterWide}. */
+  public void seedUsersClusterWide(final HAServerPlugin ha) {
+    synchronized (this) {
+      ha.replicateSecurityUsers(getUsersJsonPayload());
+    }
+  }
+
+  /** Reads and submits the group document under this monitor. See {@link #seedSecurityStateClusterWide}. */
+  public void seedGroupsClusterWide(final HAServerPlugin ha) {
+    synchronized (this) {
+      ha.replicateSecurityGroups(getGroupsJsonPayload());
+    }
+  }
+
+  /** Reads and submits the API-token document under this monitor. See {@link #seedSecurityStateClusterWide}. */
+  public void seedApiTokensClusterWide(final HAServerPlugin ha) {
+    synchronized (this) {
+      ha.replicateSecurityApiTokens(getApiTokensJsonPayload());
+    }
   }
 
   /**
@@ -1169,8 +1231,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
-   * The whole API-token document as the JSON string {@link #applyReplicatedApiTokens} takes, for seeding a peer
-   * that has just joined the cluster (issue #7373). It carries token hashes, never token material.
+   * The whole API-token document as the JSON string {@link #applyReplicatedApiTokens} takes. It carries token
+   * hashes, never token material. As with {@link #getGroupsJsonPayload}, seeding a joining peer goes through
+   * {@link #seedApiTokensClusterWide} so the read and the submit happen under this monitor.
    */
   public String getApiTokensJsonPayload() {
     return apiTokenConfig.toJsonPayload();

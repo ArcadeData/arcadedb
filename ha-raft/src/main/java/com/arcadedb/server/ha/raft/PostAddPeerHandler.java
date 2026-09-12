@@ -23,10 +23,10 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
-import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
+import java.util.List;
 import java.util.logging.Level;
 
 public class PostAddPeerHandler extends AbstractServerHttpHandler {
@@ -61,29 +61,33 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
 
     raftHAServer.addPeer(peerId, address, name.isEmpty() ? null : name);
 
-    // Seed the newly-joined peer with the current security files. Snapshot install covers none of them
+    // Seed the newly-joined peer with the current security documents. Snapshot install covers none of them
     // (they live under <server-root>/config/, outside the database directory), so without this explicit
     // seed the new peer would start with whatever its own files hold - a stale user set, a stale group
     // document, a stale token store - until the next mutation of that kind happens cluster-wide. The
     // groups and tokens half is issue #7373; the users half predates it.
     //
-    // Best-effort, and each kind is seeded independently: a failure does not roll back the peer addition,
-    // and one failing seed must not skip the other two.
-    final ServerSecurity security = httpServer.getServer().getSecurity();
-    seed(peerId, "users", () -> plugin.replicateSecurityUsers(security.getUsersJsonPayload()));
-    seed(peerId, "groups", () -> plugin.replicateSecurityGroups(security.getGroupsJsonPayload()));
-    seed(peerId, "API tokens", () -> plugin.replicateSecurityApiTokens(security.getApiTokensJsonPayload()));
+    // Delegated to ServerSecurity so each document is READ and SUBMITTED under the security monitor. Reading
+    // here and submitting afterwards would leave a window in which a revocation commits in between, and the
+    // seed - which carries a whole document - would then put the revoked token, or the deleted group, back on
+    // every node. addPeer is exactly when an operator is also likely to be rotating credentials.
+    final List<String> failedSeeds = httpServer.getServer().getSecurity().seedSecurityStateClusterWide();
 
-    return new ExecutionResponse(200,
-        new JSONObject().put("result", "Peer " + peerId + " added").toString());
-  }
-
-  private void seed(final String peerId, final String what, final Runnable seeding) {
-    try {
-      seeding.run();
-    } catch (final Exception e) {
+    // Still best-effort: a failed seed does not roll back the peer addition, because the peer is already a
+    // cluster member and removing it again is a second failure mode rather than a repair. But the response says
+    // so rather than reporting a flat success - the operator is the one who has to reissue the seed, and they
+    // cannot do that if the only record is a WARNING in this node's log (issue #7521).
+    final JSONObject response = new JSONObject().put("result", "Peer " + peerId + " added");
+    if (!failedSeeds.isEmpty()) {
+      response.put("warning", "Peer added, but the following security documents could NOT be seeded to it: "
+          + String.join(", ", failedSeeds)
+          + ". The new peer keeps its own copy of them until the next cluster-wide change of that kind; reissue "
+          + "the change, or re-run addPeer, before treating the peer as consistent");
       LogManager.instance().log(this, Level.WARNING,
-          "%s seed to new peer '%s' failed (best-effort): %s", what, peerId, e.getMessage());
+          "Peer '%s' was added but these security documents could not be seeded to it: %s", peerId,
+          String.join(", ", failedSeeds));
     }
+
+    return new ExecutionResponse(200, response.toString());
   }
 }

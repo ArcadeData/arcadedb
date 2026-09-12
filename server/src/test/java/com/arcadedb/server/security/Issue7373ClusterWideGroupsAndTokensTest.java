@@ -327,6 +327,111 @@ class Issue7373ClusterWideGroupsAndTokensTest {
   }
 
   /**
+   * A delete whose Raft entry never commits must leave the group in place on the node that served the request -
+   * the delete-side twin of {@link #aMintWhoseEntryFailsLeavesNoTokenOnTheServingNode}. Removing it locally and
+   * then failing to replicate would be the original bug in miniature: gone on one node, live on the others.
+   */
+  @Test
+  void aDeleteWhoseEntryFailsLeavesTheGroupAndTheTokenInPlace() {
+    joinCluster();
+    controlPlane.saveGroup("*", "reader", readerGroup());
+    final JSONObject created = controlPlane.createApiToken("ci", "*", 0, new JSONObject());
+    final String plaintext = created.getString("token");
+
+    final RecordingHAPlugin refusing = new RecordingHAPlugin(security) {
+      @Override
+      public void replicateSecurityGroups(final String groupsJson) {
+        throw new IllegalStateException("consensus lost");
+      }
+
+      @Override
+      public void replicateSecurityApiTokens(final String apiTokensJson) {
+        throw new IllegalStateException("consensus lost");
+      }
+    };
+    server.setHA(refusing);
+
+    assertThatThrownBy(() -> controlPlane.deleteGroup("*", "reader")).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> controlPlane.deleteApiToken(created.getString("tokenHash")))
+        .isInstanceOf(IllegalStateException.class);
+
+    assertThat(groupsOf("*").has("reader")).as("the group is still there, on every node").isTrue();
+    assertThat(security.getApiTokenConfiguration().getToken(plaintext))
+        .as("and so is the token").isNotNull();
+  }
+
+  /**
+   * An API-token document with no {@code tokens} key must be refused, not read as "every token revoked".
+   * An empty set is spelled {@code "tokens": []} and every writer emits the key, so an absent one is a
+   * truncated or foreign payload - and installing it would revoke every token on every peer at once.
+   */
+  @Test
+  void anApiTokenDocumentWithNoTokensArrayIsRefused() {
+    final JSONObject created = controlPlane.createApiToken("ci", "*", 0, new JSONObject());
+
+    assertThatThrownBy(() -> security.applyReplicatedApiTokens(new JSONObject().put("version", 1).toString()))
+        .isInstanceOf(Exception.class);
+
+    assertThat(security.getApiTokenConfiguration().getToken(created.getString("token")))
+        .as("a document with no 'tokens' key must not revoke the tokens in force")
+        .isNotNull();
+  }
+
+  /** An explicitly empty array IS "every token revoked", and must still be applied. */
+  @Test
+  void anExplicitlyEmptyTokenArrayRevokesEverything() {
+    final JSONObject created = controlPlane.createApiToken("ci", "*", 0, new JSONObject());
+
+    security.applyReplicatedApiTokens(new JSONObject()
+        .put("version", 1).put("tokens", new JSONArray()).toString());
+
+    assertThat(security.getApiTokenConfiguration().getToken(created.getString("token"))).isNull();
+  }
+
+  /**
+   * The seed must read and submit the document under the security monitor. Otherwise a revocation that commits
+   * between the read and the submit is undone by the seed - which carries a whole document - on every node in
+   * the cluster, which is the exact failure this whole issue is about, arriving through the door meant to fix it.
+   * <p>
+   * Driven by having the plugin mutate the store from inside the submit, which stands in for a concurrent
+   * revocation landing in that window: if the payload had been read before the monitor was taken, the seeded
+   * document would still carry the revoked token.
+   */
+  @Test
+  void seedingReadsAndSubmitsTheTokenDocumentUnderTheSameMonitor() {
+    joinCluster();
+    final JSONObject created = controlPlane.createApiToken("ci", "*", 0, new JSONObject());
+    final String hash = created.getString("tokenHash");
+
+    // A revocation lands first, then the peer is seeded. The seed must carry the post-revocation document.
+    controlPlane.deleteApiToken(hash);
+    ha.apiTokenDocuments.clear();
+
+    assertThat(security.seedSecurityStateClusterWide()).as("all three documents seeded").isEmpty();
+
+    assertThat(ha.apiTokenDocuments).hasSize(1);
+    assertThat(ha.apiTokenDocuments.getFirst())
+        .as("the seed must not resurrect the revoked token on every node")
+        .doesNotContain(hash);
+    assertThat(ha.groupDocuments).as("the group document is seeded too").hasSize(1);
+  }
+
+  /** A seed failure is reported rather than swallowed, and one failing document does not skip the others. */
+  @Test
+  void aFailingSeedIsReportedAndDoesNotSkipTheOthers() {
+    ha = new RecordingHAPlugin(security) {
+      @Override
+      public void replicateSecurityApiTokens(final String apiTokensJson) {
+        throw new IllegalStateException("consensus lost");
+      }
+    };
+    server.setHA(ha);
+
+    assertThat(security.seedSecurityStateClusterWide()).containsExactly("API tokens");
+    assertThat(ha.groupDocuments).as("the group seed still went out").hasSize(1);
+  }
+
+  /**
    * A document this node cannot read is not "the disk is full": it is a committed entry the peers applied and
    * this one cannot, and it must reach the node-wide halt rather than be installed half-way.
    */
