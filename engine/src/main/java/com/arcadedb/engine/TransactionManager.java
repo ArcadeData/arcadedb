@@ -301,8 +301,14 @@ public class TransactionManager {
         return WalFileSweepOutcome.SKIPPED_LOCKED;
       }
 
-      lock.release();
-      walFile.delete();
+      // Keep the lock held THROUGH the delete: releasing it first would reopen the exact window this
+      // whole check exists to close, letting a third instance acquire it and start using the file in
+      // the instant between the release and the delete.
+      try {
+        walFile.delete();
+      } finally {
+        lock.release();
+      }
       return WalFileSweepOutcome.DELETED;
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error on removing WAL file '%s'", e, walFile);
