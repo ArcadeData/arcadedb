@@ -3379,15 +3379,26 @@ function renderTypeLink(typeName) {
   return "<a class='link' href='#'" + schemaActionAttrs("show-type-detail", typeName) + ">" + escapeHtml(typeName) + "</a>";
 }
 
+// A LIGHTWEIGHT edge type keeps its edges inside the two vertices and allocates no record, so its record count is 0
+// however many edges the graph holds. Showing that 0 as the type's size reads as "nothing was loaded" (issue #7477),
+// so the badge says what the type is instead of counting records it can never have.
+const LIGHTWEIGHT_EDGE_HINT = "LIGHTWEIGHT: edges are stored inside the vertices, so this type keeps no records. "
+  + "Query them with SELECT FROM <type> or by traversing the vertices.";
+
 function renderTypeSidebarBadge(row, color, action) {
   let name = escapeHtml(row.name);
+  let lightweight = row.lightweight === true;
   let records = (row.records || 0).toLocaleString();
+  let count = lightweight ? "lightweight" : records;
+  // Escaped once, off the raw name: building the title from `name` and escaping the result would escape the type
+  // name twice and show a tooltip reading "A&amp;B" for a type called "A&B".
+  let title = escapeHtml(lightweight ? row.name + " - " + LIGHTWEIGHT_EDGE_HINT : row.name + " (" + records + " records)");
   return (
     "<a class='sidebar-badge' href='#' style='background-color: " + color + "'" +
     schemaActionAttrs(action, row.name) +
-    " title='" + name + " (" + records + " records)'>" +
+    " title='" + title + "'>" +
     "<span class='sidebar-badge-name'>" + name + "</span>" +
-    "<span class='sidebar-badge-count'>" + records + "</span>" +
+    "<span class='sidebar-badge-count'>" + count + "</span>" +
     "</a>"
   );
 }
@@ -3573,7 +3584,10 @@ function showTypeDetail(typeName) {
   html += "<div class='d-flex align-items-center gap-3 mb-3'>";
   html += "<h4 style='margin:0;'>" + escapeHtml(row.name) + "</h4>";
   html += "<span class='db-type-category-badge' style='background-color:" + catColor + ";'>" + catLabel + "</span>";
-  html += "<span style='color:#888; font-size:0.9rem;'>" + (row.records || 0).toLocaleString() + " records</span>";
+  if (row.lightweight === true)
+    html += "<span class='badge bg-warning text-dark' title='" + escapeHtml(LIGHTWEIGHT_EDGE_HINT) + "'>LIGHTWEIGHT</span>";
+  else
+    html += "<span style='color:#888; font-size:0.9rem;'>" + (row.records || 0).toLocaleString() + " records</span>";
   if (row.bucketSelectionStrategy && row.bucketSelectionStrategy != "round-robin") {
     html += "<span class='badge bg-info' title='Bucket selection strategy: " + escapeHtml(row.bucketSelectionStrategy) + "'>"
          + escapeHtml(row.bucketSelectionStrategy) + "</span>";

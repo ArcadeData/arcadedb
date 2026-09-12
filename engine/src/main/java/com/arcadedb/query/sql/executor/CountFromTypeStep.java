@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 
 import java.util.NoSuchElementException;
 
@@ -75,7 +76,12 @@ public class CountFromTypeStep extends AbstractExecutionStep {
             throw new CommandExecutionException("Type " + targetName + " does not exist in the database schema");
           }
 
-          final long size = context.getDatabase().countType(targetName, true);
+          // countType() counts records, and a lightweight edge has none: on such a type it would answer 0 for a
+          // scan that returns rows, which is the contradiction issue #7477 was reported as. The check belongs here
+          // rather than in the planner because the target can be a context variable, resolved only now.
+          final long size = EdgeType.holdsLightweightEdges(typez)
+              ? FetchFromLightweightEdgeTypeStep.countEdgesOf(context, targetName)
+              : context.getDatabase().countType(targetName, true);
           executed = true;
           final ResultInternal result = new ResultInternal(context.getDatabase());
           result.setProperty(alias, size);

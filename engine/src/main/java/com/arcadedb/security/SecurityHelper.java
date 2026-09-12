@@ -68,6 +68,22 @@ public final class SecurityHelper {
   }
 
   /**
+   * Non-throwing check on ONE bucket, for a caller that opens the buckets of a type individually and wants to skip
+   * the ones it may not read rather than fail on the first: {@link #canAccessType} answers yes as soon as a single
+   * bucket of the type is readable, which is the right question for a listing and the wrong one for a scan.
+   * <b>No bound user means allow</b>, as it does for {@link #canAccessType} and for
+   * {@code LocalDatabase.checkPermissionsOnFile}: a missing context or current user is embedded usage or an
+   * internal caller, never an anonymous request - the server binds the user before a query is planned. Stated here
+   * because the default is only safe while that holds: a caller reusing this from somewhere a request CAN arrive
+   * without a user would be reading "allow everything" as "allow this one".
+   */
+  public static boolean canAccessFile(final DatabaseInternal database, final int fileId, final SecurityDatabaseUser.ACCESS access) {
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    final SecurityDatabaseUser user = dbContext == null ? null : dbContext.getCurrentUser();
+    return user == null || user.requestAccessOnFile(fileId, access);
+  }
+
+  /**
    * Same as {@link #canAccessType(SecurityDatabaseUser, DocumentType, SecurityDatabaseUser.ACCESS)}, resolving the
    * user bound to {@code database}'s current context. For listings that must silently hide what the caller cannot
    * see rather than fail the whole request.

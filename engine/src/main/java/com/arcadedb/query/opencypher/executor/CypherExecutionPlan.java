@@ -6242,20 +6242,10 @@ public class CypherExecutionPlan {
       return true;
 
     final DocumentType type = schema.getType(name);
-    if (type instanceof EdgeType && holdsALightweightEdgeType(type))
+    if (EdgeType.holdsLightweightEdges(type))
       return false;
 
     return db.countType(name, true) == 0;
-  }
-
-  /** Whether the edge type, or any type inheriting from it, stores its edges without a record of their own. */
-  private static boolean holdsALightweightEdgeType(final DocumentType type) {
-    if (type instanceof EdgeType edgeType && edgeType.isLightweight())
-      return true;
-    for (final DocumentType subType : type.getSubTypes())
-      if (holdsALightweightEdgeType(subType))
-        return true;
-    return false;
   }
 
   /**

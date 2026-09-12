@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalDocumentType;
 
 import java.util.ArrayList;
@@ -234,6 +235,22 @@ public class TraverseExecutionPlanner {
 
   private void handleClassAsTarget(final SelectExecutionPlan plan, final FromClause queryTarget, final CommandContext context) {
     final Identifier identifier = queryTarget.getItem().getIdentifier();
+
+    // A TRAVERSE rooted on a LIGHTWEIGHT edge type would read the type's bucket, which holds nothing by
+    // construction, and report that as a clean empty traversal - the symptom issue #7477 fixes on the SELECT side.
+    // It is not routed to the walk that fixes it there, because the fix needs AbstractTraverseStep's dedup as well:
+    // that keys on (bucketId, position) through RidHashSet, a pair every lightweight edge of a type shares, so the
+    // walk would hand TRAVERSE three edges and TRAVERSE would collapse them into one. Tracked in issue #7480.
+    //
+    // Until then it refuses rather than answering nothing. Silently reporting zero rows for data the graph holds is
+    // the whole defect #7477 is about, and it is worse here than it was there now that SELECT on the same type
+    // works: the inconsistency would read as "this type has no edges" to someone who just saw that it does. The
+    // same call is made one branch over for a TimeSeries type with no engine, for the same reason (issue #6356).
+    if (EdgeType.holdsLightweightEdges(context.getDatabase().getSchema().getType(identifier.getStringValue())))
+      throw new CommandExecutionException("TRAVERSE cannot start from '" + identifier.getStringValue()
+          + "' because it is a LIGHTWEIGHT edge type, whose edges are stored inside their two vertices and have no "
+          + "record to traverse from. Start from the vertices instead (e.g. TRAVERSE out('" + identifier.getStringValue()
+          + "') FROM <vertex type>), or use SELECT on the edge type. See issue #7480");
 
     final Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
     final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), null, context,

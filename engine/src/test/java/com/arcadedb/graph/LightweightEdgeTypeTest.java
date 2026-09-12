@@ -60,9 +60,12 @@ class LightweightEdgeTypeTest extends TestHelper {
     // the edge exists on the graph...
     database.transaction(() -> assertThat(database.lookupByRID(a, true).asVertex().countEdges(Vertex.DIRECTION.OUT))
         .isEqualTo(1));
-    // ...but no record was allocated for it
-    assertThat(count("select count(@rid) as c from Follows")).isZero();
-    assertThat(count("select count(*) as c from Follows")).isZero();
+    // ...but no record was allocated for it: the type's bucket is empty, which is what countType() reports
+    assertThat(database.countType("Follows", true)).isZero();
+    assertThat(count("select count(*) as c from bucket:Follows_0")).isZero();
+    // ...and a query on the type still answers with the edge, because the SQL scan walks the vertices that hold
+    // lightweight edges rather than the bucket that by construction cannot (issue #7477)
+    assertThat(count("select count(*) as c from Follows")).isEqualTo(1);
   }
 
   @Test
@@ -286,7 +289,10 @@ class LightweightEdgeTypeTest extends TestHelper {
       assertThat(edge).isInstanceOf(LightEdge.class);
       assertThat(edge.getIn()).isEqualTo(b);
     });
-    assertThat(count("select count(@rid) as c from Follows")).isZero();
+    // no record was allocated for it: the type's bucket is empty, which is what countType() reports
+    assertThat(database.countType("Follows", true)).isZero();
+    // ...and the edge is nonetheless what a query on the type returns (issue #7477)
+    assertThat(count("select count(*) as c from Follows")).isEqualTo(1);
   }
 
   @Test

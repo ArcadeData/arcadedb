@@ -43,7 +43,6 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.Level;
@@ -58,8 +57,8 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   private              boolean                            orderByRidDesc = false;
   private              boolean                            parallelScan   = false;
   private              List<ExecutionStep>                subSteps = new ArrayList<>();
-  private static final ConcurrentHashMap<String, Integer> WARNINGS = new ConcurrentHashMap<>();
-  private static final int                                WARNINGS_EVERY;
+  /** Size above which scanning a whole type is worth warning an operator about. */
+  static final         long                               LARGE_TYPE_BYTES = 100_000_000L;
 
   ResultSet currentResultSet;
   int       currentStep = 0;
@@ -79,10 +78,6 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   // into the (blocking) result queue. Small enough to keep DDL/close wait bounded, large enough to amortize
   // the uncontended read-lock cost to noise.
   private static final int SCAN_BATCH_SIZE = 256;
-
-  static {
-    WARNINGS_EVERY = GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger();
-  }
 
   protected FetchFromTypeExecutionStep(final CommandContext context) {
     super(context);
@@ -129,36 +124,32 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
 
     bucketIds[bucketIds.length - 1] = -1;//temporary bucket, data in tx
 
+    // getFileIfExists, not getFile: the latter throws when the id is not registered, and a bucket can be dropped
+    // between the schema snapshot above and this lookup. The total only decides whether to log a warning, so every
+    // way of not knowing a bucket's size counts it as 0 rather than failing the query - and it is not computed at
+    // all when warnings are off. Page count rather than getSize(): same number, but a field read instead of the
+    // channel lock and the channel.size() syscall (#6132).
     long typeFileSize = 0;
-    for (final int fileId : bucketIds) {
-      if (fileId > -1) {
-        final PaginatedComponentFile f = (PaginatedComponentFile) context.getDatabase().getFileManager().getFile(fileId);
-        if (f != null) {
-          try {
-            typeFileSize += f.getSize();
-          } catch (final IOException e) {
-            // IGNORE IT
-          }
-        }
-      }
-    }
+    if (CommandWarnings.isEnabled())
+      for (final int fileId : bucketIds)
+        if (fileId > -1
+            && context.getDatabase().getFileManager().getFileIfExists(fileId) instanceof PaginatedComponentFile f)
+          typeFileSize += f.getTotalPages() * (long) f.getPageSize();
 
-    if (WARNINGS_EVERY > 0) {
-      if (typeFileSize > 100_000_000) {
-        final Integer counter = WARNINGS.compute(typeName + ".scan", (k, v) -> v == null ? 1 : v + 1);
-        if (counter % WARNINGS_EVERY == 1) {
-          final Set<String> filteredProperties = planningInfo != null ?
-              extractFilteredProperties(planningInfo.whereClause) : Collections.emptySet();
-          if (filteredProperties.isEmpty())
-            LogManager.instance().log(this, Level.WARNING,
-                "Attempt to scan type '%s' in database '%s' of total size %s %d times. This operation is very expensive, consider using an index",
-                typeName, context.getDatabase().getName(), FileUtils.getSizeAsString(typeFileSize), counter);
-          else
-            LogManager.instance().log(this, Level.WARNING,
-                "Attempt to scan type '%s' in database '%s' of total size %s %d times, filtering on propert%s %s. This operation is very expensive, consider creating an index",
-                typeName, context.getDatabase().getName(), FileUtils.getSizeAsString(typeFileSize), counter,
-                filteredProperties.size() == 1 ? "y" : "ies", String.join(", ", filteredProperties));
-        }
+    if (typeFileSize > LARGE_TYPE_BYTES) {
+      final int counter = CommandWarnings.occurrencesWhenDue((DatabaseInternal) context.getDatabase(), typeName + ".scan");
+      if (counter > 0) {
+        final Set<String> filteredProperties = planningInfo != null ?
+            extractFilteredProperties(planningInfo.whereClause) : Collections.emptySet();
+        if (filteredProperties.isEmpty())
+          LogManager.instance().log(this, Level.WARNING,
+              "Attempt to scan type '%s' in database '%s' of total size %s %d times. This operation is very expensive, consider using an index",
+              typeName, context.getDatabase().getName(), FileUtils.getSizeAsString(typeFileSize), counter);
+        else
+          LogManager.instance().log(this, Level.WARNING,
+              "Attempt to scan type '%s' in database '%s' of total size %s %d times, filtering on propert%s %s. This operation is very expensive, consider creating an index",
+              typeName, context.getDatabase().getName(), FileUtils.getSizeAsString(typeFileSize), counter,
+              filteredProperties.size() == 1 ? "y" : "ies", String.join(", ", filteredProperties));
       }
     }
 
