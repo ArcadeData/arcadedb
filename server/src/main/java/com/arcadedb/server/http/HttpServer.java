@@ -28,6 +28,7 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.handler.DeleteApiTokenHandler;
 import com.arcadedb.server.http.handler.DeleteGroupHandler;
 import com.arcadedb.server.http.handler.DeleteUserHandler;
+import com.arcadedb.server.http.handler.LeaderCommandForwarder;
 import com.arcadedb.server.http.handler.GetApiDocsHandler;
 import com.arcadedb.server.http.handler.GetApiTokensHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
@@ -126,6 +127,7 @@ public class HttpServer implements ServerPlugin {
   private final    HttpSessionManager     sessionManager;
   private final    HttpAuthSessionManager authSessionManager;
   private final    ClusterAuthSessionResolver clusterAuthSessionResolver;
+  private final    LeaderCommandForwarder leaderCommandForwarder;
   private final    WebSocketEventBus      webSocketEventBus;
   private final    WebSocketInsertSessionManager  insertSessionManager;
   private final    WebSocketInsertProtocol        insertProtocol;
@@ -148,6 +150,7 @@ public class HttpServer implements ServerPlugin {
         server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER),
         server.getServerName());
     this.clusterAuthSessionResolver = new ClusterAuthSessionResolver(server, authSessionManager);
+    this.leaderCommandForwarder = new LeaderCommandForwarder(this);
     this.webSocketEventBus = new WebSocketEventBus(this.server);
     // A /ws insert session holds a transaction between frames, so an abandoned one has to expire the way an
     // 'arcadedb-session-id' transaction does - on its own budget, because a bulk loader pauses between chunks
@@ -450,6 +453,14 @@ public class HttpServer implements ServerPlugin {
 
   public ClusterAuthSessionResolver getClusterAuthSessionResolver() {
     return clusterAuthSessionResolver;
+  }
+
+  /**
+   * The one forwarder every leader-only route shares, so the "already forwarded here" notice it can emit
+   * stays logged once per server rather than once per route (issue #7380).
+   */
+  public LeaderCommandForwarder getLeaderCommandForwarder() {
+    return leaderCommandForwarder;
   }
 
   public ArcadeDBServer getServer() {
