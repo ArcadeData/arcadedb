@@ -79,7 +79,7 @@ class Issue7507LeaderForwardTimeoutTest {
           new LeaderCommandForwarder.Transport(configuration(1_000L, 60_000L, 5_000L));
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
-      final ExecutionResponse response = transport.send(
+      final ExecutionResponse response = transport.send(transport.client(),
           transport.newRequest(URI.create("http://" + leader.address() + "/api/v1/server"), "POST", "{}", false).build(),
           leader.address(), false);
       watch.assertGaveUpWithin(GAVE_UP_BOUND_MS,
@@ -110,7 +110,7 @@ class Issue7507LeaderForwardTimeoutTest {
           new LeaderCommandForwarder.Transport(configuration(1_000L, 60_000L, 5_000L));
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
-      final ExecutionResponse response = transport.send(
+      final ExecutionResponse response = transport.send(transport.client(),
           transport.newRequest(URI.create("http://" + leader.address() + "/api/v1/server"), "POST", "{}", false).build(),
           leader.address(), false);
       watch.assertGaveUpWithin(GAVE_UP_BOUND_MS,
@@ -192,7 +192,7 @@ class Issue7507LeaderForwardTimeoutTest {
     final LeaderCommandForwarder.Transport transport =
         new LeaderCommandForwarder.Transport(configuration(7_000L, 60_000L, 2_500L));
 
-    final ExecutionResponse response = transport.couldNotConnect("leader.example:2480");
+    final ExecutionResponse response = transport.couldNotConnect(transport.client(), "leader.example:2480");
 
     assertThat(response.getCode()).isEqualTo(504);
     final String error = new JSONObject(response.getResponse()).getString("error");
