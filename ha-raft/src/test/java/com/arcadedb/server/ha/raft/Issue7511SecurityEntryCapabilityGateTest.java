@@ -29,6 +29,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -81,7 +82,8 @@ class Issue7511SecurityEntryCapabilityGateTest {
   @Test
   void thisBuildAdvertisesBothEntryTypesAlongsideTheSchemaDelta() {
     assertThat(PeerCapabilities.LOCAL).containsExactlyInAnyOrder(PeerCapabilities.SCHEMA_DELTA,
-        PeerCapabilities.SECURITY_GROUPS_ENTRY, PeerCapabilities.SECURITY_API_TOKENS_ENTRY);
+        PeerCapabilities.SECURITY_GROUPS_ENTRY, PeerCapabilities.SECURITY_API_TOKENS_ENTRY,
+        PeerCapabilities.SECURITY_PRECONDITION);
   }
 
   // -------------------------------------------------------------------------------------------------------
@@ -271,7 +273,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
     assertThatThrownBy(() -> plugin.replicateSecurityGroups("{\"databases\":{}}"))
         .isInstanceOf(ClusterCapabilityNotReadyException.class);
 
-    verify(broker, never()).replicateSecurityGroups(anyString());
+    verify(broker, never()).replicateSecurityGroups(anyString(), any());
   }
 
   /**
@@ -290,7 +292,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
     assertThatThrownBy(() -> plugin.replicateSecurityApiTokens("{\"version\":1,\"tokens\":[]}"))
         .isInstanceOf(ClusterCapabilityNotReadyException.class);
 
-    verify(broker, never()).replicateSecurityApiTokens(anyString());
+    verify(broker, never()).replicateSecurityApiTokens(anyString(), any());
   }
 
   /** The other direction, so the test above cannot pass because the plugin submits nothing under any condition. */
@@ -306,8 +308,8 @@ class Issue7511SecurityEntryCapabilityGateTest {
     plugin.replicateSecurityGroups("{\"databases\":{}}");
     plugin.replicateSecurityApiTokens("{\"version\":1,\"tokens\":[]}");
 
-    verify(broker).replicateSecurityGroups("{\"databases\":{}}");
-    verify(broker).replicateSecurityApiTokens("{\"version\":1,\"tokens\":[]}");
+    verify(broker).replicateSecurityGroups("{\"databases\":{}}", null);
+    verify(broker).replicateSecurityApiTokens("{\"version\":1,\"tokens\":[]}", null);
   }
 
   /**
@@ -326,7 +328,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
 
     plugin.replicateSecurityUsers("[{\"name\":\"root\"}]");
 
-    verify(broker).replicateSecurityUsers("[{\"name\":\"root\"}]");
+    verify(broker).replicateSecurityUsers("[{\"name\":\"root\"}]", null);
   }
 
   // -------------------------------------------------------------------------------------------------------

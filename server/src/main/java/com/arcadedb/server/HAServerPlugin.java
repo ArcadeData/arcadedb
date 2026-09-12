@@ -372,8 +372,45 @@ public interface HAServerPlugin extends ServerPlugin {
   default void revokeAuthSession(final String token) {
   }
 
+  /**
+   * Waits, bounded, for THIS node's state machine to catch up with the committed log (issue #7509).
+   * <p>
+   * A node that lost a security compare-and-set has to see the winning entry before it rebuilds its document, or
+   * the retry is built from the same stale view and loses again. The submitter may be a follower, whose own apply
+   * lags the reply it got back from the leader, so "the submit returned" is not "this node has applied it".
+   * Best-effort by contract: it returns when the deadline passes rather than failing, and the retry then simply
+   * has one more chance to lose. Default is a no-op for non-HA setups.
+   */
+  default void awaitLocalApply() {
+    // No-op by default; Raft implementation overrides.
+  }
+
   default void replicateSecurityUsers(final String usersJsonArray) {
     // No-op by default; Raft implementation overrides.
+  }
+
+  /**
+   * Replicates the full user list, installing it only while the list in force still fingerprints to
+   * {@code expectedFingerprint} (issue #7509).
+   * <p>
+   * The whole document is replicated, built by reading the current one and mutating a copy, and the
+   * read-compute-submit sequence is serialised by a per-NODE monitor. Without a precondition two nodes each
+   * build a document from their own view and the one Raft orders second silently reverts the first. The
+   * precondition moves the decision to the apply, which is the only point ordered across nodes.
+   *
+   * @param expectedFingerprint the fingerprint of the document the submitter read, or null to install
+   *                            unconditionally - which is what a seed of a joining peer wants
+   *
+   * @return true when the entry was applied, false when it was refused because the document had changed since
+   * the submitter read it; the caller re-reads and retries
+   */
+  default boolean replicateSecurityUsers(final String usersJsonArray, final String expectedFingerprint) {
+    // Delegates to the unconditional form, so an implementation that only knows the pre-#7509 signature keeps
+    // replicating - it just installs unconditionally, which is exactly what it did before the precondition
+    // existed. Reporting the entry as applied is the conservative answer: it preserves that behaviour instead
+    // of making every mutation report a phantom conflict.
+    replicateSecurityUsers(usersJsonArray);
+    return true;
   }
 
   /**
@@ -392,6 +429,17 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * {@link #replicateSecurityUsers(String, String)} for the group document (issue #7509).
+   *
+   * @return true when the entry was applied, false when the document had changed since the submitter read it
+   */
+  default boolean replicateSecurityGroups(final String groupsJson, final String expectedFingerprint) {
+    // See replicateSecurityUsers(String, String) for why this delegates rather than no-oping.
+    replicateSecurityGroups(groupsJson);
+    return true;
+  }
+
+  /**
    * Replicates the full {@code server-api-tokens.json} document across the cluster (issue #7373). Called by
    * {@code ServerSecurity.createApiTokenClusterWide} / {@code deleteApiTokenClusterWide}, and by
    * {@code PostAddPeerHandler} to seed newly-joined peers. Default is a no-op for non-HA setups; the Raft
@@ -404,5 +452,16 @@ public interface HAServerPlugin extends ServerPlugin {
    */
   default void replicateSecurityApiTokens(final String apiTokensJson) {
     // No-op by default; Raft implementation overrides.
+  }
+
+  /**
+   * {@link #replicateSecurityUsers(String, String)} for the API-token document (issue #7509).
+   *
+   * @return true when the entry was applied, false when the document had changed since the submitter read it
+   */
+  default boolean replicateSecurityApiTokens(final String apiTokensJson, final String expectedFingerprint) {
+    // See replicateSecurityUsers(String, String) for why this delegates rather than no-oping.
+    replicateSecurityApiTokens(apiTokensJson);
+    return true;
   }
 }

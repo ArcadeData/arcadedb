@@ -62,6 +62,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // database per plugin lifetime instead of on every (re)wrap.
   private final Set<String> warnedSingleBucketDatabases = ConcurrentHashMap.newKeySet();
 
+  /** How often a cluster that cannot use the #7509 compare-and-set may say so. */
+  private static final long SECURITY_PRECONDITION_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
+
+  // When the "security changes are replicating without the concurrency check" line was last logged.
+  private volatile long lastSecurityPreconditionWithheldLog;
+
   // Handlers registered by registerAPI() that own a background executor. A fresh RaftHAPlugin
   // instance (and thus fresh handler instances) is created by PluginManager on every server
   // start, so stopService() must close the ones THIS instance created rather than relying on any
@@ -218,17 +224,27 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
   @Override
   public void replicateSecurityUsers(final String usersJsonArray) {
+    // Overridden alongside the two-argument form because the interface's default for THIS one is the no-op:
+    // inheriting it would make the seed paths - PostAddPeerHandler, ServerControlPlane.connectCluster - stop
+    // replicating altogether.
+    replicateSecurityUsers(usersJsonArray, null);
+  }
+
+  @Override
+  public boolean replicateSecurityUsers(final String usersJsonArray, final String expectedFingerprint) {
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
 
+    final boolean applied;
     try {
-      raftHAServer.getTransactionBroker().replicateSecurityUsers(usersJsonArray);
+      applied = raftHAServer.getTransactionBroker()
+          .replicateSecurityUsers(usersJsonArray, preconditionEveryPeerCanRead(expectedFingerprint));
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error sending security-users entry via Raft", e);
     }
-    LogManager.instance().log(this, Level.INFO, "Security users entry committed via Raft");
+    return reportSecurityOutcome("users", applied);
   }
 
   /**
@@ -241,20 +257,27 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    */
   @Override
   public void replicateSecurityGroups(final String groupsJson) {
+    replicateSecurityGroups(groupsJson, null);
+  }
+
+  @Override
+  public boolean replicateSecurityGroups(final String groupsJson, final String expectedFingerprint) {
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
 
     SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raftHAServer, RaftLogEntryType.SECURITY_GROUPS_ENTRY,
         "group document");
 
+    final boolean applied;
     try {
-      raftHAServer.getTransactionBroker().replicateSecurityGroups(groupsJson);
+      applied = raftHAServer.getTransactionBroker()
+          .replicateSecurityGroups(groupsJson, preconditionEveryPeerCanRead(expectedFingerprint));
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error sending security-groups entry via Raft", e);
     }
-    LogManager.instance().log(this, Level.INFO, "Security groups entry committed via Raft");
+    return reportSecurityOutcome("groups", applied);
   }
 
   /**
@@ -266,20 +289,119 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    */
   @Override
   public void replicateSecurityApiTokens(final String apiTokensJson) {
+    replicateSecurityApiTokens(apiTokensJson, null);
+  }
+
+  @Override
+  public boolean replicateSecurityApiTokens(final String apiTokensJson, final String expectedFingerprint) {
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
 
     SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raftHAServer,
         RaftLogEntryType.SECURITY_API_TOKENS_ENTRY, "API-token document");
 
+    final boolean applied;
     try {
-      raftHAServer.getTransactionBroker().replicateSecurityApiTokens(apiTokensJson);
+      applied = raftHAServer.getTransactionBroker()
+          .replicateSecurityApiTokens(apiTokensJson, preconditionEveryPeerCanRead(expectedFingerprint));
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error sending security-api-tokens entry via Raft", e);
     }
-    LogManager.instance().log(this, Level.INFO, "Security API-tokens entry committed via Raft");
+    return reportSecurityOutcome("API-tokens", applied);
+  }
+
+  /**
+   * The precondition to actually write, which is {@code expectedFingerprint} only while EVERY peer has advertised
+   * that it can read one (issue #7509), and null otherwise.
+   * <p>
+   * This is the gate {@code RaftLogEntryCodec}'s own javadoc demands of any new optional section, and it is not a
+   * formality here. A peer that predates the section skips it and installs the document unconditionally, so an
+   * ungated precondition during a rolling upgrade would have the losing entry REFUSED on the upgraded nodes and
+   * APPLIED on the older one - the security state of the cluster diverging, which is worse than the lost update
+   * #7509 is about, because the same credentials then resolve differently depending on which node answers.
+   * Withholding the precondition instead keeps the pre-#7509 behaviour uniformly until the last node is upgraded,
+   * at which point the compare-and-set starts working on its own with no operator step.
+   * <p>
+   * Read per submission rather than cached, exactly as {@code RaftReplicatedDatabase.schemaDeltaEnabled} reads it:
+   * a peer that stops answering stops receiving preconditions from the next mutation on, and one that finishes
+   * upgrading starts receiving them without a leader restart.
+   */
+  private String preconditionEveryPeerCanRead(final String expectedFingerprint) {
+    return expectedFingerprint == null ?
+        null :
+        preconditionForPeers(expectedFingerprint,
+            raftHAServer.peersMissingCapability(PeerCapabilities.SECURITY_PRECONDITION));
+  }
+
+  /**
+   * The decision {@link #preconditionEveryPeerCanRead} makes, separated from the peer lookup it makes it on so it
+   * can be driven directly: a precondition is written only when NO peer is missing the capability.
+   * Package-private for tests.
+   */
+  String preconditionForPeers(final String expectedFingerprint, final List<String> peersMissingTheCapability) {
+    if (expectedFingerprint == null)
+      return null;
+    if (peersMissingTheCapability.isEmpty())
+      return expectedFingerprint;
+
+    logSecurityPreconditionWithheld(peersMissingTheCapability);
+    return null;
+  }
+
+  /**
+   * Reports, at most once per {@link #SECURITY_PRECONDITION_WITHHELD_LOG_THROTTLE_MS}, that the compare-and-set is
+   * not engaged and WHICH peers are the reason.
+   * <p>
+   * Silence would put an operator back where issue #7509 found them: believing concurrent security changes are safe
+   * while they are not. Throttled because a cluster left half-upgraded is a steady state, not an event.
+   */
+  private void logSecurityPreconditionWithheld(final List<String> peersMissingTheCapability) {
+    final long now = System.currentTimeMillis();
+    if (now - lastSecurityPreconditionWithheldLog < SECURITY_PRECONDITION_WITHHELD_LOG_THROTTLE_MS)
+      return;
+    // Racy by design: two administrators crossing the window at the same instant cost one duplicate line.
+    lastSecurityPreconditionWithheldLog = now;
+    LogManager.instance().log(this, Level.INFO,
+        "Security changes are replicating WITHOUT the concurrency check of issue #7509: peer(s) %s have not "
+            + "advertised the '%s' capability, so a precondition could not be read there. Until they are upgraded "
+            + "or reachable again, two security changes made on two nodes at the same time can still lose one of "
+            + "them - the pre-#7509 behaviour. Nothing has to be turned on afterwards; the check resumes by itself.",
+        peersMissingTheCapability, PeerCapabilities.SECURITY_PRECONDITION);
+  }
+
+  /**
+   * Logs the outcome of a security entry (issue #7509).
+   * <p>
+   * The catch-up wait a refused submitter needs before it retries is deliberately NOT done here: this method runs
+   * with the caller's {@code ServerSecurity} monitor held, and that monitor is shared by every cluster-wide
+   * security mutation on the node. {@link #awaitLocalApply()} is called instead by
+   * {@code ServerSecurity.awaitSupersededChange}, outside the monitor.
+   */
+  private boolean reportSecurityOutcome(final String document, final boolean applied) {
+    if (applied) {
+      LogManager.instance().log(this, Level.INFO, "Security %s entry committed via Raft", document);
+      return true;
+    }
+
+    LogManager.instance().log(this, Level.INFO,
+        "Security %s entry was refused: the document changed between this node's read and the apply, so the "
+            + "caller retries against the current document", document);
+    return false;
+  }
+
+  /**
+   * Waits, bounded by {@code arcadedb.ha.quorumTimeout}, for this node's state machine to catch up with the
+   * committed log (issue #7509). Best-effort: {@code waitForLocalApply()} returns rather than failing when the
+   * deadline passes. Safe to block in, because the state-machine apply thread never takes the
+   * {@code ServerSecurity} monitor - and the caller does not hold it here anyway.
+   */
+  @Override
+  public void awaitLocalApply() {
+    final RaftHAServer raft = raftHAServer;
+    if (raft != null)
+      raft.waitForLocalApply();
   }
 
   @Override

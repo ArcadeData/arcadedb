@@ -437,26 +437,43 @@ public class RaftTransactionBroker {
 
   /**
    * Replicates a security users entry so all nodes update their user files.
+   *
+   * @param expectedFingerprint the fingerprint of the user list the submitter read, or null to install
+   *                            unconditionally (a seed). See {@link #wasApplied} (issue #7509)
+   *
+   * @return false when the entry was refused because the document had changed since it was read
    */
-  public void replicateSecurityUsers(final String usersJson) {
-    final ByteString entry = RaftLogEntryCodec.encodeSecurityUsersEntry(usersJson);
-    groupCommitter.submitAndWait(entry.toByteArray());
+  public boolean replicateSecurityUsers(final String usersJson, final String expectedFingerprint) {
+    final ByteString entry = RaftLogEntryCodec.encodeSecurityUsersEntry(usersJson, expectedFingerprint);
+    return wasApplied(groupCommitter.submitAndWaitForReply(entry.toByteArray()));
   }
 
   /**
-   * Replicates a security-groups entry so all nodes update their group document (issue #7373).
+   * Replicates a security-groups entry so all nodes update their group document (issue #7373). See
+   * {@link #replicateSecurityUsers} for {@code expectedFingerprint} and the return value.
    */
-  public void replicateSecurityGroups(final String groupsJson) {
-    final ByteString entry = RaftLogEntryCodec.encodeSecurityGroupsEntry(groupsJson);
-    groupCommitter.submitAndWait(entry.toByteArray());
+  public boolean replicateSecurityGroups(final String groupsJson, final String expectedFingerprint) {
+    final ByteString entry = RaftLogEntryCodec.encodeSecurityGroupsEntry(groupsJson, expectedFingerprint);
+    return wasApplied(groupCommitter.submitAndWaitForReply(entry.toByteArray()));
   }
 
   /**
-   * Replicates a security API-tokens entry so all nodes update their token store (issue #7373).
+   * Replicates a security API-tokens entry so all nodes update their token store (issue #7373). See
+   * {@link #replicateSecurityUsers} for {@code expectedFingerprint} and the return value.
    */
-  public void replicateSecurityApiTokens(final String apiTokensJson) {
-    final ByteString entry = RaftLogEntryCodec.encodeSecurityApiTokensEntry(apiTokensJson);
-    groupCommitter.submitAndWait(entry.toByteArray());
+  public boolean replicateSecurityApiTokens(final String apiTokensJson, final String expectedFingerprint) {
+    final ByteString entry = RaftLogEntryCodec.encodeSecurityApiTokensEntry(apiTokensJson, expectedFingerprint);
+    return wasApplied(groupCommitter.submitAndWaitForReply(entry.toByteArray()));
+  }
+
+  /**
+   * Reads the leader state machine's answer for a security entry (issue #7509). Anything that is not the
+   * explicit "superseded" marker counts as applied: a leader that predates the marker answers "OK", and a reply
+   * that carried no message at all is indistinguishable from that, so the conservative reading is the one that
+   * preserves the pre-#7509 behaviour rather than one that reports a phantom conflict.
+   */
+  private static boolean wasApplied(final String applyReply) {
+    return !ArcadeStateMachine.SECURITY_ENTRY_SUPERSEDED_REPLY.equals(applyReply);
   }
 
   /**
