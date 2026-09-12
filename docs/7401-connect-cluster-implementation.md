@@ -84,7 +84,7 @@ $ grep -rn "CONNECT_CLUSTER\|connectCluster" --include='*.java' --exclude-dir=ta
 | `ServerControlPlane.connectCluster` -> the users seed | yes | yes - `Issue7401ServerControlPlaneConnectClusterTest` asserts the seed runs, runs *after* the join, and that a failing seed does not fail the join |
 | `RaftHAPlugin.connectCluster` -> address parsing / peer-id derivation | yes | yes - `Issue7401JoinTargetTest`, one case per server-list syntax the argument can use |
 | `RaftHAPlugin.connectCluster` -> the declared leader-election **priority** reaching the committed peer | yes - fixed during the review loop, see below | yes - `Issue7401JoinPriorityTest`, which reads the `SetConfigurationRequest` Ratis is asked to commit |
-| `RaftHAPlugin.connectCluster` with the Raft server not started | yes - `ServerException` | **argued**: the same guard, message and call shape as the four sibling membership methods in the same class (`addPeer`, `removePeer`, `transferLeadership`, `stepDown`). None of them has a test for it, and one here would pin the guard rather than the join |
+| `RaftHAPlugin.connectCluster` with the Raft server not started | yes - `ServerException` | **argued**: the same guard, in the same place, with the same message as the sibling membership methods in this class (`addPeer`, `removePeer`, `transferLeadership`, `stepDown`, `leaveCluster`). None of them has a test for it, and one here would pin the guard rather than the join. The *type* differs and is stated here rather than glossed: `grep -n "Raft HA server not started" RaftHAPlugin.java` shows five bare `RuntimeException`s, one `TransactionException` and this one `ServerException`. Nothing observable turns on it - neither is `IllegalArgumentException` nor `OperationNotAvailableException`, so both surface as HTTP 500 / gRPC `INTERNAL` - and the more descriptive type is kept rather than matched downwards; converting the other six is unrelated churn for this PR |
 | `arcadedb.ha.serverList` startup path -> `parsePeerList` peer-id derivation | yes (refactor only - now calls the extracted `peerIdForAddress`) | yes - the 155 existing `ha-raft` resolver/K8s/allowlist tests still pass, and `Issue7401JoinTargetTest.theJoinPathAndTheServerListPathAgreeOnTheSameAddress` compares the two derivations directly |
 | Kubernetes scale-up -> `synthesizeK8sScaleUpPeer` peer-id derivation | yes (refactor only - same extraction) | yes - `Issue4836K8sScaleUpTest` (7 tests, unchanged, still green) |
 
@@ -227,6 +227,19 @@ an entry with no priority, which must still be 0 - correctly stays green.
 
 `RaftAtomicMembershipTest` was deliberately **not** touched, per this project's rule against modifying
 existing tests; the new coverage lives in its own class.
+
+### Second review cycle
+
+"A few minor points, no blockers." One was a real accuracy defect in this document and is fixed above:
+the coverage table claimed the not-started guard had the same "call shape" as its siblings, and the
+exception *type* is not the same - they throw bare `RuntimeException`, this throws `ServerException`.
+The claim was narrowed to what `grep` actually shows, the type was kept (nothing observable turns on
+it, and it is the more descriptive one), and the six siblings were left alone as unrelated churn.
+
+The other two points were flags rather than requests and needed no change: `http.connect-cluster` now
+counts successful joins instead of attempts, which is the house pattern every other wrapper in
+`PostServerCommandHandler` already follows and is annotated in `docs/7304-grpc-control-plane.md`; and
+the known gaps were noted as honestly disclosed.
 
 ### What the reviewer got wrong, and the evidence
 
