@@ -273,6 +273,31 @@ class Issue7521SecuritySeedRetryTest {
         .hasSize(1);
   }
 
+  /**
+   * The same contract with the backoff turned off, which is a documented configuration
+   * ({@code arcadedb.ha.securitySeedRetryBaseMs} of 0 "retries without pausing"). With no sleep to throw, an
+   * interrupt would be observed nowhere and the loop would spin through the whole budget - so the flag is
+   * checked before the pause as well.
+   */
+  @Test
+  void anInterruptStopsTheRetryingEvenWithNoBackoffConfigured() {
+    final SeedingHAPlugin ha = new SeedingHAPlugin(security) {
+      @Override
+      public void replicateSecurityApiTokens(final String apiTokensJson) {
+        Thread.currentThread().interrupt();
+        super.replicateSecurityApiTokens(apiTokensJson);
+      }
+    };
+    ha.failApiTokensTimes = Integer.MAX_VALUE;
+    server.setHA(ha);
+
+    final List<String> failed = security.seedSecurityStateClusterWide(5, 0L);
+
+    assertThat(Thread.interrupted()).as("the flag is left with the caller, not consumed by the check").isTrue();
+    assertThat(failed).containsExactly("API tokens");
+    assertThat(ha.apiTokenDocuments).as("one attempt of a budget of 5, with no pause to interrupt").hasSize(1);
+  }
+
   /** With no HA plugin at all there is no cluster to seed, and the retry loop must not turn that into work. */
   @Test
   void aStandaloneServerSeedsNothing() {

@@ -1182,7 +1182,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * failure {@link #seedSecurityStateClusterWide()}'s monitor exists to prevent, arriving through the retry.
    * <p>
    * An interrupt stops the retrying rather than swallowing the flag: the interrupt status is restored and what
-   * is still unseeded is returned, so the caller reports the honest partial result.
+   * is still unseeded is returned, so the caller reports the honest partial result. That holds whether or not a
+   * backoff is configured - the flag is checked before the pause as well as raised by it.
    *
    * @param maxAttempts  attempts in total per document, clamped into {@code [1, 10]}
    * @param retryBaseMs  base backoff in milliseconds; the pause before retry n (1-based) is
@@ -1244,6 +1245,14 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * stops the retrying - the interrupt flag is restored so the caller's thread keeps it.
    */
   private static boolean pauseBeforeRetry(final long retryBaseMs, final int retry) {
+    // Before the pause, not only inside it. A base delay of 0 or less is a documented configuration - "retries
+    // without pausing" - and with no sleep to throw, an interrupt raised while seedOnce was blocked in a Raft
+    // submit would never be observed: the loop would spin through the whole budget, which is the opposite of
+    // what this method's contract says. isInterrupted() rather than interrupted(), so the flag stays with the
+    // caller's thread exactly as the catch below restores it.
+    if (Thread.currentThread().isInterrupted())
+      return false;
+
     final long pause = backoffMs(retryBaseMs, retry);
     if (pause <= 0)
       return true;
