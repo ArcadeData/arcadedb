@@ -1,5 +1,9 @@
 # #7380 - the REST `/server/users` routes reach `*ClusterWide` on a follower with no leader gate
 
+**PR:** https://github.com/ArcadeData/arcadedb/pull/7512
+**Final state:** `max-cycles-reached` (4 of 4 used; nothing blocking was raised in any cycle)
+**Follow-ups filed:** #7507, #7508, #7516. Pre-existing and related: #7373
+
 ## Problem
 
 `POST`, `PUT` and `DELETE /api/v1/server/users` call `ServerSecurity.createUserClusterWide` /
@@ -272,3 +276,19 @@ Both reviewers ran against `dc3abaf`.
 
 Four cycles used, which is the limit set for this run. Nothing blocking was raised in any of them;
 the fix itself was unchanged after cycle 1.
+
+## Final state
+
+`max-cycles-reached` - the run's four review cycles were used. That is a budget, not a verdict:
+the last substantive review said "nothing here blocks merging", the fix itself was unchanged after
+cycle 1, and cycles 3 and 4 spent themselves on two stale citations and three cosmetic items.
+
+| Cycle | Head | What changed |
+|---|---|---|
+| 1 | `7e397dd` | `URI.create` now answers 400 instead of throwing. The IT written for it was withdrawn: its own control proved it passed for the wrong reason |
+| 2 | `98af7d2` | The control test's PUT leg now waits for the update on every node, not just the leader. Three findings filed rather than fixed (#7507, #7508, #7516) |
+| 3 | `dc3abaf` | Three imports left behind by the extraction removed |
+| 4 | `db1632b` | `UnaryOperator` imported rather than qualified; the new import moved back into its sorted run |
+
+No deferred items: every review comment across the four cycles was applied, filed as an issue, or
+answered on its thread with evidence.
