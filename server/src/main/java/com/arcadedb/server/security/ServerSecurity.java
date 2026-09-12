@@ -1201,6 +1201,15 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
           "%s is %d, which is outside [1, %d]; seeding each security document at most %d times instead",
           GlobalConfiguration.HA_SECURITY_SEED_RETRIES.getKey(), maxAttempts, MAX_SEED_ATTEMPTS, attempts);
 
+    // Symmetric with the clamp above: a base delay the backoff is going to ignore is a misconfiguration, and
+    // saturating it silently leaves the operator believing a number that has no effect. Only worth saying when
+    // there will be a pause at all.
+    if (attempts > 1 && (retryBaseMs < 0 || retryBaseMs > MAX_SEED_RETRY_PAUSE_MS))
+      LogManager.instance().log(this, Level.WARNING,
+          "%s is %d, which is outside [0, %d]; pausing %s between attempts instead",
+          GlobalConfiguration.HA_SECURITY_SEED_RETRY_BASE_MS.getKey(), retryBaseMs, MAX_SEED_RETRY_PAUSE_MS,
+          retryBaseMs < 0 ? "not at all" : MAX_SEED_RETRY_PAUSE_MS + "ms");
+
     List<String> failed = seedOnce(ha, null);
 
     for (int retry = 1; retry < attempts && !failed.isEmpty(); retry++) {
