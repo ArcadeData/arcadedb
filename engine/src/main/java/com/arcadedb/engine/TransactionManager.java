@@ -274,14 +274,14 @@ public class TransactionManager {
     return preserve;
   }
 
-  private enum WalFileSweepOutcome {DELETED, SKIPPED_LOCKED, ERROR}
+  enum WalFileSweepOutcome {DELETED, SKIPPED_LOCKED, ERROR}
 
   /**
    * Test-support hook (issue #7479): exposes {@link #deleteWALFileIfNotHeldByAnotherInstance} directly, so
    * a test can drive it against one file in isolation instead of a whole database's {@code close()}.
    */
-  String deleteWALFileForTesting(final File walFile) {
-    return deleteWALFileIfNotHeldByAnotherInstance(walFile).name();
+  WalFileSweepOutcome deleteWALFileForTesting(final File walFile) {
+    return deleteWALFileIfNotHeldByAnotherInstance(walFile);
   }
 
   /**
@@ -322,8 +322,13 @@ public class TransactionManager {
       }
 
       if (!nobodyElseHasItOpen) {
+        // Someone else already has it open - either a live peer instance still using it, or (rarer) another
+        // closing instance's own sweep racing this one over the same ownerless orphan. Either way it is not
+        // this sweep's to remove: the file survives, and whoever does hold it will remove it if it turns
+        // out to be an orphan after all.
         LogManager.instance().log(this, Level.WARNING,
-            "Skipped removing WAL file '%s': it is still locked, presumably by another database instance", null, walFile);
+            "Skipped removing WAL file '%s': it is still open, either by a live database instance or a competing cleanup",
+            null, walFile);
         return WalFileSweepOutcome.SKIPPED_LOCKED;
       }
 
