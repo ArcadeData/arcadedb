@@ -262,3 +262,43 @@ PR: https://github.com/ArcadeData/arcadedb/pull/7583
 | `rejectReservedKey`'s `@`-branch and `rejectReservedColumn` are near-duplicate logic in two classes; the reviewer flagged it as *not* worth extracting today | **Declined, agreed with the reviewer.** The two differ in what they inspect (a JSON key on a data line vs a column name on a header row), in when they run (per property vs once per header), and in their message wording. The classes share no base type, so a helper would mean a new utility for about four lines of code and would put the JSONL and CSV messages under one roof where they would drift toward a generic wording. Worth revisiting only if a third encoding is added, which is exactly what the reviewer said |
 
 No item was unclear, so nothing was deferred for the developer and no `review-deferred-*.md` notes file was produced.
+
+### Cycle 2 - 270082b530
+
+`claude` reviewed again and found no correctness bug and nothing blocking. It independently re-verified the three
+claims this fix rests on - that `parseValue` genuinely never returns a `Map`, that the
+`MalformedBatchRecordException`-vs-`IllegalArgumentException` split is what actually drives 408 vs 400 in
+`PostBatchHandler`, and that the control-key matching really is case-sensitive - and confirmed the OpenAPI
+`required` lists match the parsers field-for-field. Two notes:
+
+| Note | Disposition |
+|---|---|
+| `Issue7570BatchReservedKeyIT.post(...)` reimplements a raw `HttpURLConnection` POST helper that other ITs in the package also have; CLAUDE.md asks for reuse. Flagged by the reviewer itself as a nice-to-have, not a blocker, and as "already widespread across ~57 test files" rather than something this PR introduces | **Declined, with the base class checked first.** `BaseGraphServerTest` has no helper that posts a body: `readResponse`/`readError` only drain a stream and collapse newlines, and `executeCommand` is pinned to `/api/v1/command/graph`, asserts 200 so it cannot express the 400 these tests are about, and builds its URL as `248<serverIndex>` - the hardcoded-port form this IT deliberately avoids. Reusing it is not possible; adding a new protected helper to a base class shared by dozens of suites is a wider change than this PR should carry, and it would be the right change to make once, for all ~57 files, rather than as a side effect here |
+| The cycle-1 decision not to extract the shared `@`-prefix check | **Confirmed by the reviewer**, no action |
+
+No item was unclear; nothing deferred for the developer; no `review-deferred-*.md` notes file was produced by
+either cycle. (The `docs/review-deferred-*.md` files present in the tree predate this branch - they came in with
+PR #7210 and others.)
+
+## Final state
+
+**clean-approval** after 2 review cycles.
+
+| | |
+|---|---|
+| PR | https://github.com/ArcadeData/arcadedb/pull/7583 |
+| Branch | `fix/7570-openapi-batch-request-body-schema` |
+| Cycle 1 | `16bb1ef3d7` - 3 non-blocking notes, 2 applied, 1 declined with reasoning |
+| Cycle 2 | `270082b530` - 2 non-blocking notes, both declined with reasoning; no correctness bug found |
+| Follow-ups filed | #7573, #7574 |
+
+### Outstanding for the developer
+
+- **CodeRabbit never reviewed this PR.** It hit its free-tier rate limit at the first push ("Review limit reached,
+  next included review available in 32 minutes") and its check reports `pass` only because it was skipped. There are
+  therefore zero CodeRabbit threads to resolve - which reads the same as "all resolved" but is not. The repository's
+  own merge bar asks for CodeRabbit threads to be resolved, so it is worth a `@coderabbitai review` once the limit
+  resets before merging.
+- **Downstream drivers.** The blast-radius grep covers this repository only. The refusal is a behaviour change on a
+  write path, so the arcadedb-drivers clients - the reporter's own starting point - are worth a look before release.
+- Merge is the developer's. This workflow does not merge.
