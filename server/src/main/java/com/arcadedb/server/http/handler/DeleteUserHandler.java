@@ -23,7 +23,15 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
+import java.io.IOException;
+
 /**
+ * {@code DELETE /server/users?name=<user>}: drops a server user.
+ * <p>
+ * On an HA cluster the request is forwarded to the leader first: dropping a user submits a Raft entry
+ * (through {@code ServerSecurity.dropUserClusterWide}), which a follower must not do. The equivalent
+ * {@code POST /server} {@code drop user} command has always forwarded; this route did not (issue #7380).
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class DeleteUserHandler extends AbstractServerHttpHandler {
@@ -34,8 +42,15 @@ public class DeleteUserHandler extends AbstractServerHttpHandler {
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) {
+      final JSONObject payload) throws IOException {
     checkRootUser(user);
+
+    // Before any validation, exactly as the POST /server 'drop user' command forwards before parsing its
+    // target (issue #7380). The query string travels with the path, so the leader reads the same 'name'.
+    final ExecutionResponse forwarded = httpServer.getLeaderCommandForwarder()
+        .forwardIfReplica(exchange, user, LeaderCommandForwarder.currentPathWithQuery(exchange), null);
+    if (forwarded != null)
+      return forwarded;
 
     final String name = getQueryParameter(exchange, "name");
     if (name == null || name.isBlank())

@@ -18,44 +18,26 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.HAServerPlugin;
-import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
-import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.logging.Level;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
-  private static final HttpClient HTTP_CLIENT           = HttpClient.newHttpClient();
-
-  /**
-   * Emits the "a peer forwarded a server command here and this node is not the leader either" notice only
-   * once (issue #6191). Per handler instance, so each server in an in-process cluster says it once.
-   */
-  private final AtomicBoolean forwardedAgainWarned = new AtomicBoolean(false);
-
   private static final String LIST_DATABASES       = "list databases";
   private static final String SHUTDOWN             = "shutdown";
   private static final String CREATE_DATABASE      = "create database";
@@ -652,84 +634,14 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   /**
    * If this node is an HA replica, forwards the server command to the leader and returns its response.
    * Returns null if this node is the leader or HA is not enabled (caller should execute locally).
+   * <p>
+   * The mechanics live in {@link LeaderCommandForwarder}, shared with the REST {@code /server/users} routes
+   * that perform the same operations and used to run them wherever the request landed (issue #7380).
    */
   private ExecutionResponse forwardToLeaderIfReplica(final HttpServerExchange exchange, final JSONObject payload,
       final ServerSecurityUser user) throws IOException {
-    final HAServerPlugin ha = httpServer.getServer().getHA();
-    if (ha == null || ha.isLeader())
-      return null;
-
-    // A peer already forwarded this command to what it believed was the leader and it arrived here, on a node
-    // that is not the leader either. Forwarding it on would send it round the cycle that wrong address
-    // created; refuse in one hop with the typed error instead (issue #6191).
-    if (LeaderForwardContext.isAlreadyForwarded()) {
-      // Also said once in this node's log: the refusal goes back to the peer and from there to the client, so
-      // otherwise the only node that can name the misconfiguration never mentions it.
-      if (forwardedAgainWarned.compareAndSet(false, true))
-        LogManager.instance().log(this, Level.WARNING,
-            "A cluster peer forwarded a server command to this node as the leader, but this node is not the leader. "
-                + "Unless leadership just moved, the HTTP address that peer resolved for the leader does not identify "
-                + "it: declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in %s. The "
-                + "command is refused rather than forwarded on. This notice is logged only once.",
-            GlobalConfiguration.HA_SERVER_LIST.getKey());
-      throw new ServerIsNotTheLeaderException(
-          "Refusing to forward a server command that a cluster peer already forwarded to the leader: it arrived on "
-              + "this node, which is not the leader. Either leadership moved while the request was in flight - retry - "
-              + "or the HTTP address that peer resolved for the leader does not identify it, which is what declaring "
-              + "every node's HTTP port ('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
-              + " prevents", ha.getLeaderName());
-    }
-
-    final String leaderHttpAddress = ha.getLeaderAddress();
-    if (leaderHttpAddress == null)
-      throw new ServerIsNotTheLeaderException("Leader address is unknown", ha.getLeaderName());
-
-    // Dialing an address that resolves to this node comes straight back here, and this node is not the
-    // leader. That is what the derive fallback produces when the peers share a host and no HTTP port is
-    // declared: it pairs the leader's Raft host with THIS node's HTTP port (issue #6191).
-    if (ha.isOwnHttpAddress(leaderHttpAddress))
-      throw new ServerIsNotTheLeaderException(
-          "Cannot forward the server command: the HTTP address resolved for the leader (" + leaderHttpAddress
-              + ") is this node's own, and this node is not the leader. Declare every node's HTTP port explicitly with "
-              + "the 'host:raftPort:httpPort' syntax in " + GlobalConfiguration.HA_SERVER_LIST.getKey(),
-          ha.getLeaderName());
-
-    final HeaderValues authValues = exchange.getRequestHeaders().get("Authorization");
-    final String authHeader = authValues != null ? authValues.getFirst() : null;
-
-    final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create("http://" + leaderHttpAddress + "/api/v1/server"))
-        .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(payload.toString()));
-
-    if (authHeader != null && authHeader.startsWith("Bearer AU-")) {
-      // Per-node session token: convert to cluster-internal identity headers
-      final String clusterToken = httpServer.getServer().getConfiguration()
-          .getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
-      final String userName = user != null ? user.getName() : null;
-      if (userName != null)
-        builder.header("X-ArcadeDB-Forwarded-User", userName);
-      if (clusterToken != null && !clusterToken.isBlank()) {
-        builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
-        // One hop only: whichever node this address really names refuses the command if it is not the leader,
-        // instead of resolving the same address and forwarding it again (issue #6191). Sent only alongside
-        // the cluster token, because that is the only form in which the receiving node trusts it - see
-        // LeaderForwardContext. The other branch below relays the client's own credentials and carries no
-        // marker; its loop protection is the self-address check above.
-        builder.header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
-      }
-    } else if (authHeader != null) {
-      // Basic or API token: stateless, forward as-is
-      builder.header("Authorization", authHeader);
-    }
-
-    try {
-      final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-      return new ExecutionResponse(response.statusCode(), response.body());
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new IOException("Interrupted while forwarding server command to leader at " + leaderHttpAddress, e);
-    }
+    return httpServer.getLeaderCommandForwarder()
+        .forwardIfReplica(exchange, user, LeaderCommandForwarder.currentPathWithQuery(exchange), payload.toString());
   }
 
   private void checkServerIsLeaderIfInHA() {
