@@ -151,7 +151,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
         // CHECKED BEFORE ANYTHING ELSE IN THE LOOP BODY, NOT ONLY AT THE BOTTOM: THE -onRowError skip 'continue'
         // BELOW BYPASSES A CHECK PLACED AFTER IT, SO A RUN OF MALFORMED LINES BEING SKIPPED COULD KEEP READING
-        // PAST parsingLimitBytes'S BUDGET FOR AS LONG AS THE BAD LINES KEEP COMING.
+        // PAST parsingLimitBytes'S BUDGET FOR AS LONG AS THE BAD LINES KEEP COMING. parser.getPosition() (NOT
+        // xmlReader.getLocation().getCharacterOffset()-STYLE PRECISION, WHICH HAS NO EQUIVALENT HERE): THE
+        // UNDERLYING BufferedReader DOES ITS OWN READ-AHEAD, SO THE SAME "BUDGET AS COARSE AS ONE BUFFER FULL"
+        // CAVEAT XML's ANALYZE()/LOAD() COMMENTS DESCRIBE APPLIES TO THIS CHECK TOO.
         if (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes)
           break;
 
