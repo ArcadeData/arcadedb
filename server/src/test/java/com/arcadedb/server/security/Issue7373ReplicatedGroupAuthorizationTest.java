@@ -44,16 +44,21 @@ import static org.mockito.Mockito.when;
  * <b>authorization decision</b> on a peer, rather than to a file.
  * <p>
  * The two halves are deliberately separate in the fix, and this test is what makes that separation visible.
- * {@link ServerSecurity#applyReplicatedGroups} installs the document and nothing else - it runs on the Raft
- * state-machine apply thread, which may not block, and {@link ServerSecurity#updateSchema} opens and walks every
- * database. The cached {@code ServerSecurityDatabaseUser} of an already-connected principal therefore keeps
- * answering from the PREVIOUS document until the refresh runs: on the node that served the request
- * {@code ServerControlPlane} runs it immediately, and on a peer the group file's watcher does, on the
- * {@code arcadedb.server.security.reloadEvery} tick (issue #7510 is about closing that lag).
+ * {@link ServerSecurity#applyReplicatedGroups} installs the document and does not walk the databases on the
+ * calling thread - it runs on the Raft state-machine apply thread, which may not block, and
+ * {@link ServerSecurity#updateSchema} walks every open database. So the cached
+ * {@code ServerSecurityDatabaseUser} of an already-connected principal is not re-derived by the time the apply
+ * returns; the refresh is a separate step.
  * <p>
- * So both assertions below matter, and the first one is not a bug being pinned as a feature - it is the reason
- * #7510 exists, stated in a form that will fail if someone makes the apply blocking by calling
- * {@code updateSchema} from it.
+ * Since issue #7510 that step is no longer only the group file's watcher: the apply hands the sweep to a
+ * single-worker executor, so a peer converges in milliseconds instead of on the
+ * {@code arcadedb.server.security.reloadEvery} tick. That does not change what this test pins, because the
+ * server here is a Mockito mock whose {@code getDatabaseNames()} answers empty - the scheduled sweep has no
+ * database to walk, and the mocked {@link DatabaseInternal} below was never registered with a server at all.
+ * What stays asserted is therefore exactly the invariant that must not be broken: the apply returns without
+ * having done the walk itself. The test would fail if someone made it blocking by calling
+ * {@code updateSchema} from the apply thread. {@code Issue7510ReplicatedGroupPermissionRefreshTest} covers the
+ * other half - that the sweep does then happen, promptly, on another thread.
  */
 class Issue7373ReplicatedGroupAuthorizationTest {
 
@@ -109,16 +114,18 @@ class Issue7373ReplicatedGroupAuthorizationTest {
     assertThat(security.getDatabaseGroupsConfiguration(DATABASE).getJSONObject(GROUP).getJSONArray("access"))
         .as("the document itself is revoked immediately on the peer").isEmpty();
 
-    // ...but the apply does not walk the databases, so the principal that was already connected still answers
-    // from its cache. That is the lag issue #7510 tracks, and asserting it here is what would fail if someone
-    // "fixed" it by calling updateSchema() from the state-machine apply thread.
+    // ...but the apply does not walk the databases ON THIS THREAD, so the principal that was already connected
+    // still answers from its cache when the call returns. Asserting it here is what would fail if someone
+    // "fixed" issue #7510 by calling updateSchema() from the state-machine apply thread instead of handing it
+    // off. The hand-off cannot interfere: this fixture's mocked server reports no open databases.
     assertThat(alice.getDatabaseUser(database))
         .as("getDatabaseUser caches per database, and nothing in the apply clears it").isSameAs(cached);
     assertThat(cached.requestAccessOnDatabase(DATABASE_ACCESS.UPDATE_SCHEMA))
         .as("the cached principal has not been refreshed yet").isTrue();
 
-    // The refresh is the second half: ServerControlPlane runs it on the serving node, the group file's watcher
-    // runs it on a peer. Once it has run, the replicated revocation is enforced against the live principal.
+    // The refresh is the second half: ServerControlPlane runs it synchronously on the serving node, and on a
+    // peer the executor the apply schedules runs it (issue #7510), with the group file's watcher behind that as
+    // the fallback. Once it has run, the replicated revocation is enforced against the live principal.
     security.updateSchema(database);
 
     assertThat(cached.requestAccessOnDatabase(DATABASE_ACCESS.UPDATE_SCHEMA))

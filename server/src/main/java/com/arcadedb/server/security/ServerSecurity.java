@@ -50,7 +50,12 @@ import java.security.SecureRandom;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.KeySpec;
 import java.util.*;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_ALGORITHM;
@@ -95,6 +100,37 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private static final long                               PASSWORD_LOCKOUT_MS   = 30_000;
   private final        ConcurrentHashMap<String, long[]>  passwordFailures      = new ConcurrentHashMap<>();
 
+  /**
+   * Runs the per-database permission refresh a replicated group change needs, OFF the Raft state-machine apply
+   * thread (issue #7510).
+   * <p>
+   * {@link #applyReplicatedGroups} may not do the sweep itself: it runs on the apply thread, which must never
+   * block, and the sweep walks every open database. Before this existed the peers had no refresh at all and
+   * picked the change up only when {@code SecurityGroupFileRepository}'s watcher next ticked - so for the
+   * length of {@code arcadedb.server.security.reloadEvery} a peer kept granting a permission the cluster had
+   * already narrowed, while {@code GET /server/groups} on that same peer already reported the new definition.
+   * <p>
+   * One worker with {@code corePoolSize} 0, so a server that never edits a group never creates the thread, and
+   * {@link ThreadPoolExecutor.AbortPolicy} rather than caller-runs: running the sweep on the caller is exactly
+   * the outcome the hand-off exists to prevent. The queue is four deep against a coalescing flag that keeps at
+   * most one refresh queued, so a rejection is only reachable after {@link #stopService}; it is logged and the
+   * watcher tick remains the fallback.
+   * <p>
+   * Not one of the JVM-wide {@code DedicatedThreadPool}s: this one belongs to a single server instance - HA
+   * tests run several servers in one JVM - and is idle in every steady state. It follows
+   * {@code ArcadeStateMachine.snapshotInstallExecutor}, the existing precedent for getting off the Ratis thread.
+   */
+  private final        ThreadPoolExecutor                 permissionRefreshExecutor = createPermissionRefreshExecutor();
+  private final        AtomicBoolean                      permissionRefreshPending  = new AtomicBoolean();
+
+  private static ThreadPoolExecutor createPermissionRefreshExecutor() {
+    return new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(4), r -> {
+      final Thread thread = new Thread(r, "arcadedb-security-permission-refresh");
+      thread.setDaemon(true);
+      return thread;
+    }, new ThreadPoolExecutor.AbortPolicy());
+  }
+
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
     this.algorithm = configuration.getValueAsString(SERVER_SECURITY_ALGORITHM);
@@ -108,9 +144,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     usersRepository = new SecurityUserFileRepository(configPath);
     groupRepository = new SecurityGroupFileRepository(configPath, checkConfigReloadEveryMs).onReload(latestConfiguration -> {
-      for (final String databaseName : server.getDatabaseNames()) {
-        updateSchema(server.getDatabase(databaseName));
-      }
+      refreshOpenDatabasePermissions();
       return null;
     });
 
@@ -210,6 +244,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     users = new ConcurrentHashMap<>();
     if (groupRepository != null)
       groupRepository.stop();
+
+    // Interrupting rather than draining: a sweep in flight is re-deriving permissions of databases this server
+    // is closing anyway, and every task it could still be holding is idempotent and re-run by the next change.
+    permissionRefreshExecutor.shutdownNow();
   }
 
   public ServerSecurityUser authenticate(final String userName, final String userPassword, final String databaseName) {
@@ -594,6 +632,62 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     for (final ServerSecurityUser user : users.values())
       user.refreshDatabaseConfiguration(database, groupConfiguration);
+  }
+
+  /**
+   * Re-derives the cached permissions of every database this server currently has open, from the group document
+   * in force right now.
+   * <p>
+   * Every database rather than a named one, because the trigger is a whole replaced group document and nothing
+   * in it says which database changed - the watcher callback has always swept them all for the same reason, and
+   * this is that loop, now shared with {@link #scheduleReplicatedPermissionRefresh}.
+   * <p>
+   * A failure on one database is logged and the sweep continues: a database dropped between
+   * {@code getDatabaseNames()} and {@code getDatabase()} must not cost the databases after it their refresh, and
+   * on the refresh worker an escaping exception would also kill the sweep the next group change needs.
+   */
+  private void refreshOpenDatabasePermissions() {
+    if (server == null)
+      return;
+
+    for (final String databaseName : server.getDatabaseNames()) {
+      try {
+        updateSchema(server.getDatabase(databaseName));
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not refresh the cached permissions of database '%s' after a group change; the principals "
+                + "already connected to it keep the previous permissions until the next refresh", e, databaseName);
+      }
+    }
+  }
+
+  /**
+   * Queues the {@link #refreshOpenDatabasePermissions} sweep a replicated group change needs, without blocking
+   * the caller (issue #7510). Safe to call from the Raft state-machine apply thread, which is the only caller.
+   * <p>
+   * At most one refresh is queued at a time. The pending flag is cleared at the START of the sweep rather than
+   * at its end, which is what makes the coalescing lossless: an entry applied while a sweep is running always
+   * finds the flag clear and queues another one, so the last document to be published is always swept. The
+   * price is at most one redundant sweep, and the sweep is idempotent - it re-derives from whatever document is
+   * in force when it runs.
+   */
+  private void scheduleReplicatedPermissionRefresh() {
+    if (!permissionRefreshPending.compareAndSet(false, true))
+      // A refresh is already queued and has not started reading the document yet, so it will pick this one up.
+      return;
+
+    try {
+      permissionRefreshExecutor.execute(() -> {
+        permissionRefreshPending.set(false);
+        refreshOpenDatabasePermissions();
+      });
+    } catch (final RejectedExecutionException e) {
+      permissionRefreshPending.set(false);
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not schedule the permission refresh for a replicated group change; the principals already "
+              + "connected to this node keep the previous permissions until the '%s' watcher next reloads "
+              + "(arcadedb.server.security.reloadEvery)", e, SecurityGroupFileRepository.FILE_NAME);
+    }
   }
 
   public String getEncodedHash(final String password, final String salt, final int iterations) {
@@ -1058,11 +1152,15 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * is in force, are the group half of issue #7137: see
    * {@link SecurityGroupFileRepository#applyReplicated}.
    * <p>
-   * The per-database permission caches are NOT refreshed from here: {@code ServerSecurity.updateSchema} opens
-   * and walks each database, which is blocking work this thread may not do. The peers pick the change up through
-   * {@code SecurityGroupFileRepository}'s file watcher, on the {@code arcadedb.server.security.reloadEvery}
-   * interval, which is the same mechanism a hand-edited group file has always gone through. The node that served
-   * the request refreshes immediately, in {@code ServerControlPlane}.
+   * The per-database permission caches are not refreshed on THIS thread - {@code updateSchema} walks every open
+   * database, which is blocking work the apply thread may not do - but they are refreshed:
+   * {@link #scheduleReplicatedPermissionRefresh} hands the sweep to a single-worker executor that runs it in
+   * milliseconds (issue #7510). Until that existed, a peer converged only when
+   * {@code SecurityGroupFileRepository}'s watcher next ticked, so for the length of
+   * {@code arcadedb.server.security.reloadEvery} it kept granting a permission the cluster had already narrowed.
+   * The watcher is still there and is still what a hand-edited group file goes through; it is now the fallback
+   * rather than the mechanism. The node that served the request refreshes synchronously, in
+   * {@code ServerControlPlane}, so its 200 still means "enforced here".
    */
   public void applyReplicatedGroups(final String groupsJson) {
     final JSONObject root = new JSONObject(groupsJson);
@@ -1085,6 +1183,13 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
               + "discard the versionless file and fall back to the DEFAULT group definitions");
 
     final Exception persistFailure = groupRepository.applyReplicated(root);
+
+    // Scheduled here, BEFORE the persistence failure is reported, because the document is in force from the
+    // line above whether or not it reached the disk - that is the whole point of the publish-before-persist
+    // ordering. Refreshing only on the happy path would leave this node enforcing the previous groups for as
+    // long as the volume stayed broken, which is the case that ordering exists to prevent (issue #7510).
+    scheduleReplicatedPermissionRefresh();
+
     if (persistFailure != null) {
       LogManager.instance().log(this, Level.SEVERE,
           "Could not write the replicated group document to '%s'. The new groups ARE in effect on this node from "
