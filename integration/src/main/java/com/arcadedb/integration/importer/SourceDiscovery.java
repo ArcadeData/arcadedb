@@ -689,6 +689,9 @@ public class SourceDiscovery {
     }
 
     final StringBuilder line = new StringBuilder(128);
+    // THE isEndOfStream() HALF IS DEFENCE, NOT A LIVE CASE: EVERY nextChar() IN THIS CLASS IS GUARDED BY AN
+    // isAvailable(), SO first IS A REAL CHARACTER WHENEVER IT IS NOT 0. IT IS KEPT BECAUSE THE COST OF A FUTURE
+    // CALLER LOSING THAT GUARD IS Parser.END_OF_STREAM SILENTLY BECOMING THE FIRST CHARACTER OF A SNIFFED LINE
     if (first != 0 && !parser.isEndOfStream())
       line.append(first);
 

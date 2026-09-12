@@ -183,6 +183,15 @@ public class Parser {
     return peek() >= 0;
   }
 
+  /**
+   * The source's byte stream, positioned past its leading comment block unless this parser was built to skip that
+   * (see {@link #Parser(Source, long, boolean)}).
+   * <p>
+   * Read it, do not rewind it: {@code mark()}/{@code reset()} on the returned stream are not supported when the
+   * block is being dropped, because the pushback the lookahead needs is not markable. Rewinding a source is
+   * {@link #reset()}'s job anyway - it re-opens the source and rebuilds this stream, which is the only thing that
+   * puts the comment-block scan back at the start too.
+   */
   public InputStream getInputStream() {
     return is;
   }

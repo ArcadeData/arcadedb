@@ -807,7 +807,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     return switch (entityType) {
       case VERTEX -> settings.verticesSkipEntries != null ? settings.verticesSkipEntries : defaultHeaderSkipEntries();
       case EDGE -> settings.edgesSkipEntries != null ? settings.edgesSkipEntries : defaultHeaderSkipEntries();
-      // A SUPPLIED HEADER MEANS THE FILE HAS NO HEADER LINE, SO THERE IS NOTHING TO SKIP
+      // A SUPPLIED HEADER MEANS THE FILE HAS NO HEADER LINE, SO THERE IS NOTHING TO SKIP. THE DOCUMENTS ROUTE ONLY:
+      // -verticesHeader AND -edgesHeader HAVE NEVER SUPPRESSED THE DEFAULT SKIP AND STILL DO NOT, WHICH IS ISSUE
+      // #7499 - CHANGING IT IS A BEHAVIOUR CHANGE FOR ANYONE PASSING A HEADER AND RELYING ON THE SKIP, SO IT IS NOT
+      // FOLDED INTO A HELPER WHOSE POINT IS TO PRESERVE WHAT EACH ROUTE ALREADY DID
       case DOCUMENT, DATABASE -> settings.documentsSkipEntries != null ?
           settings.documentsSkipEntries :
           settings.documentsHeader == null ? defaultHeaderSkipEntries() : 0L;
@@ -844,8 +847,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     context.skippedRecords.addAndGet(skipped);
     LogManager.instance().log(this, Level.INFO,
-        "- Skipped rows.....: %d (skipped as header rows by %s, reported as skippedRecords and not as errors)", null, skipped,
-        skipEntriesOption(entityType));
+        "- Skipped rows.....: %d (dropped before the first imported row by %s, reported as skippedRecords and not "
+            + "as errors)", null, skipped, skipEntriesOption(entityType));
   }
 
   /**
