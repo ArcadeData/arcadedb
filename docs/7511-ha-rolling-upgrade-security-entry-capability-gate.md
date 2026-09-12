@@ -343,3 +343,28 @@ claude's review said nothing blocks the merge. Its four notes:
    Residual risk and in `ha-raft/CLAUDE.md`'s "Negotiation governs what is written next" section. No change.
 
 No deferred items.
+
+### Cycle 3 - `eb5427e` - clean approval
+
+"Nothing here blocks merge." The review traced the source rather than the diff and independently confirmed the
+three things the design turns on:
+
+* `refreshPeerCapabilities()` already swallows a probe failure or interrupt and records it as unknown, so
+  `peersMissingCapabilityNow` cannot escape as an uncaught 500 in place of the intended 409 /
+  `FAILED_PRECONDITION`;
+* the 409 arm precedes the generic `OperationNotAvailableException` handling, with
+  `aPlainOperationNotAvailableRefusalIsNotSweptIntoTheSame409` pinning it;
+* the `exceptionArgs` / `detail` split is the correct one, mirroring `ResultSetTooLargeException`.
+
+Its one remaining note - that the exception extends `ServerControlPlane.OperationNotAvailableException` by outer
+qualification rather than importing the nested type - is marked stylistic with no precedent either way, and
+explicitly "not worth changing". No change made, and nothing deferred.
+
+CI on this head: `build-and-package`, CodeQL, Codacy, Meterian, lint and CodeRabbit all green. The one CodeRabbit
+review thread the PR ever had is resolved (by CodeRabbit itself, after re-verifying the fix).
+
+## Final state
+
+`clean-approval`. Three review cycles, three findings acted on (one CodeRabbit Major, two claude observations),
+nothing deferred, no unresolved feedback. Follow-ups #7548 and #7549 filed before the PR opened; #7521 already
+covers the addPeer-seed consequence. **The merge is the developer's.**
