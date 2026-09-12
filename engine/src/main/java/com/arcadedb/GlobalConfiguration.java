@@ -1992,6 +1992,31 @@ public enum GlobalConfiguration {
       costs one whole-document entry per database to re-prime the diff base.""",
       Boolean.class, true),
 
+  HA_SECURITY_ENTRY_CAPABILITY_GATE("arcadedb.ha.securityEntryCapabilityGate", SCOPE.SERVER,
+      """
+      Refuse a group or API-token change while any peer of the Raft configuration has not proved it can decode \
+      the log entry that change is replicated as (issue #7511). ON BY DEFAULT, and the default is the safe one. \
+      \
+      SECURITY_GROUPS_ENTRY and SECURITY_API_TOKENS_ENTRY are new in 26.10.1, and a node predating them cannot \
+      decode either. ArcadeStateMachine refuses to SKIP a committed entry whose type it does not recognise - \
+      skipping would diverge the cluster's security state silently - so it halts the node instead. During a \
+      rolling upgrade the cluster is mixed by construction, which made creating a group or minting a token on an \
+      already-upgraded node halt every node still on the old build: a routine admin action turning a routine \
+      upgrade into a partial outage. With this on, the operation is refused instead, with HTTP 409 / gRPC \
+      FAILED_PRECONDITION naming the peer that is holding the cluster back. Nothing is submitted, so nothing \
+      halts, and the change succeeds unchanged once the last node is up - no sequencing by hand. \
+      \
+      The peer is asked over POST /api/v1/cluster/capabilities, the #7219 handshake. Every unknown counts as a \
+      no: a peer that is unreachable, whose address identifies no single node, or that runs a build without that \
+      route all read the same way, because at the transport they ARE the same 404-or-timeout. That is what makes \
+      the gate safe and also what makes it strict - an admin change is refused while any node is DOWN, not only \
+      while any node is OLD, revocations included. \
+      \
+      Turn it off only to accept that trade knowingly: when a peer cannot be probed and you know from outside the \
+      cluster that every node runs a build that understands these entries. Turning it off does not make an old \
+      peer able to decode the entry - it makes the node halt again.""",
+      Boolean.class, true),
+
   HA_BOOTSTRAP_FROM_LOCAL_DATABASE("arcadedb.ha.bootstrapFromLocalDatabase", SCOPE.SERVER,
       """
       When true (the default) and every peer's Raft log is empty at first cluster formation, peers exchange a \
