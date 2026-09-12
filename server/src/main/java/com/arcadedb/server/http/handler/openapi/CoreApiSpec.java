@@ -140,6 +140,9 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Server");
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
     postOp.setResponses(createCommandResponses());
+    // Only this operation forwards to the HA leader, so the 504 is added here rather than in the shared
+    // createCommandResponses() that POST /api/v1/command/{database} also uses (issue #7507).
+    postOp.getResponses().addApiResponse("504", SpecBuilders.errorResponse(SpecBuilders.LEADER_FORWARD_TIMEOUT_DESCRIPTION));
     pathItem.setPost(postOp);
 
     return pathItem;

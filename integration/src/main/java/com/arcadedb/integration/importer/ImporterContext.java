@@ -135,22 +135,33 @@ public class ImporterContext {
    * each format on entry to its own {@code load()}: a format could forget, two of them had, and a format added
    * later inherits the reset instead of having to know about it (issue #7342).
    * <p>
-   * {@code lastParsed} - the value {@code FormatImporter#printProgress} subtracts to turn the counter into a rate -
-   * goes with it. Left behind, it made the first progress line of every phase after the first report a NEGATIVE
-   * rate, which is the visible artefact of the per-phase reset and was already true for the nine formats that used
-   * to reset the counter themselves.
+   * {@code lastParsed} - the value {@code FormatImporter#printProgress} subtracts from {@link #getParsedTotal()} to
+   * turn the counter into a rate - is rebased to {@link #parsedInPreviousPhases}, NOT zeroed, for the same reason:
+   * {@code printProgress} reads the CUMULATIVE total (issue #7483), so zeroing this baseline at a phase boundary
+   * made the very next progress line compute {@code (wholeImportSoFar - 0) / oneSecond} - a rate spike as visible
+   * as the negative-rate bug zeroing used to fix, just inflated instead of negative. Rebasing to the cumulative
+   * total AS OF this boundary keeps the subtraction measuring only what the new phase parses after it.
+   * <p>
+   * {@code synchronized}, with {@link #getParsedTotal()}: {@code parsed.getAndSet(0)} and
+   * {@code parsedInPreviousPhases.addAndGet(...)} are each individually atomic but not atomic AS A PAIR, so a
+   * concurrent reader - {@code ServerControlPlane}'s progress-polling {@code Timer} thread runs on a different
+   * thread than the import itself - could land between the two: {@code parsed} already zeroed,
+   * {@code parsedInPreviousPhases} not yet credited with what it held. That reads as a total LOWER than the one
+   * reported a moment before, the exact symptom this issue (#7483) exists to eliminate, just from a race instead
+   * of from the reset this method already fixed.
    */
-  public void beginPhase() {
+  public synchronized void beginPhase() {
     parsedInPreviousPhases.addAndGet(parsed.getAndSet(0));
-    lastParsed = 0;
+    lastParsed = parsedInPreviousPhases.get();
     lastLapOn = System.currentTimeMillis();
   }
 
   /**
    * The rows this IMPORT parsed: the phases already finished plus the one still running. This is what
-   * {@code parsedRecords} reports (issue #7342).
+   * {@code parsedRecords} reports (issue #7342). {@code synchronized} with {@link #beginPhase()} - see there for
+   * the race it closes.
    */
-  public long getParsedTotal() {
+  public synchronized long getParsedTotal() {
     return parsedInPreviousPhases.get() + parsed.get();
   }
 

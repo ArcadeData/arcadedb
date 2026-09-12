@@ -18,7 +18,10 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.GlobalConfiguration;
+
 import java.io.IOException;
+import java.net.http.HttpClient;
 import java.util.List;
 import java.util.Map;
 
@@ -104,9 +107,73 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * The token {@code server}'s peers actually accept: the HA plugin's own, and the raw
+   * {@link GlobalConfiguration#HA_CLUSTER_TOKEN} setting only when the plugin has none (HA not active, or a
+   * non-Raft implementation that does not derive one).
+   * <p>
+   * The fallback is not the same value as the plugin's. {@code ClusterTokenProvider} derives the token from
+   * the cluster name and the root password when the setting is left empty, and stores it on itself
+   * <em>without</em> writing it back into the configuration - so on every cluster that did not declare a
+   * token explicitly the raw setting reads empty while the effective token is a real secret. Reading the
+   * setting alone is therefore not a conservative approximation of this: it is a different answer.
+   * <p>
+   * One method rather than one per caller, because the two ends of a forwarded hop reading the resolution
+   * order differently is the defect of issue #7516 - the sender authenticated with the raw setting while the
+   * receiver checked the derived token, so on a default-configured cluster the forward carried no usable
+   * credentials at all.
+   *
+   * @return the effective token, or null/blank when this server has none
+   */
+  static String effectiveClusterToken(final ArcadeDBServer server) {
+    if (server == null)
+      return null;
+    final HAServerPlugin ha = server.getHA();
+    final String fromPlugin = ha != null ? ha.getClusterToken() : null;
+    if (fromPlugin != null && !fromPlugin.isBlank())
+      return fromPlugin;
+    return server.getConfiguration().getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+  }
+
+  /**
    * Returns the HTTP address (host:port) of the current leader, or null if unknown.
    */
   String getLeaderAddress();
+
+  /**
+   * The HTTPS endpoint (host:port) a forward to the leader should be dialled on in preference to
+   * {@link #getLeaderAddress()}, or {@code null} when there is none to prefer.
+   * <p>
+   * Answering {@code null} is the ordinary case, not a failure: it is what an implementation says when SSL is off,
+   * when no HTTPS endpoint resolves for the leader, or when the one that does is this node's own. A caller reads
+   * {@code null} as "dial the plain-HTTP address", which is the listener that is always bound
+   * ({@code HttpServer.buildUndertowServer} adds it unconditionally and the HTTPS one only on top). That is the
+   * same withhold-rather-than-refuse rule {@code PeerDialAddress.encryptedEndpointOf} applies to every other
+   * peer-to-peer dial in the cluster (issue #6221).
+   * <p>
+   * <b>An implementation that answers non-null owns the self-address check for that address.</b> Callers apply
+   * {@link #isOwnHttpAddress} to the plain-HTTP address they were handed, and it cannot speak for an HTTPS
+   * endpoint: the two are read from independent fields of {@code arcadedb.ha.serverList} with independent derive
+   * fallbacks, so one can be this node's own while the other is not.
+   *
+   * @see #getPeerHttpsClient()
+   */
+  default String getLeaderHttpsAddress() {
+    return null;
+  }
+
+  /**
+   * An {@link HttpClient} that validates a cluster peer's certificate against this node's truststore, for dialling
+   * the endpoint {@link #getLeaderHttpsAddress()} named. {@code null} when this implementation has none, in which
+   * case the caller falls back to the plain-HTTP address.
+   * <p>
+   * The client is owned by the plugin and must not be closed by the caller: it carries a connection pool and a
+   * selector thread that are shared by every forward and released when the plugin stops.
+   *
+   * @throws IOException when the trust material cannot be read - the caller falls back to plain HTTP.
+   */
+  default HttpClient getPeerHttpsClient() throws IOException {
+    return null;
+  }
 
   /**
    * Returns a comma-separated list of replica HTTP addresses, or empty string if none.

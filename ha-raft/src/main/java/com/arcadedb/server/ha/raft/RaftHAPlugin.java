@@ -36,6 +36,7 @@ import com.arcadedb.database.DatabaseInternal;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
@@ -86,6 +87,21 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // The HA verbose level is SCOPE.SERVER and HALog caches it in a static, so it has to be handed the server's
     // configuration here - otherwise the first log call caches whatever a -D happened to say (issue #7233).
     HALog.configure(configuration);
+  }
+
+  /**
+   * Installs the Raft server this plugin delegates to, without going through {@code startService()} and a real
+   * Ratis cluster.
+   * <p>
+   * Package-private and test-only, the same seam {@code RaftHAServer.setCapabilityProber} is. It exists so the
+   * #7511 interlock can be driven through the method an operator's request actually reaches - the HTTP and gRPC
+   * control planes both end at {@code replicateSecurityGroups} / {@code replicateSecurityApiTokens} - rather than
+   * only through the gate helper those two call. A gate nothing calls is a gate that is not there, and only a test
+   * of the caller can tell the difference.
+   */
+  // @VisibleForTesting
+  void setRaftHAServer(final RaftHAServer raftHAServer) {
+    this.raftHAServer = raftHAServer;
   }
 
   @Override
@@ -231,6 +247,14 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     return reportSecurityOutcome("users", applied);
   }
 
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Gated on every peer having proved it can decode a {@code SECURITY_GROUPS_ENTRY} (issue #7511). The entry type
+   * is new in 26.10.1 and a peer that cannot decode it HALTS rather than skips it, so during a rolling upgrade an
+   * ungated group change turned a routine admin action into a partial outage. The gate runs before the broker is
+   * handed anything, so a refusal submits nothing.
+   */
   @Override
   public void replicateSecurityGroups(final String groupsJson) {
     replicateSecurityGroups(groupsJson, null);
@@ -240,6 +264,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   public boolean replicateSecurityGroups(final String groupsJson, final String expectedFingerprint) {
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
+
+    SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raftHAServer, RaftLogEntryType.SECURITY_GROUPS_ENTRY,
+        "group document");
 
     final boolean applied;
     try {
@@ -253,6 +280,13 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     return reportSecurityOutcome("groups", applied);
   }
 
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Gated the same way {@link #replicateSecurityGroups} is, and for the same reason (issue #7511). Worth being
+   * explicit that this covers a REVOCATION as well as a mint: a revoked token is not revoked anywhere if the entry
+   * carrying it halts the nodes that were still serving it.
+   */
   @Override
   public void replicateSecurityApiTokens(final String apiTokensJson) {
     replicateSecurityApiTokens(apiTokensJson, null);
@@ -262,6 +296,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   public boolean replicateSecurityApiTokens(final String apiTokensJson, final String expectedFingerprint) {
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
+
+    SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raftHAServer,
+        RaftLogEntryType.SECURITY_API_TOKENS_ENTRY, "API-token document");
 
     final boolean applied;
     try {
@@ -511,6 +548,27 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   @Override
   public String getLeaderAddress() {
     return raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
+  }
+
+  /**
+   * The HTTPS endpoint a forward to the leader should prefer, or {@code null} when the plain-HTTP one is what
+   * there is (issue #7508). The policy - SSL on, an HTTPS endpoint that resolves, and not this node's own - lives
+   * in {@link RaftHAServer#getLeaderHttpsAddress()}, next to the resolver it reads.
+   */
+  @Override
+  public String getLeaderHttpsAddress() {
+    return raftHAServer != null ? raftHAServer.getLeaderHttpsAddress() : null;
+  }
+
+  /**
+   * The HTTPS client a forward to {@link #getLeaderHttpsAddress()} is sent on: this node's truststore, so the
+   * leader's certificate is validated against the cluster's trust anchors and not against this node's own key
+   * material - the same context {@code SnapshotInstaller}, the capability probe and the bootstrap-state query
+   * already use (issue #4470).
+   */
+  @Override
+  public HttpClient getPeerHttpsClient() throws IOException {
+    return raftHAServer != null ? raftHAServer.getForwardHttpsClient() : null;
   }
 
   @Override

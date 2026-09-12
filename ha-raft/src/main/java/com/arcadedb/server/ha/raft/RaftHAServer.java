@@ -71,6 +71,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.net.URLEncoder;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
@@ -236,6 +237,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Per server and not static: several ArcadeDBServer instances share a JVM in every HA test, and a shared cache
   // would rebuild on each probe and could close a client another server was still sending on.
   private final    TrustedHttpClientCache    capabilityHttpsClients = new TrustedHttpClientCache();
+  /**
+   * The HTTPS client that requests forwarded to the leader are sent on (issue #7508). A second cache rather than
+   * a share of {@link #capabilityHttpsClients}: that one is asked by a single scheduled thread, sequentially, and
+   * its rebuild path is documented against exactly that. This one is asked by HTTP worker threads, concurrently,
+   * so a truststore rotation makes one of them close the previous client - an orderly shutdown that waits for the
+   * forwards still in flight on it - while the others wait on the cache's monitor. That is bounded by their own
+   * request timeouts and happens only when the operator rotates a certificate.
+   */
+  private final    TrustedHttpClientCache    forwardHttpsClients    = new TrustedHttpClientCache();
   // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728). One worker is
   // enough since at most one resync fires per replica per stall streak; a small bounded queue with a
   // caller-runs policy degrades to running on the lag-monitor thread under the (unlikely) burst.
@@ -1005,6 +1015,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * The HTTPS client a forward to the leader is sent on, built from this node's truststore and rebuilt only when
+   * that truststore changes (issue #7508). Owned here, so it is closed with the server rather than held for the
+   * life of the JVM.
+   */
+  HttpClient getForwardHttpsClient() throws IOException {
+    return forwardHttpsClients.clientFor(arcadeServer);
+  }
+
+  /**
    * Returns a human-readable display name for a peer, e.g. "arcadedb-0 (localhost:2480)".
    * Falls back to the raw peer ID string if the peer is unknown.
    */
@@ -1708,6 +1727,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // been told to stand down. Making the close asynchronous to avoid that wait would hand the shutdown path a
     // client that outlives the server it belongs to, which is the leak this call exists to prevent.
     capabilityHttpsClients.close();
+    // Same reasoning for the forward client: a forward still in flight holds this close() until it unwinds,
+    // bounded by that request's own timeout, and leaving it open would leak a selector thread per server.
+    forwardHttpsClients.close();
     stalledResyncExecutor.shutdownNow();
     channelRecoveryExecutor.shutdownNow();
     if (transactionBroker != null) {
@@ -1850,6 +1872,42 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public String getLeaderHttpAddress() {
     return resolveHttpAddress(getLeaderId());
+  }
+
+  /**
+   * The HTTPS endpoint (host:port) of the current Raft leader, for a caller that would otherwise dial its
+   * plain-HTTP one; {@code null} when there is nothing better to dial than that (issue #7508).
+   * <p>
+   * Three ways to answer {@code null}, and none of them is a failure - the caller falls back to
+   * {@link #getLeaderHttpAddress()}, the listener that is always bound:
+   * <ul>
+   * <li>SSL is off, so there is no HTTPS listener anywhere in the cluster to dial;</li>
+   * <li>no HTTPS endpoint resolves for the leader ({@link #resolveHttpsAddress} answers {@code null} when the
+   * 5th field of {@code arcadedb.ha.serverList} is absent and this node has no HTTPS port to derive one from);</li>
+   * <li>the one that resolves is this node's own. The HTTP twin leaves that check to its callers, which run
+   * {@link #isOwnHttpAddress}; that method speaks for the HTTP listener and cannot answer for an HTTPS endpoint,
+   * so this one makes the check itself rather than handing out an address no caller can vet.</li>
+   * </ul>
+   * Resolved through the plain {@link #resolveHttpsAddress} rather than through
+   * {@link #getUnambiguousPeerHttpsAddress}, mirroring the HTTP twin exactly: an address that names the wrong
+   * node is caught by the receiving node's one-hop refusal, since the forward carries
+   * {@code LeaderForwardContext.FORWARDED_TO_LEADER_HEADER} whichever scheme it travelled on (issue #6191).
+   */
+  public String getLeaderHttpsAddress() {
+    return preferredLeaderHttpsAddress(configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL),
+        resolveHttpsAddress(getLeaderId()), getLocalHttpsAddress());
+  }
+
+  /**
+   * The decision {@link #getLeaderHttpsAddress()} makes, without the resolver behind it. Package-private and pure
+   * so the three ways it answers {@code null} are unit-testable without a Raft group (issue #7508).
+   */
+  static String preferredLeaderHttpsAddress(final boolean useSSL, final String leaderHttpsAddress,
+      final String localHttpsAddress) {
+    if (!useSSL || leaderHttpsAddress == null)
+      return null;
+    return localHttpsAddress != null && isSameHttpEndpoint(localHttpsAddress, leaderHttpsAddress)
+        ? null : leaderHttpsAddress;
   }
 
   public RaftClient getClient() {
@@ -4389,6 +4447,57 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       if (!peer.getId().equals(localPeerId))
         peerIds.add(peer.getId().toString());
     return peerCapabilities.peersMissing(peerIds, capability);
+  }
+
+  /**
+   * The peers that have NOT proved they can decode {@code capability}, asking them NOW when the cached answer
+   * does not already cover every one of them (issue #7511).
+   * <p>
+   * {@link #peersMissingCapability} alone is not enough for a caller that REFUSES on a "no". The background
+   * capability monitor runs on the leader only ({@link #startCapabilityMonitor}, called from
+   * {@link #startLagMonitor}), because #7219's only consumer was the leader-side schema-delta decision. The
+   * consumer this exists for is not leader-side: the group and API-token REST routes do not forward, so
+   * {@code ServerSecurity.saveGroupClusterWide} and friends run on whichever node the client or load balancer
+   * picked, and submit through a Raft client that routes to the leader. On a FOLLOWER the registry is empty by
+   * design, so a refusal built on the cached answer alone would refuse every group change ever made on a
+   * follower, on a perfectly healthy single-version cluster.
+   * <p>
+   * So the cached answer is consulted first and one synchronous round is run only when it is not already a full
+   * "yes". That keeps the leader's hot path free - a warm registry answers without dialling anything - and makes
+   * a follower's answer correct at the cost of one probe round on an operation that is rare by construction
+   * (group administration and token minting, both already serialised behind the {@code ServerSecurity} monitor
+   * across a full Raft round trip). The round is bounded: sequential, with
+   * {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} per peer.
+   * <p>
+   * Re-reading after the round rather than returning what it observed is deliberate: the round records through
+   * the same generation-guarded registry the monitor writes to, so the re-read is the one answer both agree on.
+   * <p>
+   * <b>Overlapping with the leader's background round is harmless, and deliberately not locked out</b> (PR #7555
+   * review). Two rounds can fan out at once on a leader, which costs a redundant probe and nothing else: every
+   * write goes through {@link PeerCapabilityRegistry}'s generation guard, and the one outcome that would matter -
+   * a peer wrongly read as CAPABLE - cannot be produced by an interleaving, because recording a capability
+   * requires a peer to have actually answered with it. A shared lock would remove the redundant probe at the cost
+   * of a lock-order hazard worth more than it: this method runs on a request thread that already holds the
+   * {@code ServerSecurity} monitor, so making the capability-monitor thread wait on the same lock would put a
+   * monitor-held wait on both sides of a cycle.
+   * <p>
+   * The round is logged at FINE with what it cost and what it concluded. It is the one place this feature can add
+   * latency an operator did not ask for - the {@code ServerSecurity} monitor is held across it, and that monitor is
+   * shared with user administration, so an unreachable peer delays the next {@code createUser} as well as the next
+   * group change - and a stall with nothing in the log to explain it is the thing that wastes an afternoon.
+   */
+  public List<String> peersMissingCapabilityNow(final String capability) {
+    final List<String> cached = peersMissingCapability(capability);
+    if (cached.isEmpty())
+      return cached;
+
+    final long startedAt = System.currentTimeMillis();
+    refreshPeerCapabilities();
+    final List<String> missing = peersMissingCapability(capability);
+    LogManager.instance().log(this, Level.FINE,
+        "Asked every peer about the '%s' capability before replicating an entry that needs it (%d ms); still "
+            + "missing: %s", capability, System.currentTimeMillis() - startedAt, missing);
+    return missing;
   }
 
   /** What this node tells its peers it can decode. */

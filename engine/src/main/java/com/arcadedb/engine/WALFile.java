@@ -33,6 +33,8 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -60,6 +62,7 @@ public class WALFile extends LockContext {
   private final    RandomAccessFile file;
   private final    String           filePath;
   private final    FileChannel      channel;
+  private final    FileLock         lock;
   private volatile boolean          active            = true;
   private volatile boolean          open;
   private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
@@ -96,10 +99,56 @@ public class WALFile extends LockContext {
     this.file = new RandomAccessFile(filePath, "rw");
     this.channel = file.getChannel();
     this.open = true;
+    this.lock = acquireLock();
+  }
+
+  /**
+   * Exclusive advisory lock on this file for the whole life of this instance (issue #7479). Without it, a
+   * second process/instance's directory-wide WAL cleanup on close() had no way to tell this file apart from
+   * a genuine orphan an earlier unclean shutdown left behind, and deleted it out from under this one - the
+   * reported corruption. Best-effort: a lock that cannot be acquired (a same-named file collision, or a
+   * filesystem whose advisory locking does not reach across process/container boundaries, e.g. some Docker
+   * Desktop bind mounts) leaves this file exactly as unprotected as it always was, never worse.
+   * <p>
+   * The guarantee this gives {@code TransactionManager}'s orphan sweep is scoped to a SEPARATE OS process
+   * holding the file open, which is the reported scenario and the only one {@code LocalDatabase}'s own
+   * per-database lock does not already rule out (two {@code LocalDatabase} instances on the same path
+   * within one JVM/process are refused at open time). It is not a guarantee against a second, same-process
+   * {@code WALFile} on this exact path: {@code FileChannel}'s own javadoc warns that closing any channel
+   * releases every lock the JVM holds on the underlying file, "regardless of whether the locks were
+   * acquired via that channel or via another channel open on the same file" - the POSIX advisory-lock
+   * model this wraps is scoped to a (process, inode) pair, not a file descriptor, so it cannot do better.
+   */
+  private FileLock acquireLock() {
+    try {
+      return channel.tryLock();
+    } catch (final IOException | OverlappingFileLockException e) {
+      LogManager.instance()
+          .log(this, Level.WARNING, "Unable to lock WAL file '%s'; another process may be able to remove it", e, filePath);
+      return null;
+    }
+  }
+
+  /**
+   * Whether THIS instance's own {@link #acquireLock()} actually got the lock (issue #7479) - i.e. nobody
+   * else had the file open at that moment - not whether the file is locked in general. Lets a caller that
+   * opened this file only to probe whether anyone else has it open - {@code TransactionManager}'s orphan
+   * sweep and construction-site guards - tell that apart from "someone was already there" without having
+   * to reach into the lock field itself.
+   */
+  boolean acquiredLock() {
+    return lock != null;
   }
 
   public synchronized void close() throws IOException {
     this.open = false;
+    if (lock != null)
+      try {
+        lock.release();
+      } catch (final IOException e) {
+        // IGNORE IT: the channel close right below releases it regardless
+      }
+
     if (channel != null)
       channel.close();
 
