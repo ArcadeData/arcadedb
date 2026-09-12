@@ -106,6 +106,42 @@ class Issue7482ParsingLimitAppliesToAllFormatsTest {
   }
 
   /**
+   * Jsonl got the identical {@code parsingLimitBytes} guard as CSV/RDF, checked at the top of its {@code while}
+   * loop before the {@code -onRowError skip} {@code continue} - but only CSV's own row loop had an end-to-end test
+   * exercising the guard. This pins the same claim for Jsonl's.
+   */
+  @Test
+  void jsonlHonoursParsingLimitBytes() throws Exception {
+    final int rows = 500;
+    final StringBuilder jsonl = new StringBuilder();
+    for (int i = 0; i < rows; i++)
+      jsonl.append("{\"t\":\"d\",\"c\":{\"t\":\"Doc\",\"r\":\"#1:").append(i).append("\",\"p\":{\"n\":\"v").append(i)
+          .append("\"}}}\n");
+    final File file = writeFile("importer-7482-jsonl-bytes.jsonl", jsonl.toString());
+    final String databasePath = "target/databases/test-import-7482-jsonl-bytes";
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    try (final Database setup = new DatabaseFactory(databasePath).create()) {
+      setup.transaction(() -> setup.getSchema().createDocumentType("Doc"));
+    }
+
+    try {
+      new Importer(("-url file://" + file.getAbsolutePath() + " -database " + databasePath + " -parsingLimitBytes 200")
+          .split(" ")).load();
+
+      try (final Database db = new DatabaseFactory(databasePath).open()) {
+        final long imported = db.query("sql", "select count(*) as c from Doc").next().<Long>getProperty("c");
+        assertThat(imported).as("a 200-byte budget on a source many times larger must stop the import short of the end")
+            .isLessThan(rows);
+      }
+    } finally {
+      dropDatabase(databasePath);
+      file.delete();
+      TestHelper.checkActiveDatabases();
+    }
+  }
+
+  /**
    * The array-based JSON format needed the byte limit threaded through two more call levels than the others, and
    * the array has to be fully drained (via {@code JsonReader#skipValue()}) once the limit trips, or
    * {@code reader.endArray()} throws: this pins that the limit stops importing AND that the reader is left in a
