@@ -169,11 +169,25 @@ public class PluginApiSpec implements OpenApiContributor {
   private PathItem createAddPeerPath() {
     final Operation post = SpecBuilders.operation("addClusterPeer", "Cluster",
         "Add a peer to the cluster",
-        "Adds a peer to the Raft configuration. " + RAFT_REQUIRED);
+        """
+            Adds a peer to the Raft configuration, then seeds it with the current security documents \
+            (users, groups and API tokens), which live outside the database directory and are therefore \
+            not carried by a snapshot install.
+
+            The seed is retried within arcadedb.ha.securitySeedRetries. If a document still has not been \
+            submitted when the budget is spent, the answer is 503: the peer IS a member - the membership \
+            change is never rolled back - but until the seed lands it authenticates and authorizes from its \
+            own copies of those documents, so a credential the cluster has revoked can still be in force \
+            there. Re-issuing this request is the fix: adding a peer that is already a member is a no-op and \
+            the seed is reissued. """ + RAFT_REQUIRED);
     post.setRequestBody(SpecBuilders.jsonBody("Peer to add", "AddPeerRequest", true));
-    post.setResponses(SpecBuilders.standardResponses("200",
-        SpecBuilders.jsonResponse("Peer added", "ClusterActionResponse"),
-        "400", "401", "403", "500"));
+    final ApiResponses responses = SpecBuilders.standardResponses("200",
+        SpecBuilders.jsonResponse("Peer added and every security document seeded", "ClusterActionResponse"),
+        "400", "401", "403", "500");
+    responses.addApiResponse("503", SpecBuilders.jsonResponse(
+        "Peer added, but at least one security document could not be seeded to it. 'error' names them and "
+            + "'detail' says what the peer enforces until the seed is reissued.", "ClusterActionResponse"));
+    post.setResponses(responses);
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);
@@ -510,6 +524,11 @@ public class PluginApiSpec implements OpenApiContributor {
         "Database the action applied to. Present on resync."));
     schema.addProperty("localServer", SpecBuilders.string(
         "Server that performed the action. Present on resync."));
+    schema.addProperty("error", SpecBuilders.string(
+        "Short reason the action did not fully succeed. Present on the 503 of add-peer, naming the security "
+            + "documents that could not be seeded to the new peer."));
+    schema.addProperty("detail", SpecBuilders.string(
+        "Long form of 'error', including what to do about it. Present whenever 'error' is."));
     return schema;
   }
 

@@ -61,6 +61,10 @@ import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
 public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   public static final  int                             LATEST_VERSION       = 2;
+  /** Document names {@link #seedSecurityStateClusterWide(int, long)} reports as failed, and retries by. */
+  private static final String                          SEED_USERS           = "users";
+  private static final String                          SEED_GROUPS          = "groups";
+  private static final String                          SEED_API_TOKENS      = "API tokens";
   private final        ArcadeDBServer                  server;
   private final        SecurityUserFileRepository      usersRepository;
   private final        SecurityGroupFileRepository     groupRepository;
@@ -1120,19 +1124,113 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * Each document is seeded under its own acquisition rather than all three under one, so an unrelated user
    * change is not blocked for three consecutive Raft round trips. Each is best-effort and independent: the
    * failures are collected and returned rather than thrown, so one failing seed does not skip the other two.
+   * <p>
+   * One attempt at each document. The cluster-admission paths call
+   * {@link #seedSecurityStateClusterWideWithRetry()} instead, which retries the ones that failed.
    *
    * @return the names of the documents that could not be seeded, empty when all three were submitted
    */
   public List<String> seedSecurityStateClusterWide() {
+    return seedSecurityStateClusterWide(1, 0L);
+  }
+
+  /**
+   * {@link #seedSecurityStateClusterWide()} with the retry budget the server is configured for
+   * ({@code arcadedb.ha.securitySeedRetries} and {@code arcadedb.ha.securitySeedRetryBaseMs}).
+   * <p>
+   * This is the overload every cluster-admission path uses, and the settings are read here - per call, through
+   * the server's configuration - rather than captured at construction, so a {@code SET SERVER SETTING} takes
+   * effect on the next admission without a restart.
+   *
+   * @return the names of the documents that could not be seeded, empty when all three were submitted
+   */
+  public List<String> seedSecurityStateClusterWideWithRetry() {
+    if (server == null)
+      return List.of();
+
+    final ContextConfiguration configuration = server.getConfiguration();
+    return seedSecurityStateClusterWide(
+        configuration.getValueAsInteger(GlobalConfiguration.HA_SECURITY_SEED_RETRIES),
+        configuration.getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_BASE_MS));
+  }
+
+  /**
+   * {@link #seedSecurityStateClusterWide()} with a bounded retry over the documents that failed (issue #7521).
+   * <p>
+   * The seed is submitted as a Raft entry, so its usual failure is "no quorum right now" - which is the same
+   * condition that makes adding a peer interesting in the first place, and which clears on its own. A single
+   * attempt turned that transient condition into a peer running indefinitely on its own stale copies of the
+   * three documents, because nothing else converges them: they live under {@code <server-root>/config/},
+   * outside the database directory, so Raft snapshot install does not carry them.
+   * <p>
+   * Only the documents that failed are retried, so a document already submitted is not submitted again - a
+   * second entry would be harmless but not free, and the count is what the tests pin.
+   * <p>
+   * Every attempt re-reads the document under this monitor, exactly as the first one does. That is not an
+   * optimisation detail: a retry that replayed the payload read before the first attempt would carry a
+   * pre-revocation document and put the revoked token, or the deleted group, back on every node - the very
+   * failure {@link #seedSecurityStateClusterWide()}'s monitor exists to prevent, arriving through the retry.
+   * <p>
+   * An interrupt stops the retrying rather than swallowing the flag: the interrupt status is restored and what
+   * is still unseeded is returned, so the caller reports the honest partial result.
+   *
+   * @param maxAttempts  attempts in total per document; anything below 1 is treated as 1
+   * @param retryBaseMs  base backoff in milliseconds; the pause before retry n (1-based) is
+   *                     {@code retryBaseMs * 2^(n-1)}. 0 retries without pausing
+   *
+   * @return the names of the documents that could not be seeded, empty when all three were submitted
+   */
+  public List<String> seedSecurityStateClusterWide(final int maxAttempts, final long retryBaseMs) {
     final HAServerPlugin ha = server != null ? server.getHA() : null;
     if (ha == null)
       return List.of();
 
-    final List<String> failed = new ArrayList<>(3);
-    seed(failed, "users", () -> seedUsersClusterWide(ha));
-    seed(failed, "groups", () -> seedGroupsClusterWide(ha));
-    seed(failed, "API tokens", () -> seedApiTokensClusterWide(ha));
+    final int attempts = Math.max(1, maxAttempts);
+    List<String> failed = seedOnce(ha, null);
+
+    for (int retry = 1; retry < attempts && !failed.isEmpty(); retry++) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Retrying the cluster-wide seed of these security documents (attempt %d of %d): %s", retry + 1, attempts,
+          String.join(", ", failed));
+      if (!pauseBeforeRetry(retryBaseMs, retry))
+        break;
+      failed = seedOnce(ha, failed);
+    }
+
     return failed;
+  }
+
+  /**
+   * One pass over the three documents, or over {@code only} when retrying. Each is independent: the failures
+   * are collected and returned rather than thrown, so one failing seed does not skip the others.
+   */
+  private List<String> seedOnce(final HAServerPlugin ha, final Collection<String> only) {
+    final List<String> failed = new ArrayList<>(3);
+    if (only == null || only.contains(SEED_USERS))
+      seed(failed, SEED_USERS, () -> seedUsersClusterWide(ha));
+    if (only == null || only.contains(SEED_GROUPS))
+      seed(failed, SEED_GROUPS, () -> seedGroupsClusterWide(ha));
+    if (only == null || only.contains(SEED_API_TOKENS))
+      seed(failed, SEED_API_TOKENS, () -> seedApiTokensClusterWide(ha));
+    return failed;
+  }
+
+  /**
+   * Sleeps the backoff for retry {@code retry} (1-based). Returns false when the wait was interrupted, which
+   * stops the retrying - the interrupt flag is restored so the caller's thread keeps it.
+   */
+  private static boolean pauseBeforeRetry(final long retryBaseMs, final int retry) {
+    if (retryBaseMs <= 0)
+      return true;
+    try {
+      // Shift on the retry index, not on an unbounded counter: attempts are bounded by maxAttempts, which is
+      // configuration, so cap the exponent as well rather than trusting it to stay small.
+      Thread.sleep(retryBaseMs << Math.min(retry - 1, 16));
+      return true;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
   }
 
   private void seed(final List<String> failed, final String what, final Runnable seeding) {

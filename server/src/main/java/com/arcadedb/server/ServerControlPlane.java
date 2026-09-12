@@ -217,17 +217,28 @@ public class ServerControlPlane {
           "Cannot connect '" + serverAddress + "' to the cluster: " + e.getMessage());
     }
 
-    // Seed the newly joined peer with the current users file, exactly as PostAddPeerHandler does after
-    // its own addPeer: server-users.jsonl lives under <server-root>/config/, outside the database
-    // directory, so snapshot install does not cover it and the new peer would run with a stale user set
-    // until the next cluster-wide user mutation. Best-effort, as it is there: the peer is already a
-    // committed member and a failure here does not - and must not - roll that back.
-    try {
-      ha.replicateSecurityUsers(server.getSecurity().getUsersJsonPayload());
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Users seed to '%s' after connect cluster failed (best-effort): %s", serverAddress, e.getMessage());
-    }
+    // Seed the newly joined peer with the current security documents, through the same retrying,
+    // monitor-held helper PostAddPeerHandler uses after its own addPeer (issue #7521). All three of them:
+    // server-users.jsonl, server-groups.json and server-api-tokens.json all live under <server-root>/config/,
+    // outside the database directory, so snapshot install carries none of them, and seeding only the users -
+    // which is what this did - left a group narrowed or a token revoked while the peer was away in force on it
+    // until the next cluster-wide change of that kind.
+    final List<String> failedSeeds = server.getSecurity().seedSecurityStateClusterWideWithRetry();
+    if (!failedSeeds.isEmpty())
+      // Still best-effort on THIS verb: the join is a committed membership change by the time the seed runs, and
+      // issue #7401 deliberately decided a seed failure must not be reported as a failed join, because the caller
+      // would retry a join that already happened. The sibling POST /api/v1/cluster/peer route answers 503 in the
+      // same situation, so the two verbs disagree about how loudly this is reported - tracked by issue #7550,
+      // which is where that inconsistency gets resolved one way or the other rather than here.
+      //
+      // SEVERE, not WARNING: what has happened is that a cluster member enforces credentials the cluster has
+      // already changed.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Server '%s' joined the cluster but these security documents could NOT be seeded to it: %s. It "
+              + "authenticates and authorizes from its own copies of them - a user deleted, a group narrowed or an "
+              + "API token revoked since it last held them is still in force there. Re-run connect cluster: joining "
+              + "a server that is already a member is a no-op and the seed is reissued", serverAddress,
+          String.join(", ", failedSeeds));
   }
 
   // ---------------------------------------------------------------------------------------------

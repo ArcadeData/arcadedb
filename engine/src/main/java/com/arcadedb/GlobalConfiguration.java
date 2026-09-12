@@ -2026,6 +2026,14 @@ public enum GlobalConfiguration {
       "Base delay in milliseconds for exponential backoff between snapshot download retries. Actual delay is baseMs * 2^attempt.",
       Long.class, 5000L),
 
+  HA_SECURITY_SEED_RETRIES("arcadedb.ha.securitySeedRetries", SCOPE.SERVER,
+      "Attempts, in total, at seeding each security document (users, groups, API tokens) to a peer that has just been added to the cluster. The seed is submitted as a Raft entry, so its usual failure is a momentary loss of quorum - the same condition that makes adding a peer interesting - and only the documents that failed are retried. 1 disables the retry. When the budget is exhausted the caller is answered with a failure naming the documents that did not land, never a success.",
+      Integer.class, 3),
+
+  HA_SECURITY_SEED_RETRY_BASE_MS("arcadedb.ha.securitySeedRetryBaseMs", SCOPE.SERVER,
+      "Base delay in milliseconds for the exponential backoff between security-document seed retries. The delay before retry n (1-based) is baseMs * 2^(n-1).",
+      Long.class, 500L),
+
   HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS("arcadedb.ha.snapshotInstallBackupWaitMs", SCOPE.SERVER,
       "Milliseconds a snapshot install waits for a backup or an import of the same database, already running on this node, to finish before it replaces the database files anyway. An install applies a committed Raft entry, so the wait has to be bounded: when it expires the install proceeds and logs a warning. 0 refuses to wait at all.",
       Long.class, 60_000L),

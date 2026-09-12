@@ -71,23 +71,51 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
     // here and submitting afterwards would leave a window in which a revocation commits in between, and the
     // seed - which carries a whole document - would then put the revoked token, or the deleted group, back on
     // every node. addPeer is exactly when an operator is also likely to be rotating credentials.
-    final List<String> failedSeeds = httpServer.getServer().getSecurity().seedSecurityStateClusterWide();
+    //
+    // With the configured retry budget (arcadedb.ha.securitySeedRetries), because the entries go through Raft
+    // and the usual failure is a momentary loss of quorum - the same condition that makes adding a peer
+    // interesting. Only the documents that failed are retried, and each retry re-reads under the monitor.
+    final List<String> failedSeeds = httpServer.getServer().getSecurity().seedSecurityStateClusterWideWithRetry();
 
-    // Still best-effort: a failed seed does not roll back the peer addition, because the peer is already a
-    // cluster member and removing it again is a second failure mode rather than a repair. But the response says
-    // so rather than reporting a flat success - the operator is the one who has to reissue the seed, and they
-    // cannot do that if the only record is a WARNING in this node's log (issue #7521).
+    return seedOutcomeResponse(peerId, failedSeeds);
+  }
+
+  /**
+   * The response for a peer that was admitted and a seed that may or may not have landed (issue #7521).
+   * <p>
+   * A failed seed still does not roll back the peer addition: the peer is already a cluster member, and removing
+   * it again is a second failure mode rather than a repair. What it does change is the <b>status</b>. Reporting a
+   * partial failure as HTTP 200 with a {@code warning} field meant operator automation read a success and moved
+   * on, while the peer kept authenticating and authorizing from its own copies of the three documents - for a
+   * node re-added after having been out of the cluster, a snapshot of the security state from whenever it left,
+   * so a user dropped since, a group narrowed since or a token revoked since is still in force there.
+   * <p>
+   * 503 rather than 500: the seed is submitted as a Raft entry and its usual failure is a momentary loss of
+   * quorum, so the condition is transient and re-issuing the very same request is the fix. That request is
+   * idempotent on the membership change - {@code RaftClusterManager.addPeer} treats an already-member peer as
+   * success - and reissues the seed.
+   * <p>
+   * Static and package-private so the status/body contract is unit-testable without an
+   * {@code HttpServerExchange}.
+   */
+  static ExecutionResponse seedOutcomeResponse(final String peerId, final List<String> failedSeeds) {
     final JSONObject response = new JSONObject().put("result", "Peer " + peerId + " added");
-    if (!failedSeeds.isEmpty()) {
-      response.put("warning", "Peer added, but the following security documents could NOT be seeded to it: "
-          + String.join(", ", failedSeeds)
-          + ". The new peer keeps its own copy of them until the next cluster-wide change of that kind; reissue "
-          + "the change, or re-run addPeer, before treating the peer as consistent");
-      LogManager.instance().log(this, Level.WARNING,
-          "Peer '%s' was added but these security documents could not be seeded to it: %s", peerId,
-          String.join(", ", failedSeeds));
-    }
+    if (failedSeeds.isEmpty())
+      return new ExecutionResponse(200, response.toString());
 
-    return new ExecutionResponse(200, response.toString());
+    // 'error' short and 'detail' long, which is the shape AbstractServerHttpHandler.sendErrorResponse produces
+    // and which Studio's globalNotifyError renders as a notification title plus body.
+    final String documents = String.join(", ", failedSeeds);
+    response.put("error", "Peer " + peerId + " added, but these security documents could NOT be seeded to it: "
+        + documents);
+    response.put("detail", "Until they are, peer " + peerId + " authenticates and authorizes from its own copies of "
+        + "them - a user deleted, a group narrowed or an API token revoked since it last held them is still in "
+        + "force there. Re-run this request: adding a peer that is already a member is a no-op and the seed is "
+        + "reissued. Remove the peer if it cannot be seeded");
+    LogManager.instance().log(PostAddPeerHandler.class, Level.SEVERE,
+        "Peer '%s' was added but these security documents could not be seeded to it: %s. It serves requests with "
+            + "its own copies of them until the seed is reissued", peerId, documents);
+
+    return new ExecutionResponse(503, response.toString());
   }
 }
