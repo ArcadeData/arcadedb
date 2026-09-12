@@ -244,3 +244,17 @@ rather than locally (see **Not verified here**).
 
 Nothing in this cycle changed the fix itself; one test assertion was widened and three follow-up
 issues now carry the rest.
+
+## Review cycle 3
+
+Both reviewers ran against `dc3abaf`.
+
+- **Unused imports.** `PostServerCommandHandler` still imported `GlobalConfiguration`,
+  `LogManager` and `java.util.logging.Level` after the forwarding mechanics moved out. Verified -
+  each symbol occurred exactly once in the file, on its own import line - and removed.
+- **The PUT replication check.** Both reviewers named it; it was already fixed in `dc3abaf`, the
+  commit they were reviewing. The `claude` review quoted the pre-fix line, so this is a stale
+  citation rather than a finding. No action.
+- CodeRabbit confirmed on both threads that #7507 and #7516 are the right homes for the timeout and
+  the Basic/API-token forward loop, and agreed that one response deadline for every forward would
+  be the wrong fix here.
