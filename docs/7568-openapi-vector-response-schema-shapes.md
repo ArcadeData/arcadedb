@@ -263,3 +263,34 @@ push.
 
 `./mvnw -o -pl server -am test -Dtest='*ApiSpec*Test,SpecBuildersTest,OpenApiSpecGeneratorTest,Issue7568*,Issue7400*'`
 -> Tests run: 170, Failures: 0, Errors: 0.
+
+### Cycle 2 - `fd5de1c`
+
+Both reviewers landed on this head and neither left anything actionable.
+
+- `claude`: re-verified every `required` list, the `weights` closure and defaults, and the `legs`
+  sub-object shapes field-for-field against the engine writers, and states it found no case where a
+  field is marked required that the server can omit - the failure mode that would matter here.
+  "No blocking issues found."
+- `coderabbitai`: one inline finding, on exactly the nested `legs` sub-object `required` lists that
+  cycle 1 had already fixed. It re-verified the branch itself and marked the thread
+  **"✅ Addressed in commit fd5de1c"**; the thread shows `isResolved=true`. No other threads are open.
+
+One non-blocking remark was **skipped, with rationale**: `claude` observed that this tracking doc is
+longer and more process-log-like than sibling `docs/` entries, and suggested leaving review-cycle
+narration out in future. Not applied, because the "Review cycles", "Adversarial pass" and
+"Completeness" sections are what the workflow that produced this PR requires the doc to carry - they
+are the evidence for the coverage claims, not commentary. The observation is noted here rather than in
+a separate notes file, since adding a second process document to the PR is the very thing the remark
+objects to.
+
+No deferred items and no `review-deferred-*.md` notes file: nothing in either review was actionable
+but unclear.
+
+## Final state
+
+**clean-approval** after 2 review cycles.
+
+- PR: https://github.com/ArcadeData/arcadedb/pull/7580
+- Follow-ups filed before the PR opened: #7577, #7578, #7579.
+- Merge belongs to the developer; this workflow does not merge.
