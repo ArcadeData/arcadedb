@@ -181,3 +181,24 @@ server instead. Verified by running both at `HEAD` with the patch reverted - ide
 - [x] 3. `LeaderProxy` is unreachable and `LeaderForwardContext`'s Javadoc claims it enforces the rule -
       **filed as #7551**
 - [x] 4. No request timeout on a forwarded hop - **already filed as #7507**
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7558
+
+## Review cycles
+
+| Cycle | Head | Review outcome | Change made |
+|---|---|---|---|
+| 1 | `11ab0207` | One actionable item: `LeaderForwardContext`'s Javadoc still listed `LeaderProxy` among the places the one-hop rule is enforced, which this PR's own analysis had shown to be a claim about code nothing constructs. Also noted the test-plan boxes were unticked | Both mentions of `LeaderProxy` now say it is never constructed and point at #7551. PR body's test-plan boxes ticked for the three runs actually performed; the manual three-node check left unticked and labelled as not run |
+| 2 | `9dde04ba` | One maintainability item, flagged as optional: `LeaderCommandForwarder.effectiveClusterToken` and `AbstractServerHttpHandler.isValidClusterToken` each carried their own copy of the "plugin's token first, raw setting as fallback" order - the same duplication whose drift is the defect being fixed | Extracted `HAServerPlugin.effectiveClusterToken(ArcadeDBServer)`; both sides call it. No behaviour change. Re-ran the 4 unit cases and 10 IT cases, green |
+| 3 | `780b46f3` | "Nothing blocking". Two minor notes: the `Authorization` header was read twice per request; and `effectiveClusterToken` being a static on an otherwise instance-method interface is "a one-line note either way, not a request for change" | Collapsed the header read to one lookup shared by both readers. The static-on-interface shape was left as is - the reviewer explicitly did not ask for a change, and putting a resolver used by two collaborators on the interface that owns the concept is what keeps them from drifting apart again. Re-ran 8 unit and 5 IT cases, green |
+| 4 | `137bc4a0` | No actionable items. Traced every branch combination against the four unit cases, confirmed `constantTimeEquals` is unchanged, confirmed no unused imports and no leftover debug output, and independently re-ran the `new LeaderProxy` grep | None |
+
+**Deferred items:** none. No `review-deferred-*.md` notes file was produced in any cycle.
+
+**CodeRabbit** was rate-limited for the whole run (its check reports "pass / Review rate limited") and posted no findings, so no review threads are open.
+
+**Final state:** clean-approval on cycle 4. GitHub Actions were still finishing when the loop ended
+(`build-and-package`, `lint` and several CodeQL analyses pending); the merge, and confirming those, stay
+with the developer.
