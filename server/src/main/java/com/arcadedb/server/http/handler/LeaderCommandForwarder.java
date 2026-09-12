@@ -167,16 +167,28 @@ public final class LeaderCommandForwarder {
               + " prevents", ha.getLeaderName());
     }
 
-    final String leaderHttpAddress = ha.getLeaderAddress();
-    if (leaderHttpAddress == null)
+    // Where to dial the leader and on which scheme: the HTTPS endpoint when the cluster has one for it,
+    // the plain-HTTP one otherwise (issue #7508). On an SSL cluster the plain branch would relay the
+    // credentials below in cleartext.
+    final LeaderDial dial = LeaderDial.resolve(ha, transport.client());
+    if (dial == null)
       throw new ServerIsNotTheLeaderException("Leader address is unknown", ha.getLeaderName());
+
+    // The cluster named an HTTPS endpoint for the leader and this node cannot reach it. Downgrading to the plain
+    // listener would put the Authorization header relayed below on the wire in clear, which is the failure this
+    // whole change exists to end - so the command is refused instead (issue #7508).
+    if (dial.refused())
+      throw new ServerIsNotTheLeaderException("Cannot forward the server command: " + dial.refusal(),
+          ha.getLeaderName());
 
     // Dialing an address that resolves to this node comes straight back here, and this node is not the
     // leader. That is what the derive fallback produces when the peers share a host and no HTTP port is
-    // declared: it pairs the leader's Raft host with THIS node's HTTP port (issue #6191).
-    if (ha.isOwnHttpAddress(leaderHttpAddress))
+    // declared: it pairs the leader's Raft host with THIS node's HTTP port (issue #6191). Asked only of the
+    // plain-HTTP branch: isOwnHttpAddress compares against this node's HTTP listener and cannot answer for an
+    // HTTPS endpoint, which the plugin withholds when it is this node's own instead.
+    if (!dial.https() && ha.isOwnHttpAddress(dial.address()))
       throw new ServerIsNotTheLeaderException(
-          "Cannot forward the server command: the HTTP address resolved for the leader (" + leaderHttpAddress
+          "Cannot forward the server command: the HTTP address resolved for the leader (" + dial.address()
               + ") is this node's own, and this node is not the leader. Declare every node's HTTP port explicitly with "
               + "the 'host:raftPort:httpPort' syntax in " + GlobalConfiguration.HA_SERVER_LIST.getKey(),
           ha.getLeaderName());
@@ -186,7 +198,7 @@ public final class LeaderCommandForwarder {
 
     final URI leaderUri;
     try {
-      leaderUri = URI.create("http://" + leaderHttpAddress + targetPath);
+      leaderUri = URI.create(dial.url(targetPath));
     } catch (final IllegalArgumentException e) {
       // URI.create is the one call on this path that throws an UNCHECKED exception, so without this it
       // would leave as a 500 - a server fault - for a request target that is simply not a URI.
@@ -241,7 +253,10 @@ public final class LeaderCommandForwarder {
       // header, which is what keeps the leader validating what the client actually sent (issue #7516).
       builder.header("Authorization", authHeader);
 
-    return transport.send(builder.build(), leaderHttpAddress, longRunningCommand);
+    // Sent on the client the dial chose - the plugin's trust-carrying one on an HTTPS cluster, this
+    // transport's own bounded client otherwise - while the deadline and the 504 translation stay here, so
+    // neither scheme can produce an unbounded forward (issues #7507 and #7508).
+    return transport.send(dial.client(), builder.build(), dial.address(), longRunningCommand);
   }
 
   /**
@@ -325,13 +340,13 @@ public final class LeaderCommandForwarder {
      * comes back as HTTP 504 naming the leader and the setting that bounds the wait, instead of falling through
      * to the generic 500 an {@link IOException} would produce.
      */
-    ExecutionResponse send(final HttpRequest request, final String leaderHttpAddress,
+    ExecutionResponse send(final HttpClient dialClient, final HttpRequest request, final String leaderHttpAddress,
         final boolean longRunningCommand) throws IOException {
       // The deadline that actually applied, taken from the request rather than re-read, so the message cannot
       // quote a number the forward was never given.
       final long deadlineMs = request.timeout().orElseGet(() -> responseTimeout(longRunningCommand)).toMillis();
 
-      final CompletableFuture<HttpResponse<String>> pending = client.sendAsync(request,
+      final CompletableFuture<HttpResponse<String>> pending = dialClient.sendAsync(request,
           HttpResponse.BodyHandlers.ofString());
       try {
         final HttpResponse<String> response = pending.get(deadlineMs, TimeUnit.MILLISECONDS);
@@ -347,7 +362,7 @@ public final class LeaderCommandForwarder {
         // ran. Swapping the two arms is caught only by
         // Issue7507LeaderForwardTimeoutTest#aLeaderThatCannotBeConnectedToIsAnsweredWithItsOwnGatewayTimeout.
         if (cause instanceof HttpConnectTimeoutException)
-          return couldNotConnect(leaderHttpAddress);
+          return couldNotConnect(dialClient, leaderHttpAddress);
         if (cause instanceof HttpTimeoutException)
           return gaveUp(leaderHttpAddress, deadlineMs, longRunningCommand);
         if (cause instanceof IOException io)
@@ -391,9 +406,9 @@ public final class LeaderCommandForwarder {
      * (measured against a client with an 800 ms connect timeout dialling 192.0.2.1, the RFC 5737 TEST-NET-1
      * address, on a JDK 21 runtime).
      */
-    ExecutionResponse couldNotConnect(final String leaderHttpAddress) {
+    ExecutionResponse couldNotConnect(final HttpClient dialClient, final String leaderHttpAddress) {
       final String setting = GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT.getKey();
-      final long connectMs = client.connectTimeout().map(Duration::toMillis).orElse(0L);
+      final long connectMs = dialClient.connectTimeout().map(Duration::toMillis).orElse(0L);
       LogManager.instance().log(this, Level.WARNING,
           "Could not connect to the cluster leader at %s within %,d ms (%s) to forward a server command.",
           leaderHttpAddress, connectMs, setting);

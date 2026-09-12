@@ -21,6 +21,7 @@ package com.arcadedb.server;
 import com.arcadedb.GlobalConfiguration;
 
 import java.io.IOException;
+import java.net.http.HttpClient;
 import java.util.List;
 import java.util.Map;
 
@@ -137,6 +138,42 @@ public interface HAServerPlugin extends ServerPlugin {
    * Returns the HTTP address (host:port) of the current leader, or null if unknown.
    */
   String getLeaderAddress();
+
+  /**
+   * The HTTPS endpoint (host:port) a forward to the leader should be dialled on in preference to
+   * {@link #getLeaderAddress()}, or {@code null} when there is none to prefer.
+   * <p>
+   * Answering {@code null} is the ordinary case, not a failure: it is what an implementation says when SSL is off,
+   * when no HTTPS endpoint resolves for the leader, or when the one that does is this node's own. A caller reads
+   * {@code null} as "dial the plain-HTTP address", which is the listener that is always bound
+   * ({@code HttpServer.buildUndertowServer} adds it unconditionally and the HTTPS one only on top). That is the
+   * same withhold-rather-than-refuse rule {@code PeerDialAddress.encryptedEndpointOf} applies to every other
+   * peer-to-peer dial in the cluster (issue #6221).
+   * <p>
+   * <b>An implementation that answers non-null owns the self-address check for that address.</b> Callers apply
+   * {@link #isOwnHttpAddress} to the plain-HTTP address they were handed, and it cannot speak for an HTTPS
+   * endpoint: the two are read from independent fields of {@code arcadedb.ha.serverList} with independent derive
+   * fallbacks, so one can be this node's own while the other is not.
+   *
+   * @see #getPeerHttpsClient()
+   */
+  default String getLeaderHttpsAddress() {
+    return null;
+  }
+
+  /**
+   * An {@link HttpClient} that validates a cluster peer's certificate against this node's truststore, for dialling
+   * the endpoint {@link #getLeaderHttpsAddress()} named. {@code null} when this implementation has none, in which
+   * case the caller falls back to the plain-HTTP address.
+   * <p>
+   * The client is owned by the plugin and must not be closed by the caller: it carries a connection pool and a
+   * selector thread that are shared by every forward and released when the plugin stops.
+   *
+   * @throws IOException when the trust material cannot be read - the caller falls back to plain HTTP.
+   */
+  default HttpClient getPeerHttpsClient() throws IOException {
+    return null;
+  }
 
   /**
    * Returns a comma-separated list of replica HTTP addresses, or empty string if none.

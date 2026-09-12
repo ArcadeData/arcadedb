@@ -71,6 +71,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.net.URLEncoder;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
@@ -236,6 +237,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Per server and not static: several ArcadeDBServer instances share a JVM in every HA test, and a shared cache
   // would rebuild on each probe and could close a client another server was still sending on.
   private final    TrustedHttpClientCache    capabilityHttpsClients = new TrustedHttpClientCache();
+  /**
+   * The HTTPS client that requests forwarded to the leader are sent on (issue #7508). A second cache rather than
+   * a share of {@link #capabilityHttpsClients}: that one is asked by a single scheduled thread, sequentially, and
+   * its rebuild path is documented against exactly that. This one is asked by HTTP worker threads, concurrently,
+   * so a truststore rotation makes one of them close the previous client - an orderly shutdown that waits for the
+   * forwards still in flight on it - while the others wait on the cache's monitor. That is bounded by their own
+   * request timeouts and happens only when the operator rotates a certificate.
+   */
+  private final    TrustedHttpClientCache    forwardHttpsClients    = new TrustedHttpClientCache();
   // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728). One worker is
   // enough since at most one resync fires per replica per stall streak; a small bounded queue with a
   // caller-runs policy degrades to running on the lag-monitor thread under the (unlikely) burst.
@@ -1005,6 +1015,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * The HTTPS client a forward to the leader is sent on, built from this node's truststore and rebuilt only when
+   * that truststore changes (issue #7508). Owned here, so it is closed with the server rather than held for the
+   * life of the JVM.
+   */
+  HttpClient getForwardHttpsClient() throws IOException {
+    return forwardHttpsClients.clientFor(arcadeServer);
+  }
+
+  /**
    * Returns a human-readable display name for a peer, e.g. "arcadedb-0 (localhost:2480)".
    * Falls back to the raw peer ID string if the peer is unknown.
    */
@@ -1708,6 +1727,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // been told to stand down. Making the close asynchronous to avoid that wait would hand the shutdown path a
     // client that outlives the server it belongs to, which is the leak this call exists to prevent.
     capabilityHttpsClients.close();
+    // Same reasoning for the forward client: a forward still in flight holds this close() until it unwinds,
+    // bounded by that request's own timeout, and leaving it open would leak a selector thread per server.
+    forwardHttpsClients.close();
     stalledResyncExecutor.shutdownNow();
     channelRecoveryExecutor.shutdownNow();
     if (transactionBroker != null) {
@@ -1850,6 +1872,42 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public String getLeaderHttpAddress() {
     return resolveHttpAddress(getLeaderId());
+  }
+
+  /**
+   * The HTTPS endpoint (host:port) of the current Raft leader, for a caller that would otherwise dial its
+   * plain-HTTP one; {@code null} when there is nothing better to dial than that (issue #7508).
+   * <p>
+   * Three ways to answer {@code null}, and none of them is a failure - the caller falls back to
+   * {@link #getLeaderHttpAddress()}, the listener that is always bound:
+   * <ul>
+   * <li>SSL is off, so there is no HTTPS listener anywhere in the cluster to dial;</li>
+   * <li>no HTTPS endpoint resolves for the leader ({@link #resolveHttpsAddress} answers {@code null} when the
+   * 5th field of {@code arcadedb.ha.serverList} is absent and this node has no HTTPS port to derive one from);</li>
+   * <li>the one that resolves is this node's own. The HTTP twin leaves that check to its callers, which run
+   * {@link #isOwnHttpAddress}; that method speaks for the HTTP listener and cannot answer for an HTTPS endpoint,
+   * so this one makes the check itself rather than handing out an address no caller can vet.</li>
+   * </ul>
+   * Resolved through the plain {@link #resolveHttpsAddress} rather than through
+   * {@link #getUnambiguousPeerHttpsAddress}, mirroring the HTTP twin exactly: an address that names the wrong
+   * node is caught by the receiving node's one-hop refusal, since the forward carries
+   * {@code LeaderForwardContext.FORWARDED_TO_LEADER_HEADER} whichever scheme it travelled on (issue #6191).
+   */
+  public String getLeaderHttpsAddress() {
+    return preferredLeaderHttpsAddress(configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL),
+        resolveHttpsAddress(getLeaderId()), getLocalHttpsAddress());
+  }
+
+  /**
+   * The decision {@link #getLeaderHttpsAddress()} makes, without the resolver behind it. Package-private and pure
+   * so the three ways it answers {@code null} are unit-testable without a Raft group (issue #7508).
+   */
+  static String preferredLeaderHttpsAddress(final boolean useSSL, final String leaderHttpsAddress,
+      final String localHttpsAddress) {
+    if (!useSSL || leaderHttpsAddress == null)
+      return null;
+    return localHttpsAddress != null && isSameHttpEndpoint(localHttpsAddress, leaderHttpsAddress)
+        ? null : leaderHttpsAddress;
   }
 
   public RaftClient getClient() {
