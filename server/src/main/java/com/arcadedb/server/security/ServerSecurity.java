@@ -921,20 +921,73 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     }
   }
 
+  /**
+   * Saves a group on THIS node only, with no replication. The local half of {@link #saveGroupClusterWide};
+   * every caller that is not that method wants the cluster-aware one instead (issue #7373).
+   */
   public synchronized void saveGroup(final String database, final String name, final JSONObject groupConfig) {
+    if (groupConfig == null)
+      // Same guard as saveGroupClusterWide(): groupsDocumentWith() reads a null replacement as a removal, so a
+      // null here would quietly turn a save into a delete. deleteGroup() is the method for that.
+      throw new IllegalArgumentException("Group configuration is required; use deleteGroup() to remove a group");
+
+    persistGroups(groupsDocumentWith(database, name, groupConfig));
+  }
+
+  /**
+   * Deletes a group on THIS node only, with no replication. The local half of
+   * {@link #deleteGroupClusterWide} (issue #7373).
+   */
+  public synchronized boolean deleteGroup(final String database, final String name) {
+    final JSONObject root = groupsDocumentWith(database, name, null);
+    if (root == null)
+      return false;
+    persistGroups(root);
+    return true;
+  }
+
+  /**
+   * Returns the whole group document with {@code name} under {@code database} replaced by {@code groupConfig},
+   * or removed when {@code groupConfig} is {@code null}; {@code null} when a removal found nothing to remove.
+   * Does not mutate anything.
+   * <p>
+   * The single place the save/delete shape is expressed, on both the local and the replicated path - the same
+   * reason {@link #snapshotWith} exists for users: two hand-written copies of this walk are how the local and
+   * the replicated document end up differing in a corner nobody exercises.
+   */
+  private JSONObject groupsDocumentWith(final String database, final String name, final JSONObject groupConfig) {
     final JSONObject root = groupRepository.getGroups().copy();
     final JSONObject databases = root.getJSONObject("databases");
 
-    if (!databases.has(database))
-      databases.put(database, new JSONObject().put("groups", new JSONObject()));
+    if (groupConfig == null) {
+      if (!databases.has(database))
+        return null;
 
-    final JSONObject dbEntry = databases.getJSONObject(database);
-    if (!dbEntry.has("groups"))
-      dbEntry.put("groups", new JSONObject());
+      final JSONObject dbEntry = databases.getJSONObject(database);
+      if (!dbEntry.has("groups"))
+        return null;
 
-    dbEntry.getJSONObject("groups").put(name, groupConfig);
+      final JSONObject groups = dbEntry.getJSONObject("groups");
+      if (!groups.has(name))
+        return null;
+
+      groups.remove(name);
+    } else {
+      if (!databases.has(database))
+        databases.put(database, new JSONObject().put("groups", new JSONObject()));
+
+      final JSONObject dbEntry = databases.getJSONObject(database);
+      if (!dbEntry.has("groups"))
+        dbEntry.put("groups", new JSONObject());
+
+      dbEntry.getJSONObject("groups").put(name, groupConfig);
+    }
 
     root.put("version", LATEST_VERSION);
+    return root;
+  }
+
+  private void persistGroups(final JSONObject root) {
     try {
       groupRepository.save(root);
     } catch (final IOException e) {
@@ -942,30 +995,248 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     }
   }
 
-  public synchronized boolean deleteGroup(final String database, final String name) {
-    final JSONObject root = groupRepository.getGroups().copy();
-    final JSONObject databases = root.getJSONObject("databases");
+  /**
+   * Cluster-aware {@link #saveGroup}: submits the resulting group document as a Raft entry when the server is
+   * part of an HA cluster, so every peer applies it, and falls back to the local mutation when it is not.
+   * <p>
+   * Groups were node-local while users were replicated (issue #7373). A user document IS replicated, so the same
+   * credentials authenticated everywhere but resolved to a group that existed on one node only - the same
+   * principal getting different authorization depending on which node the load balancer picked.
+   * <p>
+   * The {@code synchronized} block and its cost are exactly those of {@link #createUserClusterWide}: the monitor
+   * is held across the Raft round trip so two concurrent group changes cannot each overwrite the other's
+   * document, which is affordable only because group administration is rare. Nothing on a request hot path may
+   * be put inside it, and {@link #applyReplicatedGroups} - which unblocks the submit - must never take it.
+   */
+  public void saveGroupClusterWide(final String database, final String name, final JSONObject groupConfig) {
+    if (groupConfig == null)
+      // groupsDocumentWith() reads a null replacement as "remove this group", so a null here would quietly turn
+      // a save into a delete. Deleting is deleteGroupClusterWide()'s job, and it reports "no such group".
+      throw new IllegalArgumentException("Group configuration is required; use deleteGroupClusterWide() to remove a group");
 
-    if (!databases.has(database))
-      return false;
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha == null) {
+      saveGroup(database, name, groupConfig);
+      return;
+    }
 
-    final JSONObject dbEntry = databases.getJSONObject(database);
-    if (!dbEntry.has("groups"))
-      return false;
+    synchronized (this) {
+      ha.replicateSecurityGroups(groupsDocumentWith(database, name, groupConfig).toString());
+    }
+  }
 
-    final JSONObject groups = dbEntry.getJSONObject("groups");
-    if (!groups.has(name))
-      return false;
+  /**
+   * Cluster-aware {@link #deleteGroup}. See {@link #saveGroupClusterWide}.
+   *
+   * @return true if the group existed and the removal was applied/replicated, false if there was no such group
+   */
+  public boolean deleteGroupClusterWide(final String database, final String name) {
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha == null)
+      return deleteGroup(database, name);
 
-    groups.remove(name);
+    synchronized (this) {
+      final JSONObject root = groupsDocumentWith(database, name, null);
+      if (root == null)
+        return false;
 
-    root.put("version", LATEST_VERSION);
-    try {
-      groupRepository.save(root);
-    } catch (final IOException e) {
-      throw new ServerSecurityException("Error saving group configuration", e);
+      ha.replicateSecurityGroups(root.toString());
     }
     return true;
+  }
+
+  /**
+   * Applies a replicated group document: publishes it in memory and writes {@code server-groups.json}.
+   * Called from the Raft state machine on every peer when a {@code SECURITY_GROUPS_ENTRY} is applied.
+   * <p>
+   * <b>INVARIANT: this method must never take the {@code ServerSecurity} monitor, and must never block.</b> It
+   * runs on the Raft state-machine apply thread, and {@link #saveGroupClusterWide} /
+   * {@link #deleteGroupClusterWide} hold that monitor while blocked waiting for the very entry this method
+   * applies - the same deadlock {@link #applyReplicatedUsers} documents at length.
+   * <p>
+   * The publish-before-persist ordering, and the fact that a write failure is reported only after the document
+   * is in force, are the group half of issue #7137: see
+   * {@link SecurityGroupFileRepository#applyReplicated}.
+   * <p>
+   * The per-database permission caches are NOT refreshed from here: {@code ServerSecurity.updateSchema} opens
+   * and walks each database, which is blocking work this thread may not do. The peers pick the change up through
+   * {@code SecurityGroupFileRepository}'s file watcher, on the {@code arcadedb.server.security.reloadEvery}
+   * interval, which is the same mechanism a hand-edited group file has always gone through. The node that served
+   * the request refreshes immediately, in {@code ServerControlPlane}.
+   */
+  public void applyReplicatedGroups(final String groupsJson) {
+    final JSONObject root = new JSONObject(groupsJson);
+    // Validated BEFORE any mutation: a document this node cannot read is not "the disk is full", it is a
+    // committed entry this node cannot apply, and it must reach the node-wide halt rather than be swallowed
+    // (issue #4798). Both checks below are about what the document does to the node AFTER it is installed:
+    //
+    // - no usable 'databases' section and every authorization lookup - getDatabaseGroupsConfiguration, called
+    //   per request - throws instead of answering;
+    // - no 'version' and the document is written out anyway, but SecurityGroupFileRepository.load() discards a
+    //   versionless file on the next restart and falls back to createDefault(), which is the silent widening
+    //   to the default permissions the repository's own atomic-write comment exists to prevent.
+    if (!root.has("databases") || !(root.get("databases") instanceof JSONObject))
+      throw new ServerSecurityException(
+          "Replicated group document has no usable 'databases' section; refusing to install it over the current "
+              + "groups, because every authorization lookup on this node would then fail");
+    if (!root.has("version"))
+      throw new ServerSecurityException(
+          "Replicated group document carries no 'version'; refusing to install it, because a restart would "
+              + "discard the versionless file and fall back to the DEFAULT group definitions");
+
+    final Exception persistFailure = groupRepository.applyReplicated(root);
+    if (persistFailure != null) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Could not write the replicated group document to '%s'. The new groups ARE in effect on this node from "
+              + "now on; what failed is making them durable", persistFailure, SecurityGroupFileRepository.FILE_NAME);
+      throw new ReplicatedSecurityConfigPersistenceException(
+          "Replicated groups applied in memory but could NOT be persisted to '" + SecurityGroupFileRepository.FILE_NAME
+              + "'; this node enforces the new document now, but a restart reverts it to the stale file and the "
+              + "change must then be reissued", persistFailure);
+    }
+  }
+
+  /**
+   * The whole group document as the JSON string {@link #applyReplicatedGroups} takes. Intentionally NOT
+   * {@code synchronized}, for the same reason {@link #getUsersJsonPayload} is not: the caller holds this
+   * monitor across the read-compute-submit sequence. To seed a joining peer, call {@link #seedGroupsClusterWide}
+   * rather than pairing this with a bare {@code replicateSecurityGroups}.
+   */
+  public String getGroupsJsonPayload() {
+    return groupsToJSON().toString();
+  }
+
+  /**
+   * Submits the current users, group and API-token documents so a newly-joined peer converges on them, each read
+   * and submitted <b>under this monitor</b> (issue #7373).
+   * <p>
+   * The monitor is the point. Snapshot restores state, so a snapshot taken before a revocation and submitted
+   * after it puts the revoked token - or the deleted group - back on every node in the cluster. Reading outside
+   * the monitor leaves exactly that window open, and it is not hypothetical: {@code addPeer} is precisely the
+   * moment an operator is also likely to be rotating credentials. {@link #getUsersJsonPayload}'s javadoc has
+   * always said the caller must hold this monitor; {@code PostAddPeerHandler} did not, which this closes for the
+   * users seed as well as for the two new ones.
+   * <p>
+   * Each document is seeded under its own acquisition rather than all three under one, so an unrelated user
+   * change is not blocked for three consecutive Raft round trips. Each is best-effort and independent: the
+   * failures are collected and returned rather than thrown, so one failing seed does not skip the other two.
+   *
+   * @return the names of the documents that could not be seeded, empty when all three were submitted
+   */
+  public List<String> seedSecurityStateClusterWide() {
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha == null)
+      return List.of();
+
+    final List<String> failed = new ArrayList<>(3);
+    seed(failed, "users", () -> seedUsersClusterWide(ha));
+    seed(failed, "groups", () -> seedGroupsClusterWide(ha));
+    seed(failed, "API tokens", () -> seedApiTokensClusterWide(ha));
+    return failed;
+  }
+
+  private void seed(final List<String> failed, final String what, final Runnable seeding) {
+    try {
+      seeding.run();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Could not seed the %s document to the cluster: %s", e, what,
+          e.getMessage());
+      failed.add(what);
+    }
+  }
+
+  /** Reads and submits the user list under this monitor. See {@link #seedSecurityStateClusterWide}. */
+  private void seedUsersClusterWide(final HAServerPlugin ha) {
+    synchronized (this) {
+      ha.replicateSecurityUsers(getUsersJsonPayload());
+    }
+  }
+
+  /** Reads and submits the group document under this monitor. See {@link #seedSecurityStateClusterWide}. */
+  private void seedGroupsClusterWide(final HAServerPlugin ha) {
+    synchronized (this) {
+      ha.replicateSecurityGroups(getGroupsJsonPayload());
+    }
+  }
+
+  /** Reads and submits the API-token document under this monitor. See {@link #seedSecurityStateClusterWide}. */
+  private void seedApiTokensClusterWide(final HAServerPlugin ha) {
+    synchronized (this) {
+      ha.replicateSecurityApiTokens(getApiTokensJsonPayload());
+    }
+  }
+
+  /**
+   * Cluster-aware API-token mint. In a cluster the token is generated here but installed only by the replicated
+   * apply, so a token whose Raft entry never commits leaves nothing behind on this node - the ordering
+   * {@link #createUserClusterWide} uses for users.
+   * <p>
+   * An API token minted on one node used to authenticate against that node only (issue #7373); behind a load
+   * balancer that is an intermittent 401 with no pattern the operator can see.
+   *
+   * @return the created token including its plaintext value, which exists nowhere else
+   */
+  public JSONObject createApiTokenClusterWide(final String name, final String database, final long expiresAt,
+      final JSONObject permissions) {
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha == null)
+      return apiTokenConfig.createToken(name, database, expiresAt, permissions);
+
+    synchronized (this) {
+      final ApiTokenConfiguration.MintedToken minted = apiTokenConfig.mintToken(name, database, expiresAt, permissions);
+      ha.replicateSecurityApiTokens(minted.documentJson());
+      return minted.response();
+    }
+  }
+
+  /**
+   * Cluster-aware API-token revocation. Deleting a token on one node used to leave it live on the others, which
+   * for a REVOKED credential is a security failure and not just a consistency one (issue #7373).
+   *
+   * @return true if a token had that hash and the revocation was replicated, false if there was no such token
+   */
+  public boolean deleteApiTokenClusterWide(final String tokenHash) {
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha == null)
+      return apiTokenConfig.deleteToken(tokenHash);
+
+    synchronized (this) {
+      final String document = apiTokenConfig.documentWithout(tokenHash);
+      if (document == null)
+        return false;
+
+      ha.replicateSecurityApiTokens(document);
+    }
+    return true;
+  }
+
+  /**
+   * Applies a replicated API-token document. Called from the Raft state machine on every peer when a
+   * {@code SECURITY_API_TOKENS_ENTRY} is applied.
+   * <p>
+   * Same invariant as {@link #applyReplicatedGroups}: never takes the {@code ServerSecurity} monitor and never
+   * blocks, because the submitting thread holds that monitor while waiting for this entry.
+   */
+  public void applyReplicatedApiTokens(final String apiTokensJson) {
+    final Exception persistFailure = apiTokenConfig.applyReplicated(apiTokensJson);
+    if (persistFailure != null) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Could not write the replicated API-token document to '%s'. The new token set IS in effect on this node "
+              + "from now on; what failed is making it durable", persistFailure, ApiTokenConfiguration.FILE_NAME);
+      throw new ReplicatedSecurityConfigPersistenceException(
+          "Replicated API tokens applied in memory but could NOT be persisted to '" + ApiTokenConfiguration.FILE_NAME
+              + "'; this node enforces the new set now, but a restart reverts it to the stale file and the change "
+              + "must then be reissued", persistFailure);
+    }
+  }
+
+  /**
+   * The whole API-token document as the JSON string {@link #applyReplicatedApiTokens} takes. It carries token
+   * hashes, never token material. As with {@link #getGroupsJsonPayload}, seeding a joining peer goes through
+   * {@link #seedApiTokensClusterWide} so the read and the submit happen under this monitor.
+   */
+  public String getApiTokensJsonPayload() {
+    return apiTokenConfig.toJsonPayload();
   }
 
   /**

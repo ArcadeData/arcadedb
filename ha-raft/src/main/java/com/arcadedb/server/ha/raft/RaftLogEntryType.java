@@ -31,7 +31,18 @@ public enum RaftLogEntryType {
    * verify their local fingerprint against the entry: match → bootstrap locally, mismatch → fall
    * back to the existing leader-shipped snapshot path. See issue #4147.
    */
-  BOOTSTRAP_FINGERPRINT_ENTRY((byte) 6);
+  BOOTSTRAP_FINGERPRINT_ENTRY((byte) 6),
+  /**
+   * The whole {@code server-groups.json} document, replicated so a group created, changed or deleted on one node
+   * exists on every node (issue #7373). Node-scoped like {@link #SECURITY_USERS_ENTRY}: it carries no database
+   * name and advances the global applied position only.
+   */
+  SECURITY_GROUPS_ENTRY((byte) 7),
+  /**
+   * The whole {@code server-api-tokens.json} document, replicated so a token minted or revoked on one node is
+   * minted or revoked on every node (issue #7373). Carries token hashes, never token material.
+   */
+  SECURITY_API_TOKENS_ENTRY((byte) 8);
 
   private final byte id;
 

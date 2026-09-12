@@ -65,6 +65,40 @@ public class SecurityGroupFileRepository {
   }
 
   public synchronized void save(final JSONObject configuration) throws IOException {
+    persist(configuration);
+    latestGroupConfiguration = configuration;
+  }
+
+  /**
+   * Installs a group document that arrived over HA replication: published in memory FIRST, then persisted, with
+   * the write failure RETURNED instead of thrown (issue #7373).
+   * <p>
+   * The opposite order to {@link #save}, and deliberately so - the same reasoning as the users half of issue
+   * #7137. A locally-initiated save must not publish a document that did not reach the disk, because the
+   * request can simply fail and the operator retries. A replicated one has already been committed by a quorum
+   * and applied by the other nodes: returning early on the write failure would leave THIS node authorizing
+   * against the previous group definitions - so a permission the operator has just narrowed, or a group they
+   * have just deleted, would keep granting access here for as long as the volume stayed full or read-only.
+   * <p>
+   * What is outstanding after a failure is therefore durability only, and it does not recover by itself: see
+   * {@code ServerSecurity.applyReplicatedGroups} and {@code ArcadeStateMachine.applySecurityGroupsEntry}.
+   *
+   * @return the persistence failure, or {@code null} when the document reached the disk
+   */
+  public synchronized Exception applyReplicated(final JSONObject configuration) {
+    latestGroupConfiguration = configuration;
+    try {
+      persist(configuration);
+      return null;
+    } catch (final Exception e) {
+      // Exception, not IOException: an unchecked failure out of persist() would otherwise propagate from a
+      // method whose whole contract is "the document is in force here, only the write failed".
+      return e;
+    }
+  }
+
+  /** Writes the document to {@link #FILE_NAME} without touching the in-memory copy. */
+  private void persist(final JSONObject configuration) throws IOException {
     final File dir = file.getParentFile();
     if (dir != null && !dir.exists())
       dir.mkdirs();
@@ -88,8 +122,6 @@ public class SecurityGroupFileRepository {
     } finally {
       Files.deleteIfExists(tmp);
     }
-
-    latestGroupConfiguration = configuration;
   }
 
   public synchronized void saveInError(final Exception e) {
