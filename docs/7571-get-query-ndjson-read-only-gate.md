@@ -321,6 +321,46 @@ observations, none of which asked for a change. Recorded rather than passed over
    checked this against `ServerBackupDatabaseIT` and `Issue7443SqlMaintenanceSlotIT` and found it conventional.
    No change.
 
+## CI on `ca8f53e` (run 34721619007)
+
+29 checks green, 5 red. Every red one was chased to a cause; none is in the code this PR touches, and the
+lane that runs this PR's own tests - `integration-tests` - is green.
+
+| Check | Failing class(es) | Verdict |
+|---|---|---|
+| `unit-tests` | `Issue7089NaNTransparentSumAvgTest`, `MultiColumnAggregationResultTest`, `ArcadeStateMachinePerDatabaseHaltTest` | **Pre-existing main breakage.** All three fail identically in this branch's base run (main @`5fbcf737dd`, run 34719574241) and in the two main runs before it. |
+| `unit-tests` | `Issue7037SnapshotInstallSpaceCheckTest.leaderEstimateCoversEveryShippedFile` | **Flake.** Not a consistent main failure. It asserts a Raft snapshot byte estimate exceeds the summed page-file lengths (`65962 > 131072` failed), which depends on flush timing. Ran locally on this branch: 8/8 green. |
+| `slow-unit-tests` | `Issue6534QuiesceResizeRaceTest.aGrowCannotPublishWhileAQuiescenceIsStillWaitingOnABusyWorker` | **Known-red race test** (`expected: 1 but was: 3` in an async quiesce/resize race). Ran locally on this branch: green. |
+| `ha-integration-tests` | `RaftUserManagement3NodesIT` | **Pre-existing.** Fails in the base run too - where `Issue5569SlotMergeDeleteRaftIT` and `RaftPriorityRejoinIT` fail as well, so this lane is strictly *less* red here than on its base. |
+| `CI Status` | - | The aggregate of the four above. |
+| `codecov/patch` | 60%, 6 lines on `AbstractQueryHandler` | **Real, and closed.** See below. |
+
+None of the failing classes lives in `server/src/main/java/com/arcadedb/server/http/handler/`, and there is
+no path from an ndjson read-only gate to a Raft snapshot size estimate, a timeseries NaN aggregation or an
+async pool resize race.
+
+### The coverage failure was a real gap, and closed it
+
+`codecov/patch` was the one red check that pointed at this PR's own code: 3 missing and 3 partial lines on
+`AbstractQueryHandler`. Chasing it rather than dismissing it as a moved-method artifact found that the gate's
+`catch (Exception e)` arm - the "this language could not analyze it" branch - had no test at all. The
+original draft test for it was the one deleted in the falsifiability pass for never reaching the gate, and
+nothing replaced it.
+
+`aStatementThatCannotBeAnalyzedIsRefusedByTheGateRatherThanStreamed` now covers it, driving a statement the
+SQL parser rejects (`SELCT idx FROM ...`) through the GET path. It also pins a consequence worth stating out
+loud, which the reviewer's cycle-4 observation #3 was circling: a *streamed* request whose statement does not
+parse is answered with the gate's message ("only ... a read-only statement") rather than with the parser's,
+so the caller is told the encoding is unavailable instead of where the syntax error is. That is pre-existing
+on the two POST operations since #7306 and this PR extends it to GET rather than inventing it; the test
+asserts the buffered encoding still reports the parse error itself, so the difference is a documented
+contrast rather than something the next reader discovers from a confusing 400.
+
+With it the IT has five methods, and four of them fail when the single new line in `GetQueryHandler` is
+commented out - up from three of four before. The fifth,
+`theGateChangesNothingForAReadOrForTheBufferedEncoding`, passes in both states by construction: it is the
+regression guard for what must *not* change, not a gate assertion.
+
 ## Outcome
 
 - **PR:** https://github.com/ArcadeData/arcadedb/pull/7582

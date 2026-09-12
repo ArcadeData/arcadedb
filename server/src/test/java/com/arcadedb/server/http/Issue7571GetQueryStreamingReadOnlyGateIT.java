@@ -140,6 +140,41 @@ public class Issue7571GetQueryStreamingReadOnlyGateIT extends BaseGraphServerTes
   }
 
   /**
+   * The gate's {@code catch (Exception e)} arm - "not provably read-only" includes "this language could not
+   * analyze it". A statement the SQL parser rejects reaches it, because {@code analyze()} parses before it can
+   * classify. Pinned for two reasons.
+   * <p>
+   * It is the one branch of the relocated method the other tests do not reach, and an uncovered catch arm in a
+   * refusal gate is the branch that silently stops refusing.
+   * <p>
+   * And it records a real consequence of the safe reading, which a reader of the 400 would otherwise find
+   * surprising: a streamed request whose statement does not parse is answered with the gate's message rather
+   * than the parser's, so the caller is told the encoding is unavailable rather than where the syntax error is.
+   * That is pre-existing on the two POST operations - {@code POST /command} has answered this way since #7306 -
+   * and this PR extends it to GET rather than inventing it. The buffered encoding still reports the parse
+   * error itself, which is asserted here so the difference is a documented contrast and not a discovery.
+   */
+  @Test
+  void aStatementThatCannotBeAnalyzedIsRefusedByTheGateRatherThanStreamed() throws Exception {
+    final String malformed = "SELCT idx FROM " + TYPE_NAME;
+
+    final HttpResponse<String> streamed = send(getRequest(malformed, NDJSON));
+    assertThat(streamed.statusCode()).as("answered %s", streamed.body()).isEqualTo(400);
+    assertThat(streamed.body())
+        .as("a statement whose analysis throws is not provably read-only, so the gate refuses it before the "
+            + "engine is asked to run it")
+        .contains("read-only statement");
+
+    // The buffered encoding is not gated, so the same statement still reaches the parser and the caller gets
+    // the actual syntax error. Asserted as a contrast: only the negotiated encoding changes the message.
+    final HttpResponse<String> buffered = send(getRequest(malformed, "application/json"));
+    assertThat(buffered.statusCode()).isEqualTo(400);
+    assertThat(buffered.body())
+        .as("the buffered encoding reports the parse failure itself, not the streaming restriction")
+        .doesNotContain("read-only statement");
+  }
+
+  /**
    * The gate is scoped to the streaming encoding and must stay there. A read that was streamable before is
    * still streamed, and the buffered encoding is untouched for everything the stream turns away - which is what
    * makes the refusal a redirection to a working alternative rather than a loss of function.
