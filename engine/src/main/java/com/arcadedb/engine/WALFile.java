@@ -130,11 +130,13 @@ public class WALFile extends LockContext {
   }
 
   /**
-   * Whether {@link #acquireLock()} actually got the lock (issue #7479): lets a caller that opened this
-   * file only to probe whether anyone else has it open - {@code TransactionManager}'s orphan sweep - tell
-   * that apart from "nobody was there to contend with" without having to reach into the lock itself.
+   * Whether THIS instance's own {@link #acquireLock()} actually got the lock (issue #7479) - i.e. nobody
+   * else had the file open at that moment - not whether the file is locked in general. Lets a caller that
+   * opened this file only to probe whether anyone else has it open - {@code TransactionManager}'s orphan
+   * sweep and construction-site guards - tell that apart from "someone was already there" without having
+   * to reach into the lock field itself.
    */
-  boolean isLocked() {
+  boolean acquiredLock() {
     return lock != null;
   }
 
