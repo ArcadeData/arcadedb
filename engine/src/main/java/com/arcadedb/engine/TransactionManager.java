@@ -416,20 +416,38 @@ public class TransactionManager {
         // #7479: these are meant to be this same database's own leftover WAL files from its last,
         // unclean shutdown - nothing else should still have them open. One that is anyway means another
         // process/instance is sharing this directory right now, and replaying WAL it may be concurrently
-        // appending to or rotating is exactly the corruption this issue is about. Abort the same way the
-        // corrupt-transaction and version-gap cases below already do: log SEVERE, preserve every WAL file
-        // for manual inspection, replay nothing.
+        // appending to or rotating is exactly the corruption this issue is about.
         if (!activeWALFilePool[i].isLocked()) {
           LogManager.instance().log(this, Level.SEVERE,
               "Recovery aborted for database '%s': WAL file '%s' is still open by another process or database "
-                  + "instance. WAL files have been preserved for manual inspection. No further transactions will be replayed.",
-              null, database, activeWALFilePool[i]);
+                  + "instance", null, database, activeWALFilePool[i]);
           foreignlyLockedFileDetected = true;
         }
       }
 
-      if (foreignlyLockedFileDetected)
-        return;
+      if (foreignlyLockedFileDetected) {
+        // Unlike the corrupt-transaction/version-gap aborts below, these files are not this instance's to
+        // rename aside as ".corrupt": the one that failed the lock check legitimately belongs to another
+        // live instance right now, and the rest are this database's own untouched recovery source that a
+        // future, uncontested open must still be able to replay - not evidence of corruption. Close every
+        // handle this scan opened (releasing whatever lock this instance did acquire on the others) and
+        // refuse the open outright (review on #7502) rather than leaving this array as the live pool and
+        // letting the open proceed: createWALFilePool() giving this instance a fresh, safe-looking pool
+        // would not stop it from also writing brand-new transactions to the very data files the other,
+        // still-unaccounted-for instance is presently mutating - the corruption this whole issue is about.
+        for (final WALFile file : activeWALFilePool) {
+          if (file == null)
+            continue;
+          try {
+            file.close();
+          } catch (final IOException e) {
+            LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, file);
+          }
+        }
+        throw new LockException(
+            "Database '" + database.getName() + "' cannot complete recovery: another process or database instance "
+                + "is writing to its WAL files");
+      }
 
       if (activeWALFilePool.length > 0) {
         long lastTxId = -1;
@@ -1158,10 +1176,25 @@ public class TransactionManager {
       // colliding with one that already exists - and is still locked - means another process/instance
       // raced this same open and got there first. Refuse the open outright rather than silently sharing
       // that file with whoever holds it, the same way lockDatabase() already refuses on the whole-database
-      // lock file.
-      if (!activeWALFilePool[i].isLocked())
+      // lock file. Every slot already opened before this one is closed first (review on #7502): the throw
+      // otherwise left them as leaked handles and self-locks for the life of the JVM, since neither this
+      // constructor nor its caller retains a reference to a TransactionManager whose constructor never
+      // finished.
+      if (!activeWALFilePool[i].isLocked()) {
+        for (int alreadyOpened = 0; alreadyOpened < i; ++alreadyOpened)
+          try {
+            activeWALFilePool[alreadyOpened].close();
+          } catch (final IOException e) {
+            LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, activeWALFilePool[alreadyOpened]);
+          }
+        try {
+          activeWALFilePool[i].close();
+        } catch (final IOException e) {
+          LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, activeWALFilePool[i]);
+        }
         throw new LockException(
             "WAL file '" + walFilePath + "' is already open by another process or database instance");
+      }
     }
   }
 
@@ -1177,6 +1210,14 @@ public class TransactionManager {
             activeWALFilePool[i] = database.getWALFileFactory()
                 .newInstance(database.getDatabasePath() + "/txlog_" + logFileCounter.getAndIncrement() + ".wal");
 
+            // SET THE OLD FILE AS INACTIVE READY TO BE DISPOSED. Done unconditionally, before the new
+            // file's lock is even checked: the old file's own retirement has nothing to do with whether
+            // rotating INTO the new one succeeds, and close()'s normal WAL cleanup already handles a
+            // database that gets fenced right below (issue #7479 review - this used to only happen on the
+            // success path, leaking the old file's handle and self-lock whenever the check below failed).
+            file.setActive(false);
+            inactiveWALFilePool.add(file);
+
             // #7479: same reasoning as createWALFilePool() - a freshly counted name that turns out to
             // already be locked means another process/instance raced this rotation and got there first.
             if (!activeWALFilePool[i].isLocked()) {
@@ -1191,10 +1232,6 @@ public class TransactionManager {
                 localDatabase.fenceForRecovery(reason);
               return;
             }
-
-            // SET THE FILE AS INACTIVE READY TO BE DISPOSED
-            file.setActive(false);
-            inactiveWALFilePool.add(file);
           }
         } catch (final ClosedChannelException e) {
           try {
