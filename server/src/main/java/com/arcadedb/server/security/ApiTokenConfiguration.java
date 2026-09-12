@@ -24,8 +24,14 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
@@ -112,7 +118,40 @@ public class ApiTokenConfiguration {
       // The partially-built map is discarded: a file this node could not read through must not silently
       // narrow the token set it was already serving.
       LogManager.instance().log(this, Level.WARNING, "Error loading API tokens from '%s'", e, filePath);
+    } catch (final RuntimeException e) {
+      // A file that exists but does not parse - truncated by a crash mid-write, hand-edited, or restored from
+      // the wrong backup - raises JSONException, which is UNCHECKED. Letting it out of here aborted server
+      // startup: load() is called from ServerSecurity.loadUsers(), whose own catch is IOException-only, and
+      // that is called straight from ArcadeDBServer.start(). The users and group stores both degrade to a
+      // default instead of refusing to boot; this one crashed the server. It now degrades too, and to the EMPTY
+      // store rather than to anything else, because empty is the fail-CLOSED direction for credentials: no
+      // token authenticates until the operator restores the file.
+      onLoadFailure(e);
     }
+  }
+
+  /**
+   * Preserves an unparseable token file beside itself and leaves the store empty. Copying it aside matters more
+   * here than the log line does: the very next {@link #save} - a token minted, or any replicated token entry -
+   * overwrites the live file with the empty document, and the evidence of what the node used to hold would be
+   * gone with it.
+   */
+  private void onLoadFailure(final RuntimeException failure) {
+    tokens = new ConcurrentHashMap<>();
+
+    final Path corrupt = Paths.get(filePath);
+    final Path preserved = corrupt.resolveSibling(FILE_NAME.replace(".json", "-error.json"));
+    try {
+      Files.copy(corrupt, preserved, StandardCopyOption.REPLACE_EXISTING);
+    } catch (final IOException | RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING, "Could not preserve the unreadable API-token file as '%s'", e,
+          preserved);
+    }
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "API-token file '%s' could not be parsed; it has been copied to '%s' and this node starts with NO API "
+            + "tokens, so none of them authenticates until the file is restored. Users and groups are unaffected",
+        failure, filePath, preserved);
   }
 
   public synchronized void save() {
@@ -132,29 +171,59 @@ public class ApiTokenConfiguration {
     // Serialised BEFORE the try, so only the write is classified as a persistence failure. A RuntimeException out
     // of toString() is a bug in the document, not a full disk, and reporting it with disk-full wording would send
     // an operator to look at the volume.
-    final String serialized = document.toString(2);
+    final byte[] bytes = document.toString(2).getBytes(UTF_8);
 
     final File file = new File(filePath);
-    if (!file.getParentFile().exists())
-      file.getParentFile().mkdirs();
+    final File dir = file.getParentFile();
+    if (dir != null && !dir.exists())
+      dir.mkdirs();
 
-    Exception failure = null;
-    try (final OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(file), UTF_8)) {
-      writer.write(serialized);
-    } catch (final IOException e) {
-      failure = e;
-    }
-
-    // Set file permissions to owner-only (mode 600) on POSIX systems
     try {
-      final PosixFileAttributeView posixView = Files.getFileAttributeView(file.toPath(), PosixFileAttributeView.class);
-      if (posixView != null)
-        posixView.setPermissions(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
-    } catch (final IOException | UnsupportedOperationException e) {
-      // Non-POSIX system (e.g., Windows) — skip
+      writeAtomically(file.toPath(), bytes);
+      return null;
+    } catch (final IOException e) {
+      return e;
     }
+  }
 
-    return failure;
+  /**
+   * Writes the token document through a sibling temp file that is fsynced, chmodded and only then renamed over
+   * the target, the same way {@link SecurityGroupFileRepository} writes the group document.
+   * <p>
+   * A direct write to the live file leaves a truncated {@code server-api-tokens.json} behind if the process dies
+   * mid-write, and this file is now written on every node on every replicated token change rather than only on
+   * the one that served a request - many more chances to be killed in that window. A truncated file is not a
+   * degraded token store, it is an unparseable one, which is why {@link #load} also has to survive it.
+   * <p>
+   * The permissions are set on the TEMP file, before the rename, so the live path never exists even briefly with
+   * the default umask: this file is the closest thing the server has to a credential store, and a window in
+   * which it is group-readable is a window an attacker can wait for.
+   */
+  private static void writeAtomically(final Path target, final byte[] bytes) throws IOException {
+    final Path tmp = Files.createTempFile(target.getParent(), FILE_NAME, ".tmp");
+    try {
+      try (final FileChannel channel = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
+        channel.write(ByteBuffer.wrap(bytes));
+        channel.force(true);
+      }
+
+      // Owner-only (mode 600) on POSIX systems; silently skipped elsewhere (e.g. Windows).
+      try {
+        final PosixFileAttributeView posixView = Files.getFileAttributeView(tmp, PosixFileAttributeView.class);
+        if (posixView != null)
+          posixView.setPermissions(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+      } catch (final IOException | UnsupportedOperationException e) {
+        // Non-POSIX system - skip
+      }
+
+      try {
+        Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      } catch (final AtomicMoveNotSupportedException e) {
+        Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+      }
+    } finally {
+      Files.deleteIfExists(tmp);
+    }
   }
 
   /** The on-disk document shape, built from an explicit token collection rather than from the live map. */

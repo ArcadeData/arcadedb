@@ -38,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -530,6 +531,57 @@ class Issue7373ClusterWideGroupsAndTokensTest {
     assertThat(tokens.getToken(created.getString("token")))
         .as("an unreadable file must not silently narrow the token set this node was already serving")
         .isNotNull();
+  }
+
+  /**
+   * A token file that exists but does not parse must not stop the server from starting.
+   * <p>
+   * {@code load()} is called from {@code ServerSecurity.loadUsers()}, whose catch is {@code IOException}-only,
+   * and that is called straight from {@code ArcadeDBServer.start()}. {@code JSONException} is unchecked, so
+   * before this it travelled all the way out and the node refused to boot - while the users and group stores
+   * both degrade to a default for the same input. Degrading to the EMPTY token store is the fail-closed
+   * direction: nothing authenticates until the operator restores the file.
+   */
+  @Test
+  void aTokenFileThatCannotBeParsedLeavesAnEmptyStoreInsteadOfFailingStartup() throws Exception {
+    final JSONObject created = controlPlane.createApiToken("ci", "*", 0, new JSONObject());
+    final ApiTokenConfiguration tokens = security.getApiTokenConfiguration();
+
+    final File tokenFile = new File(CONFIG_PATH, ApiTokenConfiguration.FILE_NAME);
+    java.nio.file.Files.writeString(tokenFile.toPath(), "{\"tokens\": [ truncated");
+
+    assertThatCode(tokens::load).doesNotThrowAnyException();
+
+    assertThat(tokens.listTokens()).as("fail closed: no token authenticates until the file is restored").isEmpty();
+    assertThat(tokens.getToken(created.getString("token"))).isNull();
+    assertThat(new File(CONFIG_PATH, "server-api-tokens-error.json"))
+        .as("the unparseable file is preserved, because the next save() overwrites the live one")
+        .isFile();
+  }
+
+  /**
+   * The token file is written through a temp file that is renamed over the target, so a crash mid-write cannot
+   * leave a truncated one behind - the same guarantee {@code SecurityGroupFileRepository} gives the group
+   * document. Checked here through its two visible consequences: no {@code .tmp} litter is left in the config
+   * directory, and the live file is owner-only from the moment it exists.
+   */
+  @Test
+  void theTokenFileIsWrittenAtomicallyAndOwnerOnly() throws Exception {
+    controlPlane.createApiToken("ci", "*", 0, new JSONObject());
+
+    final File tokenFile = new File(CONFIG_PATH, ApiTokenConfiguration.FILE_NAME);
+    assertThat(tokenFile).isFile();
+
+    final String[] leftovers = new File(CONFIG_PATH).list((dir, name) -> name.endsWith(".tmp"));
+    assertThat(leftovers).as("the temp file is removed whether the rename succeeded or not").isEmpty();
+
+    final java.nio.file.attribute.PosixFileAttributeView posix = java.nio.file.Files.getFileAttributeView(
+        tokenFile.toPath(), java.nio.file.attribute.PosixFileAttributeView.class);
+    if (posix != null)
+      assertThat(posix.readAttributes().permissions())
+          .as("the credential store must never be readable by anyone else, not even briefly")
+          .containsExactlyInAnyOrder(java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+              java.nio.file.attribute.PosixFilePermission.OWNER_WRITE);
   }
 
   private ServerSecurity peerSecurity(final String subDirectory) {

@@ -1146,21 +1146,21 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /** Reads and submits the user list under this monitor. See {@link #seedSecurityStateClusterWide}. */
-  public void seedUsersClusterWide(final HAServerPlugin ha) {
+  private void seedUsersClusterWide(final HAServerPlugin ha) {
     synchronized (this) {
       ha.replicateSecurityUsers(getUsersJsonPayload());
     }
   }
 
   /** Reads and submits the group document under this monitor. See {@link #seedSecurityStateClusterWide}. */
-  public void seedGroupsClusterWide(final HAServerPlugin ha) {
+  private void seedGroupsClusterWide(final HAServerPlugin ha) {
     synchronized (this) {
       ha.replicateSecurityGroups(getGroupsJsonPayload());
     }
   }
 
   /** Reads and submits the API-token document under this monitor. See {@link #seedSecurityStateClusterWide}. */
-  public void seedApiTokensClusterWide(final HAServerPlugin ha) {
+  private void seedApiTokensClusterWide(final HAServerPlugin ha) {
     synchronized (this) {
       ha.replicateSecurityApiTokens(getApiTokensJsonPayload());
     }
