@@ -32,6 +32,7 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.stream.Stream;
@@ -136,6 +137,31 @@ class Issue7490CommentPrefixReachesFormatTest {
 
     assertThat(in.read()).as("the first byte of the data, not of the comment").isEqualTo(DATA.charAt(0));
     assertThat(in.available()).as("and once it has, the estimate is the data's").isEqualTo(DATA.length() - 1);
+  }
+
+  /**
+   * The block is dropped on the BYTE stream, which is only the same operation as dropping it on the decoded
+   * characters for a charset that encodes {@code #}, {@code /} and {@code \n} as the one ASCII byte each of them
+   * is. For UTF-16 and UTF-32 a byte-oriented scan would match the LOW BYTE of an unrelated character and leave the
+   * stream misaligned by one, so the guard has to answer false there and the block is left in place instead.
+   * <p>
+   * Asserted on the predicate rather than through an import, because
+   * {@code DatabaseFactory.getDefaultCharset()} answers UTF-8 and only UTF-8: the false arm cannot be reached from
+   * the outside today, which is the whole reason it is worth pinning down.
+   */
+  @Test
+  void theByteLevelStripIsOnlyAppliedToAnAsciiCompatibleCharset() {
+    assertThat(Parser.isCommentStrippableCharset(StandardCharsets.UTF_8)).isTrue();
+    assertThat(Parser.isCommentStrippableCharset(StandardCharsets.US_ASCII)).isTrue();
+    assertThat(Parser.isCommentStrippableCharset(StandardCharsets.ISO_8859_1)).isTrue();
+    assertThat(Parser.isCommentStrippableCharset(Charset.forName("windows-1252"))).isTrue();
+
+    assertThat(Parser.isCommentStrippableCharset(StandardCharsets.UTF_16))
+        .as("'#' is 0x00 0x23 here, and its low byte would be matched at the wrong offset")
+        .isFalse();
+    assertThat(Parser.isCommentStrippableCharset(StandardCharsets.UTF_16LE)).isFalse();
+    assertThat(Parser.isCommentStrippableCharset(StandardCharsets.UTF_16BE)).isFalse();
+    assertThat(Parser.isCommentStrippableCharset(Charset.forName("UTF-32"))).isFalse();
   }
 
   /**
