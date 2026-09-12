@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -219,7 +220,7 @@ public class ApiTokenConfiguration {
       return null;
 
     final List<JSONObject> next = new ArrayList<>(tokens.size());
-    for (final java.util.Map.Entry<String, JSONObject> entry : tokens.entrySet())
+    for (final Map.Entry<String, JSONObject> entry : tokens.entrySet())
       if (!entry.getKey().equals(tokenHash))
         next.add(entry.getValue());
 

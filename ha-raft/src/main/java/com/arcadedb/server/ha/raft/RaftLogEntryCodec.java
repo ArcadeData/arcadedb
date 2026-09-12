@@ -665,10 +665,8 @@ public final class RaftLogEntryCodec {
   }
 
   /**
-   * Encodes a security-users entry into a ByteString.
-   * <p>
-   * Binary format: type byte, empty databaseName (UTF), jsonLength (int), UTF-8 bytes.
-   * The empty databaseName slot keeps the decoder symmetric with other entry types.
+   * Encodes a security-users entry into a ByteString. See {@link #encodeSecurityEntry} for the wire format the
+   * three security entries share.
    */
   public static ByteString encodeSecurityUsersEntry(final String usersJson) {
     return encodeSecurityEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, usersJson);

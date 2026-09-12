@@ -926,6 +926,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * every caller that is not that method wants the cluster-aware one instead (issue #7373).
    */
   public synchronized void saveGroup(final String database, final String name, final JSONObject groupConfig) {
+    if (groupConfig == null)
+      // Same guard as saveGroupClusterWide(): groupsDocumentWith() reads a null replacement as a removal, so a
+      // null here would quietly turn a save into a delete. deleteGroup() is the method for that.
+      throw new IllegalArgumentException("Group configuration is required; use deleteGroup() to remove a group");
+
     persistGroups(groupsDocumentWith(database, name, groupConfig));
   }
 

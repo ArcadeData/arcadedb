@@ -399,6 +399,34 @@ class Issue7373ClusterWideGroupsAndTokensTest {
         .as("the token set already in force is untouched").isNotNull();
   }
 
+  /**
+   * The behaviour change the token-store rebuild brought with it, pinned so it cannot regress silently.
+   * <p>
+   * {@code load()} used to {@code clear()} the map before opening the file, so a file that existed but could not
+   * be read through left the node with NO tokens. It now builds a fresh map and swaps it only after a clean
+   * parse, so a read failure leaves the set the node was already serving in place. That is the safe direction:
+   * an unreadable file is a local fault, and answering 401 to every holder of a valid token because of it is an
+   * outage, not a safety measure. The revocation path does not depend on this - a revocation arrives as a
+   * replicated entry, not as a re-read of the file.
+   */
+  @Test
+  void aTokenFileThatCannotBeReadLeavesTheTokensAlreadyInForceAlone() throws Exception {
+    final JSONObject created = controlPlane.createApiToken("ci", "*", 0, new JSONObject());
+    final ApiTokenConfiguration tokens = security.getApiTokenConfiguration();
+    assertThat(tokens.getToken(created.getString("token"))).isNotNull();
+
+    // Replace the file with a directory of the same name: it exists, and every read of it fails.
+    final File tokenFile = new File(CONFIG_PATH, ApiTokenConfiguration.FILE_NAME);
+    assertThat(tokenFile.delete()).isTrue();
+    assertThat(tokenFile.mkdirs()).isTrue();
+
+    tokens.load();
+
+    assertThat(tokens.getToken(created.getString("token")))
+        .as("an unreadable file must not silently narrow the token set this node was already serving")
+        .isNotNull();
+  }
+
   private ServerSecurity peerSecurity(final String subDirectory) {
     final File dir = new File(CONFIG_PATH, subDirectory);
     assertThat(dir.mkdirs()).isTrue();
