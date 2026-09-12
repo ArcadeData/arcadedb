@@ -197,7 +197,9 @@ public final class LeaderCommandForwarder {
       // 26.10.1 server: '?x=a{b}' is answered 400 by the parser, and URI.create rejects the same string).
       // What is guarded is the gap between those two allowances drifting apart - an Undertow upgrade, that
       // option being turned on, or an HTTP/2 ':path' that does not travel through the same parser.
-      // LeaderProxy already guards the identical call the same way, which is why this is not left to chance.
+      // LeaderProxy guards the identical call the same way, which is why this is not left to chance - though
+      // that class is never constructed, so it is a precedent for the shape of the guard and not evidence
+      // anything has exercised it (issue #7551).
       return new ExecutionResponse(400, new JSONObject()
           .put("error", "The request target cannot be forwarded to the cluster leader: " + e.getMessage())
           .toString());
@@ -208,26 +210,36 @@ public final class LeaderCommandForwarder {
     final HttpRequest.Builder builder = transport.newRequest(leaderUri, exchange.getRequestMethod().toString(), body,
         longRunningCommand);
 
+    // The secret cluster members authenticate to each other with, and the only thing that makes the one-hop
+    // marker below believable on the far end. Resolved through the shared helper the receiving node uses, so
+    // the two ends of the same hop cannot read different values - this used to read the raw
+    // arcadedb.ha.clusterToken setting, which is empty on every cluster that did not declare a token
+    // explicitly, while the receiver checked the token derived at startup (issue #7516).
+    final String clusterToken = HAServerPlugin.effectiveClusterToken(httpServer.getServer());
+    if (clusterToken != null && !clusterToken.isBlank()) {
+      builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
+      // One hop only: whichever node this address really names refuses the command if it is not the leader,
+      // instead of resolving the same address and forwarding it again (issue #6191). Set here, beside the
+      // token and never without it, because that is the only form in which the receiving node trusts it - a
+      // marker from an ordinary client would let any caller turn its own transparent forward into a refusal
+      // (see LeaderForwardContext). Until issue #7516 it travelled with the session-token branch alone, which
+      // left a Basic/API-token forward with no bound at all when two peers name each other as the leader: the
+      // dial-side self-address check does not fire there, because each node is dialling the OTHER one.
+      builder.header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
+    }
+
     if (authHeader != null && authHeader.startsWith("Bearer AU-")) {
-      // Per-node session token: convert to cluster-internal identity headers
-      final String clusterToken = httpServer.getServer().getConfiguration()
-          .getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+      // Per-node session token: the leader cannot resolve it, so this node names the principal instead. The
+      // cluster token above is what makes that substitution believable.
       final String userName = user != null ? user.getName() : null;
       if (userName != null)
         builder.header("X-ArcadeDB-Forwarded-User", userName);
-      if (clusterToken != null && !clusterToken.isBlank()) {
-        builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
-        // One hop only: whichever node this address really names refuses the command if it is not the leader,
-        // instead of resolving the same address and forwarding it again (issue #6191). Sent only alongside
-        // the cluster token, because that is the only form in which the receiving node trusts it - see
-        // LeaderForwardContext. The other branch below relays the client's own credentials and carries no
-        // marker; its loop protection is the self-address check above.
-        builder.header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
-      }
-    } else if (authHeader != null) {
-      // Basic or API token: stateless, forward as-is
+    } else if (authHeader != null)
+      // Basic auth or an API token: stateless, and the leader can check them itself, so they are relayed
+      // unchanged rather than swapped for a forwarded-user assertion - an API token carries scopes that
+      // resolving the user by name on the leader would silently discard. Deliberately with no forwarded-user
+      // header, which is what keeps the leader validating what the client actually sent (issue #7516).
       builder.header("Authorization", authHeader);
-    }
 
     return transport.send(builder.build(), leaderHttpAddress, longRunningCommand);
   }
