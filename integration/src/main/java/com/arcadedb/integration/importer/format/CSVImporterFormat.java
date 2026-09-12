@@ -69,6 +69,12 @@ import java.util.logging.Level;
  */
 public class CSVImporterFormat extends AbstractImporterFormat {
   /**
+   * {@link #sourceReader}'s "this character was never read" marker. Distinct from {@code -1} (end of stream) and
+   * from {@code 0} (a NUL character), both of which {@link java.io.Reader#read()} can legitimately return.
+   */
+  private static final int NOT_READ = -2;
+
+  /**
    * The delimiter resolved for the entity this format was created for - the user's own, else the one content sniffing
    * found - or null when the format was created without one, in which case the generic {@code delimiter} option and
    * then a comma apply. Carried here rather than read back from {@code settings.options}: that map is shared by every
@@ -773,12 +779,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       default -> value; // String is the default
     };
   }
-
-  /**
-   * {@link #sourceReader}'s "this character was never read" marker. Distinct from {@code -1} (end of stream) and
-   * from {@code 0} (a NUL character), both of which {@link java.io.Reader#read()} can legitimately return.
-   */
-  private static final int NOT_READ = -2;
 
   /**
    * The source's character stream, positioned past the leading comment block ({@code #} and {@code //} lines).
