@@ -31,8 +31,6 @@ import com.arcadedb.server.ServerException;
  * a full or read-only config volume into an indefinite crash loop. Every other failure - a payload that cannot
  * be parsed, or an entry that cannot be read out of it - happens BEFORE any mutation and means this node cannot
  * read a committed entry its peers applied, which is the case #4798 argues must never be skipped quietly.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ReplicatedSecurityConfigPersistenceException extends ServerException {
 
