@@ -116,8 +116,8 @@ class RDFImporterFormatDelimiterDetectionTest {
         ("-url file://" + rdf + " -database " + DB_PATH + " -edgeType Related").split(" ")).load();
 
     assertThat(report.get("createdEdges"))
-        .as("the detected space delimiter must reach the parser: all four triples become edges - an RDF source has "
-            + "no header row for the first one to be dropped as (issue #7345)")
+        .as("the detected space delimiter must reach the parser: all four triples become edges, because an RDF "
+            + "source has no header row for the first one to be dropped as (issue #7345)")
         .isEqualTo(4L);
     assertThat(countOf("Related"))
         .as("and the edges are durable, not merely counted")

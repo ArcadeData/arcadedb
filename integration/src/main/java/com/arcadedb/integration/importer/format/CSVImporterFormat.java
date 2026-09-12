@@ -32,6 +32,7 @@ import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
+import com.arcadedb.integration.importer.SourceDiscovery;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -783,6 +784,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * anywhere in the source - which is exactly why {@code //} was the one that came through - but it is consumed
    * here too, so that a {@code //} line FOLLOWING one is still part of the leading block (issue #7347).
    * <p>
+   * The RULE is {@link SourceDiscovery#isCommentLineStart(char, char)}, shared with the sniffer rather than
+   * restated: the loops cannot be shared - that one walks a {@code Parser}, this one a raw reader - but the two
+   * have to answer "is this a comment" identically or they disagree about where the data starts.
+   * <p>
    * The LEADING block only, which is what the sniffer skips: a {@code //} appearing later in a source is data, and
    * a value legitimately beginning with {@code //} - a protocol-relative URL - keeps its row.
    * <p>
@@ -798,19 +803,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       if (first < 0)
         return reader;
 
-      if (first != '#' && first != '/') {
+      // READ THE SECOND CHARACTER ONLY WHEN IT CAN MATTER, AND GIVE IT BACK WHEN IT TURNS OUT TO BE DATA
+      final int second = first == '/' ? reader.read() : 0;
+
+      if (!SourceDiscovery.isCommentLineStart((char) first, second > 0 ? (char) second : 0)) {
+        if (second > 0)
+          reader.unread(second);
         reader.unread(first);
         return reader;
-      }
-
-      if (first == '/') {
-        final int second = reader.read();
-        if (second != '/') {
-          if (second >= 0)
-            reader.unread(second);
-          reader.unread(first);
-          return reader;
-        }
       }
 
       // A COMMENT LINE: DISCARD IT WHOLE AND LOOK AT THE NEXT ONE

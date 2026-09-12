@@ -21,12 +21,14 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.integration.importer.format.XMLImporterFormat;
 import com.arcadedb.utility.FileUtils;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -80,7 +82,60 @@ class Issue7341ParsingLimitIsACapTest {
     assertThat(importWithLimit("unlimited", "")).isEqualTo(OBJECTS);
   }
 
+  /**
+   * The sibling check in {@code analyze()}, against {@code -analyzingLimitEntries}, which had the same shape and
+   * the same off-by-one - and which no test in the tree exercised at all.
+   * <p>
+   * Observed through the schema the analysis produces: each object of the source carries a property of its own, so
+   * the properties discovered ARE the objects analyzed. A limit of N must discover exactly N of them.
+   */
+  @ParameterizedTest
+  @ValueSource(ints = { 1, 2, 3, 5 })
+  void analyzingLimitEntriesAnalyzesExactlyThatManyObjects(final int limit) throws Exception {
+    final AnalyzedSchema analyzedSchema = new AnalyzedSchema(100);
+    final ImporterSettings settings = new ImporterSettings();
+    settings.options.put("analyzingLimitEntries", String.valueOf(limit));
+
+    new XMLImporterFormat().analyze(AnalyzedEntity.EntityType.DOCUMENT, parserOf(distinctlyPropertiedXml()), settings,
+        analyzedSchema);
+
+    assertThat(analyzedSchema.getEntity("item").getProperties())
+        .as("-analyzingLimitEntries %d analyzes %d objects, so it discovers the %d properties they carry between "
+            + "them - not the %dth object's as well", limit, limit, limit, limit + 1)
+        .hasSize(limit);
+  }
+
+  /**
+   * And with no limit the analysis still sees the whole source, so the {@code >=} cannot have started cutting one
+   * object short of the end.
+   */
+  @Test
+  void noAnalyzingLimitAnalyzesEveryObject() throws Exception {
+    final AnalyzedSchema analyzedSchema = new AnalyzedSchema(100);
+
+    new XMLImporterFormat().analyze(AnalyzedEntity.EntityType.DOCUMENT, parserOf(distinctlyPropertiedXml()),
+        new ImporterSettings(), analyzedSchema);
+
+    assertThat(analyzedSchema.getEntity("item").getProperties()).hasSize(OBJECTS);
+  }
+
   // -----------------------------------------------------------------------------------------------------------
+
+  /**
+   * {@value #OBJECTS} objects, the kth carrying a property {@code p<k>} and no other: the set of properties the
+   * analysis ends up with is a direct read-out of how many objects it looked at.
+   */
+  private static String distinctlyPropertiedXml() {
+    final StringBuilder xml = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<root>\n");
+    for (int i = 1; i <= OBJECTS; ++i)
+      xml.append("  <item p").append(i).append("=\"v\"/>\n");
+    return xml.append("</root>").toString();
+  }
+
+  private static Parser parserOf(final String content) throws Exception {
+    final byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+    return new Parser(new Source("test.xml", new ByteArrayInputStream(bytes), bytes.length, false, null, null), 0);
+  }
 
   /**
    * Imports a {@value #OBJECTS}-object XML source through the live CLI path and returns how many records landed.
