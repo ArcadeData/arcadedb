@@ -251,7 +251,9 @@ public class JSONImporterFormat implements FormatImporter {
       // once per top-level array object above, which is what '-parsingLimitEntries N' means here - the same '>='
       // as XMLImporterFormat.load()'s cap (ISSUE #7341): the record that trips it is still imported, so N of them
       // land, not N-1. reader.endArray() below requires the array to be fully consumed first, so whatever records
-      // the limit left unread are skipped rather than parsed (#7482).
+      // the limit left unread are skipped rather than parsed (#7482). parser.getPosition(), not the more precise
+      // per-token position XMLImporterFormat uses: Gson's JsonReader does its own internal buffering the same way
+      // the XML fix worked around, so this byte budget carries the same "coarse as one buffer full" caveat.
       if ((settings.parsingLimitEntries > 0 && recordIndex >= settings.parsingLimitEntries)
           || (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes)) {
         while (reader.hasNext())
