@@ -1065,8 +1065,12 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * Maps a handler failure to the status the client receives. A {@link StatusException} raised by the body (the
    * NOT_FOUND of {@code getDatabaseInfo}) is sent as it is; the authorization exception is checked before the
    * authentication one because it is the more specific outcome, not because of any inheritance between the two.
+   * <p>
+   * Package-private rather than private so the arms that answer a REFUSAL - where the status is the whole
+   * contract with the client, not a detail of it - can be pinned without standing up a gRPC server.
    */
-  private StatusException toStatus(final String operation, final Exception e) {
+  // @VisibleForTesting
+  StatusException toStatus(final String operation, final Exception e) {
     if (e instanceof StatusException se)
       return se;
     // A leader-only operation refused on a follower. Routed through the shared mapper so the answer carries the

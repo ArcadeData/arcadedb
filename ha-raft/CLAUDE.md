@@ -110,6 +110,34 @@ Three things about that mechanism that are easy to get wrong:
 
 The cost of getting it wrong is asymmetric and worth restating: withholding a section that a peer could actually have read costs one larger Raft entry. Writing one a peer cannot read costs a silent schema divergence. Every arm of `PeerCapabilityRegistry` is written to fail the cheap way.
 
+### A new entry TYPE needs a capability too, and its "no" is a refusal
+
+The three steps above describe an optional *section*. A new `RaftLogEntryType` is the same negotiation with one
+difference that changes what step 2 can do: an unknown section is invisible to an old peer, while an unknown type
+byte is a deliberate `triggerCriticalHalt()` (#4798). There is nothing to degrade to. `SCHEMA_ENTRY` can ship the
+whole document instead of a delta; a `SECURITY_GROUPS_ENTRY` either is written, and halts the peer, or is not
+written and the operation is refused.
+
+So #7511 gates the two types #7373 added - `SECURITY_GROUPS_ENTRY` (7) and `SECURITY_API_TOKENS_ENTRY` (8) - and
+refuses: `ClusterCapabilityNotReadyException`, HTTP 409 / gRPC `FAILED_PRECONDITION`, naming the peer and the
+reason its answer is missing. `SecurityEntryCapabilityGate.capabilityFor` is an exhaustive `switch` over
+`RaftLogEntryType` with no `default`, so **adding a ninth constant does not compile** until you decide whether it
+needs a token. That is the mechanism, not a reminder.
+
+Two things that are specific to a refusal and do not apply to a withheld section:
+
+- **It must not read a stale cache.** The background capability monitor runs on the LEADER only, because #7219's
+  only consumer was leader-side. A refusal is not: the group and API-token REST routes do not forward, so
+  `ServerSecurity.saveGroupClusterWide` runs on whichever node the client hit and submits through a Raft client
+  that routes to the leader. `peersMissingCapability` alone would therefore refuse every group change ever made on
+  a FOLLOWER, on a healthy single-version cluster. Gate on **`peersMissingCapabilityNow`**, which reads the cache
+  first and runs one synchronous round only when that is not already a full "yes".
+- **Strictness costs availability, so it needs an escape hatch.** "Every unknown is a no" turns an unreachable node
+  into a refusal, and for `SECURITY_API_TOKENS_ENTRY` that includes a REVOCATION during an incident.
+  `arcadedb.ha.securityEntryCapabilityGate` (default true) is how an operator who knows the unreachable node
+  understands the entry submits anyway; the refusal message names it. Do not remove it in the name of safety -
+  without it the only way past a down node is to remove it from the cluster.
+
 ### Negotiation governs what is written next, never what is already committed
 
 This is the boundary of the mechanism, and it is a **downgrade boundary rather than a code one** (#7255). The Raft log is durable: a delta entry committed while every peer was capable stays in it. A node restarted onto a build that predates #7211 replays it through the old `applySchemaEntry`, sees an empty `schemaJson`, applies nothing, logs nothing, and diverges - exactly the failure #6989 and #7219 exist to prevent, arriving from the one direction neither can reach. A node *joining* on an older build installs a snapshot rather than replaying the whole log, so its exposure is narrower: only the entries committed between that snapshot and the leader's next capability round.

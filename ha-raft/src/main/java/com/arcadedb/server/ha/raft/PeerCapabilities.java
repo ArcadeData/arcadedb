@@ -52,11 +52,29 @@ public final class PeerCapabilities {
   public static final String SCHEMA_DELTA = "schema-delta";
 
   /**
+   * This node decodes {@code SECURITY_GROUPS_ENTRY}, the Raft log entry type (id 7) that replicates the whole
+   * {@code server-groups.json} document (issue #7373).
+   * <p>
+   * Unlike {@link #SCHEMA_DELTA} this token does not guard an OPTIONAL section of an entry a peer can otherwise
+   * read - it guards the entry's type byte itself. A peer that lacks it does not misread the entry, it cannot read
+   * it at all, and {@code ArcadeStateMachine} halts rather than skip a committed entry (issue #4798). So the
+   * consumer of this token refuses the operation instead of degrading it: there is no whole-document fallback to
+   * degrade to. See {@link SecurityEntryCapabilityGate} and issue #7511.
+   */
+  public static final String SECURITY_GROUPS_ENTRY = "security-groups-entry";
+
+  /**
+   * This node decodes {@code SECURITY_API_TOKENS_ENTRY}, the Raft log entry type (id 8) that replicates the whole
+   * {@code server-api-tokens.json} document (issue #7373). Same contract as {@link #SECURITY_GROUPS_ENTRY}.
+   */
+  public static final String SECURITY_API_TOKENS_ENTRY = "security-api-tokens-entry";
+
+  /**
    * Everything this build can decode. Immutable, and deliberately a whitelist written out by hand rather than
    * derived from anything: a capability is a promise about the wire format, and the only thing that can make it
    * true is a human having checked that the decoder is present.
    */
-  public static final Set<String> LOCAL = Set.of(SCHEMA_DELTA);
+  public static final Set<String> LOCAL = Set.of(SCHEMA_DELTA, SECURITY_GROUPS_ENTRY, SECURITY_API_TOKENS_ENTRY);
 
   private PeerCapabilities() {
     // utility class
