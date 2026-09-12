@@ -22,8 +22,6 @@ import com.arcadedb.utility.StringUtils;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.query.OperationType;
-import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.QueryStatistics;

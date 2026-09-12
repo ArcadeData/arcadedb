@@ -196,7 +196,9 @@ What this PR deliberately does **not** change:
 - `AbstractQueryHandler`: `requireStreamableStatement(Database, String, String)` moved here from
   `PostCommandHandler`, `private static` → `protected static`, javadoc rewritten so the reason that holds
   for every operation is stated first and the two transactional hazards are named as POST-only.
-- `PostCommandHandler`: method removed, call site unchanged; now-unused imports dropped.
+- `PostCommandHandler`: method removed, call site unchanged; the two imports it was the only user of
+  (`com.arcadedb.query.OperationType` and `com.arcadedb.query.QueryEngine`) dropped in review cycle 1 -
+  the first commit claimed to have dropped them and had not, which the reviewer caught.
 - `GetQueryHandler`: calls `requireStreamableStatement(database, language, text)` when the ndjson encoding
   was negotiated, next to the existing `ndJsonRowSerializer(...)` precondition, before `database.query(...)`.
 - `CoreApiSpec`: `NDJSON_READ_ONLY_DESCRIPTION` now appended to `executeQueryGet` as well, and its wording
@@ -224,3 +226,30 @@ answered against the source, not against this document.
 | 4 | Do the new tests reach the branch they name? | **One did not, replaced.** See Falsifiability above. |
 | 5 | Does relocating the method change POST behaviour? | **Two real changes, both acknowledged, neither observed by anything in the tree.** (a) The FINE-level diagnostic now logs against `AbstractQueryHandler.class` instead of `PostCommandHandler.class`, so a log scraper keyed on the logger name would see a different one; the gate is now genuinely shared, so the base class is the more accurate attribution. (b) The exception message's second clause changed from "before the transaction that produced them commits" to "before the statement has finished", because the transaction wording was only true of the two POST operations and the message is now sent by three. `grep -rn "before the transaction commits\|transaction that produced them"` over `*.java` finds no assertion or client matching it, and `grep -rn "streaming encoding is available only"` finds only the throw site; every existing assertion matches the unchanged substring `read-only statement`. |
 | 6 | Is the OpenAPI contract now inconsistent with the handlers? | **One gap, filed as #7575.** The restriction text is accurate for all three operations and `createQueryResponses` already declares the `400` the GET operation now uses for it. The `EXPLAIN` divergence stays undocumented, which is exactly what #7575 asks to settle - it needs a decision about which behaviour is right before the contract can state one. |
+
+## Review cycles
+
+### Cycle 1 - `a5a09db`
+
+| Reviewer | Outcome |
+|---|---|
+| `claude` | One actionable finding, applied. Everything else was confirmation: gate ordering, the classification matching `BackupDatabaseStatement.getOperationTypes()`, the `protected static` relocation as the right answer to the sibling-class problem, the message rewording, the OpenAPI sharing, and the scope calls on #7575/#7576. |
+| `coderabbitai` | "No actionable comments were generated in the recent review." Merge risk: minimal. |
+| `codacy-production` | 0 new issues, 0 complexity. |
+
+**Applied.** *Two unused imports left in `PostCommandHandler.java`.* Verified before agreeing rather than
+taken on the reviewer's word: `grep -n "OperationType\|QueryEngine" PostCommandHandler.java` returns lines
+25 and 26 (the imports) and line 162, which is a comment - so neither symbol is referenced by any code in the
+file. The reviewer was also right that the PR body and this document both claimed these had already been
+dropped, which was false. Both imports removed and the claim above corrected. A scan of every import in all
+six changed files for the same defect found nothing else; the only other hits are two pre-existing
+`java.util.*` wildcards, which the scan cannot resolve and which are used.
+
+**Not applied.** *CodeRabbit's "Docstring Coverage 40.91%, threshold 80%" pre-merge check.* It counts every
+function touched by the diff, which here is dominated by the IT's private request-building helpers
+(`baseUrl`, `authorization`, `getRequest`, `postRequest`, `send`, `countTouched`) and `CoreApiSpecTest`'s
+`suffixFrom`. Each is three to ten lines whose name states exactly what it does, and every method that
+carries a non-obvious decision - the gate itself, all four IT test methods, both new spec tests - already has
+javadoc explaining *why*. Adding a docstring to `private String baseUrl()` to move a percentage is the kind
+of comment the repo's own style avoids. The threshold is a generic bot metric rather than a finding about
+this code, so it is recorded here rather than satisfied.
