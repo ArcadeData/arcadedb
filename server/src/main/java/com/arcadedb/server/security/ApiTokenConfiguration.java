@@ -336,7 +336,10 @@ public class ApiTokenConfiguration {
    * {@code ServerSecurity.deleteApiTokenClusterWide} (issue #7373); a revocation that reaches one node is not a
    * revocation, so every caller that is not that method wants the cluster-aware one.
    */
-  public boolean deleteToken(final String tokenHash) {
+  public synchronized boolean deleteToken(final String tokenHash) {
+    // synchronized, like every other writer in this class: the remove and the save() that records it have to be
+    // one step against a concurrent load()/applyReplicated() swapping the map between them, or the revocation
+    // reaches memory and the file keeps the token.
     if (tokenHash.startsWith(TOKEN_PREFIX))
       throw new IllegalArgumentException("Use token hash instead of plaintext token for deletion");
     if (tokens.remove(tokenHash) != null) {
@@ -346,15 +349,27 @@ public class ApiTokenConfiguration {
     return false;
   }
 
+  /**
+   * Resolves a plaintext token, evicting it if it has expired.
+   * <p>
+   * Deliberately NOT {@code synchronized}: this is the API-token authentication path, reached on every request
+   * carrying one, and the writers it would contend with hold their monitor across a file write. The map
+   * generation is read ONCE into a local, so the lookup and the eviction cannot straddle a
+   * {@link #applyReplicated} swap and remove from a generation the hit did not come from. When they do straddle
+   * one, the eviction lands on a map that is no longer live and {@link #save} writes the newer generation
+   * instead - which is the right outcome: the replicated document wins, and the expired token is refused here
+   * either way.
+   */
   public JSONObject getToken(final String plaintextToken) {
+    final ConcurrentHashMap<String, JSONObject> current = tokens;
     final String hash = hashToken(plaintextToken);
-    final JSONObject tokenJson = tokens.get(hash);
+    final JSONObject tokenJson = current.get(hash);
     if (tokenJson == null)
       return null;
 
     final long expiresAt = tokenJson.getLong("expiresAt", 0);
     if (expiresAt > 0 && expiresAt < System.currentTimeMillis()) {
-      tokens.remove(hash);
+      current.remove(hash);
       save();
       return null;
     }
