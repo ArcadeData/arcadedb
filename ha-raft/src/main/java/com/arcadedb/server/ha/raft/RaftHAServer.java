@@ -2972,12 +2972,47 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   public void addPeer(final String peerId, final String address, final String name) {
-    clusterManager.addPeer(peerId, address, name);
+    // Built here rather than left to RaftClusterManager so both overloads meet at the one method the
+    // reachability probe below guards, instead of the probe having to be repeated per overload.
+    addPeer(RaftPeer.newBuilder()
+        .setId(RaftPeerId.valueOf(peerId))
+        .setAddress(address)
+        .build(), name);
   }
 
-  /** See {@link RaftClusterManager#addPeer(RaftPeer, String)}: adds the peer with every field it carries. */
+  /**
+   * See {@link RaftClusterManager#addPeer(RaftPeer, String)}: adds the peer with every field it carries.
+   * <p>
+   * This is the method every operator-facing entry point reaches - {@code POST /api/v1/cluster/peer} through
+   * {@link PostAddPeerHandler}, {@code connect cluster} and the gRPC {@code ConnectCluster} RPC through
+   * {@code RaftHAPlugin.connectCluster}, and the embedded {@code HAServerPlugin.addPeer} API - so it is where
+   * the pre-flight reachability probe of issue #7514 lives. It sits HERE rather than inside
+   * {@link RaftClusterManager} because the two are different jobs: the manager's is to issue a Raft
+   * configuration change, and knowing whether an address answers a TCP connection is not part of it. This
+   * object is also the one holding the {@link ContextConfiguration} the probe's budget comes from.
+   */
   void addPeer(final RaftPeer newPeer, final String name) {
+    ensurePeerReachable(newPeer);
     clusterManager.addPeer(newPeer, name);
+  }
+
+  /**
+   * Refuses an add whose target answers no TCP connection on its Raft address, before any configuration
+   * change is issued (issue #7514).
+   * <p>
+   * Skipped for a peer that is already in the configuration this add would be evaluated against, because
+   * {@code RaftClusterManager.buildAddArgs} reads the SAME {@link #getLivePeers()} and treats that case as a
+   * no-op success. Adding the peer again is then idempotent - which {@code connect cluster} documents and
+   * {@code Issue7401ConnectClusterJoinsPeerIT} pins - and a probe that refused it would have broken that for
+   * any committed member that happens to be down.
+   */
+  private void ensurePeerReachable(final RaftPeer newPeer) {
+    final long probeTimeoutMs = configuration.getValueAsLong(GlobalConfiguration.HA_ADD_PEER_PROBE_TIMEOUT);
+    final String reason = PeerReachability.addRefusalReason(isPeerInConfig(getLivePeers(), newPeer.getId()),
+        probeTimeoutMs, newPeer.getAddress());
+    if (reason != null)
+      throw new UnreachablePeerException(newPeer.getId().toString(), newPeer.getAddress(), reason,
+          localPeerId != null ? localPeerId.toString() : null, probeTimeoutMs);
   }
 
   public void removePeer(final String peerId) {
