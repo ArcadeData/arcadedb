@@ -775,6 +775,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   }
 
   /**
+   * {@link #sourceReader}'s "this character was never read" marker. Distinct from {@code -1} (end of stream) and
+   * from {@code 0} (a NUL character), both of which {@link java.io.Reader#read()} can legitimately return.
+   */
+  private static final int NOT_READ = -2;
+
+  /**
    * The source's character stream, positioned past the leading comment block ({@code #} and {@code //} lines).
    * <p>
    * Content sniffing skips both {@code #} and {@code //} comment lines before it decides the format
@@ -794,12 +800,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * Two characters of lookahead rather than a buffered {@code readLine}/{@code reset}: a mark has to be given a
    * read-ahead limit up front, and a single CSV row can be larger than any limit worth reserving.
    */
-  /**
-   * {@link #sourceReader}'s "this character was never read" marker. Distinct from {@code -1} (end of stream) and
-   * from {@code 0} (a NUL character), both of which {@link java.io.Reader#read()} can legitimately return.
-   */
-  private static final int NOT_READ = -2;
-
   protected static Reader sourceReader(final Parser parser) throws IOException {
     final PushbackReader reader = new PushbackReader(
         new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset()), 2);
