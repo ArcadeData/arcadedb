@@ -316,7 +316,7 @@ public class TransactionManager {
       final boolean nobodyElseHasItOpen;
       final WALFile probe = new WALFile(walFile.getPath());
       try {
-        nobodyElseHasItOpen = probe.isLocked();
+        nobodyElseHasItOpen = probe.acquiredLock();
       } finally {
         probe.close();
       }
@@ -417,7 +417,7 @@ public class TransactionManager {
         // unclean shutdown - nothing else should still have them open. One that is anyway means another
         // process/instance is sharing this directory right now, and replaying WAL it may be concurrently
         // appending to or rotating is exactly the corruption this issue is about.
-        if (!activeWALFilePool[i].isLocked()) {
+        if (!activeWALFilePool[i].acquiredLock()) {
           LogManager.instance().log(this, Level.SEVERE,
               "Recovery aborted for database '%s': WAL file '%s' is still open by another process or database "
                   + "instance", null, database, activeWALFilePool[i]);
@@ -1180,13 +1180,17 @@ public class TransactionManager {
       // otherwise left them as leaked handles and self-locks for the life of the JVM, since neither this
       // constructor nor its caller retains a reference to a TransactionManager whose constructor never
       // finished.
-      if (!activeWALFilePool[i].isLocked()) {
-        for (int alreadyOpened = 0; alreadyOpened < i; ++alreadyOpened)
+      if (!activeWALFilePool[i].acquiredLock()) {
+        for (int alreadyOpened = 0; alreadyOpened < i; ++alreadyOpened) {
+          // A slot that hit FileNotFoundException above and `continue`d never got a WALFile at all.
+          if (activeWALFilePool[alreadyOpened] == null)
+            continue;
           try {
             activeWALFilePool[alreadyOpened].close();
           } catch (final IOException e) {
             LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, activeWALFilePool[alreadyOpened]);
           }
+        }
         try {
           activeWALFilePool[i].close();
         } catch (final IOException e) {
@@ -1220,7 +1224,7 @@ public class TransactionManager {
 
             // #7479: same reasoning as createWALFilePool() - a freshly counted name that turns out to
             // already be locked means another process/instance raced this rotation and got there first.
-            if (!activeWALFilePool[i].isLocked()) {
+            if (!activeWALFilePool[i].acquiredLock()) {
               final String reason =
                   "WAL file '" + activeWALFilePool[i] + "' is already open by another process or database instance";
               try {
