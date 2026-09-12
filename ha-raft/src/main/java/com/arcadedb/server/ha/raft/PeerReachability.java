@@ -22,6 +22,10 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * The pre-flight reachability probe an add-peer request runs before asking Raft to change the
@@ -30,7 +34,8 @@ import java.net.SocketTimeoutException;
  * Ratis does not commit a {@code Mode.ADD} until the new peer has caught up, so an address nothing is
  * listening on cannot succeed - it can only consume the membership-change retry budget and then report
  * the failure as a serialized {@code SetConfigurationRequest}. A TCP connect answers the one question
- * that decides it, in milliseconds.
+ * that decides it, in milliseconds - name resolution included, which is why the dial runs on a throwaway
+ * daemon thread the caller stops waiting on (see {@link #bounded}).
  * <p>
  * <b>It is deliberately one-sided.</b> A refused or timed-out connection is proof that the membership
  * change cannot commit, and that is the only case this reports. A successful connection proves only that
@@ -107,8 +112,54 @@ final class PeerReachability {
       return null;
 
     final String host = address.substring(0, colonIdx);
-    final int connectTimeoutMs = (int) Math.min(timeoutMs, Integer.MAX_VALUE);
+    return bounded(host, port, timeoutMs);
+  }
 
+  /**
+   * Runs {@link #dial} on a throwaway daemon thread and gives up on it after {@code timeoutMs}.
+   * <p>
+   * The wrapper is not ceremony, it is the only way the budget covers the whole probe. {@code new
+   * InetSocketAddress(host, port)} resolves the name <b>eagerly, in its constructor</b>, before
+   * {@code Socket.connect}'s timeout argument applies to anything - so a resolver that is slow or
+   * unreachable blocks for however long the platform's resolver takes, and the setting would bound only
+   * the TCP handshake after it. That would reintroduce, through DNS, the held-worker-thread problem issue
+   * #7514 exists to remove.
+   * <p>
+   * A thread rather than a pool because this is an operator-triggered admin request (add peer, connect
+   * cluster), not a hot path: there is nothing to amortise and a pool would add a lifecycle to own. The
+   * abandoned thread is a daemon, so it cannot hold the JVM open; {@code cancel(true)} interrupts a
+   * blocking connect, and a name resolution already in progress is NOT interruptible on the JDK's
+   * resolver - that thread simply ends when the resolver gives up. What is guaranteed is what matters
+   * here: the caller is released within the budget.
+   */
+  private static String bounded(final String host, final int port, final long timeoutMs) {
+    final int connectTimeoutMs = (int) Math.min(timeoutMs, Integer.MAX_VALUE);
+    final FutureTask<String> probe = new FutureTask<>(() -> dial(host, port, connectTimeoutMs));
+    final Thread worker = new Thread(probe, "arcadedb-peer-probe-" + host + "-" + port);
+    worker.setDaemon(true);
+    worker.start();
+
+    try {
+      return probe.get(timeoutMs, TimeUnit.MILLISECONDS);
+    } catch (final TimeoutException e) {
+      probe.cancel(true);
+      return "no answer within " + timeoutMs + " ms, name resolution included";
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      probe.cancel(true);
+      // Not "unreachable": this thread was interrupted (shutdown), which says nothing about the peer.
+      // Reporting a reason here would refuse an add on the strength of our own shutdown.
+      return null;
+    } catch (final ExecutionException e) {
+      // dial() converts every IOException into a reason, so reaching here means an unchecked failure -
+      // report it rather than swallowing it into a false "reachable".
+      final Throwable cause = e.getCause() != null ? e.getCause() : e;
+      return cause.getMessage() != null && !cause.getMessage().isBlank() ? cause.getMessage() : cause.toString();
+    }
+  }
+
+  /** The blocking half: resolve, connect, and turn any failure into a reason. Never throws. */
+  private static String dial(final String host, final int port, final int connectTimeoutMs) {
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress(host, port), connectTimeoutMs);
       return null;
@@ -116,7 +167,7 @@ final class PeerReachability {
       // Distinguished from the refusal below because the two point an operator at different things: a
       // refusal means the host is up and the process is not, a timeout means the host or the route is not
       // answering at all (or the handshake is slower than the budget, which is what the setting is for).
-      return "no answer within " + timeoutMs + " ms";
+      return "no answer within " + connectTimeoutMs + " ms";
     } catch (final IOException e) {
       return e.getMessage() != null && !e.getMessage().isBlank() ? e.getMessage() : e.toString();
     }

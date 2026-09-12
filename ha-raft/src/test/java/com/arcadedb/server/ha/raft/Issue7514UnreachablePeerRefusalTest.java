@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -75,6 +76,28 @@ class Issue7514UnreachablePeerRefusalTest {
   void aPortNothingIsBoundToIsReportedWithAReason() throws Exception {
     final String reason = PeerReachability.unreachableReason(addressNothingListensOn(), PROBE_TIMEOUT_MS);
 
+    assertThat(reason).isNotNull().isNotBlank();
+  }
+
+  /**
+   * The budget covers the whole probe, name resolution included. Before the review of PR #7562 it did not:
+   * {@code new InetSocketAddress(host, port)} resolves in its constructor, before {@code Socket.connect}'s
+   * timeout argument applies to anything, so a slow or unreachable resolver held the caller for as long as
+   * the platform's resolver took - the held-worker-thread problem this whole change exists to remove,
+   * reintroduced through DNS.
+   * <p>
+   * Driven with a name that cannot resolve. The bound is a tripwire, not a latency budget: the point is
+   * that the caller is released on the probe's own budget rather than on the resolver's.
+   */
+  @Test
+  void theBudgetCoversNameResolutionAndNotOnlyTheHandshake() {
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+
+    final String reason = PeerReachability.unreachableReason(
+        "issue7514-no-such-host-" + System.nanoTime() + ".invalid:2434", PROBE_TIMEOUT_MS);
+
+    watch.assertGaveUpWithin(PROBE_TIMEOUT_MS * 5,
+        "a probe budget that covers name resolution from one that starts only after the resolver answers");
     assertThat(reason).isNotNull().isNotBlank();
   }
 
