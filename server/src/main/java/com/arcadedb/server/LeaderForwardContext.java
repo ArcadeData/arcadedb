@@ -36,16 +36,21 @@ package com.arcadedb.server;
  * request boundary and clears it in a finally block, because one of the redirect decisions is taken deep
  * inside the engine ({@code RaftReplicatedDatabase.command}) where the HTTP exchange is no longer in reach.
  * <p>
- * It is honored <em>only</em> on a request that authenticated with the cluster token, because the marker is a
- * statement one node makes to another. Trusting it from an ordinary client request would cost nothing in
- * safety - its only possible effect is a refusal, never execution on a node that is not the leader - but it
- * would let any caller (or a proxy that copies unknown {@code X-ArcadeDB-*} headers through) turn its own
- * transparent forward-to-leader into a {@code ServerIsNotTheLeaderException}. Every follower-to-leader
- * redirect that can loop authenticates with the cluster token, so nothing is left uncovered by the gate: the
- * one branch that does not - a server command forwarded with a client's own Basic/API-token credentials -
- * carries no marker at all and relies on the dial-side self-address check, which is what the reachable
- * misconfiguration (an undeclared {@code http} port, where every peer derives to this node's own address)
- * produces anyway.
+ * It is honored <em>only</em> on a request carrying a valid {@code X-ArcadeDB-Cluster-Token}, because the
+ * marker is a statement one node makes to another. Trusting it from an ordinary client request would cost
+ * nothing in safety - its only possible effect is a refusal, never execution on a node that is not the leader
+ * - but it would let any caller (or a proxy that copies unknown {@code X-ArcadeDB-*} headers through) turn
+ * its own transparent forward-to-leader into a {@code ServerIsNotTheLeaderException}.
+ * <p>
+ * That gate is on the cluster token as a <em>proof of hop</em>, not on the token having replaced the caller's
+ * identity. The distinction is what issue #7516 turns on: a server command relayed with a client's own
+ * Basic-auth or API-token header keeps those headers - resolving the user by name on the leader would discard
+ * the scopes an API token carries - and so sends the cluster token beside them rather than instead of them.
+ * Before that split it sent no token, and therefore no marker, which left the dial-side self-address check as
+ * its only bound. That check catches the reachable misconfiguration of issue #6191 (an undeclared {@code http}
+ * port, where every peer derives to this node's own address) but not a hand-written or stale
+ * {@code arcadedb.ha.serverList} in which two peers name each other: there each node dials the <em>other</em>
+ * one, so no node ever recognizes its own address and the request ping-pongs.
  * <p>
  * {@code LeaderProxy} enforces the same one-hop rule for the requests it relays, reading the exchange
  * directly since it still has one.

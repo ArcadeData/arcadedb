@@ -166,26 +166,37 @@ public final class LeaderCommandForwarder {
     } else
       builder.method(exchange.getRequestMethod().toString(), HttpRequest.BodyPublishers.noBody());
 
+    // The secret cluster members authenticate to each other with, and the only thing that makes the one-hop
+    // marker below believable on the far end. Read through the HA plugin, which holds the EFFECTIVE token:
+    // when arcadedb.ha.clusterToken is left empty, ClusterTokenProvider derives one at startup and stores it
+    // on itself WITHOUT writing it back into the configuration, so the raw setting reads empty on every
+    // cluster that did not declare a token explicitly. The receiving node validates against the effective
+    // token, so reading the raw setting here left the two ends of the same hop disagreeing (issue #7516).
+    final String clusterToken = effectiveClusterToken(ha);
+    if (clusterToken != null && !clusterToken.isBlank()) {
+      builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
+      // One hop only: whichever node this address really names refuses the command if it is not the leader,
+      // instead of resolving the same address and forwarding it again (issue #6191). Set here, beside the
+      // token and never without it, because that is the only form in which the receiving node trusts it - a
+      // marker from an ordinary client would let any caller turn its own transparent forward into a refusal
+      // (see LeaderForwardContext). Until issue #7516 it travelled with the session-token branch alone, which
+      // left a Basic/API-token forward with no bound at all when two peers name each other as the leader: the
+      // dial-side self-address check does not fire there, because each node is dialling the OTHER one.
+      builder.header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
+    }
+
     if (authHeader != null && authHeader.startsWith("Bearer AU-")) {
-      // Per-node session token: convert to cluster-internal identity headers
-      final String clusterToken = httpServer.getServer().getConfiguration()
-          .getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+      // Per-node session token: the leader cannot resolve it, so this node names the principal instead. The
+      // cluster token above is what makes that substitution believable.
       final String userName = user != null ? user.getName() : null;
       if (userName != null)
         builder.header("X-ArcadeDB-Forwarded-User", userName);
-      if (clusterToken != null && !clusterToken.isBlank()) {
-        builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
-        // One hop only: whichever node this address really names refuses the command if it is not the leader,
-        // instead of resolving the same address and forwarding it again (issue #6191). Sent only alongside
-        // the cluster token, because that is the only form in which the receiving node trusts it - see
-        // LeaderForwardContext. The other branch below relays the client's own credentials and carries no
-        // marker; its loop protection is the self-address check above.
-        builder.header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
-      }
-    } else if (authHeader != null) {
-      // Basic or API token: stateless, forward as-is
+    } else if (authHeader != null)
+      // Basic auth or an API token: stateless, and the leader can check them itself, so they are relayed
+      // unchanged rather than swapped for a forwarded-user assertion - an API token carries scopes that
+      // resolving the user by name on the leader would silently discard. Deliberately with no forwarded-user
+      // header, which is what keeps the leader validating what the client actually sent (issue #7516).
       builder.header("Authorization", authHeader);
-    }
 
     try {
       final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
@@ -194,5 +205,18 @@ public final class LeaderCommandForwarder {
       Thread.currentThread().interrupt();
       throw new IOException("Interrupted while forwarding server command to leader at " + leaderHttpAddress, e);
     }
+  }
+
+  /**
+   * The token this node's peers actually accept: the plugin's derived one whenever
+   * {@code arcadedb.ha.clusterToken} was not declared, and the raw setting otherwise. Mirrors the resolution
+   * order the receiving side uses in {@code AbstractServerHttpHandler}, so a forward this node sends and the
+   * check the peer runs on it cannot read two different values.
+   */
+  private String effectiveClusterToken(final HAServerPlugin ha) {
+    final String fromPlugin = ha != null ? ha.getClusterToken() : null;
+    if (fromPlugin != null && !fromPlugin.isBlank())
+      return fromPlugin;
+    return httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
   }
 }

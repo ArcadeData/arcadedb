@@ -351,27 +351,54 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       ServerSecurityUser user = null;
 
-      // Cluster-internal forwarded auth: a follower forwarded a request on behalf of an
-      // end user. The original per-node session token (Bearer AU-...) cannot be resolved on
-      // the leader, so the follower substitutes X-ArcadeDB-Cluster-Token plus
-      // X-ArcadeDB-Forwarded-User. Validated before the standard Authorization header check.
+      // Cluster-internal headers: a peer relayed this request. X-ArcadeDB-Cluster-Token proves the HOP - it
+      // is the shared secret only cluster members hold - and that is all it proves. Whether it also names
+      // the principal depends on what the relaying node could do with the client's credentials:
+      //
+      //   - a per-node session token (Bearer AU-...) cannot be resolved on the node the request is relayed
+      //     to, so the relaying node substitutes X-ArcadeDB-Forwarded-User and the principal is resolved
+      //     from that name here;
+      //   - Basic auth and API tokens are stateless, so they are relayed unchanged and re-validated by the
+      //     standard Authorization check below. No forwarded user travels with them deliberately: an API
+      //     token carries scopes that resolving the user by name here would silently discard.
+      //
+      // Splitting the two is what lets the second shape carry the one-hop marker as well (issue #7516);
+      // before it, the token could only travel together with a substituted identity, so the branch that had
+      // to relay the caller's own credentials carried no marker and could cycle.
       final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
       if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
-        user = validateClusterForwardedAuth(exchange,
-            clusterTokenHeader.getFirst(),
-            exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User"));
-        if (user == null)
-          return; // 401 already sent
+        if (!isValidClusterToken(clusterTokenHeader.getFirst())) {
+          exchange.setStatusCode(401);
+          sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
+          return;
+        }
 
         // A peer already redirected this request to the leader, so this node must execute it or refuse it -
         // redirecting it again sends it round the cycle a wrong leader address creates, and nothing else in
         // the exchange says the request has been here before (issue #6191). Published onto a thread-local
         // because one of the redirect decisions is taken deep in the engine, where the exchange is out of
-        // reach. Read only here, inside the cluster-token branch: the marker is a statement one node makes to
-        // another, and honoring it from an ordinary client request would let any caller turn its own
+        // reach. Read only after the cluster token has been validated: the marker is a statement one node
+        // makes to another, and honoring it from an ordinary client request would let any caller turn its own
         // transparent forward into a refusal by copying the header through.
         if (exchange.getRequestHeaders().contains(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER))
           LeaderForwardContext.markAlreadyForwarded();
+
+        final HeaderValues forwardedUserValues = exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User");
+        final HeaderValues relayedAuthorization = exchange.getRequestHeaders().get("Authorization");
+        if (forwardedUserValues != null && !forwardedUserValues.isEmpty()) {
+          user = resolveForwardedUser(exchange, forwardedUserValues.getFirst());
+          if (user == null)
+            return; // 401 already sent
+        } else if (relayedAuthorization == null || relayedAuthorization.isEmpty()) {
+          // Neither a forwarded identity nor credentials of the caller's own: the cluster token proves a
+          // hop, it has never been a principal. Refused here rather than falling through, so the answer to
+          // this request shape is the one it has always been.
+          exchange.setStatusCode(401);
+          sendErrorResponse(exchange, 401, "Missing forwarded user", null, null);
+          return;
+        }
+        // Otherwise the peer relayed the caller's own credentials: the standard Authorization check below
+        // authenticates them here, exactly as the node the client dialled already did.
       }
 
       if (user == null) {
@@ -1165,14 +1192,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
-   * Validates cluster-internal forwarded-auth headers. Returns the resolved user on success,
-   * or {@code null} after sending a 401 response.
+   * Whether {@code providedToken} is the shared secret this cluster's members authenticate to each other
+   * with. This is a proof of <em>hop</em>, not of identity: it says a cluster peer sent the request, and
+   * nothing about who the request is for. What the caller does with that answer - resolve a forwarded
+   * identity, honor the one-hop marker, or both - is the caller's decision (issue #7516).
+   * <p>
+   * Prefers the HA plugin's effective token, which is PBKDF2-derived at startup when
+   * {@code arcadedb.ha.clusterToken} is left empty and is never written back into the configuration, over
+   * the raw setting. The raw setting is the fallback for non-Raft setups.
    */
-  private ServerSecurityUser validateClusterForwardedAuth(final HttpServerExchange exchange,
-      final String providedToken, final HeaderValues forwardedUserValues) {
-
-    // Prefer the HA plugin's effective token (which may be PBKDF2-derived when not explicitly
-    // configured) over the raw config value. Falls back to the raw config for non-Raft setups.
+  private boolean isValidClusterToken(final String providedToken) {
     String clusterToken = null;
     final var ha = httpServer.getServer().getHA();
     if (ha != null)
@@ -1180,21 +1209,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (clusterToken == null || clusterToken.isBlank())
       clusterToken = httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
 
-    if (clusterToken == null || clusterToken.isBlank()
-        || !constantTimeEquals(clusterToken, providedToken)) {
-      exchange.setStatusCode(401);
-      sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
-      return null;
-    }
+    return clusterToken != null && !clusterToken.isBlank() && constantTimeEquals(clusterToken, providedToken);
+  }
 
-    if (forwardedUserValues == null || forwardedUserValues.isEmpty()) {
-      exchange.setStatusCode(401);
-      sendErrorResponse(exchange, 401, "Missing forwarded user", null, null);
-      return null;
-    }
-
-    final ServerSecurityUser forwardedUser = httpServer.getServer().getSecurity()
-        .getUser(forwardedUserValues.getFirst());
+  /**
+   * Resolves the principal a peer named in {@code X-ArcadeDB-Forwarded-User}, answering 401 and returning
+   * null when this node does not know that user. Only ever called after {@link #isValidClusterToken} has
+   * accepted the request's cluster token.
+   */
+  private ServerSecurityUser resolveForwardedUser(final HttpServerExchange exchange, final String userName) {
+    final ServerSecurityUser forwardedUser = httpServer.getServer().getSecurity().getUser(userName);
     if (forwardedUser == null) {
       exchange.setStatusCode(401);
       sendErrorResponse(exchange, 401, "Unknown forwarded user", null, null);
