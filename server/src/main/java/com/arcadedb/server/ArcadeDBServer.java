@@ -441,7 +441,20 @@ public class ArcadeDBServer {
     // DATABASES SO A RECOVERED ONE IS REGISTERED RATHER THAN MISTAKEN FOR ABSENT AND RECREATED (ISSUE #7129).
     loadDatabases(true);
 
-    loadDefaultDatabases();
+    try {
+      loadDefaultDatabases();
+    } catch (final Exception e) {
+      // Security, the HTTP service and every BEFORE_HTTP_ON/AFTER_HTTP_ON plugin are already up at this point,
+      // and a failing 'restore:' or 'import:' default-database command (issue #7484) can leave one created and
+      // half-initialized. status is still STARTING here - it is only set to ONLINE below - so leaving the
+      // exception to propagate on its own, the way it used to, left every one of those resources running with
+      // no stop() ever called and no path back to OFFLINE: main() has already discarded this ArcadeDBServer
+      // instance by the time the exception reaches it. stop() before rethrowing is the same recovery
+      // lifecycleEvent(SERVER_UP)'s own failure handler below already uses, and it is reentrant with the lock
+      // start() is still holding (see the field comment on lifecycleLock).
+      stop();
+      throw e;
+    }
 
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN);
 
@@ -1613,8 +1626,22 @@ public class ArcadeDBServer {
                 database = createDatabase(dbName, defaultDbMode);
               }
               try (final var rs = database.command("sql", "import database " + commandParams)) {
-                // drain not needed: the import command produces no rows we consume here.
-                // try-with-resources ensures the result set / execution plan is released.
+                // ImportDatabaseStatement REPORTS EXACTLY ONE CLASS OF FAILURE IN-BAND RATHER THAN BY THROWING: A
+                // FAILED probeOnly PROBE, AND (SINCE ISSUE #7461) A 'WITH ...' SETTING VALUE THE IMPORTER REFUSES,
+                // BOTH AS THE SINGLE ROW {"result":"FAIL","reason":...}. DISCARDING THAT ROW USED TO LEAVE dbName
+                // CREATED AND EMPTY WITH NOTHING IN THE LOG SAYING WHY (ISSUE #7484). TREATED THE SAME AS A FAILED
+                // 'restore:' ABOVE - LOUD AND FATAL TO STARTUP - RATHER THAN LOGGED AND IGNORED: A STARTUP
+                // MISCONFIGURATION THAT SILENTLY LEAVES A DEFAULT DATABASE EMPTY IS WORSE THAN ONE THAT REFUSES TO
+                // START, AND THE TWO STARTUP COMMANDS NOW ANSWER A BAD SOURCE THE SAME WAY.
+                if (rs.hasNext()) {
+                  final var row = rs.next();
+                  final String outcome = row.getProperty("result");
+                  if (!"OK".equals(outcome)) {
+                    final String reason = row.getProperty("reason");
+                    throw new CommandExecutionException(
+                        "Startup 'import:' command failed to import default database '" + dbName + "': " + reason);
+                  }
+                }
               }
               break;
 

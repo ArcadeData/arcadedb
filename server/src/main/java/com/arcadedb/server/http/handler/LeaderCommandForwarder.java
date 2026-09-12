@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -32,9 +33,17 @@ import io.undertow.util.HeaderValues;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-
+import java.net.http.HttpTimeoutException;
+import java.time.Duration;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -56,11 +65,17 @@ import java.util.logging.Level;
  * <p>
  * <b>This class performs no authorization.</b> The caller checks it first - every current call site runs
  * {@code AbstractServerHttpHandler.checkRootUser} before asking to forward.
+ * <p>
+ * <b>Every forward is bounded.</b> {@code forwardIfReplica} runs on an Undertow worker thread - all four call
+ * sites return {@code true} from {@code mustExecuteOnWorkerThread()} - so a leader that accepts the connection
+ * and then never answers would hold that worker until the OS tore the socket down, and enough of them would
+ * stop the follower serving anything (issue #7507). {@link Transport} therefore gives the client a connect
+ * timeout and every request a response deadline, and turns a blown deadline into an HTTP 504 rather than a
+ * parked thread.
  */
 public final class LeaderCommandForwarder {
-  private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
-
   private final HttpServer httpServer;
+  private final Transport  transport;
 
   /**
    * Emits the "a peer forwarded a request here and this node is not the leader either" notice only once
@@ -71,6 +86,19 @@ public final class LeaderCommandForwarder {
 
   public LeaderCommandForwarder(final HttpServer httpServer) {
     this.httpServer = httpServer;
+    this.transport = new Transport(httpServer.getServer().getConfiguration());
+  }
+
+  /**
+   * Releases the HTTP client this forwarder dials the leader with. Called when the {@link HttpServer} stops.
+   */
+  public void close() {
+    transport.close();
+  }
+
+  /** The bounded transport this forwarder sends through. Package-private, for tests. */
+  Transport transport() {
+    return transport;
   }
 
   /**
@@ -97,6 +125,23 @@ public final class LeaderCommandForwarder {
    */
   public ExecutionResponse forwardIfReplica(final HttpServerExchange exchange, final ServerSecurityUser user,
       final String targetPath, final String body) throws IOException {
+    return forwardIfReplica(exchange, user, targetPath, body, false);
+  }
+
+  /**
+   * As {@link #forwardIfReplica(HttpServerExchange, ServerSecurityUser, String, String)}, choosing which of the
+   * two response deadlines the forward is given.
+   *
+   * @param longRunningCommand true for a forwarded command that legitimately runs for minutes - {@code restore
+   *                           backup}, {@code restore database}, {@code import database} - which is given
+   *                           {@link GlobalConfiguration#HA_PROXY_LONG_COMMAND_TIMEOUT} instead of
+   *                           {@link GlobalConfiguration#HA_PROXY_READ_TIMEOUT}. Applying the short deadline to
+   *                           those would abort exactly the operations that most need to reach the leader
+   *                           (issue #7507); both deadlines are finite, because either way it is a worker
+   *                           thread that waits.
+   */
+  public ExecutionResponse forwardIfReplica(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final String targetPath, final String body, final boolean longRunningCommand) throws IOException {
     final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha == null || ha.isLeader())
       return null;
@@ -125,7 +170,7 @@ public final class LeaderCommandForwarder {
     // Where to dial the leader and on which scheme: the HTTPS endpoint when the cluster has one for it,
     // the plain-HTTP one otherwise (issue #7508). On an SSL cluster the plain branch would relay the
     // credentials below in cleartext.
-    final LeaderDial dial = LeaderDial.resolve(ha, HTTP_CLIENT);
+    final LeaderDial dial = LeaderDial.resolve(ha, transport.client());
     if (dial == null)
       throw new ServerIsNotTheLeaderException("Leader address is unknown", ha.getLeaderName());
 
@@ -164,47 +209,253 @@ public final class LeaderCommandForwarder {
       // 26.10.1 server: '?x=a{b}' is answered 400 by the parser, and URI.create rejects the same string).
       // What is guarded is the gap between those two allowances drifting apart - an Undertow upgrade, that
       // option being turned on, or an HTTP/2 ':path' that does not travel through the same parser.
-      // LeaderProxy already guards the identical call the same way, which is why this is not left to chance.
+      // LeaderProxy guards the identical call the same way, which is why this is not left to chance - though
+      // that class is never constructed, so it is a precedent for the shape of the guard and not evidence
+      // anything has exercised it (issue #7551).
       return new ExecutionResponse(400, new JSONObject()
           .put("error", "The request target cannot be forwarded to the cluster leader: " + e.getMessage())
           .toString());
     }
 
-    final HttpRequest.Builder builder = HttpRequest.newBuilder().uri(leaderUri);
+    // Transport.newRequest is the only way this class builds a request, and it attaches the response deadline
+    // unconditionally - so no call site can end up issuing an unbounded forward (issue #7507).
+    final HttpRequest.Builder builder = transport.newRequest(leaderUri, exchange.getRequestMethod().toString(), body,
+        longRunningCommand);
 
-    if (body != null) {
-      builder.header("Content-Type", "application/json");
-      builder.method(exchange.getRequestMethod().toString(), HttpRequest.BodyPublishers.ofString(body));
-    } else
-      builder.method(exchange.getRequestMethod().toString(), HttpRequest.BodyPublishers.noBody());
+    // The secret cluster members authenticate to each other with, and the only thing that makes the one-hop
+    // marker below believable on the far end. Resolved through the shared helper the receiving node uses, so
+    // the two ends of the same hop cannot read different values - this used to read the raw
+    // arcadedb.ha.clusterToken setting, which is empty on every cluster that did not declare a token
+    // explicitly, while the receiver checked the token derived at startup (issue #7516).
+    final String clusterToken = HAServerPlugin.effectiveClusterToken(httpServer.getServer());
+    if (clusterToken != null && !clusterToken.isBlank()) {
+      builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
+      // One hop only: whichever node this address really names refuses the command if it is not the leader,
+      // instead of resolving the same address and forwarding it again (issue #6191). Set here, beside the
+      // token and never without it, because that is the only form in which the receiving node trusts it - a
+      // marker from an ordinary client would let any caller turn its own transparent forward into a refusal
+      // (see LeaderForwardContext). Until issue #7516 it travelled with the session-token branch alone, which
+      // left a Basic/API-token forward with no bound at all when two peers name each other as the leader: the
+      // dial-side self-address check does not fire there, because each node is dialling the OTHER one.
+      builder.header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
+    }
 
     if (authHeader != null && authHeader.startsWith("Bearer AU-")) {
-      // Per-node session token: convert to cluster-internal identity headers
-      final String clusterToken = httpServer.getServer().getConfiguration()
-          .getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+      // Per-node session token: the leader cannot resolve it, so this node names the principal instead. The
+      // cluster token above is what makes that substitution believable.
       final String userName = user != null ? user.getName() : null;
       if (userName != null)
         builder.header("X-ArcadeDB-Forwarded-User", userName);
-      if (clusterToken != null && !clusterToken.isBlank()) {
-        builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
-        // One hop only: whichever node this address really names refuses the command if it is not the leader,
-        // instead of resolving the same address and forwarding it again (issue #6191). Sent only alongside
-        // the cluster token, because that is the only form in which the receiving node trusts it - see
-        // LeaderForwardContext. The other branch below relays the client's own credentials and carries no
-        // marker; its loop protection is the self-address check above.
-        builder.header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
-      }
-    } else if (authHeader != null) {
-      // Basic or API token: stateless, forward as-is
+    } else if (authHeader != null)
+      // Basic auth or an API token: stateless, and the leader can check them itself, so they are relayed
+      // unchanged rather than swapped for a forwarded-user assertion - an API token carries scopes that
+      // resolving the user by name on the leader would silently discard. Deliberately with no forwarded-user
+      // header, which is what keeps the leader validating what the client actually sent (issue #7516).
       builder.header("Authorization", authHeader);
+
+    // Sent on the client the dial chose - the plugin's trust-carrying one on an HTTPS cluster, this
+    // transport's own bounded client otherwise - while the deadline and the 504 translation stay here, so
+    // neither scheme can produce an unbounded forward (issues #7507 and #7508).
+    return transport.send(dial.client(), builder.build(), dial.address(), longRunningCommand);
+  }
+
+  /**
+   * The bounded HTTP call to the leader: an {@link HttpClient} that cannot wait forever to connect, a response
+   * deadline on every request, and HTTP 504 in place of a parked worker thread when the deadline blows
+   * (issue #7507).
+   * <p>
+   * Package-private so the bounds can be asserted without standing up a cluster.
+   */
+  static final class Transport {
+    /**
+     * A {@code Duration} of zero or less is rejected by both {@code HttpClient.Builder.connectTimeout} and
+     * {@code HttpRequest.Builder.timeout}. Clamping to 1 ms rather than falling back to the default is
+     * deliberate: 0 must not become a back door to the unbounded behaviour this class exists to remove.
+     */
+    private static final long MIN_TIMEOUT_MS = 1L;
+
+    private final ContextConfiguration configuration;
+    /**
+     * Which settings have already had their clamp reported. Per setting rather than one flag for the three:
+     * misconfiguring two of them at once is not less confusing than misconfiguring one, and a shared flag would
+     * report only whichever clamped first.
+     */
+    private final Set<GlobalConfiguration> clampWarned = ConcurrentHashMap.newKeySet();
+    private final HttpClient               client;
+
+    Transport(final ContextConfiguration configuration) {
+      this.configuration = configuration;
+      // An HttpClient's connect timeout is fixed at build time, so this one is read once. The response
+      // deadlines below are read per request instead, so SET SERVER SETTING moves them without a restart.
+      this.client = HttpClient.newBuilder()
+          .connectTimeout(bounded(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT,
+              configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT)))
+          .build();
     }
 
-    try {
-      final HttpResponse<String> response = dial.client().send(builder.build(), HttpResponse.BodyHandlers.ofString());
-      return new ExecutionResponse(response.statusCode(), response.body());
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new IOException("Interrupted while forwarding server command to leader at " + dial.url(targetPath), e);
+    HttpClient client() {
+      return client;
+    }
+
+    /**
+     * The deadline a forward of this kind gets, re-read from the configuration on every call.
+     */
+    Duration responseTimeout(final boolean longRunningCommand) {
+      final GlobalConfiguration setting = deadlineSetting(longRunningCommand);
+      return bounded(setting, configuration.getValueAsLong(setting));
+    }
+
+    /**
+     * Builds the request to send to the leader, with the response deadline already attached.
+     *
+     * @param method the HTTP method of the request being forwarded
+     * @param body   the body to relay, or null for a request that has none
+     */
+    HttpRequest.Builder newRequest(final URI leaderUri, final String method, final String body,
+        final boolean longRunningCommand) {
+      final HttpRequest.Builder builder = HttpRequest.newBuilder().uri(leaderUri)
+          .timeout(responseTimeout(longRunningCommand));
+
+      if (body != null) {
+        builder.header("Content-Type", "application/json");
+        builder.method(method, HttpRequest.BodyPublishers.ofString(body));
+      } else
+        builder.method(method, HttpRequest.BodyPublishers.noBody());
+
+      return builder;
+    }
+
+    /**
+     * Sends the request and relays the leader's answer, giving up after the deadline the request carries.
+     * <p>
+     * The wait is bounded twice over, and it has to be. {@code HttpRequest.timeout} bounds only the wait for the
+     * response <b>headers</b>: a peer that answers {@code 200 OK} with a {@code Content-Length} and then stops
+     * writing leaves {@code HttpClient.send} blocked for as long as it holds the socket open, deadline or no
+     * deadline (measured against a socket that sent headers plus five bytes of a declared hundred - the send did
+     * not return). So the exchange is issued asynchronously and awaited with the same deadline applied to the
+     * whole of it, body included, and the future is cancelled when that expires. The request-level timeout is
+     * kept because it aborts the exchange at the JDK level rather than only releasing this thread.
+     * <p>
+     * A blown deadline - either one, plus the connect timeout arriving as {@code HttpConnectTimeoutException} -
+     * comes back as HTTP 504 naming the leader and the setting that bounds the wait, instead of falling through
+     * to the generic 500 an {@link IOException} would produce.
+     */
+    ExecutionResponse send(final HttpClient dialClient, final HttpRequest request, final String leaderHttpAddress,
+        final boolean longRunningCommand) throws IOException {
+      // The deadline that actually applied, taken from the request rather than re-read, so the message cannot
+      // quote a number the forward was never given.
+      final long deadlineMs = request.timeout().orElseGet(() -> responseTimeout(longRunningCommand)).toMillis();
+
+      final CompletableFuture<HttpResponse<String>> pending = dialClient.sendAsync(request,
+          HttpResponse.BodyHandlers.ofString());
+      try {
+        final HttpResponse<String> response = pending.get(deadlineMs, TimeUnit.MILLISECONDS);
+        return new ExecutionResponse(response.statusCode(), response.body());
+      } catch (final TimeoutException e) {
+        pending.cancel(true);
+        return gaveUp(leaderHttpAddress, deadlineMs, longRunningCommand);
+      } catch (final ExecutionException e) {
+        final Throwable cause = e.getCause();
+        // ORDER IS LOAD-BEARING: HttpConnectTimeoutException is a SUBCLASS of HttpTimeoutException, so this arm
+        // has to come first or it is dead code and every failure to connect reports itself as "the leader did
+        // not answer within proxyReadTimeout" - the wrong knob, and the wrong story about whether the command
+        // ran. Swapping the two arms is caught only by
+        // Issue7507LeaderForwardTimeoutTest#aLeaderThatCannotBeConnectedToIsAnsweredWithItsOwnGatewayTimeout.
+        if (cause instanceof HttpConnectTimeoutException)
+          return couldNotConnect(dialClient, leaderHttpAddress);
+        if (cause instanceof HttpTimeoutException)
+          return gaveUp(leaderHttpAddress, deadlineMs, longRunningCommand);
+        if (cause instanceof IOException io)
+          throw io;
+        if (cause instanceof RuntimeException runtime)
+          throw runtime;
+        throw new IOException("Error forwarding server command to leader at " + leaderHttpAddress, cause);
+      } catch (final InterruptedException e) {
+        pending.cancel(true);
+        Thread.currentThread().interrupt();
+        throw new IOException("Interrupted while forwarding server command to leader at " + leaderHttpAddress, e);
+      }
+    }
+
+    /**
+     * The answer to a forward that ran out of time. 504 rather than 500: this node is acting as a gateway and it
+     * is the gateway's peer that did not answer.
+     */
+    private ExecutionResponse gaveUp(final String leaderHttpAddress, final long deadlineMs,
+        final boolean longRunningCommand) {
+      final String setting = deadlineSetting(longRunningCommand).getKey();
+      LogManager.instance().log(this, Level.WARNING,
+          "Gave up waiting for the cluster leader at %s to answer a forwarded server command after %,d ms. "
+              + "The command may still be running there. Raise %s if the operation is legitimately slower than "
+              + "that, otherwise the leader is unresponsive.", leaderHttpAddress, deadlineMs, setting);
+      return new ExecutionResponse(504, new JSONObject()
+          .put("error", "The cluster leader at " + leaderHttpAddress + " did not answer the forwarded server "
+              + "command within " + deadlineMs + " ms (" + setting + "). The command was not executed on this "
+              + "node, but it may still be running on the leader: check there before retrying, or raise "
+              + setting + " if the operation is legitimately slower than that")
+          .toString());
+    }
+
+    /**
+     * The answer to a forward that never got a connection to the leader at all, within
+     * {@link GlobalConfiguration#HA_PROXY_CONNECT_TIMEOUT}. 504 as well - same gateway, earlier failure - but it
+     * names the connect timeout and says the command certainly did not run.
+     * <p>
+     * The JDK reports this as {@code HttpConnectTimeoutException} - a subclass of {@code HttpTimeoutException},
+     * carrying a {@code ConnectException} as its own cause - which is why the arm above has to be tested first
+     * (measured against a client with an 800 ms connect timeout dialling 192.0.2.1, the RFC 5737 TEST-NET-1
+     * address, on a JDK 21 runtime).
+     */
+    ExecutionResponse couldNotConnect(final HttpClient dialClient, final String leaderHttpAddress) {
+      final String setting = GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT.getKey();
+      final long connectMs = dialClient.connectTimeout().map(Duration::toMillis).orElse(0L);
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not connect to the cluster leader at %s within %,d ms (%s) to forward a server command.",
+          leaderHttpAddress, connectMs, setting);
+      return new ExecutionResponse(504, new JSONObject()
+          .put("error", "Could not connect to the cluster leader at " + leaderHttpAddress + " within " + connectMs
+              + " ms (" + setting + ") to forward the server command. The command did not run: retry it, or "
+              + "check that the address resolved for the leader is reachable from this node")
+          .toString());
+    }
+
+    /**
+     * Releases the client's selector thread and executor. One client per {@link HttpServer}, so without this an
+     * in-process cluster - or a test suite that starts and stops servers - would accumulate them.
+     * {@code shutdownNow} rather than {@code close}: the latter waits for in-flight exchanges, and the whole
+     * point of the deadlines above is that this node stops waiting on the leader.
+     */
+    void close() {
+      client.shutdownNow();
+    }
+
+    private static GlobalConfiguration deadlineSetting(final boolean longRunningCommand) {
+      return longRunningCommand ?
+          GlobalConfiguration.HA_PROXY_LONG_COMMAND_TIMEOUT :
+          GlobalConfiguration.HA_PROXY_READ_TIMEOUT;
+    }
+
+    /**
+     * The configured value as a usable {@code Duration}, clamped rather than allowed to be non-positive.
+     * <p>
+     * 0 conventionally means "no timeout" in some other settings, and here it must not: that is the behaviour
+     * this class exists to remove, and both JDK builders reject a non-positive {@code Duration} outright. What an
+     * operator who typed 0 will actually see is every forwarded administrative command on this follower failing
+     * within a millisecond, so the clamp says so in the log rather than leaving them an unexplained wall of 504s.
+     * Once per {@code Transport}: the response deadline is re-read on every forward.
+     */
+    private Duration bounded(final GlobalConfiguration setting, final long configuredMs) {
+      if (configuredMs >= MIN_TIMEOUT_MS)
+        return Duration.ofMillis(configuredMs);
+
+      if (clampWarned.add(setting))
+        LogManager.instance().log(this, Level.WARNING,
+            "%s is set to %,d, which does not switch the bound off - a follower-to-leader forward is never "
+                + "unbounded. It is clamped to %,d ms instead, so forwarded administrative commands on this node "
+                + "will fail almost immediately. Set a positive value in milliseconds. This notice is logged only "
+                + "once per setting.", setting.getKey(), configuredMs, MIN_TIMEOUT_MS);
+
+      return Duration.ofMillis(MIN_TIMEOUT_MS);
     }
   }
 }

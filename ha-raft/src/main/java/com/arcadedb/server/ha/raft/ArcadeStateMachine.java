@@ -536,7 +536,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
           GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
       if (dbDir != null) {
         final Path databasesDirectory = Path.of(dbDir);
-        SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDirectory);
+        // The server is passed so the repair can take each database's maintenance slot while it moves its
+        // files, the same slot an install takes (issue #7449). This runs again on every HealthMonitor-driven
+        // Ratis restart, i.e. with the server ONLINE and a scheduled backup able to be in flight.
+        SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDirectory, server);
         // Finish any deletion a crash or a shutdown cut short: the directories are reserved, so nothing else
         // will ever look at them.
         deferredDatabaseDeleter.sweepOrphanedStagingDirectories(databasesDirectory);

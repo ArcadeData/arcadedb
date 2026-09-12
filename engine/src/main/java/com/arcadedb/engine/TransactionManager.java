@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
@@ -30,6 +31,7 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexCompacted;
 import com.arcadedb.index.vector.LSMVectorIndexMutable;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.LockManager;
 
 import java.io.*;
@@ -42,7 +44,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
-import java.util.stream.Stream;
 
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;
@@ -243,19 +244,103 @@ public class TransactionManager {
           "Preserving the WAL files of database '%s': not all pages reached the disk (%s), the next open will recover them",
           null, database.getName(), preserveWalFiles ? "caller requested preservation" : "unacked WAL pages");
     } else {
-      // DELETE ALL THE WAL FILES AT OS-LEVEL
+      // DELETE ALL THE WAL FILES AT OS-LEVEL. By this point every file THIS instance's own pool tracked
+      // has already been dropped one by one above; anything a directory scan still finds here is, under
+      // normal single-process operation, a genuine orphan this same database left behind on an earlier
+      // unclean shutdown - nothing has it open, and deleting it is safe.
+      //
+      // #7479: on a database directory a second embedded process/instance also has open (the reported
+      // case: a per-process advisory lock a Docker Desktop bind mount does not enforce across the
+      // container boundary), that scan finds the OTHER instance's still-active WAL files too. Deleting
+      // those by name alone corrupted the still-running instance exactly as reported - "No such file or
+      // directory" on every WAL check from then on. Try an exclusive lock on each file first: an orphan
+      // nobody holds open acquires it and is deleted as before; a file another instance still has open
+      // fails the lock and is left alone, with one clear warning instead of silent data loss elsewhere.
       final File dir = new File(database.getDatabasePath());
-      File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
-      if (walFiles != null) {
-        Stream.of(walFiles).forEach(File::delete);
-        walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
-      }
+      final File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
+      int unremovable = 0;
+      if (walFiles != null)
+        for (final File walFile : walFiles)
+          if (deleteWALFileIfNotHeldByAnotherInstance(walFile) == WalFileSweepOutcome.ERROR)
+            ++unremovable;
 
-      if (walFiles != null && walFiles.length > 0)
+      // A file skipped because another instance still holds it is expected and already logged its own
+      // warning above: it must not also inflate this count, or an operator sees two warnings for what is,
+      // in that case, correct behaviour rather than an actual error.
+      if (unremovable > 0)
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, walFiles.length);
+            .log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, unremovable);
     }
     return preserve;
+  }
+
+  enum WalFileSweepOutcome {DELETED, SKIPPED_LOCKED, ERROR}
+
+  /**
+   * Test-support hook (issue #7479): exposes {@link #deleteWALFileIfNotHeldByAnotherInstance} directly, so
+   * a test can drive it against one file in isolation instead of a whole database's {@code close()}.
+   */
+  WalFileSweepOutcome deleteWALFileForTesting(final File walFile) {
+    return deleteWALFileIfNotHeldByAnotherInstance(walFile);
+  }
+
+  /**
+   * Deletes {@code walFile} only if an exclusive lock on it can be acquired first (issue #7479). A file
+   * this instance's own pool never tracked is either a genuine orphan from an earlier unclean shutdown
+   * of THIS SAME database - nothing holds it open, the lock succeeds instantly, and it is deleted exactly
+   * as before - or a WAL file another live instance still has open (every {@link WALFile} has held an
+   * exclusive lock on itself for its whole life since this same issue), in which case the lock fails and
+   * the file is left untouched instead of being deleted out from under that other instance.
+   * <p>
+   * The probe is a {@link WALFile} itself, not a raw handle kept open across the delete: on Windows a
+   * process cannot delete a file through which it still holds an open, non-share-delete handle - even its
+   * own - so the handle used to prove nobody else has the file open must be closed (releasing the lock as
+   * a side effect) BEFORE {@code delete()} is attempted, exactly as {@link WALFile#drop()} already does for
+   * the ordinary case.
+   * <p>
+   * Accepted trade-off (raised in review): closing the probe before deleting reopens a THIRD instance's
+   * window to acquire the lock and start using the file in between - the opposite choice from holding the
+   * lock through the delete, which an earlier revision of this method did, until that was found to make
+   * the delete itself fail silently on Windows (see above). Between "closeable by Windows, briefly racy
+   * against a third instance" and "safe against a third instance, broken on Windows", this keeps the
+   * former: the scenario this whole method exists for is already "more than one instance should not share
+   * this directory", so a THIRD one racing into the exact same window is a corner of that corner.
+   */
+  private WalFileSweepOutcome deleteWALFileIfNotHeldByAnotherInstance(final File walFile) {
+    if (!walFile.exists())
+      // Already gone - its owner's own clean shutdown, or a concurrent sweep, beat us to it. Opening it
+      // below would otherwise recreate it as an empty file just to delete it again.
+      return WalFileSweepOutcome.DELETED;
+
+    try {
+      final boolean nobodyElseHasItOpen;
+      final WALFile probe = new WALFile(walFile.getPath());
+      try {
+        nobodyElseHasItOpen = probe.acquiredLock();
+      } finally {
+        probe.close();
+      }
+
+      if (!nobodyElseHasItOpen) {
+        // Someone else already has it open - either a live peer instance still using it, or (rarer) another
+        // closing instance's own sweep racing this one over the same ownerless orphan. Either way it is not
+        // this sweep's to remove: the file survives, and whoever does hold it will remove it if it turns
+        // out to be an orphan after all.
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipped removing WAL file '%s': it is still open, either by a live database instance or a competing cleanup",
+            null, walFile);
+        return WalFileSweepOutcome.SKIPPED_LOCKED;
+      }
+
+      if (!walFile.delete()) {
+        LogManager.instance().log(this, Level.WARNING, "Error on removing WAL file '%s'", null, walFile);
+        return WalFileSweepOutcome.ERROR;
+      }
+      return WalFileSweepOutcome.DELETED;
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on removing WAL file '%s'", e, walFile);
+      return WalFileSweepOutcome.ERROR;
+    }
   }
 
   public Binary createTransactionBuffer(final long txId, final List<MutablePage> pages) {
@@ -323,13 +408,50 @@ public class TransactionManager {
       }
 
       activeWALFilePool = new WALFile[walFiles.length];
+      boolean foreignlyLockedFileDetected = false;
       for (int i = 0; i < walFiles.length; ++i) {
         try {
           activeWALFilePool[i] = new WALFile(database.getDatabasePath() + File.separator + walFiles[i].getName());
         } catch (final FileNotFoundException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e,
               database.getDatabasePath() + walFiles[i].getName());
+          continue;
         }
+
+        // #7479: these are meant to be this same database's own leftover WAL files from its last,
+        // unclean shutdown - nothing else should still have them open. One that is anyway means another
+        // process/instance is sharing this directory right now, and replaying WAL it may be concurrently
+        // appending to or rotating is exactly the corruption this issue is about.
+        if (!activeWALFilePool[i].acquiredLock()) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Recovery aborted for database '%s': WAL file '%s' is still open by another process or database "
+                  + "instance", null, database, activeWALFilePool[i]);
+          foreignlyLockedFileDetected = true;
+        }
+      }
+
+      if (foreignlyLockedFileDetected) {
+        // Unlike the corrupt-transaction/version-gap aborts below, these files are not this instance's to
+        // rename aside as ".corrupt": the one that failed the lock check legitimately belongs to another
+        // live instance right now, and the rest are this database's own untouched recovery source that a
+        // future, uncontested open must still be able to replay - not evidence of corruption. Close every
+        // handle this scan opened (releasing whatever lock this instance did acquire on the others) and
+        // refuse the open outright (review on #7502) rather than leaving this array as the live pool and
+        // letting the open proceed: createWALFilePool() giving this instance a fresh, safe-looking pool
+        // would not stop it from also writing brand-new transactions to the very data files the other,
+        // still-unaccounted-for instance is presently mutating - the corruption this whole issue is about.
+        for (final WALFile file : activeWALFilePool) {
+          if (file == null)
+            continue;
+          try {
+            file.close();
+          } catch (final IOException e) {
+            LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, file);
+          }
+        }
+        throw new LockException(
+            "Database '" + database.getName() + "' cannot complete recovery: another process or database instance "
+                + "is writing to its WAL files");
       }
 
       if (activeWALFilePool.length > 0) {
@@ -339,6 +461,11 @@ public class TransactionManager {
         final WALFile.WALTransaction[] walPositions = new WALFile.WALTransaction[activeWALFilePool.length];
         for (int i = 0; i < activeWALFilePool.length; ++i) {
           final WALFile file = activeWALFilePool[i];
+          // A slot whose WALFile constructor threw FileNotFoundException above never got one (pre-existing
+          // gap, found in review on #7502): nothing left to replay from it, but leaving it null unguarded
+          // crashed this loop with an unrelated NullPointerException instead of just skipping it.
+          if (file == null)
+            continue;
           walPositions[i] = file.getFirstTransaction();
           // A torn first record followed by intact transactions is corruption, not a clean empty/EOF file:
           // stopping silently would drop committed data (issue #4508). Abort recovery and preserve the WAL.
@@ -1047,11 +1174,40 @@ public class TransactionManager {
     activeWALFilePool = new WALFile[walFilePoolSize(database.getConfiguration())];
     for (int i = 0; i < activeWALFilePool.length; ++i) {
       final long counter = logFileCounter.getAndIncrement();
+      final String walFilePath = database.getDatabasePath() + "/txlog_" + counter + ".wal";
       try {
-        activeWALFilePool[i] = database.getWALFileFactory().newInstance(database.getDatabasePath() + "/txlog_" + counter + ".wal");
+        activeWALFilePool[i] = database.getWALFileFactory().newInstance(walFilePath);
       } catch (final FileNotFoundException e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e,
-            database.getDatabasePath() + "/txlog_" + counter + ".wal");
+        LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, walFilePath);
+        continue;
+      }
+
+      // #7479: the counter above is seeded past every WAL file this scan could see, so a brand-new name
+      // colliding with one that already exists - and is still locked - means another process/instance
+      // raced this same open and got there first. Refuse the open outright rather than silently sharing
+      // that file with whoever holds it, the same way lockDatabase() already refuses on the whole-database
+      // lock file. Every slot already opened before this one is closed first (review on #7502): the throw
+      // otherwise left them as leaked handles and self-locks for the life of the JVM, since neither this
+      // constructor nor its caller retains a reference to a TransactionManager whose constructor never
+      // finished.
+      if (!activeWALFilePool[i].acquiredLock()) {
+        for (int alreadyOpened = 0; alreadyOpened < i; ++alreadyOpened) {
+          // A slot that hit FileNotFoundException above and `continue`d never got a WALFile at all.
+          if (activeWALFilePool[alreadyOpened] == null)
+            continue;
+          try {
+            activeWALFilePool[alreadyOpened].close();
+          } catch (final IOException e) {
+            LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, activeWALFilePool[alreadyOpened]);
+          }
+        }
+        try {
+          activeWALFilePool[i].close();
+        } catch (final IOException e) {
+          LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, activeWALFilePool[i]);
+        }
+        throw new LockException(
+            "WAL file '" + walFilePath + "' is already open by another process or database instance");
       }
     }
   }
@@ -1068,9 +1224,28 @@ public class TransactionManager {
             activeWALFilePool[i] = database.getWALFileFactory()
                 .newInstance(database.getDatabasePath() + "/txlog_" + logFileCounter.getAndIncrement() + ".wal");
 
-            // SET THE FILE AS INACTIVE READY TO BE DISPOSED
+            // SET THE OLD FILE AS INACTIVE READY TO BE DISPOSED. Done unconditionally, before the new
+            // file's lock is even checked: the old file's own retirement has nothing to do with whether
+            // rotating INTO the new one succeeds, and close()'s normal WAL cleanup already handles a
+            // database that gets fenced right below (issue #7479 review - this used to only happen on the
+            // success path, leaking the old file's handle and self-lock whenever the check below failed).
             file.setActive(false);
             inactiveWALFilePool.add(file);
+
+            // #7479: same reasoning as createWALFilePool() - a freshly counted name that turns out to
+            // already be locked means another process/instance raced this rotation and got there first.
+            if (!activeWALFilePool[i].acquiredLock()) {
+              final String reason =
+                  "WAL file '" + activeWALFilePool[i] + "' is already open by another process or database instance";
+              try {
+                activeWALFilePool[i].close();
+              } catch (final IOException ignored) {
+                // IGNORE IT: the database is being fenced regardless
+              }
+              if (database.getEmbedded() instanceof LocalDatabase localDatabase)
+                localDatabase.fenceForRecovery(reason);
+              return;
+            }
           }
         } catch (final ClosedChannelException e) {
           try {
@@ -1079,9 +1254,56 @@ public class TransactionManager {
             // IGNORE IT
           }
         } catch (final IOException e) {
+          // #7479: a WAL file this instance still has open just became inaccessible. Under normal
+          // single-process operation that never happens - the OS keeps an open file's content reachable
+          // through its descriptor even past an unlink - so it means something outside this instance's
+          // control removed it (the reported case: a second embedded process/instance sharing the same
+          // database directory, its own clean close deleting every *.wal file it could see). Retrying
+          // this check every second forever, as before, only produced an unbounded flood of identical
+          // stack traces while the database kept silently accepting writes into a WAL pool that can no
+          // longer be trusted. Fence it once instead, the same way a post-WAL-append commit failure
+          // already does (#5053): fenceForRecovery() logs a single clear SEVERE line, and the
+          // housekeeping timer cancels itself on its next tick (the isFencedForRecovery() guard above) -
+          // there is no point checking the rest of the pool, the whole database is about to stop being
+          // usable anyway.
+          if (database.getEmbedded() instanceof LocalDatabase localDatabase) {
+            localDatabase.fenceForRecovery(
+                "WAL file '" + file + "' became inaccessible while still open; check whether another process or "
+                    + "database instance is writing to this database's files", e);
+            return;
+          }
+          // No LocalDatabase to fence (a wrapper this issue does not otherwise reach): fall back to the
+          // original behaviour of logging and continuing to check the rest of the pool.
           LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, file);
         }
       }
+  }
+
+  /**
+   * Test-support hook (issue #7479): lets a test simulate an active WAL file becoming inaccessible
+   * without depending on filesystem-specific unlink-while-open semantics, which do not reproduce the
+   * failure portably (see {@code TransactionManagerWalFileLostFencesTest}).
+   */
+  WALFile replaceActiveWALFileForTesting(final int index, final WALFile replacement) {
+    final WALFile previous = activeWALFilePool[index];
+    activeWALFilePool[index] = replacement;
+    return previous;
+  }
+
+  /**
+   * Test-support hook: runs one pass of the periodic WAL housekeeping check on demand instead of
+   * waiting for the once-a-second timer.
+   */
+  void checkWALFilesForTesting() {
+    checkWALFiles();
+  }
+
+  /**
+   * Test-support hook (issue #7479): the value {@link #checkWALFiles}'s rotation would use for its next
+   * WAL file name, so a test can pre-create and lock a colliding file at exactly that name.
+   */
+  long getLogFileCounterForTesting() {
+    return logFileCounter.get();
   }
 
   private boolean cleanWALFiles(final boolean dropFiles, final boolean force) {

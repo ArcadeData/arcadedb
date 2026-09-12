@@ -30,6 +30,7 @@ download, i.e. the longest-running thing the HA layer does, and it no longer par
 | `MaterializedViewScheduler` | `server` | Cron-style MV refresh | scheduled executor | n/a |
 | Raft HA pools | `ha-raft` | Leader election, log replication | configurable in Raft conf | n/a |
 | `ArcadeStateMachine.snapshotInstallExecutor` | `ha-raft` | Leader-initiated follower snapshot install, off the Ratis state-machine thread | 1 worker, 16-deep queue (Ratis serialises installs per division) | Abort, turned into a failed future so Ratis retries - never caller-runs, which would put the download back on the Ratis thread |
+| `ServerSecurity.permissionsRefreshExecutor` | `server` | Re-deriving the cached per-database permissions after a group document arrives over HA replication, off the Raft state-machine apply thread (issue #7510) | core 0 (an idle server carries no thread) / max 1, 30 s keep-alive, 1-deep queue | **Drop**, logged at `FINE` - and that is coalescing, not loss: the task reads the group document when it RUNS, and the new document is published before the submit, so the one already queued covers every change dropped behind it |
 | Undertow IO + worker | `server` | HTTP request handling | hardcoded 500 worker threads | Undertow built-in |
 | `ServerMonitor` | `server` | Periodic metric collection | scheduled executor | n/a |
 

@@ -171,6 +171,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
 
+        // CHECKED BEFORE THE SKIP-ROW 'continue' BELOW, NOT ONLY AFTER A ROW IS ACTUALLY PROCESSED: A SKIPPED
+        // ROW (e.g. A LARGE -documentsSkipEntries HEADER BLOCK) NEVER REACHES THE POST-PROCESSING CHECK AT THE
+        // BOTTOM OF THIS LOOP, SO parsingLimitBytes WOULD OTHERWISE GO ON READING PAST ITS BUDGET FOR AS LONG AS
+        // ROWS KEEP BEING SKIPPED. parsingLimitEntries STAYS A POST-PROCESSING CHECK ON PURPOSE (SEE BELOW).
+        if (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes)
+          break;
+
         if (skipEntries > 0 && line < skipEntries) {
           // SKIP IT
           ++skipped;
@@ -206,6 +213,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           context.errors.incrementAndGet();
           database.begin();
         }
+
+        // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
+        // ROW, SO STOPPING ONCE IT REACHES THE LIMIT IMPORTS EXACTLY -parsingLimitEntries ROWS, NOT ONE MORE (#7482).
+        // KEPT AS A POST-PROCESSING CHECK, UNLIKE parsingLimitBytes ABOVE: THE ROW THAT TRIPS THIS CAP IS MEANT TO
+        // STILL LAND, THE SAME WAY XML's DOES.
+        if (settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
+          break;
       }
 
       // Same ownsTransaction gate as the rollback paths below: don't commit the caller's unrelated pending work as
@@ -422,6 +436,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
 
+        // SAME REASONING AS loadDocuments() ABOVE: CHECKED BEFORE EITHER 'continue' BELOW, SO A LONG RUN OF SKIPPED
+        // OR ID-LESS ROWS CANNOT KEEP READING PAST THE BYTE BUDGET.
+        if (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes)
+          break;
+
         if (skipEntries > 0 && line < skipEntries) {
           ++skipped;
           continue;
@@ -463,6 +482,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           context.errors.incrementAndGet();
           database.begin();
         }
+
+        // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
+        // ROW, SO STOPPING ONCE IT REACHES THE LIMIT IMPORTS EXACTLY -parsingLimitEntries ROWS, NOT ONE MORE (#7482).
+        // KEPT AS A POST-PROCESSING CHECK, UNLIKE parsingLimitBytes ABOVE: THE ROW THAT TRIPS THIS CAP IS MEANT TO
+        // STILL LAND, THE SAME WAY XML's DOES.
+        if (settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
+          break;
       }
 
       if (skipOnError) {
@@ -604,6 +630,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
           context.parsed.incrementAndGet();
 
+          // SAME REASONING AS loadDocuments()/loadVertices() ABOVE: CHECKED BEFORE THE SKIP-ROW 'continue', SO A
+          // LONG RUN OF SKIPPED ROWS CANNOT KEEP READING PAST THE BYTE BUDGET.
+          if (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes)
+            break;
+
           if (skipEntries > 0 && line < skipEntries) {
             ++skipped;
             continue;
@@ -632,6 +663,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             txOpen = true;
             txCount = 0;
           }
+
+          // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
+          // ROW, SO STOPPING ONCE IT REACHES THE LIMIT IMPORTS EXACTLY -parsingLimitEntries ROWS, NOT ONE MORE (#7482).
+          // KEPT AS A POST-PROCESSING CHECK, UNLIKE parsingLimitBytes ABOVE: THE ROW THAT TRIPS THIS CAP IS MEANT TO
+          // STILL LAND, THE SAME WAY XML's DOES.
+          if (settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
+            break;
         }
         txOpen = false;
         database.commit();

@@ -1904,6 +1904,18 @@ public enum GlobalConfiguration {
       "Interval in milliseconds for the Raft health monitor to check for CLOSED/EXCEPTION state and auto-recover. 0 disables.",
       Long.class, 3000L),
 
+  HA_SECURITY_SEED_RETRY_TIMEOUT("arcadedb.ha.securitySeedRetryTimeout", SCOPE.SERVER,
+      """
+      Time budget in milliseconds a peer-admission call (POST /api/v1/cluster/peer, 'connect cluster') spends \
+      retrying the security documents - server-users.jsonl, server-groups.json, server-api-tokens.json - it seeds \
+      to the newly-joined peer (issue #7521). None of them is carried by a Raft snapshot install, so a peer that \
+      does not receive the seed keeps whatever its own config directory holds: for a node re-added after time out \
+      of the cluster that is a user dropped since, a group narrowed since, or a token revoked since, still good on \
+      that one node. The usual failure is a momentarily absent quorum, which is transient and is what the retry is \
+      for; only the documents that failed are retried, with exponential backoff. 0 disables the retry and leaves \
+      the single best-effort attempt.""",
+      Long.class, 3000L),
+
   HA_RESYNC_PROGRESS_LOGGING("arcadedb.ha.resyncProgressLogging", SCOPE.SERVER,
       """
       When true (default), the leader emits a concise per-follower unreachable/reconnected narrative and a \
@@ -1980,6 +1992,31 @@ public enum GlobalConfiguration {
       costs one whole-document entry per database to re-prime the diff base.""",
       Boolean.class, true),
 
+  HA_SECURITY_ENTRY_CAPABILITY_GATE("arcadedb.ha.securityEntryCapabilityGate", SCOPE.SERVER,
+      """
+      Refuse a group or API-token change while any peer of the Raft configuration has not proved it can decode \
+      the log entry that change is replicated as (issue #7511). ON BY DEFAULT, and the default is the safe one. \
+      \
+      SECURITY_GROUPS_ENTRY and SECURITY_API_TOKENS_ENTRY are new in 26.10.1, and a node predating them cannot \
+      decode either. ArcadeStateMachine refuses to SKIP a committed entry whose type it does not recognise - \
+      skipping would diverge the cluster's security state silently - so it halts the node instead. During a \
+      rolling upgrade the cluster is mixed by construction, which made creating a group or minting a token on an \
+      already-upgraded node halt every node still on the old build: a routine admin action turning a routine \
+      upgrade into a partial outage. With this on, the operation is refused instead, with HTTP 409 / gRPC \
+      FAILED_PRECONDITION naming the peer that is holding the cluster back. Nothing is submitted, so nothing \
+      halts, and the change succeeds unchanged once the last node is up - no sequencing by hand. \
+      \
+      The peer is asked over POST /api/v1/cluster/capabilities, the #7219 handshake. Every unknown counts as a \
+      no: a peer that is unreachable, whose address identifies no single node, or that runs a build without that \
+      route all read the same way, because at the transport they ARE the same 404-or-timeout. That is what makes \
+      the gate safe and also what makes it strict - an admin change is refused while any node is DOWN, not only \
+      while any node is OLD, revocations included. \
+      \
+      Turn it off only to accept that trade knowingly: when a peer cannot be probed and you know from outside the \
+      cluster that every node runs a build that understands these entries. Turning it off does not make an old \
+      peer able to decode the entry - it makes the node halt again.""",
+      Boolean.class, true),
+
   HA_BOOTSTRAP_FROM_LOCAL_DATABASE("arcadedb.ha.bootstrapFromLocalDatabase", SCOPE.SERVER,
       """
       When true (the default) and every peer's Raft log is empty at first cluster formation, peers exchange a \
@@ -2031,11 +2068,35 @@ public enum GlobalConfiguration {
       Long.class, 60_000L),
 
   HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
-      "Read timeout in milliseconds for the leader proxy in AbstractServerHttpHandler. Covers long-running queries proxied from a follower to the leader.",
+      """
+      Milliseconds a follower waits for the leader to answer a request it forwarded before giving up and \
+      answering the client HTTP 504. The live reader is LeaderCommandForwarder: the commands of \
+      POST /api/v1/server and the POST/PUT/DELETE /api/v1/server/users routes. LeaderProxy reads it too, but \
+      nothing constructs LeaderProxy, so that path is dormant. \
+      The forward runs on an HTTP worker thread, so this is the bound that stops a wedged leader from parking \
+      one indefinitely; 0 or a negative value does not disable it. The forwarded commands that legitimately run \
+      for minutes - 'restore backup', 'restore database' and 'import database' - use \
+      arcadedb.ha.proxyLongCommandTimeout instead. Re-read on every forward.""",
       Long.class, 30000L),
 
+  HA_PROXY_LONG_COMMAND_TIMEOUT("arcadedb.ha.proxyLongCommandTimeout", SCOPE.SERVER,
+      """
+      Milliseconds a follower waits for the leader to answer a forwarded 'restore backup', 'restore database' \
+      or 'import database' before giving up and answering the client HTTP 504. These commands legitimately run \
+      for minutes, so arcadedb.ha.proxyReadTimeout would abort exactly the operations that most need to reach \
+      the leader - but the wait still has to be finite, because it is an HTTP worker thread that is waiting. \
+      0 or a negative value does not disable it. Re-read on every forward.""",
+      Long.class, 3_600_000L),
+
   HA_PROXY_CONNECT_TIMEOUT("arcadedb.ha.proxyConnectTimeout", SCOPE.SERVER,
-      "Connect timeout in milliseconds for the leader proxy in AbstractServerHttpHandler.",
+      """
+      Connect timeout in milliseconds for a follower dialling the leader, used by LeaderCommandForwarder (and \
+      by LeaderProxy, which nothing currently constructs). Bounds the half of the failure the response deadline \
+      cannot see: a leader whose host accepts no connection. Read once when the HTTP client is built, because a java.net.http.HttpClient's connect \
+      timeout is fixed at build time - a change needs a restart. RaftHAPlugin also reads it, as the budget for \
+      one whole peer authentication-session RPC rather than only that RPC's connect phase: those are small \
+      requests on a LAN with a client waiting on a 401-or-200, so the connect budget is the right order of \
+      magnitude for the lot.""",
       Long.class, 5000L),
 
   HA_PROXY_MAX_BODY_SIZE("arcadedb.ha.proxyMaxBodySize", SCOPE.SERVER,

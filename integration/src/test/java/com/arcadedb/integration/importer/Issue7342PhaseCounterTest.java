@@ -30,6 +30,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -51,11 +54,15 @@ class Issue7342PhaseCounterTest {
 
   /**
    * The unit the hoist rests on. {@code lastParsed} goes with the counter: it is what
-   * {@code FormatImporter#printProgress} subtracts to turn the counter into a rate, so left behind it made the
-   * first progress line of every phase after the first report a NEGATIVE rate.
+   * {@code FormatImporter#printProgress} subtracts from {@link ImporterContext#getParsedTotal()} to turn the
+   * counter into a rate (issue #7483 moved that subtraction from the per-phase counter to the cumulative total).
+   * {@code lastParsed} is therefore rebased to the cumulative total as of the boundary, not zeroed: zeroing it
+   * while the thing it is subtracted FROM stayed cumulative would make the very next progress line compute
+   * {@code (wholeImportSoFar - 0) / oneSecond} - a rate spike exactly as visible as the negative-rate bug this
+   * reset originally fixed, just inflated instead of negative.
    */
   @Test
-  void beginPhaseFoldsThePhaseIntoTheTotalAndZeroesTheRest() {
+  void beginPhaseFoldsThePhaseIntoTheTotalAndRebasesLastParsedToIt() {
     final ImporterContext context = new ImporterContext();
 
     context.parsed.set(7);
@@ -64,15 +71,71 @@ class Issue7342PhaseCounterTest {
     context.beginPhase();
 
     assertThat(context.parsed.get()).as("the next phase counts its own rows from zero").isZero();
-    assertThat(context.lastParsed).as("so the first progress line of the next phase cannot report a negative rate")
-        .isZero();
+    assertThat(context.lastParsed)
+        .as("rebased to the cumulative total as of this boundary, so the next call's (getParsedTotal() - lastParsed) "
+            + "measures only what the NEW phase parses, not the whole import re-divided by one tick's elapsed time")
+        .isEqualTo(7);
     assertThat(context.getParsedTotal()).as("and nothing is lost: the phase's rows join the import-wide total")
         .isEqualTo(7);
 
     context.parsed.set(3);
     assertThat(context.getParsedTotal()).as("the total is the finished phases plus the one still running")
         .isEqualTo(10);
+    assertThat(context.getParsedTotal() - context.lastParsed)
+        .as("the rate computation a progress reader does: only the 3 rows the new phase has parsed so far, not the "
+            + "cumulative 10")
+        .isEqualTo(3);
     assertThat(context.toMap()).containsEntry("parsedRecords", 10L);
+  }
+
+  /**
+   * A code-review finding on #7483's own fix: {@code parsed.getAndSet(0)} and
+   * {@code parsedInPreviousPhases.addAndGet(...)} inside {@code beginPhase()} are each individually atomic but not
+   * atomic AS A PAIR, so a concurrent {@code getParsedTotal()} - exactly what {@code ServerControlPlane}'s
+   * progress-polling {@code Timer} thread does, on a thread other than the import's own - could land between the
+   * two: {@code parsed} already zeroed, {@code parsedInPreviousPhases} not yet credited. That reads as a total
+   * LOWER than the one reported a moment before - the same "progress went backwards" symptom this issue exists to
+   * eliminate, just from a race instead of from the reset the rest of this fix already covers. {@code beginPhase()}
+   * and {@code getParsedTotal()} are now both {@code synchronized} on the instance to close it.
+   * <p>
+   * Hammers both methods from separate threads long enough that, before the fix, the race reliably reproduces
+   * within the loop count below; the assertion is simply that {@code getParsedTotal()} never returns less than the
+   * highest value already observed.
+   */
+  @Test
+  void getParsedTotalNeverGoesBackwardsUnderConcurrentBeginPhase() throws Exception {
+    final ImporterContext context = new ImporterContext();
+    final int             phases  = 20_000;
+    final AtomicBoolean stop    = new AtomicBoolean(false);
+    final AtomicLong    maxSeen = new AtomicLong(0);
+    final AtomicReference<AssertionError> failure = new AtomicReference<>();
+
+    final Thread reader = new Thread(() -> {
+      while (!stop.get()) {
+        final long total = context.getParsedTotal();
+        final long previousMax = maxSeen.getAndUpdate(current -> Math.max(current, total));
+        if (total < previousMax)
+          failure.compareAndSet(null,
+              new AssertionError("getParsedTotal() returned " + total + " after already having reported " + previousMax));
+      }
+    });
+
+    reader.start();
+    try {
+      for (int i = 0; i < phases; i++) {
+        context.parsed.incrementAndGet();
+        context.beginPhase();
+      }
+    } finally {
+      stop.set(true);
+      reader.join();
+    }
+
+    if (failure.get() != null)
+      throw failure.get();
+
+    assertThat(context.getParsedTotal()).as("every one of the phases' single row must still be accounted for")
+        .isEqualTo(phases);
   }
 
   /**

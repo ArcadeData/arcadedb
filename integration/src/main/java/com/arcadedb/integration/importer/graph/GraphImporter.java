@@ -77,6 +77,16 @@ import java.util.logging.Level;
  * index's automatic rebuild deferred for that long; its writes stay searchable through the delta scan meanwhile.
  * The importer is meant for a database being loaded, not one serving other writers at the same time.
  * <p>
+ * <b>Never point this at a database directory a running ArcadeDB Server (or any other process/JVM) already has
+ * open</b> (issue #7479). {@code DatabaseFactory} opens the raw database files directly - the same files the
+ * server's own embedded engine has open - and while the per-process lock file is meant to refuse that, it is
+ * only as reliable as the filesystem's advisory locking: a Docker Desktop bind mount (Windows/macOS) does not
+ * enforce {@code FileChannel.tryLock()} across the host/container boundary, so a second process can open the
+ * same files anyway. Two independent, uncoordinated engine instances writing to one set of files is unsafe
+ * regardless of that particular gap - one instance's own clean {@code close()} can remove WAL files the other
+ * still has open, corrupting it. To bulk-load into a database a server is serving, use the server's own remote
+ * protocol instead of an embedded {@code DatabaseFactory}, or stop the server for the duration of the import.
+ * <p>
  * Usage:
  * <pre>
  * GraphImporter.builder(database)

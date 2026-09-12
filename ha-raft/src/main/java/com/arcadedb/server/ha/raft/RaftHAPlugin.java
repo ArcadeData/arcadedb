@@ -83,6 +83,21 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     HALog.configure(configuration);
   }
 
+  /**
+   * Installs the Raft server this plugin delegates to, without going through {@code startService()} and a real
+   * Ratis cluster.
+   * <p>
+   * Package-private and test-only, the same seam {@code RaftHAServer.setCapabilityProber} is. It exists so the
+   * #7511 interlock can be driven through the method an operator's request actually reaches - the HTTP and gRPC
+   * control planes both end at {@code replicateSecurityGroups} / {@code replicateSecurityApiTokens} - rather than
+   * only through the gate helper those two call. A gate nothing calls is a gate that is not there, and only a test
+   * of the caller can tell the difference.
+   */
+  // @VisibleForTesting
+  void setRaftHAServer(final RaftHAServer raftHAServer) {
+    this.raftHAServer = raftHAServer;
+  }
+
   @Override
   public PluginInstallationPriority getInstallationPriority() {
     return PluginInstallationPriority.AFTER_HTTP_ON;
@@ -216,10 +231,21 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     LogManager.instance().log(this, Level.INFO, "Security users entry committed via Raft");
   }
 
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Gated on every peer having proved it can decode a {@code SECURITY_GROUPS_ENTRY} (issue #7511). The entry type
+   * is new in 26.10.1 and a peer that cannot decode it HALTS rather than skips it, so during a rolling upgrade an
+   * ungated group change turned a routine admin action into a partial outage. The gate runs before the broker is
+   * handed anything, so a refusal submits nothing.
+   */
   @Override
   public void replicateSecurityGroups(final String groupsJson) {
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
+
+    SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raftHAServer, RaftLogEntryType.SECURITY_GROUPS_ENTRY,
+        "group document");
 
     try {
       raftHAServer.getTransactionBroker().replicateSecurityGroups(groupsJson);
@@ -231,10 +257,20 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     LogManager.instance().log(this, Level.INFO, "Security groups entry committed via Raft");
   }
 
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Gated the same way {@link #replicateSecurityGroups} is, and for the same reason (issue #7511). Worth being
+   * explicit that this covers a REVOCATION as well as a mint: a revoked token is not revoked anywhere if the entry
+   * carrying it halts the nodes that were still serving it.
+   */
   @Override
   public void replicateSecurityApiTokens(final String apiTokensJson) {
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
+
+    SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raftHAServer,
+        RaftLogEntryType.SECURITY_API_TOKENS_ENTRY, "API-token document");
 
     try {
       raftHAServer.getTransactionBroker().replicateSecurityApiTokens(apiTokensJson);

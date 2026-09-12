@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.GlobalConfiguration;
+
 import java.io.IOException;
 import java.net.http.HttpClient;
 import java.util.List;
@@ -102,6 +104,34 @@ public interface HAServerPlugin extends ServerPlugin {
    */
   default String getClusterToken() {
     return null;
+  }
+
+  /**
+   * The token {@code server}'s peers actually accept: the HA plugin's own, and the raw
+   * {@link GlobalConfiguration#HA_CLUSTER_TOKEN} setting only when the plugin has none (HA not active, or a
+   * non-Raft implementation that does not derive one).
+   * <p>
+   * The fallback is not the same value as the plugin's. {@code ClusterTokenProvider} derives the token from
+   * the cluster name and the root password when the setting is left empty, and stores it on itself
+   * <em>without</em> writing it back into the configuration - so on every cluster that did not declare a
+   * token explicitly the raw setting reads empty while the effective token is a real secret. Reading the
+   * setting alone is therefore not a conservative approximation of this: it is a different answer.
+   * <p>
+   * One method rather than one per caller, because the two ends of a forwarded hop reading the resolution
+   * order differently is the defect of issue #7516 - the sender authenticated with the raw setting while the
+   * receiver checked the derived token, so on a default-configured cluster the forward carried no usable
+   * credentials at all.
+   *
+   * @return the effective token, or null/blank when this server has none
+   */
+  static String effectiveClusterToken(final ArcadeDBServer server) {
+    if (server == null)
+      return null;
+    final HAServerPlugin ha = server.getHA();
+    final String fromPlugin = ha != null ? ha.getClusterToken() : null;
+    if (fromPlugin != null && !fromPlugin.isBlank())
+      return fromPlugin;
+    return server.getConfiguration().getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
   }
 
   /**
