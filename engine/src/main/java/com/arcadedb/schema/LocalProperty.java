@@ -29,6 +29,12 @@ import java.util.*;
 
 public class LocalProperty extends AbstractProperty {
 
+  /**
+   * The CUSTOM key a user reaches for when trying to turn an existing property into a time-series column, as in
+   * {@code ALTER PROPERTY Reading.value CUSTOM role = "FIELD"}.
+   */
+  private static final String TIMESERIES_ROLE_CUSTOM_KEY = "role";
+
   public LocalProperty(final LocalDocumentType owner, final String name, final Type type) {
     super(owner, name, type, owner.getSchema().getDictionary().getIdByName(name, true));
   }
@@ -287,12 +293,6 @@ public class LocalProperty extends AbstractProperty {
     }
     return this;
   }
-
-  /**
-   * The CUSTOM key a user reaches for when trying to turn an existing property into a time-series column, as in
-   * {@code ALTER PROPERTY Reading.value CUSTOM role = "FIELD"}.
-   */
-  private static final String TIMESERIES_ROLE_CUSTOM_KEY = "role";
 
   /**
    * Refuses {@code CUSTOM role} on a property of a TIMESERIES type.
