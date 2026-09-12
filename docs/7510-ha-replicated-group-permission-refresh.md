@@ -162,7 +162,9 @@ so the new asynchronous refresh has nothing to walk and cannot race them.
 
 ## Test results
 
-New: `server/src/test/java/com/arcadedb/server/security/Issue7510ReplicatedGroupRefreshTest.java`, 4 tests.
+New: `server/src/test/java/com/arcadedb/server/security/Issue7510ReplicatedGroupRefreshTest.java`, **5 tests** -
+four written against the coverage table before the fix, plus the per-database-guard test added afterwards by the
+adversarial pass (finding 1 below).
 
 Before the fix (only the extraction in place, no scheduling):
 
@@ -177,7 +179,9 @@ Each of the three failed by exhausting the full 10 s outcome wait (30.99 s for t
 converging - which is the defect, reproduced through the entry point the Raft state machine actually uses.
 
 After the fix: `Tests run: 4, Failures: 0, Errors: 0` in 0.958 s - the class is now faster than one reload
-interval, which is the change stated as a number.
+interval, which is the change stated as a number. With the fifth test added it is `Tests run: 5, Failures: 0` in
+0.577 s, and that fifth test was separately proved able to fail by reverting its guard
+(`Tests run: 5, Failures: 1`).
 
 Regression runs (all with `-Dmaven.repo.local=$WORKTREE/.m2repo`, isolated from the parallel agents):
 

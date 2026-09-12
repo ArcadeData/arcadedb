@@ -250,6 +250,21 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // exactly one behaviour: an already-running walk finishes, nothing else starts.
     permissionsRefreshExecutor.shutdown();
     permissionsRefreshExecutor.getQueue().clear();
+
+    // And then WAIT for the walk that was already running, briefly. ArcadeDBServer.stopInternal() calls this
+    // method immediately before the loop that closes every ServerDatabase, so without this the worker would still
+    // be resolving names out of server.getDatabaseNames() while the main thread closes those same databases. The
+    // bound is short and the timeout is not an error: a refresh is a traversal of cached maps, and if it somehow
+    // has not finished in two seconds, proceeding is what this method did before - the guards inside the worker
+    // turn whatever it then touches into a log line rather than a failure.
+    try {
+      if (!permissionsRefreshExecutor.awaitTermination(2, TimeUnit.SECONDS))
+        LogManager.instance().log(this, Level.FINE,
+            "A cached-permission refresh was still running when the security service stopped; the databases close "
+                + "under it");
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   public ServerSecurityUser authenticate(final String userName, final String userPassword, final String databaseName) {
@@ -668,6 +683,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // Nothing may escape the worker: a throw here is swallowed by the executor, and the node would then quietly
       // fall back to converging on the reload tick - the behaviour this executor exists to replace. It has to be
       // visible rather than silently reverted to.
+      //
+      // Exception and deliberately not Throwable: an Error is not a refresh that failed, it is a JVM that is no
+      // longer able to run one, and logging it here as though the node had merely lost its fast path would be a
+      // lie about the state of the process. Let it kill the worker and reach the default handler.
       LogManager.instance().log(this, Level.SEVERE,
           "Error while refreshing the cached database permissions after a replicated group change; this node now "
               + "converges only on the '%s' reload tick", e, SecurityGroupFileRepository.FILE_NAME);
