@@ -77,11 +77,11 @@ class TransactionManagerWalFileDeleteFailureReportedTest extends TestHelper {
           .as("this test requires directory write permission to actually be enforced (e.g. not running as root)")
           .isTrue();
 
-      final String outcome = txManager.deleteWALFileForTesting(walFile);
+      final TransactionManager.WalFileSweepOutcome outcome = txManager.deleteWALFileForTesting(walFile);
 
       assertThat(outcome)
           .as("a delete the OS actually refused must be reported as an error, not silently as success")
-          .isEqualTo("ERROR");
+          .isEqualTo(TransactionManager.WalFileSweepOutcome.ERROR);
       assertThat(walFile)
           .as("the file the OS refused to delete must still be there")
           .exists();
