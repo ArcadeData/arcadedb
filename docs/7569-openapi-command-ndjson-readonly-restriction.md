@@ -97,3 +97,41 @@ One finding, verified independently before filing:
    Narrower than the subagent framed it: the transactional hazards `requireStreamableStatement()`'s javadoc
    describes are POST-only, since `GetQueryHandler.requiresTransaction()` returns `false` so there is no
    auto-commit wrapper and no retry loop. #7571 says so explicitly rather than overstating the exposure.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/7572
+
+## Review cycles
+
+### Cycle 1 - 9463c26df5
+
+- **CodeRabbit:** "No actionable comments were generated." Merge risk: minimal. One pre-merge check
+  warning, "Docstring Coverage 16.67%" - **skipped as a nitpick**: the functions it counts are JUnit
+  test methods and private spec builders, and this repo documents intent in targeted javadoc/comments
+  (the new constant and the new test both carry one) rather than in per-method docstrings. Adding
+  boilerplate javadoc to satisfy a percentage would be noise.
+- **claude:** no blocking issues. Confirmed the new text matches
+  `requireStreamableStatement()`'s actual conditions, that sharing one constant between the two POST
+  operations is right, and that deferring the GET gap to #7571 keeps the PR narrow.
+- **claude, one non-blocking observation:** `requireStreamableStatement()` excludes
+  CREATE/UPDATE/DELETE/SCHEMA/DDL but not `OperationType.ADMIN`, so "if any statement reports ADMIN
+  while `isIdempotent()` returns true, it could still stream" - suggested as a possible follow-up.
+
+  **Assessed and NOT filed: the premise does not hold.** `OperationType.ADMIN` has exactly one
+  producer in the tree - `OpenCypherQueryEngine.analyze()` returns it for a `CypherAdminStatement`
+  (`engine/src/main/java/com/arcadedb/query/opencypher/query/OpenCypherQueryEngine.java:116`) - and
+  `CypherAdminStatement.isReadOnly()` returns `false` unconditionally
+  (`engine/src/main/java/com/arcadedb/query/opencypher/ast/CypherAdminStatement.java:66-68`), which is
+  what `isIdempotent()` delegates to. So every ADMIN statement fails the gate's very first conjunct
+  and is refused before the operation-type set is consulted at all. There is no statement that is both
+  ADMIN and idempotent, so there is nothing to leak and no follow-up to file.
+
+  Verified by: `grep -rn "OperationType.ADMIN" --include="*.java" engine/src/main/java server/src/main/java`
+  (one hit) and reading `CypherAdminStatement`.
+
+No code changes were required by the review; no items were deferred.
+
+## Final state
+
+`clean-approval`
