@@ -279,3 +279,25 @@ request, and is consistent with `ha-raft/CLAUDE.md`'s dense-comment convention. 
 
 Full `ha-raft` sweep green after both fixes (12 IT classes, `Issue7259ClusterBootstrapSettledIT` at 3 tests).
 Nothing deferred in either cycle.
+
+### cycle 3 - `cc09a1ac5a`
+
+Clean approval. "Nothing blocking from my pass." The reviewer independently re-verified the two claims the fix
+rests on - `recordBootstrapBaseline` at `ArcadeStateMachine.java:3021` running before the installs at
+`3070`/`3148`, and `BootstrapElection.Outcome` having no value that legitimately needs to override
+`COMMITTED` - and confirmed both cycle-2 fixes are actually present in the diff rather than only described in
+the PR body. One awareness note, explicitly not a request for change: `runBootstrapIfEligible()` catches
+`RuntimeException | Error`, which is broad, but rethrows immediately after one cheap atomic write. Left as is.
+
+## Final state
+
+`clean-approval` after 3 review cycles, 0 items deferred.
+
+| cycle | head | outcome |
+|---|---|---|
+| 1 | `6c26219230` | one real defect: a second bootstrap pass could downgrade a recorded `COMMITTED` and switch the gate back off. Fixed + pinned by a new test. |
+| 2 | `939e2acb3a` | two accepted: `onLeaderChanged()` outside the `try` documented as covering it; non-atomic check-then-set on the outcome field. Both fixed. |
+| 3 | `cc09a1ac5a` | clean approval, nothing blocking. |
+
+Follow-ups left open for the developer: **#7518**, **#7519** (both named in the PR body under Known gaps) and
+**#7520** (pre-existing red on `main`, found here but not caused here).
