@@ -496,6 +496,14 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (targetAddr == null)
       throw new ServerException("Cannot find server '" + serverName + "' in the cluster");
 
+    sendShutdownCommand(serverName, targetAddr, targetId);
+  }
+
+  /**
+   * Posts the shutdown command to one resolved peer. Split out of {@link #shutdownRemoteServer} so that
+   * method stays the peer lookup it was, and this one is the dial.
+   */
+  private void sendShutdownCommand(final String serverName, final String targetAddr, final RaftPeerId targetId) {
     // The request carries the cluster token, so on an SSL cluster it goes over HTTPS like every other
     // peer-to-peer dial in the package: getPeerHttpsAddress answers null whenever SSL is off, this node
     // has no HTTPS listener or the peer has none, which is exactly when plain HTTP is still correct
@@ -515,8 +523,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (token != null && !token.isEmpty())
       builder.header("Authorization", "Bearer " + token);
 
+    final HttpRequest request = builder.build();
     try {
-      final HttpRequest request = builder.build();
       final HttpClient client = "https".equals(request.uri().getScheme())
           ? raftHAServer.getHttpsClients().clientFor(server)
           : SHUTDOWN_HTTP;
@@ -525,9 +533,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       client.send(request, HttpResponse.BodyHandlers.discarding());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new RuntimeException("Interrupted while shutting down remote server '" + serverName + "'", e);
+      throw new ServerException("Interrupted while shutting down remote server '" + serverName + "'", e);
     } catch (final IOException e) {
-      throw new RuntimeException("Failed to shutdown remote server '" + serverName + "'", e);
+      throw new ServerException("Failed to shutdown remote server '" + serverName + "'", e);
     }
   }
 
