@@ -208,6 +208,24 @@ non-blocking observations:
    something to revisit if these documents ever grow to thousands of entries. No change.
 3. **#7559** - agreed it is out of scope here and belongs to #7219/#7559. No change.
 
+### Cycle 3 - `8250b8eeca`
+
+Documentation only: the javadoc change cycle 2 asked for, plus this section. The `claude-review` job for this
+head finished `success` and posted nothing - the `permission_denials_count > 0` outcome the repo's `CLAUDE.md`
+documents - and the `gh run rerun` that normally recovers it sat queued behind a saturated runner pool for the
+rest of the session. No review text was obtained for this head.
+
+What that leaves unreviewed is exactly the javadoc paragraph in `SecurityDocumentFingerprint` and this
+tracking doc: no production behaviour differs from `45965839e9`, which the cycle-2 review went through in full
+and closed with "I don't see any blocking issues".
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/7560
+
+Final state: **timeout** - the loop stopped because the reviewer did not answer on the third head, not because
+anything was outstanding. The merge is the developer's.
+
 ## Test results
 
 - `server`: `com.arcadedb.server.security.*Test` - 109 tests, 0 failures (15 of them new in
