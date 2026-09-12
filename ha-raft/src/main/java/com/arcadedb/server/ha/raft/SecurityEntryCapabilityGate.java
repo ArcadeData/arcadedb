@@ -58,6 +58,13 @@ import java.util.logging.Level;
  * revocation is refused while any node is DOWN, not only while any node is OLD.
  * {@code arcadedb.ha.securityEntryCapabilityGate} is the escape hatch for an operator who knows, from outside the
  * cluster, that the node that cannot be probed does understand the entry; the refusal names it.
+ * <p>
+ * The second cost is latency, and it is wider than the gated operations. Every caller of this gate holds the
+ * {@code ServerSecurity} monitor across it, and that monitor is shared with USER administration - so an
+ * unreachable peer makes the probe round delay the next {@code createUser} as much as the next group change (PR
+ * #7555 review). Bounded by {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} per peer, paid only when the cached
+ * answer is not already a full "yes", and logged at FINE by {@link RaftHAServer#peersMissingCapabilityNow} so the
+ * stall is attributable rather than mysterious.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -127,8 +134,11 @@ final class SecurityEntryCapabilityGate {
     if (missing.isEmpty())
       return;
 
+    // The peers and the token travel as FIELDS as well as in the message: production mode conceals the message
+    // (AbstractServerHttpHandler.buildErrorBody drops 'detail'), and a refusal that could not name the lagging
+    // node is the silence this issue exists to end (PR #7555 review).
     throw new ClusterCapabilityNotReadyException(
-        refusal(what, type, capability, missing, raft.getPeerCapabilityRegistry()));
+        refusal(what, type, capability, missing, raft.getPeerCapabilityRegistry()), capability, missing);
   }
 
   /**

@@ -256,7 +256,8 @@ class Issue7511SecurityEntryGateRefusalTest {
     @Override
     public void replicateSecurityGroups(final String groupsJson) {
       if (refusing)
-        throw new ClusterCapabilityNotReadyException("Refusing to replicate the group document: " + REFUSAL);
+        throw new ClusterCapabilityNotReadyException("Refusing to replicate the group document: " + REFUSAL,
+            "security-groups-entry", List.of("arcadedb2"));
       groupDocuments.add(groupsJson);
       security.applyReplicatedGroups(groupsJson);
     }
@@ -265,7 +266,8 @@ class Issue7511SecurityEntryGateRefusalTest {
     public void replicateSecurityApiTokens(final String apiTokensJson) {
       if (refusing)
         throw new ClusterCapabilityNotReadyException("Refusing to replicate the API-token document: peer(s) "
-            + "[arcadedb2] have not advertised the 'security-api-tokens-entry' capability");
+            + "[arcadedb2] have not advertised the 'security-api-tokens-entry' capability",
+            "security-api-tokens-entry", List.of("arcadedb2"));
       apiTokenDocuments.add(apiTokensJson);
       security.applyReplicatedApiTokens(apiTokensJson);
     }

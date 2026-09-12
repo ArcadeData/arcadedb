@@ -4413,14 +4413,33 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * <p>
    * Re-reading after the round rather than returning what it observed is deliberate: the round records through
    * the same generation-guarded registry the monitor writes to, so the re-read is the one answer both agree on.
+   * <p>
+   * <b>Overlapping with the leader's background round is harmless, and deliberately not locked out</b> (PR #7555
+   * review). Two rounds can fan out at once on a leader, which costs a redundant probe and nothing else: every
+   * write goes through {@link PeerCapabilityRegistry}'s generation guard, and the one outcome that would matter -
+   * a peer wrongly read as CAPABLE - cannot be produced by an interleaving, because recording a capability
+   * requires a peer to have actually answered with it. A shared lock would remove the redundant probe at the cost
+   * of a lock-order hazard worth more than it: this method runs on a request thread that already holds the
+   * {@code ServerSecurity} monitor, so making the capability-monitor thread wait on the same lock would put a
+   * monitor-held wait on both sides of a cycle.
+   * <p>
+   * The round is logged at FINE with what it cost and what it concluded. It is the one place this feature can add
+   * latency an operator did not ask for - the {@code ServerSecurity} monitor is held across it, and that monitor is
+   * shared with user administration, so an unreachable peer delays the next {@code createUser} as well as the next
+   * group change - and a stall with nothing in the log to explain it is the thing that wastes an afternoon.
    */
   public List<String> peersMissingCapabilityNow(final String capability) {
     final List<String> cached = peersMissingCapability(capability);
     if (cached.isEmpty())
       return cached;
 
+    final long startedAt = System.currentTimeMillis();
     refreshPeerCapabilities();
-    return peersMissingCapability(capability);
+    final List<String> missing = peersMissingCapability(capability);
+    LogManager.instance().log(this, Level.FINE,
+        "Asked every peer about the '%s' capability before replicating an entry that needs it (%d ms); still "
+            + "missing: %s", capability, System.currentTimeMillis() - startedAt, missing);
+    return missing;
   }
 
   /** What this node tells its peers it can decode. */

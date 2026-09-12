@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -33,6 +34,8 @@ import io.undertow.util.HeaderMap;
 import io.undertow.util.Methods;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -58,12 +61,19 @@ import static org.mockito.Mockito.when;
  */
 class Issue7511ClusterNotReadyHttpStatusTest {
 
-  private static final String REFUSAL = "Refusing to replicate the group document: peer(s) [arcadedb2] have not "
-      + "advertised the 'security-groups-entry' capability";
+  private static final String CAPABILITY = "security-groups-entry";
+  private static final String LAGGING    = "arcadedb2";
+  private static final String REFUSAL    = "Refusing to replicate the group document: peer(s) [" + LAGGING
+      + "] have not advertised the '" + CAPABILITY + "' capability. Peer '" + LAGGING
+      + "': the capability route answered HTTP 404.";
+
+  private static ClusterCapabilityNotReadyException refusal() {
+    return new ClusterCapabilityNotReadyException(REFUSAL, CAPABILITY, List.of(LAGGING));
+  }
 
   @Test
   void aClusterNotReadyRefusalMapsTo409RatherThanAGeneric500() {
-    final HandledResponse response = handle(new ClusterCapabilityNotReadyException(REFUSAL));
+    final HandledResponse response = handle(refusal());
 
     assertThat(response.statusCode)
         .as("a refusal in which nothing was submitted is a conflict with the cluster's state, not a server fault "
@@ -96,20 +106,67 @@ class Issue7511ClusterNotReadyHttpStatusTest {
   @Test
   void aWrappedClusterNotReadyRefusalKeepsThe409() {
     final HandledResponse response = handle(new CommandExecutionException("Error on command execution",
-        new ClusterCapabilityNotReadyException(REFUSAL)));
+        refusal()));
 
     assertThat(response.statusCode).isEqualTo(409);
     assertThat(new JSONObject(response.body).getString("exception"))
         .isEqualTo(ClusterCapabilityNotReadyException.class.getName());
   }
 
+  /**
+   * In {@code production} mode {@code buildErrorBody} conceals {@code detail}, where the refusal's prose lives. A
+   * 409 that reaches an operator as a bare "Cluster is not ready for this operation" has told them nothing they
+   * can act on, which is the silence #7511 exists to end - so the lagging peer and the capability ride
+   * {@code exceptionArgs}, which every mode emits (PR #7555 review).
+   * <p>
+   * The per-peer REASON is deliberately absent from that field and is asserted absent: it is free-form text built
+   * from a probe failure and can carry a host, a port or a JDK exception message, which is the class of content
+   * {@code detail} is concealed for in the first place.
+   */
+  @Test
+  void inProductionModeThePeerAndTheCapabilitySurviveInExceptionArgs() {
+    final HandledResponse response = handle(refusal(), "production");
+
+    assertThat(response.statusCode).isEqualTo(409);
+
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("detail"))
+        .as("production conceals the free-form cause chain, as it does for every other error")
+        .isFalse();
+    assertThat(json.getString("exceptionArgs"))
+        .as("and what is left must still name the node holding the cluster back")
+        .contains(LAGGING)
+        .contains(CAPABILITY);
+    assertThat(json.getString("exceptionArgs"))
+        .as("but not the probe-failure text, which is exactly what production mode conceals detail for")
+        .doesNotContain("404");
+  }
+
+  /** The bounded rendering stays bounded: a large cluster cannot turn one error body into a peer dump. */
+  @Test
+  void theExceptionArgsAreBoundedOnALargeCluster() {
+    final List<String> manyPeers = List.of("p1", "p2", "p3", "p4", "p5", "p6", "p7");
+    final String args = new ClusterCapabilityNotReadyException(REFUSAL, CAPABILITY, manyPeers).toExceptionArgs();
+
+    assertThat(args).startsWith(CAPABILITY + "|p1,p2,p3,p4,p5");
+    assertThat(args).endsWith(",+2 more");
+    assertThat(args).doesNotContain("p6").doesNotContain("p7");
+  }
+
   private record HandledResponse(int statusCode, String body) {
   }
 
   private HandledResponse handle(final RuntimeException toThrow) {
+    return handle(toThrow, "development");
+  }
+
+  private HandledResponse handle(final RuntimeException toThrow, final String serverMode) {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.SERVER_MODE, serverMode);
+
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getObservationRegistry()).thenReturn(ObservationRegistry.create());
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
+    when(server.getConfiguration()).thenReturn(configuration);
     when(server.getServerName()).thenReturn("test");
 
     final HttpServer httpServer = mock(HttpServer.class);

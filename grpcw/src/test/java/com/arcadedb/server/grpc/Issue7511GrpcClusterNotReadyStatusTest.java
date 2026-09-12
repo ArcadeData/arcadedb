@@ -26,6 +26,8 @@ import io.grpc.Status;
 import io.grpc.StatusException;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -51,7 +53,7 @@ class Issue7511GrpcClusterNotReadyStatusTest {
   void aClusterNotReadyRefusalIsAPreconditionFailureRatherThanAnInternalError() {
     final StatusException mapped = adminService().toStatus("saveGroup", new ClusterCapabilityNotReadyException(
         "Refusing to replicate the group document: peer(s) [arcadedb2] have not advertised the "
-            + "'security-groups-entry' capability"));
+            + "'security-groups-entry' capability", "security-groups-entry", List.of("arcadedb2")));
 
     assertThat(mapped.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
     assertThat(mapped.getStatus().getDescription())
@@ -63,7 +65,7 @@ class Issue7511GrpcClusterNotReadyStatusTest {
   void theSameArmAnswersATokenRevocationRefusal() {
     final StatusException mapped = adminService().toStatus("deleteApiToken", new ClusterCapabilityNotReadyException(
         "Refusing to replicate the API-token document: peer(s) [arcadedb2] have not advertised the "
-            + "'security-api-tokens-entry' capability"));
+            + "'security-api-tokens-entry' capability", "security-api-tokens-entry", List.of("arcadedb2")));
 
     assertThat(mapped.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
   }

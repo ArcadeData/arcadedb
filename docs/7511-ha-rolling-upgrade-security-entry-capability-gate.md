@@ -274,3 +274,47 @@ Restated with what the adversarial pass added:
   documents for schema deltas.
 * Studio and a follower's cluster payload still say nothing about readiness: #7548, #7549.
 * Nothing else. Every row of the coverage table is fixed here, filed, or argued with evidence above.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7555
+
+## Review cycles
+
+### Cycle 1 - `771f11b` - 3 findings, all addressed, none deferred
+
+**CodeRabbit, `AbstractServerHttpHandler.java:761`, Major - "Preserve the cluster refusal details in production
+HTTP responses."** *Valid, and the most important finding of the review.* Verified against
+`buildErrorBody` (line 1628): `detail` is emitted only when `verbose`, i.e. not when
+`arcadedb.server.mode=production`, while `exceptionArgs` is emitted in every mode. The 409 arm passed `null` there,
+so in production the entire refusal reached the client as `{"error":"Cluster is not ready for this operation"}` -
+no peer, no capability. That is the silence this issue exists to end, reintroduced one mode over.
+
+Fixed, though **not** with the suggested `capabilityNotReady.getMessage()`. `exceptionArgs` is a wire contract
+(`RemoteHttpComponent.manageException`, `RaftReplicatedDatabase.reconstructLeaderException`) documented as carrying
+"bounded, non-sensitive values"; the message is neither. `ClusterCapabilityNotReadyException` now carries the
+capability and the missing peers as fields and renders `toExceptionArgs()` as
+`security-groups-entry|arcadedb2[,+N more]` - pipe-separated like `DuplicatedKeyException`'s, capped at five peers.
+The per-peer REASONS stay in the message: a reason is free-form probe-failure text that can carry a host, a port or
+a JDK exception message, which is the class of content `detail` is concealed for. Covered by
+`inProductionModeThePeerAndTheCapabilitySurviveInExceptionArgs` (production mode, asserts `detail` absent,
+`exceptionArgs` naming the peer and the capability, and the 404 reason NOT leaking into it) and
+`theExceptionArgsAreBoundedOnALargeCluster`. Falsified: reverting the arm to `null` fails the new test with
+`JSONObject[exceptionArgs] not found` and nothing else.
+
+**claude, observation 1 - the on-demand probe is held under a monitor shared with USER administration.** Valid
+refinement of finding 5 of the adversarial pass, which had only said "other security-admin mutations". Verified:
+`ServerSecurity.createUser` (line 301) is `synchronized` on the same monitor, so an unreachable peer delays the next
+`createUser` as much as the next group change. No behaviour change - the trade is deliberate - but claude's
+suggested "metric/log line" was worth taking: `peersMissingCapabilityNow` now logs the round at FINE with its
+elapsed time and what it concluded, so the stall is attributable, and both the gate's and the method's javadoc say
+the monitor is shared with user administration.
+
+**claude, observation 2 - a request-thread round can overlap the leader's background round.** Valid, harmless, and
+now written down rather than left for the next reader to re-derive. Documented on `peersMissingCapabilityNow`: the
+interleaving cannot produce a wrong CAPABLE (recording a capability requires a peer to have answered with it), and
+a shared lock was rejected rather than forgotten, because this method runs on a thread already holding the
+`ServerSecurity` monitor and making the capability-monitor thread wait on the same lock would put a monitor-held
+wait on both sides of a cycle.
+
+No deferred items.

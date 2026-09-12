@@ -758,7 +758,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             ClusterCapabilityNotReadyException.class);
     if (capabilityNotReady != null) {
       logUserError(capabilityNotReady);
-      sendErrorResponse(exchange, 409, "Cluster is not ready for this operation", capabilityNotReady, null);
+      // The peers go in exceptionArgs, not only in the message: 'detail' - where the message lands - is concealed
+      // in production, and a 409 that names no node tells an operator nothing they can act on. Same split
+      // ResultSetTooLargeException makes, and the same reason. The per-peer REASONS stay in the message: they are
+      // free-form probe-failure text that can carry a host, a port or a JDK exception message, which is exactly
+      // what production mode conceals 'detail' for (PR #7555 review).
+      sendErrorResponse(exchange, 409, "Cluster is not ready for this operation", capabilityNotReady,
+              capabilityNotReady.toExceptionArgs());
       return;
     }
 
