@@ -104,7 +104,7 @@ ArcadeDbGrpcAdminService.java:297-298  (definition, mirrors checkRootUser)
 | `disconnect cluster` | `DisconnectCluster` | fixed here | yes (authz + non-HA rejection) |
 | `GET /health` | `Health` | fixed here | yes |
 | `GET /ready` | `Ready` | fixed here | yes |
-| `connect cluster` | `ConnectCluster` | **argued here, reversed by #7400** | yes, in #7400 (authz + non-HA rejection) |
+| `connect cluster` | `ConnectCluster` | **argued here, reversed by #7400**; implemented by #7401 | yes, in #7400 (authz + non-HA rejection) and #7401 (the join) |
 | `restore backup` | none | **filed** #7308 | - |
 | `restore database` | none | **filed** #7308 | - |
 | `import database` | none | **filed** #7308 | - |
@@ -127,7 +127,10 @@ ArcadeDbGrpcAdminService.java:297-298  (definition, mirrors checkRootUser)
   carrying the shared implementation's own message, and a later real join lands in one place for
   both transports. The shared method has since moved to `ServerControlPlane.connectCluster` and
   raises `OperationNotAvailableException` (a `CommandExecutionException` subtype), which is the arm
-  that maps to `FAILED_PRECONDITION`. Whether to implement the join at all is #7401.
+  that maps to `FAILED_PRECONDITION`. Whether to implement the join at all was #7401, and it did: the
+  verb now adds the named server to this cluster, so the `FAILED_PRECONDITION` above is what a server
+  with no HA - or an HA implementation without runtime membership - answers, not what every caller
+  gets.
 - **`POST /login` / `POST /logout` / `GET /sessions`** - HTTP sessions exist because HTTP is
   stateless per request and the browser needs a bearer token. gRPC authenticates every admin RPC
   from the `DatabaseCredentials` on the request body, enforced centrally in
@@ -277,8 +280,12 @@ findings, both correct, both fixed:
    policy refuses was never counted. The chained form silently turned nine of them from successes
    into attempts, in a PR that claimed the split changed no behaviour. Each command now has a small
    wrapper in the handler that runs the shared implementation and increments afterwards.
-   `connect cluster` is the one exception and says so: it always throws, so there is no success to
-   count after, which is what the moved implementation did too.
+   `connect cluster` was the one exception and said so: it always threw, so there was no success to
+   count after, which is what the moved implementation did too. *Issue #7401 made the verb a real
+   join, so that exception is gone - its counter is incremented after the call like every other, and
+   `http.connect-cluster` now counts successful joins rather than attempts. Noted here rather than
+   deleted because the rule this list states is the record, and the exception to it is the part a
+   reader would otherwise re-derive.*
 2. **`ExistsDatabase` disclosed the existence of databases the caller has no grant on.** The first
    attempt left it unfiltered and this document claimed that as parity with
    `GetExistsDatabaseHandler`. That was a misreading of the handler's comment, which explains why it

@@ -779,14 +779,19 @@ public class RemoteGrpcServer implements AutoCloseable {
   }
 
   /**
-   * Asks this server to join the cluster reachable at {@code serverAddress} ({@code <host>:<port>}),
-   * the client half of the pair {@link #disconnectCluster()} completes (issue #7400).
+   * Joins the server named by {@code serverAddress} to the cluster of the server this client is
+   * connected to, the other half of the pair {@link #disconnectCluster()} completes (issue #7400).
    * <p>
-   * Reaches the same {@code ServerControlPlane.connectCluster} the HTTP {@code connect cluster} verb
-   * calls. The current HA stack does not implement a client-initiated join, so today this raises the
-   * server's own refusal through {@code GrpcClientErrorMapper} rather than joining anything; issue
-   * #7401 carries that decision. The address is sent as given - the server refuses before reading it,
-   * exactly as the HTTP verb does.
+   * <b>Note the direction</b>, which issue #7401 settled and which is the opposite of what this
+   * javadoc claimed when the RPC shipped: the address names the server being <em>added</em>, and the
+   * server this client is talking to is the one whose cluster grows. It is the operator-facing alias
+   * of {@code POST /api/v1/cluster/peer}. A node cannot be made to join a foreign cluster this way -
+   * a running Raft node would have to discard its own log first - so that is not what this does.
+   * <p>
+   * {@code serverAddress} is one entry of {@code arcadedb.ha.serverList}: {@code host},
+   * {@code host:raftPort}, the longer positional forms or the {@code host:&#123;raft:..,http:..&#125;}
+   * object form, optionally prefixed {@code name@}. It is sent as given; the server validates it for
+   * every transport, and surfaces a refusal through {@code GrpcClientErrorMapper}.
    */
   public void connectCluster(final String serverAddress) {
     call("connect cluster", stub -> stub.connectCluster(

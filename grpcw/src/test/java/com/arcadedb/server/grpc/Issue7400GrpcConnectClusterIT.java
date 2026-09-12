@@ -39,12 +39,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * pair-mate, so a gRPC-only client could take a server out of a cluster and then had to reopen the
  * HTTP port to attempt the other half.
  * <p>
- * What is asserted here is protocol <em>parity</em>, not a working join. The shared implementation
- * {@code ServerControlPlane.connectCluster} refuses unconditionally - the current HA stack has never
- * implemented the verb - and {@code PostServerCommandHandler} has always surfaced that refusal on
- * HTTP. The gRPC caller must now receive the same refusal from the same method, rather than
- * {@code UNIMPLEMENTED} for a verb the other transport accepts. Making the verb actually join a
- * cluster is issue #7401.
+ * What is asserted here is protocol <em>parity</em>: the gRPC caller receives the same answer from the
+ * same method the HTTP verb calls, rather than {@code UNIMPLEMENTED} for a verb the other transport
+ * accepts. This fixture runs no HA at all, so the answers it drives are the refusals; the join itself
+ * arrived with #7401 and is exercised against a live Raft cluster by
+ * {@code Issue7401ConnectClusterJoinsPeerIT}.
  * <p>
  * The pair is driven together throughout, as the issue asks: a test that called connect alone would
  * pass against a service that had lost disconnect.
@@ -118,14 +117,16 @@ public class Issue7400GrpcConnectClusterIT extends BaseGraphServerTest {
    * {@code FAILED_PRECONDITION} is the mapper's arm for
    * {@code ServerControlPlane.OperationNotAvailableException} - the operation cannot run in this
    * server's configuration at all, as opposed to having been attempted and failed - and the
-   * description is the shared implementation's own message, not a rendering invented here.
+   * description is the shared implementation's own message, not a rendering invented here. Since #7401
+   * made the verb a real join, this fixture's refusal is that HA is not enabled here at all; what the
+   * test is for is unchanged, and is that the refusal comes from the shared implementation.
    */
   @Test
   void connectClusterIsRefusedByTheSharedImplementation() {
     assertThatThrownBy(() -> connect(root(), PEER_ADDRESS))
         .isInstanceOf(StatusRuntimeException.class)
         .hasMessageContaining("FAILED_PRECONDITION")
-        .hasMessageContaining("not supported by the current HA implementation");
+        .hasMessageContaining("not running with High Availability module enabled");
   }
 
   /**
@@ -146,17 +147,18 @@ public class Issue7400GrpcConnectClusterIT extends BaseGraphServerTest {
   }
 
   /**
-   * HTTP's {@code extractTarget} yields {@code ""} for a bare {@code connect cluster}, and the shared
-   * implementation refuses before it looks at the argument. The RPC must not invent an
-   * {@code INVALID_ARGUMENT} gate the HTTP verb does not have, or the two transports disagree on the
-   * same input - which is the drift this issue is about.
+   * HTTP's {@code extractTarget} yields {@code ""} for a bare {@code connect cluster}. Since #7401 the
+   * verb has an argument it genuinely needs, so that is the caller's error on both transports: HTTP
+   * answers 400 and this answers {@code INVALID_ARGUMENT}. The RPC still invents no gate of its own -
+   * the status comes from the shared implementation's {@code IllegalArgumentException}, which is what
+   * keeps the two transports from disagreeing on the same input, the drift this issue is about.
    */
   @Test
   void connectClusterWithAnEmptyAddressIsRefusedTheSameWay() {
     assertThatThrownBy(() -> connect(root(), ""))
         .isInstanceOf(StatusRuntimeException.class)
-        .hasMessageContaining("FAILED_PRECONDITION")
-        .hasMessageContaining("not supported by the current HA implementation");
+        .hasMessageContaining("INVALID_ARGUMENT")
+        .hasMessageContaining("requires the address of the server to join");
   }
 
   /**
