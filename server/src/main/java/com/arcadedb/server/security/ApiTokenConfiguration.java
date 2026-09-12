@@ -260,10 +260,26 @@ public class ApiTokenConfiguration {
    * A token minted but NOT yet installed: the one-time response for the caller, and the whole token document to
    * replicate (issue #7373).
    *
-   * @param response     the created token including its plaintext under {@code "token"}
-   * @param documentJson the complete token store with the new token in it, for {@link #applyReplicated}
+   * @param response           the created token including its plaintext under {@code "token"}
+   * @param documentBeforeJson the complete token store as it was when the mint was computed, read in the SAME
+   *                           critical section as {@code documentJson} so a cluster-wide caller can use it as
+   *                           the compare-and-set precondition of {@code documentJson} (issue #7509). Reading it
+   *                           separately would let a concurrent replicated apply slip between the two, and the
+   *                           precondition would then describe a token set the payload was not built from
+   * @param documentJson       the complete token store with the new token in it, for {@link #applyReplicated}
    */
-  public record MintedToken(JSONObject response, String documentJson) {
+  public record MintedToken(JSONObject response, String documentBeforeJson, String documentJson) {
+  }
+
+  /**
+   * A prospective change to the token document: what it is NOW and what it would become, both read in one
+   * critical section (issue #7509). See {@link MintedToken#documentBeforeJson()} for why the pair has to be
+   * atomic.
+   *
+   * @param before the document the change was computed from, usable as a compare-and-set precondition
+   * @param after  the document to replicate
+   */
+  public record DocumentChange(String before, String after) {
   }
 
   /**
@@ -286,16 +302,17 @@ public class ApiTokenConfiguration {
     final JSONObject response = minted.document().copy();
     response.put("token", minted.plaintext());
 
-    return new MintedToken(response, documentOf(next).toString());
+    return new MintedToken(response, documentOf(tokens.values()).toString(), documentOf(next).toString());
   }
 
   /**
-   * The token document with {@code tokenHash} removed, or {@code null} when no token has that hash - the
-   * cluster-wide half of {@link #deleteToken} (issue #7373). Nothing local is mutated.
+   * The token document with {@code tokenHash} removed - beside the document it was removed FROM - or
+   * {@code null} when no token has that hash. The cluster-wide half of {@link #deleteToken} (issue #7373).
+   * Nothing local is mutated.
    *
    * @throws IllegalArgumentException when handed a plaintext token instead of a hash
    */
-  public synchronized String documentWithout(final String tokenHash) {
+  public synchronized DocumentChange documentWithout(final String tokenHash) {
     if (tokenHash.startsWith(TOKEN_PREFIX))
       throw new IllegalArgumentException("Use token hash instead of plaintext token for deletion");
     if (!tokens.containsKey(tokenHash))
@@ -306,7 +323,9 @@ public class ApiTokenConfiguration {
       if (!entry.getKey().equals(tokenHash))
         next.add(entry.getValue());
 
-    return documentOf(next).toString();
+    // The before/after pair leaves this monitor together, so a cluster-wide revocation can pin its
+    // compare-and-set to the very document it removed the token from (issue #7509).
+    return new DocumentChange(documentOf(tokens.values()).toString(), documentOf(next).toString());
   }
 
   /**

@@ -52,14 +52,14 @@ class Issue7373SecurityConfigBrokerEntryTest {
   @Test
   void replicateSecurityGroupsSubmitsAnEntry() {
     assertThatThrownBy(() ->
-        broker.replicateSecurityGroups("{\"databases\":{\"*\":{\"groups\":{}}},\"version\":2}"))
+        broker.replicateSecurityGroups("{\"databases\":{\"*\":{\"groups\":{}}},\"version\":2}", null))
         .isInstanceOf(QuorumNotReachedException.class);
   }
 
   @Test
   void replicateSecurityApiTokensSubmitsAnEntry() {
     assertThatThrownBy(() ->
-        broker.replicateSecurityApiTokens("{\"version\":1,\"tokens\":[]}"))
+        broker.replicateSecurityApiTokens("{\"version\":1,\"tokens\":[]}", null))
         .isInstanceOf(QuorumNotReachedException.class);
   }
 }
