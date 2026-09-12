@@ -554,9 +554,18 @@ class Issue7373ClusterWideGroupsAndTokensTest {
 
     assertThat(tokens.listTokens()).as("fail closed: no token authenticates until the file is restored").isEmpty();
     assertThat(tokens.getToken(created.getString("token"))).isNull();
-    assertThat(new File(CONFIG_PATH, "server-api-tokens-error.json"))
+    final File preserved = new File(CONFIG_PATH, "server-api-tokens-error.json");
+    assertThat(preserved)
         .as("the unparseable file is preserved, because the next save() overwrites the live one")
         .isFile();
+
+    final java.nio.file.attribute.PosixFileAttributeView posix = java.nio.file.Files.getFileAttributeView(
+        preserved.toPath(), java.nio.file.attribute.PosixFileAttributeView.class);
+    if (posix != null)
+      assertThat(posix.readAttributes().permissions())
+          .as("the preserved copy holds the same hashes and scopes as the live file, so it gets the same mode")
+          .containsExactlyInAnyOrder(java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+              java.nio.file.attribute.PosixFilePermission.OWNER_WRITE);
   }
 
   /**

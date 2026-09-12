@@ -130,6 +130,17 @@ public class ApiTokenConfiguration {
     }
   }
 
+  /** Owner-only (mode 600) on POSIX systems; silently skipped elsewhere (e.g. Windows). */
+  private static void restrictToOwner(final Path file) {
+    try {
+      final PosixFileAttributeView posixView = Files.getFileAttributeView(file, PosixFileAttributeView.class);
+      if (posixView != null)
+        posixView.setPermissions(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+    } catch (final IOException | UnsupportedOperationException e) {
+      // Non-POSIX system - skip
+    }
+  }
+
   /**
    * Preserves an unparseable token file beside itself and leaves the store empty. Copying it aside matters more
    * here than the log line does: the very next {@link #save} - a token minted, or any replicated token entry -
@@ -143,6 +154,10 @@ public class ApiTokenConfiguration {
     final Path preserved = corrupt.resolveSibling(FILE_NAME.replace(".json", "-error.json"));
     try {
       Files.copy(corrupt, preserved, StandardCopyOption.REPLACE_EXISTING);
+      // The copy is created fresh, so it takes the umask's permissions rather than the 0600 the live file is
+      // written with. It holds the same token hashes, names, scopes and expiry, so it gets the same treatment -
+      // preserving evidence must not mean publishing it to every account on the host.
+      restrictToOwner(preserved);
     } catch (final IOException | RuntimeException e) {
       LogManager.instance().log(this, Level.WARNING, "Could not preserve the unreadable API-token file as '%s'", e,
           preserved);
@@ -207,14 +222,7 @@ public class ApiTokenConfiguration {
         channel.force(true);
       }
 
-      // Owner-only (mode 600) on POSIX systems; silently skipped elsewhere (e.g. Windows).
-      try {
-        final PosixFileAttributeView posixView = Files.getFileAttributeView(tmp, PosixFileAttributeView.class);
-        if (posixView != null)
-          posixView.setPermissions(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
-      } catch (final IOException | UnsupportedOperationException e) {
-        // Non-POSIX system - skip
-      }
+      restrictToOwner(tmp);
 
       try {
         Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
