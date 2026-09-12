@@ -677,7 +677,13 @@ function addPeerPrompt() {
       globalNotify("Success", "Peer " + peerId + " added", "success");
       updateCluster();
     })
-    .fail(function(jqXHR) { globalNotifyError(jqXHR.responseText); });
+    .fail(function(jqXHR) {
+      globalNotifyError(jqXHR.responseText);
+      // 503 means the membership change succeeded and a security document did not reach the new peer
+      // (issue #7521). The peer IS a member, so the cluster view has to be refreshed even though the
+      // call failed - otherwise the operator is told about an error and shown a topology without it.
+      if (jqXHR.status == 503) updateCluster();
+    });
   });
 }
 

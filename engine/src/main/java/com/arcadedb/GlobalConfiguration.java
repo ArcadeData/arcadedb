@@ -1904,6 +1904,18 @@ public enum GlobalConfiguration {
       "Interval in milliseconds for the Raft health monitor to check for CLOSED/EXCEPTION state and auto-recover. 0 disables.",
       Long.class, 3000L),
 
+  HA_SECURITY_SEED_RETRY_TIMEOUT("arcadedb.ha.securitySeedRetryTimeout", SCOPE.SERVER,
+      """
+      Time budget in milliseconds a peer-admission call (POST /api/v1/cluster/peer, 'connect cluster') spends \
+      retrying the security documents - server-users.jsonl, server-groups.json, server-api-tokens.json - it seeds \
+      to the newly-joined peer (issue #7521). None of them is carried by a Raft snapshot install, so a peer that \
+      does not receive the seed keeps whatever its own config directory holds: for a node re-added after time out \
+      of the cluster that is a user dropped since, a group narrowed since, or a token revoked since, still good on \
+      that one node. The usual failure is a momentarily absent quorum, which is transient and is what the retry is \
+      for; only the documents that failed are retried, with exponential backoff. 0 disables the retry and leaves \
+      the single best-effort attempt.""",
+      Long.class, 3000L),
+
   HA_RESYNC_PROGRESS_LOGGING("arcadedb.ha.resyncProgressLogging", SCOPE.SERVER,
       """
       When true (default), the leader emits a concise per-follower unreachable/reconnected narrative and a \

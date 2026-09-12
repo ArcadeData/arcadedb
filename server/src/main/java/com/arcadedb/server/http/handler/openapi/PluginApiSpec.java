@@ -169,11 +169,19 @@ public class PluginApiSpec implements OpenApiContributor {
   private PathItem createAddPeerPath() {
     final Operation post = SpecBuilders.operation("addClusterPeer", "Cluster",
         "Add a peer to the cluster",
-        "Adds a peer to the Raft configuration. " + RAFT_REQUIRED);
+        """
+            Adds a peer to the Raft configuration, then seeds it with the three security documents \
+            (server-users.jsonl, server-groups.json, server-api-tokens.json) that a Raft snapshot install does \
+            not carry.
+
+            A 503 means the membership change succeeded and at least one of those seeds did not commit within \
+            arcadedb.ha.securitySeedRetryTimeout: the peer IS a cluster member and serves requests against its \
+            own copy of the documents that failed, which are named in 'failedSeeds'. Re-POST the same peer to \
+            reissue the seed - the membership change is idempotent. """ + RAFT_REQUIRED);
     post.setRequestBody(SpecBuilders.jsonBody("Peer to add", "AddPeerRequest", true));
     post.setResponses(SpecBuilders.standardResponses("200",
-        SpecBuilders.jsonResponse("Peer added", "ClusterActionResponse"),
-        "400", "401", "403", "500"));
+        SpecBuilders.jsonResponse("Peer added and seeded", "ClusterActionResponse"),
+        "400", "401", "403", "500", "503"));
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);

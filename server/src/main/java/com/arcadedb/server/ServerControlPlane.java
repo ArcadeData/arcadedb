@@ -163,8 +163,13 @@ public class ServerControlPlane {
    * have written in the configuration.
    * <p>
    * Equivalent to {@code POST /api/v1/cluster/peer} and deliberately so: the same atomic Raft
-   * membership change, and the same users seed afterwards, because {@code server-users.jsonl} lives
-   * outside the database directory and a snapshot install does not carry it.
+   * membership change, and the same seed of the three security documents afterwards, because
+   * {@code server-users.jsonl}, {@code server-groups.json} and {@code server-api-tokens.json} all live
+   * outside the database directory and a snapshot install carries none of them.
+   * <p>
+   * The one thing it does not share with that route is how a failed seed is reported. That route answers
+   * 503 (issue #7521); this verb returns nothing and an existing contract pins that a failed seed must not
+   * fail the join, so the failure reaches the operator only as a SEVERE log line. Tracked separately.
    * <p>
    * <b>Note the direction.</b> The address names the server being <em>added</em>; the cluster that
    * grows is the one this server belongs to. That is the opposite of the pre-Raft implementation this
@@ -217,16 +222,39 @@ public class ServerControlPlane {
           "Cannot connect '" + serverAddress + "' to the cluster: " + e.getMessage());
     }
 
-    // Seed the newly joined peer with the current users file, exactly as PostAddPeerHandler does after
-    // its own addPeer: server-users.jsonl lives under <server-root>/config/, outside the database
-    // directory, so snapshot install does not cover it and the new peer would run with a stale user set
-    // until the next cluster-wide user mutation. Best-effort, as it is there: the peer is already a
-    // committed member and a failure here does not - and must not - roll that back.
+    // Seed the newly joined peer with the current security documents, exactly as PostAddPeerHandler does
+    // after its own addPeer: server-users.jsonl, server-groups.json and server-api-tokens.json all live
+    // under <server-root>/config/, outside the database directory, so snapshot install covers none of them
+    // and the new peer would run with a stale user set, a stale group document and a stale token store until
+    // the next cluster-wide change of each kind.
+    //
+    // Through ServerSecurity rather than a bare replicateSecurityUsers (issue #7521). That call seeded the
+    // users document only - this verb never grew the groups and API-token half #7373 gave the add-peer route
+    // - and it read the payload OUTSIDE the security monitor, which is the window #7373 closed on the other
+    // route: a revocation committing between the read and the submit is undone on every node by a seed that
+    // carries a whole document. It also retries within a bounded budget, because the submit waits for a Raft
+    // commit and its usual failure is an absent quorum at this instant.
+    //
+    // Still best-effort in the sense that matters to the caller: the peer is already a committed member and a
+    // seed failure does not - and must not - fail the join, or the caller would retry a join that already
+    // happened. What it is not is silent.
+    //
+    // The catch is the contract, not defensiveness: NOTHING raised while seeding may escape and be read as a
+    // failed join, because by this point the peer is a committed member. seedSecurityStateClusterWide already
+    // collects a per-document failure rather than throwing, so what this covers is everything around them -
+    // a server whose security store is not installed, most of all.
     try {
-      ha.replicateSecurityUsers(server.getSecurity().getUsersJsonPayload());
+      final List<String> failedSeeds = server.getSecurity().seedSecurityStateClusterWide(
+          server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT));
+      if (!failedSeeds.isEmpty())
+        LogManager.instance().log(this, Level.SEVERE,
+            "Connect cluster joined '%s' but these security documents could not be seeded to it: %s. That peer is a "
+                + "cluster member serving requests against its own copy of them; reissue the change, or re-run "
+                + "connect cluster, before treating it as consistent", serverAddress, String.join(", ", failedSeeds));
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Users seed to '%s' after connect cluster failed (best-effort): %s", serverAddress, e.getMessage());
+      LogManager.instance().log(this, Level.SEVERE,
+          "Connect cluster joined '%s' but the security seed could not be run at all: %s. That peer is a cluster "
+              + "member serving requests against its own security documents", e, serverAddress, e.getMessage());
     }
   }
 
