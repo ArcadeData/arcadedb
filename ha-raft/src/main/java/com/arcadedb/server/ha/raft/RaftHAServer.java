@@ -4391,6 +4391,38 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return peerCapabilities.peersMissing(peerIds, capability);
   }
 
+  /**
+   * The peers that have NOT proved they can decode {@code capability}, asking them NOW when the cached answer
+   * does not already cover every one of them (issue #7511).
+   * <p>
+   * {@link #peersMissingCapability} alone is not enough for a caller that REFUSES on a "no". The background
+   * capability monitor runs on the leader only ({@link #startCapabilityMonitor}, called from
+   * {@link #startLagMonitor}), because #7219's only consumer was the leader-side schema-delta decision. The
+   * consumer this exists for is not leader-side: the group and API-token REST routes do not forward, so
+   * {@code ServerSecurity.saveGroupClusterWide} and friends run on whichever node the client or load balancer
+   * picked, and submit through a Raft client that routes to the leader. On a FOLLOWER the registry is empty by
+   * design, so a refusal built on the cached answer alone would refuse every group change ever made on a
+   * follower, on a perfectly healthy single-version cluster.
+   * <p>
+   * So the cached answer is consulted first and one synchronous round is run only when it is not already a full
+   * "yes". That keeps the leader's hot path free - a warm registry answers without dialling anything - and makes
+   * a follower's answer correct at the cost of one probe round on an operation that is rare by construction
+   * (group administration and token minting, both already serialised behind the {@code ServerSecurity} monitor
+   * across a full Raft round trip). The round is bounded: sequential, with
+   * {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} per peer.
+   * <p>
+   * Re-reading after the round rather than returning what it observed is deliberate: the round records through
+   * the same generation-guarded registry the monitor writes to, so the re-read is the one answer both agree on.
+   */
+  public List<String> peersMissingCapabilityNow(final String capability) {
+    final List<String> cached = peersMissingCapability(capability);
+    if (cached.isEmpty())
+      return cached;
+
+    refreshPeerCapabilities();
+    return peersMissingCapability(capability);
+  }
+
   /** What this node tells its peers it can decode. */
   public Set<String> getAdvertisedCapabilities() {
     return advertisedCapabilities;

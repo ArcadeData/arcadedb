@@ -30,6 +30,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.ClusterAuthSessionResolver;
@@ -740,6 +741,24 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       logUserError(committedRemotely);
       sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry",
               committedRemotely, null);
+      return;
+    }
+
+    // 409 Conflict: a member of the cluster has not proved it can decode the replicated entry this operation
+    // would be written as, so nothing was submitted (issue #7511). A conflict rather than a 5xx for the same
+    // reason the two arms below are: the request is well formed and authorized, the server is healthy, and what
+    // has to change before it succeeds is the state of the CLUSTER - finish the rolling upgrade, or restore
+    // contact with the peer the message names - not anything about the request. A 5xx would tell a client or load
+    // balancer to retry it blindly against another node, where it is refused identically.
+    //
+    // Before anything reaches the OperationNotAvailableException it extends: that parent means "this server cannot
+    // do this at all" (HA not enabled), a permanent property of the deployment, while this clears itself the
+    // moment the last node is up.
+    final ClusterCapabilityNotReadyException capabilityNotReady = firstOf(e, cause,
+            ClusterCapabilityNotReadyException.class);
+    if (capabilityNotReady != null) {
+      logUserError(capabilityNotReady);
+      sendErrorResponse(exchange, 409, "Cluster is not ready for this operation", capabilityNotReady, null);
       return;
     }
 
