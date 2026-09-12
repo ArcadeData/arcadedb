@@ -133,8 +133,9 @@ The other three entry points are reachable: `LeaderCommandForwarder` from four H
 ### Residual risk
 
 - No integration test starts a genuine HTTPS HA cluster: the scheme decision is proved by unit tests
-  per entry point, not by an end-to-end TLS forward. The issue reporter did not reproduce on one
-  either.
+  per entry point, not by an end-to-end TLS forward, so hostname verification, SNI and real
+  truststore loading on this path stay uncovered. The issue reporter did not reproduce on one
+  either. **Filed as #7563.**
 - Truststore rotation rebuilds the forward's HTTPS client from the truststore's path, password,
   mtime and size - the same fingerprint `TrustedHttpClientCache` uses - but the two implementations
   are separate.
@@ -242,6 +243,14 @@ is a weaker pass and is recorded as such. Four findings, all fixed before the PR
    cross-node HTTP round trip the call is about to make. If the forward ever needs more, the fix is a
    time-bounded revalidation inside that cache, which would serve the capability probe too.
 
+---
+
+# Appendix: review log
+
+Everything above is the durable record - the invariant, the enumeration, the coverage table, the
+design and the residual risk. What follows is dated correspondence with the PR reviewers, kept so a
+later reader can see why a given branch behaves as it does rather than having to reopen the PR.
+
 ## Review cycle 1 - `7198db162a`
 
 ### CodeRabbit, inline on `HAServerPlugin.java:120` - "Fail closed when TLS is required" (Major, CWE-319) - APPLIED, in part
@@ -291,3 +300,36 @@ uncovered `RaftReplicatedDatabase` send - restate gaps this PR already declares 
 
 Counts every function in the 10 touched files, not the ones this diff adds; the added members carry Javadoc.
 Writing docstrings for untouched methods to clear a bot threshold is not in scope for a bug fix.
+
+## Review cycle 2 - `33a9d64128`
+
+CodeRabbit re-verified its own finding against the new code and accepted the split: "`LeaderDial.resolve`
+now refuses the forward when `getLeaderHttpsAddress()` returns an endpoint but `getPeerHttpsClient()` is
+unavailable or throws ... The remaining HTTP fallback occurs only when no HTTPS endpoint resolves. This
+preserves compatibility for clusters that never declared HTTPS endpoints." Thread answered by the bot
+itself; no code change.
+
+The `claude` review found no bugs and said nothing blocks the merge. Its five points:
+
+1. **Lock contention on the new hot path.** `forwardHttpsClients.clientFor()` is `synchronized` and is now
+   called by every HTTP worker thread forwarding on an SSL cluster, where the existing
+   `capabilityHttpsClients` had one scheduled caller. During a truststore rotation the thread that observes
+   the change holds the monitor across `previous.close()`, which waits for in-flight sends. **No change**:
+   this is the tradeoff the field's Javadoc already states, it is bounded by the forwards' own request
+   timeouts, and it happens only when an operator rotates a certificate. Replacing it would mean a
+   revalidation window inside `TrustedHttpClientCache`, which is a change to the capability probe's
+   behaviour too and does not belong in this fix.
+2. **Per-forward cost** of the two `stat`s and the password digest - already reasoned about above. No change.
+3. **No live-TLS integration test.** Agreed, and it is the one gap unit tests structurally cannot close on
+   a path that decides whether credentials are encrypted. **Filed as #7563**, with the fixture shape and the
+   other peer-to-peer dials the same fixture would cover.
+4. **This document mixes a durable design record with an ephemeral review log.** Fair. Split with the
+   appendix heading above rather than dropped: the orchestrating workflow requires the review history to be
+   recorded here, so it is now labelled as correspondence instead of reading as design.
+5. **`LeaderProxy` is dead code.** Already declared, tracked as #7547. No change.
+
+## Final state
+
+`clean-approval` - the latest review from each bot says nothing blocks the merge, the one CodeRabbit
+thread was re-verified and answered by CodeRabbit itself, and the three known gaps carry issue numbers
+(#7546, #7547, #7563).
