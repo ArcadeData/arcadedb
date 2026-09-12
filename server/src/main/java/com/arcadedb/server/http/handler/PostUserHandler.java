@@ -24,7 +24,16 @@ import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
+import java.io.IOException;
+
 /**
+ * {@code POST /server/users}: creates a server user.
+ * <p>
+ * On an HA cluster the request is forwarded to the leader first: creating a user submits a Raft entry
+ * (through {@link ServerSecurity#createUserClusterWide}), which a follower must not do. The equivalent
+ * {@code POST /server} {@code create user} command has always forwarded; this route did not, which made the
+ * behaviour of one HTTP API depend on which of its two routes the client picked (issue #7380).
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostUserHandler extends AbstractServerHttpHandler {
@@ -35,8 +44,17 @@ public class PostUserHandler extends AbstractServerHttpHandler {
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) {
+      final JSONObject payload) throws IOException {
     checkRootUser(user);
+
+    // Before any validation, exactly as the POST /server 'create user' command forwards before parsing its
+    // target: the leader is the node that decides whether this request is well formed, so that the answer a
+    // client gets does not depend on which node it happened to reach.
+    final ExecutionResponse forwarded = httpServer.getLeaderCommandForwarder()
+        .forwardIfReplica(exchange, user, LeaderCommandForwarder.currentPathWithQuery(exchange),
+            payload != null ? payload.toString() : null);
+    if (forwarded != null)
+      return forwarded;
 
     if (payload == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());

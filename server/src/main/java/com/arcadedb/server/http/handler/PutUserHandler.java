@@ -24,11 +24,17 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
+import java.io.IOException;
+
 /**
  * {@code PUT /server/users?name=<user>}: updates an existing user's password, per-database groups, or
  * both. The operation itself lives in {@link ServerControlPlane#updateUser} so the gRPC
  * {@code UpdateUser} RPC runs this exact code rather than a second copy of it (issue #7309); what is
  * left here is reading the request and choosing the status code.
+ * <p>
+ * On an HA cluster the request is forwarded to the leader first: the update submits a Raft entry (through
+ * {@link com.arcadedb.server.security.ServerSecurity#updateUserClusterWide}), which a follower must not do
+ * (issue #7380).
  */
 public class PutUserHandler extends AbstractServerHttpHandler {
   private final ServerControlPlane controlPlane;
@@ -40,8 +46,16 @@ public class PutUserHandler extends AbstractServerHttpHandler {
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) {
+      final JSONObject payload) throws IOException {
     checkRootUser(user);
+
+    // Before any validation, exactly as the POST /server command path forwards before parsing its target
+    // (issue #7380).
+    final ExecutionResponse forwarded = httpServer.getLeaderCommandForwarder()
+        .forwardIfReplica(exchange, user, LeaderCommandForwarder.currentPathWithQuery(exchange),
+            payload != null ? payload.toString() : null);
+    if (forwarded != null)
+      return forwarded;
 
     if (payload == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
