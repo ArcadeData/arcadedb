@@ -44,6 +44,14 @@ import java.util.concurrent.TimeoutException;
  * as it did before. That asymmetry is what makes the probe safe to put in front of every entry point:
  * it can turn a slow failure into a fast one, and it cannot turn a success into a failure.
  * <p>
+ * <b>The dial thread is per call and deliberately not pooled.</b> Read {@link #bounded}'s reasoning before
+ * moving it onto a {@code DedicatedThreadPool}: the repo's rule is about engine parallelism on hot paths,
+ * and this is one blocking syscall on a root-authenticated admin request with nothing to amortise. The
+ * accepted cost is that a burst of adds against slow-resolving hosts creates one daemon thread each, some
+ * of which outlive the budget because an in-flight JDK name resolution is not interruptible. Pooling it
+ * would cap the threads and, with them, the concurrency of the probe itself - which is the wrong trade for
+ * a call whose whole purpose is to not make the caller wait.
+ * <p>
  * A Raft-level handshake (the {@code GroupInfo} RPC {@link KubernetesAutoJoin} uses for the mirror-image
  * problem of inserting THIS node into a remote group) would answer more of those questions. It also needs
  * a client built from the server's transport {@code Parameters} so it speaks TLS exactly when the cluster
@@ -134,7 +142,7 @@ final class PeerReachability {
    */
   private static String bounded(final String host, final int port, final long timeoutMs) {
     final int connectTimeoutMs = (int) Math.min(timeoutMs, Integer.MAX_VALUE);
-    final FutureTask<String> probe = new FutureTask<>(() -> dial(host, port, connectTimeoutMs));
+    final FutureTask<String> probe = new FutureTask<>(() -> dial(host, port, connectTimeoutMs, timeoutMs));
     final Thread worker = new Thread(probe, "arcadedb-peer-probe-" + host + "-" + port);
     worker.setDaemon(true);
     worker.start();
@@ -143,7 +151,10 @@ final class PeerReachability {
       return probe.get(timeoutMs, TimeUnit.MILLISECONDS);
     } catch (final TimeoutException e) {
       probe.cancel(true);
-      return "no answer within " + timeoutMs + " ms, name resolution included";
+      // Same sentence the inner connect produces, on purpose. The two timeouts are the same length, so
+      // which of them observes the expiry is a scheduling race; wording them differently would have made
+      // that race visible in an operator-facing message without telling the operator anything more.
+      return timedOut(timeoutMs);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       probe.cancel(true);
@@ -159,7 +170,8 @@ final class PeerReachability {
   }
 
   /** The blocking half: resolve, connect, and turn any failure into a reason. Never throws. */
-  private static String dial(final String host, final int port, final int connectTimeoutMs) {
+  private static String dial(final String host, final int port, final int connectTimeoutMs,
+      final long budgetMs) {
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress(host, port), connectTimeoutMs);
       return null;
@@ -167,9 +179,14 @@ final class PeerReachability {
       // Distinguished from the refusal below because the two point an operator at different things: a
       // refusal means the host is up and the process is not, a timeout means the host or the route is not
       // answering at all (or the handshake is slower than the budget, which is what the setting is for).
-      return "no answer within " + connectTimeoutMs + " ms";
+      return timedOut(budgetMs);
     } catch (final IOException e) {
       return e.getMessage() != null && !e.getMessage().isBlank() ? e.getMessage() : e.toString();
     }
+  }
+
+  /** The one sentence for "the budget expired", wherever it was observed. */
+  private static String timedOut(final long budgetMs) {
+    return "no answer within " + budgetMs + " ms, name resolution and TCP handshake together";
   }
 }

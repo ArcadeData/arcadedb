@@ -73,10 +73,23 @@ class RaftClusterManager {
     this.setConfigurationBudgetMs = setConfigurationBudgetMs;
   }
 
+  /**
+   * <b>Test-only seam.</b> No production code reaches these two overloads any more: issue #7514 moved the
+   * {@link RaftPeer} construction up into {@code RaftHAServer.addPeer(String, String, String)} so that both
+   * of its overloads meet at {@code addPeer(RaftPeer, String)}, which is where the pre-flight reachability
+   * probe lives. Every live entry point - {@code POST /api/v1/cluster/peer}, {@code connect cluster}, the
+   * gRPC {@code ConnectCluster} RPC, the embedded {@code HAServerPlugin.addPeer} - therefore goes through
+   * the probe, and anything calling these instead would bypass it.
+   * <p>
+   * They are kept because two tests exercise the membership change through them without standing up a
+   * server ({@code RaftAtomicMembershipTest}, {@code Issue7514UnreachablePeerRefusalTest}). A new
+   * production caller belongs on {@code RaftHAServer.addPeer}, not here.
+   */
   void addPeer(final String peerId, final String address) {
     addPeer(peerId, address, null);
   }
 
+  /** See {@link #addPeer(String, String)}: a test-only seam that bypasses the reachability probe. */
   void addPeer(final String peerId, final String address, final String name) {
     addPeer(RaftPeer.newBuilder()
         .setId(RaftPeerId.valueOf(peerId))
