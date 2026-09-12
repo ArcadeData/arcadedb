@@ -21,6 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
@@ -138,8 +139,26 @@ public final class LeaderCommandForwarder {
     final HeaderValues authValues = exchange.getRequestHeaders().get("Authorization");
     final String authHeader = authValues != null ? authValues.getFirst() : null;
 
-    final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create("http://" + leaderHttpAddress + targetPath));
+    final URI leaderUri;
+    try {
+      leaderUri = URI.create("http://" + leaderHttpAddress + targetPath);
+    } catch (final IllegalArgumentException e) {
+      // URI.create is the one call on this path that throws an UNCHECKED exception, so without this it
+      // would leave as a 500 - a server fault - for a request target that is simply not a URI.
+      //
+      // Defence in depth, not a fix for a path anyone has reached: Undertow's request-line parser rejects
+      // every character RFC 3986 forbids before a handler runs, because ArcadeDB never sets
+      // UndertowOptions.ALLOW_UNESCAPED_CHARACTERS_IN_URL and it defaults to false (verified against a live
+      // 26.10.1 server: '?x=a{b}' is answered 400 by the parser, and URI.create rejects the same string).
+      // What is guarded is the gap between those two allowances drifting apart - an Undertow upgrade, that
+      // option being turned on, or an HTTP/2 ':path' that does not travel through the same parser.
+      // LeaderProxy already guards the identical call the same way, which is why this is not left to chance.
+      return new ExecutionResponse(400, new JSONObject()
+          .put("error", "The request target cannot be forwarded to the cluster leader: " + e.getMessage())
+          .toString());
+    }
+
+    final HttpRequest.Builder builder = HttpRequest.newBuilder().uri(leaderUri);
 
     if (body != null) {
       builder.header("Content-Type", "application/json");

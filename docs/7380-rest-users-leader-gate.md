@@ -198,3 +198,37 @@ and `curl -u root:... http://127.0.0.1:2480/api/v1/server` answering `User/Passw
 The non-HA path is a single branch - `forwardIfReplica` returns null the moment `getHA()` is null -
 and the leader leg of the new IT exercises the same early return with HA active. CI runs
 `UserManagementIT` on a clean port.
+
+## Review cycle 1 - the `URI.create` edge case
+
+The reviewer flagged that `forwardIfReplica` builds `URI.create("http://" + leaderHttpAddress +
+targetPath)` from the raw query string off the exchange, and that `URI.create` throws
+`IllegalArgumentException` - unchecked, unlike every other failure on that path - which would leave
+as a 500.
+
+**Investigated, and the two halves of it came apart:**
+
+- `URI.create` really does reject characters a query string can carry: `{`, `}` and `` ` `` all
+  throw `Illegal character in query`.
+- Undertow really does let some of them through *in some configuration*: a live ArcadeDB 26.9.1
+  answered `GET /api/v1/ready?x=a{b}` with 204.
+- But **not in this build's configuration**. A three-node 26.10.1 test cluster answered 400 to the
+  same target, from the request-line parser, before any handler ran - `ArcadeDB` never sets
+  `UndertowOptions.ALLOW_UNESCAPED_CHARACTERS_IN_URL`, so it stays at Undertow 2.4.3's default of
+  `false`.
+
+The first version of the fix shipped an IT that asserted a 400 from a follower for
+`?name=issue7380{bad`. It passed - **for the wrong reason**, and the leader leg written as its
+control is what caught it: the same request answered 400 on the leader too, where no forward
+happens, proving the 400 came from Undertow rather than from the guard.
+
+**Disposition:** the guard stays, the test does not. `URI.create` is the only unchecked throw on
+the forward path, `LeaderProxy` already guards the identical call the same way, and the gap being
+covered is the two allowances drifting apart (an Undertow upgrade, that option turned on, or an
+HTTP/2 `:path` that does not travel through the same parser - HTTP/2 is enabled here). It is
+labelled in the code as defence in depth rather than as a fix for a path anyone has reached, because
+nothing in this configuration reaches it.
+
+The reviewer's other two points were acknowledged, not changed: forwarding before validation is the
+documented tradeoff that matches the command path, and `UserManagementIT` is confirmed green in CI
+rather than locally (see **Not verified here**).
