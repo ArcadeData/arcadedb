@@ -27,6 +27,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.SecurityDocumentVersions;
 
 import io.undertow.server.handlers.PathHandler;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -202,11 +203,16 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
   @Override
   public void replicateSecurityUsers(final String usersJsonArray) {
+    replicateSecurityUsers(usersJsonArray, SecurityDocumentVersions.UNCONDITIONAL, SecurityDocumentVersions.NO_VERSION);
+  }
+
+  @Override
+  public void replicateSecurityUsers(final String usersJsonArray, final long expectedVersion, final long newVersion) {
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
 
     try {
-      raftHAServer.getTransactionBroker().replicateSecurityUsers(usersJsonArray);
+      raftHAServer.getTransactionBroker().replicateSecurityUsers(usersJsonArray, expectedVersion, newVersion);
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -217,11 +223,16 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
   @Override
   public void replicateSecurityGroups(final String groupsJson) {
+    replicateSecurityGroups(groupsJson, SecurityDocumentVersions.UNCONDITIONAL, SecurityDocumentVersions.NO_VERSION);
+  }
+
+  @Override
+  public void replicateSecurityGroups(final String groupsJson, final long expectedVersion, final long newVersion) {
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
 
     try {
-      raftHAServer.getTransactionBroker().replicateSecurityGroups(groupsJson);
+      raftHAServer.getTransactionBroker().replicateSecurityGroups(groupsJson, expectedVersion, newVersion);
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -232,11 +243,18 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
   @Override
   public void replicateSecurityApiTokens(final String apiTokensJson) {
+    replicateSecurityApiTokens(apiTokensJson, SecurityDocumentVersions.UNCONDITIONAL,
+        SecurityDocumentVersions.NO_VERSION);
+  }
+
+  @Override
+  public void replicateSecurityApiTokens(final String apiTokensJson, final long expectedVersion,
+      final long newVersion) {
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
 
     try {
-      raftHAServer.getTransactionBroker().replicateSecurityApiTokens(apiTokensJson);
+      raftHAServer.getTransactionBroker().replicateSecurityApiTokens(apiTokensJson, expectedVersion, newVersion);
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {

@@ -20,8 +20,10 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.compression.CompressionFactory;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
+import com.arcadedb.server.security.SecurityDocumentVersions;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -133,6 +135,32 @@ public final class RaftLogEntryCodec {
 
   /** Bytes one extension frame spends on its header ({@link #EXTENSION_MAGIC} + length). */
   private static final int EXTENSION_HEADER_BYTES = 8;
+
+  /**
+   * Extension-section id of the compare-and-set versions a node-scoped security entry carries (issue #7509).
+   * ASCII {@code "SCAS"}, so it is recognisable in a hex dump next to {@link #EXTENSION_MAGIC}'s {@code "ADBX"}.
+   * <p>
+   * It rides in an extension section rather than in the entry body precisely because a peer that predates the
+   * fix must not halt on it: {@code SECURITY_USERS_ENTRY} has existed since #6808, so a two-long field appended
+   * to its body would have been read as a length and refused as a corrupt entry - which for a node-scoped entry
+   * is the node-wide halt, on every not-yet-upgraded peer, permanently. Skipped, the entry applies exactly as it
+   * does today.
+   */
+  static final int SECURITY_CAS_SECTION_ID = 0x53434153;
+
+  /** Bytes the {@link #SECURITY_CAS_SECTION_ID} section's payload occupies: the id plus two longs. */
+  private static final int SECURITY_CAS_SECTION_BYTES = 4 + 8 + 8;
+
+  /**
+   * The compare-and-set versions of a node-scoped security entry (issue #7509): the version of the document the
+   * submitter built the payload from, and the version the payload establishes.
+   * <p>
+   * Null on an entry produced by a node that predates the fix, which the applier reads as
+   * {@code (UNCONDITIONAL, NO_VERSION)} - apply regardless, touch no counter - so a mixed-version cluster
+   * behaves exactly as it did before rather than refusing entries nobody can satisfy.
+   */
+  public record SecurityCas(long expectedVersion, long newVersion) {
+  }
 
   /**
    * Appends one self-describing extension section to an entry being encoded. Call this AFTER the type's own
@@ -325,8 +353,37 @@ public final class RaftLogEntryCodec {
        * predates this section, and every entry produced with {@code arcadedb.ha.schemaDelta} off. When it is
        * set, {@code schemaJson} is empty and the applier merges the delta into its own schema instead.
        */
-      SchemaDelta.Payload schemaDelta
+      SchemaDelta.Payload schemaDelta,
+      /**
+       * The compare-and-set versions of a node-scoped security entry (issue #7509). Null on every other entry
+       * type, and on a security entry produced by a node that predates the fix - which the applier reads as
+       * "apply unconditionally and leave the counter alone".
+       */
+      SecurityCas securityCas
   ) {
+    /**
+     * The shape every entry that carries no compare-and-set versions has: everything but {@code securityCas},
+     * which is null (issue #7509). Kept so that adding the component did not change how the other sixteen entry
+     * shapes are built, here or by anything outside this class.
+     */
+    public DecodedEntry(final RaftLogEntryType type, final String databaseName, final byte[] walData,
+        final Map<Integer, Integer> bucketRecordDelta, final String schemaJson, final Map<Integer, String> filesToAdd,
+        final Map<Integer, String> filesToRemove, final List<byte[]> walEntries,
+        final List<Map<Integer, Integer>> bucketDeltas, final String usersJson, final boolean forceSnapshot,
+        final String bootstrapFingerprint, final long bootstrapLastTxId, final List<TsSealedBlob> sealedFileBlobs,
+        final boolean moreChunksFollow, final List<TsSealedChunk> sealedFileChunks,
+        final SchemaDelta.Payload schemaDelta) {
+      this(type, databaseName, walData, bucketRecordDelta, schemaJson, filesToAdd, filesToRemove, walEntries,
+          bucketDeltas, usersJson, forceSnapshot, bootstrapFingerprint, bootstrapLastTxId, sealedFileBlobs,
+          moreChunksFollow, sealedFileChunks, schemaDelta, null);
+    }
+
+    /** This entry with {@code cas} attached, used once the trailing extension sections have been read. */
+    DecodedEntry withSecurityCas(final SecurityCas cas) {
+      return new DecodedEntry(type, databaseName, walData, bucketRecordDelta, schemaJson, filesToAdd, filesToRemove,
+          walEntries, bucketDeltas, usersJson, forceSnapshot, bootstrapFingerprint, bootstrapLastTxId, sealedFileBlobs,
+          moreChunksFollow, sealedFileChunks, schemaDelta, cas);
+    }
   }
 
   /**
@@ -669,7 +726,17 @@ public final class RaftLogEntryCodec {
    * three security entries share.
    */
   public static ByteString encodeSecurityUsersEntry(final String usersJson) {
-    return encodeSecurityEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, usersJson);
+    return encodeSecurityEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, usersJson,
+        SecurityDocumentVersions.UNCONDITIONAL, SecurityDocumentVersions.NO_VERSION);
+  }
+
+  /**
+   * Encodes a security-users entry that carries the compare-and-set versions of issue #7509: the users version
+   * the submitter built the payload from and the version it establishes.
+   */
+  public static ByteString encodeSecurityUsersEntry(final String usersJson, final long expectedVersion,
+      final long newVersion) {
+    return encodeSecurityEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, usersJson, expectedVersion, newVersion);
   }
 
   /**
@@ -677,7 +744,14 @@ public final class RaftLogEntryCodec {
    * Same wire shape as {@link #encodeSecurityUsersEntry}; the type byte is what tells the two apart.
    */
   public static ByteString encodeSecurityGroupsEntry(final String groupsJson) {
-    return encodeSecurityEntry(RaftLogEntryType.SECURITY_GROUPS_ENTRY, groupsJson);
+    return encodeSecurityEntry(RaftLogEntryType.SECURITY_GROUPS_ENTRY, groupsJson,
+        SecurityDocumentVersions.UNCONDITIONAL, SecurityDocumentVersions.NO_VERSION);
+  }
+
+  /** {@link #encodeSecurityUsersEntry(String, long, long)} for the group document (issue #7509). */
+  public static ByteString encodeSecurityGroupsEntry(final String groupsJson, final long expectedVersion,
+      final long newVersion) {
+    return encodeSecurityEntry(RaftLogEntryType.SECURITY_GROUPS_ENTRY, groupsJson, expectedVersion, newVersion);
   }
 
   /**
@@ -685,16 +759,31 @@ public final class RaftLogEntryCodec {
    * (issue #7373). The document carries token hashes, never token material.
    */
   public static ByteString encodeSecurityApiTokensEntry(final String apiTokensJson) {
-    return encodeSecurityEntry(RaftLogEntryType.SECURITY_API_TOKENS_ENTRY, apiTokensJson);
+    return encodeSecurityEntry(RaftLogEntryType.SECURITY_API_TOKENS_ENTRY, apiTokensJson,
+        SecurityDocumentVersions.UNCONDITIONAL, SecurityDocumentVersions.NO_VERSION);
+  }
+
+  /** {@link #encodeSecurityUsersEntry(String, long, long)} for the API-token document (issue #7509). */
+  public static ByteString encodeSecurityApiTokensEntry(final String apiTokensJson, final long expectedVersion,
+      final long newVersion) {
+    return encodeSecurityEntry(RaftLogEntryType.SECURITY_API_TOKENS_ENTRY, apiTokensJson, expectedVersion, newVersion);
   }
 
   /**
    * The shared body of every node-scoped security entry.
    * <p>
-   * Binary format: type byte, empty databaseName (UTF), jsonLength (int), UTF-8 bytes.
+   * Binary format: type byte, empty databaseName (UTF), jsonLength (int), UTF-8 bytes, then the
+   * {@link #SECURITY_CAS_SECTION_ID} extension section carrying the two compare-and-set versions (issue #7509).
    * The empty databaseName slot keeps the decoder symmetric with other entry types.
+   * <p>
+   * The section is written unconditionally, including when both versions are the "no compare-and-set" sentinels:
+   * emitting it only sometimes would mean an entry's shape depended on its content, and a decoder cannot tell an
+   * absent section from one that was dropped. A peer that predates #7138 halts on any trailing frame and so must
+   * not be in the cluster at all by now; one that has #7138 but not this fix skips the section and applies the
+   * entry exactly as it does today.
    */
-  private static ByteString encodeSecurityEntry(final RaftLogEntryType type, final String json) {
+  private static ByteString encodeSecurityEntry(final RaftLogEntryType type, final String json,
+      final long expectedVersion, final long newVersion) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
@@ -705,11 +794,25 @@ public final class RaftLogEntryCodec {
       dos.writeInt(bytes.length);
       dos.write(bytes);
 
+      writeExtensionSection(dos, encodeSecurityCasSection(expectedVersion, newVersion));
+
       dos.flush();
       return ByteString.copyFrom(baos.toByteArray());
     } catch (final IOException e) {
       throw new IllegalStateException("Failed to encode " + type + " entry", e);
     }
+  }
+
+  /** The {@link #SECURITY_CAS_SECTION_ID} section's payload: its own id, then the two versions. */
+  private static byte[] encodeSecurityCasSection(final long expectedVersion, final long newVersion)
+      throws IOException {
+    final ByteArrayOutputStream baos = new ByteArrayOutputStream(SECURITY_CAS_SECTION_BYTES);
+    final DataOutputStream dos = new DataOutputStream(baos);
+    dos.writeInt(SECURITY_CAS_SECTION_ID);
+    dos.writeLong(expectedVersion);
+    dos.writeLong(newVersion);
+    dos.flush();
+    return baos.toByteArray();
   }
 
   /**
@@ -776,7 +879,7 @@ public final class RaftLogEntryCodec {
       final RaftLogEntryType type = RaftLogEntryType.fromId(typeByte);
       if (type == null)
         return new DecodedEntry(null, null, null, null, null, null, null, null, null, null, false, null, -1L,
-            Collections.emptyList(), false, Collections.emptyList(), null);
+            Collections.emptyList(), false, Collections.emptyList(), null, null);
       final String databaseName = dis.readUTF();
 
       try {
@@ -811,14 +914,14 @@ public final class RaftLogEntryCodec {
       case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
       case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
           null, null, null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false,
-          Collections.emptyList(), null);
+          Collections.emptyList(), null, null);
       case SECURITY_USERS_ENTRY, SECURITY_GROUPS_ENTRY, SECURITY_API_TOKENS_ENTRY -> decodeSecurityEntry(dis, type);
       case BOOTSTRAP_FINGERPRINT_ENTRY -> decodeBootstrapFingerprintEntry(dis, databaseName);
     };
 
-    skipTrailingExtensionSections(dis, type);
+    final SecurityCas cas = readTrailingExtensionSections(dis, type);
 
-    return result;
+    return cas == null ? result : result.withSecurityCas(cas);
   }
 
   /**
@@ -835,11 +938,12 @@ public final class RaftLogEntryCodec {
    * of those sections, so there is nothing left here to frame. It extends through its own mechanism instead; see
    * {@link #EXTENSION_MAGIC}.
    */
-  private static void skipTrailingExtensionSections(final DataInputStream dis, final RaftLogEntryType type)
+  private static SecurityCas readTrailingExtensionSections(final DataInputStream dis, final RaftLogEntryType type)
       throws IOException {
     if (type == RaftLogEntryType.SCHEMA_ENTRY)
-      return;
+      return null;
 
+    SecurityCas cas = null;
     while (dis.available() > 0) {
       if (dis.available() < EXTENSION_HEADER_BYTES)
         throw new IllegalStateException("Corrupted Raft log entry: " + dis.available()
@@ -853,8 +957,32 @@ public final class RaftLogEntryCodec {
 
       final int length = dis.readInt();
       checkByteLength(length, dis.available(), type + " extension section");
-      dis.skipNBytes(length);
+      final byte[] payload = new byte[length];
+      dis.readFully(payload);
+
+      final SecurityCas decoded = decodeSecurityCasSection(payload);
+      if (decoded != null)
+        // Last one wins, deliberately: repeating a section is not a shape any producer emits, and picking the
+        // last is what a reader appending a corrected value would mean. Unknown sections are still skipped.
+        cas = decoded;
     }
+    return cas;
+  }
+
+  /**
+   * Reads a {@link #SECURITY_CAS_SECTION_ID} section, or returns null when the payload is some other extension
+   * section this version does not know - which is the whole point of the framing and must stay a skip, not a
+   * failure (issue #7138).
+   */
+  private static SecurityCas decodeSecurityCasSection(final byte[] payload) throws IOException {
+    if (payload.length != SECURITY_CAS_SECTION_BYTES)
+      return null;
+
+    final DataInputStream dis = new DataInputStream(new ByteArrayInputStream(payload));
+    if (dis.readInt() != SECURITY_CAS_SECTION_ID)
+      return null;
+
+    return new SecurityCas(dis.readLong(), dis.readLong());
   }
 
   private static DecodedEntry decodeTxEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -877,7 +1005,7 @@ public final class RaftLogEntryCodec {
 
     return new DecodedEntry(RaftLogEntryType.TX_ENTRY, databaseName, walData, bucketRecordDelta,
         null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false, Collections.emptyList(),
-        null);
+        null, null);
   }
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -1032,7 +1160,7 @@ public final class RaftLogEntryCodec {
 
     return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null,
         schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false, null, -1L, sealedFileBlobs,
-        moreChunksFollow, sealedFileChunks, schemaDelta);
+        moreChunksFollow, sealedFileChunks, schemaDelta, null);
   }
 
   private static DecodedEntry decodeInstallDatabaseEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -1044,7 +1172,7 @@ public final class RaftLogEntryCodec {
     }
     return new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName,
         null, null, null, null, null, null, null, null, forceSnapshot, null, -1L, Collections.emptyList(), false,
-        Collections.emptyList(), null);
+        Collections.emptyList(), null, null);
   }
 
   private static DecodedEntry decodeBootstrapFingerprintEntry(final DataInputStream dis, final String databaseName)
@@ -1057,7 +1185,7 @@ public final class RaftLogEntryCodec {
     final long lastTxId = dis.readLong();
     return new DecodedEntry(RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY, databaseName,
         null, null, null, null, null, null, null, null, false, fingerprint, lastTxId, Collections.emptyList(), false,
-        Collections.emptyList(), null);
+        Collections.emptyList(), null, null);
   }
 
   /**
@@ -1074,7 +1202,7 @@ public final class RaftLogEntryCodec {
     final String json = new String(bytes, StandardCharsets.UTF_8);
     return new DecodedEntry(type, "",
         null, null, null, null, null, null, null, json, false, null, -1L, Collections.emptyList(), false,
-        Collections.emptyList(), null);
+        Collections.emptyList(), null, null);
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {

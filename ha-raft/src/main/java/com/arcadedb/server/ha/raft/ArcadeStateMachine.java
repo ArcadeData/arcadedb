@@ -47,6 +47,9 @@ import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ReplicatedSecurityConfigPersistenceException;
 import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
+import com.arcadedb.server.security.SecurityDocumentConflictException;
+import com.arcadedb.server.security.SecurityDocumentVersions;
+import com.arcadedb.server.security.SecurityDocumentVersions.Document;
 import com.arcadedb.server.security.SecurityGroupFileRepository;
 import com.arcadedb.server.security.SecurityUserFileRepository;
 import com.arcadedb.utility.FileUtils;
@@ -3638,15 +3641,59 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * can diverge replicated state is a property of the apply, not of the entry's database scoping, so a future
    * node-scoped entry that CAN diverge still reaches the halt it needs.
    */
+  /**
+   * The version the submitter of a security entry built its payload from, or
+   * {@link SecurityDocumentVersions#UNCONDITIONAL} when the entry carries no compare-and-set section at all
+   * (issue #7509) - which is every entry produced by a node that predates the fix. Reading a missing section as
+   * "apply regardless" is what keeps a mixed-version cluster behaving as it did instead of refusing entries no
+   * node can satisfy.
+   */
+  private static long expectedVersionOf(final RaftLogEntryCodec.SecurityCas cas) {
+    return cas != null ? cas.expectedVersion() : SecurityDocumentVersions.UNCONDITIONAL;
+  }
+
+  /** The version a security entry establishes, or {@link SecurityDocumentVersions#NO_VERSION} when it carries none. */
+  private static long newVersionOf(final RaftLogEntryCodec.SecurityCas cas) {
+    return cas != null ? cas.newVersion() : SecurityDocumentVersions.NO_VERSION;
+  }
+
+  /**
+   * Turns a refused security entry into the NON-HALTING failure classification (issue #7509).
+   * <p>
+   * A conflict is not "this node cannot read a committed entry its peers applied" - the case #4798 argues must
+   * reach the node-wide halt. It is the opposite: the node read the entry perfectly well and every other node
+   * reaches the same verdict on it, because the counter compared is advanced only by an apply and so is
+   * identical everywhere the same prefix of the log has been applied. Nothing diverges, nothing is installed,
+   * and the submitter is told so it can re-read and reissue. Halting on it would turn two operators pressing
+   * save in the same second into a downed node.
+   */
+  private ReplicationException securityDocumentConflict(final SecurityDocumentConflictException e,
+      final String documentFileName) {
+    LogManager.instance().log(this, Level.WARNING,
+        "Refused a replicated change to '%s': it was built from version %d and this node is at version %d, so "
+            + "another node changed the same document concurrently. Nothing was installed; the change has to be "
+            + "re-read and reissued", e, documentFileName, e.getExpectedVersion(), e.getCurrentVersion());
+    return new ReplicationException(e.getMessage(), e);
+  }
+
   private void applySecurityUsersEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String payload = decoded.usersJson();
     if (payload == null) {
       LogManager.instance().log(this, Level.WARNING, "SECURITY_USERS_ENTRY has null payload, skipping");
       return;
     }
+    final RaftLogEntryCodec.SecurityCas cas = decoded.securityCas();
+    try {
+      server.getSecurity().checkReplicatedSecurityVersion(Document.USERS, expectedVersionOf(cas));
+    } catch (final SecurityDocumentConflictException e) {
+      throw securityDocumentConflict(e, SecurityUserFileRepository.FILE_NAME);
+    }
     try {
       server.getSecurity().applyReplicatedUsers(payload);
     } catch (final ReplicatedUsersPersistenceException e) {
+      // The list IS in force in memory - that is what #7137 changed - so the counter has to follow it, or this
+      // node would keep comparing against a version it no longer holds and refuse the next entry its peers accept.
+      server.getSecurity().recordReplicatedSecurityVersion(Document.USERS, newVersionOf(cas));
       LogManager.instance().log(this, Level.SEVERE,
           "Could not fully apply a replicated user list on this node: %s. The node keeps running and, when the "
               + "list reached memory, is already enforcing it - but it is not durable: a restart before this is "
@@ -3665,6 +3712,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // from applyReplicatedUsers BEFORE any mutation. That is not "the disk is full", it is "this node cannot
     // read a committed entry its peers applied", and it still reaches the node-wide halt - the case #4798
     // argues must never be skipped quietly. Catching RuntimeException here would have downgraded it silently.
+    server.getSecurity().recordReplicatedSecurityVersion(Document.USERS, newVersionOf(cas));
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_USERS_ENTRY (%d bytes)", payload.length());
   }
 
@@ -3688,9 +3736,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.WARNING, "SECURITY_GROUPS_ENTRY has null payload, skipping");
       return;
     }
+    final RaftLogEntryCodec.SecurityCas cas = decoded.securityCas();
+    try {
+      server.getSecurity().checkReplicatedSecurityVersion(Document.GROUPS, expectedVersionOf(cas));
+    } catch (final SecurityDocumentConflictException e) {
+      throw securityDocumentConflict(e, SecurityGroupFileRepository.FILE_NAME);
+    }
     try {
       server.getSecurity().applyReplicatedGroups(payload);
     } catch (final ReplicatedSecurityConfigPersistenceException e) {
+      server.getSecurity().recordReplicatedSecurityVersion(Document.GROUPS, newVersionOf(cas));
       LogManager.instance().log(this, Level.SEVERE,
           "Could not fully apply a replicated group document on this node: %s. The node keeps running and is "
               + "already authorizing against the new groups - but they are not durable: a restart before this is "
@@ -3701,6 +3756,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "Failed to persist the replicated group document locally; the node is already authorizing against the "
               + "new groups in memory, only their durability to disk failed", e);
     }
+    server.getSecurity().recordReplicatedSecurityVersion(Document.GROUPS, newVersionOf(cas));
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_GROUPS_ENTRY (%d bytes)", payload.length());
   }
 
@@ -3719,9 +3775,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.WARNING, "SECURITY_API_TOKENS_ENTRY has null payload, skipping");
       return;
     }
+    final RaftLogEntryCodec.SecurityCas cas = decoded.securityCas();
+    try {
+      server.getSecurity().checkReplicatedSecurityVersion(Document.API_TOKENS, expectedVersionOf(cas));
+    } catch (final SecurityDocumentConflictException e) {
+      throw securityDocumentConflict(e, ApiTokenConfiguration.FILE_NAME);
+    }
     try {
       server.getSecurity().applyReplicatedApiTokens(payload);
     } catch (final ReplicatedSecurityConfigPersistenceException e) {
+      server.getSecurity().recordReplicatedSecurityVersion(Document.API_TOKENS, newVersionOf(cas));
       LogManager.instance().log(this, Level.SEVERE,
           "Could not fully apply a replicated API-token document on this node: %s. The node keeps running and is "
               + "already enforcing the new token set - a revoked token does NOT authenticate here any more - but it "
@@ -3733,6 +3796,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "Failed to persist the replicated API-token document locally; the node is already enforcing the new token "
               + "set in memory, only its durability to disk failed", e);
     }
+    server.getSecurity().recordReplicatedSecurityVersion(Document.API_TOKENS, newVersionOf(cas));
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_API_TOKENS_ENTRY (%d bytes)", payload.length());
   }
 

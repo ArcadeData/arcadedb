@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.server.security.SecurityDocumentVersions;
+
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -310,6 +312,25 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Conditional form of {@link #replicateSecurityUsers(String)} (issue #7509): the entry carries the version of
+   * the user list the submitter read, and every node installs it only while its own copy is still at that
+   * version. A concurrent change made on another node therefore refuses this entry instead of being silently
+   * reverted by it.
+   * <p>
+   * The default delegates to the unconditional form, which is what an HA implementation that predates the
+   * compare-and-set does: it replicates exactly as before rather than failing to replicate at all.
+   *
+   * @param expectedVersion the users version the payload was built from, or
+   *                        {@link SecurityDocumentVersions#UNCONDITIONAL} to apply whatever the node holds
+   *                        (peer seeding, which must never be refused)
+   * @param newVersion      the version the payload establishes, or {@link SecurityDocumentVersions#NO_VERSION}
+   *                        to leave the counter alone
+   */
+  default void replicateSecurityUsers(final String usersJsonArray, final long expectedVersion, final long newVersion) {
+    replicateSecurityUsers(usersJsonArray);
+  }
+
+  /**
    * Replicates the full {@code server-groups.json} document across the cluster (issue #7373). Called by
    * {@code ServerSecurity.saveGroupClusterWide} / {@code deleteGroupClusterWide}, and by
    * {@code PostAddPeerHandler} to seed newly-joined peers. Default is a no-op for non-HA setups; the Raft
@@ -325,6 +346,15 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Conditional form of {@link #replicateSecurityGroups(String)} (issue #7509). See
+   * {@link #replicateSecurityUsers(String, long, long)} for what the two versions mean and why the default
+   * still replicates.
+   */
+  default void replicateSecurityGroups(final String groupsJson, final long expectedVersion, final long newVersion) {
+    replicateSecurityGroups(groupsJson);
+  }
+
+  /**
    * Replicates the full {@code server-api-tokens.json} document across the cluster (issue #7373). Called by
    * {@code ServerSecurity.createApiTokenClusterWide} / {@code deleteApiTokenClusterWide}, and by
    * {@code PostAddPeerHandler} to seed newly-joined peers. Default is a no-op for non-HA setups; the Raft
@@ -337,5 +367,14 @@ public interface HAServerPlugin extends ServerPlugin {
    */
   default void replicateSecurityApiTokens(final String apiTokensJson) {
     // No-op by default; Raft implementation overrides.
+  }
+
+  /**
+   * Conditional form of {@link #replicateSecurityApiTokens(String)} (issue #7509). See
+   * {@link #replicateSecurityUsers(String, long, long)} for what the two versions mean and why the default
+   * still replicates.
+   */
+  default void replicateSecurityApiTokens(final String apiTokensJson, final long expectedVersion, final long newVersion) {
+    replicateSecurityApiTokens(apiTokensJson);
   }
 }

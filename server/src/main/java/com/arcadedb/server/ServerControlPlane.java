@@ -217,17 +217,24 @@ public class ServerControlPlane {
           "Cannot connect '" + serverAddress + "' to the cluster: " + e.getMessage());
     }
 
-    // Seed the newly joined peer with the current users file, exactly as PostAddPeerHandler does after
-    // its own addPeer: server-users.jsonl lives under <server-root>/config/, outside the database
-    // directory, so snapshot install does not cover it and the new peer would run with a stale user set
-    // until the next cluster-wide user mutation. Best-effort, as it is there: the peer is already a
-    // committed member and a failure here does not - and must not - roll that back.
-    try {
-      ha.replicateSecurityUsers(server.getSecurity().getUsersJsonPayload());
-    } catch (final Exception e) {
+    // Seed the newly joined peer with the current security state, exactly as PostAddPeerHandler does after
+    // its own addPeer: server-users.jsonl, server-groups.json and server-api-tokens.json live under
+    // <server-root>/config/, outside the database directory, so snapshot install does not cover any of them and
+    // the new peer would run with a stale security state until the next cluster-wide mutation.
+    //
+    // Through seedSecurityStateClusterWide() rather than a bare replicateSecurityUsers(getUsersJsonPayload()),
+    // which is what this used to be and which was wrong twice over (issue #7509): it read the payload OUTSIDE
+    // the security monitor, so a revocation committing between the read and the submit was undone by the seed
+    // on every node in the cluster, and it seeded the users only - the group and API-token documents #7373
+    // added were left for the next change to carry.
+    //
+    // Best-effort, as it was: the peer is already a committed member and a failure here does not - and must not
+    // - roll that back.
+    final List<String> failedSeeds = server.getSecurity().seedSecurityStateClusterWide();
+    if (!failedSeeds.isEmpty())
       LogManager.instance().log(this, Level.WARNING,
-          "Users seed to '%s' after connect cluster failed (best-effort): %s", serverAddress, e.getMessage());
-    }
+          "Security seed to '%s' after connect cluster did not fully succeed (best-effort); documents not seeded: %s",
+          serverAddress, String.join(", ", failedSeeds));
   }
 
   // ---------------------------------------------------------------------------------------------

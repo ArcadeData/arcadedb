@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
+import com.arcadedb.server.security.SecurityDocumentVersions;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
@@ -439,7 +440,15 @@ public class RaftTransactionBroker {
    * Replicates a security users entry so all nodes update their user files.
    */
   public void replicateSecurityUsers(final String usersJson) {
-    final ByteString entry = RaftLogEntryCodec.encodeSecurityUsersEntry(usersJson);
+    replicateSecurityUsers(usersJson, SecurityDocumentVersions.UNCONDITIONAL, SecurityDocumentVersions.NO_VERSION);
+  }
+
+  /**
+   * Replicates a security users entry that carries the compare-and-set versions of issue #7509, so a node whose
+   * user list has moved on refuses the entry instead of installing a document built without its change in it.
+   */
+  public void replicateSecurityUsers(final String usersJson, final long expectedVersion, final long newVersion) {
+    final ByteString entry = RaftLogEntryCodec.encodeSecurityUsersEntry(usersJson, expectedVersion, newVersion);
     groupCommitter.submitAndWait(entry.toByteArray());
   }
 
@@ -447,7 +456,12 @@ public class RaftTransactionBroker {
    * Replicates a security-groups entry so all nodes update their group document (issue #7373).
    */
   public void replicateSecurityGroups(final String groupsJson) {
-    final ByteString entry = RaftLogEntryCodec.encodeSecurityGroupsEntry(groupsJson);
+    replicateSecurityGroups(groupsJson, SecurityDocumentVersions.UNCONDITIONAL, SecurityDocumentVersions.NO_VERSION);
+  }
+
+  /** {@link #replicateSecurityUsers(String, long, long)} for the group document (issue #7509). */
+  public void replicateSecurityGroups(final String groupsJson, final long expectedVersion, final long newVersion) {
+    final ByteString entry = RaftLogEntryCodec.encodeSecurityGroupsEntry(groupsJson, expectedVersion, newVersion);
     groupCommitter.submitAndWait(entry.toByteArray());
   }
 
@@ -455,7 +469,14 @@ public class RaftTransactionBroker {
    * Replicates a security API-tokens entry so all nodes update their token store (issue #7373).
    */
   public void replicateSecurityApiTokens(final String apiTokensJson) {
-    final ByteString entry = RaftLogEntryCodec.encodeSecurityApiTokensEntry(apiTokensJson);
+    replicateSecurityApiTokens(apiTokensJson, SecurityDocumentVersions.UNCONDITIONAL,
+        SecurityDocumentVersions.NO_VERSION);
+  }
+
+  /** {@link #replicateSecurityUsers(String, long, long)} for the API-token document (issue #7509). */
+  public void replicateSecurityApiTokens(final String apiTokensJson, final long expectedVersion,
+      final long newVersion) {
+    final ByteString entry = RaftLogEntryCodec.encodeSecurityApiTokensEntry(apiTokensJson, expectedVersion, newVersion);
     groupCommitter.submitAndWait(entry.toByteArray());
   }
 

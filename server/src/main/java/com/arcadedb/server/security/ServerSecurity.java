@@ -31,6 +31,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.DefaultConsoleReader;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerException;
+import com.arcadedb.server.security.SecurityDocumentVersions.Document;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.credential.CredentialsValidator;
@@ -87,6 +88,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   });
   private              Timer                           reloadConfigurationTimer;
   private final        ApiTokenConfiguration           apiTokenConfig;
+  /**
+   * The compare-and-set counter of each replicated security document (issue #7509). Read under this monitor
+   * when a mutation is submitted, advanced by the apply, and persisted so a restarted node does not disagree
+   * with its peers about the next entry.
+   */
+  private final        SecurityDocumentVersions        documentVersions;
   private static final int                                MAX_TOKEN_FAILURES   = 5;
   private static final long                               TOKEN_LOCKOUT_MS     = 30_000;
   private final        ConcurrentHashMap<String, long[]>  tokenFailures        = new ConcurrentHashMap<>();
@@ -115,6 +122,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     });
 
     apiTokenConfig = new ApiTokenConfiguration(configPath);
+
+    documentVersions = new SecurityDocumentVersions(configPath);
+    documentVersions.load();
 
     try {
       secretKeyFactory = SecretKeyFactory.getInstance(algorithm);
@@ -419,7 +429,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       if (users.containsKey(name))
         throw new ServerSecurityException("User '" + name + "' already exists");
 
-      ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration));
+      final long expectedVersion = documentVersions.get(Document.USERS);
+      ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration), expectedVersion, expectedVersion + 1);
     }
   }
 
@@ -445,7 +456,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
       passwordChanged = !Objects.equals(previous.getPassword(), userConfiguration.getString("password", null));
 
-      ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration));
+      final long expectedVersion = documentVersions.get(Document.USERS);
+      ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration), expectedVersion, expectedVersion + 1);
     }
 
     // Applying the replicated list already dropped this principal's LOGIN sessions on every node, this one
@@ -472,7 +484,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       if (!users.containsKey(userName))
         return false;
 
-      ha.replicateSecurityUsers(replicationPayloadWith(userName, null));
+      final long expectedVersion = documentVersions.get(Document.USERS);
+      ha.replicateSecurityUsers(replicationPayloadWith(userName, null), expectedVersion, expectedVersion + 1);
     }
 
     // Same rationale (and the same OUTSIDE-the-monitor placement) as dropUser(): a recreated same-name
@@ -802,6 +815,71 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
+   * Refuses a replicated security document entry that was built from a version of {@code document} this node no
+   * longer holds (issue #7509) - somebody changed the same document on another node between the submitter's read
+   * and this apply. Called by {@code ArcadeStateMachine} BEFORE the matching {@code applyReplicated*}, so a
+   * refused entry installs nothing at all.
+   * <p>
+   * The check is what stops the read-modify-write from losing a change. Two nodes that each read version 5,
+   * mutate their own copy and submit both produce an entry that claims to turn 5 into 6. Raft linearises them;
+   * the first is applied everywhere and moves every node to 6; the second no longer matches on ANY node, so it
+   * is refused everywhere rather than installed over the first one, and its submitter is told.
+   * <p>
+   * <b>The verdict is the same on every node by construction</b>, which is what makes refusing an entry safe at
+   * all - a verdict that differed between nodes would be divergence, which is worse than the lost update. The
+   * counter is advanced only by an apply and never derived from the node's own documents, which CAN legitimately
+   * differ between nodes; see {@link SecurityDocumentVersions} for why a digest of the document would not have
+   * that property.
+   * <p>
+   * Runs on the Raft state-machine apply thread, so, like {@link #applyReplicatedUsers(String)}, it must never
+   * take this monitor and never block. It does neither: it reads one {@code AtomicLongArray} slot.
+   *
+   * @param expectedVersion the version the payload was built from, or {@link SecurityDocumentVersions#UNCONDITIONAL}
+   *                        for a peer seed and for an entry from a node that predates this fix
+   *
+   * @throws SecurityDocumentConflictException when the document moved on
+   */
+  public void checkReplicatedSecurityVersion(final Document document, final long expectedVersion) {
+    if (!documentVersions.accepts(document, expectedVersion))
+      throw new SecurityDocumentConflictException(document, expectedVersion, documentVersions.get(document));
+  }
+
+  /**
+   * Records that {@code document} is now at {@code newVersion} (issue #7509). Called by
+   * {@code ArcadeStateMachine} AFTER the matching {@code applyReplicated*} - including when that reported a
+   * PERSISTENCE failure, because the document is in force in memory by then (issue #7137) and a counter left
+   * behind would make this node refuse the next entry its peers accept.
+   * <p>
+   * <b>After, not before, and that ordering is the safe direction.</b> A submitter reads the document and the
+   * counter without this monitor, so it can observe them a moment apart. Recording last means the window it can
+   * land in is "document already new, counter still old", which makes it stamp a version the apply then refuses:
+   * a spurious refusal, which costs a retry. Recording first would open the opposite window - "counter already
+   * new, document still old" - in which a submitter builds its payload from the PREVIOUS document and stamps a
+   * version that matches, so the entry is accepted and the change it was built without is reverted. That is the
+   * bug this whole mechanism exists to close, reintroduced through the ordering.
+   * {@link SecurityDocumentVersions#NO_VERSION} leaves the counter alone, which is what an entry from a node
+   * that predates this fix carries.
+   * <p>
+   * A failure to write the counter down is logged and NOT thrown: the document it tracks is already in force, so
+   * adding a second exception would not undo anything. What it costs is in the message, because it is the same
+   * outstanding-durability condition #7137 describes for the document itself.
+   */
+  public void recordReplicatedSecurityVersion(final Document document, final long newVersion) {
+    final Exception failure = documentVersions.record(document, newVersion);
+    if (failure != null)
+      LogManager.instance().log(this, Level.SEVERE,
+          "Could not write the replicated security document versions to '%s'. The new %s IS in effect on this node; "
+              + "what failed is recording which version it is, so a restart before this is fixed can make this node "
+              + "refuse a security change its peers accept (or the reverse) until the next one is applied",
+          failure, SecurityDocumentVersions.FILE_NAME, document.getDocumentFileName());
+  }
+
+  /** The version of a replicated security document this node currently holds (issue #7509). */
+  public long getSecurityDocumentVersion(final Document document) {
+    return documentVersions.get(document);
+  }
+
+  /**
    * Applies a replicated users payload: writes it to {@code server-users.jsonl}
    * and populates the in-memory users map directly from the payload.
    * Called from the Raft state machine on every peer when a SECURITY_USERS_ENTRY
@@ -1021,7 +1099,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     }
 
     synchronized (this) {
-      ha.replicateSecurityGroups(groupsDocumentWith(database, name, groupConfig).toString());
+      final long expectedVersion = documentVersions.get(Document.GROUPS);
+      ha.replicateSecurityGroups(groupsDocumentWith(database, name, groupConfig).toString(), expectedVersion,
+          expectedVersion + 1);
     }
   }
 
@@ -1040,7 +1120,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       if (root == null)
         return false;
 
-      ha.replicateSecurityGroups(root.toString());
+      final long expectedVersion = documentVersions.get(Document.GROUPS);
+      ha.replicateSecurityGroups(root.toString(), expectedVersion, expectedVersion + 1);
     }
     return true;
   }
@@ -1145,24 +1226,35 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     }
   }
 
-  /** Reads and submits the user list under this monitor. See {@link #seedSecurityStateClusterWide}. */
+  /**
+   * Reads and submits the user list under this monitor. See {@link #seedSecurityStateClusterWide}.
+   * <p>
+   * Submitted UNCONDITIONALLY (issue #7509): a seed exists precisely because the joining peer holds nothing
+   * comparable, so refusing it on a version mismatch would leave that peer authenticating against whatever its
+   * own configuration directory happened to contain. It still carries the version it establishes, so every node
+   * - the joiner included - ends the seed on the same counter and the next ordinary change is conditional
+   * again.
+   */
   private void seedUsersClusterWide(final HAServerPlugin ha) {
     synchronized (this) {
-      ha.replicateSecurityUsers(getUsersJsonPayload());
+      ha.replicateSecurityUsers(getUsersJsonPayload(), SecurityDocumentVersions.UNCONDITIONAL,
+          documentVersions.get(Document.USERS) + 1);
     }
   }
 
-  /** Reads and submits the group document under this monitor. See {@link #seedSecurityStateClusterWide}. */
+  /** Reads and submits the group document under this monitor. See {@link #seedUsersClusterWide}. */
   private void seedGroupsClusterWide(final HAServerPlugin ha) {
     synchronized (this) {
-      ha.replicateSecurityGroups(getGroupsJsonPayload());
+      ha.replicateSecurityGroups(getGroupsJsonPayload(), SecurityDocumentVersions.UNCONDITIONAL,
+          documentVersions.get(Document.GROUPS) + 1);
     }
   }
 
-  /** Reads and submits the API-token document under this monitor. See {@link #seedSecurityStateClusterWide}. */
+  /** Reads and submits the API-token document under this monitor. See {@link #seedUsersClusterWide}. */
   private void seedApiTokensClusterWide(final HAServerPlugin ha) {
     synchronized (this) {
-      ha.replicateSecurityApiTokens(getApiTokensJsonPayload());
+      ha.replicateSecurityApiTokens(getApiTokensJsonPayload(), SecurityDocumentVersions.UNCONDITIONAL,
+          documentVersions.get(Document.API_TOKENS) + 1);
     }
   }
 
@@ -1184,7 +1276,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     synchronized (this) {
       final ApiTokenConfiguration.MintedToken minted = apiTokenConfig.mintToken(name, database, expiresAt, permissions);
-      ha.replicateSecurityApiTokens(minted.documentJson());
+      final long expectedVersion = documentVersions.get(Document.API_TOKENS);
+      ha.replicateSecurityApiTokens(minted.documentJson(), expectedVersion, expectedVersion + 1);
       return minted.response();
     }
   }
@@ -1205,7 +1298,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       if (document == null)
         return false;
 
-      ha.replicateSecurityApiTokens(document);
+      final long expectedVersion = documentVersions.get(Document.API_TOKENS);
+      ha.replicateSecurityApiTokens(document, expectedVersion, expectedVersion + 1);
     }
     return true;
   }
