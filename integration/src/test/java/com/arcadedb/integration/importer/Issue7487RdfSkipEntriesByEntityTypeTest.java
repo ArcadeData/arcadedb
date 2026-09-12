@@ -119,6 +119,49 @@ class Issue7487RdfSkipEntriesByEntityTypeTest {
           .doesNotContainKey("skippedRecords");
   }
 
+  /**
+   * The true {@code DATABASE} route: {@code -url} with neither {@code -vertexType} nor {@code -edgeType} set, which
+   * is the only way {@code Importer.load()} reaches that entity type. It is the documents route - which is where
+   * {@code load()} sends it - so {@code -documentsSkipEntries} is the option that governs it.
+   * <p>
+   * The {@code -url} case above passes {@code -edgeType}, which makes the entity type {@code EDGE}, so without this
+   * the branch {@code DOCUMENT} and {@code DATABASE} share is only ever entered as {@code DOCUMENT}.
+   */
+  @Test
+  void theDatabaseRouteIsGovernedByTheDocumentsOption() throws Exception {
+    final String databasePath = "target/databases/test-import-7487-database";
+    final File file = new File("target/importer-7487-database.txt");
+
+    final StringBuilder content = new StringBuilder(128);
+    for (int i = 1; i <= TRIPLES; ++i)
+      content.append("<http://a/s").append(i).append("> <http://a/rel> <http://a/o").append(i).append("> .\n");
+    Files.writeString(file.toPath(), content.toString(), StandardCharsets.UTF_8);
+
+    FileUtils.deleteRecursively(new File(databasePath));
+    try (final Database seed = new DatabaseFactory(databasePath).create()) {
+      // THE DEFAULT TYPE NAMES, SINCE NEITHER -vertexType NOR -edgeType MAY BE SET HERE WITHOUT LEAVING THE ROUTE
+      seed.transaction(() -> {
+        seed.getSchema().createVertexType("Node").createProperty("id", Type.STRING);
+        seed.getSchema().getType("Node").getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, new String[] { "id" });
+        seed.getSchema().createEdgeType("Relationship");
+      });
+    }
+
+    try {
+      final Map<String, Object> report = new Importer(new String[] { "-url", "file://" + file.getAbsolutePath(),
+          "-database", databasePath, "-documentsSkipEntries", "1" }).load();
+
+      assertThat(report).as("-documentsSkipEntries governs the DATABASE route").containsEntry("skippedRecords", 1L);
+      assertThat(report).containsEntry("createdEdges", TRIPLES - 1L);
+    } finally {
+      final DatabaseFactory factory = new DatabaseFactory(databasePath);
+      if (factory.exists())
+        factory.open().drop();
+      file.delete();
+      TestHelper.checkActiveDatabases();
+    }
+  }
+
   // -----------------------------------------------------------------------------------------------------------
 
   /**
