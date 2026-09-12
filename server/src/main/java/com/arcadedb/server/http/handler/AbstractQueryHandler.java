@@ -896,8 +896,14 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * A statement whose language cannot analyze it is refused too: "not provably read-only" is the safe reading,
    * and the buffered encoding remains available for every case this turns away.
    * <p>
-   * For {@code sql} the analysis is free: {@code SQLQueryEngine.parse} is a {@code StatementCache} lookup that
-   * the execution about to follow repeats with the same key.
+   * Cost, since this analyzes a statement the execution is about to parse again. For {@code sql} and
+   * {@code opencypher} it is free: both resolve through a statement cache ({@code SQLQueryEngine.parse} is a
+   * {@code StatementCache} lookup, {@code OpenCypherQueryEngine.analyze} a {@code CypherStatementCache} one)
+   * that the execution repeats with the same key. {@code mongo}, {@code graphql} and {@code redis} classify
+   * from the command text without parsing. {@code gremlin} and {@code sqlscript} do parse twice -
+   * {@code ArcadeGremlin.parse()} builds the traversal, and {@code SQLScriptQueryEngine} says outright that it
+   * has no script statement cache - which is the price of refusing before the first byte rather than after,
+   * and is the price the two POST operations have already been paying since issue #7306.
    */
   protected static void requireStreamableStatement(final Database database, final String language,
       final String command) {

@@ -253,3 +253,30 @@ carries a non-obvious decision - the gate itself, all four IT test methods, both
 javadoc explaining *why*. Adding a docstring to `private String baseUrl()` to move a percentage is the kind
 of comment the repo's own style avoids. The threshold is a generic bot metric rather than a finding about
 this code, so it is recorded here rather than satisfied.
+
+### Cycle 2 - `1e23fc3`
+
+| Reviewer | Outcome |
+|---|---|
+| `claude` | "No blocking issues found." The import removal was re-verified by the reviewer. One non-blocking observation, answered below. |
+
+**Applied (documentation only, no behaviour change).** *"Worth double-checking [that `analyze()` is cheap]
+holds for the non-SQL engines mentioned in Residual risk if any of them do non-trivial work in `analyze()`."*
+The reviewer is right that the javadoc only claimed it for `sql` and left the reader to guess about the rest,
+and right that this is not a regression - the two POST operations have made the same call since #7306 - but
+this PR does newly apply that cost to `GET /query`, so the claim should be complete rather than SQL-shaped.
+Checked each engine and wrote the answer into the gate's javadoc:
+
+| Language | `analyze()` cost | Evidence |
+|---|---|---|
+| `sql` | free | `SQLQueryEngine.parse` → `database.getStatementCache().get(query)` |
+| `opencypher` | free | `OpenCypherQueryEngine.analyze` → `database.getCypherStatementCache().get(query)` |
+| `mongo`, `graphql`, `redis` | cheap, no parse | `detectMongoOperationTypes` / `classify` / `parseCommand` classify from the command text |
+| `gremlin` | a real parse | `ArcadeGremlin.parse()` calls `executeStatement(true)` and walks the resulting traversal's steps |
+| `sqlscript` | a real parse | `SQLScriptQueryEngine.parseScript`; that class's own javadoc says "this parse is NOT free - there is no script statement cache" |
+
+So two of the seven parse twice on a streamed request. That is the price of refusing before the first byte
+instead of after, it is the price #7306 already accepted for the two POST operations, and it is now written
+down where the next reader will find it instead of inferred from a claim about `sql`.
+
+**Not applied.** Nothing else; the rest of the review was confirmation.
