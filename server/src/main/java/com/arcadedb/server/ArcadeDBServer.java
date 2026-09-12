@@ -441,7 +441,20 @@ public class ArcadeDBServer {
     // DATABASES SO A RECOVERED ONE IS REGISTERED RATHER THAN MISTAKEN FOR ABSENT AND RECREATED (ISSUE #7129).
     loadDatabases(true);
 
-    loadDefaultDatabases();
+    try {
+      loadDefaultDatabases();
+    } catch (final Exception e) {
+      // Security, the HTTP service and every BEFORE_HTTP_ON/AFTER_HTTP_ON plugin are already up at this point,
+      // and a failing 'restore:' or 'import:' default-database command (issue #7484) can leave one created and
+      // half-initialized. status is still STARTING here - it is only set to ONLINE below - so leaving the
+      // exception to propagate on its own, the way it used to, left every one of those resources running with
+      // no stop() ever called and no path back to OFFLINE: main() has already discarded this ArcadeDBServer
+      // instance by the time the exception reaches it. stop() before rethrowing is the same recovery
+      // lifecycleEvent(SERVER_UP)'s own failure handler below already uses, and it is reentrant with the lock
+      // start() is still holding (see the field comment on lifecycleLock).
+      stop();
+      throw e;
+    }
 
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN);
 
