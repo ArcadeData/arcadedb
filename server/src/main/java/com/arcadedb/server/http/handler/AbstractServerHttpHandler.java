@@ -352,6 +352,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       ServerSecurityUser user = null;
 
+      // Read once and shared by both readers below: the cluster-token branch asks only whether the caller
+      // sent credentials of its own, the standard check below authenticates them.
+      final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
+
       // Cluster-internal headers: a peer relayed this request. X-ArcadeDB-Cluster-Token proves the HOP - it
       // is the shared secret only cluster members hold - and that is all it proves. Whether it also names
       // the principal depends on what the relaying node could do with the client's credentials:
@@ -385,12 +389,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           LeaderForwardContext.markAlreadyForwarded();
 
         final HeaderValues forwardedUserValues = exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User");
-        final HeaderValues relayedAuthorization = exchange.getRequestHeaders().get("Authorization");
         if (forwardedUserValues != null && !forwardedUserValues.isEmpty()) {
           user = resolveForwardedUser(exchange, forwardedUserValues.getFirst());
           if (user == null)
             return; // 401 already sent
-        } else if (relayedAuthorization == null || relayedAuthorization.isEmpty()) {
+        } else if (authorization == null || authorization.isEmpty()) {
           // Neither a forwarded identity nor credentials of the caller's own: the cluster token proves a
           // hop, it has never been a principal. Refused here rather than falling through, so the answer to
           // this request shape is the one it has always been.
@@ -403,7 +406,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       }
 
       if (user == null) {
-        final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
         if (isRequireAuthentication() && (authorization == null || authorization.isEmpty())) {
           exchange.setStatusCode(401);
           exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE, "Basic");
