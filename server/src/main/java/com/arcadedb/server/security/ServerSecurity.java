@@ -132,6 +132,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * Serialises {@link #updateSchema}, so the document a refresh read and the permissions it publishes cannot be
    * separated by another refresh. See that method for why an unsynchronised read-then-publish is a lost update on
    * an authorization decision rather than a benign one.
+   * <p>
+   * <b>Server-wide, not per database.</b> Two databases refreshing concurrently used to be able to run fully in
+   * parallel and now take turns, which is a deliberate trade and a cheap one: a refresh is a walk of cached maps
+   * with no I/O in it, and the things that trigger one - a group edit, a schema change, a database open - are all
+   * rare. A map of per-database locks would buy parallelism nothing measures back, at the price of a second
+   * lifetime to manage for every database name the server has ever seen.
    */
   private final        Object                             permissionsPublishLock     = new Object();
 
