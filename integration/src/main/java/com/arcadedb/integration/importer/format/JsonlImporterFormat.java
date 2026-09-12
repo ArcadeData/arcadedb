@@ -195,6 +195,14 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           database.begin();
           timeSeriesSamplesSinceCommit = 0;
         }
+
+        // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
+        // RECORD, SO STOPPING ONCE IT REACHES THE LIMIT IMPORTS EXACTLY -parsingLimitEntries RECORDS, NOT ONE MORE
+        // (#7482). -parsingLimitBytes IS THE SAME IDEA MEASURED IN BYTES READ FROM THE SOURCE RATHER THAN RECORDS
+        // PARSED.
+        if ((settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
+            || (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes))
+          break;
       }
 
       // Issue #6460: resolve any LINK / LIST-of-LINK / MAP-of-LINK property values that were still forward

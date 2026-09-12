@@ -1613,8 +1613,22 @@ public class ArcadeDBServer {
                 database = createDatabase(dbName, defaultDbMode);
               }
               try (final var rs = database.command("sql", "import database " + commandParams)) {
-                // drain not needed: the import command produces no rows we consume here.
-                // try-with-resources ensures the result set / execution plan is released.
+                // ImportDatabaseStatement REPORTS EXACTLY ONE CLASS OF FAILURE IN-BAND RATHER THAN BY THROWING: A
+                // FAILED probeOnly PROBE, AND (SINCE ISSUE #7461) A 'WITH ...' SETTING VALUE THE IMPORTER REFUSES,
+                // BOTH AS THE SINGLE ROW {"result":"FAIL","reason":...}. DISCARDING THAT ROW USED TO LEAVE dbName
+                // CREATED AND EMPTY WITH NOTHING IN THE LOG SAYING WHY (ISSUE #7484). TREATED THE SAME AS A FAILED
+                // 'restore:' ABOVE - LOUD AND FATAL TO STARTUP - RATHER THAN LOGGED AND IGNORED: A STARTUP
+                // MISCONFIGURATION THAT SILENTLY LEAVES A DEFAULT DATABASE EMPTY IS WORSE THAN ONE THAT REFUSES TO
+                // START, AND THE TWO STARTUP COMMANDS NOW ANSWER A BAD SOURCE THE SAME WAY.
+                if (rs.hasNext()) {
+                  final var row = rs.next();
+                  final String outcome = row.getProperty("result");
+                  if (!"OK".equals(outcome)) {
+                    final String reason = row.getProperty("reason");
+                    throw new CommandExecutionException(
+                        "Startup 'import:' command failed to import default database '" + dbName + "': " + reason);
+                  }
+                }
               }
               break;
 

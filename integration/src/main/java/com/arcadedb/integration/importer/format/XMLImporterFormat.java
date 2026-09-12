@@ -189,8 +189,15 @@ public class XMLImporterFormat implements FormatImporter {
         // '>=' AND NOT '>': context.parsed IS INCREMENTED ONCE PER COMPLETED OBJECT, SO A STRICT COMPARISON ONLY
         // BREAKS ONCE THE COUNT HAS PASSED THE LIMIT - AND THE OBJECT THAT TRIPPED IT HAS ALREADY BEEN HANDED TO
         // database.async().createRecord(). '-parsingLimitEntries N' IMPORTED N+1 ENTRIES, WHILE THE SAME FLAG ON THE
-        // VECTOR ROUTE (TextEmbeddingsImporterLSM, THROUGH parser.limit()) STOPPED AT N (ISSUE #7341)
-        if (settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
+        // VECTOR ROUTE (TextEmbeddingsImporterLSM, THROUGH parser.limit()) STOPPED AT N (ISSUE #7341).
+        // -parsingLimitBytes IS THE SAME IDEA MEASURED IN BYTES READ FROM THE SOURCE RATHER THAN OBJECTS PARSED,
+        // AND WAS SILENTLY IGNORED HERE LIKE EVERY OTHER FORMAT (ISSUE #7482). xmlReader.getLocation() RATHER THAN
+        // parser.getPosition(): THE LATTER IS THE UNDERLYING InputStream'S READ POSITION, WHICH A BUFFERING
+        // XMLStreamReader FILLS FAR AHEAD OF THE EVENT IT HAS ACTUALLY HANDED BACK, MAKING THE BYTE BUDGET AS COARSE
+        // AS ONE BUFFER FULL. getCharacterOffset() IS THE PARSER'S OWN LOGICAL POSITION IN THE DOCUMENT, THE SAME
+        // GRANULARITY CSVImporterFormat.analyze() ALREADY GETS FROM ITS TOKENIZER'S currentChar().
+        if ((settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
+            || (settings.parsingLimitBytes > 0 && xmlReader.getLocation().getCharacterOffset() > settings.parsingLimitBytes))
           break;
       }
 
@@ -205,7 +212,11 @@ public class XMLImporterFormat implements FormatImporter {
   @Override
   public SourceSchema analyze(final AnalyzedEntity.EntityType entityType, final Parser parser, final ImporterSettings settings,
       final AnalyzedSchema analyzedSchema) {
-    final int analyzingLimitEntries = settings.getIntValue("analyzingLimitEntries", 0);
+    // `analysisLimitEntries` IS THE ONE REAL SETTING (WITH A DEFAULT OF 10000), SHARED WITH CSVImporterFormat.
+    // `analyzingLimitEntries` WAS THIS FORMAT'S OWN MISSPELLED, DEFAULT-LESS COPY: KEPT HERE, IF EXPLICITLY PASSED,
+    // AS A DEPRECATED ALIAS SO A SCRIPT THAT SET IT STILL WORKS (ISSUE #7485)
+    final long analyzingLimitEntries = settings.getValue("analyzingLimitEntries", null) != null ?
+        settings.getIntValue("analyzingLimitEntries", 0) : settings.analysisLimitEntries;
     final int objectNestLevel = settings.getIntValue("objectNestLevel", 1);
 
     long parsedObjects = 0;
@@ -337,6 +348,14 @@ public class XMLImporterFormat implements FormatImporter {
         // SAME OFF-BY-ONE AND SAME FIX AS load()'S -parsingLimitEntries ABOVE: parsedObjects IS INCREMENTED ONCE PER
         // COMPLETED OBJECT, SO A STRICT COMPARISON ANALYZED N+1 OF THEM (ISSUE #7341)
         if (analyzingLimitEntries > 0 && parsedObjects >= analyzingLimitEntries)
+          break;
+
+        // CSVImporterFormat.analyze() HAS HONOURED analysisLimitBytes SINCE ITS INTRODUCTION; XML HAD NO EQUIVALENT
+        // GUARD AT ALL, SO SCHEMA ANALYSIS ON A SOURCE WITH FEW BUT HUGE OBJECTS WAS UNBOUNDED (ISSUE #7485).
+        // xmlReader.getLocation().getCharacterOffset() RATHER THAN parser.getPosition(): SEE THE SAME CHOICE IN
+        // load()'S -parsingLimitBytes GUARD ABOVE (ISSUE #7482) - THE PARSER'S OWN LOGICAL POSITION, NOT THE
+        // UNDERLYING BUFFERED STREAM'S READ-AHEAD POSITION.
+        if (settings.analysisLimitBytes > 0 && xmlReader.getLocation().getCharacterOffset() > settings.analysisLimitBytes)
           break;
       }
 

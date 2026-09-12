@@ -110,7 +110,7 @@ public class JSONImporterFormat implements FormatImporter {
         case END_OBJECT:
           reader.endObject();
         case BEGIN_ARRAY:
-          parseRecords(reader, database, settings, context, (JSONArray) tagValue, waitFor != token);
+          parseRecords(reader, parser, database, settings, context, (JSONArray) tagValue, waitFor != token);
           break;
         case NAME:
           final String tag = reader.nextName();
@@ -137,7 +137,7 @@ public class JSONImporterFormat implements FormatImporter {
     return "JSON";
   }
 
-  private void parseRecords(final JsonReader reader, final Database database, final ImporterSettings settings,
+  private void parseRecords(final JsonReader reader, final Parser parser, final Database database, final ImporterSettings settings,
       final ImporterContext context,
       final JSONArray mapping, boolean ignore) throws IOException {
     // Each record below commits/rolls back its own nested transaction (database.begin() nests rather than reusing
@@ -151,7 +151,7 @@ public class JSONImporterFormat implements FormatImporter {
 
     database.begin();
     try {
-      parseRecordsArray(reader, database, settings, context, mapping, ignore);
+      parseRecordsArray(reader, parser, database, settings, context, mapping, ignore);
     } catch (final IOException e) {
       // A genuinely source-level failure never passes through parseRecordsArray()'s per-record catch below (which
       // only catches RuntimeException), so the active transaction here is always this method's own, untouched
@@ -170,7 +170,7 @@ public class JSONImporterFormat implements FormatImporter {
     }
   }
 
-  private void parseRecordsArray(final JsonReader reader, final Database database, final ImporterSettings settings,
+  private void parseRecordsArray(final JsonReader reader, final Parser parser, final Database database, final ImporterSettings settings,
       final ImporterContext context, final JSONArray mapping, boolean ignore) throws IOException {
     final Object mappingValue = mapping != null && !mapping.isEmpty() ? mapping.get(0) : null;
     JSONObject mappingObject;
@@ -243,6 +243,17 @@ public class JSONImporterFormat implements FormatImporter {
       }
 
       database.begin();
+
+      // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
+      // RECORD (INSIDE parseRecord()), SO STOPPING ONCE IT REACHES THE LIMIT IMPORTS EXACTLY -parsingLimitEntries
+      // RECORDS, NOT ONE MORE (#7482). reader.endArray() BELOW REQUIRES THE ARRAY TO BE FULLY CONSUMED FIRST, SO
+      // WHATEVER RECORDS THE LIMIT LEFT UNREAD ARE SKIPPED RATHER THAN PARSED.
+      if ((settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
+          || (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes)) {
+        while (reader.hasNext())
+          reader.skipValue();
+        break;
+      }
     }
 
     database.commit();
