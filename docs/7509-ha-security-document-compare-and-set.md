@@ -193,6 +193,21 @@ Deliberately not changed, with reasons:
   the shared shape is the four lines around them. The dead `boolean applied = false;` initialisers the review
   flagged are gone; every one is now a definitely-assigned `final boolean`.
 
+### Cycle 2 - `45965839e9`
+
+No blocking issues: the reviewer re-verified the cycle-1 fixes against the source, including that the three
+"in force" fingerprint helpers serialise the same way the submitter-side snapshot helpers do. Three
+non-blocking observations:
+
+1. **`SecurityDocumentFingerprint.appendString` escapes only `"` and `\`** - correct, but worth saying so
+   explicitly. Applied: the javadoc now states that the canonical form is a COMPARISON KEY and not a
+   serialization format, that it escapes only what could make two different documents produce the same bytes,
+   and that the structural characters a JSON writer would escape cannot move a boundary inside a string this
+   method delimits itself.
+2. **Per-apply hashing cost** - the reviewer agreed with the cycle-1 decision not to cache, flagging it only as
+   something to revisit if these documents ever grow to thousands of entries. No change.
+3. **#7559** - agreed it is out of scope here and belongs to #7219/#7559. No change.
+
 ## Test results
 
 - `server`: `com.arcadedb.server.security.*Test` - 109 tests, 0 failures (15 of them new in

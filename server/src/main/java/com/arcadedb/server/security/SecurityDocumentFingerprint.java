@@ -85,6 +85,13 @@ public final class SecurityDocumentFingerprint {
    * Appends {@code value}'s canonical form to {@code out}: object keys in ascending order, array elements
    * ordered by their own canonical form, scalars as their {@code toString}. Strings are quoted and every
    * quote and backslash inside them escaped, so {@code ["a","b"]} and {@code ["ab"]} cannot collide.
+   * <p>
+   * <b>The result is a comparison key, not a serialization format.</b> It is hashed and compared, never parsed
+   * back, so it escapes only what could make two DIFFERENT documents produce the same bytes - the quote that
+   * ends a string and the backslash that could escape it. It deliberately does not escape the structural
+   * characters a JSON writer would ({@code &#123;}, {@code &#125;}, {@code [}, {@code ]}, {@code :},
+   * {@code ,}), because inside an already-delimited string they cannot move a boundary: the delimiters
+   * themselves are written by this method, not taken from the value. Do not reuse this output as JSON.
    */
   private static void canonicalize(final Object value, final StringBuilder out) {
     switch (value) {
@@ -123,6 +130,7 @@ public final class SecurityDocumentFingerprint {
     }
   }
 
+  /** See {@link #canonicalize}: this closes the string so its contents cannot be mistaken for structure. */
   private static void appendString(final String value, final StringBuilder out) {
     out.append('"');
     for (int i = 0; i < value.length(); i++) {
