@@ -92,9 +92,11 @@ public class Parser {
 
   public boolean isAvailable() throws IOException {
     if (peeked != NOTHING_PEEKED)
-      // A PEEKED CHARACTER IS STILL TO BE CONSUMED BY nextChar(), SO THE SOURCE IS AVAILABLE EXACTLY WHEN THAT
-      // CHARACTER IS NOT THE END-OF-STREAM MARKER
-      return peeked >= 0;
+      // A PEEKED CHARACTER IS STILL TO BE CONSUMED BY nextChar(), SO THE SOURCE IS AVAILABLE WHEN THAT CHARACTER IS
+      // NOT THE END-OF-STREAM MARKER - AND, WHEN A LIMIT IS SET, WHEN THE LIMIT STILL ALLOWS IT. peekChar() HAS
+      // ALREADY ADVANCED position FOR THE BUFFERED CHARACTER, SO THE COMPARISON IS AGAINST position - 1: THIS ANSWERS
+      // EXACTLY WHAT THE BRANCH BELOW WOULD HAVE ANSWERED HAD THE PEEK NOT HAPPENED
+      return peeked >= 0 && (limit <= 0 || position.get() - 1 < limit);
     if (limit > 0)
       return position.get() < limit && is.available() > 0;
     if (reader.ready())

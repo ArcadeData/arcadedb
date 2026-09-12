@@ -794,6 +794,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * Two characters of lookahead rather than a buffered {@code readLine}/{@code reset}: a mark has to be given a
    * read-ahead limit up front, and a single CSV row can be larger than any limit worth reserving.
    */
+  /**
+   * {@link #sourceReader}'s "this character was never read" marker. Distinct from {@code -1} (end of stream) and
+   * from {@code 0} (a NUL character), both of which {@link java.io.Reader#read()} can legitimately return.
+   */
+  private static final int NOT_READ = -2;
+
   protected static Reader sourceReader(final Parser parser) throws IOException {
     final PushbackReader reader = new PushbackReader(
         new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset()), 2);
@@ -803,11 +809,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       if (first < 0)
         return reader;
 
-      // READ THE SECOND CHARACTER ONLY WHEN IT CAN MATTER, AND GIVE IT BACK WHEN IT TURNS OUT TO BE DATA
-      final int second = first == '/' ? reader.read() : 0;
+      // READ THE SECOND CHARACTER ONLY WHEN IT CAN MATTER, AND GIVE IT BACK WHEN IT TURNS OUT TO BE DATA. THE
+      // "NOT READ" SENTINEL IS NOT_READ AND NOT 0, BECAUSE Reader.read() ANSWERS 0 FOR A REAL NUL CHARACTER: A
+      // SOURCE OPENING '/' NUL WOULD OTHERWISE HAVE HAD ITS NUL READ AND NEVER GIVEN BACK - SILENT DATA LOSS,
+      // WHICH IS THE FAILURE MODE THIS WHOLE CHANGE IS ABOUT
+      final int second = first == '/' ? reader.read() : NOT_READ;
 
-      if (!SourceDiscovery.isCommentLineStart((char) first, second > 0 ? (char) second : 0)) {
-        if (second > 0)
+      if (!SourceDiscovery.isCommentLineStart((char) first, second >= 0 ? (char) second : 0)) {
+        if (second >= 0)
           reader.unread(second);
         reader.unread(first);
         return reader;
