@@ -135,6 +135,17 @@ import java.util.zip.CRC32;
 public class ArcadeStateMachine extends BaseStateMachine {
 
   /**
+   * What {@link #applyTransaction} answers the Ratis client when a node-scoped security entry was NOT installed
+   * because its compare-and-set precondition no longer held (issue #7509). Anything else - "OK", or no message
+   * at all from a leader that predates this - means the entry was applied.
+   * <p>
+   * The verdict has to travel in the REPLY rather than be observed locally: the submitting node is not
+   * necessarily the leader, and a follower's own apply of the entry can lag the reply it gets back. The reply
+   * carries the LEADER's verdict, which is the authoritative one because applies are ordered and deterministic.
+   */
+  public static final String SECURITY_ENTRY_SUPERSEDED_REPLY = "SECURITY_ENTRY_SUPERSEDED";
+
+  /**
    * Test-only WAL gap counter. When non-null, incremented each time a follower detects a
    * WAL page-version gap. Used by deterministic tests to verify no gap occurred.
    * <p>
@@ -923,15 +934,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
           appended.originatedLocally() :
           Boolean.TRUE.equals(context);
 
+      // Set by the three security applies when the entry's compare-and-set precondition no longer held, so the
+      // reply below can tell the submitter its change did not land (issue #7509). A one-element array rather
+      // than a field: applyWithRetry can re-run the lambda, and a field would outlive this entry.
+      final boolean[] securitySuperseded = new boolean[1];
+
       applyWithRetry(index, decoded.databaseName(), () -> {
+        securitySuperseded[0] = false;
         switch (decoded.type()) {
         case TX_ENTRY -> applyTxEntry(decoded, index, context instanceof AppendedEntry appended ? appended.pages() : null);
         case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
         case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
         case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
-        case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
-        case SECURITY_GROUPS_ENTRY -> applySecurityGroupsEntry(decoded);
-        case SECURITY_API_TOKENS_ENTRY -> applySecurityApiTokensEntry(decoded);
+        case SECURITY_USERS_ENTRY -> securitySuperseded[0] = !applySecurityUsersEntry(decoded);
+        case SECURITY_GROUPS_ENTRY -> securitySuperseded[0] = !applySecurityGroupsEntry(decoded);
+        case SECURITY_API_TOKENS_ENTRY -> securitySuperseded[0] = !applySecurityApiTokensEntry(decoded);
         case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index, originatedLocally);
         }
       });
@@ -969,7 +986,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
           }
         }
       }
-      return CompletableFuture.completedFuture(Message.valueOf("OK"));
+      // A superseded security entry IS applied - as a no-op, identically on every node, so the applied index
+      // advances exactly as it does for any other entry. Only the ANSWER differs, so the submitter learns its
+      // document was built from a view the cluster had already moved past (issue #7509).
+      return CompletableFuture.completedFuture(
+          Message.valueOf(securitySuperseded[0] ? SECURITY_ENTRY_SUPERSEDED_REPLY : "OK"));
 
     } catch (final ReplicationException e) {
       // A resync-required signal for an already-quarantined database repeats on every committed entry
@@ -3637,15 +3658,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The classification lives here, at the apply site, rather than in the generic handler: whether a failure
    * can diverge replicated state is a property of the apply, not of the entry's database scoping, so a future
    * node-scoped entry that CAN diverge still reaches the halt it needs.
+   *
+   * @return false when the entry carried a compare-and-set precondition that no longer holds, so the user list
+   * was deliberately NOT installed (issue #7509). The decision is the same on every node, because the payload
+   * and the state it is compared against are both replicated and applies are ordered
    */
-  private void applySecurityUsersEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+  private boolean applySecurityUsersEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String payload = decoded.usersJson();
     if (payload == null) {
       LogManager.instance().log(this, Level.WARNING, "SECURITY_USERS_ENTRY has null payload, skipping");
-      return;
+      return true;
     }
     try {
-      server.getSecurity().applyReplicatedUsers(payload);
+      // An entry with no precondition takes the unconditional apply verbatim - that is a seed, and it is also
+      // every entry a node that predates issue #7509 wrote. Only a conditional entry goes through the
+      // compare-and-set overload, so nothing about the pre-#7509 path changes shape.
+      final String precondition = decoded.securityPrecondition();
+      if (precondition == null)
+        server.getSecurity().applyReplicatedUsers(payload);
+      else if (!server.getSecurity().applyReplicatedUsers(payload, precondition))
+        return false;
     } catch (final ReplicatedUsersPersistenceException e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Could not fully apply a replicated user list on this node: %s. The node keeps running and, when the "
@@ -3666,6 +3698,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // read a committed entry its peers applied", and it still reaches the node-wide halt - the case #4798
     // argues must never be skipped quietly. Catching RuntimeException here would have downgraded it silently.
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_USERS_ENTRY (%d bytes)", payload.length());
+    return true;
   }
 
   /**
@@ -3682,14 +3715,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@link #applySecurityUsersEntry}, which applies verbatim: reissue the group change on the leader once the
    * volume is fixed.
    */
-  private void applySecurityGroupsEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+  private boolean applySecurityGroupsEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String payload = decoded.usersJson();
     if (payload == null) {
       LogManager.instance().log(this, Level.WARNING, "SECURITY_GROUPS_ENTRY has null payload, skipping");
-      return;
+      return true;
     }
     try {
-      server.getSecurity().applyReplicatedGroups(payload);
+      final String precondition = decoded.securityPrecondition();
+      if (precondition == null)
+        server.getSecurity().applyReplicatedGroups(payload);
+      else if (!server.getSecurity().applyReplicatedGroups(payload, precondition))
+        return false;
     } catch (final ReplicatedSecurityConfigPersistenceException e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Could not fully apply a replicated group document on this node: %s. The node keeps running and is "
@@ -3702,6 +3739,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "new groups in memory, only their durability to disk failed", e);
     }
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_GROUPS_ENTRY (%d bytes)", payload.length());
+    return true;
   }
 
   /**
@@ -3713,14 +3751,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * authenticating here even when the write failed. What is outstanding is only that a restart would read the
    * stale file back - which is why the operator instruction is to reissue the revocation, not to wait.
    */
-  private void applySecurityApiTokensEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+  private boolean applySecurityApiTokensEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String payload = decoded.usersJson();
     if (payload == null) {
       LogManager.instance().log(this, Level.WARNING, "SECURITY_API_TOKENS_ENTRY has null payload, skipping");
-      return;
+      return true;
     }
     try {
-      server.getSecurity().applyReplicatedApiTokens(payload);
+      final String precondition = decoded.securityPrecondition();
+      if (precondition == null)
+        server.getSecurity().applyReplicatedApiTokens(payload);
+      else if (!server.getSecurity().applyReplicatedApiTokens(payload, precondition))
+        return false;
     } catch (final ReplicatedSecurityConfigPersistenceException e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Could not fully apply a replicated API-token document on this node: %s. The node keeps running and is "
@@ -3734,6 +3776,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "set in memory, only its durability to disk failed", e);
     }
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_API_TOKENS_ENTRY (%d bytes)", payload.length());
+    return true;
   }
 
   /**

@@ -79,7 +79,7 @@ class RaftTransactionBrokerTest {
   @Test
   void replicateSecurityUsersEncodesCorrectEntryType() {
     assertThatThrownBy(() ->
-        broker.replicateSecurityUsers("[{\"name\":\"root\"}]"))
+        broker.replicateSecurityUsers("[{\"name\":\"root\"}]", null))
         .isInstanceOf(QuorumNotReachedException.class);
   }
 

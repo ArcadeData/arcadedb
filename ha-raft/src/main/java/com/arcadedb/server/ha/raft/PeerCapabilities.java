@@ -52,11 +52,24 @@ public final class PeerCapabilities {
   public static final String SCHEMA_DELTA = "schema-delta";
 
   /**
+   * This node reads the compare-and-set precondition section of the three node-scoped security entries - the user
+   * list, the group document and the API-token document (issue #7509).
+   * <p>
+   * Advertising it says this node REFUSES a security document whose precondition no longer matches what is in
+   * force. That is what makes the section unsafe to write to a peer without it: such a peer skips the section and
+   * installs the document unconditionally, so the losing entry would be refused on the upgraded nodes and applied
+   * on the older one - a divergence of the security state, where an ungated pre-#7509 cluster at least lost the
+   * same change everywhere. A leader that cannot see this token on every peer therefore writes no precondition and
+   * keeps the pre-#7509 behaviour uniformly.
+   */
+  public static final String SECURITY_PRECONDITION = "security-precondition";
+
+  /**
    * Everything this build can decode. Immutable, and deliberately a whitelist written out by hand rather than
    * derived from anything: a capability is a promise about the wire format, and the only thing that can make it
    * true is a human having checked that the decoder is present.
    */
-  public static final Set<String> LOCAL = Set.of(SCHEMA_DELTA);
+  public static final Set<String> LOCAL = Set.of(SCHEMA_DELTA, SECURITY_PRECONDITION);
 
   private PeerCapabilities() {
     // utility class

@@ -86,6 +86,6 @@ class Issue7337SealedShardsOfEntryTest {
   private static RaftLogEntryCodec.DecodedEntry entry(final List<RaftLogEntryCodec.TsSealedBlob> blobs,
       final List<RaftLogEntryCodec.TsSealedChunk> chunks) {
     return new RaftLogEntryCodec.DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, "graph", null, null, null, null, null,
-        null, null, null, false, null, -1L, blobs, false, chunks, null);
+        null, null, null, false, null, -1L, blobs, false, chunks, null, null);
   }
 }

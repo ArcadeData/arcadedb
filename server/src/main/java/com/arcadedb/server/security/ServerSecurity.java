@@ -95,6 +95,17 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private static final long                               PASSWORD_LOCKOUT_MS   = 30_000;
   private final        ConcurrentHashMap<String, long[]>  passwordFailures      = new ConcurrentHashMap<>();
 
+  /**
+   * How many times a cluster-wide security mutation rebuilds its document and resubmits after losing a
+   * compare-and-set race (issue #7509).
+   * <p>
+   * Small on purpose. Every attempt costs a Raft round trip, and a node only loses the race to a security change
+   * committed on ANOTHER node inside that window - which is administration, not traffic, so a handful of retries
+   * covers the concurrency a real cluster produces. Exhausting it reports a conflict the caller can retry, which
+   * is what issue #7509 asks for: never a silent success over a change that was thrown away.
+   */
+  private static final int                                SECURITY_CAS_MAX_ATTEMPTS = 5;
+
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
     this.algorithm = configuration.getValueAsString(SERVER_SECURITY_ALGORITHM);
@@ -397,15 +408,20 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * divergence in by overwriting every peer with the serving node's whole list (issue #6808).
    * <p>
    * The {@code synchronized} block serialises the read-compute-submit sequence against any other user
-   * mutation on this node, so two concurrent calls cannot overwrite each other's in-flight change. It must
-   * NOT be held across anything that can block on the Raft apply thread; {@link #applyReplicatedUsers}, which
-   * unblocks the submit, deliberately does not take this monitor.
+   * mutation on this node. It must NOT be held across anything that can block on the Raft apply thread;
+   * {@link #applyReplicatedUsers(String)}, which unblocks the submit, deliberately does not take this monitor.
    * <p>
-   * Note what that costs, for whoever adds a fourth cluster-wide mutator here by symmetry: the monitor IS
+   * Note what that costs, for whoever adds another cluster-wide mutator here by symmetry: the monitor IS
    * held across the Raft round trip, so every user create/update/drop on this node serialises for the
-   * duration of consensus. That is deliberate - the payload is the whole user list, so two concurrent
-   * submits would otherwise each overwrite the other's change - and it is affordable only because user
-   * administration is rare. Nothing on a request hot path may be put inside this monitor.
+   * duration of consensus. It is affordable only because user administration is rare, and nothing on a request
+   * hot path may be put inside this monitor.
+   * <p>
+   * <b>The monitor is per-NODE, so it is not what makes the payload safe.</b> Two nodes can each build a whole
+   * user list from their own view at the same time, and the entry Raft orders second would silently revert the
+   * first (issue #7509). What prevents that is the COMPARE-AND-SET: the fingerprint of the list this node read
+   * rides along with the entry, the apply refuses to install a list whose fingerprint no longer matches the one
+   * in force, and this loop then re-reads and resubmits - up to {@link #SECURITY_CAS_MAX_ATTEMPTS} times, after
+   * which the caller is told the request changed nothing rather than that it succeeded.
    */
   public void createUserClusterWide(final JSONObject userConfiguration) {
     final HAServerPlugin ha = server != null ? server.getHA() : null;
@@ -415,12 +431,32 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     }
 
     final String name = userConfiguration.getString("name");
-    synchronized (this) {
-      if (users.containsKey(name))
-        throw new ServerSecurityException("User '" + name + "' already exists");
+    for (int attempt = 1; ; attempt++) {
+      synchronized (this) {
+        if (users.containsKey(name))
+          throw new ServerSecurityException("User '" + name + "' already exists");
 
-      ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration));
+        if (ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration), usersFingerprint()))
+          return;
+      }
+      exhausted("create user '" + name + "'", "user list", attempt);
     }
+  }
+
+  /**
+   * Fails a cluster-wide security mutation that lost the compare-and-set race {@link #SECURITY_CAS_MAX_ATTEMPTS}
+   * times, and otherwise returns so the caller retries (issue #7509).
+   */
+  private void exhausted(final String what, final String document, final int attempt) {
+    if (attempt < SECURITY_CAS_MAX_ATTEMPTS) {
+      LogManager.instance().log(this, Level.INFO,
+          "Retrying to %s: the %s changed on another node between this node's read and the apply (attempt %d of %d)",
+          what, document, attempt, SECURITY_CAS_MAX_ATTEMPTS);
+      return;
+    }
+    throw new ServerSecurityException("Could not " + what + " after " + SECURITY_CAS_MAX_ATTEMPTS
+        + " attempts: the " + document + " keeps being changed concurrently on another node of the cluster. "
+        + "Nothing was changed; retry the request");
   }
 
   /**
@@ -437,15 +473,21 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     }
 
     final String name = userConfiguration.getString("name");
-    final boolean passwordChanged;
-    synchronized (this) {
-      final ServerSecurityUser previous = users.get(name);
-      if (previous == null)
-        throw new ServerSecurityException("User '" + name + "' not found");
+    boolean passwordChanged = false;
+    for (int attempt = 1; ; attempt++) {
+      boolean applied = false;
+      synchronized (this) {
+        final ServerSecurityUser previous = users.get(name);
+        if (previous == null)
+          throw new ServerSecurityException("User '" + name + "' not found");
 
-      passwordChanged = !Objects.equals(previous.getPassword(), userConfiguration.getString("password", null));
+        passwordChanged = !Objects.equals(previous.getPassword(), userConfiguration.getString("password", null));
 
-      ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration));
+        applied = ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration), usersFingerprint());
+      }
+      if (applied)
+        break;
+      exhausted("update user '" + name + "'", "user list", attempt);
     }
 
     // Applying the replicated list already dropped this principal's LOGIN sessions on every node, this one
@@ -468,11 +510,17 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     if (ha == null)
       return dropUserLocally(userName);
 
-    synchronized (this) {
-      if (!users.containsKey(userName))
-        return false;
+    for (int attempt = 1; ; attempt++) {
+      boolean applied = false;
+      synchronized (this) {
+        if (!users.containsKey(userName))
+          return false;
 
-      ha.replicateSecurityUsers(replicationPayloadWith(userName, null));
+        applied = ha.replicateSecurityUsers(replicationPayloadWith(userName, null), usersFingerprint());
+      }
+      if (applied)
+        break;
+      exhausted("drop user '" + userName + "'", "user list", attempt);
     }
 
     // Same rationale (and the same OUTSIDE-the-monitor placement) as dropUser(): a recreated same-name
@@ -890,6 +938,65 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
+   * {@link #applyReplicatedUsers(String)} with the compare-and-set precondition the entry carried (issue #7509):
+   * when {@code expectedFingerprint} is not null and no longer matches the user list in force, the payload was
+   * built from a view the cluster has already moved past and is NOT installed.
+   * <p>
+   * The refusal is deterministic - the payload, the precondition and the state they are compared against are all
+   * replicated, and Raft applies entries in one order on every node - so every node refuses the same entry and
+   * none of them diverges. The submitter learns about it from the reply
+   * {@code ArcadeStateMachine.applyTransaction} sends back, and retries against the current document.
+   * <p>
+   * The install itself stays in {@link #applyReplicatedUsers(String)} rather than being inlined here: that is
+   * the method the fault-injection fixtures of issues #7137, #7227 and #7252 override, and moving the body would
+   * make three regression tests pass against a path they no longer exercise.
+   *
+   * @return true when the list was installed, false when the precondition no longer held
+   */
+  public boolean applyReplicatedUsers(final String usersJsonArray, final String expectedFingerprint) {
+    if (isSuperseded("user list", expectedFingerprint, usersFingerprint()))
+      return false;
+
+    applyReplicatedUsers(usersJsonArray);
+    return true;
+  }
+
+  /**
+   * Whether a replicated security entry must be refused because the document it was built from is no longer the
+   * one in force (issue #7509). A null {@code expected} is an unconditional install - a seed, or an entry from a
+   * node that predates the precondition - and is never refused.
+   */
+  private boolean isSuperseded(final String document, final String expected, final String current) {
+    if (expected == null || expected.equals(current))
+      return false;
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Refusing a replicated %s: it was built from a document that is no longer in force (expected fingerprint "
+            + "%s, current %s). Installing it would revert a change this node has already applied; the node that "
+            + "submitted it retries against the current document",
+        document, expected, current);
+    return true;
+  }
+
+  /**
+   * The compare-and-set fingerprint of the user list currently in force (issue #7509). Non-blocking and free of
+   * the {@code ServerSecurity} monitor, so the Raft apply thread may call it.
+   */
+  public String usersFingerprint() {
+    return SecurityDocumentFingerprint.of(getUsersJsonPayload());
+  }
+
+  /** The compare-and-set fingerprint of the group document currently in force (issue #7509). */
+  public String groupsFingerprint() {
+    return SecurityDocumentFingerprint.of(getGroupsJsonPayload());
+  }
+
+  /** The compare-and-set fingerprint of the API-token document currently in force (issue #7509). */
+  public String apiTokensFingerprint() {
+    return SecurityDocumentFingerprint.of(getApiTokensJsonPayload());
+  }
+
+  /**
    * Writes the users file, returning the failure instead of throwing it so the caller can finish applying the
    * list before reporting (issue #7137). Inlining the try/catch at the call site would force a non-final local:
    * javac treats every statement in a {@code try} as able to throw, so an assignment made after the call is
@@ -1003,10 +1110,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * credentials authenticated everywhere but resolved to a group that existed on one node only - the same
    * principal getting different authorization depending on which node the load balancer picked.
    * <p>
-   * The {@code synchronized} block and its cost are exactly those of {@link #createUserClusterWide}: the monitor
-   * is held across the Raft round trip so two concurrent group changes cannot each overwrite the other's
-   * document, which is affordable only because group administration is rare. Nothing on a request hot path may
-   * be put inside it, and {@link #applyReplicatedGroups} - which unblocks the submit - must never take it.
+   * The {@code synchronized} block and its cost are exactly those of {@link #createUserClusterWide}, and so is
+   * the compare-and-set retry around it (issue #7509): the monitor serialises this node's own group changes,
+   * while the fingerprint carried with the entry is what stops a group change committed on ANOTHER node from
+   * being reverted. Holding the monitor across the Raft round trip is affordable only because group
+   * administration is rare; nothing on a request hot path may be put inside it, and
+   * {@link #applyReplicatedGroups(String)} - which unblocks the submit - must never take it.
    */
   public void saveGroupClusterWide(final String database, final String name, final JSONObject groupConfig) {
     if (groupConfig == null)
@@ -1020,8 +1129,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       return;
     }
 
-    synchronized (this) {
-      ha.replicateSecurityGroups(groupsDocumentWith(database, name, groupConfig).toString());
+    for (int attempt = 1; ; attempt++) {
+      synchronized (this) {
+        if (ha.replicateSecurityGroups(groupsDocumentWith(database, name, groupConfig).toString(), groupsFingerprint()))
+          return;
+      }
+      exhausted("save group '" + name + "' of database '" + database + "'", "group document", attempt);
     }
   }
 
@@ -1035,14 +1148,17 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     if (ha == null)
       return deleteGroup(database, name);
 
-    synchronized (this) {
-      final JSONObject root = groupsDocumentWith(database, name, null);
-      if (root == null)
-        return false;
+    for (int attempt = 1; ; attempt++) {
+      synchronized (this) {
+        final JSONObject root = groupsDocumentWith(database, name, null);
+        if (root == null)
+          return false;
 
-      ha.replicateSecurityGroups(root.toString());
+        if (ha.replicateSecurityGroups(root.toString(), groupsFingerprint()))
+          return true;
+      }
+      exhausted("delete group '" + name + "' of database '" + database + "'", "group document", attempt);
     }
-    return true;
   }
 
   /**
@@ -1094,6 +1210,21 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
               + "'; this node enforces the new document now, but a restart reverts it to the stale file and the "
               + "change must then be reissued", persistFailure);
     }
+  }
+
+  /**
+   * {@link #applyReplicatedGroups(String)} with the compare-and-set precondition the entry carried (issue
+   * #7509). See {@link #applyReplicatedUsers(String, String)} for why the refusal cannot diverge the cluster,
+   * and for why the install stays in the single-argument method.
+   *
+   * @return true when the document was installed, false when the precondition no longer held
+   */
+  public boolean applyReplicatedGroups(final String groupsJson, final String expectedFingerprint) {
+    if (isSuperseded("group document", expectedFingerprint, groupsFingerprint()))
+      return false;
+
+    applyReplicatedGroups(groupsJson);
+    return true;
   }
 
   /**
@@ -1182,10 +1313,17 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     if (ha == null)
       return apiTokenConfig.createToken(name, database, expiresAt, permissions);
 
-    synchronized (this) {
-      final ApiTokenConfiguration.MintedToken minted = apiTokenConfig.mintToken(name, database, expiresAt, permissions);
-      ha.replicateSecurityApiTokens(minted.documentJson());
-      return minted.response();
+    for (int attempt = 1; ; attempt++) {
+      synchronized (this) {
+        // Re-minted on every attempt rather than minted once and resubmitted: mintToken() derives the document
+        // from the token set THIS node currently holds, so a document built before a lost race would put back
+        // the very tokens the winning entry revoked. The plaintext of a losing attempt reaches nobody - it is
+        // returned only from the attempt that commits.
+        final ApiTokenConfiguration.MintedToken minted = apiTokenConfig.mintToken(name, database, expiresAt, permissions);
+        if (ha.replicateSecurityApiTokens(minted.documentJson(), apiTokensFingerprint()))
+          return minted.response();
+      }
+      exhausted("create API token '" + name + "'", "API-token document", attempt);
     }
   }
 
@@ -1200,14 +1338,17 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     if (ha == null)
       return apiTokenConfig.deleteToken(tokenHash);
 
-    synchronized (this) {
-      final String document = apiTokenConfig.documentWithout(tokenHash);
-      if (document == null)
-        return false;
+    for (int attempt = 1; ; attempt++) {
+      synchronized (this) {
+        final String document = apiTokenConfig.documentWithout(tokenHash);
+        if (document == null)
+          return false;
 
-      ha.replicateSecurityApiTokens(document);
+        if (ha.replicateSecurityApiTokens(document, apiTokensFingerprint()))
+          return true;
+      }
+      exhausted("delete the API token", "API-token document", attempt);
     }
-    return true;
   }
 
   /**
@@ -1228,6 +1369,21 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
               + "'; this node enforces the new set now, but a restart reverts it to the stale file and the change "
               + "must then be reissued", persistFailure);
     }
+  }
+
+  /**
+   * {@link #applyReplicatedApiTokens(String)} with the compare-and-set precondition the entry carried (issue
+   * #7509). See {@link #applyReplicatedUsers(String, String)} for why the refusal cannot diverge the cluster,
+   * and for why the install stays in the single-argument method.
+   *
+   * @return true when the document was installed, false when the precondition no longer held
+   */
+  public boolean applyReplicatedApiTokens(final String apiTokensJson, final String expectedFingerprint) {
+    if (isSuperseded("API-token document", expectedFingerprint, apiTokensFingerprint()))
+      return false;
+
+    applyReplicatedApiTokens(apiTokensJson);
+    return true;
   }
 
   /**
