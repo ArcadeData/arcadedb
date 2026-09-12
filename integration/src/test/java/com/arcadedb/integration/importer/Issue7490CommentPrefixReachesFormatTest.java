@@ -38,6 +38,7 @@ import java.nio.file.Files;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7490: content sniffing skipped the leading comment block and then handed it, intact, to the format that
@@ -162,6 +163,26 @@ class Issue7490CommentPrefixReachesFormatTest {
     assertThat(Parser.isCommentStrippableCharset(StandardCharsets.UTF_16LE)).isFalse();
     assertThat(Parser.isCommentStrippableCharset(StandardCharsets.UTF_16BE)).isFalse();
     assertThat(Parser.isCommentStrippableCharset(Charset.forName("UTF-32"))).isFalse();
+  }
+
+  /**
+   * The stream is to be read, not rewound. Dropping the block needs pushback, and pushback is not markable, so the
+   * stream has to SAY so rather than quietly mis-rewind: {@code markSupported()} is false, {@code mark()} does
+   * nothing and {@code reset()} throws, which is the {@link InputStream} contract for an unmarkable stream.
+   * Rewinding a source is {@code Parser.reset()}'s job - it is the only thing that also puts the comment-block scan
+   * back at the start.
+   */
+  @Test
+  void theStrippedStreamDeclaresItselfUnmarkableRatherThanMisRewinding() throws IOException {
+    final InputStream in = parserOver("# c\n" + DATA).getInputStream();
+
+    assertThat(in.markSupported()).isFalse();
+
+    in.mark(64);
+    assertThat((char) in.read()).as("the first byte of the data, the comment already gone").isEqualTo(DATA.charAt(0));
+    assertThatThrownBy(in::reset)
+        .as("a caller that ignores markSupported() is told, not quietly given the wrong bytes")
+        .isInstanceOf(IOException.class);
   }
 
   /**
