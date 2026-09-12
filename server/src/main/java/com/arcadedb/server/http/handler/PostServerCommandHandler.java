@@ -103,7 +103,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         command_lc.startsWith(CREATE_USER) || command_lc.startsWith(DROP_USER) ||
         command_lc.startsWith(RESTORE_BACKUP) || command_lc.startsWith(RESTORE_DATABASE) ||
         command_lc.startsWith(IMPORT_DATABASE)) {
-      final ExecutionResponse forwarded = forwardToLeaderIfReplica(exchange, payload, user);
+      final ExecutionResponse forwarded = forwardToLeaderIfReplica(exchange, payload, user,
+          isLongRunningForwardedCommand(command_lc));
       if (forwarded != null)
         return forwarded;
     }
@@ -639,9 +640,27 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * that perform the same operations and used to run them wherever the request landed (issue #7380).
    */
   private ExecutionResponse forwardToLeaderIfReplica(final HttpServerExchange exchange, final JSONObject payload,
-      final ServerSecurityUser user) throws IOException {
+      final ServerSecurityUser user, final boolean longRunningCommand) throws IOException {
     return httpServer.getLeaderCommandForwarder()
-        .forwardIfReplica(exchange, user, LeaderCommandForwarder.currentPathWithQuery(exchange), payload.toString());
+        .forwardIfReplica(exchange, user, LeaderCommandForwarder.currentPathWithQuery(exchange), payload.toString(),
+            longRunningCommand);
+  }
+
+  /**
+   * Which of the forwarded commands gets the long response deadline rather than the ordinary one (issue #7507).
+   * <p>
+   * Every forward is bounded, because it is an Undertow worker thread that waits for the leader's answer. These
+   * three legitimately run for minutes though, so bounding them with {@code HA_PROXY_READ_TIMEOUT} would abort
+   * exactly the operations that most need to reach the leader; they get
+   * {@code HA_PROXY_LONG_COMMAND_TIMEOUT} instead. The set is a subset of the commands that forward at all -
+   * see the guard in {@link #execute} - so a command added to one list and not the other simply keeps the
+   * ordinary deadline.
+   *
+   * @param command_lc the command, already lower-cased and trimmed the way {@link #execute} does it
+   */
+  static boolean isLongRunningForwardedCommand(final String command_lc) {
+    return command_lc.startsWith(RESTORE_BACKUP) || command_lc.startsWith(RESTORE_DATABASE) ||
+        command_lc.startsWith(IMPORT_DATABASE);
   }
 
   private void checkServerIsLeaderIfInHA() {

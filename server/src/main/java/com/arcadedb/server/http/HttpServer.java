@@ -188,6 +188,7 @@ public class HttpServer implements ServerPlugin {
 
     sessionManager.close();
     authSessionManager.close();
+    leaderCommandForwarder.close();
   }
 
   @Override

@@ -53,7 +53,7 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
     postOp.setOperationId("createUser");
     postOp.addTagsItem("Security");
     postOp.setRequestBody(SpecBuilders.jsonBody("User creation request with name, password, and optional databases", null, true));
-    postOp.setResponses(createAdminResponses("User created", "201"));
+    postOp.setResponses(forwardedToLeaderResponses("User created", "201"));
     pathItem.setPost(postOp);
 
     final Operation putOp = new Operation();
@@ -64,7 +64,7 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
     putOp.addTagsItem("Security");
     putOp.addParametersItem(SpecBuilders.queryParam("name", "User name", true));
     putOp.setRequestBody(SpecBuilders.jsonBody("User update request with optional password and databases", null, true));
-    putOp.setResponses(createAdminResponses("User updated"));
+    putOp.setResponses(forwardedToLeaderResponses("User updated", "200"));
     pathItem.setPut(putOp);
 
     final Operation deleteOp = new Operation();
@@ -74,7 +74,7 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
     deleteOp.setOperationId("deleteUser");
     deleteOp.addTagsItem("Security");
     deleteOp.addParametersItem(SpecBuilders.queryParam("name", "User name to delete", true));
-    deleteOp.setResponses(createAdminResponses("User deleted"));
+    deleteOp.setResponses(forwardedToLeaderResponses("User deleted", "200"));
     pathItem.setDelete(deleteOp);
 
     return pathItem;
@@ -143,6 +143,16 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
     pathItem.setDelete(deleteOp);
 
     return pathItem;
+  }
+
+  /**
+   * The responses of a write that an HA follower forwards to the leader rather than executing locally. The
+   * forward is bounded, so it can answer 504 where the other admin routes cannot (issue #7507).
+   */
+  private ApiResponses forwardedToLeaderResponses(final String successDescription, final String successCode) {
+    final ApiResponses responses = createAdminResponses(successDescription, successCode);
+    responses.addApiResponse("504", SpecBuilders.errorResponse(SpecBuilders.LEADER_FORWARD_TIMEOUT_DESCRIPTION));
+    return responses;
   }
 
   private ApiResponses createAdminResponses(final String successDescription) {
