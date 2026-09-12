@@ -316,6 +316,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private          ClusterTokenProvider      tokenProvider;
   private volatile int                       restartFailureCount   = 0;
   private volatile BootstrapElection         bootstrapElection;
+  /**
+   * Outcome of the most recent {@link #runBootstrapIfEligible()} pass on this node, or {@code null} while no
+   * pass has finished yet.
+   * <p>
+   * The distinction it publishes is "the bootstrap pass has not finished" versus "it finished and here is what
+   * it decided", which nothing else on this server answers: {@link ArcadeStateMachine#getBootstrapBaseline}
+   * turns non-null in the MIDDLE of the apply that may still be replacing the whole database directory from a
+   * leader-shipped snapshot, and a peer on which the bootstrap was never eligible records no baseline at all,
+   * so a null baseline cannot tell "not yet" from "never will". Issue #7259.
+   */
+  private volatile BootstrapElection.Outcome lastBootstrapOutcome;
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
@@ -1137,9 +1148,35 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public BootstrapElection.Outcome runBootstrapIfEligible() {
     final BootstrapElection election = bootstrapElection;
     if (election == null)
-      return BootstrapElection.Outcome.SKIPPED_DISABLED;
+      return recordBootstrapOutcome(BootstrapElection.Outcome.SKIPPED_DISABLED);
     election.onLeaderChanged();
-    return election.runIfEligible();
+    try {
+      return recordBootstrapOutcome(election.runIfEligible());
+    } catch (final RuntimeException | Error e) {
+      // runIfEligible() swallows its own Throwable into FAILED, so this only fires if the pass dies before
+      // that catch (e.g. onLeaderChanged). Publish a terminal outcome anyway: a caller waiting for the pass
+      // to finish must not be left waiting out its whole budget on a pass that already died.
+      recordBootstrapOutcome(BootstrapElection.Outcome.FAILED);
+      throw e;
+    }
+  }
+
+  private BootstrapElection.Outcome recordBootstrapOutcome(final BootstrapElection.Outcome outcome) {
+    lastBootstrapOutcome = outcome;
+    return outcome;
+  }
+
+  /**
+   * The outcome of the most recent bootstrap pass that finished on this node, or {@code null} while none has.
+   * <p>
+   * Only the leader runs a pass ({@link ArcadeStateMachine#notifyLeaderChanged} submits it), so on a follower
+   * this stays {@code null} for the node's whole life. A non-null value means the pass RETURNED: for
+   * {@link BootstrapElection.Outcome#COMMITTED} at least one {@code BOOTSTRAP_FINGERPRINT_ENTRY} was committed -
+   * the commit goes through {@code RaftGroupCommitter.submitAndWait}, which blocks on the quorum reply - and
+   * every other value means this pass committed nothing. Issue #7259.
+   */
+  public BootstrapElection.Outcome getLastBootstrapOutcome() {
+    return lastBootstrapOutcome;
   }
 
   @Override
