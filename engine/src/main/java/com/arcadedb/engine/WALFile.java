@@ -33,6 +33,8 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -60,6 +62,7 @@ public class WALFile extends LockContext {
   private final    RandomAccessFile file;
   private final    String           filePath;
   private final    FileChannel      channel;
+  private final    FileLock         lock;
   private volatile boolean          active            = true;
   private volatile boolean          open;
   private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
@@ -96,10 +99,36 @@ public class WALFile extends LockContext {
     this.file = new RandomAccessFile(filePath, "rw");
     this.channel = file.getChannel();
     this.open = true;
+    this.lock = acquireLock();
+  }
+
+  /**
+   * Exclusive advisory lock on this file for the whole life of this instance (issue #7479). Without it, a
+   * second process/instance's directory-wide WAL cleanup on close() had no way to tell this file apart from
+   * a genuine orphan an earlier unclean shutdown left behind, and deleted it out from under this one - the
+   * reported corruption. Best-effort: a lock that cannot be acquired (a same-named file collision, or a
+   * filesystem whose advisory locking does not reach across process/container boundaries, e.g. some Docker
+   * Desktop bind mounts) leaves this file exactly as unprotected as it always was, never worse.
+   */
+  private FileLock acquireLock() {
+    try {
+      return channel.tryLock();
+    } catch (final IOException | OverlappingFileLockException e) {
+      LogManager.instance()
+          .log(this, Level.WARNING, "Unable to lock WAL file '%s'; another process may be able to remove it", e, filePath);
+      return null;
+    }
   }
 
   public synchronized void close() throws IOException {
     this.open = false;
+    if (lock != null)
+      try {
+        lock.release();
+      } catch (final IOException e) {
+        // IGNORE IT: the channel close right below releases it regardless
+      }
+
     if (channel != null)
       channel.close();
 
