@@ -33,6 +33,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.concurrent.TimeUnit;
+import java.util.function.UnaryOperator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -237,7 +238,7 @@ class Issue7380RestUserRoutesLeaderGateIT extends BaseRaftHATest {
   }
 
   private HttpResponse<String> send(final int serverIndex, final String method, final String path,
-      final String body, final java.util.function.UnaryOperator<HttpRequest.Builder> decorate) throws Exception {
+      final String body, final UnaryOperator<HttpRequest.Builder> decorate) throws Exception {
     final int port = getServer(serverIndex).getHttpServer().getPort();
     HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create("http://127.0.0.1:" + port + path))

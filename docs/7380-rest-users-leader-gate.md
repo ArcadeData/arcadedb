@@ -258,3 +258,17 @@ Both reviewers ran against `dc3abaf`.
 - CodeRabbit confirmed on both threads that #7507 and #7516 are the right homes for the timeout and
   the Basic/API-token forward loop, and agreed that one response deadline for every forward would
   be the wrong fix here.
+
+## Review cycle 4 (final)
+
+- **Unused imports.** Named again, but already removed in `db1632b4` - the very commit the review
+  ran against. `git show HEAD:...PostServerCommandHandler.java | grep -c` for the three returns 0.
+  Second stale citation in two cycles; no action.
+- **A fully-qualified `java.util.function.UnaryOperator` in the test.** Real, and against the
+  project convention of importing rather than qualifying. Fixed.
+- **Import order in `HttpServer`.** The handler import block is not sorted as a whole, but lines
+  28-33 were a sorted run and the new import had been dropped into the middle of it. Moved after
+  `GetUsersHandler`.
+
+Four cycles used, which is the limit set for this run. Nothing blocking was raised in any of them;
+the fix itself was unchanged after cycle 1.
