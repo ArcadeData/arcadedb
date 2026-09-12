@@ -26,6 +26,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -92,6 +96,40 @@ class Issue7484StartupImportFailureTest extends StaticBaseServerTest {
             + "started by this point stopped again - not merely fail to reach ONLINE while everything it already "
             + "brought up (and status == STARTING) is left running")
         .isEqualTo(ArcadeDBServer.STATUS.OFFLINE);
+  }
+
+  /**
+   * The other of the two failures {@code ImportDatabaseStatement} reports in band (issue #7461): a {@code WITH ...}
+   * setting value the importer refuses, as opposed to {@link #aFailingImportStartupCommandAbortsStartupWithTheReason}'s
+   * unreadable-source probe. Both answer {@code {"result":"FAIL","reason":...}} through the same code path, but
+   * pinning only one of the two leaves the other unverified against a fix that could, in principle, special-case
+   * the probe failure and miss this one.
+   * <p>
+   * A single {@code WITH} setting, deliberately: {@code loadDefaultDatabases()}'s own {@code commands.split(",")}
+   * tokenizes a {@code {...}} block's commands on every comma BEFORE the SQL statement ever sees the text, so a
+   * multi-setting {@code WITH a = 1, b = 2} - fine inside a plain {@code IMPORT DATABASE} SQL command - would be
+   * silently split into "a = 1" (this command) and a bogus second "command" ("b = 2", with no {@code type:} prefix,
+   * logged and ignored) here.
+   */
+  @Test
+  void aRefusedWithSettingAbortsStartupWithTheReason() throws Exception {
+    final Path csv = Path.of("target", "import-7484-badsetting.csv").toAbsolutePath();
+    Files.writeString(csv, "id,name\n1,a\n", StandardCharsets.UTF_8);
+
+    try {
+      server = newServerWithDefaultDatabaseImport("file://" + csv + " WITH documentsSkipEntries = 'not-a-number'");
+
+      assertThatThrownBy(() -> server.start())
+          .as("a WITH setting value the importer cannot use (issue #7461) is the other in-band FAIL this startup "
+              + "command has to answer for, not just an unreadable source")
+          .isInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining(DB_NAME)
+          .hasMessageContaining("not-a-number");
+
+      assertThat(server.getStatus()).isEqualTo(ArcadeDBServer.STATUS.OFFLINE);
+    } finally {
+      Files.deleteIfExists(csv);
+    }
   }
 
   private static ArcadeDBServer newServerWithDefaultDatabaseImport(final String importCommandParams) {
