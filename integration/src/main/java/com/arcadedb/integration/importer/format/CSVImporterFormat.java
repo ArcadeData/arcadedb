@@ -49,6 +49,8 @@ import com.univocity.parsers.tsv.TsvParserSettings;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.PushbackReader;
+import java.io.Reader;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -96,8 +98,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       final ImporterContext context,
       final ImporterSettings settings) throws ImportException {
 
-    context.parsed.set(0);
-
     switch (entityType) {
     case DOCUMENT, DATABASE -> loadDocuments(sourceSchema, parser, database, context, settings);
     case VERTEX -> loadVertices(sourceSchema, parser, database, context, settings);
@@ -128,15 +128,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
     if (settings.documentsHeader == null && settings.documentsSkipEntries == null)
       // by default skip the first line as header
-      skipEntries = 1l;
+      skipEntries = defaultHeaderSkipEntries();
 
     // Captured before the try below so both are also visible in the catch blocks.
     final TransactionOwnership ownership = computeTransactionOwnership(database, context);
     final boolean transactionActiveOnEntry = ownership.transactionActiveOnEntry();
     final boolean ownsTransaction = ownership.ownsTransaction();
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
-        DatabaseFactory.getDefaultCharset())) {
+    try (final Reader inputFileReader = sourceReader(parser)) {
       csvParser.beginParsing(inputFileReader);
 
       // Unlike loadVertices(), called unconditionally regardless of skipOnError: loadDocuments() needs an active
@@ -393,14 +392,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
     if (settings.verticesSkipEntries == null)
-      skipEntries = 1L;
+      // BY DEFAULT SKIP THE FIRST LINE AS HEADER
+      skipEntries = defaultHeaderSkipEntries();
 
     final TransactionOwnership ownership = computeTransactionOwnership(database, context);
     final boolean transactionActiveOnEntry = ownership.transactionActiveOnEntry();
     final boolean ownsTransaction = ownership.ownsTransaction();
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
-        DatabaseFactory.getDefaultCharset())) {
+    try (final Reader inputFileReader = sourceReader(parser)) {
       csvParser.beginParsing(inputFileReader);
 
       // Unlike loadDocuments(), gated on skipOnError: in "abort" mode vertices persist via database.async() instead
@@ -562,10 +561,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
     if (settings.edgesSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-      skipEntries = 1l;
+      skipEntries = defaultHeaderSkipEntries();
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
-        DatabaseFactory.getDefaultCharset())) {
+    try (final Reader inputFileReader = sourceReader(parser)) {
       csvParser.beginParsing(inputFileReader);
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
@@ -775,6 +773,68 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     };
   }
 
+  /**
+   * The source's character stream, positioned past the leading comment block ({@code #} and {@code //} lines).
+   * <p>
+   * Content sniffing skips both {@code #} and {@code //} comment lines before it decides the format
+   * ({@code SourceDiscovery.analyzeText}), and the row loops have to agree with it or a line the sniffer treated as
+   * a comment arrives as data: for RDF that is a bogus edge built out of the comment's own words, for CSV a bogus
+   * header. A {@code #} line is also the univocity parser's own comment and would never reach {@code parseNext()}
+   * anywhere in the source - which is exactly why {@code //} was the one that came through - but it is consumed
+   * here too, so that a {@code //} line FOLLOWING one is still part of the leading block (issue #7347).
+   * <p>
+   * The LEADING block only, which is what the sniffer skips: a {@code //} appearing later in a source is data, and
+   * a value legitimately beginning with {@code //} - a protocol-relative URL - keeps its row.
+   * <p>
+   * Two characters of lookahead rather than a buffered {@code readLine}/{@code reset}: a mark has to be given a
+   * read-ahead limit up front, and a single CSV row can be larger than any limit worth reserving.
+   */
+  protected static Reader sourceReader(final Parser parser) throws IOException {
+    final PushbackReader reader = new PushbackReader(
+        new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset()), 2);
+
+    while (true) {
+      final int first = reader.read();
+      if (first < 0)
+        return reader;
+
+      if (first != '#' && first != '/') {
+        reader.unread(first);
+        return reader;
+      }
+
+      if (first == '/') {
+        final int second = reader.read();
+        if (second != '/') {
+          if (second >= 0)
+            reader.unread(second);
+          reader.unread(first);
+          return reader;
+        }
+      }
+
+      // A COMMENT LINE: DISCARD IT WHOLE AND LOOK AT THE NEXT ONE
+      for (int c = reader.read(); c >= 0 && c != '\n'; c = reader.read())
+        ;
+    }
+  }
+
+  /**
+   * How many leading rows a source of this format is assumed to spend on a header when the caller set no explicit
+   * {@code -documentsSkipEntries} / {@code -verticesSkipEntries} / {@code -edgesSkipEntries}.
+   * <p>
+   * One for delimited text, where a header line is the convention. Overridden to zero by
+   * {@link RDFImporterFormat}: N-Triples, N-Quads and Turtle have no header row - every line is a statement - and
+   * the format is selected by sniffing the first line AS a statement, so the one line the importer is certain
+   * carries data was the one it threw away, silently, on every RDF import (issue #7345).
+   * <p>
+   * The default only: an explicit {@code -edgesSkipEntries 1} still skips one, for the users who have been passing
+   * nothing and relying on the skip.
+   */
+  protected long defaultHeaderSkipEntries() {
+    return 1L;
+  }
+
   @Override
   public SourceSchema analyze(final AnalyzedEntity.EntityType entityType, final Parser parser, final ImporterSettings settings,
       final AnalyzedSchema analyzedSchema) throws IOException {
@@ -831,7 +891,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
       if (settings.verticesSkipEntries == null)
         // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-        skipEntries = 1l;
+        skipEntries = defaultHeaderSkipEntries();
       break;
 
     case EDGE:
@@ -839,7 +899,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
       if (settings.edgesSkipEntries == null)
         // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-        skipEntries = 1l;
+        skipEntries = defaultHeaderSkipEntries();
       break;
 
     case DOCUMENT:
@@ -847,7 +907,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
       if (settings.documentsSkipEntries == null)
         // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-        skipEntries = 1l;
+        skipEntries = defaultHeaderSkipEntries();
       break;
 
     default:
@@ -864,8 +924,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       LogManager.instance().log(this, Level.INFO, "Parsing with custom header: %s", null, fieldNames);
     }
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
-        DatabaseFactory.getDefaultCharset())) {
+    try (final Reader inputFileReader = sourceReader(parser)) {
       csvParser.beginParsing(inputFileReader);
 
       String[] row;

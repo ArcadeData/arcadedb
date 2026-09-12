@@ -132,7 +132,6 @@ class RDFImporterFormatTransactionLeakTest {
     database.newDocument("Marker").set("name", "caller").save();
 
     format.load(null, null, rdfParser("""
-        s,p,o
         v1,rel,v2
         v3,rel,v4
         """), (DatabaseInternal) database, context, settings());
@@ -169,7 +168,6 @@ class RDFImporterFormatTransactionLeakTest {
     assertThat(database.isTransactionActive()).isFalse();
 
     format.load(null, null, rdfParser("""
-        s,p,o
         v1,rel,v2
         v3,rel,v4
         """), (DatabaseInternal) database, context, settings());
@@ -189,7 +187,6 @@ class RDFImporterFormatTransactionLeakTest {
     context.callerTransactionActiveOnEntry = false;
 
     final Parser parser = rdfParser("""
-        s,p,o
         v1,rel,v2
         v3,rel,TOOLONGVALUEHERE
         """);
@@ -218,7 +215,6 @@ class RDFImporterFormatTransactionLeakTest {
     database.newDocument("Marker").set("name", "caller").save();
 
     final Parser parser = rdfParser("""
-        s,p,o
         v1,rel,v2
         v3,rel,TOOLONGVALUEHERE
         """);
@@ -255,7 +251,6 @@ class RDFImporterFormatTransactionLeakTest {
     database.begin();
 
     final Parser parser = rdfParser("""
-        s,p,o
         v1,rel,v2
         v3,rel,TOOLONGVALUEHERE
         """);
@@ -301,7 +296,6 @@ class RDFImporterFormatTransactionLeakTest {
 
     // Every row is valid, so the loop completes and the only failure is the trailing commit itself.
     final Parser parser = rdfParser("""
-        s,p,o
         v1,rel,v2
         """);
 

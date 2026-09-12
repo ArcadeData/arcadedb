@@ -18,7 +18,6 @@
  */
 package com.arcadedb.integration.importer.format;
 
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.ImportException;
@@ -30,7 +29,7 @@ import com.arcadedb.log.LogManager;
 import com.univocity.parsers.common.AbstractParser;
 
 import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.Reader;
 import java.util.logging.Level;
 
 public class RDFImporterFormat extends CSVImporterFormat {
@@ -68,17 +67,9 @@ public class RDFImporterFormat extends CSVImporterFormat {
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
     final AbstractParser csvParser = createCSVParser(settings);
 
-    // One ImporterContext serves every phase of an import - Importer.load() calls loadFromSource() for the url,
-    // documents, vertices and edges sources against the same context - so this counter arrives carrying whatever an
-    // earlier phase left in it. Zeroed here the way CSVImporterFormat, Neo4jImporterFormat, OrientDBImporterFormat,
-    // GloVeImporterFormat, Word2VecImporterFormat and Word2VecImporterFormatLSM all zero it, so the number this
-    // phase reports is its own row count (issue #7288).
-    context.parsed.set(0);
-
-    long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
-    if (settings.edgesSkipEntries == null)
-      // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-      skipEntries = 1l;
+    // defaultHeaderSkipEntries() answers 0 here (see the override below): an RDF source has no header row, so
+    // nothing is skipped unless the caller asked for it (issue #7345).
+    final long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : defaultHeaderSkipEntries();
 
     // Whether the transaction this method is about to use belongs to the import, as opposed to predating it.
     // Not the same as "this call pushed it": in the CLI pipeline AbstractImporter.openDatabase() ends with a
@@ -113,7 +104,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // what -commitEvery actually asks for, and is the same shape CSVImporterFormat.loadEdges() uses (issue #7288).
     int txCount = 0;
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
+    try (final Reader inputFileReader = sourceReader(parser)) {
       csvParser.beginParsing(inputFileReader);
 
       if (!database.isTransactionActive())
@@ -207,6 +198,20 @@ public class RDFImporterFormat extends CSVImporterFormat {
               readEdges - committedEdges);
       }
     }
+  }
+
+  /**
+   * Zero: N-Triples, N-Quads and Turtle have no header row at all - every line of the source is a statement.
+   * <p>
+   * Inheriting {@link CSVImporterFormat}'s default of one meant the first triple of every RDF file was dropped as a
+   * header, silently: nothing in the report told "N rows, one was a header" from "N rows, one was malformed", since
+   * {@code parsedRecords} counted all N and {@code createdEdges} said N-1. The convention is right for CSV and wrong
+   * here for the very reason the format was selected - content sniffing recognised the first line BECAUSE it is a
+   * triple (issue #7345).
+   */
+  @Override
+  protected long defaultHeaderSkipEntries() {
+    return 0L;
   }
 
   @Override

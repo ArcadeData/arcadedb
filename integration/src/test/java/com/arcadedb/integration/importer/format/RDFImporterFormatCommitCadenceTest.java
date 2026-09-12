@@ -123,7 +123,6 @@ class RDFImporterFormatCommitCadenceTest {
     context.callerTransactionActiveOnEntry = false;
 
     final Parser parser = rdfParser("""
-        s,p,o
         v1,rel,v2
         v2,rel,v3
         v3,rel,v4
@@ -155,7 +154,6 @@ class RDFImporterFormatCommitCadenceTest {
     context.callerTransactionActiveOnEntry = false;
 
     final Parser parser = rdfParser("""
-        s,p,o
         v1,rel,v2
         v2,rel,v3
         v3,rel,v4
@@ -185,7 +183,6 @@ class RDFImporterFormatCommitCadenceTest {
     context.callerTransactionActiveOnEntry = false;
 
     final Parser parser = rdfParser("""
-        s,p,o
         v1,rel,v2
         v2,rel,v3
         v3,rel,v4
@@ -201,22 +198,21 @@ class RDFImporterFormatCommitCadenceTest {
   }
 
   /**
-   * Finding 2: {@code context.parsed} is an import-wide counter that {@code Importer.load()} carries across
-   * its four {@code loadFromSource()} phases, so a phase after the first entered with whatever the previous
-   * one left in it. The cadence must not depend on that, and the count this phase reports must be its own
-   * row count - one per source row, header included - rather than twice it plus an inherited offset.
+   * Finding 2: the counter the cadence was taken from was incremented TWICE per row, so the value reaching the
+   * modulo was never the row count the setting asks for.
+   * <p>
+   * The stale-offset half of that finding - {@code context.parsed} arriving carrying whatever the previous
+   * {@code loadFromSource()} phase left in it - is no longer the format's to answer: the reset has moved into
+   * {@code Importer.loadFromSource()}, where a format cannot forget it (issue #7342), and the two CLI-route tests
+   * below drive it where a user does.
    */
   @Test
-  void aCounterLeftBehindByAnEarlierPhaseDoesNotShiftTheCommitBoundary() throws Exception {
+  void eachSourceRowIsCountedExactlyOnce() throws Exception {
     final RDFImporterFormat format = new RDFImporterFormat();
     final ImporterContext context = new ImporterContext();
     context.callerTransactionActiveOnEntry = false;
 
-    // What an earlier -documents/-vertices phase of the same import leaves behind.
-    context.parsed.set(1234);
-
     final Parser parser = rdfParser("""
-        s,p,o
         v1,rel,v2
         v2,rel,v3
         v3,rel,v4
@@ -229,12 +225,12 @@ class RDFImporterFormatCommitCadenceTest {
         .isInstanceOf(TextParsingException.class);
 
     assertThat(countOf("Related"))
-        .as("the boundary is measured from this loop's own first row, not from an inherited offset")
+        .as("the boundary is measured in rows: three batches of two completed before the malformed row")
         .isEqualTo(6);
     assertThat(context.parsed.get())
-        .as("each source row is counted exactly once, from zero: the header plus the six data rows - the seventh row "
-            + "throws inside parseNext(), in the loop condition, so the loop body never counts it")
-        .isEqualTo(7);
+        .as("each source row is counted exactly once: the six data rows - the seventh throws inside parseNext(), "
+            + "in the loop condition, so the loop body never counts it")
+        .isEqualTo(6);
   }
 
   /**
@@ -256,7 +252,6 @@ class RDFImporterFormatCommitCadenceTest {
 
     // Every row is valid, so the loop runs to its own trailing commit - the path under test.
     final Parser parser = rdfParser("""
-        s,p,o
         v1,rel,v2
         v2,rel,v3
         v3,rel,v4
@@ -298,7 +293,6 @@ class RDFImporterFormatCommitCadenceTest {
     database.begin();
 
     final Parser parser = rdfParser("""
-        s,p,o
         v1,rel,v2
         v2,rel,v3
         v3,rel,v4
@@ -377,9 +371,9 @@ class RDFImporterFormatCommitCadenceTest {
           + " -database " + cliDbPath + " " + typeOptions + " -commitEvery 2").split(" ")).load();
 
       assertThat(report.get("createdEdges"))
-          .as("the import must actually have run: four of the five triples become edges, the first being skipped as "
-              + "the header row RDF sources default to (-edgesSkipEntries 0 opts out)")
-          .isEqualTo(4L);
+          .as("the import must actually have run: all five triples become edges - an RDF source has no header row "
+              + "for the first one to be dropped as (issue #7345)")
+          .isEqualTo(5L);
       assertThat(report.get("parsedRecords"))
           .as("the five source rows are counted once each, not twice")
           .isEqualTo(5L);
