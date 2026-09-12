@@ -172,6 +172,21 @@ public interface HAServerPlugin extends ServerPlugin {
   void disconnectCluster();
 
   /**
+   * Joins the server named by {@code serverAddress} to this node's cluster, the other half of the
+   * {@code connect cluster} / {@code disconnect cluster} pair (issue #7401).
+   * <p>
+   * {@code serverAddress} is <b>one entry of {@code arcadedb.ha.serverList}</b>, not a bare host and
+   * port: the implementation parses it with the same parser the configured server list goes through, so
+   * an operator types here what they would have written in the configuration and the joining peer gets
+   * the identity it gives itself. An implementation that cannot change membership at runtime keeps the
+   * default below; {@code ServerControlPlane.connectCluster} turns that into the refusal both transports
+   * report, so the verb answers "this HA implementation cannot do it" rather than reading as a fault.
+   */
+  default void connectCluster(final String serverAddress) {
+    throw new UnsupportedOperationException("Dynamic membership not supported by this HA implementation");
+  }
+
+  /**
    * Adds a new peer to the cluster at runtime.
    */
   default void addPeer(final String peerId, final String address) {
