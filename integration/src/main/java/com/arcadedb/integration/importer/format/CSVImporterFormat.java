@@ -792,12 +792,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * {@code -verticesSkipEntries}, {@code -edgesSkipEntries} or {@code -documentsSkipEntries}, falling back to
    * {@link #defaultHeaderSkipEntries()}.
    * <p>
-   * ONE function, read by both the analysis and the row loop, because the two used to answer it separately and
-   * could disagree about the same file: {@code RDFImporterFormat.load()} read {@code -edgesSkipEntries} whichever
-   * entity the source had arrived as, so on the {@code -vertices} and {@code -documents} routes
-   * {@code -verticesSkipEntries} was silently inert while {@code -edgesSkipEntries} - the option a user on that
-   * route has no reason to reach for - was the one that worked (issue #7487). The analysis disagreed with the load
-   * about a {@code -documentsHeader} source too, skipping its first row as a header even though the caller had
+   * ONE function, because the answer used to be spelled out at each of the sites that needed it and they did not
+   * all spell it the same way. {@code RDFImporterFormat.load()} read {@code -edgesSkipEntries} whichever entity the
+   * source had arrived as, so on the {@code -vertices} and {@code -documents} routes {@code -verticesSkipEntries}
+   * was silently inert while {@code -edgesSkipEntries} - the option a user on that route has no reason to reach
+   * for - was the one that worked (issue #7487). {@link #analyze} and the delimited-text row loops disagreed about
+   * a {@code -documentsHeader} source: the analysis skipped its first row as a header even though the caller had
    * supplied the header and the load imported that row.
    * <p>
    * {@code DATABASE} - the {@code -url} route with neither {@code -vertexType} nor {@code -edgeType} set - is the

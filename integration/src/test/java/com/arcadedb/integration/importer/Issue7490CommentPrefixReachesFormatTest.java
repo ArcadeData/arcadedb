@@ -123,6 +123,22 @@ class Issue7490CommentPrefixReachesFormatTest {
   }
 
   /**
+   * {@code available()} must never count the comment block as readable: those bytes are not readable from this
+   * stream at all, and answering with them would tell a format that has not read yet there is more data waiting
+   * than there is.
+   */
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("commentBlocks")
+  void availableNeverCountsTheCommentBlock(final String name, final String comments) throws IOException {
+    final InputStream in = parserOver(comments + DATA).getInputStream();
+
+    assertThat(in.available()).as("nothing is readable without blocking until the block has been dropped").isZero();
+
+    assertThat(in.read()).as("the first byte of the data, not of the comment").isEqualTo(DATA.charAt(0));
+    assertThat(in.available()).as("and once it has, the estimate is the data's").isEqualTo(DATA.length() - 1);
+  }
+
+  /**
    * Content sniffing reads the source WHOLE - it walks the comment block itself, counting the lines so it can rewind
    * over them - so the stripping must not be applied under it.
    */

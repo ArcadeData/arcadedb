@@ -318,6 +318,17 @@ public class Parser {
       return in.skip(n);
     }
 
+    /**
+     * Zero until the block has been dropped, rather than {@link FilterInputStream}'s delegation to a stream still
+     * positioned on the comment: those bytes are not readable from THIS stream, and the first read has to drop them
+     * before it can answer, which may block. Zero is always a valid answer to "how many bytes can be read without
+     * blocking", and once the block is gone the underlying estimate is the right one again.
+     */
+    @Override
+    public int available() throws IOException {
+      return stripped ? in.available() : 0;
+    }
+
     private void strip() throws IOException {
       if (stripped)
         return;
