@@ -255,3 +255,27 @@ and with it restored the whole sweep is green again (3 tests in the IT, 12 IT cl
 
 The reviewer's remaining points were confirmations, not requests (docs convention, code style, blast radius);
 nothing was deferred.
+
+### cycle 2 - `939e2acb3a`
+
+Two findings, both accepted and both fixed.
+
+1. **`election.onLeaderChanged()` sat outside the `try` it was documented as being inside.** The catch existed
+   precisely because `runIfEligible()` swallows its own `Throwable` into `FAILED`, leaving a throw from
+   `onLeaderChanged` as the only way out of the method without an outcome - and that was exactly the case the
+   catch did not cover. A throw there would have left `lastBootstrapOutcome` null and made every affected test
+   setup burn the whole 15 s budget before giving up. The call moved inside the `try`; the comment now says
+   what the code does.
+2. **The check-then-set on the outcome field was not atomic.** The reviewer flagged this as non-blocking on the
+   grounds that production only reaches it from the single-threaded `lifecycleExecutor`, which is true - but
+   `runBootstrapIfEligible()` is public, and `BootstrapElectionIT`, `RaftBootstrapDoesNotEngageOnRestartIT` and
+   the new `aSecondBootstrapPassCannotDowngradeARecordedCommitted` all call it from their own thread while that
+   executor may still be running the automatic pass. A lost update there drops the `COMMITTED` the guard exists
+   to protect, so it was taken rather than deferred: the field is now an `AtomicReference` updated through
+   `updateAndGet`, which makes the invariant self-documenting instead of resting on a call-site assumption.
+
+The reviewer's third note - that the javadoc leans on #7259 investigation context - was explicitly not a
+request, and is consistent with `ha-raft/CLAUDE.md`'s dense-comment convention. Not changed.
+
+Full `ha-raft` sweep green after both fixes (12 IT classes, `Issue7259ClusterBootstrapSettledIT` at 3 tests).
+Nothing deferred in either cycle.

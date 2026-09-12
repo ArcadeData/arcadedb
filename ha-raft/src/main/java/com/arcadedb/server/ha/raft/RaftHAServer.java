@@ -329,7 +329,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Written only through {@link #recordBootstrapOutcome}, which never lets a later pass overwrite a recorded
    * {@code COMMITTED}. Issue #7259.
    */
-  private volatile BootstrapElection.Outcome lastBootstrapOutcome;
+  private final AtomicReference<BootstrapElection.Outcome> lastBootstrapOutcome = new AtomicReference<>();
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
@@ -1152,13 +1152,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final BootstrapElection election = bootstrapElection;
     if (election == null)
       return recordBootstrapOutcome(BootstrapElection.Outcome.SKIPPED_DISABLED);
-    election.onLeaderChanged();
     try {
+      // onLeaderChanged() is INSIDE the try on purpose: runIfEligible() swallows its own Throwable into
+      // FAILED, so the only way out of this method without an outcome is a throw from onLeaderChanged, and
+      // leaving it outside would mean the one case this catch exists for is the one it does not cover.
+      election.onLeaderChanged();
       return recordBootstrapOutcome(election.runIfEligible());
     } catch (final RuntimeException | Error e) {
-      // runIfEligible() swallows its own Throwable into FAILED, so this only fires if the pass dies before
-      // that catch (e.g. onLeaderChanged). Publish a terminal outcome anyway: a caller waiting for the pass
-      // to finish must not be left waiting out its whole budget on a pass that already died.
+      // Publish a terminal outcome anyway: a caller waiting for the pass to finish must not be left waiting
+      // out its whole budget on a pass that already died.
       recordBootstrapOutcome(BootstrapElection.Outcome.FAILED);
       throw e;
     }
@@ -1181,8 +1183,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * {@code runBootstrapIfEligible()} a second time. Issue #7259.
    */
   private BootstrapElection.Outcome recordBootstrapOutcome(final BootstrapElection.Outcome outcome) {
-    if (lastBootstrapOutcome != BootstrapElection.Outcome.COMMITTED)
-      lastBootstrapOutcome = outcome;
+    // An AtomicReference rather than a volatile with a check-then-set: production only reaches this from the
+    // single-threaded lifecycleExecutor, but runBootstrapIfEligible() is public and several tests call it
+    // directly from their own thread while that executor may still be running the automatic pass. A lost
+    // update there would drop the COMMITTED this method exists to protect.
+    lastBootstrapOutcome.updateAndGet(
+        current -> current == BootstrapElection.Outcome.COMMITTED ? current : outcome);
     return outcome;
   }
 
@@ -1198,7 +1204,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * {@code COMMITTED} is sticky for the node's life; see {@link #recordBootstrapOutcome}. Issue #7259.
    */
   public BootstrapElection.Outcome getLastBootstrapOutcome() {
-    return lastBootstrapOutcome;
+    return lastBootstrapOutcome.get();
   }
 
   @Override
