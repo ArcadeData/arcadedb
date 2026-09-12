@@ -179,6 +179,24 @@ class Issue7568VectorResponseSchemaShapeTest {
   }
 
   /**
+   * Whether a leg is present is conditional; what a present leg holds is not. Each sub-object is written as a
+   * single expression in {@code HybridSearch}, so a leg that appears appears whole - there is no state in which
+   * {@code legs.fulltext} exists without its index name. Leaving these lists off would have reproduced, one level
+   * down, the very defect this fix is about.
+   */
+  @Test
+  void eachLegSubObjectRequiresEverythingItCarriesWhenItIsPresentAtAll() {
+    final Schema<?> legs = property(schema("HybridSearchResponse"), "legs");
+
+    for (final String leg : List.of("vector", "fulltext", "expand")) {
+      final Schema<?> subObject = property(legs, leg);
+      assertThat(subObject.getRequired())
+          .as("legs." + leg + " is written whole or not at all")
+          .containsExactlyInAnyOrderElementsOf(subObject.getProperties().keySet());
+    }
+  }
+
+  /**
    * A record's properties are arbitrary, so this one stays a map - but an open map, declared as such, rather
    * than a bare object a generator turns into an empty model.
    */

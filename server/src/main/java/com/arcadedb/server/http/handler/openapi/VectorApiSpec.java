@@ -266,12 +266,16 @@ public class VectorApiSpec implements OpenApiContributor {
 
     final Schema<Object> vector = SpecBuilders.object("The vector leg, which every hybrid search runs");
     vector.addProperty("count", SpecBuilders.integer("Rows the vector leg contributed to fusion"));
+    vector.setRequired(List.of("count"));
 
     final Schema<Object> fullText = SpecBuilders.object(
         "The full-text leg, present whenever it ran - including when it matched nothing");
     fullText.addProperty("indexName", SpecBuilders.string("Full-text index that was searched"));
     fullText.addProperty("similarity", SpecBuilders.string("Similarity function that index scores with, e.g. BM25"));
     fullText.addProperty("count", SpecBuilders.integer("Rows the full-text leg contributed to fusion"));
+    // Each sub-object is written as one expression, so a leg that is present is present whole: there is no
+    // state in which 'fulltext' exists without its index name. Same for 'expand' below.
+    fullText.setRequired(List.of("indexName", "similarity", "count"));
 
     final Schema<Object> expand = SpecBuilders.object(
         "The graph expansion leg, present whenever the request carried 'expand'");
@@ -285,6 +289,8 @@ public class VectorApiSpec implements OpenApiContributor {
         True when the seed budget capped the seed list, so a thin neighborhood is the cap's doing rather than \
         the graph's."""));
     expand.addProperty("count", SpecBuilders.integer("Rows the expansion leg contributed to fusion"));
+    expand.setRequired(List.of("direction", "edgeTypes", "maxDepth", "truncated", "seedCount", "seedsTruncated",
+        "count"));
 
     legs.addProperty("vector", vector);
     legs.addProperty("fulltext", fullText);

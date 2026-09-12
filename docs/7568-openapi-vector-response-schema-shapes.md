@@ -236,3 +236,30 @@ recorded as such. Four findings, each verified against the tree:
    checks `maxDepth` and `direction` and ignores anything else. The server accepts an unknown key
    there, so `additionalProperties: false` would make the document stricter than the server and
    reject requests that actually work.
+
+## Review cycles
+
+### Cycle 1 - `f90129b`
+
+`claude` reviewed the patch against the engine code and confirmed every `required` list, the
+`additionalProperties: false` on `weights`, the 1.0/1.0/0.5 defaults and the open-map choice for a
+hit's `properties`. Two items, both addressed in `d?` (next commit):
+
+1. *Nit, applied.* `assertThatThrownBy` was reached through its fully-qualified name in
+   `Issue7568VectorResponseContractMatchesBehaviourTest` while `assertThat` from the same class was
+   already statically imported. Now imported.
+2. *"Possible follow-up, not a blocker" - applied here instead.* `legsSchema()`'s `fulltext` and
+   `expand` sub-objects declared no `required` list of their own. The reviewer suggested folding it
+   into #7578; it is fixed here instead, because `legsSchema()` is code this PR introduces and
+   shipping it under-described would reproduce the exact defect the PR is about, one level down.
+   Verified first: `HybridSearch` writes each sub-object as a single expression
+   (`:166` for `vector`, `:575-578` for `fulltext`, `:185-194` for `expand`), so a leg that is present
+   is present whole. `eachLegSubObjectRequiresEverythingItCarriesWhenItIsPresentAtAll` pins the
+   schemas and `theLegsAccountingMatchesTheDocumentedSubObjects` already pinned the engine's key sets
+   against them.
+
+No deferred items. CodeRabbit had not posted a review at the time of this push; it re-reviews on every
+push.
+
+`./mvnw -o -pl server -am test -Dtest='*ApiSpec*Test,SpecBuildersTest,OpenApiSpecGeneratorTest,Issue7568*,Issue7400*'`
+-> Tests run: 170, Failures: 0, Errors: 0.

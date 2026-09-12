@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7568: the behaviour half of the contract. The {@code required} list a generated client trusts is only
@@ -238,8 +239,8 @@ class Issue7568VectorResponseContractMatchesBehaviourTest extends TestHelper {
 
     // ... and a key the document does not declare is refused, which is what additionalProperties:false says.
     assertThat(weights.getAdditionalProperties()).isEqualTo(Boolean.FALSE);
-    org.assertj.core.api.Assertions.assertThatThrownBy(() -> HybridSearch.search(database,
-            hybridArgs().put("weights", new JSONObject().put("graph", 1.0))))
+    assertThatThrownBy(() -> HybridSearch.search(database,
+        hybridArgs().put("weights", new JSONObject().put("graph", 1.0))))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Unknown weights key");
   }
