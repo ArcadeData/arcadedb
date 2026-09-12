@@ -36,8 +36,6 @@ import com.arcadedb.utility.LockManager;
 import java.io.*;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
-import java.nio.channels.FileLock;
-import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
@@ -278,47 +276,57 @@ public class TransactionManager {
   private enum WalFileSweepOutcome {DELETED, SKIPPED_LOCKED, ERROR}
 
   /**
+   * Test-support hook (issue #7479): exposes {@link #deleteWALFileIfNotHeldByAnotherInstance} directly, so
+   * a test can drive it against one file in isolation instead of a whole database's {@code close()}.
+   */
+  String deleteWALFileForTesting(final File walFile) {
+    return deleteWALFileIfNotHeldByAnotherInstance(walFile).name();
+  }
+
+  /**
    * Deletes {@code walFile} only if an exclusive lock on it can be acquired first (issue #7479). A file
    * this instance's own pool never tracked is either a genuine orphan from an earlier unclean shutdown
    * of THIS SAME database - nothing holds it open, the lock succeeds instantly, and it is deleted exactly
    * as before - or a WAL file another live instance still has open (every {@link WALFile} has held an
    * exclusive lock on itself for its whole life since this same issue), in which case the lock fails and
    * the file is left untouched instead of being deleted out from under that other instance.
+   * <p>
+   * The probe is a {@link WALFile} itself, not a raw handle kept open across the delete: on Windows a
+   * process cannot delete a file through which it still holds an open, non-share-delete handle - even its
+   * own - so the handle used to prove nobody else has the file open must be closed (releasing the lock as
+   * a side effect) BEFORE {@code delete()} is attempted, exactly as {@link WALFile#drop()} already does for
+   * the ordinary case.
    */
   private WalFileSweepOutcome deleteWALFileIfNotHeldByAnotherInstance(final File walFile) {
-    try (final RandomAccessFile raf = new RandomAccessFile(walFile, "rw")) {
-      final FileLock lock;
-      try {
-        lock = raf.getChannel().tryLock();
-      } catch (final OverlappingFileLockException e) {
-        // This JVM itself already holds a lock on this file elsewhere: definitely still in use.
-        logSkippedLockedWALFile(walFile);
-        return WalFileSweepOutcome.SKIPPED_LOCKED;
-      }
+    if (!walFile.exists())
+      // Already gone - its owner's own clean shutdown, or a concurrent sweep, beat us to it. Opening it
+      // below would otherwise recreate it as an empty file just to delete it again.
+      return WalFileSweepOutcome.DELETED;
 
-      if (lock == null) {
-        logSkippedLockedWALFile(walFile);
-        return WalFileSweepOutcome.SKIPPED_LOCKED;
-      }
-
-      // Keep the lock held THROUGH the delete: releasing it first would reopen the exact window this
-      // whole check exists to close, letting a third instance acquire it and start using the file in
-      // the instant between the release and the delete.
+    try {
+      final boolean nobodyElseHasItOpen;
+      final WALFile probe = new WALFile(walFile.getPath());
       try {
-        walFile.delete();
+        nobodyElseHasItOpen = probe.isLocked();
       } finally {
-        lock.release();
+        probe.close();
+      }
+
+      if (!nobodyElseHasItOpen) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipped removing WAL file '%s': it is still locked, presumably by another database instance", null, walFile);
+        return WalFileSweepOutcome.SKIPPED_LOCKED;
+      }
+
+      if (!walFile.delete()) {
+        LogManager.instance().log(this, Level.WARNING, "Error on removing WAL file '%s'", null, walFile);
+        return WalFileSweepOutcome.ERROR;
       }
       return WalFileSweepOutcome.DELETED;
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error on removing WAL file '%s'", e, walFile);
       return WalFileSweepOutcome.ERROR;
     }
-  }
-
-  private void logSkippedLockedWALFile(final File walFile) {
-    LogManager.instance().log(this, Level.WARNING,
-        "Skipped removing WAL file '%s': it is still locked, presumably by another database instance", null, walFile);
   }
 
   public Binary createTransactionBuffer(final long txId, final List<MutablePage> pages) {

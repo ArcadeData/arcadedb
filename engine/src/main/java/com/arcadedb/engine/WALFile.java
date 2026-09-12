@@ -120,6 +120,15 @@ public class WALFile extends LockContext {
     }
   }
 
+  /**
+   * Whether {@link #acquireLock()} actually got the lock (issue #7479): lets a caller that opened this
+   * file only to probe whether anyone else has it open - {@code TransactionManager}'s orphan sweep - tell
+   * that apart from "nobody was there to contend with" without having to reach into the lock itself.
+   */
+  boolean isLocked() {
+    return lock != null;
+  }
+
   public synchronized void close() throws IOException {
     this.open = false;
     if (lock != null)
