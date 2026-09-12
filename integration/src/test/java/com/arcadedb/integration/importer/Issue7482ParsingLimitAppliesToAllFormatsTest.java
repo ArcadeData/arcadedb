@@ -21,6 +21,8 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 
 import org.junit.jupiter.api.Test;
@@ -241,6 +243,85 @@ class Issue7482ParsingLimitAppliesToAllFormatsTest {
     } finally {
       dropDatabase(databasePath);
       csv.delete();
+      TestHelper.checkActiveDatabases();
+    }
+  }
+
+  /**
+   * RDF got the identical {@code parsingLimitBytes} guard as CSV, but only CSV had an end-to-end test exercising
+   * it; this pins the same claim for RDF's own row loop.
+   */
+  @Test
+  void rdfHonoursParsingLimitBytes() throws Exception {
+    final int triples = 500;
+    final StringBuilder content = new StringBuilder(triples * 40);
+    for (int i = 1; i <= triples; ++i)
+      content.append("<http://a/s").append(i).append("> <http://a/rel> <http://a/o").append(i).append("> .\n");
+    final File file = writeFile("importer-7482-rdf-bytes.nt", content.toString());
+    final String databasePath = "target/databases/test-import-7482-rdf-bytes";
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    // THE VERTEX TYPE RDFImporterFormat RESOLVES SUBJECTS/OBJECTS AGAINST: AN RDF SOURCE'S OWN ANALYSIS ONLY
+    // REGISTERS THE EDGE TYPE, THE SAME SETUP EVERY OTHER RDFImporterFormat CLI TEST USES.
+    try (final Database seed = new DatabaseFactory(databasePath).create()) {
+      seed.transaction(() -> {
+        seed.getSchema().createVertexType("Node").createProperty("id", Type.STRING);
+        seed.getSchema().getType("Node").getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, new String[] { "id" });
+        seed.getSchema().createEdgeType("Related");
+      });
+    }
+
+    try {
+      new Importer(("-url file://" + file.getAbsolutePath() + " -database " + databasePath + " -edgeType Related"
+          + " -parsingLimitBytes 200").split(" ")).load();
+
+      try (final Database db = new DatabaseFactory(databasePath).open()) {
+        assertThat(db.countType("Related", true))
+            .as("a 200-byte budget on a source many times larger must stop the import short of the end")
+            .isLessThan(triples);
+      }
+    } finally {
+      dropDatabase(databasePath);
+      file.delete();
+      TestHelper.checkActiveDatabases();
+    }
+  }
+
+  /**
+   * XMLImporterFormat.load() got its own {@code parsingLimitBytes} guard measured via
+   * {@code xmlReader.getLocation().getCharacterOffset()} (unlike every other format, to stay precise despite
+   * {@code XMLStreamReader}'s own internal buffering - see the comment at the guard). Only {@code analyze()}'s
+   * matching guard had an end-to-end test before this; this pins {@code load()}'s.
+   */
+  @Test
+  void xmlLoadHonoursParsingLimitBytes() throws Exception {
+    final StringBuilder xml = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<root>\n");
+    for (int i = 1; i <= ROWS; ++i)
+      xml.append("  <item id=\"").append(i).append("\"/>\n");
+    xml.append("</root>");
+    final File file = writeFile("importer-7482-xml-bytes.xml", xml.toString());
+    final String databasePath = "target/databases/test-import-7482-xml-bytes";
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    // A BUDGET LANDING RIGHT AFTER THE SECOND <item>: xmlReader.getLocation().getCharacterOffset() IS THE PARSER'S
+    // OWN LOGICAL POSITION, NOT A BUFFER-SIZE-GRANULAR ONE, SO (UNLIKE THE CSV/RDF/Jsonl BYTE TESTS ABOVE) THE
+    // EXACT STOPPING POINT CAN BE PINNED HERE.
+    final int budget = xml.indexOf("<item id=\"3");
+
+    try {
+      new Importer(
+          ("-url file://" + file.getAbsolutePath() + " -database " + databasePath + " -parsingLimitBytes " + budget)
+              .split(" ")).load();
+
+      try (final Database db = new DatabaseFactory(databasePath).open()) {
+        assertThat(db.countType("v_item", true))
+            .as("the budget lands right after the 2nd item's closing tag, so exactly 2 objects should have been "
+                + "handed to createRecord() before the guard fired")
+            .isEqualTo(2);
+      }
+    } finally {
+      dropDatabase(databasePath);
+      file.delete();
       TestHelper.checkActiveDatabases();
     }
   }

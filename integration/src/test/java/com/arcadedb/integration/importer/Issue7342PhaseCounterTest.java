@@ -51,11 +51,15 @@ class Issue7342PhaseCounterTest {
 
   /**
    * The unit the hoist rests on. {@code lastParsed} goes with the counter: it is what
-   * {@code FormatImporter#printProgress} subtracts to turn the counter into a rate, so left behind it made the
-   * first progress line of every phase after the first report a NEGATIVE rate.
+   * {@code FormatImporter#printProgress} subtracts from {@link ImporterContext#getParsedTotal()} to turn the
+   * counter into a rate (issue #7483 moved that subtraction from the per-phase counter to the cumulative total).
+   * {@code lastParsed} is therefore rebased to the cumulative total as of the boundary, not zeroed: zeroing it
+   * while the thing it is subtracted FROM stayed cumulative would make the very next progress line compute
+   * {@code (wholeImportSoFar - 0) / oneSecond} - a rate spike exactly as visible as the negative-rate bug this
+   * reset originally fixed, just inflated instead of negative.
    */
   @Test
-  void beginPhaseFoldsThePhaseIntoTheTotalAndZeroesTheRest() {
+  void beginPhaseFoldsThePhaseIntoTheTotalAndRebasesLastParsedToIt() {
     final ImporterContext context = new ImporterContext();
 
     context.parsed.set(7);
@@ -64,14 +68,20 @@ class Issue7342PhaseCounterTest {
     context.beginPhase();
 
     assertThat(context.parsed.get()).as("the next phase counts its own rows from zero").isZero();
-    assertThat(context.lastParsed).as("so the first progress line of the next phase cannot report a negative rate")
-        .isZero();
+    assertThat(context.lastParsed)
+        .as("rebased to the cumulative total as of this boundary, so the next call's (getParsedTotal() - lastParsed) "
+            + "measures only what the NEW phase parses, not the whole import re-divided by one tick's elapsed time")
+        .isEqualTo(7);
     assertThat(context.getParsedTotal()).as("and nothing is lost: the phase's rows join the import-wide total")
         .isEqualTo(7);
 
     context.parsed.set(3);
     assertThat(context.getParsedTotal()).as("the total is the finished phases plus the one still running")
         .isEqualTo(10);
+    assertThat(context.getParsedTotal() - context.lastParsed)
+        .as("the rate computation a progress reader does: only the 3 rows the new phase has parsed so far, not the "
+            + "cumulative 10")
+        .isEqualTo(3);
     assertThat(context.toMap()).containsEntry("parsedRecords", 10L);
   }
 
