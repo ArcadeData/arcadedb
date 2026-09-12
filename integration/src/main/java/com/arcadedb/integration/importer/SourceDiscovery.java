@@ -84,9 +84,13 @@ public class SourceDiscovery {
 
     final Source source = getSource();
 
-    final Parser parser = new Parser(source, 0);
+    // THE SNIFFER WALKS THE COMMENT BLOCK ITSELF - IT COUNTS THE LINES AND REWINDS OVER THEM - SO IT NEEDS THE
+    // SOURCE WHOLE. THE analyze() BELOW IS A FORMAT AND WANTS THE OPPOSITE, AND THE reset() BETWEEN THE TWO IS
+    // WHERE THE STREAM IS REBUILT, SO ONE PARSER CAN SERVE BOTH (ISSUE #7490)
+    final Parser parser = new Parser(source, 0, false);
 
     final FormatImporter formatImporter = analyzeSourceContent(parser, entityType, settings, logger);
+    parser.setSkipLeadingComments(true);
     parser.reset();
 
     SourceSchema sourceSchema = null;
@@ -318,7 +322,10 @@ public class SourceDiscovery {
       }
     }
 
-    parser.nextChar();
+    // GUARDED: AN EMPTY SOURCE WOULD OTHERWISE MAKE Parser.END_OF_STREAM THE CURRENT CHARACTER AND CARRY IT INTO
+    // THE LINE THE SNIFFER BUILDS OUT OF IT (ISSUE #7494)
+    if (parser.isAvailable())
+      parser.nextChar();
 
     FormatImporter format = analyzeChar(parser, settings, userDelimiter);
     if (format != null)
@@ -682,7 +689,10 @@ public class SourceDiscovery {
     }
 
     final StringBuilder line = new StringBuilder(128);
-    if (first != 0)
+    // THE isEndOfStream() HALF IS DEFENCE, NOT A LIVE CASE: EVERY nextChar() IN THIS CLASS IS GUARDED BY AN
+    // isAvailable(), SO first IS A REAL CHARACTER WHENEVER IT IS NOT 0. IT IS KEPT BECAUSE THE COST OF A FUTURE
+    // CALLER LOSING THAT GUARD IS Parser.END_OF_STREAM SILENTLY BECOMING THE FIRST CHARACTER OF A SNIFFED LINE
+    if (first != 0 && !parser.isEndOfStream())
       line.append(first);
 
     boolean terminated = false;
