@@ -80,8 +80,9 @@ import java.util.zip.ZipInputStream;
  *   <li><b>Cleanup phase:</b> Delete the backup directory, remove marker files, and
  *       clean up stale WAL files from the newly installed database.</li>
  * </ol>
- * On startup, {@link #recoverPendingSnapshotSwaps(Path)} detects incomplete swaps
- * via the {@code .snapshot-pending} marker and either completes or rolls back each one.
+ * On startup, {@link #recoverPendingSnapshotSwaps(Path, ArcadeDBServer)} detects incomplete swaps
+ * via the {@code .snapshot-pending} marker and either completes or rolls back each one, taking the same
+ * per-database maintenance slot {@link #install} takes while it does (issue #7449).
  * <p>
  * <b>Durability ordering (issue #4830).</b> Crash recovery is only sound if the on-disk state it reads
  * back is actually durable, so each boundary is fsynced before the next step depends on it: extracted
@@ -129,29 +130,6 @@ public final class SnapshotInstaller {
   static final long MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 10L * 1024 * 1024 * 1024;
 
   /**
-   * The effective per-entry cap. {@code arcadedb.ha.snapshotMaxEntrySize} declared and documented exactly this
-   * limit but had no reader anywhere in the tree, so the only way to change it was to recompile this class
-   * (issue #7121). A non-positive configured value falls back to the compiled default rather than disabling the
-   * defense - a zip-bomb guard that an operator can switch off by typing 0 is not a guard.
-   * <p>
-   * Read from the SERVER's {@link ContextConfiguration} rather than from the {@link GlobalConfiguration}
-   * enum, as the sibling reads in this class do. The enum is populated by {@code readConfiguration()} alone, which
-   * consults {@code System.getProperty} and {@code System.getenv}: the server configuration file, {@code SET SERVER
-   * SETTING} and the MCP {@code set_server_setting} tool all write into the overlay and never touch it, so an enum
-   * read silently ignores every channel this {@code SCOPE.SERVER} setting advertises except a raw {@code -D}
-   * (issue #7226). The overlay falls back to the enum for a key nobody set, so {@code -D} keeps working through it.
-   *
-   * @param configuration the server's configuration overlay; {@code null} in unit tests and in the non-Raft install
-   *                      callers, which then see the enum (and therefore {@code -D}) alone
-   */
-  static long maxZipEntryUncompressedBytes(final ContextConfiguration configuration) {
-    final long configured = configuration != null
-        ? configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE)
-        : GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE.getValueAsLong();
-    return configured > 0 ? configured : MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES;
-  }
-
-  /**
    * Logged at most once: warns that SSL is enabled but the snapshot is being downloaded over plain
    * HTTP because no HTTPS endpoint could be resolved for the leader.
    */
@@ -180,6 +158,38 @@ public final class SnapshotInstaller {
    * registry lock instead of re-opening the database mid-swap.
    */
   static volatile Runnable swapBarrierForTesting = null;
+
+  /**
+   * Test-only barrier invoked at the head of {@link #recoverSingleDatabase}, with the per-database maintenance slot
+   * already taken by {@link #recoverSingleDatabaseHoldingMaintenanceSlot} when there is a coordinator to take it
+   * from. {@code null} in production (the only cost is a single reference read per recovered database). The
+   * issue-#7449 regression test sets it to pause inside the repair and prove a concurrent backup of that database is
+   * refused while its files are being moved.
+   */
+  static volatile Runnable recoveryBarrierForTesting = null;
+
+  /**
+   * The effective per-entry cap. {@code arcadedb.ha.snapshotMaxEntrySize} declared and documented exactly this
+   * limit but had no reader anywhere in the tree, so the only way to change it was to recompile this class
+   * (issue #7121). A non-positive configured value falls back to the compiled default rather than disabling the
+   * defense - a zip-bomb guard that an operator can switch off by typing 0 is not a guard.
+   * <p>
+   * Read from the SERVER's {@link ContextConfiguration} rather than from the {@link GlobalConfiguration}
+   * enum, as the sibling reads in this class do. The enum is populated by {@code readConfiguration()} alone, which
+   * consults {@code System.getProperty} and {@code System.getenv}: the server configuration file, {@code SET SERVER
+   * SETTING} and the MCP {@code set_server_setting} tool all write into the overlay and never touch it, so an enum
+   * read silently ignores every channel this {@code SCOPE.SERVER} setting advertises except a raw {@code -D}
+   * (issue #7226). The overlay falls back to the enum for a key nobody set, so {@code -D} keeps working through it.
+   *
+   * @param configuration the server's configuration overlay; {@code null} in unit tests and in the non-Raft install
+   *                      callers, which then see the enum (and therefore {@code -D}) alone
+   */
+  static long maxZipEntryUncompressedBytes(final ContextConfiguration configuration) {
+    final long configured = configuration != null
+        ? configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE)
+        : GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE.getValueAsLong();
+    return configured > 0 ? configured : MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES;
+  }
 
   private SnapshotInstaller() {
   }
@@ -791,6 +801,36 @@ public final class SnapshotInstaller {
    * @param databasesDir the parent directory containing all database subdirectories
    */
   public static void recoverPendingSnapshotSwaps(final Path databasesDir) {
+    recoverPendingSnapshotSwaps(databasesDir, null);
+  }
+
+  /**
+   * Scans all database subdirectories for pending snapshot swaps and completes or rolls back each one, holding the
+   * repaired database's maintenance slot while it does.
+   * <p>
+   * The repair moves files into and out of the live database directory - {@code atomicSwap}, {@code restoreBackup}
+   * and {@code clearLiveDatabaseFiles} all run against it - which is what #7444 set out to exclude a backup from
+   * when it gave {@link #install} the slot. This driver of the same file movement was left out, and could not take
+   * the slot as written: its signature had no {@link ArcadeDBServer} to reach a {@link BackupCoordinator} through
+   * (issue #7449).
+   * <p>
+   * It is not a startup-only path, which is what makes the exclusion worth having rather than a formality:
+   * {@code RaftHAServer.restartRatis} builds a new state machine and starts a new Ratis server while this server is
+   * ONLINE, so {@code ArcadeStateMachine.initialize()} - and this pass - runs again with the auto-backup scheduler
+   * started and the databases registered.
+   * <p>
+   * The slot is taken per database rather than once for the pass, because the repair is per directory: a backup of
+   * one database must not hold up the repair of another. The wait is bounded by
+   * {@code arcadedb.ha.snapshotInstallBackupWaitMs}, the same setting {@link #install} uses, and expiry is not
+   * fatal for the same reason it is not there: a directory left half-swapped is worse than a backup that reads a
+   * torn one, and {@code ArcadeDBServer.loadDatabases} keeps the database unopened until the marker clears.
+   *
+   * @param databasesDir the parent directory containing all database subdirectories
+   * @param server       the server whose {@link BackupCoordinator} admits the repair, or {@code null} when there is
+   *                     none to consult - an embedded caller, or a unit test driving the pass directly - in which
+   *                     case the repair runs unreserved, exactly as it did before this existed
+   */
+  public static void recoverPendingSnapshotSwaps(final Path databasesDir, final ArcadeDBServer server) {
     if (!Files.isDirectory(databasesDir))
       return;
 
@@ -825,7 +865,10 @@ public final class SnapshotInstaller {
         LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
             "Recovering pending snapshot swap for database directory: %s", null, dbDir);
 
-        recoverSingleDatabase(dbDir);
+        // The directory name IS the database name: ArcadeDBServer resolves databases/<name> both when it opens
+        // them (loadDatabases) and when it looks one up (getDatabase), so it is the key the coordinator - and
+        // every backup entry point that consults it - uses for this database.
+        recoverSingleDatabaseHoldingMaintenanceSlot(dirName, dbDir, server);
       }
     } catch (final IOException e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
@@ -833,7 +876,55 @@ public final class SnapshotInstaller {
     }
   }
 
+  /**
+   * Runs {@link #recoverSingleDatabase} with this node's per-database maintenance slot held, so a backup of the
+   * database cannot read a directory whose files are being moved (issue #7449).
+   * <p>
+   * A null coordinator is not a production state - {@code ArcadeDBServer}'s field is final and initialised inline -
+   * but this pass also runs with no server at all (the {@code null} contract on
+   * {@link #recoverPendingSnapshotSwaps(Path, ArcadeDBServer)}), and the {@code install} path above tolerates a
+   * partially-stubbed server for the same reason. No coordinator means no slot to take, and therefore none to
+   * release.
+   * <p>
+   * An expired wait proceeds rather than skipping the database. The repair is the only thing that clears the
+   * {@code .snapshot-pending} marker, and until it is cleared {@code ArcadeDBServer.loadDatabases} refuses to open
+   * the database at all - so skipping it would trade a backup that reads a torn directory for a database that stays
+   * unavailable until the next restart.
+   */
+  private static void recoverSingleDatabaseHoldingMaintenanceSlot(final String databaseName, final Path dbDir,
+      final ArcadeDBServer server) {
+    final BackupCoordinator coordinator = server == null ? null : server.getBackupCoordinator();
+    if (coordinator == null) {
+      recoverSingleDatabase(dbDir);
+      return;
+    }
+
+    final BackupCoordinator.Operation refusedBy = coordinator.begin(databaseName, BackupCoordinator.Operation.RESTORE,
+        server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS));
+    final boolean slotHeld = refusedBy == null;
+    if (!slotHeld)
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+          "Repairing the interrupted snapshot swap of database '%s' while %s of it is still running on this node: "
+              + "the repair is what clears the '%s' marker that keeps the database from being opened, so it proceeds "
+              + "and that operation will fail or produce an incomplete result. Raise '%s' to give it longer to "
+              + "finish", null, databaseName, refusedBy.phrase(), SNAPSHOT_PENDING_FILE,
+          GlobalConfiguration.HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS.getKey());
+
+    try {
+      recoverSingleDatabase(dbDir);
+    } finally {
+      // Only what was actually reserved: a wait that expired took nothing, and releasing then would drop the
+      // reservation the operation still in flight is holding.
+      if (slotHeld)
+        coordinator.end(databaseName, BackupCoordinator.Operation.RESTORE);
+    }
+  }
+
   private static void recoverSingleDatabase(final Path dbDir) {
+    final Runnable barrier = recoveryBarrierForTesting;
+    if (barrier != null)
+      barrier.run();
+
     final Path snapshotNew = dbDir.resolve(SNAPSHOT_NEW_DIR);
     final Path snapshotBackup = dbDir.resolve(SNAPSHOT_BACKUP_DIR);
     final Path pendingMarker = dbDir.resolve(SNAPSHOT_PENDING_FILE);
