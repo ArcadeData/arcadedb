@@ -291,3 +291,29 @@ What this change does **not** cover, in plain language:
    so at WARNING.
 
 Nothing else: the coverage table above is the evidence, and its two argued rows carry their reasons.
+
+## Pull request
+
+<https://github.com/ArcadeData/arcadedb/pull/7517>
+
+## Review cycles
+
+| # | Head | What the review said | What changed |
+|---|---|---|---|
+| 1 | `225b3c2` | One real defect: the leader-election priority was parsed and then dropped, because `connectCluster` passed `addPeer` an id, address and name and `addPeer` rebuilt a fresh `RaftPeer`. Plus a finding that the PR description described a `LeaderCommandForwarder` closing #7380 | Fixed by handing the parsed `RaftPeer` over whole, with `Issue7401JoinPriorityTest` pinning it from the parse to the `SetConfigurationRequest`. The description finding did not hold - `gh pr view 7517 --json body` starts `Closes #7401` - and was answered on the thread |
+| 2 | `0dd64bf` | "A few minor points, no blockers." The not-started guard's claimed "call shape" parity with its siblings was wrong on the exception type; the `http.connect-cluster` metric now counts successes rather than attempts; known gaps honestly disclosed | The inaccurate claim was narrowed to what `grep` shows, in this document and in the PR body. The metric point was a flag, not a request, and matches the house pattern; no change |
+| 3 | `0226b4d` | "No blocking issues found." One non-blocking suggestion to trim this document's process narrative post-merge | Kept, with the reasoning answered on the thread: the javadoc and the OpenAPI description are the reference documentation, and the two sections named are the near-miss record a later reader could not reconstruct |
+
+An automated fix pass also wrote its own version of the priority fix into the worktree during cycle 1.
+It left the call site unwired, so the bug survived while a new javadoc claimed otherwise, and it edited
+an existing test method. Those edits were stashed, not committed (`git stash list`, two entries labelled
+"superseded"; a patch copy is outside the repo). The follow-up it filed, #7523, is accurate and kept.
+
+## Deferred items
+
+None. No `review-deferred-*.md` notes file was produced by any cycle of this PR - every finding was
+either fixed in the branch, answered with evidence on the thread, or filed as a follow-up issue.
+
+## Final state
+
+`clean-approval` after 3 cycles. Merge is the developer's.
