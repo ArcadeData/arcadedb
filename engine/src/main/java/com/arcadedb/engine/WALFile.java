@@ -109,6 +109,15 @@ public class WALFile extends LockContext {
    * reported corruption. Best-effort: a lock that cannot be acquired (a same-named file collision, or a
    * filesystem whose advisory locking does not reach across process/container boundaries, e.g. some Docker
    * Desktop bind mounts) leaves this file exactly as unprotected as it always was, never worse.
+   * <p>
+   * The guarantee this gives {@code TransactionManager}'s orphan sweep is scoped to a SEPARATE OS process
+   * holding the file open, which is the reported scenario and the only one {@code LocalDatabase}'s own
+   * per-database lock does not already rule out (two {@code LocalDatabase} instances on the same path
+   * within one JVM/process are refused at open time). It is not a guarantee against a second, same-process
+   * {@code WALFile} on this exact path: {@code FileChannel}'s own javadoc warns that closing any channel
+   * releases every lock the JVM holds on the underlying file, "regardless of whether the locks were
+   * acquired via that channel or via another channel open on the same file" - the POSIX advisory-lock
+   * model this wraps is scoped to a (process, inode) pair, not a file descriptor, so it cannot do better.
    */
   private FileLock acquireLock() {
     try {
