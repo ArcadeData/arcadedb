@@ -2043,11 +2043,35 @@ public enum GlobalConfiguration {
       Long.class, 60_000L),
 
   HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
-      "Read timeout in milliseconds for the leader proxy in AbstractServerHttpHandler. Covers long-running queries proxied from a follower to the leader.",
+      """
+      Milliseconds a follower waits for the leader to answer a request it forwarded before giving up and \
+      answering the client HTTP 504. The live reader is LeaderCommandForwarder: the commands of \
+      POST /api/v1/server and the POST/PUT/DELETE /api/v1/server/users routes. LeaderProxy reads it too, but \
+      nothing constructs LeaderProxy, so that path is dormant. \
+      The forward runs on an HTTP worker thread, so this is the bound that stops a wedged leader from parking \
+      one indefinitely; 0 or a negative value does not disable it. The forwarded commands that legitimately run \
+      for minutes - 'restore backup', 'restore database' and 'import database' - use \
+      arcadedb.ha.proxyLongCommandTimeout instead. Re-read on every forward.""",
       Long.class, 30000L),
 
+  HA_PROXY_LONG_COMMAND_TIMEOUT("arcadedb.ha.proxyLongCommandTimeout", SCOPE.SERVER,
+      """
+      Milliseconds a follower waits for the leader to answer a forwarded 'restore backup', 'restore database' \
+      or 'import database' before giving up and answering the client HTTP 504. These commands legitimately run \
+      for minutes, so arcadedb.ha.proxyReadTimeout would abort exactly the operations that most need to reach \
+      the leader - but the wait still has to be finite, because it is an HTTP worker thread that is waiting. \
+      0 or a negative value does not disable it. Re-read on every forward.""",
+      Long.class, 3_600_000L),
+
   HA_PROXY_CONNECT_TIMEOUT("arcadedb.ha.proxyConnectTimeout", SCOPE.SERVER,
-      "Connect timeout in milliseconds for the leader proxy in AbstractServerHttpHandler.",
+      """
+      Connect timeout in milliseconds for a follower dialling the leader, used by LeaderCommandForwarder (and \
+      by LeaderProxy, which nothing currently constructs). Bounds the half of the failure the response deadline \
+      cannot see: a leader whose host accepts no connection. Read once when the HTTP client is built, because a java.net.http.HttpClient's connect \
+      timeout is fixed at build time - a change needs a restart. RaftHAPlugin also reads it, as the budget for \
+      one whole peer authentication-session RPC rather than only that RPC's connect phase: those are small \
+      requests on a LAN with a client waiting on a 401-or-200, so the connect budget is the right order of \
+      magnitude for the lot.""",
       Long.class, 5000L),
 
   HA_PROXY_MAX_BODY_SIZE("arcadedb.ha.proxyMaxBodySize", SCOPE.SERVER,
