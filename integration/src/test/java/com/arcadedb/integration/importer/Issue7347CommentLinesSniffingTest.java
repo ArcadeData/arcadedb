@@ -49,8 +49,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * word of the comment.
  * <p>
  * The row loops have to agree with the sniffer about what a comment is, or a line the sniffer skipped arrives as
- * data: {@code #} is the univocity parser's own comment character and never reaches {@code parseNext()}, and the
- * leading {@code //} block is dropped by {@code CSVImporterFormat.sourceReader()}.
+ * data. {@link Parser} drops the leading block from the stream every format reads, so all of them agree by
+ * construction; before #7490 moved it there, only the delimited-text formats did - {@code #} because it is the
+ * univocity parser's own comment character, {@code //} because {@code CSVImporterFormat} stripped it by hand.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

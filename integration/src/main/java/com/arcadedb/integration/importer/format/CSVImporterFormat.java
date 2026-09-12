@@ -32,7 +32,6 @@ import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
-import com.arcadedb.integration.importer.SourceDiscovery;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -50,7 +49,6 @@ import com.univocity.parsers.tsv.TsvParserSettings;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.PushbackReader;
 import java.io.Reader;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -68,12 +66,6 @@ import java.util.logging.Level;
  * transaction-ownership contract this and {@code JSONImporterFormat} both satisfy, by different means.
  */
 public class CSVImporterFormat extends AbstractImporterFormat {
-  /**
-   * {@link #sourceReader}'s "this character was never read" marker. Distinct from {@code -1} (end of stream) and
-   * from {@code 0} (a NUL character), both of which {@link java.io.Reader#read()} can legitimately return.
-   */
-  private static final int NOT_READ = -2;
-
   /**
    * The delimiter resolved for the entity this format was created for - the user's own, else the one content sniffing
    * found - or null when the format was created without one, in which case the generic {@code delimiter} option and
@@ -106,14 +98,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       final ImporterSettings settings) throws ImportException {
 
     switch (entityType) {
-    case DOCUMENT, DATABASE -> loadDocuments(sourceSchema, parser, database, context, settings);
+    case DOCUMENT, DATABASE -> loadDocuments(sourceSchema, entityType, parser, database, context, settings);
     case VERTEX -> loadVertices(sourceSchema, parser, database, context, settings);
     case EDGE -> loadEdges(sourceSchema, parser, database, context, settings);
     }
   }
 
-  private void loadDocuments(final SourceSchema sourceSchema, final Parser parser, final Database database,
-      final ImporterContext context, final ImporterSettings settings) throws ImportException {
+  private void loadDocuments(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser,
+      final Database database, final ImporterContext context, final ImporterSettings settings) throws ImportException {
     final AbstractParser<?> csvParser = createCSVParser(settings);
 
     LogManager.instance().log(this, Level.INFO, "Started importing documents from CSV source");
@@ -132,10 +124,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     if (skipOnError && context.callerTransactionActiveOnEntry)
       throw ImporterSettings.newExclusiveTransactionRequiredException();
 
-    long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
-    if (settings.documentsHeader == null && settings.documentsSkipEntries == null)
-      // by default skip the first line as header
-      skipEntries = defaultHeaderSkipEntries();
+    final long skipEntries = skipEntries(entityType, settings);
+    long skipped = 0;
 
     // Captured before the try below so both are also visible in the catch blocks.
     final TransactionOwnership ownership = computeTransactionOwnership(database, context);
@@ -181,9 +171,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
 
-        if (skipEntries > 0 && line < skipEntries)
+        if (skipEntries > 0 && line < skipEntries) {
           // SKIP IT
+          ++skipped;
           continue;
+        }
 
         try {
           final MutableDocument document = database.newDocument(settings.documentTypeName);
@@ -237,7 +229,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
               elapsedInSecs > 0 ? context.createdDocuments.get() / elapsedInSecs : context.createdDocuments.get());
       LogManager.instance().log(this, Level.INFO, "- Parsed lines...: %d", null, context.parsed.get());
       LogManager.instance().log(this, Level.INFO, "- Total documents: %d", null, context.createdDocuments.get());
-      LogManager.instance().log(this, Level.INFO, "- Skipped rows...: %d", null, context.errors.get() - errorsBefore);
+      LogManager.instance().log(this, Level.INFO, "- Failed rows....: %d", null, context.errors.get() - errorsBefore);
+      reportSkippedEntries(entityType, context, skipped);
 
       stopParsingQuietly(csvParser);
     }
@@ -397,10 +390,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         firstAsyncError.compareAndSet(null, exception);
       });
 
-    long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
-    if (settings.verticesSkipEntries == null)
-      // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-      skipEntries = defaultHeaderSkipEntries();
+    final long skipEntries = skipEntries(AnalyzedEntity.EntityType.VERTEX, settings);
+    long skipped = 0;
 
     final TransactionOwnership ownership = computeTransactionOwnership(database, context);
     final boolean transactionActiveOnEntry = ownership.transactionActiveOnEntry();
@@ -431,8 +422,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
 
-        if (skipEntries > 0 && line < skipEntries)
+        if (skipEntries > 0 && line < skipEntries) {
+          ++skipped;
           continue;
+        }
 
         if (idIndex >= 0 && idIndex >= row.length) {
           LogManager.instance()
@@ -515,7 +508,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
               elapsedInSecs > 0 ? context.createdVertices.get() / elapsedInSecs : context.createdVertices.get());
       LogManager.instance().log(this, Level.INFO, "- Parsed lines...: %d", null, context.parsed.get());
       LogManager.instance().log(this, Level.INFO, "- Total vertices.: %d", null, context.createdVertices.get());
-      LogManager.instance().log(this, Level.INFO, "- Skipped rows...: %d", null, context.errors.get() - errorsBefore);
+      LogManager.instance().log(this, Level.INFO, "- Failed rows....: %d", null, context.errors.get() - errorsBefore);
+      reportSkippedEntries(AnalyzedEntity.EntityType.VERTEX, context, skipped);
 
       stopParsingQuietly(csvParser);
     }
@@ -565,10 +559,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting edges", exception));
 
-    long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
-    if (settings.edgesSkipEntries == null)
-      // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-      skipEntries = defaultHeaderSkipEntries();
+    final long skipEntries = skipEntries(AnalyzedEntity.EntityType.EDGE, settings);
+    long skipped = 0;
 
     try (final Reader inputFileReader = sourceReader(parser)) {
       csvParser.beginParsing(inputFileReader);
@@ -612,8 +604,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
           context.parsed.incrementAndGet();
 
-          if (skipEntries > 0 && line < skipEntries)
+          if (skipEntries > 0 && line < skipEntries) {
+            ++skipped;
             continue;
+          }
 
           try {
             createEdgeFromRow(database, row, properties, from, to, context, settings);
@@ -689,7 +683,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       LogManager.instance().log(this, Level.INFO, "- Parsed lines......: %d", null, context.parsed.get());
       LogManager.instance().log(this, Level.INFO, "- Total edges.......: %d", null, context.createdEdges.get());
       LogManager.instance().log(this, Level.INFO, "- Total linked Edges: %d", null, context.linkedEdges.get());
-      LogManager.instance().log(this, Level.INFO, "- Skipped edges.....: %d", null, context.skippedEdges.get());
+      LogManager.instance().log(this, Level.INFO, "- Unresolved edges..: %d", null, context.skippedEdges.get());
+      reportSkippedEntries(AnalyzedEntity.EntityType.EDGE, context, skipped);
 
       stopParsingQuietly(csvParser);
     }
@@ -781,51 +776,76 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   }
 
   /**
-   * The source's character stream, positioned past the leading comment block ({@code #} and {@code //} lines).
+   * The source's character stream. The leading comment block ({@code #} and {@code //} lines) is already gone from
+   * it: {@link Parser} drops it, once, for every format at once.
    * <p>
-   * Content sniffing skips both {@code #} and {@code //} comment lines before it decides the format
-   * ({@code SourceDiscovery.analyzeText}), and the row loops have to agree with it or a line the sniffer treated as
-   * a comment arrives as data: for RDF that is a bogus edge built out of the comment's own words, for CSV a bogus
-   * header. A {@code #} line is also the univocity parser's own comment and would never reach {@code parseNext()}
-   * anywhere in the source - which is exactly why {@code //} was the one that came through - but it is consumed
-   * here too, so that a {@code //} line FOLLOWING one is still part of the leading block (issue #7347).
-   * <p>
-   * The RULE is {@link SourceDiscovery#isCommentLineStart(char, char)}, shared with the sniffer rather than
-   * restated: the loops cannot be shared - that one walks a {@code Parser}, this one a raw reader - but the two
-   * have to answer "is this a comment" identically or they disagree about where the data starts.
-   * <p>
-   * The LEADING block only, which is what the sniffer skips: a {@code //} appearing later in a source is data, and
-   * a value legitimately beginning with {@code //} - a protocol-relative URL - keeps its row.
-   * <p>
-   * Two characters of lookahead rather than a buffered {@code readLine}/{@code reset}: a mark has to be given a
-   * read-ahead limit up front, and a single CSV row can be larger than any limit worth reserving.
+   * This used to strip the block here, which fixed the two delimited-text formats and left XML, JSON and JSONL
+   * receiving the very comment lines content sniffing had skipped to recognise them - so a {@code #}-commented
+   * N-Triples file imported and a {@code #}-commented XML file died on {@code ImportException} (issue #7490).
    */
-  protected static Reader sourceReader(final Parser parser) throws IOException {
-    final PushbackReader reader = new PushbackReader(
-        new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset()), 2);
+  protected static Reader sourceReader(final Parser parser) {
+    return new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset());
+  }
 
-    while (true) {
-      final int first = reader.read();
-      if (first < 0)
-        return reader;
+  /**
+   * How many leading rows to skip for {@code entityType}, from the one option that governs that route:
+   * {@code -verticesSkipEntries}, {@code -edgesSkipEntries} or {@code -documentsSkipEntries}, falling back to
+   * {@link #defaultHeaderSkipEntries()}.
+   * <p>
+   * ONE function, read by both the analysis and the row loop, because the two used to answer it separately and
+   * could disagree about the same file: {@code RDFImporterFormat.load()} read {@code -edgesSkipEntries} whichever
+   * entity the source had arrived as, so on the {@code -vertices} and {@code -documents} routes
+   * {@code -verticesSkipEntries} was silently inert while {@code -edgesSkipEntries} - the option a user on that
+   * route has no reason to reach for - was the one that worked (issue #7487). The analysis disagreed with the load
+   * about a {@code -documentsHeader} source too, skipping its first row as a header even though the caller had
+   * supplied the header and the load imported that row.
+   * <p>
+   * {@code DATABASE} - the {@code -url} route with neither {@code -vertexType} nor {@code -edgeType} set - is the
+   * documents route, which is where {@link #load} sends it.
+   */
+  protected long skipEntries(final AnalyzedEntity.EntityType entityType, final ImporterSettings settings) {
+    return switch (entityType) {
+      case VERTEX -> settings.verticesSkipEntries != null ? settings.verticesSkipEntries : defaultHeaderSkipEntries();
+      case EDGE -> settings.edgesSkipEntries != null ? settings.edgesSkipEntries : defaultHeaderSkipEntries();
+      // A SUPPLIED HEADER MEANS THE FILE HAS NO HEADER LINE, SO THERE IS NOTHING TO SKIP
+      case DOCUMENT, DATABASE -> settings.documentsSkipEntries != null ?
+          settings.documentsSkipEntries :
+          settings.documentsHeader == null ? defaultHeaderSkipEntries() : 0L;
+    };
+  }
 
-      // READ THE SECOND CHARACTER ONLY WHEN IT CAN MATTER, AND GIVE IT BACK WHEN IT TURNS OUT TO BE DATA. THE
-      // "NOT READ" SENTINEL IS NOT_READ AND NOT 0, BECAUSE Reader.read() ANSWERS 0 FOR A REAL NUL CHARACTER: A
-      // SOURCE OPENING '/' NUL WOULD OTHERWISE HAVE HAD ITS NUL READ AND NEVER GIVEN BACK - SILENT DATA LOSS,
-      // WHICH IS THE FAILURE MODE THIS WHOLE CHANGE IS ABOUT
-      final int second = first == '/' ? reader.read() : NOT_READ;
+  /**
+   * The name of the option {@link #skipEntries} read, for the notice that names it. The silent case - rows missing
+   * from the report because a setting said to drop them - is the one that costs an afternoon (issue #7488).
+   */
+  protected static String skipEntriesOption(final AnalyzedEntity.EntityType entityType) {
+    return switch (entityType) {
+      case VERTEX -> "-verticesSkipEntries";
+      case EDGE -> "-edgesSkipEntries";
+      case DOCUMENT, DATABASE -> "-documentsSkipEntries";
+    };
+  }
 
-      if (!SourceDiscovery.isCommentLineStart((char) first, second >= 0 ? (char) second : 0)) {
-        if (second >= 0)
-          reader.unread(second);
-        reader.unread(first);
-        return reader;
-      }
+  /**
+   * Records the rows a phase skipped on purpose and, when there were any, says so once with the setting responsible.
+   * <p>
+   * They are counted APART from {@link ImporterContext#errors}, which covers the failure half: a report of
+   * {@code parsedRecords=4, createdEdges=3} used to read the same whether the missing row was a header the caller
+   * asked to skip, an edge whose endpoints did not resolve or a row {@code -onRowError skip} dropped, and the usual
+   * guess - "my file has a bad row" - is wrong for the first (issue #7488).
+   *
+   * @param skipped how many rows the loop actually skipped, which is the smaller of the setting and the number of
+   *                rows the source turned out to have
+   */
+  protected void reportSkippedEntries(final AnalyzedEntity.EntityType entityType, final ImporterContext context,
+      final long skipped) {
+    if (skipped <= 0)
+      return;
 
-      // A COMMENT LINE: DISCARD IT WHOLE AND LOOK AT THE NEXT ONE
-      for (int c = reader.read(); c >= 0 && c != '\n'; c = reader.read())
-        ;
-    }
+    context.skippedRecords.addAndGet(skipped);
+    LogManager.instance().log(this, Level.INFO,
+        "- Skipped rows.....: %d (skipped as header rows by %s, reported as skippedRecords and not as errors)", null, skipped,
+        skipEntriesOption(entityType));
   }
 
   /**
@@ -891,37 +911,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         settings.vertexTypeName :
         entityType == AnalyzedEntity.EntityType.EDGE ? settings.edgeTypeName : settings.documentTypeName;
 
-    long skipEntries = 0;
-    final String header;
-
-    switch (entityType) {
-    case VERTEX:
-      header = settings.verticesHeader;
-      skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
-      if (settings.verticesSkipEntries == null)
-        // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-        skipEntries = defaultHeaderSkipEntries();
-      break;
-
-    case EDGE:
-      header = settings.edgesHeader;
-      skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
-      if (settings.edgesSkipEntries == null)
-        // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-        skipEntries = defaultHeaderSkipEntries();
-      break;
-
-    case DOCUMENT:
-      header = settings.documentsHeader;
-      skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
-      if (settings.documentsSkipEntries == null)
-        // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-        skipEntries = defaultHeaderSkipEntries();
-      break;
-
-    default:
-      header = null;
-    }
+    // ONE FUNCTION WITH THE ROW LOOPS, SO THE ANALYSIS AND THE LOAD CANNOT DISAGREE ABOUT THE SAME FILE (ISSUE #7487)
+    final long skipEntries = skipEntries(entityType, settings);
+    final String header = switch (entityType) {
+      case VERTEX -> settings.verticesHeader;
+      case EDGE -> settings.edgesHeader;
+      // DATABASE IS THE DOCUMENTS ROUTE, WHICH IS WHERE load() SENDS IT
+      case DOCUMENT, DATABASE -> settings.documentsHeader;
+    };
 
     if (header != null) {
       if (delimiter == null)
