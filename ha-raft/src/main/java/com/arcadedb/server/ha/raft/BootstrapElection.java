@@ -31,6 +31,7 @@ import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -115,6 +116,8 @@ class BootstrapElection {
     COMMITTED,                  // we committed BOOTSTRAP_FINGERPRINT_ENTRY for at least one DB
     FAILED                      // unexpected error; bootstrap will be re-attempted on next leader change
   }
+
+  private static final String BOOTSTRAP_STATE_ROUTE = "/api/v1/cluster/bootstrap-state";
 
   private static final HttpClient HTTP = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(5))
@@ -443,14 +446,34 @@ class BootstrapElection {
         || statusCode == 429 || statusCode >= 500;
   }
 
+  /** Whether this cluster is configured for SSL; the same key every other peer dial reads. */
+  private static boolean useSSL(final RaftHAServer haServer) {
+    return haServer.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+  }
+
   /**
-   * Builds the authenticated {@code POST /api/v1/cluster/bootstrap-state} request for {@code httpAddr}.
-   * Shared by the election's async fan-out and the synchronous single-peer probe
-   * {@link #fetchBootstrapState}, so both reach the endpoint with the same credentials (issue #6124).
+   * Picks the URL and scheme for the probe. Prefers HTTPS when SSL is enabled and an HTTPS address is
+   * available; otherwise plain HTTP. The same rule {@link LeaderDatabaseQuery#chooseEndpoint} applies to
+   * this very endpoint, and that every other peer-to-peer dial in the package already follows - the probe
+   * carries the cluster token, so sending it in the clear on an SSL cluster is exactly what that rule
+   * exists to prevent (issue #7546). Package-private and pure for unit testing.
    */
-  static HttpRequest bootstrapStateRequest(final String httpAddr, final String clusterToken, final long timeoutMs) {
+  static String bootstrapStateUrl(final String httpAddr, final String httpsAddr, final boolean useSSL) {
+    if (useSSL && httpsAddr != null)
+      return "https://" + httpsAddr + BOOTSTRAP_STATE_ROUTE;
+    return "http://" + httpAddr + BOOTSTRAP_STATE_ROUTE;
+  }
+
+  /**
+   * Builds the authenticated {@code POST /api/v1/cluster/bootstrap-state} request for a peer.
+   * Shared by the election's async fan-out and the synchronous single-peer probe
+   * {@link #fetchBootstrapState}, so both reach the endpoint with the same credentials (issue #6124)
+   * and over the same scheme (issue #7546).
+   */
+  static HttpRequest bootstrapStateRequest(final String httpAddr, final String httpsAddr, final boolean useSSL,
+      final String clusterToken, final long timeoutMs) {
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create("http://" + httpAddr + "/api/v1/cluster/bootstrap-state"))
+        .uri(URI.create(bootstrapStateUrl(httpAddr, httpsAddr, useSSL)))
         .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString("{}"));
@@ -458,6 +481,18 @@ class BootstrapElection {
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
     builder.header("X-ArcadeDB-Forwarded-User", "root");
     return builder.build();
+  }
+
+  /**
+   * The client for a probe request: the cluster trust context for an HTTPS dial, the shared plain client
+   * otherwise. Same selection as {@code PeerAuthSessionQuery}, so one cluster truststore serves every
+   * peer-to-peer dial in the package.
+   */
+  private static HttpClient probeClient(final RaftHAServer haServer, final HttpRequest request)
+      throws IOException {
+    if (!"https".equals(request.uri().getScheme()))
+      return HTTP;
+    return haServer.getHttpsClients().clientFor(haServer.getServer());
   }
 
   /**
@@ -486,11 +521,14 @@ class BootstrapElection {
    * on any failure (unreachable peer, non-200, malformed body) - the caller retries on a later health
    * tick rather than drawing a conclusion from a failed probe.
    */
-  static Map<String, ArcadeStateMachine.BootstrapBaseline> fetchBootstrapState(final String httpAddr,
-      final String clusterToken, final Set<String> dbFilter, final long timeoutMs) {
+  static Map<String, ArcadeStateMachine.BootstrapBaseline> fetchBootstrapState(final RaftHAServer haServer,
+      final String httpAddr, final String httpsAddr, final String clusterToken, final Set<String> dbFilter,
+      final long timeoutMs) {
     try {
-      final HttpResponse<String> response = HTTP.send(bootstrapStateRequest(httpAddr, clusterToken, timeoutMs),
-          HttpResponse.BodyHandlers.ofString());
+      final HttpRequest request = bootstrapStateRequest(httpAddr, httpsAddr, useSSL(haServer), clusterToken,
+          timeoutMs);
+      final HttpResponse<String> response = probeClient(haServer, request)
+          .send(request, HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200) {
         LogManager.instance().log(BootstrapElection.class, Level.INFO,
             "bootstrap-state probe of %s answered HTTP %d", httpAddr, response.statusCode());
@@ -509,9 +547,24 @@ class BootstrapElection {
 
   private CompletableFuture<ProbeOutcome> queryPeer(final RaftPeerId peerId,
       final String httpAddr, final Set<String> dbFilter, final long attemptTimeoutMs) {
-    final HttpRequest request = bootstrapStateRequest(httpAddr, haServer.getClusterToken(), attemptTimeoutMs);
+    // The HTTPS endpoint is resolved per peer rather than threaded through the fan-out's address map:
+    // getPeerHttpsAddress answers null whenever SSL is off, this node has no HTTPS listener, or the peer
+    // has none, which is exactly when the probe must stay on plain HTTP.
+    final HttpRequest request = bootstrapStateRequest(httpAddr, haServer.getPeerHttpsAddress(peerId),
+        useSSL(haServer), haServer.getClusterToken(), attemptTimeoutMs);
 
-    return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+    final HttpClient client;
+    try {
+      client = probeClient(haServer, request);
+    } catch (final IOException e) {
+      // No cluster trust context: refusing is retryable, and the alternative would be to fall back to
+      // plain HTTP and send the cluster token in the clear - the thing this scheme selection prevents.
+      LogManager.instance().log(this, Level.WARNING,
+          "Bootstrap: cannot build the cluster HTTPS context to probe %s: %s", peerId, e.getMessage());
+      return CompletableFuture.completedFuture(ProbeOutcome.retryable(e.getMessage()));
+    }
+
+    return client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
         .thenApply(resp -> {
           final int status = resp.statusCode();
           if (status != 200) {

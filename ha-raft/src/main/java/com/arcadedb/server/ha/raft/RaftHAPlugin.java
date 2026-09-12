@@ -34,10 +34,12 @@ import org.apache.ratis.protocol.RaftPeerId;
 import com.arcadedb.database.DatabaseInternal;
 
 import java.io.IOException;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -51,6 +53,14 @@ import java.util.logging.Level;
  * {@code HA_SERVER_LIST} is non-blank (a configured server list implies HA intent).
  */
 public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider {
+
+  private static final String SHUTDOWN_ROUTE = "/api/v1/server";
+
+  // One client for the shutdown command, which is operator-driven and rare. Plain HTTP only; the SSL
+  // case borrows the cluster trust context from RaftHAServer, as every other dial does.
+  private static final HttpClient SHUTDOWN_HTTP = HttpClient.newBuilder()
+      .connectTimeout(Duration.ofSeconds(5))
+      .build();
 
   private          ArcadeDBServer       server;
   private          ContextConfiguration configuration;
@@ -469,10 +479,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (raftHAServer == null)
       throw new RuntimeException("Raft HA server not started");
 
+    RaftPeerId targetId = null;
     String targetAddr = null;
     for (final var peer : raftHAServer.getRaftGroup().getPeers()) {
       final String httpAddr = raftHAServer.getHttpAddresses().get(peer.getId());
       if (httpAddr != null && (peer.getId().toString().contains(serverName) || httpAddr.contains(serverName))) {
+        targetId = peer.getId();
         targetAddr = httpAddr;
         break;
       }
@@ -480,23 +492,49 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (targetAddr == null)
       throw new ServerException("Cannot find server '" + serverName + "' in the cluster");
 
+    // The request carries the cluster token, so on an SSL cluster it goes over HTTPS like every other
+    // peer-to-peer dial in the package: getPeerHttpsAddress answers null whenever SSL is off, this node
+    // has no HTTPS listener or the peer has none, which is exactly when plain HTTP is still correct
+    // (issue #7546).
+    final String url = shutdownUrl(targetAddr, raftHAServer.getPeerHttpsAddress(targetId),
+        server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL));
+
+    // No request timeout, as before: HttpURLConnection was used without one, and a shutdown command is
+    // operator-driven rather than on any timed path. The client's connect timeout is new and bounds the
+    // one case that used to hang indefinitely - a peer whose address no longer answers at all.
+    final HttpRequest.Builder builder = HttpRequest.newBuilder()
+        .uri(URI.create(url))
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString("{\"command\":\"shutdown\"}", StandardCharsets.UTF_8));
+
+    final String token = raftHAServer.getClusterToken();
+    if (token != null && !token.isEmpty())
+      builder.header("Authorization", "Bearer " + token);
+
     try {
-      final HttpURLConnection conn = (HttpURLConnection)
-          new URL("http://" + targetAddr + "/api/v1/server").openConnection();
-      conn.setRequestMethod("POST");
-      conn.setDoOutput(true);
-      conn.setRequestProperty("Content-Type", "application/json");
-
-      final String token = raftHAServer.getClusterToken();
-      if (token != null && !token.isEmpty())
-        conn.setRequestProperty("Authorization", "Bearer " + token);
-
-      conn.getOutputStream().write("{\"command\":\"shutdown\"}".getBytes(StandardCharsets.UTF_8));
-      conn.getResponseCode();
-      conn.disconnect();
+      final HttpRequest request = builder.build();
+      final HttpClient client = "https".equals(request.uri().getScheme())
+          ? raftHAServer.getHttpsClients().clientFor(server)
+          : SHUTDOWN_HTTP;
+      // The response is awaited and discarded, which is what conn.getResponseCode() did: the command's
+      // effect is the peer shutting down, and the body carries nothing this caller acts on.
+      client.send(request, HttpResponse.BodyHandlers.discarding());
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RuntimeException("Interrupted while shutting down remote server '" + serverName + "'", e);
     } catch (final IOException e) {
       throw new RuntimeException("Failed to shutdown remote server '" + serverName + "'", e);
     }
+  }
+
+  /**
+   * Picks the URL and scheme for the shutdown command. Prefers HTTPS when SSL is enabled and an HTTPS
+   * address is available; otherwise plain HTTP. Package-private and pure for unit testing (issue #7546).
+   */
+  static String shutdownUrl(final String httpAddr, final String httpsAddr, final boolean useSSL) {
+    if (useSSL && httpsAddr != null)
+      return "https://" + httpsAddr + SHUTDOWN_ROUTE;
+    return "http://" + httpAddr + SHUTDOWN_ROUTE;
   }
 
   @Override
