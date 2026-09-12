@@ -219,6 +219,24 @@ What that leaves unreviewed is exactly the javadoc paragraph in `SecurityDocumen
 tracking doc: no production behaviour differs from `45965839e9`, which the cycle-2 review went through in full
 and closed with "I don't see any blocking issues".
 
+### A `main` merge landed on this branch mid-session
+
+`c950ced4a7` merges `main` into this branch and was made by another agent working the same parallel batch, not
+by this session - `main` had gained #7511 (the security-entry capability gate), #7510 (the replicated group
+permission refresh) and #7508 (the HTTPS leader forward) while this branch was adding the compare-and-set, and
+three files collided additively. The merge kept both sides, and it was re-verified here from scratch after the
+fact rather than taken on trust:
+
+- the two capability gates compose in the right order - #7511's
+  `SecurityEntryCapabilityGate.requireEveryPeerCanDecode` refuses a group or API-token entry a peer cannot
+  decode BEFORE anything is submitted, and #7509's `preconditionEveryPeerCanRead` then only decides whether the
+  entry carries a fingerprint. Neither can mask the other: one is about the entry TYPE, the other about an
+  optional section of it;
+- `PeerCapabilities.LOCAL` is the union of the four tokens, which is correct - they answer different questions;
+- `mvn -o -pl server -Dtest='com.arcadedb.server.security.*Test' test` - 133 tests, 0 failures;
+- `mvn -o -pl ha-raft test` (real-cluster classes excluded, see below) - 1443 tests, the same 2 pre-existing
+  `ArcadeStateMachinePerDatabaseHaltTest` failures `main` already has and nothing else.
+
 ## PR
 
 https://github.com/ArcadeData/arcadedb/pull/7560
@@ -228,10 +246,10 @@ anything was outstanding. The merge is the developer's.
 
 ## Test results
 
-- `server`: `com.arcadedb.server.security.*Test` - 109 tests, 0 failures (15 of them new in
+- `server`: `com.arcadedb.server.security.*Test` - 133 tests after the `main` merge (109 before it), 0 failures (15 of them new in
   `Issue7509ConcurrentSecurityChangeTest`, 9 in `SecurityDocumentFingerprintTest`, 3 in
   `Issue7509TokenDocumentPairAtomicityTest`).
-- `ha-raft`: 1411 tests, 2 failures - `ArcadeStateMachinePerDatabaseHaltTest.perDatabaseApplyErrorDoesNot
+- `ha-raft` (after the `main` merge): 1443 tests, 2 failures - `ArcadeStateMachinePerDatabaseHaltTest.perDatabaseApplyErrorDoesNot
   TripNodeWideHalt` and `.otherDatabasesKeepApplyingAfterOneDatabaseFails`. **Both fail identically on
   unmodified `origin/main`** (verified in a pristine worktree: 1391 tests, the same 2 failures), and neither
   touches a security entry - they assert on a `TX_ENTRY` WAL decode message. Pre-existing, not a regression
