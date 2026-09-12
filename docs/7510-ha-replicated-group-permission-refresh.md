@@ -163,9 +163,11 @@ so the new asynchronous refresh has nothing to walk and cannot race them.
 
 ## Test results
 
-New: `server/src/test/java/com/arcadedb/server/security/Issue7510ReplicatedGroupRefreshTest.java`, **5 tests** -
-four written against the coverage table before the fix, plus the per-database-guard test added afterwards by the
-adversarial pass (finding 1 below).
+New: `server/src/test/java/com/arcadedb/server/security/Issue7510ReplicatedGroupRefreshTest.java`, **6 tests** -
+four written against the coverage table before the fix, the per-database-guard test added afterwards by the
+adversarial pass (finding 1 below), and `concurrentRefreshesNeverOverlapTheirReadAndPublish` added in review
+cycle 3 (last section). The `Tests run: 4` figures below are historical and are deliberately left as they were
+run: they are the before/after of the original four, made when the other two did not exist.
 
 Before the fix (only the extraction in place, no scheduling):
 
@@ -309,3 +311,32 @@ The persistence-failure test was also made deterministic in this cycle: it now r
 directory with a regular **file**, so `Files.createTempFile()` cannot succeed whatever the process's privileges
 are, and it asserts the `ReplicatedSecurityConfigPersistenceException` instead of tolerating its absence. Under
 the previous `setWritable(false)` a privileged run would have passed the test down the ordinary success path.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7553
+
+### Review cycles
+
+| # | Head | What changed | Reviewer outcome |
+|---|---|---|---|
+| 1 | `7d03762b` | the fix as opened | `claude`: "Nothing here blocks merging" - three polish items: register the pool in the `engine-concurrency` inventory, tighten `refreshAllDatabasePermissions` to package-private, prefer `shutdown()` over `shutdownNow()`. CodeRabbit posted nothing on this head |
+| 2 | `977998b2` | pool inventory row added; method package-private; `stopService()` drains the queue then `shutdown()`s (neither plain option was right: `shutdownNow()` interrupts a walk that may be inside `ArcadeDBServer.getDatabase()`, plain `shutdown()` lets a still-QUEUED task start after the service stopped) | `claude`: non-blocking notes - nothing waits for an in-flight refresh before `stopInternal()` closes the databases; say out loud why `Exception` and not `Throwable`; the doc said 4 tests and the class had 5 |
+| 3 | `2c771d22` | bounded `awaitTermination(2s)`; the `Exception`-not-`Throwable` choice stated in the comment; doc count corrected | `claude`: non-blocking. **CodeRabbit's first review**, 4 inline findings, one of them Major (CWE-863) and correct |
+| 4 | `e479a7ac` | `updateSchema`'s read and publish serialised under one dedicated monitor; the persistence-failure test made deterministic and made to assert the exception; coverage-table cells | - |
+
+### Deferred items
+
+None. Every review comment across the four cycles was either applied or answered in the thread with
+evidence - there is no `review-deferred-*.md` file in this branch.
+
+The one review suggestion **not** taken as written is CodeRabbit's "add a latch-based regression test for this
+ordering". The reply on that thread says why: the lost update depends on which of two racing threads the
+scheduler picks, whereas the overlap the lock forbids can be asserted deterministically, so
+`concurrentRefreshesNeverOverlapTheirReadAndPublish` asserts the peak occupancy of the critical section instead -
+and was proved able to fail by removing the lock.
+
+### Final state
+
+`clean-approval` - the last substantive review says nothing blocks the merge, no major issue is open, and every
+CodeRabbit thread has a reply. **The merge is the developer's.**
