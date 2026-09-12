@@ -3381,9 +3381,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     // Same two questions the other HealthMonitor-driven backstop asks before burning a throttle slot
     // (issue #6202): the address must identify a single peer and must not be our own.
-    final String leaderHttpAddr = raftHA.getUnambiguousPeerHttpAddress(raftHA.getLeaderId());
+    final RaftPeerId leaderId = raftHA.getLeaderId();
+    final String leaderHttpAddr = raftHA.getUnambiguousPeerHttpAddress(leaderId);
     if (leaderHttpAddr == null || raftHA.isOwnHttpAddress(leaderHttpAddr))
       return; // no leader to compare against yet
+    // Both endpoints from the SAME leader identity, resolved here rather than inside the queued task:
+    // leadership can move between this check and the probe, and an HTTPS address resolved from a second
+    // getLeaderId() could then name a different node than the HTTP address these two questions were
+    // asked about (issue #7546 review).
+    final String leaderHttpsAddr = raftHA.getPeerHttpsAddress(leaderId);
 
     // Floored at the snapshot cadence so a WAN cluster that has widened its watchdog does not get probed
     // more often than it resyncs.
@@ -3405,7 +3411,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // the worst case, not for the length of a download.
       lifecycleExecutor.submit(() -> {
         final Map<String, BootstrapBaseline> leaderStates = BootstrapElection.fetchBootstrapState(
-            raftHA, leaderHttpAddr, raftHA.getPeerHttpsAddress(raftHA.getLeaderId()), clusterToken, pending,
+            raftHA, leaderHttpAddr, leaderHttpsAddr, clusterToken, pending,
             BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS);
         if (leaderStates == null) {
           // The throttle slot is spent whether or not the probe answered, exactly as the stale-snapshot
