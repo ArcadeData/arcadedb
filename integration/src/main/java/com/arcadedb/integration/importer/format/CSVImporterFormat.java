@@ -820,6 +820,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   /**
    * The name of the option {@link #skipEntries} read, for the notice that names it. The silent case - rows missing
    * from the report because a setting said to drop them - is the one that costs an afternoon (issue #7488).
+   * <p>
+   * It fires on the DEFAULT header skip too, which is the common case and therefore most of the lines this adds.
+   * That is deliberate: #7345 was a default skip, not an explicit one, and it ate the first triple of every RDF
+   * source in silence. The notice joins a per-phase summary block that already logs its parsed, created and failed
+   * counts unconditionally, so it is one more line in a block the import was printing anyway - which is why it is
+   * kept short.
    */
   protected static String skipEntriesOption(final AnalyzedEntity.EntityType entityType) {
     return switch (entityType) {
@@ -847,8 +853,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     context.skippedRecords.addAndGet(skipped);
     LogManager.instance().log(this, Level.INFO,
-        "- Skipped rows.....: %d (dropped before the first imported row by %s, reported as skippedRecords and not "
-            + "as errors)", null, skipped, skipEntriesOption(entityType));
+        "- Skipped rows.....: %d (dropped by %s, counted as skippedRecords and not as errors)", null, skipped,
+        skipEntriesOption(entityType));
   }
 
   /**
