@@ -335,14 +335,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   /**
-   * Logs the outcome of a security entry and, when it was refused, waits for THIS node to catch up with the
-   * committed log before the caller re-reads (issue #7509).
+   * Logs the outcome of a security entry (issue #7509).
    * <p>
-   * The refusal verdict comes from the leader's apply, which this node may not have reached yet when it
-   * submitted as a follower. Retrying straight away would rebuild the document from the same stale view and be
-   * refused again, so the wait is what makes the retry converge rather than burn the attempt budget.
-   * {@code waitForLocalApply()} is best-effort and bounded by the quorum timeout; blocking here is safe because
-   * the state-machine apply thread never takes the {@code ServerSecurity} monitor the caller holds.
+   * The catch-up wait a refused submitter needs before it retries is deliberately NOT done here: this method runs
+   * with the caller's {@code ServerSecurity} monitor held, and that monitor is shared by every cluster-wide
+   * security mutation on the node. {@link #awaitLocalApply()} is called instead by
+   * {@code ServerSecurity.awaitSupersededChange}, outside the monitor.
    */
   private boolean reportSecurityOutcome(final String document, final boolean applied) {
     if (applied) {
@@ -351,10 +349,22 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     }
 
     LogManager.instance().log(this, Level.INFO,
-        "Security %s entry was refused: the document changed between the read and the apply. Waiting for this "
-            + "node to catch up so the caller can retry against the current document", document);
-    raftHAServer.waitForLocalApply();
+        "Security %s entry was refused: the document changed between this node's read and the apply, so the "
+            + "caller retries against the current document", document);
     return false;
+  }
+
+  /**
+   * Waits, bounded by {@code arcadedb.ha.quorumTimeout}, for this node's state machine to catch up with the
+   * committed log (issue #7509). Best-effort: {@code waitForLocalApply()} returns rather than failing when the
+   * deadline passes. Safe to block in, because the state-machine apply thread never takes the
+   * {@code ServerSecurity} monitor - and the caller does not hold it here anyway.
+   */
+  @Override
+  public void awaitLocalApply() {
+    final RaftHAServer raft = raftHAServer;
+    if (raft != null)
+      raft.waitForLocalApply();
   }
 
   @Override

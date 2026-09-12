@@ -578,6 +578,11 @@ class RaftGroupCommitter {
         // What the LEADER's state machine answered for this entry. Normally "OK"; a security entry whose
         // compare-and-set precondition no longer held answers SECURITY_ENTRY_SUPERSEDED, and the submitter
         // retries against the fresh document rather than believing its change landed (issue #7509).
+        //
+        // Decoded for EVERY entry rather than only for the three security types, which this class cannot tell
+        // apart without parsing the payload it is deliberately opaque to. The reply content is a short constant
+        // - "OK" today - so the cost is one small String per committed entry, against a per-type dispatch that
+        // would push entry-format knowledge down into the committer.
         batch.get(i).applyReply = reply.getMessage() != null ?
             reply.getMessage().getContent().toStringUtf8() :
             null;

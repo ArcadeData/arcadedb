@@ -135,16 +135,70 @@ was run by hand against the diff. It produced one finding that is real and one c
   it; the caller then gets an explicit "concurrent change, retry" error instead of a silent loss, which is the
   behaviour the issue asks for.
 - **A follower-submitted security mutation still replicates unconditionally** (#7559): the compare-and-set is
-  withheld there because the peer-capability registry is leader-only. Nothing regresses relative to today, but
-  the fix does not reach those callers.
+  withheld there because the peer-capability registry is leader-only. This is NOT limited to the upgrade
+  window - on a fully upgraded cluster, any admin request a load balancer routes to a follower
+  (`DeleteDropUserHandler`, the group and API-token REST routes, openCypher `DROP USER`) keeps the pre-fix
+  behaviour indefinitely. Nothing regresses relative to today, but the fix does not reach those callers.
 - **Nothing here changes the local (non-HA) path.** `createUser`/`updateUser`/`dropUserLocally` are already
   serialised by the same monitor on the only node that holds the document.
 
+## Review cycles
+
+### Cycle 1 - `cfb2ceddc9`
+
+The `claude-review` job raised four items. Three were verified as real and fixed on this branch; one was a
+framing correction to an already-filed follow-up.
+
+1. **TOCTOU between the payload and its precondition** (correctness, fixed). Every mutator read the volatile
+   document twice - once to build the payload, once to fingerprint the precondition - and `applyReplicated*`
+   swaps that reference from the Raft apply thread *without* this monitor, by design. A swap landing between
+   the two reads produced a payload built from the OLD document under a precondition describing the NEW one:
+   the compare-and-set then PASSES and the stale payload installs, which is #7509 reopened on a window a few
+   bytecodes wide. Fixed by reading the document once per attempt and deriving both halves from that snapshot:
+   `snapshotWith(Map, ...)`, `usersFingerprintOf(Map)`, `groupsDocumentWith(JSONObject, ...)`, `groupsJsonOf`,
+   and - for tokens, where the read lives behind another object's monitor -
+   `ApiTokenConfiguration.MintedToken.documentBeforeJson()` and `DocumentChange(before, after)`, both produced
+   inside the same `synchronized` block as the payload. Covered by the three
+   `the*PreconditionFingerprintsTheDocumentTheSubmittedPayloadWasBuiltFrom` tests and by
+   `Issue7509TokenDocumentPairAtomicityTest`.
+2. **A corrupted precondition section failed OPEN** (correctness, fixed). `readSecurityPrecondition` wrapped
+   both `readUTF` calls in one `try` returning `null`, so a section that identified itself as ours and was then
+   unreadable degraded to "no precondition, install unconditionally" - the one default this field must never
+   fall back to. The name read and the fingerprint read are now separate: an unreadable NAME is still an
+   unrecognised section and is skipped (the #7138 contract), while a failure after the name matched is reported
+   as corruption and reaches the caller as a `RaftLogEntryDecodeException`. Covered by
+   `aCorruptedPreconditionSectionFailsTheEntryInsteadOfApplyingItUnconditionally` and
+   `aSectionWhoseNameCannotBeReadIsStillSkipped`.
+3. **The retry's catch-up wait was done under the shared monitor** (availability, fixed).
+   `RaftHAPlugin.reportSecurityOutcome` called `waitForLocalApply()` - bounded by `arcadedb.ha.quorumTimeout`,
+   10s by default - before returning to `ServerSecurity`, i.e. still inside `synchronized (this)`. Five attempts
+   meant one caller could hold the monitor all seven mutators share for ~50s, queueing unrelated group and
+   token changes behind a retry storm. The wait moved to `HAServerPlugin.awaitLocalApply()`, called from
+   `ServerSecurity.awaitSupersededChange` OUTSIDE the monitor. Covered by
+   `theCatchUpWaitBetweenRetriesHappensOutsideTheSharedMonitor`, which asserts with `Thread.holdsLock` that the
+   wait happens and that the monitor is not held while it does.
+4. **The #7559 framing undersells it** (accepted, no code change). The follower-submission gap is not only a
+   rolling-upgrade transient: on a fully upgraded cluster any admin request a load balancer routes to a
+   follower still gets the precondition withheld indefinitely. Recorded on #7559 and in *Residual risk* below.
+
+Deliberately not changed, with reasons:
+
+- **Caching the fingerprint of the document in force.** It would make `isSuperseded` O(1) instead of O(document
+  size), but it adds a second piece of state that has to be invalidated on every path that installs a document
+  - including the failure paths of `applyReplicated*` - and a stale cache there is a compare-and-set that
+  passes when it should refuse. The cost it saves is one canonicalisation per security entry per node, and
+  security entries are administration rather than traffic.
+- **Extracting the seven retry loops into one helper.** Their early exits genuinely differ (`return`,
+  `return false`, `return true`, `return response`, and two `throw`s on preconditions that are not the CAS), so
+  the shared shape is the four lines around them. The dead `boolean applied = false;` initialisers the review
+  flagged are gone; every one is now a definitely-assigned `final boolean`.
+
 ## Test results
 
-- `server`: `com.arcadedb.server.security.*Test` - 102 tests, 0 failures (11 of them new in
-  `Issue7509ConcurrentSecurityChangeTest`, 9 in `SecurityDocumentFingerprintTest`).
-- `ha-raft`: 1409 tests, 2 failures - `ArcadeStateMachinePerDatabaseHaltTest.perDatabaseApplyErrorDoesNot
+- `server`: `com.arcadedb.server.security.*Test` - 109 tests, 0 failures (15 of them new in
+  `Issue7509ConcurrentSecurityChangeTest`, 9 in `SecurityDocumentFingerprintTest`, 3 in
+  `Issue7509TokenDocumentPairAtomicityTest`).
+- `ha-raft`: 1411 tests, 2 failures - `ArcadeStateMachinePerDatabaseHaltTest.perDatabaseApplyErrorDoesNot
   TripNodeWideHalt` and `.otherDatabasesKeepApplyingAfterOneDatabaseFails`. **Both fail identically on
   unmodified `origin/main`** (verified in a pristine worktree: 1391 tests, the same 2 failures), and neither
   touches a security entry - they assert on a `TX_ENTRY` WAL decode message. Pre-existing, not a regression

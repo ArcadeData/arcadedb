@@ -432,31 +432,47 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     final String name = userConfiguration.getString("name");
     for (int attempt = 1; ; attempt++) {
+      final boolean applied;
       synchronized (this) {
-        if (users.containsKey(name))
+        // ONE read of the volatile map: the payload and the precondition must describe the same document.
+        final Map<String, ServerSecurityUser> current = this.users;
+        if (current.containsKey(name))
           throw new ServerSecurityException("User '" + name + "' already exists");
 
-        if (ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration), usersFingerprint()))
-          return;
+        applied = ha.replicateSecurityUsers(replicationPayloadWith(current, name, userConfiguration),
+            usersFingerprintOf(current));
       }
-      exhausted("create user '" + name + "'", "user list", attempt);
+      if (applied)
+        return;
+      awaitSupersededChange(ha, "create user '" + name + "'", "user list", attempt);
     }
   }
 
   /**
-   * Fails a cluster-wide security mutation that lost the compare-and-set race {@link #SECURITY_CAS_MAX_ATTEMPTS}
-   * times, and otherwise returns so the caller retries (issue #7509).
+   * Prepares the next attempt of a cluster-wide security mutation that lost the compare-and-set race, or fails it
+   * once {@link #SECURITY_CAS_MAX_ATTEMPTS} have gone (issue #7509).
+   * <p>
+   * <b>Called OUTSIDE the monitor, deliberately.</b> The refusal verdict is the LEADER's, and this node may not
+   * have applied the winning entry yet - it can be a follower, whose own apply lags the reply it got back - so
+   * retrying immediately would rebuild the payload from the same stale view and lose again, burning the budget
+   * without ever converging. {@link HAServerPlugin#awaitLocalApply()} waits for this node to catch up, bounded by
+   * the quorum timeout. That wait must not happen inside {@code synchronized (this)}: the monitor is shared by
+   * all seven cluster-wide mutators, so holding it across up to {@link #SECURITY_CAS_MAX_ATTEMPTS} such waits
+   * would queue every unrelated user, group and token change on this node behind one caller's retry storm - a
+   * far worse cost than the race it is recovering from, and it would make the surrounding javadoc's "held across
+   * one Raft round trip" untrue.
    */
-  private void exhausted(final String what, final String document, final int attempt) {
-    if (attempt < SECURITY_CAS_MAX_ATTEMPTS) {
-      LogManager.instance().log(this, Level.INFO,
-          "Retrying to %s: the %s changed on another node between this node's read and the apply (attempt %d of %d)",
-          what, document, attempt, SECURITY_CAS_MAX_ATTEMPTS);
-      return;
-    }
-    throw new ServerSecurityException("Could not " + what + " after " + SECURITY_CAS_MAX_ATTEMPTS
-        + " attempts: the " + document + " keeps being changed concurrently on another node of the cluster. "
-        + "Nothing was changed; retry the request");
+  private void awaitSupersededChange(final HAServerPlugin ha, final String what, final String document,
+      final int attempt) {
+    if (attempt >= SECURITY_CAS_MAX_ATTEMPTS)
+      throw new ServerSecurityException("Could not " + what + " after " + SECURITY_CAS_MAX_ATTEMPTS
+          + " attempts: the " + document + " keeps being changed concurrently on another node of the cluster. "
+          + "Nothing was changed; retry the request");
+
+    LogManager.instance().log(this, Level.INFO,
+        "Retrying to %s: the %s changed on another node between this node's read and the apply (attempt %d of %d)",
+        what, document, attempt, SECURITY_CAS_MAX_ATTEMPTS);
+    ha.awaitLocalApply();
   }
 
   /**
@@ -473,21 +489,23 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     }
 
     final String name = userConfiguration.getString("name");
-    boolean passwordChanged = false;
+    boolean passwordChanged;
     for (int attempt = 1; ; attempt++) {
-      boolean applied = false;
+      final boolean applied;
       synchronized (this) {
-        final ServerSecurityUser previous = users.get(name);
+        final Map<String, ServerSecurityUser> current = this.users;
+        final ServerSecurityUser previous = current.get(name);
         if (previous == null)
           throw new ServerSecurityException("User '" + name + "' not found");
 
         passwordChanged = !Objects.equals(previous.getPassword(), userConfiguration.getString("password", null));
 
-        applied = ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration), usersFingerprint());
+        applied = ha.replicateSecurityUsers(replicationPayloadWith(current, name, userConfiguration),
+            usersFingerprintOf(current));
       }
       if (applied)
         break;
-      exhausted("update user '" + name + "'", "user list", attempt);
+      awaitSupersededChange(ha, "update user '" + name + "'", "user list", attempt);
     }
 
     // Applying the replicated list already dropped this principal's LOGIN sessions on every node, this one
@@ -511,16 +529,18 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       return dropUserLocally(userName);
 
     for (int attempt = 1; ; attempt++) {
-      boolean applied = false;
+      final boolean applied;
       synchronized (this) {
-        if (!users.containsKey(userName))
+        final Map<String, ServerSecurityUser> current = this.users;
+        if (!current.containsKey(userName))
           return false;
 
-        applied = ha.replicateSecurityUsers(replicationPayloadWith(userName, null), usersFingerprint());
+        applied = ha.replicateSecurityUsers(replicationPayloadWith(current, userName, null),
+            usersFingerprintOf(current));
       }
       if (applied)
         break;
-      exhausted("drop user '" + userName + "'", "user list", attempt);
+      awaitSupersededChange(ha, "drop user '" + userName + "'", "user list", attempt);
     }
 
     // Same rationale (and the same OUTSIDE-the-monitor placement) as dropUser(): a recreated same-name
@@ -804,6 +824,22 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * third not.
    */
   private List<JSONObject> snapshotWith(final String name, final JSONObject replacement) {
+    return snapshotWith(this.users, name, replacement);
+  }
+
+  /**
+   * {@link #snapshotWith(String, JSONObject)} against an explicit snapshot of the user map.
+   * <p>
+   * The overload exists because {@code users} is a volatile reference that {@link #applyReplicatedUsers(String)}
+   * swaps <b>without</b> taking this monitor - it must not, or it would deadlock with a submitter blocked on the
+   * very entry it is applying. A cluster-wide mutator that read the field once to build its payload and again to
+   * fingerprint its precondition could therefore be handed two DIFFERENT documents, and would then submit a
+   * payload built from the old one under a precondition describing the new one - a compare-and-set that passes
+   * over a change it is about to revert, which is issue #7509 reopened on a narrower window. Every such caller
+   * reads the field exactly once and derives both halves from that one snapshot.
+   */
+  private static List<JSONObject> snapshotWith(final Map<String, ServerSecurityUser> users, final String name,
+      final JSONObject replacement) {
     final List<JSONObject> snapshot = new ArrayList<>(users.size() + 1);
     boolean found = false;
     for (final ServerSecurityUser user : users.values()) {
@@ -824,10 +860,19 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * takes. Must be called while holding this monitor, so the read-compute-submit sequence is serialised
    * against any other user mutation on this node.
    */
-  private String replicationPayloadWith(final String name, final JSONObject replacement) {
+  private String replicationPayloadWith(final Map<String, ServerSecurityUser> users, final String name,
+      final JSONObject replacement) {
     final JSONArray array = new JSONArray();
-    for (final JSONObject entry : snapshotWith(name, replacement))
+    for (final JSONObject entry : snapshotWith(users, name, replacement))
       array.put(entry);
+    return array.toString();
+  }
+
+  /** The user list of {@code users} in the shape {@link #getUsersJsonPayload} produces for the live map. */
+  private static String usersJsonOf(final Map<String, ServerSecurityUser> users) {
+    final JSONArray array = new JSONArray();
+    for (final ServerSecurityUser user : users.values())
+      array.put(user.toJSON());
     return array.toString();
   }
 
@@ -986,6 +1031,28 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return SecurityDocumentFingerprint.of(getUsersJsonPayload());
   }
 
+  /**
+   * {@link #usersFingerprint()} of an explicit snapshot, so a submitter can fingerprint the very map its payload
+   * was built from. See {@link #snapshotWith(Map, String, JSONObject)} for why reading the volatile field twice
+   * is not the same thing.
+   */
+  private static String usersFingerprintOf(final Map<String, ServerSecurityUser> users) {
+    return SecurityDocumentFingerprint.of(usersJsonOf(users));
+  }
+
+  /**
+   * The group document in the shape {@link #getGroupsJsonPayload} produces, built from an explicit read of the
+   * repository's current document rather than from a second one. Same reason as
+   * {@link #snapshotWith(Map, String, JSONObject)}: the repository publishes a new document by swapping a
+   * volatile reference, which the group apply does without this monitor.
+   */
+  private static String groupsJsonOf(final JSONObject currentGroups) {
+    return new JSONObject()
+        .put("databases", currentGroups.getJSONObject("databases"))
+        .put("version", LATEST_VERSION)
+        .toString();
+  }
+
   /** The compare-and-set fingerprint of the group document currently in force (issue #7509). */
   public String groupsFingerprint() {
     return SecurityDocumentFingerprint.of(getGroupsJsonPayload());
@@ -1063,7 +1130,17 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * the replicated document end up differing in a corner nobody exercises.
    */
   private JSONObject groupsDocumentWith(final String database, final String name, final JSONObject groupConfig) {
-    final JSONObject root = groupRepository.getGroups().copy();
+    return groupsDocumentWith(groupRepository.getGroups(), database, name, groupConfig);
+  }
+
+  /**
+   * {@link #groupsDocumentWith(String, String, JSONObject)} against an explicit read of the current group
+   * document, so a cluster-wide mutator can fingerprint the same read its payload is derived from
+   * (issue #7509). See {@link #snapshotWith(Map, String, JSONObject)}.
+   */
+  private static JSONObject groupsDocumentWith(final JSONObject currentGroups, final String database,
+      final String name, final JSONObject groupConfig) {
+    final JSONObject root = currentGroups.copy();
     final JSONObject databases = root.getJSONObject("databases");
 
     if (groupConfig == null) {
@@ -1130,11 +1207,16 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     }
 
     for (int attempt = 1; ; attempt++) {
+      final boolean applied;
       synchronized (this) {
-        if (ha.replicateSecurityGroups(groupsDocumentWith(database, name, groupConfig).toString(), groupsFingerprint()))
-          return;
+        // ONE read of the repository's current document, for both halves.
+        final JSONObject current = groupRepository.getGroups();
+        applied = ha.replicateSecurityGroups(groupsDocumentWith(current, database, name, groupConfig).toString(),
+            SecurityDocumentFingerprint.of(groupsJsonOf(current)));
       }
-      exhausted("save group '" + name + "' of database '" + database + "'", "group document", attempt);
+      if (applied)
+        return;
+      awaitSupersededChange(ha, "save group '" + name + "' of database '" + database + "'", "group document", attempt);
     }
   }
 
@@ -1149,15 +1231,20 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       return deleteGroup(database, name);
 
     for (int attempt = 1; ; attempt++) {
+      final boolean applied;
       synchronized (this) {
-        final JSONObject root = groupsDocumentWith(database, name, null);
+        final JSONObject current = groupRepository.getGroups();
+        final JSONObject root = groupsDocumentWith(current, database, name, null);
         if (root == null)
           return false;
 
-        if (ha.replicateSecurityGroups(root.toString(), groupsFingerprint()))
-          return true;
+        applied = ha.replicateSecurityGroups(root.toString(),
+            SecurityDocumentFingerprint.of(groupsJsonOf(current)));
       }
-      exhausted("delete group '" + name + "' of database '" + database + "'", "group document", attempt);
+      if (applied)
+        return true;
+      awaitSupersededChange(ha, "delete group '" + name + "' of database '" + database + "'", "group document",
+          attempt);
     }
   }
 
@@ -1314,16 +1401,24 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       return apiTokenConfig.createToken(name, database, expiresAt, permissions);
 
     for (int attempt = 1; ; attempt++) {
+      final JSONObject response;
+      final boolean applied;
       synchronized (this) {
         // Re-minted on every attempt rather than minted once and resubmitted: mintToken() derives the document
         // from the token set THIS node currently holds, so a document built before a lost race would put back
         // the very tokens the winning entry revoked. The plaintext of a losing attempt reaches nobody - it is
         // returned only from the attempt that commits.
+        //
+        // The document it was built FROM comes back with it, read in the same critical section, so the
+        // precondition cannot describe a token set the payload was not derived from (issue #7509).
         final ApiTokenConfiguration.MintedToken minted = apiTokenConfig.mintToken(name, database, expiresAt, permissions);
-        if (ha.replicateSecurityApiTokens(minted.documentJson(), apiTokensFingerprint()))
-          return minted.response();
+        response = minted.response();
+        applied = ha.replicateSecurityApiTokens(minted.documentJson(),
+            SecurityDocumentFingerprint.of(minted.documentBeforeJson()));
       }
-      exhausted("create API token '" + name + "'", "API-token document", attempt);
+      if (applied)
+        return response;
+      awaitSupersededChange(ha, "create API token '" + name + "'", "API-token document", attempt);
     }
   }
 
@@ -1339,15 +1434,18 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       return apiTokenConfig.deleteToken(tokenHash);
 
     for (int attempt = 1; ; attempt++) {
+      final boolean applied;
       synchronized (this) {
-        final String document = apiTokenConfig.documentWithout(tokenHash);
-        if (document == null)
+        final ApiTokenConfiguration.DocumentChange revocation = apiTokenConfig.documentWithout(tokenHash);
+        if (revocation == null)
           return false;
 
-        if (ha.replicateSecurityApiTokens(document, apiTokensFingerprint()))
-          return true;
+        applied = ha.replicateSecurityApiTokens(revocation.after(),
+            SecurityDocumentFingerprint.of(revocation.before()));
       }
-      exhausted("delete the API token", "API-token document", attempt);
+      if (applied)
+        return true;
+      awaitSupersededChange(ha, "delete the API token", "API-token document", attempt);
     }
   }
 

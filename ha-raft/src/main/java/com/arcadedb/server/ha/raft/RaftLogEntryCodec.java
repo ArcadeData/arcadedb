@@ -927,16 +927,32 @@ public final class RaftLogEntryCodec {
    * Reads the security compare-and-set precondition out of one extension section, or returns null when the
    * section is something else - a section this version does not recognise is skipped, which is the whole point
    * of the framing (issue #7138).
+   * <p>
+   * <b>The two reads are deliberately not in one {@code try}.</b> Failing to read the section NAME means this is
+   * not our section, and skipping it is correct. Failing to read the fingerprint AFTER the name matched means our
+   * section is corrupt - and returning null for that would quietly demote the entry to "no precondition, install
+   * unconditionally", which is the one default this field must never fall back to: it is the guard that stops a
+   * stale document from reverting a committed change. A corrupt one is reported as corruption, like every other
+   * malformed payload in this class, and reaches the caller as a {@code RaftLogEntryDecodeException}.
    */
   private static String readSecurityPrecondition(final byte[] section) {
-    try (final DataInputStream dis = new DataInputStream(new ByteArrayInputStream(section))) {
+    final DataInputStream dis = new DataInputStream(new ByteArrayInputStream(section));
+    try {
       if (!SECURITY_PRECONDITION_SECTION.equals(dis.readUTF()))
         return null;
-      return dis.readUTF();
     } catch (final IOException e) {
       // A section whose first field is not a readable UTF string is not one of ours; treat it as unrecognised
       // rather than failing the entry, exactly as an unknown section name is treated.
       return null;
+    }
+
+    try {
+      return dis.readUTF();
+    } catch (final IOException e) {
+      throw new IllegalStateException(
+          "Corrupted Raft log entry: the '" + SECURITY_PRECONDITION_SECTION + "' extension section carries no "
+              + "readable fingerprint. Refusing the entry rather than applying its document unconditionally, "
+              + "which would let a stale security document revert a committed change", e);
     }
   }
 

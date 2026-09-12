@@ -262,6 +262,74 @@ class Issue7509ConcurrentSecurityChangeTest {
   }
 
   // ===========================================================================================
+  // The precondition must describe the document the payload was BUILT FROM
+  // ===========================================================================================
+
+  /**
+   * The payload and its precondition are both derived from the security document, and if they come from two
+   * separate reads of it a replicated apply can land in the gap: the payload is then built from the OLD document
+   * while the precondition describes the NEW one, the compare-and-set passes, and the stale payload installs
+   * over a change it was never aware of - issue #7509 reopened on a window a few bytecodes wide. The apply
+   * thread swaps that reference deliberately WITHOUT this monitor, so holding the monitor does not close it.
+   * <p>
+   * What is asserted is the property that makes the gap unreachable: the submitted precondition is the
+   * fingerprint of the submitted payload with this node's own change undone - i.e. of the document the payload
+   * was built from - rather than of whatever the live document happened to be a moment later.
+   */
+  @Test
+  void theUserPreconditionFingerprintsTheListTheSubmittedPayloadWasBuiltFrom() {
+    joinClusterRacing(() -> applyUserListWith("bob"));
+
+    security.createUserClusterWide(userJson("alice"));
+
+    final String[] winning = ha.submitted.getLast();
+    assertThat(fingerprintOfUsersWithout(winning[0], "alice"))
+        .as("the precondition must be the fingerprint of the list this payload was derived from")
+        .isEqualTo(winning[1]);
+  }
+
+  @Test
+  void theGroupPreconditionFingerprintsTheDocumentTheSubmittedPayloadWasBuiltFrom() {
+    joinClusterRacing(() -> applyGroupDocumentWith("auditors"));
+
+    security.saveGroupClusterWide(DATABASE, "editors", group());
+
+    final String[] winning = ha.submitted.getLast();
+    assertThat(fingerprintOfGroupsWithout(winning[0], "editors")).isEqualTo(winning[1]);
+  }
+
+  @Test
+  void theTokenPreconditionFingerprintsTheDocumentTheSubmittedPayloadWasBuiltFrom() {
+    joinClusterRacing(() -> applyTokenDocumentWith("other-node-token"));
+
+    final JSONObject minted = security.createApiTokenClusterWide("my-token", DATABASE, -1L, new JSONObject());
+
+    final String[] winning = ha.submitted.getLast();
+    assertThat(fingerprintOfTokensWithout(winning[0], minted.getString("tokenHash"))).isEqualTo(winning[1]);
+  }
+
+  // ===========================================================================================
+  // The retry's catch-up wait must not be done under the shared monitor
+  // ===========================================================================================
+
+  /**
+   * A refused submitter has to see the winning entry before it rebuilds, and on a follower that means waiting for
+   * the local state machine - bounded by the quorum timeout. Doing that inside {@code synchronized (this)} would
+   * hold the monitor all seven cluster-wide mutators share for up to five such waits, so an unrelated group or
+   * token change on the same node would queue behind one caller's retry storm.
+   */
+  @Test
+  void theCatchUpWaitBetweenRetriesHappensOutsideTheSharedMonitor() {
+    joinClusterRacing(() -> applyUserListWith("bob"));
+
+    security.createUserClusterWide(userJson("alice"));
+
+    assertThat(ha.awaits).as("a refused attempt must wait for this node to catch up before rebuilding").isEqualTo(1);
+    assertThat(ha.awaitedUnderTheMonitor)
+        .as("but never while holding the monitor every security mutation on this node shares").isFalse();
+  }
+
+  // ===========================================================================================
   // Fixtures
   // ===========================================================================================
 
@@ -310,6 +378,33 @@ class Issue7509ConcurrentSecurityChangeTest {
     security.applyReplicatedApiTokens(root.toString(), null);
   }
 
+  /** The fingerprint of {@code usersPayload} with {@code name} removed: the list it was built from. */
+  private static String fingerprintOfUsersWithout(final String usersPayload, final String name) {
+    final JSONArray payload = new JSONArray(usersPayload);
+    final JSONArray before = new JSONArray();
+    for (int i = 0; i < payload.length(); i++)
+      if (!name.equals(payload.getJSONObject(i).getString("name")))
+        before.put(payload.getJSONObject(i));
+    return SecurityDocumentFingerprint.of(before.toString());
+  }
+
+  private static String fingerprintOfGroupsWithout(final String groupsPayload, final String name) {
+    final JSONObject before = new JSONObject(groupsPayload);
+    before.getJSONObject("databases").getJSONObject(DATABASE).getJSONObject("groups").remove(name);
+    return SecurityDocumentFingerprint.of(before.toString());
+  }
+
+  private static String fingerprintOfTokensWithout(final String tokensPayload, final String tokenHash) {
+    final JSONObject payload = new JSONObject(tokensPayload);
+    final JSONArray tokens = payload.getJSONArray("tokens");
+    final JSONArray before = new JSONArray();
+    for (int i = 0; i < tokens.length(); i++)
+      if (!tokenHash.equals(tokens.getJSONObject(i).getString("tokenHash")))
+        before.put(tokens.getJSONObject(i));
+    return SecurityDocumentFingerprint.of(new JSONObject().put("version", payload.get("version"))
+        .put("tokens", before).toString());
+  }
+
   private List<String> groupNames() {
     final JSONObject databases = security.groupsToJSON().getJSONObject("databases");
     if (!databases.has(DATABASE))
@@ -336,33 +431,50 @@ class Issue7509ConcurrentSecurityChangeTest {
     private final int            competeForFirstNSubmits;
     int                          submits;
 
+    /** The (payload, precondition) pair of every submission, newest last. */
+    final List<String[]> submitted = new ArrayList<>();
+
+    /** True if any {@link #awaitLocalApply()} happened with the {@code ServerSecurity} monitor held. */
+    boolean awaitedUnderTheMonitor;
+    int     awaits;
+
     private RacingHAPlugin(final ServerSecurity security, final Runnable competing, final int competeForFirstNSubmits) {
       this.security = security;
       this.competing = competing;
       this.competeForFirstNSubmits = competeForFirstNSubmits;
     }
 
-    private void race() {
+    private void race(final String payload, final String expectedFingerprint) {
+      submitted.add(new String[] { payload, expectedFingerprint });
       if (submits < competeForFirstNSubmits)
         competing.run();
       submits++;
     }
 
     @Override
+    public void awaitLocalApply() {
+      awaits++;
+      // The monitor is shared by all seven cluster-wide mutators, so waiting for the local state machine while
+      // holding it would queue every unrelated security change on this node behind one caller's retry storm.
+      if (Thread.holdsLock(security))
+        awaitedUnderTheMonitor = true;
+    }
+
+    @Override
     public boolean replicateSecurityUsers(final String usersJson, final String expectedFingerprint) {
-      race();
+      race(usersJson, expectedFingerprint);
       return security.applyReplicatedUsers(usersJson, expectedFingerprint);
     }
 
     @Override
     public boolean replicateSecurityGroups(final String groupsJson, final String expectedFingerprint) {
-      race();
+      race(groupsJson, expectedFingerprint);
       return security.applyReplicatedGroups(groupsJson, expectedFingerprint);
     }
 
     @Override
     public boolean replicateSecurityApiTokens(final String apiTokensJson, final String expectedFingerprint) {
-      race();
+      race(apiTokensJson, expectedFingerprint);
       return security.applyReplicatedApiTokens(apiTokensJson, expectedFingerprint);
     }
 

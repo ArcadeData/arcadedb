@@ -21,9 +21,13 @@ package com.arcadedb.server.ha.raft;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Wire coverage for the compare-and-set precondition issue #7509 adds to the three node-scoped security
@@ -113,6 +117,60 @@ class Issue7509SecurityPreconditionCodecTest {
 
     assertThat(decoded.usersJson()).isEqualTo(USERS);
     assertThat(decoded.securityPrecondition()).isNull();
+  }
+
+  /**
+   * A section that IDENTIFIES ITSELF as the precondition but cannot be read past its name is corruption, and must
+   * not degrade into "no precondition, install unconditionally".
+   * <p>
+   * That default is safe for an unrecognised section - it is what the #7138 framing is for - and is exactly wrong
+   * for this one: the precondition is the guard that stops a stale security document from reverting a committed
+   * change, so silently dropping it turns a corrupt entry into the divergence the guard exists to prevent. It
+   * has to fail the entry like any other malformed payload in the codec.
+   */
+  @Test
+  void aCorruptedPreconditionSectionFailsTheEntryInsteadOfApplyingItUnconditionally() {
+    final ByteString truncated = RaftLogEntryCodec.appendExtensionSection(
+        RaftLogEntryCodec.encodeSecurityUsersEntry(USERS), utf(RaftLogEntryCodec.SECURITY_PRECONDITION_SECTION));
+
+    assertThatThrownBy(() -> RaftLogEntryCodec.decode(truncated))
+        .isInstanceOf(RaftLogEntryDecodeException.class)
+        .hasMessageContaining("SECURITY_USERS_ENTRY");
+
+    // Same for a fingerprint whose own UTF frame is cut short rather than absent entirely.
+    final byte[] name = utf(RaftLogEntryCodec.SECURITY_PRECONDITION_SECTION);
+    final byte[] halfAFingerprint = new byte[name.length + 3];
+    System.arraycopy(name, 0, halfAFingerprint, 0, name.length);
+    halfAFingerprint[name.length] = 0;
+    halfAFingerprint[name.length + 1] = 32;   // declares 32 bytes of fingerprint...
+    halfAFingerprint[name.length + 2] = 'a';  // ...and carries one
+
+    assertThatThrownBy(() -> RaftLogEntryCodec.decode(
+        RaftLogEntryCodec.appendExtensionSection(RaftLogEntryCodec.encodeSecurityUsersEntry(USERS), halfAFingerprint)))
+        .isInstanceOf(RaftLogEntryDecodeException.class);
+  }
+
+  /** A section whose NAME is unreadable is not ours, so it is skipped - the #7138 contract, unchanged. */
+  @Test
+  void aSectionWhoseNameCannotBeReadIsStillSkipped() {
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(
+        RaftLogEntryCodec.appendExtensionSection(RaftLogEntryCodec.encodeSecurityUsersEntry(USERS),
+            new byte[] { 0, 40, 'x' }));   // declares a 40-byte name, carries one
+
+    assertThat(decoded.usersJson()).isEqualTo(USERS);
+    assertThat(decoded.securityPrecondition()).isNull();
+  }
+
+  private static byte[] utf(final String value) {
+    try {
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      final DataOutputStream dos = new DataOutputStream(baos);
+      dos.writeUTF(value);
+      dos.flush();
+      return baos.toByteArray();
+    } catch (final IOException e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   /** No other entry type grows a precondition by accident. */

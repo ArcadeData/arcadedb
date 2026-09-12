@@ -305,6 +305,19 @@ public interface HAServerPlugin extends ServerPlugin {
   default void revokeAuthSession(final String token) {
   }
 
+  /**
+   * Waits, bounded, for THIS node's state machine to catch up with the committed log (issue #7509).
+   * <p>
+   * A node that lost a security compare-and-set has to see the winning entry before it rebuilds its document, or
+   * the retry is built from the same stale view and loses again. The submitter may be a follower, whose own apply
+   * lags the reply it got back from the leader, so "the submit returned" is not "this node has applied it".
+   * Best-effort by contract: it returns when the deadline passes rather than failing, and the retry then simply
+   * has one more chance to lose. Default is a no-op for non-HA setups.
+   */
+  default void awaitLocalApply() {
+    // No-op by default; Raft implementation overrides.
+  }
+
   default void replicateSecurityUsers(final String usersJsonArray) {
     // No-op by default; Raft implementation overrides.
   }
