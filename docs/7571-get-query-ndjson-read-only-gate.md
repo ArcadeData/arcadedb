@@ -294,10 +294,39 @@ empty - the loop's clean-approval condition. (`docs/review-deferred-*.md` files 
 `git log -1 --` on each shows all five belong to earlier merged PRs: #7210, #7442 and #7556. None was
 produced by this run.)
 
+### Cycle 4 - `f8334ca` (tracking doc only)
+
+The Phase 6 documentation commit re-triggered the reviewer. **No blocking issues**, four non-blocking
+observations, none of which asked for a change. Recorded rather than passed over:
+
+1. *"310 lines of process documentation for a ~13-line functional diff - worth confirming the team wants this
+   checked into the tree long-term."* A question for the maintainer, not a defect; the reviewer checked it
+   against the repo's existing `docs/75xx-*.md` convention itself and found it in keeping. Left as is.
+2. *"`GetQueryHandler`'s `text` isn't trimmed before the gate, whereas `PostCommandHandler` does
+   `command = command.trim()` first."* **Not applied, deliberately.** The property that matters is that the
+   gate analyzes exactly the text that executes, and it holds on both paths: `PostCommandHandler.java:194`
+   trims, then gates at 197, then executes the trimmed text; `GetQueryHandler` gates and executes the same
+   untrimmed text. Trimming only for the gate would *break* that property - the gate would classify a
+   different string from the one that runs. Trimming for both would change what a non-streaming GET query
+   executes, which is pre-existing behaviour on a path this issue is not about and no test covers. The
+   reviewer's own reading agrees it is not a bug, and `theGateReadsTheParsedStatementSoNoSpellingOfBackupGetsThrough`
+   already sends `"  BACKUP DATABASE  "` through the GET path and gets the 400.
+3. *"Generic `catch (Exception e)` turns a bug inside an engine's `analyze()` into a silent 400, and now three
+   operations share that blind spot."* True, and pre-existing - the reviewer says outright it is not asking
+   for a change. It is the deliberate "not provably read-only is the safe reading" choice #7306 made, and the
+   `Level.FINE` log line in the catch is what makes the real cause recoverable. Widening the blast radius
+   from two operations to three is a fair observation about shared code; narrowing the catch is a change to
+   #7306's safety posture and belongs to whoever wants to argue that posture, not to this PR.
+4. *"Tests run a real `BACKUP DATABASE` and leave a zip on the test server's filesystem."* The reviewer
+   checked this against `ServerBackupDatabaseIT` and `Issue7443SqlMaintenanceSlotIT` and found it conventional.
+   No change.
+
 ## Outcome
 
 - **PR:** https://github.com/ArcadeData/arcadedb/pull/7582
-- **Final state:** `clean-approval` after 3 review cycles.
+- **Final state:** `clean-approval`. Three substantive review cycles plus a fourth on the documentation
+  commit; the last two found no blocking issues and the last three found nothing that needed code changed
+  beyond cycle 1's unused imports.
 - **Deferred items:** none. Every review point was either applied or answered here with its reasoning.
 - **Follow-ups filed before the PR opened:** #7575 (`EXPLAIN` GET/POST divergence), #7576 (`sqlscript`
   discards the declared write, weakening the gate on all three operations and reaching MCP's permission
@@ -308,3 +337,4 @@ produced by this run.)
 | 1 | `a5a09db` | Initial implementation. One actionable finding: two imports left unused in `PostCommandHandler`, verified and removed. |
 | 2 | `1e23fc3` | No blocking issues. One non-blocking point applied as documentation: the gate's javadoc now states `analyze()`'s cost per language instead of claiming it is free on the strength of `sql` alone. |
 | 3 | `3ad27c7` | No actionable items. Clean approval. |
+| 4 | `f8334ca` | Tracking doc only. No blocking issues; four non-blocking observations, each answered above with why it was not applied. |
