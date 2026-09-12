@@ -834,6 +834,10 @@ public class CoreApiSpec implements OpenApiContributor {
         of @type, @class, @id, @from or @to is refused with a 400 naming the line, and so is a 'properties' key \
         carrying an object, because both can only ever be a misread of this encoding.
 
+        The control keys and the '@type' values are matched case-sensitively: '@Type' is not '@type' and is refused \
+        as an unknown control key, and 'Vertex' is not 'vertex'. Only the CSV boolean literals 'true' and 'false' \
+        are matched ignoring case.
+
         A temporary id is resolved only within the request that declared it, and only if the vertex appeared \
         earlier in the same payload: a vertex loaded by an EARLIER request has to be referenced by RID \
         (#bucket:position). Under refMode=ordinal, use 'ordinalBase' to keep one position counter across a load \

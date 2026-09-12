@@ -246,3 +246,19 @@ been convinced by its own reasoning - and is recorded as such.
 | `assertThat(...query("SELECT properties FROM ..."))` in the IT leaned on `properties` not being a reserved SQL word | **Real, fixed here**: replaced with an `iterateType` read, which cannot be confused by the parser |
 | The error message embeds literal JSON with quotes and has to survive being placed in a JSON error body | **Not a defect** - verified empirically: the IT parses the 400 body with `JSONObject` and reads `error` back |
 | A generated client may still treat `application/x-ndjson` as opaque regardless of the schema | **Real limitation, stated** in residual risk 3. The schema is still the only written description of the payload, and it matches how the spec already documents its NDJSON responses |
+
+## Review cycles
+
+PR: https://github.com/ArcadeData/arcadedb/pull/7583
+
+### Cycle 1 - 16bb1ef3d7
+
+`claude` reviewed and found no correctness bug and nothing blocking the merge. Three notes, all non-blocking:
+
+| Note | Disposition |
+|---|---|
+| The control keys are matched case-sensitively, so `@Type` now lands in the "unknown control key" branch. Not a regression (it misbehaved before the fix too), but worth a line in the request-body description | **Applied.** Verified first: `META_KEYS` is a `Set.of` queried with `contains`, `@type` values go through `equals`, and the CSV header is an exact `switch`; only the CSV boolean literals use `equalsIgnoreCase`. That asymmetry is unguessable and the refusal makes it visible as a 400, so the contract now states it, with an assertion in `Issue7570BatchRequestBodySchemaTest` |
+| The PR body's Test plan boxes were unticked although the runs are recorded as passing | **Applied.** Ticked, with the measured counts inline |
+| `rejectReservedKey`'s `@`-branch and `rejectReservedColumn` are near-duplicate logic in two classes; the reviewer flagged it as *not* worth extracting today | **Declined, agreed with the reviewer.** The two differ in what they inspect (a JSON key on a data line vs a column name on a header row), in when they run (per property vs once per header), and in their message wording. The classes share no base type, so a helper would mean a new utility for about four lines of code and would put the JSONL and CSV messages under one roof where they would drift toward a generic wording. Worth revisiting only if a third encoding is added, which is exactly what the reviewer said |
+
+No item was unclear, so nothing was deferred for the developer and no `review-deferred-*.md` notes file was produced.

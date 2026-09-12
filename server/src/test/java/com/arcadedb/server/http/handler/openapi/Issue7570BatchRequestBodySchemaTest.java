@@ -143,6 +143,13 @@ class Issue7570BatchRequestBodySchemaTest {
         .as("the @ namespace is reserved and an unknown key in it is a 400")
         .contains("@");
 
+    // Both parsers match the control keys with equals() and an exact switch, while only the CSV boolean literals
+    // go through equalsIgnoreCase. A client cannot guess that asymmetry, and under the new refusal '@Type' is a
+    // 400 rather than a silently stored property, so the contract has to state it.
+    assertThat(description)
+        .as("control-key matching is case-sensitive and the contract must say so")
+        .contains("case-sensitiv");
+
     final Schema<?> csv = batchOperation().getRequestBody().getContent().get("text/csv").getSchema();
     assertThat(csv.getDescription())
         .as("'Header row followed by data rows' did not say how a header names @class or an edge's endpoints")
