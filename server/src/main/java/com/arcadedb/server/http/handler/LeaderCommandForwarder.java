@@ -33,9 +33,9 @@ import io.undertow.util.HeaderValues;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 
@@ -320,9 +320,11 @@ public final class LeaderCommandForwarder {
         return gaveUp(leaderHttpAddress, deadlineMs, longRunningCommand);
       } catch (final ExecutionException e) {
         final Throwable cause = e.getCause();
-        // The connect timeout arrives as a subclass of HttpTimeoutException, and it is a different failure with
-        // a different setting behind it - saying "did not answer within proxyReadTimeout" when the socket was
-        // never established would send the operator to the wrong knob.
+        // ORDER IS LOAD-BEARING: HttpConnectTimeoutException is a SUBCLASS of HttpTimeoutException, so this arm
+        // has to come first or it is dead code and every failure to connect reports itself as "the leader did
+        // not answer within proxyReadTimeout" - the wrong knob, and the wrong story about whether the command
+        // ran. Swapping the two arms is caught only by
+        // Issue7507LeaderForwardTimeoutTest#aLeaderThatCannotBeConnectedToIsAnsweredWithItsOwnGatewayTimeout.
         if (cause instanceof HttpConnectTimeoutException)
           return couldNotConnect(leaderHttpAddress);
         if (cause instanceof HttpTimeoutException)

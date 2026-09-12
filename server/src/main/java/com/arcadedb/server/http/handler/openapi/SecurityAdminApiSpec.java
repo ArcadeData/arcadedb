@@ -151,10 +151,7 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
    */
   private ApiResponses forwardedToLeaderResponses(final String successDescription, final String successCode) {
     final ApiResponses responses = createAdminResponses(successDescription, successCode);
-    responses.addApiResponse("504", SpecBuilders.errorResponse(
-        "On an HA follower, the command is forwarded to the leader and the leader did not answer within "
-        + "'arcadedb.ha.proxyReadTimeout' (or 'arcadedb.ha.proxyLongCommandTimeout' for a restore or an "
-        + "import). It may still be running on the leader: check there before retrying"));
+    responses.addApiResponse("504", SpecBuilders.errorResponse(SpecBuilders.LEADER_FORWARD_TIMEOUT_DESCRIPTION));
     return responses;
   }
 

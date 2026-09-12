@@ -40,6 +40,15 @@ public final class SpecBuilders {
   public static final String JSON      = "application/json";
   public static final String ERROR_REF = "ErrorResponse";
 
+  /**
+   * The 504 of a route that an HA follower forwards to the leader instead of executing locally (issue #7507).
+   * Shared so the two specs that document such a route cannot drift apart on what it means.
+   */
+  public static final String LEADER_FORWARD_TIMEOUT_DESCRIPTION =
+      "On an HA follower, the command is forwarded to the leader and the leader did not answer within "
+          + "'arcadedb.ha.proxyReadTimeout' (or 'arcadedb.ha.proxyLongCommandTimeout' for a restore or an "
+          + "import). It may still be running on the leader: check there before retrying";
+
   private SpecBuilders() {
   }
 

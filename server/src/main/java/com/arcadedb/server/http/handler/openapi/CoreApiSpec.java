@@ -142,10 +142,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setResponses(createCommandResponses());
     // Only this operation forwards to the HA leader, so the 504 is added here rather than in the shared
     // createCommandResponses() that POST /api/v1/command/{database} also uses (issue #7507).
-    postOp.getResponses().addApiResponse("504", SpecBuilders.errorResponse(
-        "On an HA follower, the command is forwarded to the leader and the leader did not answer within "
-        + "'arcadedb.ha.proxyReadTimeout' (or 'arcadedb.ha.proxyLongCommandTimeout' for a restore or an "
-        + "import). It may still be running on the leader: check there before retrying"));
+    postOp.getResponses().addApiResponse("504", SpecBuilders.errorResponse(SpecBuilders.LEADER_FORWARD_TIMEOUT_DESCRIPTION));
     pathItem.setPost(postOp);
 
     return pathItem;

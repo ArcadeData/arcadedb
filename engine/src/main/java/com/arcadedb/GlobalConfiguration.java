@@ -2055,7 +2055,10 @@ public enum GlobalConfiguration {
       Connect timeout in milliseconds for a follower dialling the leader, used by LeaderCommandForwarder and \
       LeaderProxy. Bounds the half of the failure the response deadline cannot see: a leader whose host accepts \
       no connection. Read once when the HTTP client is built, because a java.net.http.HttpClient's connect \
-      timeout is fixed at build time - a change needs a restart.""",
+      timeout is fixed at build time - a change needs a restart. RaftHAPlugin also reads it, as the budget for \
+      one whole peer authentication-session RPC rather than only that RPC's connect phase: those are small \
+      requests on a LAN with a client waiting on a 401-or-200, so the connect budget is the right order of \
+      magnitude for the lot.""",
       Long.class, 5000L),
 
   HA_PROXY_MAX_BODY_SIZE("arcadedb.ha.proxyMaxBodySize", SCOPE.SERVER,
