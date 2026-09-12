@@ -50,6 +50,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
@@ -118,6 +119,9 @@ class BootstrapElection {
   }
 
   private static final String BOOTSTRAP_STATE_ROUTE = "/api/v1/cluster/bootstrap-state";
+
+  /** One notice per JVM for the SSL-on-but-plain-HTTP probe, like LeaderDatabaseQuery's. */
+  private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
 
   private static final HttpClient HTTP = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(5))
@@ -461,6 +465,15 @@ class BootstrapElection {
   static String bootstrapStateUrl(final String httpAddr, final String httpsAddr, final boolean useSSL) {
     if (useSSL && httpsAddr != null)
       return "https://" + httpsAddr + BOOTSTRAP_STATE_ROUTE;
+    // SSL on with no HTTPS endpoint for the peer: the probe still carries the cluster token, so say so once
+    // rather than leave the operator to infer it. Named after LeaderDatabaseQuery's warning for the same
+    // configuration on the same endpoint - the fallback itself is the package-wide rule, not this dial's
+    // choice, and refusing here alone would make this the one probe that behaves differently.
+    if (useSSL && PLAIN_HTTP_FALLBACK_WARNED.compareAndSet(false, true))
+      LogManager.instance().log(BootstrapElection.class, Level.WARNING,
+          "SSL is enabled but no HTTPS address is known for a peer; probing its bootstrap-state over plain HTTP, "
+              + "which sends the cluster token in the clear. Declare each node's HTTPS endpoint in %s to avoid it. "
+              + "This notice is logged only once.", GlobalConfiguration.HA_SERVER_LIST.getKey());
     return "http://" + httpAddr + BOOTSTRAP_STATE_ROUTE;
   }
 

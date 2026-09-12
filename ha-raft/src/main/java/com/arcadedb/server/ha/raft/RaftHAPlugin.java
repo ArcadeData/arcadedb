@@ -45,6 +45,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 /**
@@ -55,6 +56,9 @@ import java.util.logging.Level;
 public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider {
 
   private static final String SHUTDOWN_ROUTE = "/api/v1/server";
+
+  /** One notice per JVM for the SSL-on-but-plain-HTTP shutdown dial, like LeaderDatabaseQuery's. */
+  private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
 
   // One client for the shutdown command, which is operator-driven and rare. Plain HTTP only; the SSL
   // case borrows the cluster trust context from RaftHAServer, as every other dial does.
@@ -534,6 +538,14 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   static String shutdownUrl(final String httpAddr, final String httpsAddr, final boolean useSSL) {
     if (useSSL && httpsAddr != null)
       return "https://" + httpsAddr + SHUTDOWN_ROUTE;
+    // SSL on with no HTTPS endpoint for the peer: the command still carries the bearer token, so say so once.
+    // The fallback is the package-wide rule (LeaderDatabaseQuery warns for the same configuration); refusing an
+    // operator's explicit shutdown here alone would be a policy change for one verb.
+    if (useSSL && PLAIN_HTTP_FALLBACK_WARNED.compareAndSet(false, true))
+      LogManager.instance().log(RaftHAPlugin.class, Level.WARNING,
+          "SSL is enabled but no HTTPS address is known for the peer being shut down; sending the command over "
+              + "plain HTTP, which sends the cluster token in the clear. Declare each node's HTTPS endpoint in %s "
+              + "to avoid it. This notice is logged only once.", GlobalConfiguration.HA_SERVER_LIST.getKey());
     return "http://" + httpAddr + SHUTDOWN_ROUTE;
   }
 
