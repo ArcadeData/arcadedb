@@ -79,6 +79,15 @@ public class CoreApiSpec implements OpenApiContributor {
       "Database not found, or the session id header names a transaction that no longer resolves "
           + "(\"Remote transaction session not found or expired\")";
 
+  // Shared by POST query and POST command: PostQueryHandler extends PostCommandHandler and overrides only
+  // executeCommand(), so both reach the very same requireStreamableStatement() call in execute() before the
+  // statement runs. Held in one place so the two operations cannot describe the same gate differently (issue #7569).
+  private static final String NDJSON_READ_ONLY_DESCRIPTION = """
+      When 'Accept' requests the ndjson encoding, only a statement provably read-only may stream: one that \
+      writes - INSERT, UPDATE, DELETE, DDL, or one this analysis cannot classify - is refused with 400 before \
+      it runs, because its rows would otherwise reach the client before the transaction that produced them \
+      commits. Request the buffered 'application/json' encoding for it instead.""";
+
   @Override
   public void contribute(final OpenAPI openAPI) {
     openAPI.getPaths().addPathItem("/api/v1/server", createServerPath());
@@ -246,7 +255,7 @@ public class CoreApiSpec implements OpenApiContributor {
 
     final Operation postOp = new Operation();
     postOp.setSummary("Execute query via POST");
-    postOp.setDescription("Executes a query using POST method with query in request body");
+    postOp.setDescription("Executes a query using POST method with query in request body. " + NDJSON_READ_ONLY_DESCRIPTION);
     postOp.setOperationId("executeQueryPost");
     postOp.addTagsItem("Query");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
@@ -266,7 +275,7 @@ public class CoreApiSpec implements OpenApiContributor {
 
     final Operation postOp = new Operation();
     postOp.setSummary("Execute command");
-    postOp.setDescription("Executes a database command");
+    postOp.setDescription("Executes a database command. " + NDJSON_READ_ONLY_DESCRIPTION);
     postOp.setOperationId("executeCommand");
     postOp.addTagsItem("Command");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
