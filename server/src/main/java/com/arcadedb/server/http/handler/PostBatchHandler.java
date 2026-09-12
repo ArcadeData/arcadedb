@@ -1533,7 +1533,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    *
    * @param streaming whether the client negotiated {@code Accept: application/x-ndjson}
    */
-  private ExecutionResponse forwardBatchToLeader(final HttpServerExchange exchange, final HAServerPlugin ha,
+  // Package-private rather than private so the scheme it dials the leader on is testable without a live
+  // cluster (issue #7508). The only production caller is execute() above.
+  ExecutionResponse forwardBatchToLeader(final HttpServerExchange exchange, final HAServerPlugin ha,
       final String databaseName, final ServerSecurityUser user, final String contentType,
       final CountingInputStream body, final boolean streaming) throws Exception {
 
@@ -1559,17 +1561,22 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           .toString());
     }
 
-    final String leaderAddress = ha.getLeaderAddress();
-    if (leaderAddress == null || leaderAddress.isBlank())
+    // Where to dial the leader and on which scheme: its HTTPS endpoint when the cluster has one for it, the
+    // plain-HTTP one otherwise (issue #7508). The relayed payload and the cluster token below would otherwise
+    // cross an SSL cluster in cleartext.
+    final LeaderDial dial = LeaderDial.resolve(ha, HTTP_CLIENT);
+    if (dial == null)
       return new ExecutionResponse(503,
           "{ \"error\" : \"Cannot forward batch to leader: leader address is not available\"}");
 
     // The address resolved for the leader is this node's own: dialing it would come straight back here. The
     // derive fallback produces exactly this on a cluster whose peers share a host and declare no HTTP port,
-    // because it pairs the leader's Raft host with THIS node's HTTP port (issue #6191).
-    if (ha.isOwnHttpAddress(leaderAddress))
+    // because it pairs the leader's Raft host with THIS node's HTTP port (issue #6191). Asked only of the
+    // plain-HTTP branch: isOwnHttpAddress speaks for this node's HTTP listener and not for an HTTPS endpoint,
+    // which the plugin withholds when it is this node's own instead.
+    if (!dial.https() && ha.isOwnHttpAddress(dial.address()))
       return new ExecutionResponse(400, new JSONObject()
-          .put("error", "Cannot forward batch to leader: the HTTP address resolved for the leader (" + leaderAddress
+          .put("error", "Cannot forward batch to leader: the HTTP address resolved for the leader (" + dial.address()
               + ") is this node's own, and this node is not the leader. Declare every node's HTTP port explicitly "
               + "with the 'host:raftPort:httpPort' syntax in " + GlobalConfiguration.HA_SERVER_LIST.getKey())
           .toString());
@@ -1583,10 +1590,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(401,
           "{ \"error\" : \"Cannot forward batch to leader: no authenticated user in the current security context\"}");
 
-    String url = "http://" + leaderAddress + "/api/v1/batch/" + databaseName;
+    String path = "/api/v1/batch/" + databaseName;
     final String queryString = exchange.getQueryString();
     if (queryString != null && !queryString.isEmpty())
-      url += "?" + queryString;
+      path += "?" + queryString;
+    final String url = dial.url(path);
 
     // The body travels through the same guarded stream the leader-side load would use, so a cut upload cannot
     // relay a replay of its own bytes on to the leader either (issue #6180).
@@ -1599,9 +1607,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // the leader's first progress line - while the JDK client's own executor thread is still publishing the
         // relayed upload. That is what keeps the acknowledgements incremental across the hop.
         return relayNdJsonFromLeader(exchange, databaseName,
-            HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofInputStream()));
+            dial.client().send(request, HttpResponse.BodyHandlers.ofInputStream()));
 
-      final HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = dial.client().send(request, HttpResponse.BodyHandlers.ofString());
 
       // ExecutionResponse carries only status + body, so the leader's X-ArcadeDB-Commit-Index bookmark
       // (issue #5862) has to be copied onto this exchange explicitly, or a READ_YOUR_WRITES client that
@@ -1612,11 +1620,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(response.statusCode(), response.body());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
-      LogManager.instance().log(this, Level.WARNING, "Interrupted while forwarding /batch to leader at %s", leaderAddress);
+      LogManager.instance().log(this, Level.WARNING, "Interrupted while forwarding /batch to leader at %s", url);
       return new ExecutionResponse(503,
           "{ \"error\" : \"Interrupted while forwarding batch to leader\"}");
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", leaderAddress, e.getMessage());
+      LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", url, e.getMessage());
       return new ExecutionResponse(503,
           "{ \"error\" : \"Error forwarding batch to leader: " + e.getMessage().replace("\"", "'") + "\"}");
     }

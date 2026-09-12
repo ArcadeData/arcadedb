@@ -97,6 +97,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.http.handler.LeaderDial;
 
 import java.io.IOException;
 import java.net.URI;
@@ -3480,13 +3481,26 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw new TransactionException("Cannot forward command to leader: leader HTTP address is not available "
           + "(no leader elected within " + leaderWaitMs + "ms; tune " + GlobalConfiguration.HA_FORWARD_LEADER_WAIT_TIMEOUT_MS.getKey() + ")");
 
+    // The scheme the write travels on: the leader's HTTPS endpoint when the cluster has one for it, the
+    // plain-HTTP address awaited above otherwise (issue #7508). On an SSL cluster the plain branch puts the
+    // cluster token and the whole write on the wire in cleartext. Only the encrypted half is taken from the
+    // dial - the plain address stays the one awaited above, so the self-address check below and the URL built
+    // further down cannot vet one address and dial another across a leadership change in between.
+    final HAServerPlugin haPlugin = server.getHA();
+    final LeaderDial dial = haPlugin != null ? LeaderDial.resolve(haPlugin, HTTP_CLIENT) : null;
+    final String leaderHttpsAddress = dial != null && dial.https() ? dial.address() : null;
+
     // The address resolved for the leader is this node's own, and this node is not the leader: the POST would
     // come back here, be forwarded again, and consume one more HTTP worker thread per hop. This is what the
     // derive fallback produces when the peers share a host and no 'http' port is declared - it pairs the
     // leader's Raft host with THIS node's HTTP port. Refuse with the typed error the HTTP and gRPC layers
     // already know how to report (issue #6191). The one case where the self-address is right - this node
     // became the leader while waiting above - is left alone: that POST executes locally and terminates.
-    if (!raft.isLeader() && raft.isOwnHttpAddress(leaderHttpAddress)) {
+    //
+    // Asked only when the write is about to travel on that plain-HTTP address: isOwnHttpAddress answers for this
+    // node's HTTP listener and cannot speak for an HTTPS endpoint, which getLeaderHttpsAddress() withholds when
+    // it is this node's own.
+    if (!raft.isLeader() && leaderHttpsAddress == null && raft.isOwnHttpAddress(leaderHttpAddress)) {
       if (selfForwardWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "The HTTP address resolved for the leader (%s) is this node's own, so a write forwarded to it would come "
@@ -3519,7 +3533,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
 
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create("http://" + leaderHttpAddress + "/api/v1/command/" + getName()))
+        .uri(URI.create((leaderHttpsAddress != null
+            ? "https://" + leaderHttpsAddress
+            : "http://" + leaderHttpAddress) + "/api/v1/command/" + getName()))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(body.toString()));
 
@@ -3553,7 +3569,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     builder.header("X-ArcadeDB-Forwarded-User", proxiedUser);
 
     try {
-      final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = (leaderHttpsAddress != null ? dial.client() : HTTP_CLIENT)
+          .send(builder.build(), HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200)
         throw reconstructLeaderException(response.statusCode(), response.body());
 

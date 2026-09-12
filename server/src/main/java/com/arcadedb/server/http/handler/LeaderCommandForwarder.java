@@ -122,16 +122,21 @@ public final class LeaderCommandForwarder {
               + " prevents", ha.getLeaderName());
     }
 
-    final String leaderHttpAddress = ha.getLeaderAddress();
-    if (leaderHttpAddress == null)
+    // Where to dial the leader and on which scheme: the HTTPS endpoint when the cluster has one for it,
+    // the plain-HTTP one otherwise (issue #7508). On an SSL cluster the plain branch would relay the
+    // credentials below in cleartext.
+    final LeaderDial dial = LeaderDial.resolve(ha, HTTP_CLIENT);
+    if (dial == null)
       throw new ServerIsNotTheLeaderException("Leader address is unknown", ha.getLeaderName());
 
     // Dialing an address that resolves to this node comes straight back here, and this node is not the
     // leader. That is what the derive fallback produces when the peers share a host and no HTTP port is
-    // declared: it pairs the leader's Raft host with THIS node's HTTP port (issue #6191).
-    if (ha.isOwnHttpAddress(leaderHttpAddress))
+    // declared: it pairs the leader's Raft host with THIS node's HTTP port (issue #6191). Asked only of the
+    // plain-HTTP branch: isOwnHttpAddress compares against this node's HTTP listener and cannot answer for an
+    // HTTPS endpoint, which the plugin withholds when it is this node's own instead.
+    if (!dial.https() && ha.isOwnHttpAddress(dial.address()))
       throw new ServerIsNotTheLeaderException(
-          "Cannot forward the server command: the HTTP address resolved for the leader (" + leaderHttpAddress
+          "Cannot forward the server command: the HTTP address resolved for the leader (" + dial.address()
               + ") is this node's own, and this node is not the leader. Declare every node's HTTP port explicitly with "
               + "the 'host:raftPort:httpPort' syntax in " + GlobalConfiguration.HA_SERVER_LIST.getKey(),
           ha.getLeaderName());
@@ -141,7 +146,7 @@ public final class LeaderCommandForwarder {
 
     final URI leaderUri;
     try {
-      leaderUri = URI.create("http://" + leaderHttpAddress + targetPath);
+      leaderUri = URI.create(dial.url(targetPath));
     } catch (final IllegalArgumentException e) {
       // URI.create is the one call on this path that throws an UNCHECKED exception, so without this it
       // would leave as a 500 - a server fault - for a request target that is simply not a URI.
@@ -188,11 +193,11 @@ public final class LeaderCommandForwarder {
     }
 
     try {
-      final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = dial.client().send(builder.build(), HttpResponse.BodyHandlers.ofString());
       return new ExecutionResponse(response.statusCode(), response.body());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new IOException("Interrupted while forwarding server command to leader at " + leaderHttpAddress, e);
+      throw new IOException("Interrupted while forwarding server command to leader at " + dial.url(targetPath), e);
     }
   }
 }

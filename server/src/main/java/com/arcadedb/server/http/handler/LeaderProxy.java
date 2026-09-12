@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -101,9 +102,20 @@ public final class LeaderProxy {
       return false;
     }
 
+    // Which scheme the leader is dialled on. The caller passes the plain-HTTP address it read from the HA
+    // plugin; when the cluster has an HTTPS endpoint for the leader, that one is preferred and the proxied
+    // request - which carries the cluster token and the client's whole body - is encrypted (issue #7508). Only
+    // the encrypted half is taken from the dial, so the address the caller vetted is the one dialled otherwise.
+    final HAServerPlugin ha = httpServer.getServer().getHA();
+    final LeaderDial dial = ha != null ? LeaderDial.resolve(ha, client) : null;
+    final boolean https = dial != null && dial.https();
+    final String targetAddress = https ? dial.address() : leaderAddress;
+    final HttpClient targetClient = https ? dial.client() : client;
+
     final String path = exchange.getRequestPath();
     final String query = exchange.getQueryString();
-    final String urlString = "http://" + leaderAddress + path + (query == null || query.isEmpty() ? "" : "?" + query);
+    final String urlString = (https ? "https://" : "http://") + targetAddress + path
+        + (query == null || query.isEmpty() ? "" : "?" + query);
 
     final HttpRequest.Builder builder;
     try {
@@ -138,22 +150,22 @@ public final class LeaderProxy {
 
     final HttpResponse<byte[]> response;
     try {
-      response = client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
+      response = targetClient.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
     } catch (final HttpTimeoutException e) {
-      LogManager.instance().log(this, Level.WARNING, "Leader proxy timeout to %s: %s", leaderAddress, e.getMessage());
+      LogManager.instance().log(this, Level.WARNING, "Leader proxy timeout to %s: %s", targetAddress, e.getMessage());
       return false;
     } catch (final ConnectException e) {
-      LogManager.instance().log(this, Level.WARNING, "Leader proxy cannot connect to %s: %s", leaderAddress, e.getMessage());
+      LogManager.instance().log(this, Level.WARNING, "Leader proxy cannot connect to %s: %s", targetAddress, e.getMessage());
       return false;
     } catch (final IOException e) {
-      LogManager.instance().log(this, Level.WARNING, "Leader proxy IO error to %s: %s", leaderAddress, e.getMessage());
+      LogManager.instance().log(this, Level.WARNING, "Leader proxy IO error to %s: %s", targetAddress, e.getMessage());
       return false;
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
-      LogManager.instance().log(this, Level.WARNING, "Leader proxy interrupted to %s", leaderAddress);
+      LogManager.instance().log(this, Level.WARNING, "Leader proxy interrupted to %s", targetAddress);
       return false;
     } catch (final Throwable t) {
-      LogManager.instance().log(this, Level.SEVERE, "Leader proxy unexpected error to %s: %s", t, leaderAddress, t.getMessage());
+      LogManager.instance().log(this, Level.SEVERE, "Leader proxy unexpected error to %s: %s", t, targetAddress, t.getMessage());
       return false;
     }
 

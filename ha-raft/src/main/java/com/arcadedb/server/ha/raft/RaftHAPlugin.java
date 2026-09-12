@@ -36,6 +36,7 @@ import com.arcadedb.database.DatabaseInternal;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
@@ -389,6 +390,27 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   @Override
   public String getLeaderAddress() {
     return raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
+  }
+
+  /**
+   * The HTTPS endpoint a forward to the leader should prefer, or {@code null} when the plain-HTTP one is what
+   * there is (issue #7508). The policy - SSL on, an HTTPS endpoint that resolves, and not this node's own - lives
+   * in {@link RaftHAServer#getLeaderHttpsAddress()}, next to the resolver it reads.
+   */
+  @Override
+  public String getLeaderHttpsAddress() {
+    return raftHAServer != null ? raftHAServer.getLeaderHttpsAddress() : null;
+  }
+
+  /**
+   * The HTTPS client a forward to {@link #getLeaderHttpsAddress()} is sent on: this node's truststore, so the
+   * leader's certificate is validated against the cluster's trust anchors and not against this node's own key
+   * material - the same context {@code SnapshotInstaller}, the capability probe and the bootstrap-state query
+   * already use (issue #4470).
+   */
+  @Override
+  public HttpClient getPeerHttpsClient() throws IOException {
+    return raftHAServer != null ? raftHAServer.getForwardHttpsClient() : null;
   }
 
   @Override
