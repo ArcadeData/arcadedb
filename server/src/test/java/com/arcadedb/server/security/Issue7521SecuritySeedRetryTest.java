@@ -240,6 +240,39 @@ class Issue7521SecuritySeedRetryTest {
         .doesNotContain(hash);
   }
 
+  /**
+   * The interrupt contract the method's javadoc treats as load-bearing: a shutdown landing while a seed is in
+   * flight stops the retrying rather than being swallowed, and the caller's thread gets its flag back so
+   * whatever is unwinding above can still see it.
+   * <p>
+   * The interrupt is raised from inside the API-token seed - the last of the three - so the pause that follows
+   * is the next interruptible thing the loop does, and no file write sits between the two.
+   */
+  @Test
+  void anInterruptStopsTheRetryingAndGivesTheFlagBack() {
+    final SeedingHAPlugin ha = new SeedingHAPlugin(security) {
+      @Override
+      public void replicateSecurityApiTokens(final String apiTokensJson) {
+        Thread.currentThread().interrupt();
+        super.replicateSecurityApiTokens(apiTokensJson);
+      }
+    };
+    ha.failApiTokensTimes = Integer.MAX_VALUE;
+    server.setHA(ha);
+
+    // A base delay above zero, so the loop actually reaches Thread.sleep rather than retrying straight through.
+    final List<String> failed = security.seedSecurityStateClusterWide(5, 1L);
+
+    // Read AND clear the flag first, so an interrupt this test raised cannot leak into the teardown or the
+    // next test in this class.
+    assertThat(Thread.interrupted()).as("the interrupt is restored, not swallowed").isTrue();
+
+    assertThat(failed).containsExactly("API tokens");
+    assertThat(ha.apiTokenDocuments)
+        .as("the budget was 5, and the interrupt stopped it after the first attempt")
+        .hasSize(1);
+  }
+
   /** With no HA plugin at all there is no cluster to seed, and the retry loop must not turn that into work. */
   @Test
   void aStandaloneServerSeedsNothing() {
