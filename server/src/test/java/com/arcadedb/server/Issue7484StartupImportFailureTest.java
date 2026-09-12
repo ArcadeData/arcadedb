@@ -46,6 +46,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The fix reads the row and, on anything but {@code OK}, aborts startup the same way a failing {@code restore:}
  * startup command already does - the two commands now answer a bad source the same way, rather than one failing
  * loudly and the other succeeding silently with an empty database.
+ * <p>
+ * Security, the HTTP service and every plugin are already started by the point {@code loadDefaultDatabases()} runs,
+ * so a caller that only rethrows leaves all of it running with {@code status} stuck at {@code STARTING} - the
+ * exact state {@code isStarted() == false} cannot tell apart from a clean {@code OFFLINE}. The fix calls
+ * {@code stop()} before rethrowing, the same recovery the {@code SERVER_UP} lifecycle event's own failure handler
+ * already uses, so the server reaches {@code OFFLINE} with nothing left running.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -81,9 +87,11 @@ class Issue7484StartupImportFailureTest extends StaticBaseServerTest {
         .hasMessageContaining(DB_NAME)
         .hasMessageContaining("import:");
 
-    assertThat(server.isStarted())
-        .as("startup must not report success for a default database whose import was refused")
-        .isFalse();
+    assertThat(server.getStatus())
+        .as("the server must fully unwind back to OFFLINE - security, the HTTP listener and every plugin already "
+            + "started by this point stopped again - not merely fail to reach ONLINE while everything it already "
+            + "brought up (and status == STARTING) is left running")
+        .isEqualTo(ArcadeDBServer.STATUS.OFFLINE);
   }
 
   private static ArcadeDBServer newServerWithDefaultDatabaseImport(final String importCommandParams) {

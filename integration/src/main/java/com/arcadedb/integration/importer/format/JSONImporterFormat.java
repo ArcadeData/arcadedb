@@ -244,11 +244,15 @@ public class JSONImporterFormat implements FormatImporter {
 
       database.begin();
 
-      // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
-      // RECORD (INSIDE parseRecord()), SO STOPPING ONCE IT REACHES THE LIMIT IMPORTS EXACTLY -parsingLimitEntries
-      // RECORDS, NOT ONE MORE (#7482). reader.endArray() BELOW REQUIRES THE ARRAY TO BE FULLY CONSUMED FIRST, SO
-      // WHATEVER RECORDS THE LIMIT LEFT UNREAD ARE SKIPPED RATHER THAN PARSED.
-      if ((settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
+      // recordIndex, NOT context.parsed: parseRecord() increments context.parsed for every nested object it
+      // recurses into too (a BEGIN_OBJECT property, or a BEGIN_OBJECT array entry via parseArray()), so a record
+      // with even one nested object pushed context.parsed two past where this array's own entry count actually
+      // was, making the cap trip after fewer TOP-LEVEL records than requested. recordIndex is incremented exactly
+      // once per top-level array object above, which is what '-parsingLimitEntries N' means here - the same '>='
+      // as XMLImporterFormat.load()'s cap (ISSUE #7341): the record that trips it is still imported, so N of them
+      // land, not N-1. reader.endArray() below requires the array to be fully consumed first, so whatever records
+      // the limit left unread are skipped rather than parsed (#7482).
+      if ((settings.parsingLimitEntries > 0 && recordIndex >= settings.parsingLimitEntries)
           || (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes)) {
         while (reader.hasNext())
           reader.skipValue();

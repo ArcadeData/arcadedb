@@ -140,10 +140,53 @@ class Issue7482ParsingLimitAppliesToAllFormatsTest {
   }
 
   /**
+   * A record with a nested object used to cost the entries budget twice: {@code parseRecord()} increments
+   * {@code context.parsed} for every object it recurses into too - a nested object property, or a nested object
+   * that is itself an array entry via {@code parseArray()} - so a record with one nested object advanced
+   * {@code context.parsed} by 2, not 1, and the JSON array cap (originally checked against {@code context.parsed})
+   * tripped after fewer TOP-LEVEL records than requested. The cap now checks {@code recordIndex}, which
+   * {@code parseRecordsArray()} increments exactly once per top-level array object.
+   */
+  @Test
+  void jsonArrayParsingLimitCountsTopLevelRecordsNotNestedObjects() throws Exception {
+    final StringBuilder json = new StringBuilder("{\"Users\":[");
+    for (int i = 0; i < ROWS; i++) {
+      if (i > 0)
+        json.append(',');
+      json.append("{\"id\":\"").append(i).append("\",\"address\":{\"city\":\"city-").append(i).append("\"}}");
+    }
+    json.append("]}");
+    final File file = writeFile("importer-7482-json-nested.json", json.toString());
+    final String databasePath = "target/databases/test-import-7482-json-nested";
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    try {
+      new Importer(("-url file://" + file.getAbsolutePath() + " -database " + databasePath
+          + " -forceDatabaseCreate true -mapping {'Users':[]} -parsingLimitEntries 2").split(" ")).load();
+
+      try (final Database db = new DatabaseFactory(databasePath).open()) {
+        assertThat(db.countType("Document", true))
+            .as("each of the 6 records carries one nested object, so counting nested objects toward the cap would "
+                + "trip it after 1 top-level record instead of 2")
+            .isEqualTo(2);
+      }
+    } finally {
+      dropDatabase(databasePath);
+      file.delete();
+      TestHelper.checkActiveDatabases();
+    }
+  }
+
+  /**
    * {@code -parsingLimitBytes} used to be pure decoration: parsed, logged, never enforced anywhere. Univocity's own
    * internal buffering means the exact row where the cap fires cannot be pinned without depending on its buffer
    * size, so this only pins that a small byte budget on a source many times its size stops the import well short
    * of the end - which no test before this issue could have failed, because nothing checked the flag at all.
+   * <p>
+   * Not asserted as "at least one row lands": the byte check now runs before the header-row skip too (see
+   * {@link #csvParsingLimitBytesStopsTheImportEvenWhileSkippingRows()}), and Univocity's own internal buffering can
+   * legitimately push {@code parser.getPosition()} past a budget this small before the very first row is even
+   * handed back, importing zero rows - which is the check doing its job, not a defect.
    */
   @Test
   void csvDocumentsHonourParsingLimitBytes() throws Exception {
@@ -157,9 +200,43 @@ class Issue7482ParsingLimitAppliesToAllFormatsTest {
           .split(" ")).load();
 
       try (final Database db = new DatabaseFactory(databasePath).open()) {
-        final long imported = db.countType("Document", true);
+        final long imported = db.getSchema().existsType("Document") ? db.countType("Document", true) : 0;
         assertThat(imported).as("a 200-byte budget on a source many times larger must stop the import short of the end")
-            .isPositive().isLessThan(rows);
+            .isLessThan(rows);
+      }
+    } finally {
+      dropDatabase(databasePath);
+      csv.delete();
+      TestHelper.checkActiveDatabases();
+    }
+  }
+
+  /**
+   * The byte-limit check has to run BEFORE the skip-row {@code continue} that {@code -documentsSkipEntries} takes,
+   * not only after a row is actually processed: checked only at the bottom of the loop, a long run of skipped rows
+   * would keep reading (and re-checking nothing) for as long as skipping continued, so a tiny byte budget entirely
+   * inside the skipped block would not stop the import until the skip block ended - importing every row after it
+   * regardless of the budget. With the fix, the loop breaks WHILE still skipping, before a single row is imported.
+   */
+  @Test
+  void csvParsingLimitBytesStopsTheImportEvenWhileSkippingRows() throws Exception {
+    final int rows = 100;
+    final int skipRows = 80;
+    final File csv = writeFile("importer-7482-csv-bytes-skip.csv", csvOf(rows));
+    final String databasePath = "target/databases/test-import-7482-csv-bytes-skip";
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    try {
+      // -documentsSkipEntries 80: THE FIRST 80 (OUT OF 101, HEADER INCLUDED) ROWS ARE SKIPPED VIA THE LOOP'S
+      // 'continue'. A 50-BYTE BUDGET LANDS WELL INSIDE THAT SKIPPED PREFIX.
+      new Importer(("-url file://" + csv.getAbsolutePath() + " -database " + databasePath
+          + " -documentsSkipEntries " + skipRows + " -parsingLimitBytes 50").split(" ")).load();
+
+      try (final Database db = new DatabaseFactory(databasePath).open()) {
+        assertThat(db.getSchema().existsType("Document") ? db.countType("Document", true) : 0)
+            .as("a 50-byte budget entirely inside the 80-row skipped prefix must stop the import before any of the "
+                + "20 rows after the skip block are ever reached, not after the whole skipped prefix is read")
+            .isZero();
       }
     } finally {
       dropDatabase(databasePath);

@@ -138,6 +138,12 @@ public class RDFImporterFormat extends CSVImporterFormat {
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
 
+        // CHECKED BEFORE THE SKIP-ROW 'continue' BELOW, THE SAME WAY CSVImporterFormat's ROW LOOPS ARE: A SKIPPED
+        // ROW NEVER REACHES THE POST-PROCESSING CHECK AT THE BOTTOM OF THIS LOOP, SO parsingLimitBytes WOULD
+        // OTHERWISE GO ON READING PAST ITS BUDGET FOR AS LONG AS ROWS KEEP BEING SKIPPED.
+        if (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes)
+          break;
+
         if (skipEntries > 0 && line < skipEntries) {
           // SKIP IT
           ++skipped;
@@ -179,9 +185,9 @@ public class RDFImporterFormat extends CSVImporterFormat {
 
         // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
         // ROW, SO STOPPING ONCE IT REACHES THE LIMIT IMPORTS EXACTLY -parsingLimitEntries ROWS, NOT ONE MORE (#7482).
-        // -parsingLimitBytes IS THE SAME IDEA MEASURED IN BYTES READ FROM THE SOURCE RATHER THAN ROWS PARSED.
-        if ((settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
-            || (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes))
+        // KEPT AS A POST-PROCESSING CHECK, UNLIKE parsingLimitBytes ABOVE: THE ROW THAT TRIPS THIS CAP IS MEANT TO
+        // STILL LAND, THE SAME WAY XML's DOES.
+        if (settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
           break;
       }
 

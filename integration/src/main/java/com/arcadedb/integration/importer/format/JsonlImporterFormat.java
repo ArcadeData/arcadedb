@@ -149,6 +149,12 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       String line;
       while ((line = reader.readLine()) != null) {
 
+        // CHECKED BEFORE ANYTHING ELSE IN THE LOOP BODY, NOT ONLY AT THE BOTTOM: THE -onRowError skip 'continue'
+        // BELOW BYPASSES A CHECK PLACED AFTER IT, SO A RUN OF MALFORMED LINES BEING SKIPPED COULD KEEP READING
+        // PAST parsingLimitBytes'S BUDGET FOR AS LONG AS THE BAD LINES KEEP COMING.
+        if (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes)
+          break;
+
         var jsonLine = new JSONObject(line);
         final String recordType = jsonLine.getString("t");
 
@@ -198,10 +204,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
         // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
         // RECORD, SO STOPPING ONCE IT REACHES THE LIMIT IMPORTS EXACTLY -parsingLimitEntries RECORDS, NOT ONE MORE
-        // (#7482). -parsingLimitBytes IS THE SAME IDEA MEASURED IN BYTES READ FROM THE SOURCE RATHER THAN RECORDS
-        // PARSED.
-        if ((settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
-            || (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes))
+        // (#7482). KEPT AS A POST-PROCESSING CHECK, UNLIKE parsingLimitBytes ABOVE: THE RECORD THAT TRIPS THIS CAP
+        // IS MEANT TO STILL LAND, THE SAME WAY XML's DOES.
+        if (settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
           break;
       }
 
