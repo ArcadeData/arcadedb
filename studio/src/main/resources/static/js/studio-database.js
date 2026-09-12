@@ -3385,6 +3385,19 @@ function renderTypeLink(typeName) {
 const LIGHTWEIGHT_EDGE_HINT = "LIGHTWEIGHT: edges are stored inside the vertices, so this type keeps no records. "
   + "Query them with SELECT FROM <type> or by traversing the vertices.";
 
+// A section header sums each type's record count for a rough total. A LIGHTWEIGHT edge type reports 0
+// records by construction (see LIGHTWEIGHT_EDGE_HINT above), so a section that contains one is a lower
+// bound, not the true count - marked with a trailing "+" rather than shown as if it were exact.
+function formatSectionTotal(items) {
+  let total = 0;
+  let hasLightweight = false;
+  for (let j = 0; j < items.length; j++) {
+    total += (items[j].records || 0);
+    if (items[j].lightweight === true) hasLightweight = true;
+  }
+  return total.toLocaleString() + (hasLightweight ? "+" : "");
+}
+
 function renderTypeSidebarBadge(row, color, action) {
   let name = escapeHtml(row.name);
   let lightweight = row.lightweight === true;
@@ -3514,11 +3527,8 @@ function displaySchema(onReady) {
       let sec = sections[s];
       let items = groups[sec.key];
 
-      let total = 0;
-      for (let j = 0; j < items.length; j++) total += (items[j].records || 0);
-
       html += "<div class='sidebar-section'>";
-      html += "<div class='sidebar-section-header'><i class='fa " + sec.icon + "'></i> " + sec.label + " <span class='sidebar-count'>(" + total.toLocaleString() + ")</span>";
+      html += "<div class='sidebar-section-header'><i class='fa " + sec.icon + "'></i> " + sec.label + " <span class='sidebar-count'>(" + formatSectionTotal(items) + ")</span>";
       if (sec.key == "timeseries")
         html += "<span class='sidebar-section-header-actions'><button onclick='createTimeSeriesType(); return false;' title='Create timeseries type'><i class='fa fa-plus'></i></button></span>";
       else
@@ -3804,13 +3814,11 @@ function populateQuerySidebar() {
   }
 
   let groups = { vertex: [], edge: [], document: [], timeseries: [] };
-  let totals = { vertex: 0, edge: 0, document: 0, timeseries: 0 };
 
   for (let i in globalSchemaTypes) {
     let row = globalSchemaTypes[i];
     let cat = row.type == "vertex" ? "vertex" : (row.type == "edge" ? "edge" : (row.type == "t" ? "timeseries" : "document"));
     groups[cat].push(row);
-    totals[cat] += (row.records || 0);
   }
 
   let html = "";
@@ -3826,7 +3834,7 @@ function populateQuerySidebar() {
     let items = groups[sec.key];
     if (items.length == 0) continue;
 
-    let totalFormatted = totals[sec.key].toLocaleString();
+    let totalFormatted = formatSectionTotal(items);
     html += "<div class='sidebar-section'>";
     html += "<div class='sidebar-section-header'><i class='fa " + sec.icon + "'></i> " + sec.label + " <span class='sidebar-count'>(" + totalFormatted + ")</span></div>";
     html += "<div class='sidebar-badges'>";
