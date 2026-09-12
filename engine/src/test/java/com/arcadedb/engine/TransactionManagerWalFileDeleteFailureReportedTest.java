@@ -24,6 +24,7 @@ import com.arcadedb.database.LocalDatabase;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assumptions.assumeThat;
@@ -56,7 +57,26 @@ class TransactionManagerWalFileDeleteFailureReportedTest extends TestHelper {
     assumeThat(undeletableDir.setWritable(false))
         .as("this test needs to be able to make a directory read-only")
         .isTrue();
+    // Everything from here on runs with the directory read-only: one try/finally around all of it, so
+    // that an assumption failure (or any other exception) below still restores write access instead of
+    // leaving a permanently undeletable directory behind for the next run/mvn clean to trip over.
     try {
+      // setWritable(false) only reports whether the chmod syscall itself succeeded, not whether the OS
+      // will actually enforce it - a process running as root bypasses the permission check entirely,
+      // which would make the delete below succeed anyway and turn this into a false failure instead of a
+      // skip. Probe with an unrelated write before trusting the directory is really locked down:
+      // createNewFile() returns false only for "already exists", so a refused create surfaces as an
+      // IOException instead.
+      boolean permissionActuallyEnforced;
+      try {
+        permissionActuallyEnforced = !new File(undeletableDir, "permission-probe").createNewFile();
+      } catch (final IOException e) {
+        permissionActuallyEnforced = true;
+      }
+      assumeThat(permissionActuallyEnforced)
+          .as("this test requires directory write permission to actually be enforced (e.g. not running as root)")
+          .isTrue();
+
       final String outcome = txManager.deleteWALFileForTesting(walFile);
 
       assertThat(outcome)
@@ -68,6 +88,7 @@ class TransactionManagerWalFileDeleteFailureReportedTest extends TestHelper {
     } finally {
       undeletableDir.setWritable(true);
       walFile.delete();
+      new File(undeletableDir, "permission-probe").delete();
       undeletableDir.delete();
     }
   }
