@@ -77,6 +77,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private static final SecureRandom                    RANDOM               = new SecureRandom();
   public static final  int                             SALT_SIZE            = 32;
 
+  // Backoff bounds for the seed retry of issue #7521. Short first wait, because the common failure is an
+  // election in flight that settles in well under a second; capped so a longer operator-configured budget
+  // becomes more attempts rather than one very long sleep at the end.
+  static final long SEED_RETRY_INITIAL_BACKOFF_MS = 250L;
+  static final long SEED_RETRY_MAX_BACKOFF_MS     = 1000L;
+
   // Reused per thread so the Basic-auth hot path avoids a getInstance provider lookup on every call.
   private static final ThreadLocal<MessageDigest>      SHA256_DIGEST        = ThreadLocal.withInitial(() -> {
     try {
@@ -1120,19 +1126,77 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * Each document is seeded under its own acquisition rather than all three under one, so an unrelated user
    * change is not blocked for three consecutive Raft round trips. Each is best-effort and independent: the
    * failures are collected and returned rather than thrown, so one failing seed does not skip the other two.
+   * <p>
+   * This form makes one attempt per document. An admission path wants
+   * {@link #seedSecurityStateClusterWide(long)} instead, which retries the ones that failed (issue #7521).
    *
    * @return the names of the documents that could not be seeded, empty when all three were submitted
    */
   public List<String> seedSecurityStateClusterWide() {
+    return seedSecurityStateClusterWide(0L);
+  }
+
+  /**
+   * {@link #seedSecurityStateClusterWide()} with a time budget for retrying the documents that failed (issue
+   * #7521).
+   * <p>
+   * A single best-effort attempt is the wrong shape for this failure. {@code replicateSecurity*} submits a Raft
+   * entry and waits for it to commit, so the usual way it fails is that there is no quorum <i>at this instant</i>
+   * - which is both transient and exactly the condition that makes an {@code addPeer} interesting in the first
+   * place. Retrying costs one admin call a few seconds; not retrying leaves a peer that is already a cluster
+   * member serving requests against whatever its own config directory holds.
+   * <p>
+   * Only the documents that failed are retried, and each retry re-reads the document under the monitor rather
+   * than resubmitting the payload read on the first attempt: a revocation that commits between two attempts must
+   * not be undone by the next one, which is the whole reason the read happens under the monitor at all.
+   * <p>
+   * Sleeping is done with an exponential backoff capped at {@value #SEED_RETRY_MAX_BACKOFF_MS} ms and never past
+   * the deadline. An interrupt ends the retrying immediately, restores the interrupt flag and reports whatever is
+   * still failing - a caller being torn down must not be held here.
+   *
+   * @param retryBudgetMs how long to keep retrying the failing documents; {@code 0} (or less) is the single
+   *                      best-effort attempt {@link #seedSecurityStateClusterWide()} makes
+   *
+   * @return the names of the documents that could not be seeded, empty when all three were submitted
+   */
+  public List<String> seedSecurityStateClusterWide(final long retryBudgetMs) {
     final HAServerPlugin ha = server != null ? server.getHA() : null;
     if (ha == null)
       return List.of();
 
-    final List<String> failed = new ArrayList<>(3);
-    seed(failed, "users", () -> seedUsersClusterWide(ha));
-    seed(failed, "groups", () -> seedGroupsClusterWide(ha));
-    seed(failed, "API tokens", () -> seedApiTokensClusterWide(ha));
-    return failed;
+    // Insertion-ordered so the reported failures always read users, groups, API tokens, whichever of them failed.
+    final Map<String, Runnable> pending = new LinkedHashMap<>(4);
+    pending.put("users", () -> seedUsersClusterWide(ha));
+    pending.put("groups", () -> seedGroupsClusterWide(ha));
+    pending.put("API tokens", () -> seedApiTokensClusterWide(ha));
+
+    final long deadline = System.currentTimeMillis() + Math.max(0L, retryBudgetMs);
+    long backoffMs = SEED_RETRY_INITIAL_BACKOFF_MS;
+
+    while (true) {
+      final List<String> failed = new ArrayList<>(pending.size());
+      for (final Map.Entry<String, Runnable> document : pending.entrySet())
+        seed(failed, document.getKey(), document.getValue());
+
+      if (failed.isEmpty())
+        return List.of();
+
+      final long remainingMs = deadline - System.currentTimeMillis();
+      if (remainingMs <= 0)
+        return failed;
+
+      // Retry only what failed: a document that committed must not be resubmitted, and resubmitting it would
+      // also re-read it, widening the window in which a concurrent revocation is overwritten by a stale read.
+      pending.keySet().retainAll(failed);
+
+      try {
+        Thread.sleep(Math.min(backoffMs, remainingMs));
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return failed;
+      }
+      backoffMs = Math.min(backoffMs * 2, SEED_RETRY_MAX_BACKOFF_MS);
+    }
   }
 
   private void seed(final List<String> failed, final String what, final Runnable seeding) {
