@@ -276,8 +276,12 @@ public class Parser {
    * True for UTF-8 and every ISO-8859/windows-125x charset. False for UTF-16 and UTF-32, where a byte-oriented scan
    * would match the low byte of an unrelated character and leave the stream misaligned - so the block is left in
    * place there rather than stripped wrongly.
+   * <p>
+   * {@link com.arcadedb.database.DatabaseFactory#getDefaultCharset()} answers UTF-8 and only UTF-8 today, so the
+   * false arm is a guard on an assumption rather than a live path - which is exactly why it is package-private
+   * and asserted directly: byte-alignment logic nobody exercises is the kind that rots.
    */
-  private static boolean isCommentStrippableCharset(final Charset charset) {
+  static boolean isCommentStrippableCharset(final Charset charset) {
     final byte[] probe = "#/\n".getBytes(charset);
     return probe.length == 3 && probe[0] == '#' && probe[1] == '/' && probe[2] == '\n';
   }
