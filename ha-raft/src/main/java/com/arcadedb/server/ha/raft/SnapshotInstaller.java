@@ -130,29 +130,6 @@ public final class SnapshotInstaller {
   static final long MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 10L * 1024 * 1024 * 1024;
 
   /**
-   * The effective per-entry cap. {@code arcadedb.ha.snapshotMaxEntrySize} declared and documented exactly this
-   * limit but had no reader anywhere in the tree, so the only way to change it was to recompile this class
-   * (issue #7121). A non-positive configured value falls back to the compiled default rather than disabling the
-   * defense - a zip-bomb guard that an operator can switch off by typing 0 is not a guard.
-   * <p>
-   * Read from the SERVER's {@link ContextConfiguration} rather than from the {@link GlobalConfiguration}
-   * enum, as the sibling reads in this class do. The enum is populated by {@code readConfiguration()} alone, which
-   * consults {@code System.getProperty} and {@code System.getenv}: the server configuration file, {@code SET SERVER
-   * SETTING} and the MCP {@code set_server_setting} tool all write into the overlay and never touch it, so an enum
-   * read silently ignores every channel this {@code SCOPE.SERVER} setting advertises except a raw {@code -D}
-   * (issue #7226). The overlay falls back to the enum for a key nobody set, so {@code -D} keeps working through it.
-   *
-   * @param configuration the server's configuration overlay; {@code null} in unit tests and in the non-Raft install
-   *                      callers, which then see the enum (and therefore {@code -D}) alone
-   */
-  static long maxZipEntryUncompressedBytes(final ContextConfiguration configuration) {
-    final long configured = configuration != null
-        ? configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE)
-        : GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE.getValueAsLong();
-    return configured > 0 ? configured : MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES;
-  }
-
-  /**
    * Logged at most once: warns that SSL is enabled but the snapshot is being downloaded over plain
    * HTTP because no HTTPS endpoint could be resolved for the leader.
    */
@@ -190,6 +167,29 @@ public final class SnapshotInstaller {
    * refused while its files are being moved.
    */
   static volatile Runnable recoveryBarrierForTesting = null;
+
+  /**
+   * The effective per-entry cap. {@code arcadedb.ha.snapshotMaxEntrySize} declared and documented exactly this
+   * limit but had no reader anywhere in the tree, so the only way to change it was to recompile this class
+   * (issue #7121). A non-positive configured value falls back to the compiled default rather than disabling the
+   * defense - a zip-bomb guard that an operator can switch off by typing 0 is not a guard.
+   * <p>
+   * Read from the SERVER's {@link ContextConfiguration} rather than from the {@link GlobalConfiguration}
+   * enum, as the sibling reads in this class do. The enum is populated by {@code readConfiguration()} alone, which
+   * consults {@code System.getProperty} and {@code System.getenv}: the server configuration file, {@code SET SERVER
+   * SETTING} and the MCP {@code set_server_setting} tool all write into the overlay and never touch it, so an enum
+   * read silently ignores every channel this {@code SCOPE.SERVER} setting advertises except a raw {@code -D}
+   * (issue #7226). The overlay falls back to the enum for a key nobody set, so {@code -D} keeps working through it.
+   *
+   * @param configuration the server's configuration overlay; {@code null} in unit tests and in the non-Raft install
+   *                      callers, which then see the enum (and therefore {@code -D}) alone
+   */
+  static long maxZipEntryUncompressedBytes(final ContextConfiguration configuration) {
+    final long configured = configuration != null
+        ? configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE)
+        : GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE.getValueAsLong();
+    return configured > 0 ? configured : MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES;
+  }
 
   private SnapshotInstaller() {
   }

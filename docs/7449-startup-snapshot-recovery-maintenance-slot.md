@@ -132,14 +132,25 @@ worth writing down so the next reader does not re-derive it:
 - That last link is asserted from the pinned Ratis release's bytecode, not from memory:
 
 ```
-$ javap -p -c org/apache/ratis/server/impl/RaftServerImpl.class | grep -n initialize     # ratis-server 3.2.2
-520:  26: invokevirtual  // Method org/apache/ratis/server/impl/ServerState.initialize:(Lorg/apache/ratis/statemachine/StateMachine;)V
-$ javap -p -c org/apache/ratis/server/impl/ServerState.class | grep "StateMachine.initialize"
-43: invokeinterface  // InterfaceMethod org/apache/ratis/statemachine/StateMachine.initialize:(Lorg/apache/ratis/server/RaftServer;Lorg/apache/ratis/protocol/RaftGroupId;Lorg/apache/ratis/server/storage/RaftStorage;)V
+$ grep -n 'ratis.version' ha-raft/pom.xml
+37:        <ratis.version>3.3.0</ratis.version>
+
+$ cd "$(mktemp -d)" && unzip -oq ~/.m2/repository/org/apache/ratis/ratis-server/3.3.0/ratis-server-3.3.0.jar \
+    'org/apache/ratis/server/impl/RaftServerImpl.class' 'org/apache/ratis/server/impl/ServerState.class'
+
+$ javap -p -c org/apache/ratis/server/impl/RaftServerImpl.class   # inside boolean start()
+  10: invokevirtual #136  // Method org/apache/ratis/util/LifeCycle.compareAndTransition:(...)Z   <- start()'s NEW->STARTING
+  26: invokevirtual #137  // Method org/apache/ratis/server/impl/ServerState.initialize:(Lorg/apache/ratis/statemachine/StateMachine;)V
+
+$ javap -p -c org/apache/ratis/server/impl/ServerState.class | grep 'StateMachine.initialize'
+  43: invokeinterface #59,  4  // InterfaceMethod org/apache/ratis/statemachine/StateMachine.initialize:(Lorg/apache/ratis/server/RaftServer;Lorg/apache/ratis/protocol/RaftGroupId;Lorg/apache/ratis/server/storage/RaftStorage;)V
 ```
 
-  The `invokevirtual` at 520 is inside `RaftServerImpl.start()`, so starting the new server re-runs
-  `initialize` and therefore this pass.
+  The `invokevirtual` at offset 26 is inside `RaftServerImpl.start()` - the `compareAndTransition` at offset 10
+  is that method's own `NEW -> STARTING` entry check - so starting the new server re-runs `initialize` and
+  therefore this pass. (First written against 3.2.2, which is also in the local repository; CodeRabbit pointed
+  out on the PR that `ha-raft/pom.xml` pins 3.3.0, and the call chain is identical in the version this module
+  actually builds against.)
 
 - Nothing opens the directory mid-repair while the database is **closed**: `atomicSwap` skips every
   `.snapshot*`-prefixed entry, so the `.snapshot-pending` marker stays in `dbDir` for the whole repair and is
@@ -170,6 +181,14 @@ cold-start path it is a cheap no-op reservation.
   each could spend up to N x `snapshotInstallBackupWaitMs` in `initialize()`. Bounded and configurable, and it
   needs every one of those databases to be open-and-marked (see #7530) for a backup to be running on them at
   all, so it is documented rather than defended against.
+- What that stall actually delays, since `initialize()` can run on the `HealthMonitor` thread during a
+  `restartRatis` (asked on the PR review, answered by reading rather than by assurance): the monitor is a
+  `newSingleThreadScheduledExecutor` driven by `scheduleWithFixedDelay(this::tickSafely, intervalMs * 2,
+  intervalMs, ...)` (`HealthMonitor.java:247,253`). Fixed *delay*, not fixed rate, so the next tick is measured
+  from the end of this one - a slow restart postpones the following health check by the stall and cannot pile
+  ticks up behind it. A second restart is excluded independently: `restartRatis` holds `recoveryLock` for the
+  whole restart (`RaftHAServer.java:1566`). So the knock-on is bounded to "the next health check happens later",
+  which is the same exposure a slow Ratis `start()` already carries.
 - Nothing else in `ha-raft/src/main` moves files under a database directory: the grep in section 2 is
   exhaustive over that module.
 
@@ -270,3 +289,13 @@ so it was run as a list of specific claims to disprove rather than as a general 
 | "`ArcadeDBServer`'s field is final and initialised inline", repeated from #7444's comment into the new one | **Verified, not merely inherited.** `grep -n "backupCoordinator" ArcadeDBServer.java` -> `185: private final BackupCoordinator backupCoordinator = new BackupCoordinator();` |
 | "Ratis calls `initialize()` again on a `restartRatis`", the claim the whole reachability story rests on | **Verified** against ratis-server 3.2.2 bytecode (see Reachability above), not assumed from the framework's documented behaviour |
 | The per-database wait could stack across databases and delay a HealthMonitor Ratis restart | **Real but not a defect**: bounded, configurable, and it needs the #7530 state to occur at all. Recorded in residual risk |
+
+## Review cycles
+
+### Cycle 1 - d8cde9c
+
+| Reviewer | Finding | Disposition |
+|---|---|---|
+| `claude` | No blocking issues. Minor: `initialize()` can now block up to `snapshotInstallBackupWaitMs` per database on the thread driving `RaftServerImpl.start()`, which can be the `HealthMonitor` thread - "worth someone confirming stalling `HealthMonitor` for that duration has no knock-on effects" | **Answered with evidence** in Residual risk: `scheduleWithFixedDelay` on a single-thread scheduler means the next tick is measured from the end of this one (no pile-up), and `recoveryLock` already excludes a concurrent restart. No code change |
+| CodeRabbit (inline, `docs/...:138`) | The javap proof cites ratis-server 3.2.2 but `ha-raft/pom.xml` pins `ratis.version` 3.3.0, so it does not establish the behaviour of the dependency this module builds against | **Valid - fixed.** Re-ran the extraction against `ratis-server-3.3.0.jar`; the call chain is identical, and the doc now shows the 3.3.0 output plus the `grep` that establishes the pinned version |
+| Codacy | 1 new Info issue: PMD `FieldDeclarationsShouldBeAtStartOfClass` on `recoveryBarrierForTesting` (line 192) | **Valid - fixed.** The whole four-field cluster already sat after `maxZipEntryUncompressedBytes()`; only the new field showed up because Codacy reports the delta. Moved all four above the first method rather than splitting the new barrier away from `swapBarrierForTesting`, which clears three pre-existing violations of the same rule as well. Pure relocation - the fields are independent initialisers with no ordering relationship |
