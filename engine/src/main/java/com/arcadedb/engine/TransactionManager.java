@@ -461,6 +461,11 @@ public class TransactionManager {
         final WALFile.WALTransaction[] walPositions = new WALFile.WALTransaction[activeWALFilePool.length];
         for (int i = 0; i < activeWALFilePool.length; ++i) {
           final WALFile file = activeWALFilePool[i];
+          // A slot whose WALFile constructor threw FileNotFoundException above never got one (pre-existing
+          // gap, found in review on #7502): nothing left to replay from it, but leaving it null unguarded
+          // crashed this loop with an unrelated NullPointerException instead of just skipping it.
+          if (file == null)
+            continue;
           walPositions[i] = file.getFirstTransaction();
           // A torn first record followed by intact transactions is corruption, not a clean empty/EOF file:
           // stopping silently would drop committed data (issue #4508). Abort recovery and preserve the WAL.
