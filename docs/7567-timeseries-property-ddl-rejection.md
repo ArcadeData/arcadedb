@@ -177,3 +177,29 @@ verified by running code rather than by reading it:
 - `getTsColumn` reads `tsColumns` without a lock. That list is written only by `TimeSeriesTypeBuilder.create()` before
   the type is registered and by `fromJSON` on the single-threaded schema-load path, so no reader can observe it being
   mutated; this is stated as the reason the lock-free read is safe, not as a claim that the list is immutable.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/7585
+
+## Review cycles
+
+| Cycle | Head | Changes | Bot outcome |
+|---|---|---|---|
+| 1 | `abde77d9` | the branch as first pushed | `claude`: "Nothing blocking" - verified the funnel claim, the builder ordering, the schema-load ordering, the `copyType`/`dropType` arguments and the back-compat story against the source rather than the diff. Two style notes, one of which it advised leaving. Codacy: 1 minor CodeStyle notice (`LocalProperty.java:295`, a `private static final` declared mid-class) - the same point. CodeRabbit: rate-limited, posted no findings |
+| 2 | `3f164b23` | constant moved to the top of `LocalProperty`; deferred-items note added | `claude`: "No correctness bugs found", and it independently confirmed the unreachability argument for inline `CREATE PROPERTY ... CUSTOM role`, the `owner.getSchema().getEmbedded()` pattern, and the lock-free `getTsColumn` read. Codacy: pass, 0 issues. CodeRabbit: pass (still rate-limited) |
+
+One incidental hardening the second review named that the PR body had not: `getOrCreateProperty(name, type, ofType)`
+with a type different from the declared column's now throws at the `dropProperty` guard instead of silently dropping
+and recreating a declared TIMESERIES column under a different type.
+
+## Deferred items
+
+- [`docs/review-deferred-abde77d9.md`](review-deferred-abde77d9.md) - one item: run the `server` module before merge.
+  It is blocked by the environment rather than by judgement (port 2480 held all session by a server process this
+  branch did not start), and the reviewer's own assessment is that the module adds no entry point of its own.
+
+## Final state
+
+`deferred-items` - both reviews cleared the change with nothing blocking, every Codacy finding is addressed, and the
+one outstanding item is the `server`-module run the developer should do before merging. Merge remains the developer's.
