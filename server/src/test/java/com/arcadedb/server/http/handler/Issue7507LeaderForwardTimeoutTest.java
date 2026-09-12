@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
@@ -245,7 +246,7 @@ class Issue7507LeaderForwardTimeoutTest {
     }
 
     StalledLeader(final boolean answerHeadersThenStall) throws IOException, InterruptedException {
-      serverSocket = new ServerSocket(0, 16, java.net.InetAddress.getLoopbackAddress());
+      serverSocket = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
       acceptor = new Thread(() -> {
         started.countDown();
         while (!serverSocket.isClosed()) {

@@ -120,6 +120,14 @@ effect without a restart.
 
 ### Residual risk
 
+A forwarded `restore` or `import` still occupies its Undertow worker thread for as long as it runs,
+now up to `HA_PROXY_LONG_COMMAND_TIMEOUT` (1 h by default) rather than forever. That is the bug
+fixed - bounded instead of unbounded - but it is not the same as cheap: several concurrent forwarded
+restores still hold several workers for the duration. Handing the forward off to a thread that is not
+a request worker would remove even that, and is a different change from this one. Flagged rather than
+filed: nobody has hit it, and the shape of the fix depends on whether the client is meant to keep
+holding the connection.
+
 The two rows marked "filed" above still use an unbounded client: `/api/v1/batch`'s forward (#7542)
 and the Raft SQL-write forward (#7543). Both are outside this issue - different call paths, and
 their deadlines are separate policy questions (the batch forward streams a body of arbitrary size;
