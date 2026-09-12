@@ -195,7 +195,10 @@ public class XMLImporterFormat implements FormatImporter {
         // parser.getPosition(): THE LATTER IS THE UNDERLYING InputStream'S READ POSITION, WHICH A BUFFERING
         // XMLStreamReader FILLS FAR AHEAD OF THE EVENT IT HAS ACTUALLY HANDED BACK, MAKING THE BYTE BUDGET AS COARSE
         // AS ONE BUFFER FULL. getCharacterOffset() IS THE PARSER'S OWN LOGICAL POSITION IN THE DOCUMENT, THE SAME
-        // GRANULARITY CSVImporterFormat.analyze() ALREADY GETS FROM ITS TOKENIZER'S currentChar().
+        // GRANULARITY CSVImporterFormat.analyze() ALREADY GETS FROM ITS TOKENIZER'S currentChar(). ASSUMES THE
+        // FACTORY'S Location TRACKS IT (THE JDK's BUILT-IN STAX IMPLEMENTATION DOES); PER THE XMLStreamReader
+        // CONTRACT AN IMPLEMENTATION THAT DOES NOT IS ALLOWED TO ANSWER -1, WHICH WOULD MAKE THIS GUARD A SILENT
+        // NO-OP (-1 > limit IS NEVER true) RATHER THAN FAIL LOUDLY.
         if ((settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
             || (settings.parsingLimitBytes > 0 && xmlReader.getLocation().getCharacterOffset() > settings.parsingLimitBytes))
           break;

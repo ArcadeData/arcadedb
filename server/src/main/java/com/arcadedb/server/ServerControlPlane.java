@@ -1551,9 +1551,17 @@ public class ServerControlPlane {
     timer.schedule(new TimerTask() {
       @Override
       public void run() {
-        final long parsed = parsedCounter.getAsLong();
-        if (parsed > 0)
-          listener.onImportCounters(parsed, vertexCounter.get(), edgeCounter.get());
+        try {
+          final long parsed = parsedCounter.getAsLong();
+          if (parsed > 0)
+            listener.onImportCounters(parsed, vertexCounter.get(), edgeCounter.get());
+        } catch (final Exception ignored) {
+          // Same policy as the one-time lookup above: a tick that cannot report progress must not take the rest
+          // of them down with it. Without this, a failure here - parsedTotalSupplier()'s reflective invoke()
+          // wrapped as an unchecked exception, most plausibly - would propagate out of TimerTask.run() uncaught,
+          // which kills this Timer's background thread for good: every later tick for the rest of the import
+          // silently stops scheduling, with nothing in the log to say why.
+        }
       }
     }, 1000, 1000);
   }
