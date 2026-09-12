@@ -138,14 +138,18 @@ class Issue7347CommentLinesSniffingTest {
 
   /**
    * A single leading {@code /} is not a comment: the second character is PEEKED, so the line keeps its first
-   * character and is sniffed whole. Without the lookahead the {@code /} would be eaten and the row would arrive
-   * one character short.
+   * character. Without the lookahead the {@code /} is read to find out and cannot be given back, and the line
+   * arrives one character short - which for the source's FIRST line means a column named {@code id} where the
+   * source says {@code /id}.
+   * <p>
+   * The leading slash has to be on the first line for this to bite: comment detection looks at the head of the
+   * source and, once it has seen a line that is not a comment, never looks again.
    */
   @Test
-  void aLineOpeningWithASingleSlashIsData() throws Exception {
+  void aFirstLineOpeningWithASingleSlashIsData() throws Exception {
     final String databasePath = "target/databases/test-import-7347-slash";
     final File file = new File("target/importer-7347-slash.csv");
-    Files.writeString(file.toPath(), "path,name\n/usr/local,first\n/opt,second\n", StandardCharsets.UTF_8);
+    Files.writeString(file.toPath(), "/id,name\n/usr/local,first\n/opt,second\n", StandardCharsets.UTF_8);
 
     FileUtils.deleteRecursively(new File(databasePath));
     try {
@@ -154,8 +158,12 @@ class Issue7347CommentLinesSniffingTest {
 
       try (final Database db = new DatabaseFactory(databasePath).open()) {
         assertThat(db.countType("Path", true)).isEqualTo(2);
-        final Object path = db.query("sql", "select from Path where name = 'first'").nextIfAvailable().getProperty("path");
-        assertThat(path).as("the '/' that opens the value is still there").isEqualTo("/usr/local");
+        assertThat(db.getSchema().getType("Path").getPropertyNames())
+            .as("the '/' that opens the first line is data, so the column is named for the whole of it")
+            .contains("/id");
+        final Object path = db.query("sql", "select from Path where name = 'first'").nextIfAvailable()
+            .getProperty("/id");
+        assertThat(path).as("and the row under it is read whole too").isEqualTo("/usr/local");
       }
     } finally {
       final DatabaseFactory factory = new DatabaseFactory(databasePath);

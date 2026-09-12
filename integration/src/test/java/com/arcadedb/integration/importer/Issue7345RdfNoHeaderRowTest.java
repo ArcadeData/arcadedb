@@ -82,6 +82,49 @@ class Issue7345RdfNoHeaderRowTest {
     assertThat(importTriples("explicit-zero", 3, 0L)).containsEntry("createdEdges", 3L);
   }
 
+  /**
+   * The analysis side of the same convention, and the one {@code -edgesSkipEntries} cannot reach: the inherited
+   * {@code CSVImporterFormat.analyze()} read the source's first row as the COLUMN NAMES. For an RDF source that
+   * meant a one-statement file registered no type at all - the import died with "Type ... was not found" - and a
+   * longer one registered the edge type with a property per term of the first statement.
+   */
+  @Test
+  void aOneStatementSourceRegistersItsEdgeTypeWithOnlyTheLabelProperty() throws Exception {
+    final String databasePath = "target/databases/test-import-7345-analyze";
+    final File file = new File("target/importer-7345-analyze.txt");
+    Files.writeString(file.toPath(), "<http://a/s1> <http://a/rel> <http://a/o1> .\n", StandardCharsets.UTF_8);
+
+    FileUtils.deleteRecursively(new File(databasePath));
+    try (final Database seed = new DatabaseFactory(databasePath).create()) {
+      seed.transaction(() -> {
+        seed.getSchema().createVertexType("Node").createProperty("id", Type.STRING);
+        seed.getSchema().getType("Node").getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, new String[] { "id" });
+      });
+    }
+
+    try {
+      // No edge type created up front: registering it is the analysis's job, and the source has exactly one
+      // statement for the analysis to have consumed as a header.
+      final Map<String, Object> report = new Importer(new String[] { "-url", "file://" + file.getAbsolutePath(),
+          "-database", databasePath, "-edgeType", "Related" }).load();
+
+      assertThat(report).as("the single statement is the data it is").containsEntry("createdEdges", 1L);
+
+      try (final Database db = new DatabaseFactory(databasePath).open()) {
+        assertThat(db.getSchema().getType("Related").getPropertyNames())
+            .as("an RDF edge carries the predicate as 'label' and nothing else - not a property per term of "
+                + "whichever statement happened to come first")
+            .containsExactly("label");
+      }
+    } finally {
+      final DatabaseFactory factory = new DatabaseFactory(databasePath);
+      if (factory.exists())
+        factory.open().drop();
+      file.delete();
+      TestHelper.checkActiveDatabases();
+    }
+  }
+
   // -----------------------------------------------------------------------------------------------------------
 
   /**

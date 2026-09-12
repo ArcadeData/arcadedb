@@ -20,6 +20,8 @@ package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.AnalyzedEntity;
+import com.arcadedb.integration.importer.AnalyzedProperty;
+import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
@@ -36,10 +38,21 @@ public class RDFImporterFormat extends CSVImporterFormat {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
 
   /**
-   * The delimiter fallback the inherited {@code createCSVParser}/{@code analyze} resolve to: the generic
-   * {@code delimiter} option, then a comma. Only the direct instantiations in the test sources take this form -
-   * {@link com.arcadedb.integration.importer.SourceDiscovery} builds the format through
-   * {@link #RDFImporterFormat(String)} with the delimiter it detected.
+   * The one property {@link #load} puts on the edges it creates: the statement's predicate. Named here because
+   * {@link #analyze} declares it and the loop below writes it, and the two must agree.
+   */
+  private static final String LABEL_PROPERTY = "label";
+
+  /**
+   * No delimiter, so the inherited {@code createCSVParser}/{@code analyze} fall back to the generic
+   * {@code delimiter} option and then to a comma.
+   * <p>
+   * Nothing in production builds the format this way: {@link com.arcadedb.integration.importer.SourceDiscovery}
+   * is the only place one is constructed, and it always hands over the separator it took from between the first
+   * statement's terms through {@link #RDFImporterFormat(String)}. This form exists for a caller that drives
+   * {@code load()} directly with settings already carrying the delimiter - the format's own tests - and for parity
+   * with {@link CSVImporterFormat}'s own pair. A production caller reaching for it is a caller that has a detected
+   * separator to pass and is dropping it (issue #7315).
    */
   public RDFImporterFormat() {
     super();
@@ -127,7 +140,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
             new Object[] { v2Id }, true,
             settings.edgeTypeName,
             true,
-            "label",
+            LABEL_PROPERTY,
             edgeLabel);
 
         context.createdEdges.incrementAndGet();
@@ -193,6 +206,33 @@ public class RDFImporterFormat extends CSVImporterFormat {
               readEdges - committedEdges);
       }
     }
+  }
+
+  /**
+   * The type an RDF source maps to, registered WITHOUT reading a statement: every statement of every RDF source has
+   * the same three terms, and {@link #load} turns each into one edge of {@code settings.edgeTypeName} carrying the
+   * predicate as {@value #LABEL_PROPERTY}. There is nothing in the source to discover.
+   * <p>
+   * Inheriting {@link CSVImporterFormat#analyze} instead meant the source's FIRST statement was consumed as the
+   * column names, which is the same "the first line is a header" convention {@link #defaultHeaderSkipEntries()}
+   * corrects on the load side and is just as wrong here, in two ways that {@code -edgesSkipEntries} cannot reach:
+   * a one-statement source registered no type at all, so the import died with "Type ... was not found"; and a
+   * longer one registered the EDGE type with a property per term of the first statement - {@code <http://a/s1>},
+   * {@code <http://a/rel>}, {@code <http://a/o1>} and {@code .} - none of which any edge ever carries
+   * (issue #7345, raised in review of #7497).
+   * <p>
+   * The property is declared with a {@code null} sample deliberately: {@link AnalyzedProperty#endParsing()} infers
+   * a numeric type only from a sample it has actually seen, so no sample leaves it the {@code STRING} a predicate
+   * IRI is, while an empty-string sample would have made it a {@code LONG}.
+   */
+  @Override
+  public SourceSchema analyze(final AnalyzedEntity.EntityType entityType, final Parser parser,
+      final ImporterSettings settings, final AnalyzedSchema analyzedSchema) {
+    analyzedSchema.getOrCreateEntity(settings.edgeTypeName, AnalyzedEntity.EntityType.EDGE)
+        .getOrCreateProperty(LABEL_PROPERTY, null);
+    analyzedSchema.endParsing();
+
+    return new SourceSchema(this, parser.getSource(), analyzedSchema);
   }
 
   /**
