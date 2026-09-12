@@ -679,9 +679,10 @@ function addPeerPrompt() {
     })
     .fail(function(jqXHR) {
       globalNotifyError(jqXHR.responseText);
-      // Refresh on failure too: a 503 from this route means the peer WAS added and only its security seed did
-      // not land (issue #7521), so the membership shown here has changed even though the call reports an error.
-      updateCluster();
+      // 503 only: that is the one failure from this route where the peer WAS added and just its security seed
+      // did not land (issue #7521), so the membership shown here has changed even though the call reports an
+      // error. A 400/401/403 never reached the membership change, and refreshing on those would say nothing.
+      if (jqXHR.status === 503) updateCluster();
     });
   });
 }

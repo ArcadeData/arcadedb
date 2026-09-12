@@ -103,8 +103,11 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
     if (failedSeeds.isEmpty())
       return new ExecutionResponse(200, response.toString());
 
-    // 'error' short and 'detail' long, which is the shape AbstractServerHttpHandler.sendErrorResponse produces
-    // and which Studio's globalNotifyError renders as a notification title plus body.
+    // 'error' short and 'detail' long. Built here rather than through AbstractServerHttpHandler.sendErrorResponse,
+    // which serves exceptions and conceals 'detail' in production mode: this is a fixed operational sentence on a
+    // root-only route, not a cause chain, and concealing it would remove the only thing the operator can act on.
+    // The field NAMES match that method's, because Studio's globalNotifyError reads 'error' as the notification
+    // title and 'detail' as its body.
     final String documents = String.join(", ", failedSeeds);
     response.put("error", "Peer " + peerId + " added, but these security documents could NOT be seeded to it: "
         + documents);

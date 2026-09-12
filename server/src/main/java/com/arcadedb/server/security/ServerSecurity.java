@@ -65,6 +65,16 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private static final String                          SEED_USERS           = "users";
   private static final String                          SEED_GROUPS          = "groups";
   private static final String                          SEED_API_TOKENS      = "API tokens";
+  /**
+   * Ceilings on what {@code arcadedb.ha.securitySeedRetries} and {@code arcadedb.ha.securitySeedRetryBaseMs}
+   * can turn into. Both are operator-supplied and both are spent inside an HTTP request that has already made a
+   * Raft membership change, so neither may be taken at face value: a retry count of {@code Integer.MAX_VALUE}
+   * is an unbounded stream of Raft submissions on a request thread, and a base delay near {@code Long.MAX_VALUE}
+   * is a pause no operator meant. Clamped rather than refused, so a mistyped setting degrades instead of
+   * breaking the route.
+   */
+  private static final int                             MAX_SEED_ATTEMPTS       = 10;
+  private static final long                            MAX_SEED_RETRY_PAUSE_MS = 30_000L;
   private final        ArcadeDBServer                  server;
   private final        SecurityUserFileRepository      usersRepository;
   private final        SecurityGroupFileRepository     groupRepository;
@@ -1174,9 +1184,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * An interrupt stops the retrying rather than swallowing the flag: the interrupt status is restored and what
    * is still unseeded is returned, so the caller reports the honest partial result.
    *
-   * @param maxAttempts  attempts in total per document; anything below 1 is treated as 1
+   * @param maxAttempts  attempts in total per document, clamped into {@code [1, 10]}
    * @param retryBaseMs  base backoff in milliseconds; the pause before retry n (1-based) is
-   *                     {@code retryBaseMs * 2^(n-1)}. 0 retries without pausing
+   *                     {@code retryBaseMs * 2^(n-1)} saturated at 30 s. 0 or less retries without pausing
    *
    * @return the names of the documents that could not be seeded, empty when all three were submitted
    */
@@ -1185,7 +1195,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     if (ha == null)
       return List.of();
 
-    final int attempts = Math.max(1, maxAttempts);
+    final int attempts = Math.clamp(maxAttempts, 1, MAX_SEED_ATTEMPTS);
+    if (attempts != maxAttempts)
+      LogManager.instance().log(this, Level.WARNING,
+          "%s is %d, which is outside [1, %d]; seeding each security document at most %d times instead",
+          GlobalConfiguration.HA_SECURITY_SEED_RETRIES.getKey(), maxAttempts, MAX_SEED_ATTEMPTS, attempts);
+
     List<String> failed = seedOnce(ha, null);
 
     for (int retry = 1; retry < attempts && !failed.isEmpty(); retry++) {
@@ -1220,17 +1235,36 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * stops the retrying - the interrupt flag is restored so the caller's thread keeps it.
    */
   private static boolean pauseBeforeRetry(final long retryBaseMs, final int retry) {
-    if (retryBaseMs <= 0)
+    final long pause = backoffMs(retryBaseMs, retry);
+    if (pause <= 0)
       return true;
     try {
-      // Shift on the retry index, not on an unbounded counter: attempts are bounded by maxAttempts, which is
-      // configuration, so cap the exponent as well rather than trusting it to stay small.
-      Thread.sleep(retryBaseMs << Math.min(retry - 1, 16));
+      Thread.sleep(pause);
       return true;
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       return false;
     }
+  }
+
+  /**
+   * {@code retryBaseMs} doubled once per retry already made, saturating at {@link #MAX_SEED_RETRY_PAUSE_MS}.
+   * <p>
+   * Saturating rather than shifting, because both inputs are configuration: {@code Long.MAX_VALUE << 1} is
+   * <i>negative</i>, and a negative argument makes {@code Thread.sleep} throw {@code IllegalArgumentException}
+   * out of a method whose contract is to return the documents that could not be seeded. The loop stops as soon
+   * as the value reaches the ceiling, so nothing is ever doubled past it and the overflow has no way in.
+   */
+  static long backoffMs(final long retryBaseMs, final int retry) {
+    if (retryBaseMs <= 0)
+      return 0L;
+    long pause = retryBaseMs;
+    for (int i = 1; i < retry; i++) {
+      if (pause >= MAX_SEED_RETRY_PAUSE_MS)
+        return MAX_SEED_RETRY_PAUSE_MS;
+      pause <<= 1;
+    }
+    return Math.min(pause, MAX_SEED_RETRY_PAUSE_MS);
   }
 
   private void seed(final List<String> failed, final String what, final Runnable seeding) {

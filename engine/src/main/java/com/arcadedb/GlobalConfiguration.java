@@ -2027,11 +2027,11 @@ public enum GlobalConfiguration {
       Long.class, 5000L),
 
   HA_SECURITY_SEED_RETRIES("arcadedb.ha.securitySeedRetries", SCOPE.SERVER,
-      "Attempts, in total, at seeding each security document (users, groups, API tokens) to a peer that has just been added to the cluster. The seed is submitted as a Raft entry, so its usual failure is a momentary loss of quorum - the same condition that makes adding a peer interesting - and only the documents that failed are retried. 1 disables the retry. When the budget is exhausted the caller is answered with a failure naming the documents that did not land, never a success.",
+      "Attempts, in total, at seeding each security document (users, groups, API tokens) to a peer that has just been added to the cluster. The seed is submitted as a Raft entry, so its usual failure is a momentary loss of quorum - the same condition that makes adding a peer interesting - and only the documents that failed are retried. 1 disables the retry. The value is clamped into [1, 10], because the attempts are spent inside the request that added the peer. When the budget is exhausted the caller is answered with a failure naming the documents that did not land, never a success.",
       Integer.class, 3),
 
   HA_SECURITY_SEED_RETRY_BASE_MS("arcadedb.ha.securitySeedRetryBaseMs", SCOPE.SERVER,
-      "Base delay in milliseconds for the exponential backoff between security-document seed retries. The delay before retry n (1-based) is baseMs * 2^(n-1).",
+      "Base delay in milliseconds for the exponential backoff between security-document seed retries. The delay before retry n (1-based) is baseMs * 2^(n-1), saturating at 30000 so no single pause can exceed half a minute whatever is configured. 0 or less retries without pausing.",
       Long.class, 500L),
 
   HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS("arcadedb.ha.snapshotInstallBackupWaitMs", SCOPE.SERVER,

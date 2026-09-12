@@ -162,9 +162,16 @@ public class ServerControlPlane {
    * the one it derives for itself from the same address, and an operator writes here what they would
    * have written in the configuration.
    * <p>
-   * Equivalent to {@code POST /api/v1/cluster/peer} and deliberately so: the same atomic Raft
-   * membership change, and the same users seed afterwards, because {@code server-users.jsonl} lives
-   * outside the database directory and a snapshot install does not carry it.
+   * The same atomic Raft membership change as {@code POST /api/v1/cluster/peer}, and deliberately so,
+   * followed by the same seed of the three security documents - {@code server-users.jsonl},
+   * {@code server-groups.json} and {@code server-api-tokens.json} - which live outside the database
+   * directory, so a snapshot install carries none of them.
+   * <p>
+   * The two verbs are <b>not</b> equivalent in what they do when that seed does not land. This one
+   * stays best-effort, which is what issue #7401 decided and what
+   * {@code Issue7401ServerControlPlaneConnectClusterTest} pins: the server is a committed member by
+   * the time the seed runs, so a failed seed is logged at SEVERE and the join still reports success.
+   * The route answers 503 in the same situation (issue #7521). Reconciling the two is issue #7550.
    * <p>
    * <b>Note the direction.</b> The address names the server being <em>added</em>; the cluster that
    * grows is the one this server belongs to. That is the opposite of the pre-Raft implementation this

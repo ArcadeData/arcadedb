@@ -166,6 +166,41 @@ class Issue7521SecuritySeedRetryTest {
   }
 
   /**
+   * The other end of the budget. Both settings are operator-supplied and both are spent inside the request that
+   * already made the membership change, so an unclamped {@code Integer.MAX_VALUE} would be an unbounded stream
+   * of Raft submissions on a request thread rather than a generous retry.
+   */
+  @Test
+  void anAbsurdBudgetIsClampedRatherThanHonoured() {
+    final SeedingHAPlugin ha = new SeedingHAPlugin(security);
+    ha.failUsersTimes = Integer.MAX_VALUE;
+    server.setHA(ha);
+
+    assertThat(security.seedSecurityStateClusterWide(Integer.MAX_VALUE, 0L)).containsExactly("users");
+
+    assertThat(ha.userDocuments).as("clamped to the 10-attempt ceiling").hasSize(10);
+  }
+
+  /**
+   * A base delay near {@code Long.MAX_VALUE} used to be shifted left, and {@code Long.MAX_VALUE << 1} is
+   * <b>negative</b> - which makes {@code Thread.sleep} throw {@code IllegalArgumentException} out of a method
+   * whose whole contract is to return the documents that could not be seeded. The backoff saturates instead.
+   */
+  @Test
+  void anAbsurdBackoffSaturatesInsteadOfOverflowingNegative() {
+    assertThat(ServerSecurity.backoffMs(Long.MAX_VALUE, 1)).isEqualTo(30_000L);
+    assertThat(ServerSecurity.backoffMs(Long.MAX_VALUE, 9)).isEqualTo(30_000L);
+    assertThat(ServerSecurity.backoffMs(500L, 1)).isEqualTo(500L);
+    assertThat(ServerSecurity.backoffMs(500L, 2)).isEqualTo(1_000L);
+    assertThat(ServerSecurity.backoffMs(500L, 3)).isEqualTo(2_000L);
+    assertThat(ServerSecurity.backoffMs(500L, 9)).as("saturates rather than growing to two minutes")
+        .isEqualTo(30_000L);
+    assertThat(ServerSecurity.backoffMs(0L, 4)).isZero();
+    assertThat(ServerSecurity.backoffMs(-1L, 4)).as("a negative setting is no pause, never a negative sleep")
+        .isZero();
+  }
+
+  /**
    * The point of the monitor, applied to the retry. A retry that replayed the payload read before the first
    * attempt would carry a pre-revocation document and put the revoked token back on every node in the cluster -
    * the exact failure the seed's monitor exists to prevent, arriving through the door added to fix a different
@@ -288,6 +323,8 @@ class Issue7521SecuritySeedRetryTest {
 
     assertThat(ha.joined).isEmpty();
     assertThat(ha.userDocuments).isEmpty();
+    assertThat(ha.groupDocuments).as("validation runs before any document is submitted").isEmpty();
+    assertThat(ha.apiTokenDocuments).isEmpty();
   }
 
   // -------------------------------------------------------------------------------------------
