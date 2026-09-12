@@ -24,6 +24,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -69,6 +71,22 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class SecurityEntryCapabilityGate {
+
+  /**
+   * How often a refusal is reported per capability. The refusal already travels to the caller as a 409, so this
+   * log line exists for the operator who is NOT the caller - the one watching the cluster during a rolling
+   * upgrade while somebody's deployment script quietly retries a group change (PR #7555 review). Throttled
+   * because such a script retries in a loop and a line per attempt would bury the one that matters; a minute is
+   * far shorter than the #7219 delta-withheld throttle because this event is an operator action rather than a
+   * per-DDL decision, and so is rare by construction.
+   */
+  private static final long REFUSAL_LOG_THROTTLE_MS = 60_000L;
+
+  /**
+   * When each capability's refusal was last reported. Bounded by construction: the keys can only ever be the
+   * tokens {@link #capabilityFor} returns, which is a closed set.
+   */
+  private static final Map<String, Long> LAST_REFUSAL_LOG = new ConcurrentHashMap<>();
 
   private SecurityEntryCapabilityGate() {
     // utility class
@@ -134,11 +152,17 @@ final class SecurityEntryCapabilityGate {
     if (missing.isEmpty())
       return;
 
+    final String message = refusal(what, type, capability, missing, raft.getPeerCapabilityRegistry());
+
+    // Also said in THIS node's log, not only to the caller. The caller may be a deployment script that swallows
+    // the 409; the operator watching the rolling upgrade is the one who has to act on it (PR #7555 review).
+    if (shouldLogRefusal(capability, System.currentTimeMillis()))
+      LogManager.instance().log(SecurityEntryCapabilityGate.class, Level.WARNING, "%s", message);
+
     // The peers and the token travel as FIELDS as well as in the message: production mode conceals the message
     // (AbstractServerHttpHandler.buildErrorBody drops 'detail'), and a refusal that could not name the lagging
     // node is the silence this issue exists to end (PR #7555 review).
-    throw new ClusterCapabilityNotReadyException(
-        refusal(what, type, capability, missing, raft.getPeerCapabilityRegistry()), capability, missing);
+    throw new ClusterCapabilityNotReadyException(message, capability, missing);
   }
 
   /**
@@ -171,6 +195,28 @@ final class SecurityEntryCapabilityGate {
         .append("=false only to submit it anyway, knowing that a peer which genuinely cannot decode it will halt.");
 
     return message.toString();
+  }
+
+  /**
+   * Whether this refusal of {@code capability} is the one to report, at wall-clock {@code now}.
+   * <p>
+   * Racy by design: two admin threads crossing the window at the same instant cost one duplicate line, which is a
+   * better trade than a lock on a path that is about to throw anyway. Package-private and taking the clock so the
+   * decision can be pinned without sleeping.
+   */
+  // @VisibleForTesting
+  static boolean shouldLogRefusal(final String capability, final long now) {
+    final Long last = LAST_REFUSAL_LOG.get(capability);
+    if (last != null && now - last < REFUSAL_LOG_THROTTLE_MS)
+      return false;
+    LAST_REFUSAL_LOG.put(capability, now);
+    return true;
+  }
+
+  /** Drops the throttle state, so one test's refusal cannot suppress the next test's log line. */
+  // @VisibleForTesting
+  static void resetRefusalLogThrottle() {
+    LAST_REFUSAL_LOG.clear();
   }
 
   /** Reads the interlock off the SERVER configuration, the scope the setting is declared in. */

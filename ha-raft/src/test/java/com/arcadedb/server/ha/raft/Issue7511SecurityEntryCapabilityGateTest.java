@@ -229,6 +229,27 @@ class Issue7511SecurityEntryCapabilityGateTest {
     assertThat(message).contains(GlobalConfiguration.HA_SECURITY_ENTRY_CAPABILITY_GATE.getKey());
   }
 
+  /**
+   * The refusal is also reported in this node's own log, because the caller may be a deployment script that
+   * swallows the 409 while the operator watching the rolling upgrade is the one who has to act (PR #7555 review).
+   * Throttled per capability, so a script retrying in a loop cannot bury the line that matters - and per
+   * CAPABILITY rather than globally, so a group refusal does not silence the token refusal behind it.
+   */
+  @Test
+  void aRefusalIsReportedOnceAndThenThrottledPerCapability() {
+    SecurityEntryCapabilityGate.resetRefusalLogThrottle();
+    final long t0 = 1_000_000L;
+
+    assertThat(SecurityEntryCapabilityGate.shouldLogRefusal(PeerCapabilities.SECURITY_GROUPS_ENTRY, t0))
+        .as("the first refusal is always reported").isTrue();
+    assertThat(SecurityEntryCapabilityGate.shouldLogRefusal(PeerCapabilities.SECURITY_GROUPS_ENTRY, t0 + 1_000L))
+        .as("a retry a second later is the same condition and is not reported again").isFalse();
+    assertThat(SecurityEntryCapabilityGate.shouldLogRefusal(PeerCapabilities.SECURITY_API_TOKENS_ENTRY, t0 + 1_000L))
+        .as("but the other capability's first refusal is its own event, not a repeat of this one").isTrue();
+    assertThat(SecurityEntryCapabilityGate.shouldLogRefusal(PeerCapabilities.SECURITY_GROUPS_ENTRY, t0 + 60_001L))
+        .as("and once the window has passed the condition is reported again").isTrue();
+  }
+
   // -------------------------------------------------------------------------------------------------------
   // 5. The caller: nothing is submitted on a refusal
   // -------------------------------------------------------------------------------------------------------

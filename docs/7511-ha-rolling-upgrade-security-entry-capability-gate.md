@@ -318,3 +318,28 @@ a shared lock was rejected rather than forgotten, because this method runs on a 
 wait on both sides of a cycle.
 
 No deferred items.
+
+### Cycle 2 - `46b6c36` - CodeRabbit accepted and resolved; claude raised 4 notes, 1 acted on
+
+CodeRabbit re-reviewed the fix, agreed with the reasoning for putting the capability and peers - and not the
+free-form reasons - into `exceptionArgs`, and **resolved its own thread**. No new findings.
+
+claude's review said nothing blocks the merge. Its four notes:
+
+1. *The availability trade (an unreachable peer refuses a revocation) is by design* - flagged for visibility only.
+   No change; already documented in the setting, `ha-raft/CLAUDE.md`, the PR body and Residual risk.
+2. *"Might be worth a WARNING-level log line specifically when the round finds something missing, since that is
+   the case an operator most needs surfaced without cranking log verbosity."* **Acted on.** The FINE line added in
+   cycle 1 reports every round; this adds a WARNING carrying the whole refusal when the gate actually refuses,
+   throttled per capability at 60 s. The audience is the operator who is NOT the caller - a deployment script that
+   swallows the 409 leaves nobody else told - and the throttle is what stops that script's retry loop burying the
+   line. Per capability rather than globally, so a group refusal does not silence the token refusal behind it.
+   Pinned by `aRefusalIsReportedOnceAndThenThrottledPerCapability` against an injected clock.
+3. *"Worth confirming whatever consumes the returned failed list surfaces it somewhere an operator would actually
+   notice."* **Verified, already handled outside this diff.** `PostAddPeerHandler` (lines 74-89) puts the failed
+   documents in the `addPeer` HTTP response under `warning` - "Peer added, but the following security documents
+   could NOT be seeded to it: ..." - and logs a WARNING naming the peer. No change needed.
+4. *The downgrade path is a real residual gap for anyone who reads only the code.* Agreed and already recorded in
+   Residual risk and in `ha-raft/CLAUDE.md`'s "Negotiation governs what is written next" section. No change.
+
+No deferred items.
