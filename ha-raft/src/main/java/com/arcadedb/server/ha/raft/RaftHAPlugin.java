@@ -417,6 +417,41 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       raftHAServer.stop();
   }
 
+  /**
+   * Joins the server named by {@code serverAddress} to this cluster (issue #7401).
+   * <p>
+   * The whole of it is {@link #addPeer(String, String, String)} with the arguments derived from one
+   * {@code arcadedb.ha.serverList} entry, which is what makes the verb a thin alias for
+   * {@code POST /api/v1/cluster/peer} rather than a second way to grow a cluster: the membership change
+   * is the same atomic {@code Mode.ADD}, issued by the same {@code RaftClusterManager}, with the same
+   * retry and the same idempotence when the peer is already a member.
+   * <p>
+   * Not leader-routed, matching the add-peer route and {@code PostServerCommandHandler}, which forwards
+   * neither half of the cluster pair: the Ratis client underneath {@code addPeer} sends the
+   * configuration change to the leader itself.
+   */
+  @Override
+  public void connectCluster(final String serverAddress) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      throw new ServerException("Raft HA server not started");
+
+    final RaftPeerAddressResolver.JoinTarget target = RaftPeerAddressResolver.parseJoinTarget(serverAddress,
+        configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_PORT),
+        configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)
+            ? configuration.getValueAsString(GlobalConfiguration.HA_K8S_DNS_SUFFIX)
+            : "");
+
+    final RaftPeerId peerId = target.peer().getId();
+    raft.addPeer(peerId.toString(), target.peer().getAddress(), target.name());
+
+    // After addPeer, not before: RaftClusterManager.addPeer derives an HTTP address from the Raft port
+    // plus THIS node's HTTP offset, which is right only for a homogeneous cluster. An entry that
+    // declared its own HTTP port said so, and that answer wins over the derived one.
+    if (target.httpAddress() != null)
+      raft.getHttpAddresses().put(peerId, target.httpAddress());
+  }
+
   @Override
   public void addPeer(final String peerId, final String address) {
     addPeer(peerId, address, null);

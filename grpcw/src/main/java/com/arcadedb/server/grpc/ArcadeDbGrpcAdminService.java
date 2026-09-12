@@ -913,19 +913,18 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * {@code PostServerCommandHandler}'s dispatch chain that had no RPC.
    * <p>
    * A thin adapter over the same {@code ServerControlPlane.connectCluster} the HTTP {@code connect
-   * cluster} verb calls, so the two transports cannot drift on what the verb does. Today that shared
-   * method refuses unconditionally - the current HA stack has never implemented a client-initiated
-   * join - and the refusal reaches the caller as {@code FAILED_PRECONDITION} through the
-   * {@code OperationNotAvailableException} arm of {@link #toStatusException}. That is the same answer
-   * the HTTP caller gets, from the same method, which is the point: parity of the contract, not a
-   * working join. Issue #7401 carries the decision on whether to implement the join or retire the
-   * verb.
+   * cluster} verb calls, so the two transports cannot drift on what the verb does. Issue #7401 made
+   * that shared method join the named server to the cluster; the refusals it can still raise reach the
+   * caller as {@code FAILED_PRECONDITION} (HA not enabled, or an HA implementation with no runtime
+   * membership - the {@code OperationNotAvailableException} arm of {@link #toStatusException}) or as
+   * {@code INVALID_ARGUMENT} (a blank or malformed address - the {@code IllegalArgumentException} arm),
+   * which are the same two answers the HTTP caller gets as 500 and 400 from the same method.
    * <p>
-   * The address is passed through unvalidated because the HTTP verb passes it through unvalidated:
-   * {@code extractTarget} yields {@code ""} for a bare {@code connect cluster} and the shared method
-   * refuses before reading its argument. Root-only, as {@code checkRootUser} makes the HTTP verb, and
-   * not leader-routed, because {@code PostServerCommandHandler} does not forward either half of the
-   * pair to the leader.
+   * The address is passed through unvalidated <em>here</em> because the shared method validates it for
+   * both transports; a gate of this handler's own would be the drift this pair exists to prevent.
+   * Root-only, as {@code checkRootUser} makes the HTTP verb, and not leader-routed, because
+   * {@code PostServerCommandHandler} does not forward either half of the pair to the leader and the
+   * Raft client underneath the membership change reaches the leader itself.
    */
   @Override
   public void connectCluster(final ConnectClusterRequest req, final StreamObserver<ConnectClusterResponse> resp) {

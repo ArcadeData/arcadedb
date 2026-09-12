@@ -1039,9 +1039,9 @@ service ArcadeDbAdminService {
   rpc DisconnectCluster (DisconnectClusterRequest) returns (DisconnectClusterResponse);
   // The other half of the cluster pair (issue #7400). A thin adapter over the same
   // ServerControlPlane.connectCluster the HTTP `connect cluster` verb calls, so the two transports
-  // cannot answer the verb differently. The current HA stack does not implement a client-initiated
-  // join, so today the shared implementation refuses and this answers FAILED_PRECONDITION - see
-  // issue #7401.
+  // cannot answer the verb differently. Issue #7401 made that shared method join the named server to
+  // the cluster instead of refusing unconditionally; a server whose HA implementation cannot change
+  // membership at runtime, or that is not running HA at all, still answers FAILED_PRECONDITION.
   rpc ConnectCluster    (ConnectClusterRequest)    returns (ConnectClusterResponse);
 
   // Read-only administrative view of the server's open HTTP authentication sessions. gRPC has no
@@ -1583,10 +1583,12 @@ message DisconnectClusterResponse {}
 
 message ConnectClusterRequest {
   DatabaseCredentials credentials = 1;
-  // The `<host>:<port>` of the server to join, as the HTTP verb's `connect cluster <address>`
-  // argument. Not validated here: the HTTP verb accepts an empty argument too and the shared
-  // implementation refuses before reading it, so rejecting it on this transport alone would make
-  // the two disagree on the same input.
+  // The server to join, as the HTTP verb's `connect cluster <address>` argument: one entry of
+  // arcadedb.ha.serverList - `host`, `host:raftPort`, the longer positional forms or the
+  // `host:{raft:..,http:..}` object form, optionally prefixed `name@`. Not validated here: the shared
+  // implementation validates it for both transports, so an extra gate on this one would make them
+  // disagree on the same input. An empty value is INVALID_ARGUMENT, the status that matches the 400
+  // the HTTP verb answers for a bare `connect cluster` (issue #7401).
   string server_address = 2;
 }
 message ConnectClusterResponse {}

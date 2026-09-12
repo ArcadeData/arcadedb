@@ -131,8 +131,11 @@ public class CoreApiSpec implements OpenApiContributor {
         create user, drop user, shutdown, set server setting, get server events, align database, \
         connect cluster <address>, disconnect cluster. \
         Both restore and import support SSE progress streaming via Accept: text/event-stream header. \
-        connect cluster is dispatched but not implemented by the current HA implementation and always \
-        fails; use the cluster configuration to join nodes""");
+        connect cluster <address> adds the server at <address> to this server's cluster - the operator \
+        alias of POST /api/v1/cluster/peer - where <address> is one entry of arcadedb.ha.serverList \
+        ([name@]host[:raftPort[:httpPort]] or the host:{raft:..,http:..} object form). It answers 400 \
+        for a blank or malformed address and 500 when this server is not running an HA implementation \
+        that supports runtime membership""");
     postOp.setOperationId("executeServerCommand");
     postOp.addTagsItem("Server");
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));

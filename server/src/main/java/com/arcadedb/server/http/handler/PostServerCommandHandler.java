@@ -221,10 +221,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private void connectCluster(final String serverAddress) {
-    // Always throws: the current HA implementation does not support it. Counted first, because there
-    // is no success to count after - which is what the moved implementation did too.
-    Metrics.counter("http.connect-cluster").increment();
     controlPlane.connectCluster(serverAddress);
+    Metrics.counter("http.connect-cluster").increment();
   }
 
   private void disconnectCluster() {

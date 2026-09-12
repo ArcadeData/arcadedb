@@ -149,28 +149,83 @@ public class ServerControlPlane {
 
   /**
    * The {@code connect cluster} command, shared by the HTTP verb and the gRPC {@code ConnectCluster}
-   * RPC (issue #7400). Kept here with the rest so the command set is complete in one place; it has
-   * never been implemented by the current HA stack, and whether to implement the join or retire the
-   * verb is issue #7401.
+   * RPC: joins the server named by {@code serverAddress} to this node's cluster (issue #7401, which
+   * decided to implement the verb rather than retire it; #7400 had already made both transports reach
+   * this one method).
    * <p>
-   * The refusal names the address the caller asked for, as the rest of this class names the user,
-   * group or backup file a command could not act on. That is the caller's own argument echoed back,
-   * so it tells an operator which of several join attempts failed - and it is the only thing that
-   * makes the argument observable from outside while the operation itself does nothing with it, so
-   * a transport that dropped the parameter on the way here cannot do so unnoticed.
+   * {@code serverAddress} is <b>one entry of {@code arcadedb.ha.serverList}</b> - {@code host},
+   * {@code host:raftPort}, the longer positional forms, the {@code host:&#123;raft:..,http:..&#125;}
+   * object form, any of them optionally prefixed {@code name@}. The HA implementation parses it with
+   * the parser the configured server list goes through, so the peer id the joined server receives is
+   * the one it derives for itself from the same address, and an operator writes here what they would
+   * have written in the configuration.
    * <p>
-   * Not null-guarded. Both callers found by
-   * {@code grep -rn --include='*.java' "\.connectCluster(" --exclude-dir=target .} on the main
-   * sources pass a value that cannot be null: {@code PostServerCommandHandler} passes
-   * {@code extractTarget}'s result, which is {@code ""} or a substring, and
-   * {@code ArcadeDbGrpcAdminService} passes a protobuf string field, which defaults to {@code ""}.
-   * A null from some future caller renders as {@code 'null'} in the message rather than throwing,
-   * so the guard would buy nothing.
+   * Equivalent to {@code POST /api/v1/cluster/peer} and deliberately so: the same atomic Raft
+   * membership change, and the same users seed afterwards, because {@code server-users.jsonl} lives
+   * outside the database directory and a snapshot install does not carry it.
+   * <p>
+   * <b>Note the direction.</b> The address names the server being <em>added</em>; the cluster that
+   * grows is the one this server belongs to. That is the opposite of the pre-Raft implementation this
+   * verb had in 2023 ({@code HAServer.connectToLeader}), where the local node dialled the address and
+   * joined whatever cluster answered. Under Raft that reading is not a small change and is not safe to
+   * offer as one: a node that is already running has a Raft log of its own, and inserting it into
+   * another group whose log it does not share is the split-brain the leader-side membership change
+   * exists to prevent. The Kubernetes auto-join does self-insert, and does it from {@code start()} and
+   * only while this node knows no leader of its own - see {@code KubernetesAutoJoin}'s retry
+   * continuation condition. Joining a foreign cluster at runtime is a separate feature, tracked as
+   * issue #7515.
+   * <p>
+   * Every refusal names the address, so an operator with several join attempts in flight can tell
+   * which one failed:
+   * <ul>
+   *   <li>a blank address is an {@link IllegalArgumentException} - HTTP 400, gRPC
+   *       {@code INVALID_ARGUMENT} - because the command cannot act without one;</li>
+   *   <li>HA not enabled at all, and an HA implementation that cannot change membership at runtime,
+   *       are both {@link OperationNotAvailableException} - HTTP 500, gRPC
+   *       {@code FAILED_PRECONDITION} - a precondition of this server, not a fault of the request.</li>
+   * </ul>
+   * <b>Not leader-routed</b>, matching {@code POST /api/v1/cluster/peer} and matching
+   * {@code PostServerCommandHandler}, which forwards neither half of the cluster pair: the Raft client
+   * underneath the membership change sends it to the leader itself.
    */
   public void connectCluster(final String serverAddress) {
 
-    throw new OperationNotAvailableException("Connect cluster to '" + serverAddress
-        + "' is not supported by the current HA implementation. Use the cluster configuration to join nodes.");
+    if (serverAddress == null || serverAddress.isBlank())
+      throw new IllegalArgumentException(
+          "Connect cluster requires the address of the server to join, as [name@]host[:raftPort[:httpPort]]");
+
+    // Not requireHA(), because that refusal would not name the address, and the address is the only
+    // part of this command a caller can get wrong on the way in - the property #7400's tests pin from
+    // both transports.
+    final HAServerPlugin ha = server.getHA();
+    if (ha == null)
+      throw new OperationNotAvailableException("Cannot connect '" + serverAddress
+          + "' to the cluster: ArcadeDB is not running with High Availability module enabled. Please add this setting at startup: -Darcadedb.ha.enabled=true");
+
+    try {
+      ha.connectCluster(serverAddress);
+    } catch (final UnsupportedOperationException e) {
+      // What this is for is HAServerPlugin.connectCluster's default - an HA implementation with no
+      // runtime membership - which is a precondition of this server and must not reach gRPC as
+      // INTERNAL through the unchecked-exception path. The arm cannot tell that apart from an
+      // UnsupportedOperationException raised deeper in a working implementation, so it relays the
+      // message rather than asserting which one it caught: what it changes is the status, and a
+      // request that cannot succeed by being retried is a precondition failure either way.
+      throw new OperationNotAvailableException(
+          "Cannot connect '" + serverAddress + "' to the cluster: " + e.getMessage());
+    }
+
+    // Seed the newly joined peer with the current users file, exactly as PostAddPeerHandler does after
+    // its own addPeer: server-users.jsonl lives under <server-root>/config/, outside the database
+    // directory, so snapshot install does not cover it and the new peer would run with a stale user set
+    // until the next cluster-wide user mutation. Best-effort, as it is there: the peer is already a
+    // committed member and a failure here does not - and must not - roll that back.
+    try {
+      ha.replicateSecurityUsers(server.getSecurity().getUsersJsonPayload());
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Users seed to '%s' after connect cluster failed (best-effort): %s", serverAddress, e.getMessage());
+    }
   }
 
   // ---------------------------------------------------------------------------------------------

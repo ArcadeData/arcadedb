@@ -37,10 +37,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * has always called - so what the two transports answer for the same input is now a property worth
  * pinning from both ends rather than from one.
  * <p>
- * The verb still refuses: the current HA stack has never implemented a client-initiated join, and
- * whether to implement it or retire the verb is issue #7401. What must hold is that the refusal is
- * the <em>same</em> refusal, naming the address the caller asked for, on whichever transport the
- * caller used.
+ * Issue #7401 has since made the verb a real join, so what this fixture - a server with no HA at all -
+ * exercises is the refusal path. What must hold is unchanged and is the reason the class survives that:
+ * the refusal is the <em>same</em> refusal, naming the address the caller asked for, on whichever
+ * transport the caller used.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
@@ -60,21 +60,25 @@ class Issue7400ConnectClusterHttpIT extends BaseGraphServerTest {
   void connectClusterIsRefusedAndNamesTheAddress() throws Exception {
     final HttpResponse<String> response = executeServerCommand("connect cluster " + PEER_ADDRESS);
 
+    assertThat(response.statusCode()).isEqualTo(500);
     assertThat(response.body())
         .contains(PEER_ADDRESS)
-        .contains("not supported by the current HA implementation");
+        .contains("not running with High Availability module enabled");
   }
 
   /**
-   * A bare {@code connect cluster} yields {@code ""} from {@code extractTarget} and is refused for
-   * the same reason a filled one is - the shared method never reads its argument. This is what the
-   * gRPC side deliberately mirrors by not adding an {@code INVALID_ARGUMENT} gate of its own.
+   * A bare {@code connect cluster} yields {@code ""} from {@code extractTarget}. Since #7401 the verb
+   * has an argument it genuinely needs, so that is a client error - 400 - and no longer the same
+   * refusal a filled address gets. The gRPC side mirrors it as {@code INVALID_ARGUMENT} rather than
+   * adding a gate of its own, which is the parity this class is about: both statuses come from the one
+   * shared implementation.
    */
   @Test
   void connectClusterWithNoAddressIsRefusedTheSameWay() throws Exception {
     final HttpResponse<String> response = executeServerCommand("connect cluster");
 
-    assertThat(response.body()).contains("not supported by the current HA implementation");
+    assertThat(response.statusCode()).isEqualTo(400);
+    assertThat(response.body()).contains("requires the address of the server to join");
   }
 
   private HttpResponse<String> executeServerCommand(final String command) throws Exception {

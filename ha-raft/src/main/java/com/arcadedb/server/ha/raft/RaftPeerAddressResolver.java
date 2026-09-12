@@ -57,6 +57,70 @@ final class RaftPeerAddressResolver {
   }
 
   /**
+   * The Raft peer id of the peer reachable at {@code raftAddress}: the address with its colons turned
+   * into underscores, because a colon is not usable in a JMX {@code ObjectName}.
+   * <p>
+   * The rule lives here because it is a <em>contract between nodes</em>, not a local formatting choice:
+   * a peer declared in one node's {@code arcadedb.ha.serverList}, synthesized on a Kubernetes scale-up
+   * pod, or named in a {@code connect cluster} command must come out with the id it gives itself, or
+   * the cluster ends up with two configuration entries for one process. Every one of those three call
+   * sites goes through this method.
+   */
+  static String peerIdForAddress(final String raftAddress) {
+    return raftAddress.replace(':', '_');
+  }
+
+  /**
+   * One server to join, as parsed from a {@code connect cluster} argument (issue #7401).
+   *
+   * @param peer        the peer to add to the Raft configuration, carrying the derived id, the Raft
+   *                    address and the priority
+   * @param httpAddress the peer's HTTP address when the entry declared one, otherwise {@code null} -
+   *                    in which case the caller leaves the address {@code RaftClusterManager.addPeer}
+   *                    derives from the Raft port in place
+   * @param name        the peer's human-readable name when the entry used the {@code name@} prefix,
+   *                    otherwise {@code null}
+   */
+  record JoinTarget(RaftPeer peer, String httpAddress, String name) {
+  }
+
+  /**
+   * Parses the argument of {@code connect cluster} into the single peer it names.
+   * <p>
+   * The argument is <b>one entry of {@code arcadedb.ha.serverList}</b>, in either of the two syntaxes
+   * {@link #parsePeerList(String, int, String)} accepts, and it is parsed by that very method rather
+   * than by a second address parser. That is the point of the command: what an operator types here is
+   * what they would have written in the configuration, and the id the joined peer receives is the id
+   * the peer derives for itself from the same address.
+   *
+   * @throws IllegalArgumentException when the argument is blank, malformed, or names more than one
+   *                                  server - all of them the caller's input to fix, which is why this
+   *                                  is an {@code IllegalArgumentException} (HTTP 400, gRPC
+   *                                  {@code INVALID_ARGUMENT}) rather than the {@code ServerException}
+   *                                  the underlying parser raises for a bad configuration file
+   */
+  static JoinTarget parseJoinTarget(final String serverAddress, final int defaultRaftPort, final String k8sDnsSuffix) {
+    if (serverAddress == null || serverAddress.isBlank())
+      throw new IllegalArgumentException(
+          "Connect cluster requires the address of the server to join, as [name@]host[:raftPort[:httpPort]]");
+
+    final ParsedPeerList parsed;
+    try {
+      parsed = parsePeerList(serverAddress, defaultRaftPort, k8sDnsSuffix);
+    } catch (final ServerException | ConfigurationException e) {
+      throw new IllegalArgumentException(
+          "Invalid server address '" + serverAddress + "' for connect cluster: " + e.getMessage(), e);
+    }
+
+    if (parsed.peers().size() != 1)
+      throw new IllegalArgumentException("Connect cluster joins one server at a time, but '" + serverAddress
+          + "' names " + parsed.peers().size() + " of them");
+
+    final RaftPeer peer = parsed.peers().getFirst();
+    return new JoinTarget(peer, parsed.httpAddresses().get(peer.getId()), parsed.peerNames().get(peer.getId()));
+  }
+
+  /**
    * Parses a comma-separated server list into a {@link ParsedPeerList}.
    * <p>
    * Each entry supports two interchangeable syntaxes.
@@ -195,8 +259,7 @@ final class RaftPeerAddressResolver {
         }
       }
 
-      // Use host_raftPort as peer ID (underscore avoids JMX ObjectName issues with colons)
-      final String peerIdStr = raftAddress.replace(':', '_');
+      final String peerIdStr = peerIdForAddress(raftAddress);
       final RaftPeer peer = RaftPeer.newBuilder()
           .setId(peerIdStr)
           .setAddress(raftAddress)
@@ -508,8 +571,7 @@ final class RaftPeerAddressResolver {
 
     final String host = serverName + (dnsSuffix == null ? "" : dnsSuffix);
     final String raftAddress = host + ":" + raftPort;
-    // Use host_raftPort as peer ID (underscore avoids JMX ObjectName issues with colons), matching parsePeerList.
-    final String peerIdStr = raftAddress.replace(':', '_');
+    final String peerIdStr = peerIdForAddress(raftAddress);
     return RaftPeer.newBuilder()
         .setId(peerIdStr)
         .setAddress(raftAddress)

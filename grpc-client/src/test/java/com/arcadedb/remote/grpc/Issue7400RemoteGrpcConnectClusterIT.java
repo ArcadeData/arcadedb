@@ -35,8 +35,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * one nobody can use, which is why #7304 drove every service method from here too.
  * <p>
  * What is proved is that the proto, the service and the client agree over a real channel - and that
- * the server's own refusal survives the trip. The current HA stack does not implement the verb on
- * either transport (issue #7401); parity of the answer is the subject here, not a working join.
+ * the server's own refusal survives the trip. This fixture runs no HA, so the refusal is that HA is not
+ * enabled; the join the verb performs when it is arrived with issue #7401.
  */
 class Issue7400RemoteGrpcConnectClusterIT extends BaseGraphServerTest {
 
@@ -74,7 +74,7 @@ class Issue7400RemoteGrpcConnectClusterIT extends BaseGraphServerTest {
   void connectClusterIsReportedThroughTheSharedErrorMapper() {
     assertThatThrownBy(() -> server.connectCluster("localhost:2425"))
         .isInstanceOf(RemoteException.class)
-        .hasMessageContaining("not supported by the current HA implementation");
+        .hasMessageContaining("not running with High Availability module enabled");
   }
 
   /**
