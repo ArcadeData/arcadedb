@@ -324,7 +324,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * it decided", which nothing else on this server answers: {@link ArcadeStateMachine#getBootstrapBaseline}
    * turns non-null in the MIDDLE of the apply that may still be replacing the whole database directory from a
    * leader-shipped snapshot, and a peer on which the bootstrap was never eligible records no baseline at all,
-   * so a null baseline cannot tell "not yet" from "never will". Issue #7259.
+   * so a null baseline cannot tell "not yet" from "never will".
+   * <p>
+   * Written only through {@link #recordBootstrapOutcome}, which never lets a later pass overwrite a recorded
+   * {@code COMMITTED}. Issue #7259.
    */
   private volatile BootstrapElection.Outcome lastBootstrapOutcome;
 
@@ -1161,8 +1164,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
+  /**
+   * Records {@code outcome} as this node's last bootstrap result, except that a recorded
+   * {@link BootstrapElection.Outcome#COMMITTED} is never overwritten.
+   * <p>
+   * A later pass on the same node CANNOT commit a second baseline - {@code isFirstFormation} closes the moment
+   * the first one is applied - so every outcome that follows a {@code COMMITTED} is a report that there was
+   * nothing left to do, not a revision of what happened. Letting one overwrite would turn "this cluster
+   * committed a baseline" into "it did not", and a reader waiting on the reinstall that baseline triggers would
+   * be released in the middle of it.
+   * <p>
+   * That is not hypothetical. {@code ArcadeStateMachine.notifyLeaderChanged} submits
+   * {@link #runBootstrapIfEligible()} on every notification naming this node leader, with no term guard, and
+   * its own comment records that Ratis sometimes fires a same-term re-notification; the second pass then
+   * returns {@code SKIPPED_NOT_FIRST_FORMATION}. Tests reach the same shape deliberately by calling
+   * {@code runBootstrapIfEligible()} a second time. Issue #7259.
+   */
   private BootstrapElection.Outcome recordBootstrapOutcome(final BootstrapElection.Outcome outcome) {
-    lastBootstrapOutcome = outcome;
+    if (lastBootstrapOutcome != BootstrapElection.Outcome.COMMITTED)
+      lastBootstrapOutcome = outcome;
     return outcome;
   }
 
@@ -1170,10 +1190,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * The outcome of the most recent bootstrap pass that finished on this node, or {@code null} while none has.
    * <p>
    * Only the leader runs a pass ({@link ArcadeStateMachine#notifyLeaderChanged} submits it), so on a follower
-   * this stays {@code null} for the node's whole life. A non-null value means the pass RETURNED: for
+   * this stays {@code null} for the node's whole life. A non-null value means a pass RETURNED: for
    * {@link BootstrapElection.Outcome#COMMITTED} at least one {@code BOOTSTRAP_FINGERPRINT_ENTRY} was committed -
    * the commit goes through {@code RaftGroupCommitter.submitAndWait}, which blocks on the quorum reply - and
-   * every other value means this pass committed nothing. Issue #7259.
+   * every other value means no pass on this node has committed anything.
+   * <p>
+   * {@code COMMITTED} is sticky for the node's life; see {@link #recordBootstrapOutcome}. Issue #7259.
    */
   public BootstrapElection.Outcome getLastBootstrapOutcome() {
     return lastBootstrapOutcome;

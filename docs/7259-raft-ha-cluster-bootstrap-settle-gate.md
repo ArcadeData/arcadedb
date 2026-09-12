@@ -114,7 +114,8 @@ database?", which the two points above disqualify. Hence the one production chan
 
 **`RaftHAServer`** (production, additive): `runBootstrapIfEligible()` now records the pass's outcome in a
 volatile field, readable through `getLastBootstrapOutcome()`. `null` means no pass has finished on this node;
-any value means one has, and only `COMMITTED` means it committed a baseline.
+any value means one has, and only `COMMITTED` means it committed a baseline. A recorded `COMMITTED` is
+**sticky** - see the review cycle below for why.
 
 **`BaseRaftHATest.waitAllReplicasAreConnected()`**: after the election it calls the new
 `waitForClusterBootstrapToSettle()`, which
@@ -208,3 +209,49 @@ Filed as **#7520**; not touched here.
   reached another way, and it gates no production client - also #7519.
 - The `waitForReplicationIsCompleted` give-ups (**#7518**) remain: a test can still be told replication
   completed when nothing waited.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/7522
+
+## Review cycles
+
+### cycle 1 - `6c26219230`
+
+The `claude` reviewer found one real correctness defect, verified in the tree before it was accepted:
+
+> `recordBootstrapOutcome` unconditionally overwrites `lastBootstrapOutcome`, and
+> `runBootstrapIfEligible()` is not guaranteed to run once per term.
+
+Checked and confirmed:
+
+- `ArcadeStateMachine.notifyLeaderChanged` submits `runBootstrapIfEligible()` inside
+  `if (newLeaderId.equals(raftHA.getLocalPeerId()))` with **no** term guard, while the logging immediately
+  above it records that Ratis sometimes fires a same-term re-notification;
+- `BootstrapElection.onLeaderChanged()` is `attemptedThisTerm.clear()`, and `runBootstrapIfEligible()` calls it
+  itself, so the per-term short-circuit does not stop a second pass either - it re-evaluates `isFirstFormation`,
+  which is now closed, and returns `SKIPPED_NOT_FIRST_FORMATION`;
+- `BootstrapElectionIT.runBootstrapShortCircuitsAfterFirstFormation` already drives exactly that shape from a
+  test.
+
+Before this PR that second return value was discarded. Capturing it made a downgrade possible, and
+`awaitTerminalBootstrapOutcome` treats `SKIPPED_NOT_FIRST_FORMATION` as terminal-and-nothing-to-wait-for - so
+the gate would have switched itself back off, reopening #7259 behind a rarer condition.
+
+**Fixed** by making `COMMITTED` sticky in `recordBootstrapOutcome`: a later pass cannot commit a second
+baseline (`isFirstFormation` closes on the first one), so anything that follows a `COMMITTED` is a report that
+there was nothing left to do, never a revision of what happened.
+
+**Pinned** by `Issue7259ClusterBootstrapSettledIT.aSecondBootstrapPassCannotDowngradeARecordedCommitted`, which
+calls `runBootstrapIfEligible()` a second time on the leader and asserts the recorded outcome is still
+`COMMITTED`. With the sticky guard removed it fails:
+
+```
+[ERROR] Issue7259ClusterBootstrapSettledIT.aSecondBootstrapPassCannotDowngradeARecordedCommitted -- FAILURE!
+[ERROR] Tests run: 3, Failures: 1
+```
+
+and with it restored the whole sweep is green again (3 tests in the IT, 12 IT classes in `ha-raft`).
+
+The reviewer's remaining points were confirmations, not requests (docs convention, code style, blast radius);
+nothing was deferred.

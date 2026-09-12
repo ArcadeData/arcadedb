@@ -24,6 +24,7 @@ import org.apache.ratis.server.protocol.TermIndex;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
  * Regression test for issue #7259.
@@ -47,6 +48,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>{@link #aTypeCreatedRightAfterStartupReachesEveryPeer()} pins what the gate buys, which is the shape
  *       {@code BoltFollowerForwardingIT} asserts through Bolt: a type created on the leader immediately after
  *       setup returns is present on every peer, and the databases compare identical.</li>
+ *   <li>{@link #aSecondBootstrapPassCannotDowngradeARecordedCommitted()} pins the one thing that would
+ *       silently switch the gate back off: the recorded outcome surviving a second pass.</li>
  * </ul>
  */
 class Issue7259ClusterBootstrapSettledIT extends BaseRaftHATest {
@@ -85,6 +88,41 @@ class Issue7259ClusterBootstrapSettledIT extends BaseRaftHATest {
               reading behind here is a peer that may still be replacing its whole database directory from a \
               leader-shipped snapshot (issue #7259)""", i)
           .isGreaterThanOrEqualTo(highest);
+  }
+
+  /**
+   * A second bootstrap pass on the same leader must not downgrade a recorded {@code COMMITTED}.
+   * <p>
+   * {@code ArcadeStateMachine.notifyLeaderChanged} submits {@code runBootstrapIfEligible()} on every
+   * notification naming this node leader, with no term guard, and its own comment records that Ratis sometimes
+   * fires a same-term re-notification. The second pass finds {@code isFirstFormation} closed - the first
+   * baseline is applied - and returns {@code SKIPPED_NOT_FIRST_FORMATION}. If that overwrote the recorded
+   * {@code COMMITTED}, {@link BaseRaftHATest#waitForClusterBootstrapToSettle()} would read "nothing was
+   * committed, nothing to wait for" and release a test body while followers were still reinstalling: issue
+   * #7259 reopened, behind a rarer condition. This drives the same shape deliberately.
+   */
+  @Test
+  void aSecondBootstrapPassCannotDowngradeARecordedCommitted() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final RaftHAServer leader = getRaftPlugin(leaderIndex).getRaftHAServer();
+    // Only a recorded COMMITTED can be downgraded, so a fixture that legitimately committed nothing has nothing
+    // to say here. It does commit on this fixture; the assumption keeps the test from going green for the wrong
+    // reason if that ever stops being true.
+    assumeThat(leader.getLastBootstrapOutcome())
+        .as("this fixture is expected to commit a bootstrap baseline")
+        .isEqualTo(BootstrapElection.Outcome.COMMITTED);
+
+    final BootstrapElection.Outcome second = leader.runBootstrapIfEligible();
+    assertThat(second)
+        .as("the second pass must find first formation closed and commit nothing of its own")
+        .isNotEqualTo(BootstrapElection.Outcome.COMMITTED);
+    assertThat(leader.getLastBootstrapOutcome())
+        .as("The recorded outcome must still be COMMITTED after a second pass returned %s. A later pass cannot "
+            + "commit a second baseline, so it reports that there was nothing left to do - not that the first "
+            + "commit did not happen (issue #7259)", second)
+        .isEqualTo(BootstrapElection.Outcome.COMMITTED);
   }
 
   @Test
