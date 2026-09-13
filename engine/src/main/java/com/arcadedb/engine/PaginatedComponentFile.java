@@ -19,6 +19,7 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -496,19 +497,15 @@ public class PaginatedComponentFile extends ComponentFile {
     final int fileIdPos = filePrefix.lastIndexOf(".");
     if (fileIdPos > -1) {
       fileId = Integer.parseInt(filePrefix.substring(fileIdPos + 1));
-      final int pos = filePrefix.lastIndexOf(File.separator);
+      final int pos = FileUtils.lastIndexOfSeparator(filePrefix);
       componentName = filePrefix.substring(pos + 1, filePrefix.lastIndexOf("."));
     } else {
       fileId = -1;
-      final int pos = filePrefix.lastIndexOf(File.separator);
+      final int pos = FileUtils.lastIndexOfSeparator(filePrefix);
       componentName = filePrefix.substring(pos + 1);
     }
 
-    final int lastSlash = filePath.lastIndexOf(File.separator);
-    if (lastSlash > -1)
-      fileName = filePath.substring(lastSlash + 1);
-    else
-      fileName = filePath;
+    fileName = FileUtils.getFileNameFromPath(filePath);
 
     this.osFile = new File(filePath);
     this.file = new RandomAccessFile(osFile, mode == MODE.READ_WRITE ? "rw" : "r");
