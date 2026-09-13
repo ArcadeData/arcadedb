@@ -287,6 +287,45 @@ class CoreApiSpecTest {
     }
   }
 
+  /**
+   * Issue #7569: both operations declare 'application/x-ndjson' under their 200, but
+   * PostCommandHandler.requireStreamableStatement() refuses to stream a statement that is not
+   * provably read-only with a 400 before it ever runs - and nothing in the contract said so. A
+   * client author reading the contract alone had no way to know the restriction existed short of
+   * sending a mutating statement at a live server and reading the 400.
+   * <p>
+   * Checked on both /command and /query: PostQueryHandler extends PostCommandHandler and overrides
+   * only executeCommand(), so the very same requireStreamableStatement() call at execute() time
+   * guards both operations identically (the same sharing this file already pins down for 'limit'
+   * in commandRequestDeclaresLimitMatchingQueryRequest).
+   */
+  @Test
+  void commandAndQueryDescribeTheReadOnlyStreamingRestriction() {
+    // The literal text CoreApiSpec appends to both operations' description. Duplicated here rather
+    // than referencing the (private) production constant, matching how this file already pins other
+    // shared text verbatim (e.g. STALE_SESSION_404_DESCRIPTION's message in
+    // queryAndCommand404CoversAStaleSessionIdNotOnlyAMissingDatabase).
+    final String restriction = "only a statement provably read-only may stream";
+
+    final Operation command = openAPI.getPaths().get("/api/v1/command/{database}").getPost();
+    final Operation query = openAPI.getPaths().get("/api/v1/query/{database}").getPost();
+
+    for (final Operation operation : List.of(command, query)) {
+      assertThat(operation.getDescription())
+          .as(operation.getOperationId() + " must warn that the ndjson encoding is refused before "
+              + "it runs for a statement that is not provably read-only")
+          .contains(restriction)
+          .contains("400");
+    }
+
+    final String commandSuffix = command.getDescription().substring(command.getDescription().indexOf(restriction));
+    final String querySuffix = query.getDescription().substring(query.getDescription().indexOf(restriction));
+    assertThat(commandSuffix)
+        .as("both operations run through the exact same requireStreamableStatement() check, so the "
+            + "restriction text must not diverge between them and confuse a reader of the generated docs")
+        .isEqualTo(querySuffix);
+  }
+
   @Test
   void commandRequestDeclaresLanguageAsRequired() {
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("CommandRequest");
