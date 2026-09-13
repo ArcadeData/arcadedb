@@ -30,6 +30,7 @@ import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LongHashSet;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1656,7 +1657,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   private SparseSegmentComponent createComponent(final long segmentId) {
     final String name = segmentComponentName(segmentId);
-    final String filePath = database.getDatabasePath() + "/" + name;
+    final String filePath = database.getDatabasePath() + File.separator + name;
     try {
       final SparseSegmentComponent c = new SparseSegmentComponent(database, name, filePath, ComponentFile.MODE.READ_WRITE,
           params.pageSize());
