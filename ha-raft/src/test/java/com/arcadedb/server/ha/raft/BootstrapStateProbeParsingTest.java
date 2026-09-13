@@ -45,7 +45,8 @@ class BootstrapStateProbeParsingTest {
 
   @Test
   void theRequestCarriesTheClusterCredentialsEveryPeerRpcUses() {
-    final HttpRequest request = BootstrapElection.bootstrapStateRequest("host:2480", "the-token", 1234L);
+    final HttpRequest request = BootstrapElection.bootstrapStateRequest("host:2480", null, false, "the-token",
+        1234L);
 
     assertThat(request.uri().toString()).isEqualTo("http://host:2480/api/v1/cluster/bootstrap-state");
     assertThat(request.method()).isEqualTo("POST");
@@ -55,8 +56,75 @@ class BootstrapStateProbeParsingTest {
 
   @Test
   void aBlankTokenIsOmittedRatherThanSentEmpty() {
-    final HttpRequest request = BootstrapElection.bootstrapStateRequest("host:2480", "  ", 1234L);
+    final HttpRequest request = BootstrapElection.bootstrapStateRequest("host:2480", null, false, "  ", 1234L);
     assertThat(request.headers().firstValue("X-ArcadeDB-Cluster-Token")).isEmpty();
+  }
+
+  /**
+   * The probe carries the cluster token, so on an SSL cluster it must not be the one dial in the package
+   * that sends it in the clear (issue #7546). The rule is the one every other peer dial follows: HTTPS
+   * when SSL is enabled AND an HTTPS address resolved, plain HTTP otherwise - never an HTTPS scheme
+   * forced onto the plain HTTP port.
+   */
+  @Test
+  void anSSLClusterProbesOverHTTPSWhenTheEncryptedEndpointIsKnown() {
+    assertThat(BootstrapElection.bootstrapStateUrl("host:2480", "host:2490", true))
+        .isEqualTo("https://host:2490/api/v1/cluster/bootstrap-state");
+    assertThat(BootstrapElection.bootstrapStateRequest("host:2480", "host:2490", true, "the-token", 1234L)
+        .uri().toString()).isEqualTo("https://host:2490/api/v1/cluster/bootstrap-state");
+  }
+
+  @Test
+  void theProbeStaysOnPlainHTTPWithoutSSLOrWithoutAnEncryptedEndpoint() {
+    // SSL off: the encrypted address, even when known, is not used.
+    assertThat(BootstrapElection.bootstrapStateUrl("host:2480", "host:2490", false))
+        .isEqualTo("http://host:2480/api/v1/cluster/bootstrap-state");
+    // SSL on but no HTTPS endpoint resolved for the peer: the HTTP port keeps the HTTP scheme rather
+    // than being dialled as if it spoke TLS.
+    assertThat(BootstrapElection.bootstrapStateUrl("host:2480", null, true))
+        .isEqualTo("http://host:2480/api/v1/cluster/bootstrap-state");
+  }
+
+  /**
+   * The divergence check resolves the leader's HTTPS endpoint itself, so it owes the same self-check it
+   * already runs on the HTTP one. On a cluster that declares no HTTPS endpoints, a peer's HTTPS address is
+   * derived from that peer's Raft host plus this node's HTTPS port - so on a single-machine cluster the
+   * leader's HTTPS address collapses onto our own listener even though its HTTP address plainly does not
+   * (issue #6204). Probing ourselves would return our own bootstrap state, which matches the local
+   * comparison every time, so the divergence the check exists to find would stop being reported.
+   */
+  @Test
+  void aLeaderHTTPSAddressThatCollapsedOntoThisNodeIsNotProbed() {
+    final String localHttps = "localhost:2490";
+    // What resolveHttpsAddress derives for the leader when the 5th server-list field is absent and both
+    // nodes run on one host: the leader's Raft host with THIS node's HTTPS port.
+    final String derivedForLeader = "localhost:2490";
+
+    final String leaderHttps = RaftHAServer.preferredLeaderHttpsAddress(true, derivedForLeader, localHttps);
+    assertThat(leaderHttps).isNull();
+    // Which leaves the leader's own HTTP port - vetted as neither ambiguous nor ours - and not an HTTPS
+    // dial at this node's own listener.
+    assertThat(BootstrapElection.bootstrapStateUrl("localhost:2481", leaderHttps, true))
+        .isEqualTo("http://localhost:2481/api/v1/cluster/bootstrap-state");
+
+    // The guard is not a blanket refusal of HTTPS: a leader that resolves to a different socket is still
+    // probed over TLS, which is what issue #7546 was about.
+    assertThat(RaftHAServer.preferredLeaderHttpsAddress(true, "localhost:2491", localHttps))
+        .isEqualTo("localhost:2491");
+    assertThat(BootstrapElection.bootstrapStateUrl("localhost:2481", "localhost:2491", true))
+        .isEqualTo("https://localhost:2491/api/v1/cluster/bootstrap-state");
+  }
+
+  /**
+   * The same endpoint is reached by {@link LeaderDatabaseQuery}, and the two must not disagree about the
+   * scheme for one address pair - that disagreement is what left this probe on plain HTTP.
+   */
+  @Test
+  void theProbeAgreesWithTheDatabaseListQueryAboutTheScheme() {
+    for (final boolean useSSL : new boolean[] { true, false })
+      for (final String httpsAddr : new String[] { "host:2490", null })
+        assertThat(BootstrapElection.bootstrapStateUrl("host:2480", httpsAddr, useSSL))
+            .isEqualTo(LeaderDatabaseQuery.chooseEndpoint("host:2480", httpsAddr, useSSL).url());
   }
 
   @Test

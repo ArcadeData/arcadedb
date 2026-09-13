@@ -42,6 +42,28 @@ class RaftHAPluginTest {
     assertThat(plugin.isLeader()).isFalse();
   }
 
+  /**
+   * The shutdown command carries the cluster token in an {@code Authorization: Bearer} header, so on an
+   * SSL cluster it must not be the one dial in the package that sends it in the clear (issue #7546).
+   * Same rule as every other peer-to-peer dial: HTTPS when SSL is enabled AND an HTTPS address resolved.
+   */
+  @Test
+  void theShutdownCommandGoesOverHTTPSOnAnSSLCluster() {
+    assertThat(RaftHAPlugin.shutdownUrl("host:2480", "host:2490", true))
+        .isEqualTo("https://host:2490/api/v1/server");
+  }
+
+  @Test
+  void theShutdownCommandStaysOnPlainHTTPWithoutSSLOrWithoutAnEncryptedEndpoint() {
+    // SSL off: the encrypted address, even when known, is not used.
+    assertThat(RaftHAPlugin.shutdownUrl("host:2480", "host:2490", false))
+        .isEqualTo("http://host:2480/api/v1/server");
+    // SSL on but no HTTPS endpoint resolved for the peer: the HTTP port keeps the HTTP scheme rather
+    // than being dialled as if it spoke TLS.
+    assertThat(RaftHAPlugin.shutdownUrl("host:2480", null, true))
+        .isEqualTo("http://host:2480/api/v1/server");
+  }
+
   @Test
   void startServiceDoesNothingWhenNotConfigured() {
     final RaftHAPlugin plugin = new RaftHAPlugin();
