@@ -123,7 +123,7 @@
              docs/5838-gremlin-parse-over-widens-operationtype.md and
              gremlin/src/test/java/com/arcadedb/gremlin/ArcadeGremlinAnalyzeTest.java. See also gremlin/pom.xml's
              own comment on the paired antlr version (issue #5535). -->
-        <gremlin.version>3.8.1</gremlin.version>
+        <gremlin.version>3.8.2</gremlin.version>
 
 
         <protobuf-maven-plugin.version>5.1.8</protobuf-maven-plugin.version>
