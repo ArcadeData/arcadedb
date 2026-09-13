@@ -33,6 +33,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Type;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -239,7 +240,7 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
 
     final TimeSeriesTagDictionary dictionary = existingFile != null ?
         new TimeSeriesTagDictionary(database, name, (PaginatedComponentFile) existingFile) :
-        new TimeSeriesTagDictionary(database, name, database.getDatabasePath() + "/" + name);
+        new TimeSeriesTagDictionary(database, name, database.getDatabasePath() + File.separator + name);
 
     // Registered BEFORE it is initialised, and it has to be: initHeaderPage() commits, and a commit
     // resolves the component to bump its page count through schema.getFileById(), which throws on an id
