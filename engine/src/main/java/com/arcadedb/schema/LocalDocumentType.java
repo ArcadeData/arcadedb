@@ -537,6 +537,41 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
+   * Refuses a property that a TIMESERIES type could never store.
+   * <p>
+   * A TIMESERIES type keeps its columns in {@code LocalTimeSeriesType.tsColumns}, filled once by
+   * {@code CREATE TIMESERIES TYPE}, and the write path reads the document under those names and no others. A
+   * property created afterwards lands in {@link #properties} instead, which is what the schema listing renders: the
+   * column looks declared, every write drops its value and nothing reports it (issue #7567). The declared columns
+   * themselves reach this method too - {@code TimeSeriesTypeBuilder.create()} registers each one as a property right
+   * after filling {@code tsColumns} - and pass, because by then the name is declared.
+   * <p>
+   * A database written before this rule may already carry such a property. Refusing it at schema load would make
+   * that database unopenable, so the load path only warns; {@code DROP PROPERTY} on the stray name is the remedy and
+   * stays allowed.
+   *
+   * @param propertyName the property about to be created
+   */
+  private void checkTimeSeriesColumnDeclared(final String propertyName) {
+    if (!(this instanceof LocalTimeSeriesType tsType) || tsType.isDeclaredColumn(propertyName))
+      return;
+
+    if (schema.isReadingFromFile()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Property '%s.%s' is not a declared TIMESERIES column (declared: %s): it was added to this database before "
+              + "issue #7567 was fixed and no write will ever populate it. Remove it with DROP PROPERTY `%s`.`%s`",
+          name, propertyName, tsType.getTsColumnNames(), name, propertyName);
+      return;
+    }
+
+    throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name
+        + "' because the type is a TIMESERIES type and '" + propertyName + "' is not one of its declared columns "
+        + tsType.getTsColumnNames()
+        + ". A TIMESERIES type stores only the TIMESTAMP, TAGS and FIELDS named in CREATE TIMESERIES TYPE, so a "
+        + "property added afterwards would be silently ignored by every write");
+  }
+
+  /**
    * Creates a new property with type `propertyType`.
    *
    * @param propertyName Property name to remove
@@ -554,6 +589,8 @@ public class LocalDocumentType implements DocumentType {
       // creation path can never satisfy them.
       throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name
           + "' because the type is declared LIGHTWEIGHT and its edges cannot have properties");
+
+    checkTimeSeriesColumnDeclared(propertyName);
 
     if (properties.containsKey(propertyName))
       throw new SchemaException(
@@ -650,6 +687,17 @@ public class LocalDocumentType implements DocumentType {
   @Override
   public Property dropProperty(final String propertyName) {
     checkForSchemaMutation();
+
+    if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
+      // The column stays in the type's tsColumns list whatever happens to the schema property - nothing removes an
+      // entry from it - so the engine would keep storing and returning the column while the type stopped declaring
+      // it. Refusing here keeps the two descriptions of a TIMESERIES type from drifting apart (issue #7567). A
+      // property that is NOT a declared column is still droppable, which is how a database written before that
+      // issue gets rid of the stray one it may already carry.
+      throw new SchemaException("Cannot drop the property '" + propertyName + "' from type '" + name
+          + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it. Drop the "
+          + "whole type to remove the column");
+
     for (final TypeIndex index : getAllIndexes(true)) {
       if (index.getPropertyNames().contains(propertyName))
         throw new SchemaException(
