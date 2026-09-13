@@ -249,6 +249,45 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     tsColumns.add(column);
   }
 
+  /**
+   * The declared time-series column named {@code columnName} - the TIMESTAMP, a TAG or a FIELD named in
+   * {@code CREATE TIMESERIES TYPE} - or {@code null} when the type declares no such column.
+   * <p>
+   * This list is the only thing the write path consults: {@code SaveElementStep#saveToTimeSeries} walks
+   * {@link #getTsColumns()} and reads the document under each column's name, so a value arriving under any other
+   * name is discarded without a word (issue #7567). The list is filled once, by {@link TimeSeriesTypeBuilder#create()}
+   * or by {@link #fromJSON(JSONObject)}, and there is no supported way to extend it afterwards.
+   */
+  public ColumnDefinition getTsColumn(final String columnName) {
+    // Indexed over the ArrayList rather than an enhanced for: this runs on the DDL path for every property
+    // validation and a column list is a handful of entries, so the iterator allocation buys nothing.
+    for (int i = 0; i < tsColumns.size(); i++) {
+      final ColumnDefinition col = tsColumns.get(i);
+      if (col.getName().equals(columnName))
+        return col;
+    }
+    return null;
+  }
+
+  /**
+   * Whether {@code columnName} is one of this type's declared time-series columns. See {@link #getTsColumn(String)}
+   * for why a schema property outside that set can never hold a value.
+   */
+  public boolean isDeclaredColumn(final String columnName) {
+    return getTsColumn(columnName) != null;
+  }
+
+  /**
+   * The declared column names, in declaration order, for error messages that have to tell the user what the type
+   * actually accepts.
+   */
+  public List<String> getTsColumnNames() {
+    final List<String> names = new ArrayList<>(tsColumns.size());
+    for (int i = 0; i < tsColumns.size(); i++)
+      names.add(tsColumns.get(i).getName());
+    return names;
+  }
+
   public List<DownsamplingTier> getDownsamplingTiers() {
     return downsamplingTiers;
   }
