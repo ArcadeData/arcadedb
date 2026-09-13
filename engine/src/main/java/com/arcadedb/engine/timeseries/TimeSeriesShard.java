@@ -28,6 +28,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.logging.Level;
 import java.util.ArrayList;
@@ -142,7 +143,7 @@ public class TimeSeriesShard implements AutoCloseable {
     this.compactionBucketIntervalMs = compactionBucketIntervalMs;
 
     final String shardName = baseName + "_shard_" + shardIndex;
-    final String shardPath = database.getDatabasePath() + "/" + shardName;
+    final String shardPath = database.getDatabasePath() + File.separator + shardName;
     final LocalSchema schema = (LocalSchema) database.getSchema();
 
     // Check if the bucket was already loaded by the component factory (cold open)

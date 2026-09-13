@@ -313,14 +313,34 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
   private long compressEntry(final BackupArchiveWriter archive, final String name, final long lastModified,
       final InputStream input) throws IOException {
-    logger.log(2, "- File '%s'...", name);
-    final BackupArchiveWriter.EntryStats stats = archive.addEntry(name, lastModified, input);
+    final String entryName = archiveEntryName(name);
+    if (!entryName.equals(name))
+      // A DIRECTORY-BEARING NAME HERE IS ALREADY A BUG UPSTREAM (issue #7586) - LOGGED RATHER THAN SILENTLY
+      // ACCEPTED, SO THE ROOT CAUSE STAYS VISIBLE EVEN THOUGH THE ARCHIVE ITSELF IS STILL SAVED CORRECTLY
+      logger.logLine(0, "- WARNING: archive entry name '%s' carried a directory prefix, stored as '%s' instead", name,
+          entryName);
+
+    logger.log(2, "- File '%s'...", entryName);
+    final BackupArchiveWriter.EntryStats stats = archive.addEntry(entryName, lastModified, input);
     final long origSize = stats.uncompressedSize();
     final long compressedSize = stats.compressedSize();
 
     logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize),
         FileUtils.getSizeAsString(compressedSize), origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
     return origSize;
+  }
+
+  /**
+   * Every archive entry must sit at the archive root: {@code FullRestoreFormat} extracts each one under its own
+   * name straight into the database directory, so any directory component would nest it where the reopened
+   * database cannot find it (issue #7586). {@code compressFile}/{@code addFile} already guarantee this by deriving
+   * the entry name from {@link File#getName()}; this is the same guarantee for a name handed in directly rather
+   * than read off a {@link File}, so an upstream separator mismatch can never reach the archive uncaught - see
+   * {@link FileUtils#lastIndexOfSeparator(String)} for why a lookup keyed on this JVM's own {@link File#separator}
+   * would not be enough.
+   */
+  static String archiveEntryName(final String name) {
+    return FileUtils.getFileNameFromPath(name);
   }
 
   private long compressFile(final BackupArchiveWriter archive, final File inputFile) throws IOException {

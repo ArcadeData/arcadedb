@@ -22,7 +22,10 @@ import com.arcadedb.GlobalConfiguration;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -145,5 +148,74 @@ class BackupSettingsTest {
     assertThat(new IoThrottler(0).isEnabled()).isFalse();
     assertThat(new IoThrottler(-5).isEnabled()).isFalse();
     assertThat(new IoThrottler(1).isEnabled()).isTrue();
+  }
+
+  /**
+   * Issue #7586, defect A: with a {@code directory} pinned (as SQL's {@code BACKUP DATABASE} always does, so the
+   * archive cannot be steered outside the server's configured backup directory), the guard against a path change in
+   * {@code file} checked only {@code File.separator} - '\\' on Windows, '/' everywhere else - so a path built with
+   * the other convention slipped through validation and only failed later, several frames away, as a confusing
+   * {@code InvalidPathException} out of {@code java.io.File}. Checked here with both roles reversed on this JVM's
+   * own platform, so the gap is exercised on every platform this test runs on: a '\\'-separated value must be
+   * rejected exactly like a '/'-separated one, independent of {@link File#separator}.
+   */
+  @Test
+  void rejectsAFileArgumentContainingEitherPathSeparatorWhenADirectoryIsPinned() {
+    final BackupSettings forwardSlash = new BackupSettings();
+    forwardSlash.directory = "backups" + File.separator;
+    forwardSlash.file = "some/where/backup.zip";
+    assertThatThrownBy(forwardSlash::validateSettings).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("path change");
+
+    final BackupSettings backSlash = new BackupSettings();
+    backSlash.directory = "backups" + File.separator;
+    backSlash.file = "some\\where\\backup.zip";
+    assertThatThrownBy(backSlash::validateSettings).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("path change");
+
+    final BackupSettings fileUrlBackSlash = new BackupSettings();
+    fileUrlBackSlash.directory = "backups" + File.separator;
+    fileUrlBackSlash.file = "file://C:\\Users\\test\\backup.zip";
+    assertThatThrownBy(fileUrlBackSlash::validateSettings).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("path change");
+  }
+
+  /**
+   * A drive-qualified value such as {@code C:} or {@code C:backup.zip} carries no {@code /} or {@code \} at all -
+   * {@code checkValidName} lets it straight through - yet on Windows it is still not a bare file name: it is a
+   * drive-relative path (or, with nothing after the colon, just the drive itself), and once
+   * {@code FullBackupFormat} concatenates it onto the pinned {@code directory} the colon makes the combined path
+   * invalid, which is the same class of confusing, far-away failure this PR's separator fix already replaced with
+   * a clear rejection here (CodeRabbit finding on PR #7587).
+   */
+  @Test
+  void rejectsADriveQualifiedFileArgumentWhenADirectoryIsPinned() {
+    final BackupSettings driveOnly = new BackupSettings();
+    driveOnly.directory = "backups" + File.separator;
+    driveOnly.file = "C:";
+    assertThatThrownBy(driveOnly::validateSettings).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("path change");
+
+    final BackupSettings driveRelative = new BackupSettings();
+    driveRelative.directory = "backups" + File.separator;
+    driveRelative.file = "C:backup.zip";
+    assertThatThrownBy(driveRelative::validateSettings).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("path change");
+
+    final BackupSettings fileUrlDriveRelative = new BackupSettings();
+    fileUrlDriveRelative.directory = "backups" + File.separator;
+    fileUrlDriveRelative.file = "file://C:backup.zip";
+    assertThatThrownBy(fileUrlDriveRelative::validateSettings).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("path change");
+  }
+
+  @Test
+  void acceptsABareFileNameWhenADirectoryIsPinned() {
+    final BackupSettings settings = new BackupSettings();
+    settings.directory = "backups" + File.separator;
+    settings.file = "backup.zip";
+    settings.databaseName = "test";
+
+    assertThatCode(settings::validateSettings).doesNotThrowAnyException();
   }
 }
