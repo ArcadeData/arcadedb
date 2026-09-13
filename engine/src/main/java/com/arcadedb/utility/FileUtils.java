@@ -169,6 +169,27 @@ public class FileUtils {
       throw new IOException("Invalid file name '" + iFileName + "'");
   }
 
+  /**
+   * The last path-separator index in {@code path}, checking both '/' and '\' rather than only this JVM's own
+   * {@link File#separator}. A path built with a literal '/' (as a few storage components do, e.g.
+   * {@code databasePath + "/dictionary"}) can still reach a lookup running where {@code File.separator} is '\',
+   * and the reverse is equally possible - see issue #7586, where that mismatch left a directory prefix in a
+   * component's parsed file name on Windows and, from there, nested a backup archive entry that should have sat
+   * at the archive root.
+   */
+  public static int lastIndexOfSeparator(final String path) {
+    return Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  }
+
+  /**
+   * The last path segment of {@code path} - the part after {@link #lastIndexOfSeparator(String)} - regardless of
+   * which separator convention built it.
+   */
+  public static String getFileNameFromPath(final String path) {
+    final int pos = lastIndexOfSeparator(path);
+    return pos > -1 ? path.substring(pos + 1) : path;
+  }
+
   public static void deleteRecursively(final File rootFile) {
     for (int attempt = 0; attempt < 3; attempt++) {
       try {

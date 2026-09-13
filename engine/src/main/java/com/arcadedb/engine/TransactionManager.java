@@ -1174,7 +1174,7 @@ public class TransactionManager {
     activeWALFilePool = new WALFile[walFilePoolSize(database.getConfiguration())];
     for (int i = 0; i < activeWALFilePool.length; ++i) {
       final long counter = logFileCounter.getAndIncrement();
-      final String walFilePath = database.getDatabasePath() + "/txlog_" + counter + ".wal";
+      final String walFilePath = database.getDatabasePath() + File.separator + "txlog_" + counter + ".wal";
       try {
         activeWALFilePool[i] = database.getWALFileFactory().newInstance(walFilePath);
       } catch (final FileNotFoundException e) {
@@ -1222,7 +1222,7 @@ public class TransactionManager {
                 "WAL file '%s' reached maximum size (%d), set it as inactive, waiting for the drop (page2flush=%d)", null, file,
                 MAX_LOG_FILE_SIZE, file.getPendingPagesToFlush());
             activeWALFilePool[i] = database.getWALFileFactory()
-                .newInstance(database.getDatabasePath() + "/txlog_" + logFileCounter.getAndIncrement() + ".wal");
+                .newInstance(database.getDatabasePath() + File.separator + "txlog_" + logFileCounter.getAndIncrement() + ".wal");
 
             // SET THE OLD FILE AS INACTIVE READY TO BE DISPOSED. Done unconditionally, before the new
             // file's lock is even checked: the old file's own retirement has nothing to do with whether
@@ -1383,7 +1383,7 @@ public class TransactionManager {
         final WALFile file = activeWALFilePool[i];
         if (file != null && file.isOpen()) {
           activeWALFilePool[i] = database.getWALFileFactory()
-              .newInstance(database.getDatabasePath() + "/txlog_" + logFileCounter.getAndIncrement() + ".wal");
+              .newInstance(database.getDatabasePath() + File.separator + "txlog_" + logFileCounter.getAndIncrement() + ".wal");
           file.setActive(false);
           inactiveWALFilePool.add(file);
         }

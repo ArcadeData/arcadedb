@@ -18,7 +18,10 @@
  */
 package com.arcadedb.integration.backup;
 
+import com.arcadedb.utility.FileUtils;
+
 import java.io.File;
+import java.io.IOException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.HashMap;
@@ -81,8 +84,20 @@ public class BackupSettings {
 
     if (directory != null && file != null) {
       final String f = file.startsWith("file://") ? file.substring("file://".length()) : file;
-      if (f.contains("..") || f.contains(File.separator))
+      // A bare file name only: checkValidName rejects both '/' and '\' regardless of this JVM's own
+      // File.separator, unlike the '..'/File.separator-only check this replaces, which missed a path built
+      // with the other platform's separator convention (issue #7586, defect A) and let it reach the
+      // unconditional "directory + File.separator + fileName" concatenation in FullBackupFormat instead.
+      // The ':' check is separate: a value such as "C:" or "C:backup.zip" carries no separator at all, so
+      // checkValidName lets it through, but it is still a Windows drive-qualified (or drive-relative) path that
+      // would either escape the pinned directory or fail confusingly once concatenated with it.
+      if (f.indexOf(':') > -1)
         throw new IllegalArgumentException("Backup file cannot contain path change because the directory is specified");
+      try {
+        FileUtils.checkValidName(f);
+      } catch (final IOException e) {
+        throw new IllegalArgumentException("Backup file cannot contain path change because the directory is specified", e);
+      }
     }
 
     if (file == null)
