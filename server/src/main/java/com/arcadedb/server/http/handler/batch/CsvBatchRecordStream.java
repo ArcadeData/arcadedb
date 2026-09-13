@@ -41,6 +41,10 @@ import java.util.List;
  * The first line is the header. A {@code ---} sentinel row separates vertex and edge sections.
  * A new header row is expected after the sentinel.
  * <p>
+ * Every other column is a property. The {@code @} prefix is what separates control from data, so a column that
+ * begins with {@code @} and is not one of the five understood names is refused at the header rather than loaded as a
+ * property with that name (issue #7570).
+ * <p>
  * Handles RFC 4180 quoting (double-quote escaping) for single-line fields.
  */
 public class CsvBatchRecordStream implements BatchRecordStream {
@@ -143,6 +147,7 @@ public class CsvBatchRecordStream implements BatchRecordStream {
       case "@id" -> idCol = i;
       case "@from" -> fromCol = i;
       case "@to" -> toCol = i;
+      default -> rejectReservedColumn(headers[i]);
       }
     }
 
@@ -152,6 +157,23 @@ public class CsvBatchRecordStream implements BatchRecordStream {
       throw new IllegalArgumentException("CSV header missing @class column at line " + lineNumber);
 
     headerParsed = true;
+  }
+
+  /**
+   * Refuses an unrecognised {@code @}-prefixed column. CSV names its control keys in the header, so the header is
+   * where the JSONL reserved-key rule has to be applied: an unknown one used to become a property column, and a load
+   * built on it answered 200 holding a property whose name starts with {@code @} (issue #7570).
+   * <p>
+   * There is no CSV counterpart of the nested {@code properties} refusal the JSONL parser also makes: every value
+   * {@link #parseValue} produces is a scalar, never a {@link java.util.Map}, so a {@code properties} column can only
+   * ever be ordinary data.
+   */
+  private void rejectReservedColumn(final String column) {
+    if (!column.isEmpty() && column.charAt(0) == '@')
+      throw new IllegalArgumentException("Unknown control column '" + column + "' in the CSV header at line "
+          + lineNumber + ": the '@' prefix is reserved by the batch encoding and only "
+          + "@type, @class, @id, @from and @to are understood. A property column cannot start with '@': rename the "
+          + "column, or drop it");
   }
 
   private void parseLine(final String line) {

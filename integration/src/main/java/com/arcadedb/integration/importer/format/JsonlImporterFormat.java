@@ -293,9 +293,29 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
                   // still the export's to restore - it is not something the builder can know.
                   if (property.has("custom")) {
                     final JSONObject custom = property.getJSONObject("custom");
-                    for (final String key : custom.keySet())
+                    for (final String key : custom.keySet()) {
+                      if (docType instanceof LocalTimeSeriesType && "role".equalsIgnoreCase(key)) {
+                        // Exported from a database written before issue #7567, where ALTER PROPERTY ... CUSTOM role
+                        // was accepted and did nothing. Setting it now throws, and a restore that refuses turns a
+                        // usable backup into an unusable one, so the key is dropped with a warning instead - the
+                        // column's real role travels in the type definition, which is already restored.
+                        LogManager.instance().log(this, Level.WARNING,
+                            "Ignored the CUSTOM 'role' recorded on TIMESERIES property '%s.%s': a column's role comes "
+                                + "from the type definition, not from property metadata", typeName, propertyName);
+                        continue;
+                      }
                       docType.getProperty(propertyName).setCustomValue(key, custom.get(key));
+                    }
                   }
+                  return;
+                }
+                if (docType instanceof LocalTimeSeriesType tsType && !tsType.isDeclaredColumn(propertyName)) {
+                  // Same provenance: a property added to a TIMESERIES type with CREATE PROPERTY before issue #7567
+                  // was fixed. No sample in this export carries a value for it - the exporter writes the declared
+                  // columns - so skipping it loses nothing and keeps the restore from failing.
+                  LogManager.instance().log(this, Level.WARNING,
+                      "Skipped property '%s.%s' from the export: it is not a declared column of the TIMESERIES type "
+                          + "and no write could ever populate it", typeName, propertyName);
                   return;
                 }
                 docType.createProperty(propertyName, property);

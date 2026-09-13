@@ -261,7 +261,7 @@ public class LocalSchema implements Schema {
     loadInRamCompleted = true;
     database.begin();
     try {
-      dictionary = new Dictionary(database, "dictionary", databasePath + "/dictionary", mode, Dictionary.DEF_PAGE_SIZE);
+      dictionary = new Dictionary(database, "dictionary", databasePath + File.separator + "dictionary", mode, Dictionary.DEF_PAGE_SIZE);
       files.add(dictionary);
 
       database.commit();

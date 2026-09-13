@@ -24,6 +24,7 @@ import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.media.Content;
+import io.swagger.v3.oas.models.media.Discriminator;
 import io.swagger.v3.oas.models.media.MediaType;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.parameters.Parameter;
@@ -79,6 +80,24 @@ public class CoreApiSpec implements OpenApiContributor {
       "Database not found, or the session id header names a transaction that no longer resolves "
           + "(\"Remote transaction session not found or expired\")";
 
+  // Shared by all three operations that advertise 'application/x-ndjson' under their 200. PostQueryHandler
+  // extends PostCommandHandler and overrides only executeCommand(), and GetQueryHandler - a sibling under
+  // AbstractQueryHandler, not a subclass - calls the same relocated requireStreamableStatement() before its own
+  // query runs, so the three reach one gate. Held in one place so they cannot describe it differently
+  // (issue #7569 documented it for the two POST operations, issue #7571 brought GET under the same gate and the
+  // same words).
+  //
+  // BACKUP DATABASE is named explicitly because it is the one statement a reader would otherwise expect to
+  // stream: it is idempotent, it mutates no record, and it reads as a query everywhere else in the SQL
+  // reference - it is refused here because its declared operation types report the archive it writes to the
+  // server filesystem.
+  private static final String NDJSON_READ_ONLY_DESCRIPTION = """
+      When 'Accept' requests the ndjson encoding, only a statement provably read-only may stream: one that \
+      writes - INSERT, UPDATE, DELETE, DDL, BACKUP DATABASE, or one this analysis cannot classify - is refused \
+      with 400 before it runs, because a streamed response puts its status code on the wire ahead of the rows \
+      and so cannot report a statement that fails half-way through. Request the buffered 'application/json' \
+      encoding for it instead.""";
+
   @Override
   public void contribute(final OpenAPI openAPI) {
     openAPI.getPaths().addPathItem("/api/v1/server", createServerPath());
@@ -107,6 +126,9 @@ public class CoreApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("BatchError", createBatchErrorSchema());
     openAPI.getComponents().addSchemas("ProgressResponse", createProgressResponseSchema());
     openAPI.getComponents().addSchemas("NdJsonBatchEvent", createNdJsonBatchEventSchema());
+    openAPI.getComponents().addSchemas("BatchLine", createBatchLineSchema());
+    openAPI.getComponents().addSchemas("BatchVertexLine", createBatchVertexLineSchema());
+    openAPI.getComponents().addSchemas("BatchEdgeLine", createBatchEdgeLineSchema());
   }
 
   private PathItem createServerPath() {
@@ -224,7 +246,7 @@ public class CoreApiSpec implements OpenApiContributor {
 
     final Operation getOp = new Operation();
     getOp.setSummary("Execute query via GET");
-    getOp.setDescription("Executes a query using GET method with parameters in URL");
+    getOp.setDescription("Executes a query using GET method with parameters in URL. " + NDJSON_READ_ONLY_DESCRIPTION);
     getOp.setOperationId("executeQueryGet");
     getOp.addTagsItem("Query");
     getOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
@@ -246,7 +268,7 @@ public class CoreApiSpec implements OpenApiContributor {
 
     final Operation postOp = new Operation();
     postOp.setSummary("Execute query via POST");
-    postOp.setDescription("Executes a query using POST method with query in request body");
+    postOp.setDescription("Executes a query using POST method with query in request body. " + NDJSON_READ_ONLY_DESCRIPTION);
     postOp.setOperationId("executeQueryPost");
     postOp.addTagsItem("Query");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
@@ -266,7 +288,7 @@ public class CoreApiSpec implements OpenApiContributor {
 
     final Operation postOp = new Operation();
     postOp.setSummary("Execute command");
-    postOp.setDescription("Executes a database command");
+    postOp.setDescription("Executes a database command. " + NDJSON_READ_ONLY_DESCRIPTION);
     postOp.setOperationId("executeCommand");
     postOp.addTagsItem("Command");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
@@ -430,23 +452,7 @@ public class CoreApiSpec implements OpenApiContributor {
     refMode.getSchema().setEnum(List.of("id", "ordinal"));
     post.addParametersItem(refMode);
 
-    final RequestBody body = new RequestBody();
-    body.setDescription("""
-        Vertices first, then edges. JSONL sends one JSON record per line; CSV sends a header row \
-        followed by data rows. Vertices may declare a temporary '@id' that edges reference through \
-        '@from' and '@to', or be referenced by position when refMode=ordinal. Edges may also \
-        reference existing RIDs in #bucket:position form.""");
-    body.setRequired(true);
-    final Content content = new Content();
-    final MediaType jsonl = new MediaType();
-    jsonl.setSchema(new Schema<>().type("string").description("One JSON object per line"));
-    content.addMediaType("application/x-ndjson", jsonl);
-    content.addMediaType("application/jsonl", jsonl);
-    final MediaType csv = new MediaType();
-    csv.setSchema(new Schema<>().type("string").description("Header row followed by data rows"));
-    content.addMediaType("text/csv", csv);
-    body.setContent(content);
-    post.setRequestBody(body);
+    post.setRequestBody(createBatchRequestBody());
 
     // 400 and 408 carry the partial-commit counts rather than the generic error body: a batch is
     // not atomic, so a client that cannot read how much was committed cannot reconcile before
@@ -458,8 +464,10 @@ public class CoreApiSpec implements OpenApiContributor {
     final MediaType ndjsonBatch = new MediaType();
     ndjsonBatch.setSchema(SpecBuilders.ref("NdJsonBatchEvent"));
     responses.get("200").getContent().addMediaType(NDJSON, ndjsonBatch);
-    responses.addApiResponse("400", SpecBuilders.jsonResponse(
-        "Client-input failure, with the counts attempted before it", "BatchError"));
+    responses.addApiResponse("400", SpecBuilders.jsonResponse("""
+        Client-input failure, with the counts attempted before it. Also the answer to a line that used a reserved \
+        key: an '@'-prefixed key outside the five control keys, or a 'properties' key carrying an object.""",
+        "BatchError"));
     responses.addApiResponse("408", SpecBuilders.jsonResponse(
         "The body ended before it was fully consumed, with the counts attempted before that", "BatchError"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
@@ -806,6 +814,146 @@ public class CoreApiSpec implements OpenApiContributor {
         False both when the database does not exist and when it exists but the caller is not \
         authorized to see it, since the response does not distinguish the two cases."""));
     return schema;
+  }
+
+  /**
+   * The payload of a bulk load (issue #7570). All three media types used to be declared as a bare {@code string}, so
+   * none of the five control keys appeared anywhere in the contract and every client in every language had to
+   * reverse-engineer the encoding - while the gRPC sibling {@code GraphBatchRecord} had been schematized since it
+   * shipped.
+   * <p>
+   * The JSON line encodings name the line schema rather than a string, which is the same convention this spec
+   * already uses for its NDJSON <em>responses</em> ({@code NdJsonQueryEvent}, {@code NdJsonBatchEvent}): OpenAPI 3.0
+   * cannot say "newline-delimited instances of this schema" for a body, so the media-type schema is the schema of one
+   * line and the description carries the line orientation.
+   */
+  private RequestBody createBatchRequestBody() {
+    final RequestBody body = new RequestBody();
+    body.setDescription("""
+        Vertices first, then edges. JSONL sends one JSON record per line; CSV sends a header row \
+        followed by data rows. Vertices may declare a temporary '@id' that edges reference through \
+        '@from' and '@to', or be referenced by position when refMode=ordinal. Edges may also \
+        reference existing RIDs in #bucket:position form.
+
+        The JSON schema below describes ONE LINE: the body is a sequence of them separated by newlines, not a JSON \
+        array, and a line that is an array is refused as such.
+
+        Properties sit FLAT beside the control keys - {"@type":"vertex","@class":"Person","name":"Alice"} - and are \
+        NOT nested under a 'properties' object. The '@' prefix is reserved: a key starting with '@' that is not one \
+        of @type, @class, @id, @from or @to is refused with a 400 naming the line, and so is a 'properties' key \
+        carrying an object, because both can only ever be a misread of this encoding.
+
+        The control keys and the '@type' values are matched case-sensitively: '@Type' is not '@type' and is refused \
+        as an unknown control key, and 'Vertex' is not 'vertex'. Only the CSV boolean literals 'true' and 'false' \
+        are matched ignoring case.
+
+        A temporary id is resolved only within the request that declared it, and only if the vertex appeared \
+        earlier in the same payload: a vertex loaded by an EARLIER request has to be referenced by RID \
+        (#bucket:position). Under refMode=ordinal, use 'ordinalBase' to keep one position counter across a load \
+        split into several requests.""");
+    body.setRequired(true);
+
+    final Content content = new Content();
+    for (final String jsonLineMediaType : List.of(NDJSON, "application/jsonl")) {
+      final MediaType jsonl = new MediaType();
+      jsonl.setSchema(SpecBuilders.ref("BatchLine"));
+      jsonl.setExample("""
+          {"@type":"vertex","@class":"Person","@id":"p1","name":"Alice"}
+          {"@type":"vertex","@class":"Person","@id":"p2","name":"Bob"}
+          {"@type":"edge","@class":"Knows","@from":"p1","@to":"p2","since":2020}""");
+      content.addMediaType(jsonLineMediaType, jsonl);
+    }
+
+    final MediaType csv = new MediaType();
+    csv.setSchema(new Schema<>().type("string").description("""
+        A header row naming the columns, then one data row per record. The control keys are column names: @type and \
+        @class are required, @id names a vertex's temporary id, and @from and @to name an edge's endpoints. Every \
+        other column is a property, and the '@' prefix is reserved there too - an unrecognised '@' column is refused \
+        with a 400. A '---' row separates the vertex section from the edge section, and a new header row follows it. \
+        Values are typed by inspection: 'true'/'false' become booleans, numeric text becomes a number, an empty \
+        field sets no property at all. Quoting follows RFC 4180, single-line fields only."""));
+    csv.setExample("""
+        @type,@class,@id,name
+        vertex,Person,p1,Alice
+        vertex,Person,p2,Bob
+        ---
+        @type,@class,@from,@to,since
+        edge,Knows,p1,p2,2020""");
+    content.addMediaType("text/csv", csv);
+
+    body.setContent(content);
+    return body;
+  }
+
+  /**
+   * One line of the JSON batch encoding: a vertex or an edge, told apart by {@code @type}. The discriminator maps the
+   * short spellings as well, because the parsers accept {@code v} and {@code e} and a generated client that only knew
+   * the long ones would reject its own valid payloads.
+   */
+  private Schema<?> createBatchLineSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        One line of the JSON batch encoding. Vertices must appear before the edges that reference them.""");
+    schema.setType(null);
+    schema.setOneOf(List.of(SpecBuilders.ref("BatchVertexLine"), SpecBuilders.ref("BatchEdgeLine")));
+
+    final Discriminator discriminator = new Discriminator();
+    discriminator.setPropertyName("@type");
+    discriminator.mapping("vertex", "#/components/schemas/BatchVertexLine");
+    discriminator.mapping("v", "#/components/schemas/BatchVertexLine");
+    discriminator.mapping("edge", "#/components/schemas/BatchEdgeLine");
+    discriminator.mapping("e", "#/components/schemas/BatchEdgeLine");
+    schema.setDiscriminator(discriminator);
+    return schema;
+  }
+
+  private Schema<?> createBatchVertexLineSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        A vertex line. Its properties are the keys of this same object, flat beside the control keys below - they are \
+        NOT nested under a 'properties' key, and sending one carrying an object is refused with a 400.""");
+    schema.addProperty("@type", SpecBuilders.string("Discriminator. 'v' is accepted as a synonym of 'vertex'")
+        ._enum(List.of("vertex", "v")));
+    schema.addProperty("@class", SpecBuilders.string("""
+        Vertex type to create the record in. The type must already exist: a bulk load creates records, never \
+        types."""));
+    schema.addProperty("@id", SpecBuilders.string("""
+        Temporary id, resolved only against the edges of THIS request. Optional - a vertex needs one only if an edge \
+        in the same payload references it, and one that declares none is counted in 'verticesWithoutId'. Ignored \
+        under refMode=ordinal, where an edge names a vertex by its 0-based position instead."""));
+    schema.setRequired(List.of("@type", "@class"));
+    addFlatPropertyPolicy(schema);
+    return schema;
+  }
+
+  private Schema<?> createBatchEdgeLineSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        An edge line. Its properties are the keys of this same object, flat beside the control keys below - they are \
+        NOT nested under a 'properties' key, and sending one carrying an object is refused with a 400.""");
+    schema.addProperty("@type", SpecBuilders.string("Discriminator. 'e' is accepted as a synonym of 'edge'")
+        ._enum(List.of("edge", "e")));
+    schema.addProperty("@class", SpecBuilders.string("""
+        Edge type to create the record in. The type must already exist: a bulk load creates records, never \
+        types."""));
+    schema.addProperty("@from", SpecBuilders.string("""
+        Source vertex. Under refMode=id (the default) this is the '@id' a vertex declared EARLIER IN THIS PAYLOAD, \
+        or an existing RID in #bucket:position form; each request resolves only the ids of its own payload. Under \
+        refMode=ordinal it is the vertex's 0-based position, offset by 'ordinalBase'."""));
+    schema.addProperty("@to", SpecBuilders.string("Destination vertex, named the same way as '@from'"));
+    schema.setRequired(List.of("@type", "@class", "@from", "@to"));
+    addFlatPropertyPolicy(schema);
+    return schema;
+  }
+
+  /**
+   * Declares that any other key of the line is a property. This is what makes the encoding schemaless, and it is also
+   * what made the reserved-key refusals necessary: without a rule, a control key the loader does not understand is
+   * indistinguishable from a property whose name happens to start with '@' (issue #7570).
+   */
+  private void addFlatPropertyPolicy(final Schema<Object> schema) {
+    schema.setAdditionalProperties(SpecBuilders.object("""
+        One property of the record, keyed by its name. Any JSON scalar, array or nested object; a nested object is \
+        stored as an embedded document. The name may not start with '@' - that prefix is reserved for the control \
+        keys - and a property named 'properties' may not carry an object, because that is the nested-form misreading \
+        rather than data.""").type(null));
   }
 
   private Schema<?> createBatchResponseSchema() {

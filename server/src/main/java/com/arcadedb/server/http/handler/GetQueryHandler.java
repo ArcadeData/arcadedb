@@ -65,10 +65,21 @@ public class GetQueryHandler extends AbstractQueryHandler {
       final String limitPar = getQueryParameter(exchange, "limit");
       profile.addDeserializationNanos(System.nanoTime() - deserializationStart);
 
-      // Negotiated up front so the serializer check refuses an unstreamable serializer before any query runs.
+      // Negotiated up front so both streaming preconditions refuse the request before any query runs: a
+      // serializer that has no row stream to give, and a statement that is not provably read-only. Both have to
+      // be decided while a refusal can still be a status code - once the first ndjson line is written the 200 is
+      // already on the wire.
+      //
+      // The read-only gate lives on AbstractQueryHandler rather than on PostCommandHandler, where it started,
+      // precisely so this handler reaches it: GetQueryHandler is a sibling of PostCommandHandler, not a
+      // subclass, so this operation advertised the same media type under its 200 with only
+      // SQLQueryEngine.query()'s idempotency check standing in for the gate - which admits BACKUP DATABASE
+      // (issue #7571).
       final boolean streaming = isNdJsonRequested(exchange);
-      if (streaming)
+      if (streaming) {
         ndJsonRowSerializer(serializer, includeTypeHints);
+        requireStreamableStatement(database, language, text);
+      }
       boolean streamed = false;
 
       final JSONObject response = new JSONObject();

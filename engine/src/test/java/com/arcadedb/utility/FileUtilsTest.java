@@ -23,6 +23,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.MockedStatic;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -507,5 +508,27 @@ class FileUtilsTest {
     assertThat(target).doesNotExist();
     assertThat(tempDir.toFile().list((dir, name) -> name.endsWith(".tmp")))
         .as("a failed copy must clean up after itself").isEmpty();
+  }
+
+  /**
+   * Issue #7586: a path can be assembled with either separator convention regardless of which platform the JVM
+   * runs on (e.g. a component path built with a literal '/'), so a lookup keyed on this JVM's own
+   * {@link File#separator} finds only one of the two and leaves the other's directory in place. Mixing both
+   * separators in one path - as the real Windows defect did - exercises that gap on every platform this test runs on.
+   */
+  @Test
+  void lastIndexOfSeparatorFindsWhicheverSeparatorIsRightmost() {
+    assertThat(FileUtils.lastIndexOfSeparator("db/dir\\dictionary.0.65536.v1.dict")).isEqualTo(6);
+    assertThat(FileUtils.lastIndexOfSeparator("db\\dir/dictionary.0.65536.v1.dict")).isEqualTo(6);
+    assertThat(FileUtils.lastIndexOfSeparator("dictionary.0.65536.v1.dict")).isEqualTo(-1);
+  }
+
+  @Test
+  void getFileNameFromPathStripsADirectoryBuiltWithEitherSeparator() {
+    assertThat(FileUtils.getFileNameFromPath("db/dir\\dictionary.0.65536.v1.dict"))
+        .isEqualTo("dictionary.0.65536.v1.dict");
+    assertThat(FileUtils.getFileNameFromPath("db\\dir/dictionary.0.65536.v1.dict"))
+        .isEqualTo("dictionary.0.65536.v1.dict");
+    assertThat(FileUtils.getFileNameFromPath("dictionary.0.65536.v1.dict")).isEqualTo("dictionary.0.65536.v1.dict");
   }
 }

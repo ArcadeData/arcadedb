@@ -46,16 +46,50 @@ import java.util.logging.Level;
  */
 class RaftClusterManager {
 
+  /**
+   * How long {@link #setConfigurationWithRetry} keeps re-issuing a membership change before giving up.
+   * <p>
+   * It is NOT the whole cost of a failed add: the shared {@link RaftClient} carries its own
+   * {@code RetryLimited(maxAttempts=60, sleepTime=1s)} policy, so a single {@code setConfiguration} call can
+   * block for about a minute, and this deadline is only consulted between attempts. That is why a failure
+   * here is reported with the budget named and a sentence saying what it means (issue #7514), and why the
+   * probe in {@code RaftHAServer.ensurePeerReachable} exists to keep the common mistake from reaching it.
+   */
+  static final long DEFAULT_SET_CONFIGURATION_BUDGET_MS = 90_000;
+
   private final RaftHAServer raftHAServer;
+  private final long         setConfigurationBudgetMs;
 
   RaftClusterManager(final RaftHAServer raftHAServer) {
-    this.raftHAServer = raftHAServer;
+    this(raftHAServer, DEFAULT_SET_CONFIGURATION_BUDGET_MS);
   }
 
+  /**
+   * Package-private for tests that have to reach the give-up branch of {@link #setConfigurationWithRetry}
+   * without waiting out the real budget.
+   */
+  RaftClusterManager(final RaftHAServer raftHAServer, final long setConfigurationBudgetMs) {
+    this.raftHAServer = raftHAServer;
+    this.setConfigurationBudgetMs = setConfigurationBudgetMs;
+  }
+
+  /**
+   * <b>Test-only seam.</b> No production code reaches these two overloads any more: issue #7514 moved the
+   * {@link RaftPeer} construction up into {@code RaftHAServer.addPeer(String, String, String)} so that both
+   * of its overloads meet at {@code addPeer(RaftPeer, String)}, which is where the pre-flight reachability
+   * probe lives. Every live entry point - {@code POST /api/v1/cluster/peer}, {@code connect cluster}, the
+   * gRPC {@code ConnectCluster} RPC, the embedded {@code HAServerPlugin.addPeer} - therefore goes through
+   * the probe, and anything calling these instead would bypass it.
+   * <p>
+   * They are kept because two tests exercise the membership change through them without standing up a
+   * server ({@code RaftAtomicMembershipTest}, {@code Issue7514UnreachablePeerRefusalTest}). A new
+   * production caller belongs on {@code RaftHAServer.addPeer}, not here.
+   */
   void addPeer(final String peerId, final String address) {
     addPeer(peerId, address, null);
   }
 
+  /** See {@link #addPeer(String, String)}: a test-only seam that bypasses the reachability probe. */
   void addPeer(final String peerId, final String address, final String name) {
     addPeer(RaftPeer.newBuilder()
         .setId(RaftPeerId.valueOf(peerId))
@@ -86,7 +120,11 @@ class RaftClusterManager {
     // near-simultaneous adds cannot clobber each other. A full setConfiguration(getLivePeers()+peer)
     // is read-modify-write last-write-wins and silently drops one of two concurrent adds (issue #4795),
     // which is exactly why the K8s auto-join path already uses Mode.ADD (see KubernetesAutoJoin).
-    setConfigurationWithRetry(() -> buildAddArgs(peerId, newPeer), "add peer " + peerId);
+    setConfigurationWithRetry(() -> buildAddArgs(peerId, newPeer), "add peer " + peerId + " at " + address,
+        "The peer answered a connection but the Raft membership change did not commit: Ratis holds a Mode.ADD"
+            + " uncommitted until the new peer has caught up with the leader's log. Check that the server at "
+            + address + " is running as part of this cluster - same cluster name and cluster token - and is"
+            + " not still replaying its own log.");
 
     final int colonIdx = address.lastIndexOf(':');
     if (colonIdx > 0) {
@@ -128,7 +166,9 @@ class RaftClusterManager {
     // leader's current configuration still matches the snapshot we computed the new list from. A
     // concurrent membership change invalidates the CAS, and the retry loop re-snapshots and rebuilds,
     // instead of the read-modify-write last-write-wins of a plain setConfiguration (issue #4795).
-    setConfigurationWithRetry(() -> buildRemoveArgs(peerId, force), "remove peer " + peerId);
+    setConfigurationWithRetry(() -> buildRemoveArgs(peerId, force), "remove peer " + peerId,
+        "The Raft membership change did not commit. A removal needs a leader and a voting majority of the"
+            + " CURRENT configuration, so check that the cluster still has one.");
 
     raftHAServer.getHttpAddresses().remove(RaftPeerId.valueOf(peerId));
     LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
@@ -399,8 +439,8 @@ class RaftClusterManager {
    * returns successfully.
    */
   private void setConfigurationWithRetry(final Supplier<SetConfigurationRequest.Arguments> argsSupplier,
-      final String operationDesc) {
-    final long deadline = System.currentTimeMillis() + 90_000;
+      final String operationDesc, final String hint) {
+    final long deadline = System.currentTimeMillis() + setConfigurationBudgetMs;
     long sleepMs = 200;
 
     while (true) {
@@ -423,7 +463,7 @@ class RaftClusterManager {
           sleepMs = Math.min(sleepMs * 2, 2_000);
           continue;
         }
-        throw new ConfigurationException("Failed to " + operationDesc + ": " + reply.getException());
+        throw new ConfigurationException(gaveUpMessage(operationDesc, hint, reply.getException()));
       } catch (final IOException e) {
         if (System.currentTimeMillis() < deadline) {
           LogManager.instance().log(this, Level.FINE,
@@ -437,12 +477,44 @@ class RaftClusterManager {
           sleepMs = Math.min(sleepMs * 2, 2_000);
           continue;
         }
-        throw new ConfigurationException("Failed to " + operationDesc, e);
+        throw new ConfigurationException(gaveUpMessage(operationDesc, hint, e), e);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         throw new ConfigurationException("Interrupted while waiting to " + operationDesc, e);
       }
     }
+  }
+
+  /**
+   * The sentence a membership change that ran out of budget is reported with (issue #7514).
+   * <p>
+   * What it replaces was {@code "Failed to " + operationDesc} with the Ratis failure as the cause, and the
+   * message that reached the operator was therefore the serialized request object - {@code "Failed
+   * SetConfigurationRequest:client-48FB...->localhost_2435@group-E6A6..., cid=11, seq=null, RW, null, ADD,
+   * servers:[localhost_2436|localhost:2436], listeners:[] for 60 attempts with RetryLimited(maxAttempts=60,
+   * sleepTime=1s)"}. Three things were missing from it and are here instead: what was being attempted in
+   * words, how long it was attempted for, and what an operator should look at next.
+   * <p>
+   * The Ratis text is kept, last and labelled. It is genuinely diagnostic - the attempt count and the retry
+   * policy are in it - and dropping it would trade one incomplete report for another.
+   */
+  private String gaveUpMessage(final String operationDesc, final String hint, final Throwable ratisFailure) {
+    final StringBuilder message = new StringBuilder(256);
+    message.append("Failed to ").append(operationDesc)
+        .append(": the Raft configuration change did not commit within ").append(setConfigurationBudgetMs)
+        .append(" ms.");
+    if (hint != null && !hint.isBlank())
+      message.append(' ').append(hint);
+    message.append(" Raft reported: ").append(describe(ratisFailure));
+    return message.toString();
+  }
+
+  /** The most readable form of a Ratis failure: its message when it has one, its type and message otherwise. */
+  private static String describe(final Throwable failure) {
+    if (failure == null)
+      return "no error detail";
+    final String failureMessage = failure.getMessage();
+    return failureMessage != null && !failureMessage.isBlank() ? failureMessage : failure.toString();
   }
 
   private boolean isLeaderNow(final String expectedPeerId) {

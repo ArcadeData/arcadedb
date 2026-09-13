@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -27,6 +28,12 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import java.util.*;
 
 public class LocalProperty extends AbstractProperty {
+
+  /**
+   * The CUSTOM key a user reaches for when trying to turn an existing property into a time-series column, as in
+   * {@code ALTER PROPERTY Reading.value CUSTOM role = "FIELD"}.
+   */
+  private static final String TIMESERIES_ROLE_CUSTOM_KEY = "role";
 
   public LocalProperty(final LocalDocumentType owner, final String name, final Type type) {
     super(owner, name, type, owner.getSchema().getDictionary().getIdByName(name, true));
@@ -287,9 +294,37 @@ public class LocalProperty extends AbstractProperty {
     return this;
   }
 
+  /**
+   * Refuses {@code CUSTOM role} on a property of a TIMESERIES type.
+   * <p>
+   * A column's role is {@code ColumnDefinition.getRole()}, fixed by {@code CREATE TIMESERIES TYPE} and never read
+   * back out of a property's CUSTOM map by anything in the engine. Accepting the key stored a value that looked like
+   * it had reconfigured the column and had no effect whatsoever - the second half of issue #7567. Every other CUSTOM
+   * key stays free-form, here as everywhere else.
+   * <p>
+   * Two cases are deliberately let through, because in both the caller is getting RID of the claim rather than
+   * making it: a {@code null} value, which is how {@code ALTER PROPERTY ... CUSTOM role = null} removes the key and
+   * therefore the only way a database written before this rule can clean up the one it already stored; and the
+   * schema load itself, so such a database opens at all.
+   */
+  private void checkTimeSeriesRoleNotCustomised(final String key, final Object value) {
+    if (!(owner instanceof LocalTimeSeriesType tsType) || !TIMESERIES_ROLE_CUSTOM_KEY.equalsIgnoreCase(key))
+      return;
+
+    if (value == null || tsType.getSchema().getEmbedded().isReadingFromFile())
+      return;
+
+    final ColumnDefinition column = tsType.getTsColumn(name);
+    throw new SchemaException("Cannot set the custom value '" + key + "' on property '" + tsType.getName() + "." + name
+        + "' because the type is a TIMESERIES type: a column's role is fixed by CREATE TIMESERIES TYPE and is never "
+        + "read from property metadata"
+        + (column != null ? ", the role of '" + name + "' is " + column.getRole() : ""));
+  }
+
   @Override
   public Object setCustomValue(final String key, final Object value) {
     checkForSchemaMutation();
+    checkTimeSeriesRoleNotCustomised(key, value);
     final Object prev;
     if (value == null)
       prev = custom.remove(key);

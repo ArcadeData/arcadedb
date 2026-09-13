@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -38,6 +39,13 @@ import java.util.Set;
  * </pre>
  * Blank lines are skipped. The record object is reused across calls.
  * <p>
+ * Properties sit FLAT beside the control keys; they are not nested under a {@code properties} object. Control and
+ * data therefore share one namespace, and the {@code @} prefix is what separates them: a key outside
+ * {@link #META_KEYS} that begins with {@code @} is refused rather than stored as a property with that name, and so is
+ * a {@code properties} key carrying an object, which is the nested-form misreading the gRPC sibling's
+ * {@code GraphBatchRecord.properties} map invites. Both used to be accepted and turned into a property, so a payload
+ * built on the obvious guess loaded with the right counters and the wrong data (issue #7570).
+ * <p>
  * Parsing errors are surfaced as {@link IllegalArgumentException} so the HTTP layer maps them
  * to a 400 Bad Request with a clear message instead of a generic 500. A line that did not form a well-formed JSON
  * object at all uses the {@link MalformedBatchRecordException} subclass, because a truncated upload produces exactly
@@ -46,6 +54,17 @@ import java.util.Set;
 public class JsonlBatchRecordStream implements BatchRecordStream {
 
   private static final Set<String> META_KEYS = Set.of("@type", "@class", "@id", "@from", "@to");
+
+  /** Named in the refusal messages so the client is told what the five understood control keys are. */
+  private static final String META_KEY_LIST = "@type, @class, @id, @from and @to";
+
+  /**
+   * The one non-{@code @} key that cannot be taken at face value: {@code GraphBatchRecord} carries a
+   * {@code properties} map, so a reader of the gRPC contract nests the properties under this name. Only refused when
+   * its value is an object - {@code {"properties":"public"}} is ordinary data and a domain is allowed a field with
+   * this name.
+   */
+  private static final String NESTED_PROPERTIES_KEY = "properties";
 
   private final BufferedReader reader;
   private final BatchRecord    record;
@@ -161,8 +180,29 @@ public class JsonlBatchRecordStream implements BatchRecordStream {
     for (final String key : json.keySet()) {
       if (META_KEYS.contains(key))
         continue;
-      record.addProperty(key, unwrap(json.get(key)));
+      final Object value = unwrap(json.get(key));
+      rejectReservedKey(key, value);
+      record.addProperty(key, value);
     }
+  }
+
+  /**
+   * Refuses the two keys that cannot be what they look like. Both used to fall through into the property list, where
+   * they produced a successful load holding data the client never meant to send (issue #7570).
+   */
+  private void rejectReservedKey(final String key, final Object value) {
+    if (!key.isEmpty() && key.charAt(0) == '@')
+      throw new IllegalArgumentException("Unknown control key '" + key + "' at line " + lineNumber
+          + ": the '@' prefix is reserved by the batch encoding and only " + META_KEY_LIST + " are understood. "
+          + "A property name cannot start with '@': rename the key, or drop it");
+
+    if (NESTED_PROPERTIES_KEY.equals(key) && value instanceof Map)
+      throw new IllegalArgumentException("Reserved key 'properties' at line " + lineNumber
+          + ": a batch line carries its properties flat, beside the '@' control keys, not nested under a "
+          + "'properties' object. Send {\"@type\":\"vertex\",\"@class\":\"Person\",\"name\":\"Alice\"} rather than "
+          + "{\"@type\":\"vertex\",\"@class\":\"Person\",\"properties\":{\"name\":\"Alice\"}}. Nested here, the object "
+          + "would be stored as a single property literally named 'properties' and nothing would fail until "
+          + "something queried for a field that was never written");
   }
 
   private static Object unwrap(final Object value) {
