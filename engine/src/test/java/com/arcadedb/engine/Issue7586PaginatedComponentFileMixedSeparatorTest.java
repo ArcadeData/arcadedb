@@ -22,7 +22,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,9 +61,15 @@ class Issue7586PaginatedComponentFileMixedSeparatorTest {
 
   @Test
   void fileNameAndComponentNameStripADirectoryPrefixRegardlessOfWhichSeparatorIsClosest() throws IOException {
-    // A single, real file name containing a literal '\' (legal on Linux/macOS): the platform separator only
-    // reaches the boundary before it, exactly as a mismatched separator would on Windows.
-    final String filePath = tempDir.resolve("dir\\dictionary.0." + PAGE_SIZE + ".v0.dict").toString();
+    // A real "dir" directory, reached with a literal separator that is NOT this JVM's own File.separator: on
+    // Linux/macOS that is '\', a plain filename character that keeps "dir" and the file name in one path
+    // component; on Windows '/' is a real alternate separator, so it still resolves into "dir". Either way the
+    // closest separator to the file name is the foreign one, exactly as a mismatched separator would be on
+    // whichever platform the JVM's own separator differs from.
+    Files.createDirectories(tempDir.resolve("dir"));
+    final char foreignSeparator = File.separatorChar == '/' ? '\\' : '/';
+    final String filePath =
+        tempDir + File.separator + "dir" + foreignSeparator + "dictionary.0." + PAGE_SIZE + ".v0.dict";
 
     pcf = new PaginatedComponentFile(filePath, ComponentFile.MODE.READ_WRITE);
 
