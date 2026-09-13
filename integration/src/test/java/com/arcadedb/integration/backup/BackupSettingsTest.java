@@ -180,6 +180,35 @@ class BackupSettingsTest {
         .hasMessageContaining("path change");
   }
 
+  /**
+   * A drive-qualified value such as {@code C:} or {@code C:backup.zip} carries no {@code /} or {@code \} at all -
+   * {@code checkValidName} lets it straight through - yet on Windows it is still not a bare file name: it is a
+   * drive-relative path (or, with nothing after the colon, just the drive itself), and once
+   * {@code FullBackupFormat} concatenates it onto the pinned {@code directory} the colon makes the combined path
+   * invalid, which is the same class of confusing, far-away failure this PR's separator fix already replaced with
+   * a clear rejection here (CodeRabbit finding on PR #7587).
+   */
+  @Test
+  void rejectsADriveQualifiedFileArgumentWhenADirectoryIsPinned() {
+    final BackupSettings driveOnly = new BackupSettings();
+    driveOnly.directory = "backups" + File.separator;
+    driveOnly.file = "C:";
+    assertThatThrownBy(driveOnly::validateSettings).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("path change");
+
+    final BackupSettings driveRelative = new BackupSettings();
+    driveRelative.directory = "backups" + File.separator;
+    driveRelative.file = "C:backup.zip";
+    assertThatThrownBy(driveRelative::validateSettings).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("path change");
+
+    final BackupSettings fileUrlDriveRelative = new BackupSettings();
+    fileUrlDriveRelative.directory = "backups" + File.separator;
+    fileUrlDriveRelative.file = "file://C:backup.zip";
+    assertThatThrownBy(fileUrlDriveRelative::validateSettings).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("path change");
+  }
+
   @Test
   void acceptsABareFileNameWhenADirectoryIsPinned() {
     final BackupSettings settings = new BackupSettings();
