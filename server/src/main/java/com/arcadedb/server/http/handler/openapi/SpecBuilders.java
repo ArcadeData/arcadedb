@@ -167,6 +167,19 @@ public final class SpecBuilders {
     return new Schema<>().type("array").items(items).description(description);
   }
 
+  /**
+   * An object whose keys are not known ahead of time - a record's own properties, a tag map - declared as an
+   * open map. Distinct from {@link #object(String)}, which is the starting point for an object whose properties
+   * are then spelled out: a {@code type: object} left with neither {@code properties} nor
+   * {@code additionalProperties} carries no information at all, so a strict generator emits an empty model and
+   * the real content becomes unreachable through typed access (issue #7568).
+   */
+  public static Schema<Object> freeFormObject(final String description) {
+    final Schema<Object> schema = object(description);
+    schema.setAdditionalProperties(Boolean.TRUE);
+    return schema;
+  }
+
   public static Schema<?> ref(final String componentName) {
     return new Schema<>().$ref("#/components/schemas/" + componentName);
   }
