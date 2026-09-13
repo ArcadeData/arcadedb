@@ -60,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue7586BackupArchiveEntriesSitAtArchiveRootTest {
+class Issue7586BackupArchiveEntriesSitAtArchiveRootIT {
   private static final String DATABASE_PATH = "target/databases/issue7586-backup-root";
   private static final String RESTORED_PATH = "target/databases/issue7586-backup-root-restored";
   private static final String BACKUP_FILE   = "target/issue7586-backup-root.zip";
