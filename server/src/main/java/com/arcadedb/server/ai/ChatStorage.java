@@ -33,6 +33,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
@@ -212,10 +213,7 @@ public class ChatStorage {
     final String normalized = username == null || username.isEmpty() ? "default" : username;
     try {
       final byte[] hash = MessageDigest.getInstance("SHA-256").digest(normalized.getBytes(StandardCharsets.UTF_8));
-      final StringBuilder hex = new StringBuilder(hash.length * 2);
-      for (final byte b : hash)
-        hex.append(String.format("%02x", b));
-      return hex.toString();
+      return HexFormat.of().formatHex(hash);
     } catch (final NoSuchAlgorithmException e) {
       // SHA-256 is a JCE-mandated algorithm on every JVM; unreachable in practice.
       throw new IllegalStateException("SHA-256 not available", e);
