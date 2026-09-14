@@ -3153,9 +3153,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // abandoned batch is still the one holding the flushed-edge count, and abandon() drops what was
           // buffered without touching what it had already committed.
           final Metadata trailers = partialCommitTrailer(abandoned, counts, tempIdMap, startedAt);
-          final Throwable cause = GrpcErrorMapper.unwrap(e);
-          out.onError(GrpcErrorMapper.classifyAndAddTrailers(cause, trailers).toStatus()
-              .withDescription("graphBatchLoad: " + cause.getMessage()).asException(trailers));
+          out.onError(graphBatchLoadError(e, trailers));
           return;
         } finally {
           if (!cancelled.get() && !errorSent[0])
@@ -3213,13 +3211,33 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // close() is where the deferred incoming edges are connected, so a failure here can leave edges
           // buffered that the counters must not claim: the batch is asked what it actually flushed.
           final Metadata trailers = partialCommitTrailer(batchRef.get(), counts, tempIdMap, startedAt);
-          final Throwable cause = GrpcErrorMapper.unwrap(e);
-          out.onError(GrpcErrorMapper.classifyAndAddTrailers(cause, trailers).toStatus()
-              .withDescription("graphBatchLoad: " + cause.getMessage()).asException(trailers));
+          out.onError(graphBatchLoadError(e, trailers));
           closeQuietly(batchRef.get());
         }
       }
     };
+  }
+
+  /**
+   * Builds the {@code onError} exception for a {@code graphBatchLoad} failure, classifying {@code e} and
+   * layering {@code trailers} (the partial-commit summary) onto it via {@link GrpcErrorMapper#classifyAndAddTrailers}.
+   * <p>
+   * When the cause is already a mapped {@link StatusRuntimeException}/{@link StatusException} - e.g. a
+   * {@code getDatabase()} auth refusal - its own description is kept verbatim instead of being overwritten with
+   * a synthesized {@code "graphBatchLoad: " + message}, matching how {@link GrpcErrorMapper#toStatusRuntimeException}
+   * treats the same pass-through case elsewhere.
+   */
+  private static StatusException graphBatchLoadError(final Throwable e, final Metadata trailers) {
+    final Throwable cause = GrpcErrorMapper.unwrap(e);
+    final Status.Code code = GrpcErrorMapper.classifyAndAddTrailers(cause, trailers);
+    final String description;
+    if (cause instanceof StatusRuntimeException sre)
+      description = sre.getStatus().getDescription();
+    else if (cause instanceof StatusException se)
+      description = se.getStatus().getDescription();
+    else
+      description = "graphBatchLoad: " + cause.getMessage();
+    return code.toStatus().withDescription(description).asException(trailers);
   }
 
   // ---------------------------------------------------------------------------------------------------------
