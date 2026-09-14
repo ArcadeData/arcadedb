@@ -2894,7 +2894,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // vote grant is), so it does not mean what it would need to mean here and would have offered false
       // reassurance rather than real detection (review finding on PR #7605). The wedged-channel case remains
       // open; the empty-log case below does not depend on it.
-      final boolean emptyLogInMultiPeerCluster = conf != null && conf.getCurrentPeers().size() > 1 && commitIndex <= 0;
+      final boolean emptyLogInMultiPeerCluster = isEmptyLogInMultiPeerCluster(
+          conf == null ? 0 : conf.getCurrentPeers().size(), commitIndex);
       // Issue #7130: the division's own Ratis lifecycle, read from this same snapshot so it cannot disagree
       // with leaderPresent/localInConfig/commitIndex/appliedIndex above. A RaftServer proxy can stay RUNNING
       // while the per-group division underneath goes CLOSED or EXCEPTION (issue #5271); every field this
@@ -2942,6 +2943,24 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * The issue #7131 cold-rejoin signal: whether {@code commitIndex} means "this follower's log holds nothing
+   * yet" in a configuration with more than one peer.
+   * <p>
+   * Strictly {@code < 0} ({@code RaftLog.INVALID_LOG_INDEX}), not {@code <= 0}: index {@code 0} is
+   * {@code RaftLog.LEAST_VALID_LOG_INDEX}, the leader's first real committed entry, not "empty". An earlier
+   * revision used {@code <= 0}, which reported a follower genuinely caught up to a brand-new multi-node
+   * cluster's very first commit as not-ready - confirmed against Ratis 3.3.0 bytecode ({@code RaftLogIndex}'s
+   * two named constants) and missed by every {@code isReadyForTrafficState} test because none of them fed a
+   * real, un-reduced {@code commitIndex} through this computation (review finding on PR #7605).
+   * <p>
+   * Package-private, not private, for the same reason as {@link #isDivisionLifecycleHealthy}: so this
+   * boundary can be exercised directly instead of only through a live Ratis {@code Division}.
+   */
+  static boolean isEmptyLogInMultiPeerCluster(final int peerCount, final long commitIndex) {
+    return peerCount > 1 && commitIndex < 0;
+  }
+
+  /**
    * Pure decision function behind {@link #isReadyForTraffic(long)}, split out so the predicate can be
    * unit-tested without the Ratis state plumbing. Returns {@code true} only when a leader is present and
    * this node is in the current configuration, and either this node is the leader (treated as caught up
@@ -2985,10 +3004,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * typically has {@code commitIndex == appliedIndex} and would be reported Ready there anyway. The flag
    * is meaningful only when {@code leader} is true; a follower's readiness is decided by its lag.
    * <p>
-   * Kept as the direct 8-argument entry point for existing callers and tests: it forwards to the
-   * 11-argument overload with the two issue #7131 gates disabled ({@code emptyLogInMultiPeerCluster=false},
-   * {@code peerUnreachableThresholdMs=0}), so its documented lag-only behaviour is unchanged. Production
-   * code calls the 11-argument overload directly.
+   * Kept as the direct 8-argument entry point for existing callers and tests: it forwards to the 9-argument
+   * overload with the issue #7131 gate disabled ({@code emptyLogInMultiPeerCluster=false}), so its documented
+   * lag-only behaviour is unchanged. Production code calls the final, 11-argument overload directly.
    */
   static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
       final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries,
