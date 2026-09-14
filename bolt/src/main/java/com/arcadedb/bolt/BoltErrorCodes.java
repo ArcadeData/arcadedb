@@ -23,10 +23,6 @@ package com.arcadedb.bolt;
  * These error codes are used across BOLT protocol messages and exceptions.
  */
 public final class BoltErrorCodes {
-  private BoltErrorCodes() {
-    // Utility class - prevent instantiation
-  }
-
   // Security errors
   public static final String AUTHENTICATION_ERROR = "Neo.ClientError.Security.Unauthorized";
   public static final String FORBIDDEN_ERROR      = "Neo.ClientError.Security.Forbidden";
@@ -67,4 +63,8 @@ public final class BoltErrorCodes {
 
   // Database errors
   public static final String DATABASE_ERROR = "Neo.DatabaseError.General.UnknownError";
+
+  private BoltErrorCodes() {
+    // Utility class - prevent instantiation
+  }
 }

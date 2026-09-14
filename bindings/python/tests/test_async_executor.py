@@ -135,7 +135,9 @@ def test_async_executor_is_pending_true_while_queued(temp_db):
     pending = async_exec.is_pending()
     elapsed = time.time() - start
 
-    assert elapsed < 1.0, "is_pending() must answer immediately, not wait for the queue to drain"
+    assert (
+        elapsed < 1.0
+    ), "is_pending() must answer immediately, not wait for the queue to drain"
     assert pending is True
 
     async_exec.wait_completion()
