@@ -41,7 +41,7 @@ import java.util.logging.Level;
 
 /**
  * File-based storage for AI chat conversations.
- * Chats are stored as JSON files under {serverRoot}/chats/{username}/.
+ * Chats are stored as JSON files under {serverRoot}/chats/{@link #hashUsername(String) hash(username)}/.
  */
 public class ChatStorage {
   // Fixed stripe of locks giving concurrent writers to the same (user, chatId) a deterministic
