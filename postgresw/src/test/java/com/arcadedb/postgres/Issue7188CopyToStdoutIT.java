@@ -328,7 +328,8 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
         copyDataMessages++;
         message = readWireMessage(in);
       }
-      assertThat(copyDataMessages).as("header, five rows, trailer").isEqualTo(7);
+      assertThat(copyDataMessages).as("header combined with the first row (matching PostgreSQL's own framing), four more rows, trailer")
+          .isEqualTo(6);
       assertThat(message.type()).as("CopyDone").isEqualTo('c');
 
       final WireMessage complete = readWireMessage(in);
@@ -359,6 +360,83 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
       assertThat(readWireMessage(in).type()).isEqualTo('2');
       assertThat(readWireMessage(in).type()).isEqualTo('T');
       assertThat(readWireMessage(in).type()).isEqualTo('D');
+      assertThat(readWireMessage(in).type()).isEqualTo('C');
+      assertThat(readWireMessage(in).type()).isEqualTo('Z');
+    });
+  }
+
+  /**
+   * The framing regression reported against this issue after it shipped (issue #7188, comment 5647328956): the
+   * Arrow ADBC driver's {@code TupleReader::AppendRowAndFetchNext} reads the binary header AND the first row out of
+   * the SAME {@code PQgetCopyData()} chunk, because that is how PostgreSQL's own {@code copyto.c} sends them - the
+   * header extension length is appended to the row buffer without ending a message, so it goes out together with
+   * the first row (or, with zero rows, together with the trailer). A server that flushes the header as its own
+   * {@code CopyData} message first desynchronizes that driver one row in, even though nothing about the framing is
+   * invalid PostgreSQL wire protocol on its own.
+   */
+  @Test
+  void theFirstCopyDataChunkCarriesTheHeaderAndFirstRowLikePostgresDoes() throws Exception {
+    final String query = "SELECT id, name FROM " + TYPE + " ORDER BY id";
+    withConnection((out, in) -> {
+      sendParse(out, "COPY (" + query + ") TO STDOUT (FORMAT binary)");
+      sendBind(out);
+      sendExecute(out);
+      sendSync(out);
+      assertThat(readWireMessage(in).type()).isEqualTo('1');
+      assertThat(readWireMessage(in).type()).isEqualTo('2');
+      assertThat(readWireMessage(in).type()).isEqualTo('H');
+
+      final WireMessage first = readWireMessage(in);
+      assertThat(first.type()).isEqualTo('d');
+      assertThat(first.body().length)
+          .as("more than the 19-byte header alone (signature+flags+extension length): the first row travels in the same chunk, "
+              + "exactly as PQgetCopyData() hands it to the ADBC driver's TupleReader")
+          .isGreaterThan(19);
+
+      final ByteArrayOutputStream stream = new ByteArrayOutputStream();
+      stream.write(first.body());
+      WireMessage message = readWireMessage(in);
+      while (message.type() == 'd') {
+        stream.write(message.body());
+        message = readWireMessage(in);
+      }
+      assertThat(message.type()).as("CopyDone").isEqualTo('c');
+      assertThat(readWireMessage(in).type()).isEqualTo('C');
+      assertThat(readWireMessage(in).type()).isEqualTo('Z');
+
+      final List<List<Object>> tuples = decodeBinaryCopy(stream.toByteArray(), new int[] { 23, 1043 });
+      assertThat(tuples).hasSize(5);
+      assertThat(tuples.get(0)).containsExactly(1, "plain");
+      assertThat(tuples.get(4)).containsExactly(5, "");
+    });
+  }
+
+  /**
+   * With zero rows there is no row to carry the header, so it travels with the trailer instead - the same one
+   * {@code CopyData} chunk PostgreSQL itself sends for an empty COPY.
+   */
+  @Test
+  void aBinaryCopyWithNoRowsFramesTheHeaderAndTrailerInOneChunk() throws Exception {
+    try (final Connection connection = openJdbcConnection()) {
+      final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+      final long rows = copyManager(connection).copyOut("COPY (SELECT id FROM " + TYPE + " WHERE id > 100) TO STDOUT (FORMAT binary)", bytes);
+      assertThat(rows).isZero();
+      assertThat(decodeBinaryCopy(bytes.toByteArray(), new int[] { 23 })).isEmpty();
+    }
+
+    withConnection((out, in) -> {
+      sendParse(out, "COPY (SELECT id FROM " + TYPE + " WHERE id > 100) TO STDOUT (FORMAT binary)");
+      sendBind(out);
+      sendExecute(out);
+      sendSync(out);
+      assertThat(readWireMessage(in).type()).isEqualTo('1');
+      assertThat(readWireMessage(in).type()).isEqualTo('2');
+      assertThat(readWireMessage(in).type()).isEqualTo('H');
+
+      final WireMessage only = readWireMessage(in);
+      assertThat(only.type()).isEqualTo('d');
+      assertThat(only.body().length).as("header (19 bytes) plus the 2-byte trailer, combined").isEqualTo(21);
+      assertThat(readWireMessage(in).type()).as("CopyDone").isEqualTo('c');
       assertThat(readWireMessage(in).type()).isEqualTo('C');
       assertThat(readWireMessage(in).type()).isEqualTo('Z');
     });
