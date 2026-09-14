@@ -41,8 +41,12 @@ def _java_class_name(value: Any) -> str:
 
 
 def _cast_all_to_string(arrs: list, pa) -> list:
-    """Cast every array to a string type, tolerating a type pyarrow cannot cast directly (e.g. a
-    vector/list column) by going through Python objects instead."""
+    """
+    Cast every array to a string type.
+
+    Tolerates a type pyarrow cannot cast directly (e.g. a vector/list column)
+    by going through Python objects instead.
+    """
     unified = []
     for a in arrs:
         try:
@@ -58,7 +62,8 @@ def _cast_all_to_string(arrs: list, pa) -> list:
 
 
 def _unify_arrow_chunk_types(arrs: list, pa) -> list:
-    """Unify a column's per-batch Arrow arrays onto one Arrow type.
+    """
+    Unify a column's per-batch Arrow arrays onto one Arrow type.
 
     ArcadeDB is schemaless per document, so a property's Java type can
     legally vary row to row; ColumnBatcher infers each batch's column type
