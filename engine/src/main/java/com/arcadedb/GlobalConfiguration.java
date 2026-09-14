@@ -1934,7 +1934,7 @@ public enum GlobalConfiguration {
       Long.class, 2000L),
 
   HA_PEER_UNREACHABLE_THRESHOLD("arcadedb.ha.peerUnreachableThreshold", SCOPE.SERVER,
-      "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Does not change Raft membership or quorum. Also used, from the follower's own side, as the readiness probe's staleness bound on its last successful RPC from the leader (issue #7131): a follower this quiet for this long answers /api/v1/ready as not ready, so tuning this value for the leader-side narrative also moves that threshold.",
+      "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Does not change Raft membership or quorum.",
       Long.class, 10000L),
 
   HA_PEER_CHANNEL_RESET_DURATION("arcadedb.ha.peerChannelResetDuration", SCOPE.SERVER,
