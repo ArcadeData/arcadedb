@@ -1233,7 +1233,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         responded = true;
         resp.onCompleted();
       } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord (external tx)", e);
+        LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord (external tx)", GrpcErrorMapper.unwrap(e));
         // GrpcErrorMapper both classifies the failure (RecordNotFoundException -> NOT_FOUND, etc. - issue
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
         // FAILED_PRECONDITION from requireTransactionStillActive) instead of masking it as INTERNAL.
@@ -1415,7 +1415,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         responded = true;
         resp.onCompleted();
       } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord (external tx)", e);
+        LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord (external tx)", GrpcErrorMapper.unwrap(e));
         // GrpcErrorMapper both classifies the failure (RecordNotFoundException -> NOT_FOUND, etc. - issue
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
         // FAILED_PRECONDITION from requireTransactionStillActive) instead of masking it as INTERNAL.
@@ -3153,8 +3153,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // abandoned batch is still the one holding the flushed-edge count, and abandon() drops what was
           // buffered without touching what it had already committed.
           final Metadata trailers = partialCommitTrailer(abandoned, counts, tempIdMap, startedAt);
-          out.onError(GrpcErrorMapper.classifyAndAddTrailers(e, trailers).toStatus()
-              .withDescription("graphBatchLoad: " + e.getMessage()).asException(trailers));
+          final Throwable cause = GrpcErrorMapper.unwrap(e);
+          out.onError(GrpcErrorMapper.classifyAndAddTrailers(cause, trailers).toStatus()
+              .withDescription("graphBatchLoad: " + cause.getMessage()).asException(trailers));
           return;
         } finally {
           if (!cancelled.get() && !errorSent[0])
@@ -3212,8 +3213,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // close() is where the deferred incoming edges are connected, so a failure here can leave edges
           // buffered that the counters must not claim: the batch is asked what it actually flushed.
           final Metadata trailers = partialCommitTrailer(batchRef.get(), counts, tempIdMap, startedAt);
-          out.onError(GrpcErrorMapper.classifyAndAddTrailers(e, trailers).toStatus()
-              .withDescription("graphBatchLoad: " + e.getMessage()).asException(trailers));
+          final Throwable cause = GrpcErrorMapper.unwrap(e);
+          out.onError(GrpcErrorMapper.classifyAndAddTrailers(cause, trailers).toStatus()
+              .withDescription("graphBatchLoad: " + cause.getMessage()).asException(trailers));
           closeQuietly(batchRef.get());
         }
       }

@@ -23,6 +23,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -155,7 +157,7 @@ class Issue7116IntrospectionListNonNullTest extends AbstractGraphQLTest {
   }
 
   private static Result fieldNamed(final Result typeResult, final String fieldName) {
-    for (final Result field : typeResult.<java.util.List<Result>>getProperty("fields"))
+    for (final Result field : typeResult.<List<Result>>getProperty("fields"))
       if (fieldName.equals(field.<String>getProperty("name")))
         return field;
     throw new AssertionError("field not found: " + fieldName);
