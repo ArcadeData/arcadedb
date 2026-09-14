@@ -276,7 +276,6 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       exchange.startBlocking();
 
     final OutputStream output = exchange.getOutputStream();
-    JSONObject doneData = null;
     String gatewaySessionId = null;
 
     try (InputStream body = response.body();
@@ -347,7 +346,31 @@ public class AiChatHandler extends AbstractServerHttpHandler {
           case "done" -> {
             // Inject chatId before forwarding the done event
             event.put("chatId", chat.getString("id"));
-            doneData = event;
+
+            // Persist chat history BEFORE forwarding/closing the stream: once the client sees the
+            // stream end it may immediately call GET /chats, and that read must already see this
+            // chat. Saving after close() (the previous approach) raced the client's own read of the
+            // saved chat against the server finishing the write.
+            final JSONObject assistantMsg = new JSONObject();
+            assistantMsg.put("role", "assistant");
+            assistantMsg.put("content", event.getString("response", ""));
+            assistantMsg.put("timestamp", Instant.now().toString());
+
+            final JSONArray commands = event.getJSONArray("commands", null);
+            if (commands != null && commands.length() > 0)
+              assistantMsg.put("commands", commands);
+
+            messages.put(assistantMsg);
+            chat.put("messages", messages);
+            chat.put("updated", Instant.now().toString());
+            try {
+              chatStorage.saveChat(username, chat);
+            } catch (final RuntimeException e) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Failed to persist chat history after streaming response (chatId=%s): %s",
+                  chat.getString("id", null), e.getMessage());
+            }
+
             forwardEvent(output, event);
           }
           default ->
@@ -357,34 +380,6 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       }
     } finally {
       try { output.close(); } catch (final Exception ignored) {}
-    }
-
-    // Save chat history from the done event
-    if (doneData != null) {
-      final JSONObject assistantMsg = new JSONObject();
-      assistantMsg.put("role", "assistant");
-      assistantMsg.put("content", doneData.getString("response", ""));
-      assistantMsg.put("timestamp", Instant.now().toString());
-
-      final JSONArray commands = doneData.getJSONArray("commands", null);
-      if (commands != null && commands.length() > 0)
-        assistantMsg.put("commands", commands);
-
-      messages.put(assistantMsg);
-      chat.put("messages", messages);
-      chat.put("updated", Instant.now().toString());
-      // The SSE response has already been fully streamed and the output closed above, so the
-      // exchange is committed: we can no longer turn a persistence failure into an HTTP error for
-      // the client. Unlike the non-streaming path (buildResponse), let saveChat's failure only be
-      // logged here - re-throwing would bubble up to execute()'s catch and attempt a second
-      // response on the already-committed exchange.
-      try {
-        chatStorage.saveChat(username, chat);
-      } catch (final RuntimeException e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Failed to persist chat history after streaming response (chatId=%s): %s",
-            chat.getString("id", null), e.getMessage());
-      }
     }
 
     return null; // response already sent
