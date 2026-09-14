@@ -105,4 +105,36 @@ class SnapshotAcquireStagingRecoveryTest {
     assertThat(snapshotBackup).doesNotExist();
     assertThat(refreshDb.resolve(".snapshot-pending")).doesNotExist();
   }
+
+  /**
+   * Issue #7128 (review follow-up on PR #7605): the first cut of this fix only guarded the pending-swap
+   * branch below, via {@code SnapshotSwapRecoveryTest.recoverySkipsADirectoryWithAnInstallInFlight}. This
+   * {@code .acquire-*} branch runs first in the same loop and had no guard at all, so a runtime Ratis restart
+   * could delete an in-flight {@code acquireNewDatabase()} download's staging directory out from under it.
+   * {@code acquireNewDatabase()} registers under the FINAL database path (not the staging path), so the fix
+   * must translate the staging directory name back to that final path before checking.
+   */
+  @Test
+  void recoverySkipsAcquireStagingWithAnAcquisitionInFlight(@TempDir final Path databasesDir) throws Exception {
+    final Path staging = databasesDir.resolve(SnapshotInstaller.ACQUIRE_STAGING_PREFIX + "newdb");
+    Files.createDirectories(staging);
+    Files.writeString(staging.resolve("partial.bucket"), "still-downloading");
+
+    final Path finalDbPath = databasesDir.resolve("newdb");
+    SnapshotInstaller.markInstallInFlightForTesting(finalDbPath);
+    try {
+      SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir);
+
+      // Untouched: the in-flight acquisition still owns this staging directory.
+      assertThat(staging).exists();
+      assertThat(staging.resolve("partial.bucket")).exists();
+    } finally {
+      SnapshotInstaller.clearInstallInFlightForTesting(finalDbPath);
+    }
+
+    // Once the (simulated) acquisition is no longer in flight, the very same on-disk state - now genuinely
+    // orphaned - is cleaned up exactly as it always was.
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir);
+    assertThat(staging).doesNotExist();
+  }
 }
