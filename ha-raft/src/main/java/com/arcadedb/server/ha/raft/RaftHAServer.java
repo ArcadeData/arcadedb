@@ -2894,9 +2894,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // while the per-group division underneath goes CLOSED or EXCEPTION (issue #5271); every field this
       // method otherwise reads (leaderId, raft conf, commit/applied index) survives that close and keeps
       // reporting its last value, which is exactly how a dead division still answered Ready before this gate.
-      final LifeCycle.State lifeCycleState = info.getLifeCycleState();
-      final boolean divisionLifecycleHealthy = lifeCycleState == LifeCycle.State.RUNNING
-          || lifeCycleState == LifeCycle.State.PAUSED;
+      final boolean divisionLifecycleHealthy = isDivisionLifecycleHealthy(info.getLifeCycleState());
       final boolean haltedAfterCriticalError = sm != null && sm.isHaltedAfterCriticalError();
       return isReadyForTrafficState(leaderPresent, localInConfig, info.isLeader(), commitIndex, appliedIndex,
           maxLagEntries, resyncInProgress, info.isLeaderReady(), emptyLogInMultiPeerCluster, leaderRpcElapsedMs,
@@ -2926,6 +2924,27 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return -1;
     final RaftProtos.FollowerInfoProto followerInfo = roleInfo.getFollowerInfo();
     return followerInfo.hasLeaderInfo() ? followerInfo.getLeaderInfo().getLastRpcElapsedTimeMs() : -1;
+  }
+
+  /**
+   * Whether {@code state} counts as healthy for the issue #7130 readiness gate. Only {@code RUNNING} and
+   * {@code PAUSED} do - every other {@link LifeCycle.State} value ({@code NEW}, {@code STARTING},
+   * {@code PAUSING}, {@code EXCEPTION}, {@code CLOSING}, {@code CLOSED}) is not ready.
+   * <p>
+   * {@code PAUSED} is deliberately included alongside {@code RUNNING}, not excluded as CLOSED/EXCEPTION are:
+   * {@link ArcadeStateMachine#pause()}'s own javadoc verifies every {@code StateMachine.pause()} caller in
+   * Ratis - the snapshot-install notification path, the chunk-based install path, and the external
+   * {@code RaftServerImpl.pause()} API - is paired with a subsequent {@code reinitialize()} call back to
+   * RUNNING. PAUSED is therefore a normal, expected, self-recovering window during a healthy install or an
+   * intentional external pause, not a failure state. {@code PAUSING} is excluded because it is the transient
+   * state mid-transition, before {@link ArcadeStateMachine#pause()} has actually reached PAUSED.
+   * <p>
+   * Package-private, not private, specifically so this mapping - the one part of the #7130 fix with no other
+   * test coverage, since every {@code isReadyForTrafficState} test passes the already-reduced boolean - can
+   * be exercised directly against every {@link LifeCycle.State} value without faking a Ratis {@code Division}.
+   */
+  static boolean isDivisionLifecycleHealthy(final LifeCycle.State state) {
+    return state == LifeCycle.State.RUNNING || state == LifeCycle.State.PAUSED;
   }
 
   /**

@@ -18,8 +18,10 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import org.apache.ratis.util.LifeCycle;
 import org.junit.jupiter.api.Test;
 
+import static com.arcadedb.server.ha.raft.RaftHAServer.isDivisionLifecycleHealthy;
 import static com.arcadedb.server.ha.raft.RaftHAServer.isReadyForTrafficState;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -265,5 +267,32 @@ class RaftHAServerReadinessTest {
   void elevenArgOverloadDefaultsToHealthyDivisionAndNotHalted() {
     // Backward-compatible default for callers that predate issue #7130: neither new gate fires.
     assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, -1, 0)).isTrue();
+  }
+
+  // -----------------------------------------------------------------------------------------------
+  // Issue #7130 (review follow-up): the LifeCycle.State -> healthy-or-not mapping that isReadyForTraffic()
+  // feeds into the 13-arg overload above is itself untested by every case above, since they all pass the
+  // already-reduced boolean. Exercise the mapping directly against every LifeCycle.State value instead.
+  // -----------------------------------------------------------------------------------------------
+
+  @Test
+  void runningAndPausedAreHealthy() {
+    // RUNNING is the ordinary case. PAUSED is included deliberately - ArcadeStateMachine.pause()'s own
+    // javadoc verifies every Ratis StateMachine.pause() caller pairs it with a reinitialize() back to
+    // RUNNING, so it is a normal, self-recovering window during an install, not a failure state.
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.RUNNING)).isTrue();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.PAUSED)).isTrue();
+  }
+
+  @Test
+  void everyOtherLifeCycleStateIsUnhealthy() {
+    // CLOSED/EXCEPTION are the issue #7130 targets; NEW/STARTING/PAUSING/CLOSING are the "defensively,
+    // anything that is not RUNNING or PAUSED" half of the same gate.
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.NEW)).isFalse();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.STARTING)).isFalse();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.PAUSING)).isFalse();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.EXCEPTION)).isFalse();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.CLOSING)).isFalse();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.CLOSED)).isFalse();
   }
 }
