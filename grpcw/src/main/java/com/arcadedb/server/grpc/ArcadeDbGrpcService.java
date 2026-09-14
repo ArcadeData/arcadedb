@@ -3152,8 +3152,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // caller can reconcile instead of re-sending a load that is partly in the database already. The
           // abandoned batch is still the one holding the flushed-edge count, and abandon() drops what was
           // buffered without touching what it had already committed.
-          out.onError(GrpcErrorMapper.statusCodeFor(e).toStatus().withDescription("graphBatchLoad: " + e.getMessage())
-              .asException(partialCommitTrailer(abandoned, counts, tempIdMap, startedAt)));
+          final Metadata trailers = partialCommitTrailer(abandoned, counts, tempIdMap, startedAt);
+          out.onError(GrpcErrorMapper.classifyAndAddTrailers(e, trailers).toStatus()
+              .withDescription("graphBatchLoad: " + e.getMessage()).asException(trailers));
           return;
         } finally {
           if (!cancelled.get() && !errorSent[0])
@@ -3210,8 +3211,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } catch (final Exception e) {
           // close() is where the deferred incoming edges are connected, so a failure here can leave edges
           // buffered that the counters must not claim: the batch is asked what it actually flushed.
-          out.onError(GrpcErrorMapper.statusCodeFor(e).toStatus().withDescription("graphBatchLoad: " + e.getMessage())
-              .asException(partialCommitTrailer(batchRef.get(), counts, tempIdMap, startedAt)));
+          final Metadata trailers = partialCommitTrailer(batchRef.get(), counts, tempIdMap, startedAt);
+          out.onError(GrpcErrorMapper.classifyAndAddTrailers(e, trailers).toStatus()
+              .withDescription("graphBatchLoad: " + e.getMessage()).asException(trailers));
           closeQuietly(batchRef.get());
         }
       }

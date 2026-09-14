@@ -134,10 +134,7 @@ public final class GrpcErrorMapper {
       redirect = attachLeaderRedirect(trailers, ha, notTheLeader);
     } else if (cause instanceof DuplicatedKeyException dup) {
       code = Status.Code.ALREADY_EXISTS;
-      if (dup.getIndexName() != null)
-        trailers.put(DUP_INDEX_KEY, encodeTrailer(dup.getIndexName()));
-      if (dup.getKeys() != null)
-        trailers.put(DUP_KEYS_KEY, encodeTrailer(dup.getKeys()));
+      addDuplicatedKeyTrailers(trailers, dup);
     } else if (cause instanceof DatabaseOperationInProgressException) {
       // A backup, restore or import of the same database already holds the per-database maintenance slot, so a
       // SQL 'BACKUP DATABASE' or 'IMPORT DATABASE' sent through ExecuteCommand was refused. ABORTED is what the
@@ -179,6 +176,32 @@ public final class GrpcErrorMapper {
       case TIMEOUT -> Status.Code.DEADLINE_EXCEEDED;
       case SERVER -> Status.Code.INTERNAL;
     };
+  }
+
+  /**
+   * Same classification as {@link #toStatusRuntimeException}, but layers this class's own trailers (the
+   * exception class name, and for a {@link DuplicatedKeyException} the index/keys) onto a trailer set the
+   * caller already owns, rather than building a standalone one - for a handler like {@code graphBatchLoad}
+   * that must attach its own trailers (a partial-commit summary) alongside these. Before this, such a handler
+   * had to call {@link #statusCodeFor} directly and lost the {@code DUP_INDEX_KEY}/{@code DUP_KEYS_KEY}
+   * trailers that {@code executeCommand}/{@code createRecord} attach for the identical
+   * {@link DuplicatedKeyException} (code review on issue #7123).
+   */
+  static Status.Code classifyAndAddTrailers(final Throwable t, final Metadata trailers) {
+    final Throwable cause = unwrap(t);
+    trailers.put(EXCEPTION_CLASS_KEY, cause.getClass().getName());
+    if (cause instanceof DuplicatedKeyException dup) {
+      addDuplicatedKeyTrailers(trailers, dup);
+      return Status.Code.ALREADY_EXISTS;
+    }
+    return statusCodeFor(cause);
+  }
+
+  private static void addDuplicatedKeyTrailers(final Metadata trailers, final DuplicatedKeyException dup) {
+    if (dup.getIndexName() != null)
+      trailers.put(DUP_INDEX_KEY, encodeTrailer(dup.getIndexName()));
+    if (dup.getKeys() != null)
+      trailers.put(DUP_KEYS_KEY, encodeTrailer(dup.getKeys()));
   }
 
   /**
