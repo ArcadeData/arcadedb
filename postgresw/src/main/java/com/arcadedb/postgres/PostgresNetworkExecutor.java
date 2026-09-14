@@ -2039,10 +2039,13 @@ public class PostgresNetworkExecutor extends Thread {
     ByteBuffer encoded = binary ? null : ByteBuffer.allocate(4 * 1024);
 
     if (binary) {
+      // Left unflushed here, on purpose: PostgreSQL's own copyto.c appends this header to the row buffer without
+      // ending a CopyData message, so it travels together with the first row below (or, with zero rows, with the
+      // trailer) - the exact framing the Arrow ADBC driver's TupleReader relies on, reading the header and the
+      // first row out of the same PQgetCopyData() chunk (issue #7188, comment 5647328956).
       payload.putByteArray(COPY_BINARY_SIGNATURE);
       payload.putInt(0); // flags: no OIDs
       payload.putInt(0); // header extension length
-      appendCopyData(out, payload);
     } else if (copy.isHeader()) {
       copy.appendHeader(line, columns.keySet());
       encoded = appendCopyData(out, line, encoder, encoded);
