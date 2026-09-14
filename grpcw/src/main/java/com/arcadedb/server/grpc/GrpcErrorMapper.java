@@ -169,7 +169,11 @@ public final class GrpcErrorMapper {
     return switch (ErrorCategory.of(cause)) {
       case RETRY -> Status.Code.ABORTED;
       case ARITHMETIC -> Status.Code.OUT_OF_RANGE;
-      case DUPLICATED_KEY -> Status.Code.ALREADY_EXISTS; // unreachable: handled by its own branch above
+      // Unreachable from toStatusRuntimeException/classifyAndAddTrailers, which both special-case
+      // DuplicatedKeyException before reaching here - but ArcadeDbGrpcService.toSearchStatus calls this
+      // method directly with no such pre-check, so this arm exists for that caller (and any future one),
+      // not just to keep the switch exhaustive over ErrorCategory.
+      case DUPLICATED_KEY -> Status.Code.ALREADY_EXISTS;
       case NOT_FOUND, SCHEMA -> Status.Code.NOT_FOUND;
       case SECURITY -> Status.Code.PERMISSION_DENIED;
       case VALIDATION, PARSING -> Status.Code.INVALID_ARGUMENT;
