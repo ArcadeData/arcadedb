@@ -276,4 +276,42 @@ class ChatStorageTest {
     for (final String username : collidingUsernames)
       assertThat(chatStorage.listChats(username)).as("chats visible to %s", username).hasSize(1);
   }
+
+  @Test
+  void chatsWrittenUnderTheLegacySanitizeFilenameLayoutSurviveTheUpgrade() throws Exception {
+    // Regression test for the CodeRabbit-flagged migration gap in #7113's fix: a server that already
+    // shipped the old ChatStorage.sanitizeFilename(username) directory layout must not orphan a
+    // user's existing chats when it upgrades to the new hashUsername(username) layout.
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", ChatStorage.sanitizeFilename("legacyuser")).toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "Pre-upgrade chat");
+    final File legacyFile = new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json");
+    FileUtils.writeFile(legacyFile, chat.toString());
+
+    final List<JSONObject> chats = chatStorage.listChats("legacyuser");
+
+    assertThat(chats).hasSize(1);
+    assertThat(chatStorage.getChat("legacyuser", chat.getString("id"))).isNotNull();
+    // The legacy directory itself must be gone: this user's data now lives only under the hash.
+    assertThat(legacyDir).doesNotExist();
+  }
+
+  @Test
+  void legacyMigrationCannotReproduceTheSanitizeFilenameCollision() throws Exception {
+    // Two usernames that used to collide under sanitizeFilename must not both end up reading the
+    // migrated legacy directory: only the first one looked up after the upgrade may claim it.
+    final String sharedLegacyName = ChatStorage.sanitizeFilename("user@corp.com");
+    assertThat(sharedLegacyName).isEqualTo(ChatStorage.sanitizeFilename("user.corp.com"));
+
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", sharedLegacyName).toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "Whoever migrates first owns this");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+
+    // "user@corp.com" is looked up first and claims the legacy directory.
+    assertThat(chatStorage.listChats("user@corp.com")).hasSize(1);
+    // "user.corp.com" finds nothing left to migrate: a fresh, private, empty store instead of the
+    // other user's history.
+    assertThat(chatStorage.listChats("user.corp.com")).isEmpty();
+  }
 }
