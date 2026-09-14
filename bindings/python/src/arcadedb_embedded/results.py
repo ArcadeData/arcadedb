@@ -68,7 +68,12 @@ def _unify_arrow_chunk_types(arrs: list, pa) -> list:
         try:
             unified.append(a.cast(pa.string()))
         except pa.ArrowException:
-            unified.append(pa.array([None if v is None else str(v) for v in a.to_pylist()], type=pa.string()))
+            unified.append(
+                pa.array(
+                    [None if v is None else str(v) for v in a.to_pylist()],
+                    type=pa.string(),
+                )
+            )
     return unified
 
 
@@ -510,7 +515,10 @@ class ResultSet:
         if total == 0 or not first_names:
             return pa.table({})
         return pa.table(
-            {n: pa.chunked_array(_unify_arrow_chunk_types(chunks[n], pa)) for n in first_names}
+            {
+                n: pa.chunked_array(_unify_arrow_chunk_types(chunks[n], pa))
+                for n in first_names
+            }
         )
 
     def iter_chunks(

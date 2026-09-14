@@ -127,7 +127,9 @@ def test_to_arrow_multi_batch_int_then_float_column(temp_db_path):
             for i in range(64, 100):
                 db.command("sql", f"INSERT INTO Rec SET seq = {i}, v = {i}.5")
 
-        table = db.query("sql", "SELECT v FROM Rec ORDER BY seq").to_arrow(batch_size=64)
+        table = db.query("sql", "SELECT v FROM Rec ORDER BY seq").to_arrow(
+            batch_size=64
+        )
 
         assert table.num_rows == 100
         assert table.column("v").type == pa.float64()
@@ -148,7 +150,9 @@ def test_to_arrow_multi_batch_mixed_type_degrades_to_string(temp_db_path):
             for i in range(64, 100):
                 db.command("sql", f"INSERT INTO Rec SET seq = {i}, v = 'text{i}'")
 
-        table = db.query("sql", "SELECT v FROM Rec ORDER BY seq").to_arrow(batch_size=64)
+        table = db.query("sql", "SELECT v FROM Rec ORDER BY seq").to_arrow(
+            batch_size=64
+        )
 
         assert table.num_rows == 100
         assert table.column("v").type == pa.string()
