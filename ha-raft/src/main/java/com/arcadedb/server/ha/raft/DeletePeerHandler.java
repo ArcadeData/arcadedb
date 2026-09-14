@@ -38,6 +38,14 @@ public class DeletePeerHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    // The membership change this triggers can retry and sleep for up to ~105s. Running that on the Undertow
+    // IO thread stalls every other connection on the same selector, including kubelet readiness/liveness
+    // probes (issue #7133).
+    return true;
+  }
+
+  @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
     checkRootUser(user);

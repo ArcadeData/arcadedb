@@ -324,8 +324,10 @@ public final class HealthMonitor {
   private void handleUnhealthyState(final LifeCycle.State state) {
     crashRestartStreak++;
 
-    // Already escalated and gave up: do not resume the restart churn. The node stays down (readiness
-    // fails) and the SEVERE alert already told the operator; a pod/process restart is the way out.
+    // Already escalated and gave up: do not resume the restart churn. The node stays down: readiness fails
+    // because RaftHAServer.isReadyForTraffic() folds this division's own lifecycle into the gate (issue
+    // #7130), so a CLOSED/EXCEPTION division answers not-ready even though the HTTP listener and getStatus()
+    // stay ONLINE. The SEVERE alert already told the operator; a pod/process restart is the way out.
     if (crashLoopEscalated)
       return;
 

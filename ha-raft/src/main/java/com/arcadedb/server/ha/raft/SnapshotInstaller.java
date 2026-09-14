@@ -151,6 +151,31 @@ public final class SnapshotInstaller {
   private static final Set<String> INSTALLS_IN_FLIGHT = ConcurrentHashMap.newKeySet();
 
   /**
+   * The {@link #INSTALLS_IN_FLIGHT} key for {@code dbDir}, normalized and absolutized exactly like the two
+   * {@code inFlightKey} derivations in {@link #installHoldingMaintenanceSlot} and {@link #acquireNewDatabase}
+   * (both {@code Path.of(...).normalize().toAbsolutePath().toString()}), so a path arriving from a directory
+   * listing - as {@link #recoverPendingSnapshotSwaps(Path, ArcadeDBServer)} does - matches the key an in-flight
+   * install registered from its own, differently-constructed {@code Path} (issue #7128).
+   */
+  private static String resolvedInFlightKey(final Path dbDir) {
+    return dbDir.normalize().toAbsolutePath().toString();
+  }
+
+  /**
+   * Test-only: registers {@code dbDir} as having an install in flight, so a test can exercise the issue #7128
+   * skip guard in {@link #recoverPendingSnapshotSwaps(Path, ArcadeDBServer)} without driving a real download.
+   * Always paired with {@link #clearInstallInFlightForTesting} once the test is done with it.
+   */
+  static void markInstallInFlightForTesting(final Path dbDir) {
+    INSTALLS_IN_FLIGHT.add(resolvedInFlightKey(dbDir));
+  }
+
+  /** Test-only: undoes {@link #markInstallInFlightForTesting}. */
+  static void clearInstallInFlightForTesting(final Path dbDir) {
+    INSTALLS_IN_FLIGHT.remove(resolvedInFlightKey(dbDir));
+  }
+
+  /**
    * Test-only barrier invoked once inside the registry-locked swap region of {@link #swapAndReopen}, after the
    * live database has been closed/deregistered and before the staged snapshot is moved into place. {@code null}
    * in production (the only cost is a single reference read per install). The issue-#4832 regression test sets it
@@ -862,6 +887,24 @@ public final class SnapshotInstaller {
         if (!Files.exists(pendingMarker))
           continue;
 
+        // This pass is not startup-only (see the class javadoc above on #7449): RaftHAServer.restartRatis
+        // rebuilds the state machine, and ArcadeStateMachine.initialize() - and this pass with it - runs again
+        // while the server stays ONLINE and an install() download can already be under way for this very
+        // directory. Unlike the two Files.exists() checks above, install() has already written both the pending
+        // marker AND this INSTALLS_IN_FLIGHT entry before it starts extracting (installHoldingMaintenanceSlot
+        // adds the entry first, then writes the marker before the download begins), so a directory this pass
+        // would otherwise read as "orphaned" and delete out from under the extractor is caught here instead
+        // (issue #7128). Skipping it is safe either way the in-flight install ends: success completes the swap
+        // and clears the marker itself; failure deletes its own staging directory and marker in its catch block
+        // (installHoldingMaintenanceSlot's download-failure path). A crash takes INSTALLS_IN_FLIGHT - an
+        // in-memory set - down with it, so the next actual process restart finds the marker with nothing
+        // in-flight to race and reconciles it normally.
+        if (INSTALLS_IN_FLIGHT.contains(resolvedInFlightKey(dbDir))) {
+          LogManager.instance().log(SnapshotInstaller.class, Level.FINE,
+              "Skipping snapshot recovery for %s this pass: an install is already in flight for it", null, dbDir);
+          continue;
+        }
+
         LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
             "Recovering pending snapshot swap for database directory: %s", null, dbDir);
 
@@ -1319,7 +1362,7 @@ public final class SnapshotInstaller {
       }
     }
 
-    verifyManifest(manifestBytes, extracted, manifestRequired);
+    verifyManifest(manifestBytes, extracted, manifestRequired, targetDir);
   }
 
   /**
@@ -1328,11 +1371,24 @@ public final class SnapshotInstaller {
    *   <li>manifest absent + not required: legacy leader, nothing to verify;</li>
    *   <li>manifest absent + required: the leader advertised a manifest but it never arrived - the download
    *       was truncated before the final entry, so reject;</li>
-   *   <li>manifest present: every listed file must have been extracted with a matching size and CRC32.</li>
+   *   <li>manifest present: every listed file must have been extracted with a matching size and CRC32, AND
+   *       must still be present on disk under {@code targetDir} with that same size.</li>
    * </ul>
+   * <p>
+   * The on-disk re-stat (issue #7128) exists because {@code extracted} is a record of what this call
+   * <i>streamed</i>, taken as each entry was written and fsynced - it says nothing about whether the file is
+   * still there by the time this method runs. A concurrent boot-time recovery pass re-entering through a
+   * runtime Ratis restart can read this same staging directory as "orphaned" (no completion marker yet) and
+   * delete it out from under an extraction already in flight; every entry extracted before that deletion is
+   * gone from disk yet still recorded in {@code extracted} with a matching size and CRC, so the map-only check
+   * verified a directory that no longer existed. Re-stating turns that silent bad install into a loud one.
+   * Existence and size only, not a CRC re-read: the CRC was already computed from the exact bytes written in
+   * this call, immediately before the fsync that made them durable, so it cannot itself have been corrupted by
+   * a concurrent deletion the way "is the file still there" can - and re-reading every file a second time to
+   * recompute it would double this method's I/O for a check the in-memory record already answers correctly.
    */
-  private static void verifyManifest(final byte[] manifestBytes, final Map<String, long[]> extracted,
-      final boolean manifestRequired) throws IOException {
+  static void verifyManifest(final byte[] manifestBytes, final Map<String, long[]> extracted,
+      final boolean manifestRequired, final Path targetDir) throws IOException {
     if (manifestBytes == null) {
       if (manifestRequired)
         throw new IOException("Snapshot transfer incomplete: the leader advertised a completeness manifest but it was "
@@ -1353,6 +1409,21 @@ public final class SnapshotInstaller {
       if (got[1] != entry.crc())
         throw new IOException("Snapshot file '" + entry.name() + "' CRC32 mismatch: manifest declares "
             + entry.crc() + " but received content hashes to " + got[1] + " (corrupt download)");
+
+      final Path onDisk = targetDir.resolve(entry.name());
+      final long sizeOnDisk;
+      try {
+        sizeOnDisk = Files.size(onDisk);
+      } catch (final IOException e) {
+        throw new IOException("Snapshot file '" + entry.name() + "' was extracted and verified but is no longer "
+            + "present on disk under " + targetDir + " - the staging directory was modified concurrently while "
+            + "this install was in progress (possible concurrent recovery pass, issue #7128)", e);
+      }
+      if (sizeOnDisk != entry.size())
+        throw new IOException("Snapshot file '" + entry.name() + "' was extracted and verified but now measures "
+            + sizeOnDisk + " bytes on disk instead of the manifest's " + entry.size()
+            + " - the staging directory was modified concurrently while this install was in progress "
+            + "(possible concurrent recovery pass, issue #7128)");
     }
   }
 

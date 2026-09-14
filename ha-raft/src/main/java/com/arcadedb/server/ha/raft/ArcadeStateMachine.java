@@ -128,9 +128,13 @@ import java.util.zip.CRC32;
  * already-applied pages. {@code applySchemaEntry} uses file-existence guards for file creation
  * and the same page-version guards for WAL application. Schema reload is naturally idempotent.
  * <p>
- * <b>Crash recovery:</b> On startup, {@link SnapshotInstaller#recoverPendingSnapshotSwaps} is
- * called from {@link #initialize} to complete or roll back any snapshot installations that were
- * interrupted by a process crash.
+ * <b>Crash recovery:</b> {@link SnapshotInstaller#recoverPendingSnapshotSwaps} is called from
+ * {@link #initialize} to complete or roll back any snapshot installations that were interrupted by a
+ * process crash. Not startup-only despite the name: {@code RaftHAServer.restartRatis} rebuilds the state
+ * machine and calls {@link #initialize} again on every runtime Ratis restart it drives, with the server
+ * still ONLINE and able to have its own live {@link SnapshotInstaller#install} in flight for the very
+ * database this pass is scanning - {@link SnapshotInstaller#recoverPendingSnapshotSwaps} skips any
+ * database an in-flight install is already holding rather than racing it (issue #7128).
  */
 public class ArcadeStateMachine extends BaseStateMachine {
 

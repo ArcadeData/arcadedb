@@ -170,4 +170,100 @@ class RaftHAServerReadinessTest {
   void sixArgOverloadTreatsAnyLeaderAsReady() {
     assertThat(isReadyForTrafficState(true, true, true, 5000, 100, 0)).isTrue();
   }
+
+  // -----------------------------------------------------------------------------------------------
+  // Issue #7131: local commit/applied lag alone cannot see a follower that is not receiving entries
+  // at all (Ratis clamps a follower's commit index to its own flush index), so two purely local,
+  // leader-independent signals close the gap: an empty log in a multi-peer cluster (cold rejoin), and
+  // staleness of the last successful RPC from the leader (wedged replication channel).
+  // -----------------------------------------------------------------------------------------------
+
+  @Test
+  void emptyLogInMultiPeerClusterIsNotReady() {
+    // A follower that just rejoined (wiped/reformatted) with nothing committed yet must not be Ready
+    // even though commit == applied == 0 looks like "fully caught up" to the plain lag arithmetic.
+    assertThat(isReadyForTrafficState(true, true, false, 0, 0, 100, false, false, true, -1, 0)).isFalse();
+  }
+
+  @Test
+  void nonEmptyLogIgnoresTheEmptyLogGate() {
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, -1, 0)).isTrue();
+  }
+
+  @Test
+  void staleLeaderRpcBeyondThresholdIsNotReady() {
+    // The replication channel to the leader has been quiet for longer than the leader itself would
+    // consider tolerable (issue #7131's wedged-channel case): fail closed even with zero raw lag.
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, 15000, 10000))
+        .isFalse();
+  }
+
+  @Test
+  void freshLeaderRpcWithinThresholdIsReady() {
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, 5000, 10000))
+        .isTrue();
+  }
+
+  @Test
+  void leaderRpcElapsedExactlyAtThresholdIsNotReady() {
+    // >= threshold, not >: matches how HA_PEER_UNREACHABLE_THRESHOLD is documented on the leader side.
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, 10000, 10000))
+        .isFalse();
+  }
+
+  @Test
+  void zeroThresholdDisablesTheRpcRecencyGate() {
+    // HA_PEER_UNREACHABLE_THRESHOLD documents 0 as "disable"; a huge elapsed time must not fail closed.
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, 999_999, 0))
+        .isTrue();
+  }
+
+  @Test
+  void unknownLeaderRpcSampleSkipsTheRecencyGate() {
+    // -1 means "no sample yet" (e.g. immediately after a role transition), not "infinitely stale".
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, -1, 10000))
+        .isTrue();
+  }
+
+  @Test
+  void leaderRoleIgnoresBothNewFollowerOnlyGates() {
+    // Both new gates apply to followers only; the leader branch returns before either is evaluated.
+    assertThat(isReadyForTrafficState(true, true, true, 5000, 100, 0, false, true, true, 999_999, 10000))
+        .isTrue();
+  }
+
+  // -----------------------------------------------------------------------------------------------
+  // Issue #7130: a RaftServer proxy can stay RUNNING while the per-group division underneath goes
+  // CLOSED or EXCEPTION - every other field (leaderId, raft conf, commit/applied index) survives that
+  // close and keeps reporting its last value, so the division's own lifecycle has to be an explicit,
+  // first-evaluated gate. Same for ArcadeStateMachine.isHaltedAfterCriticalError().
+  // -----------------------------------------------------------------------------------------------
+
+  @Test
+  void unhealthyDivisionLifecycleIsNotReadyEvenWhenEverythingElseLooksFine() {
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, -1, 0, false, false))
+        .as("otherwise-ready leader with an unhealthy (CLOSED/EXCEPTION) division").isFalse();
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, -1, 0, false, false))
+        .as("otherwise-ready follower with an unhealthy division").isFalse();
+  }
+
+  @Test
+  void haltedAfterCriticalErrorIsNotReadyEvenWhenEverythingElseLooksFine() {
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, -1, 0, true, true))
+        .isFalse();
+  }
+
+  @Test
+  void healthyDivisionAndNotHaltedPreservesTheElevenArgBehaviour() {
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, -1, 0, true, false))
+        .isTrue();
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, -1, 0, true, false))
+        .isTrue();
+  }
+
+  @Test
+  void elevenArgOverloadDefaultsToHealthyDivisionAndNotHalted() {
+    // Backward-compatible default for callers that predate issue #7130: neither new gate fires.
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, -1, 0)).isTrue();
+  }
 }

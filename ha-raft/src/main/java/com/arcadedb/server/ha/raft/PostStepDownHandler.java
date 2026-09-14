@@ -35,6 +35,14 @@ public class PostStepDownHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    // stepDown() can block for tens of seconds (up to 3 targeted leadership transfers at 10s each, plus the
+    // no-target Ratis transfer). Running that on the Undertow IO thread stalls every other connection on the
+    // same selector, including kubelet readiness/liveness probes (issue #7133).
+    return true;
+  }
+
+  @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
     checkRootUser(user);
