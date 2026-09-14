@@ -128,13 +128,20 @@ class GraphQLIntrospectionTest extends AbstractGraphQLTest {
         assertThat(fields).isNotNull();
         assertThat(fields.size()).isGreaterThanOrEqualTo(3);
 
-        // Check that field type info is present
+        // Check that field type info is present. A wrapping type (LIST here, for "wrote": [Book])
+        // carries no name of its own per the introspection schema (#7116); only a named
+        // OBJECT/SCALAR does.
         for (final Result field : fields) {
           assertThat(field.<String>getProperty("name")).isNotNull();
           final Result type = field.getProperty("type");
           assertThat(type).isNotNull();
-          assertThat(type.<String>getProperty("name")).isNotNull();
           assertThat(type.<String>getProperty("kind")).isNotNull();
+          if ("LIST".equals(type.getProperty("kind"))) {
+            assertThat(type.<String>getProperty("name")).isNull();
+            assertThat(type.<Result>getProperty("ofType")).isNotNull();
+          } else {
+            assertThat(type.<String>getProperty("name")).isNotNull();
+          }
         }
 
         assertThat(resultSet.hasNext()).isFalse();

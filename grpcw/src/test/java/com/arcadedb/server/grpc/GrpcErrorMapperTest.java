@@ -18,10 +18,14 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.exception.ArithmeticErrorException;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -134,6 +138,56 @@ class GrpcErrorMapperTest {
         null);
 
     assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+  }
+
+  /**
+   * Regression tests for issue #7123: before, everything below this point - a SQL syntax error, a missing type
+   * and a division by zero - fell through the final {@code else} to {@code INTERNAL}, the code a gRPC client
+   * reads as "server broke, safe to retry", even though none of the three will ever succeed on retry.
+   */
+  @Test
+  @DisplayName("CommandParsingException (a SQL syntax error) maps to INVALID_ARGUMENT, not INTERNAL")
+  void commandParsingException_mapsToInvalidArgument() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new CommandParsingException("unexpected token"), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+  }
+
+  @Test
+  @DisplayName("CommandSemanticException maps to INVALID_ARGUMENT, not INTERNAL")
+  void commandSemanticException_mapsToInvalidArgument() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new CommandSemanticException("undefined variable"), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+  }
+
+  @Test
+  @DisplayName("SchemaException (a missing type/bucket/property) maps to NOT_FOUND, not INTERNAL")
+  void schemaException_mapsToNotFound() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new SchemaException("Type 'Missing' not found"), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.NOT_FOUND);
+  }
+
+  @Test
+  @DisplayName("ArithmeticErrorException (overflow/division by zero) maps to OUT_OF_RANGE, not INTERNAL")
+  void arithmeticErrorException_mapsToOutOfRange() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new ArithmeticErrorException("long overflow"), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.OUT_OF_RANGE);
+  }
+
+  @Test
+  @DisplayName("A retryable conflict still wins over an arithmetic error carried in the same chain")
+  void retryableConflictWinsOverArithmeticError() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new ArithmeticErrorException("long overflow", new ConcurrentModificationException("retry")), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.ABORTED);
   }
 
   @Test

@@ -34,6 +34,10 @@ public final class BoltErrorCodes {
   // Statement errors
   public static final String SYNTAX_ERROR   = "Neo.ClientError.Statement.SyntaxError";
   public static final String SEMANTIC_ERROR = "Neo.ClientError.Statement.SemanticError";
+  // A unique-index violation (DuplicatedKeyException). It is a permanent failure - retrying the
+  // identical write can never succeed - so it must not fall into the generic DatabaseError a driver
+  // would treat as a transient server fault (issue #7123).
+  public static final String CONSTRAINT_VIOLATION_ERROR = "Neo.ClientError.Schema.ConstraintValidationFailed";
   // A statement that parses and is semantically valid but references a $parameter the client never bound.
   // Neo4j gives this its own title, and drivers/tools key off it to tell "your query is wrong" apart from
   // "you forgot to send a value", so it must not collapse into SyntaxError.
@@ -51,6 +55,12 @@ public final class BoltErrorCodes {
   // managed transaction. The code is a TransientError classification that the drivers retry on; the
   // two excluded titles (Transaction.Terminated / Transaction.LockClientStopped) are deliberately avoided.
   public static final String TRANSIENT_CONFLICT_ERROR = "Neo.TransientError.Transaction.DeadlockDetected";
+
+  // A deadline/budget timeout (com.arcadedb.exception.TimeoutException - a query or the SQL TIMEOUT
+  // clause ran out of time), as opposed to the LockTimeoutException contention above: the work itself
+  // never got a chance to finish, which is retryable, so it must not fall into DatabaseError either
+  // (issue #7123).
+  public static final String TRANSACTION_TERMINATED_ERROR = "Neo.TransientError.Transaction.Terminated";
 
   // Request errors
   public static final String PROTOCOL_ERROR = "Neo.ClientError.Request.Invalid";
