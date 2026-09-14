@@ -40,29 +40,9 @@ def _java_class_name(value: Any) -> str:
     return str(value.getClass().getName())
 
 
-def _unify_arrow_chunk_types(arrs: list, pa) -> list:
-    """Unify a column's per-batch Arrow arrays onto one Arrow type.
-
-    ArcadeDB is schemaless per document, so a property's Java type can
-    legally vary row to row; ColumnBatcher infers each batch's column type
-    independently, so two batches of the same result set can produce
-    incompatible Arrow types for the same column (#7108) - e.g. int64 in one
-    batch, float64 in the next. ``pa.chunked_array`` requires every chunk to
-    share one type, so leaving them as-is raises at concatenation time on a
-    result set that is otherwise entirely legal.
-
-    Numeric types widen (int64 -> float64, matching to_columns' pandas-style
-    promotion); anything else - including a json or vector column that
-    varied - degrades to string, so the column always ends up with exactly
-    one type rather than an exception.
-    """
-    types = {a.type for a in arrs}
-    if len(types) <= 1:
-        return arrs
-
-    if types <= {pa.int64(), pa.float64()}:
-        return [a.cast(pa.float64()) for a in arrs]
-
+def _cast_all_to_string(arrs: list, pa) -> list:
+    """Cast every array to a string type, tolerating a type pyarrow cannot cast directly (e.g. a
+    vector/list column) by going through Python objects instead."""
     unified = []
     for a in arrs:
         try:
@@ -75,6 +55,38 @@ def _unify_arrow_chunk_types(arrs: list, pa) -> list:
                 )
             )
     return unified
+
+
+def _unify_arrow_chunk_types(arrs: list, pa) -> list:
+    """Unify a column's per-batch Arrow arrays onto one Arrow type.
+
+    ArcadeDB is schemaless per document, so a property's Java type can
+    legally vary row to row; ColumnBatcher infers each batch's column type
+    independently, so two batches of the same result set can produce
+    incompatible Arrow types for the same column (#7108) - e.g. int64 in one
+    batch, float64 in the next. ``pa.chunked_array`` requires every chunk to
+    share one type, so leaving them as-is raises at concatenation time on a
+    result set that is otherwise entirely legal.
+
+    Numeric types widen (int64 -> float64, matching to_columns' pandas-style
+    promotion) when every value survives the cast exactly; pyarrow's cast is
+    safe by default and raises rather than silently lose precision, which an
+    int64 outside float64's +-2**53 exact range would (code review on #7108),
+    so that case - and anything else, including a json or vector column that
+    varied - degrades to string instead, so the column always ends up with
+    exactly one type rather than an exception.
+    """
+    types = {a.type for a in arrs}
+    if len(types) <= 1:
+        return arrs
+
+    if types <= {pa.int64(), pa.float64()}:
+        try:
+            return [a.cast(pa.float64()) for a in arrs]
+        except pa.ArrowException:
+            pass
+
+    return _cast_all_to_string(arrs, pa)
 
 
 class ResultSet:

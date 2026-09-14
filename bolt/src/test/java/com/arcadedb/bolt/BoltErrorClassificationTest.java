@@ -197,18 +197,21 @@ class BoltErrorClassificationTest {
   /**
    * Issue #7123: a query/statement deadline (as opposed to the retryable {@code LockTimeoutException}
    * contention already covered by {@link #lockTimeoutClassifiesAsTransient}) must not read as a generic
-   * DatabaseError either - Neo4j's own Transaction.Terminated keeps it transient for the driver.
+   * DatabaseError either. NOT Transaction.Terminated (code review): that title means "explicitly killed
+   * by the user" and both the Neo4j driver and Spring Data Neo4j explicitly exclude it from their retry
+   * predicates, so mapping a deadline to it would make Neo4j drivers treat a deadline as non-retryable
+   * for the wrong reason. TransactionTimedOut is Neo4j's own code for this case.
    */
   @Test
-  void deadlineTimeoutClassifiesAsTransactionTerminated() {
+  void deadlineTimeoutClassifiesAsTransactionTimedOut() {
     final Throwable e = new TimeoutException("Query exceeded the configured timeout");
     assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
-        .isEqualTo(BoltErrorCodes.TRANSACTION_TERMINATED_ERROR);
-    assertThat(BoltErrorCodes.TRANSACTION_TERMINATED_ERROR).isEqualTo("Neo.TransientError.Transaction.Terminated");
+        .isEqualTo(BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR);
+    assertThat(BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR).isEqualTo("Neo.ClientError.Transaction.TransactionTimedOut");
   }
 
   @Test
-  void lockTimeoutIsNotMisclassifiedAsTransactionTerminated() {
+  void lockTimeoutIsNotMisclassifiedAsTransactionTimedOut() {
     // LockTimeoutException extends NeedRetryException (contention, not a deadline) and must keep going
     // through the DeadlockDetected transient path rather than the deadline-timeout path.
     final Throwable e = new LockTimeoutException("Timeout on acquiring lock");

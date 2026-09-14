@@ -1930,7 +1930,8 @@ public class BoltNetworkExecutor extends Thread {
    * so they must not fall into DatabaseError, which a driver's retry policy reads as "safe to retry";
    * a {@link TimeoutException} (a query/statement deadline, not the retryable
    * {@code LockTimeoutException} contention {@link #isRetryableConflict} already handles) maps to
-   * Neo4j's own Transaction.Terminated so the driver still sees it as transient (issue #7123).
+   * Neo4j's own TransactionTimedOut - not Transaction.Terminated, which means "explicitly killed by
+   * the user" and is excluded from driver retry predicates for exactly that reason (issue #7123).
    * Anything else keeps the given default.
    */
   static String classifyExecutionError(final Throwable error, final String defaultCode) {
@@ -1943,7 +1944,7 @@ public class BoltNetworkExecutor extends Thread {
     if (CauseChain.contains(error, SecurityException.class))
       return BoltErrorCodes.FORBIDDEN_ERROR;
     if (CauseChain.contains(error, TimeoutException.class))
-      return BoltErrorCodes.TRANSACTION_TERMINATED_ERROR;
+      return BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR;
     return defaultCode;
   }
 

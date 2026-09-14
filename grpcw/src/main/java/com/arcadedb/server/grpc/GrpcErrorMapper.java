@@ -186,9 +186,25 @@ public final class GrpcErrorMapper {
    * had to call {@link #statusCodeFor} directly and lost the {@code DUP_INDEX_KEY}/{@code DUP_KEYS_KEY}
    * trailers that {@code executeCommand}/{@code createRecord} attach for the identical
    * {@link DuplicatedKeyException} (code review on issue #7123).
+   * <p>
+   * Also preserves a status already chosen upstream, the same as {@link #toStatusRuntimeException} - a
+   * {@code getDatabase()} auth/authz refusal reaches {@code graphBatchLoad} as a raw
+   * {@link StatusRuntimeException}/{@link StatusException} the same way it reaches every other RPC, and
+   * without this check {@link ErrorCategory#of} would not recognise it and fold it into {@code SERVER}
+   * (code review on issue #7123).
    */
   static Status.Code classifyAndAddTrailers(final Throwable t, final Metadata trailers) {
     final Throwable cause = unwrap(t);
+    if (cause instanceof StatusRuntimeException sre) {
+      if (sre.getTrailers() != null)
+        trailers.merge(sre.getTrailers());
+      return sre.getStatus().getCode();
+    }
+    if (cause instanceof StatusException se) {
+      if (se.getTrailers() != null)
+        trailers.merge(se.getTrailers());
+      return se.getStatus().getCode();
+    }
     trailers.put(EXCEPTION_CLASS_KEY, cause.getClass().getName());
     if (cause instanceof DuplicatedKeyException dup) {
       addDuplicatedKeyTrailers(trailers, dup);
