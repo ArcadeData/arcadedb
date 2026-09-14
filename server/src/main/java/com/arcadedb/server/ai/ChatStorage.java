@@ -182,11 +182,41 @@ public class ChatStorage {
   }
 
   private File getUserDir(final String username) {
-    return Paths.get(rootPath, "chats", hashUsername(username)).toFile();
+    final File hashedDir = Paths.get(rootPath, "chats", hashUsername(username)).toFile();
+    migrateLegacyDirectoryIfPresent(username, hashedDir);
+    return hashedDir;
+  }
+
+  /**
+   * One-time lazy migration from the pre-hash directory layout ({@link #sanitizeFilename(String)}
+   * of the username) to the current one ({@link #hashUsername(String)}), so a server upgrading from
+   * a release that predates the hash keeps serving each user's existing chat history instead of
+   * silently orphaning it under the old directory name.
+   *
+   * <p>This cannot reproduce the collision the hash was introduced to fix: two usernames that used
+   * to sanitize to the same legacy directory raced to READ that shared, ambiguous directory forever.
+   * Here the first of the two to be looked up after the upgrade claims the legacy directory by
+   * renaming it away, so the second one finds nothing left to migrate and starts a fresh, private,
+   * empty hashed directory - it can no longer see the first user's history.
+   */
+  private void migrateLegacyDirectoryIfPresent(final String username, final File hashedDir) {
+    if (hashedDir.exists())
+      return;
+    final File legacyDir = Paths.get(rootPath, "chats", sanitizeFilename(username)).toFile();
+    if (!legacyDir.exists() || legacyDir.equals(hashedDir))
+      return;
+    try {
+      Files.move(legacyDir.toPath(), hashedDir.toPath());
+    } catch (final IOException e) {
+      // Lost a race with a concurrent migration of the same user, or the legacy directory vanished/
+      // the hashed one appeared between the exists() checks above and this move: either way, whatever
+      // directory is left standing is authoritative and the caller just proceeds with hashedDir.
+      LogManager.instance().log(this, Level.FINE, "Could not migrate legacy chat directory: %s", e.getMessage());
+    }
   }
 
   private File getChatFile(final String username, final String chatId) {
-    return Paths.get(rootPath, "chats", hashUsername(username), sanitizeFilename(chatId) + ".json").toFile();
+    return new File(getUserDir(username), sanitizeFilename(chatId) + ".json");
   }
 
   /**
