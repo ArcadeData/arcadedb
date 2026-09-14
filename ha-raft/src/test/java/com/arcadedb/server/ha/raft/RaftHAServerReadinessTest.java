@@ -175,63 +175,36 @@ class RaftHAServerReadinessTest {
 
   // -----------------------------------------------------------------------------------------------
   // Issue #7131: local commit/applied lag alone cannot see a follower that is not receiving entries
-  // at all (Ratis clamps a follower's commit index to its own flush index), so two purely local,
-  // leader-independent signals close the gap: an empty log in a multi-peer cluster (cold rejoin), and
-  // staleness of the last successful RPC from the leader (wedged replication channel).
+  // at all (Ratis clamps a follower's commit index to its own flush index). emptyLogInMultiPeerCluster
+  // closes the cold-rejoin half of that gap (a wiped/reformatted follower rejoining an established
+  // multi-peer cluster). A leader-RPC-recency signal was tried for the complementary wedged-channel
+  // case and removed after review: verified against Ratis 3.3.0 bytecode, granting a PRE_VOTE to ANY
+  // candidate - not necessarily this follower's own recognized leader - refreshes the same timestamp,
+  // so it did not reliably mean "still hearing from the leader" (PR #7605 review).
   // -----------------------------------------------------------------------------------------------
 
   @Test
   void emptyLogInMultiPeerClusterIsNotReady() {
     // A follower that just rejoined (wiped/reformatted) with nothing committed yet must not be Ready
     // even though commit == applied == 0 looks like "fully caught up" to the plain lag arithmetic.
-    assertThat(isReadyForTrafficState(true, true, false, 0, 0, 100, false, false, true, -1, 0)).isFalse();
+    assertThat(isReadyForTrafficState(true, true, false, 0, 0, 100, false, false, true)).isFalse();
   }
 
   @Test
   void nonEmptyLogIgnoresTheEmptyLogGate() {
-    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, -1, 0)).isTrue();
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false)).isTrue();
   }
 
   @Test
-  void staleLeaderRpcBeyondThresholdIsNotReady() {
-    // The replication channel to the leader has been quiet for longer than the leader itself would
-    // consider tolerable (issue #7131's wedged-channel case): fail closed even with zero raw lag.
-    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, 15000, 10000))
-        .isFalse();
+  void leaderRoleIgnoresTheEmptyLogGate() {
+    // The gate applies to followers only; the leader branch returns before it is evaluated.
+    assertThat(isReadyForTrafficState(true, true, true, 5000, 100, 0, false, true, true)).isTrue();
   }
 
   @Test
-  void freshLeaderRpcWithinThresholdIsReady() {
-    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, 5000, 10000))
-        .isTrue();
-  }
-
-  @Test
-  void leaderRpcElapsedExactlyAtThresholdIsNotReady() {
-    // >= threshold, not >: matches how HA_PEER_UNREACHABLE_THRESHOLD is documented on the leader side.
-    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, 10000, 10000))
-        .isFalse();
-  }
-
-  @Test
-  void zeroThresholdDisablesTheRpcRecencyGate() {
-    // HA_PEER_UNREACHABLE_THRESHOLD documents 0 as "disable"; a huge elapsed time must not fail closed.
-    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, 999_999, 0))
-        .isTrue();
-  }
-
-  @Test
-  void unknownLeaderRpcSampleSkipsTheRecencyGate() {
-    // -1 means "no sample yet" (e.g. immediately after a role transition), not "infinitely stale".
-    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, -1, 10000))
-        .isTrue();
-  }
-
-  @Test
-  void leaderRoleIgnoresBothNewFollowerOnlyGates() {
-    // Both new gates apply to followers only; the leader branch returns before either is evaluated.
-    assertThat(isReadyForTrafficState(true, true, true, 5000, 100, 0, false, true, true, 999_999, 10000))
-        .isTrue();
+  void eightArgOverloadDefaultsToNoEmptyLogGate() {
+    // Backward-compatible default for callers that predate issue #7131: the gate never fires.
+    assertThat(isReadyForTrafficState(true, true, false, 0, 0, 100, false, false)).isTrue();
   }
 
   // -----------------------------------------------------------------------------------------------
@@ -243,54 +216,55 @@ class RaftHAServerReadinessTest {
 
   @Test
   void unhealthyDivisionLifecycleIsNotReadyEvenWhenEverythingElseLooksFine() {
-    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, -1, 0, false, false))
-        .as("otherwise-ready leader with an unhealthy (CLOSED/EXCEPTION) division").isFalse();
-    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, -1, 0, false, false))
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, false, false))
+        .as("otherwise-ready leader with an unhealthy (CLOSED/EXCEPTION/PAUSED) division").isFalse();
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, false, false))
         .as("otherwise-ready follower with an unhealthy division").isFalse();
   }
 
   @Test
   void haltedAfterCriticalErrorIsNotReadyEvenWhenEverythingElseLooksFine() {
-    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, -1, 0, true, true))
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, true, true))
         .isFalse();
   }
 
   @Test
-  void healthyDivisionAndNotHaltedPreservesTheElevenArgBehaviour() {
-    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, -1, 0, true, false))
+  void healthyDivisionAndNotHaltedPreservesThePriorBehaviour() {
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, true, false))
         .isTrue();
-    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, -1, 0, true, false))
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, true, false))
         .isTrue();
   }
 
   @Test
-  void elevenArgOverloadDefaultsToHealthyDivisionAndNotHalted() {
+  void nineArgOverloadDefaultsToHealthyDivisionAndNotHalted() {
     // Backward-compatible default for callers that predate issue #7130: neither new gate fires.
-    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, -1, 0)).isTrue();
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false)).isTrue();
   }
 
   // -----------------------------------------------------------------------------------------------
   // Issue #7130 (review follow-up): the LifeCycle.State -> healthy-or-not mapping that isReadyForTraffic()
-  // feeds into the 13-arg overload above is itself untested by every case above, since they all pass the
+  // feeds into the final overload above is itself untested by every case above, since they all pass the
   // already-reduced boolean. Exercise the mapping directly against every LifeCycle.State value instead.
   // -----------------------------------------------------------------------------------------------
 
   @Test
-  void runningAndPausedAreHealthy() {
-    // RUNNING is the ordinary case. PAUSED is included deliberately - ArcadeStateMachine.pause()'s own
-    // javadoc verifies every Ratis StateMachine.pause() caller pairs it with a reinitialize() back to
-    // RUNNING, so it is a normal, self-recovering window during an install, not a failure state.
+  void onlyRunningIsHealthy() {
     assertThat(isDivisionLifecycleHealthy(LifeCycle.State.RUNNING)).isTrue();
-    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.PAUSED)).isTrue();
   }
 
   @Test
   void everyOtherLifeCycleStateIsUnhealthy() {
-    // CLOSED/EXCEPTION are the issue #7130 targets; NEW/STARTING/PAUSING/CLOSING are the "defensively,
-    // anything that is not RUNNING or PAUSED" half of the same gate.
+    // CLOSED/EXCEPTION are the issue #7130 targets. PAUSED looked like a candidate for "healthy" too (it is
+    // a normal, expected, self-recovering transition per ArcadeStateMachine.pause()'s javadoc) but Ratis's
+    // own request handlers (append entries, request vote, client requests) reject with
+    // ServerNotReadyException in every state but RUNNING - PAUSED included - so it is excluded here
+    // (PR #7605 review; confirmed against RaftServerImpl's assertLifeCycleState(RUNNING) call sites in the
+    // 3.3.0 bytecode).
     assertThat(isDivisionLifecycleHealthy(LifeCycle.State.NEW)).isFalse();
     assertThat(isDivisionLifecycleHealthy(LifeCycle.State.STARTING)).isFalse();
     assertThat(isDivisionLifecycleHealthy(LifeCycle.State.PAUSING)).isFalse();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.PAUSED)).isFalse();
     assertThat(isDivisionLifecycleHealthy(LifeCycle.State.EXCEPTION)).isFalse();
     assertThat(isDivisionLifecycleHealthy(LifeCycle.State.CLOSING)).isFalse();
     assertThat(isDivisionLifecycleHealthy(LifeCycle.State.CLOSED)).isFalse();
