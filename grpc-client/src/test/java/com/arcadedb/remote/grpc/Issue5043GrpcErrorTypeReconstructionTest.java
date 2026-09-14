@@ -22,6 +22,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.remote.RemoteException;
 import io.grpc.Metadata;
@@ -161,6 +162,24 @@ class Issue5043GrpcErrorTypeReconstructionTest {
     assertThat(GrpcClientErrorMapper.toException(wire)).isInstanceOf(TimeoutException.class);
   }
 
+  /**
+   * Regression test for issue #7123's code review: {@link SchemaException} (a missing type/bucket/property)
+   * and {@link RecordNotFoundException} (a missing record) both classify to the same NOT_FOUND status
+   * server-side, so without this exact-type reconstruction a schema error used to be silently rebuilt as
+   * the unrelated RecordNotFoundException by the status-code-only fallback.
+   */
+  @Test
+  @DisplayName("SchemaException trailer rebuilds SchemaException, not RecordNotFoundException")
+  void schemaExceptionTrailer_rebuildsSchemaException() {
+    final StatusRuntimeException wire = withClass(Status.NOT_FOUND.withDescription("Type 'Foo' was not found"),
+        SchemaException.class.getName(), null);
+
+    final RuntimeException rebuilt = GrpcClientErrorMapper.toException(wire);
+
+    assertThat(rebuilt).isInstanceOf(SchemaException.class);
+    assertThat(rebuilt).isNotInstanceOf(RecordNotFoundException.class);
+  }
+
   @Test
   @DisplayName("Fully-qualified class-name literals in reconstructFromClassName stay in sync with the classes")
   void reconstructFromClassName_literalsMatchActualClassNames() {
@@ -174,6 +193,7 @@ class Issue5043GrpcErrorTypeReconstructionTest {
     assertThat(RecordNotFoundException.class.getName()).isEqualTo("com.arcadedb.exception.RecordNotFoundException");
     assertThat(TimeoutException.class.getName()).isEqualTo("com.arcadedb.exception.TimeoutException");
     assertThat(SecurityException.class.getName()).isEqualTo("java.lang.SecurityException");
+    assertThat(SchemaException.class.getName()).isEqualTo("com.arcadedb.exception.SchemaException");
   }
 
   @Test
