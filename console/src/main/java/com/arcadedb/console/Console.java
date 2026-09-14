@@ -41,7 +41,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.utility.*;
+import com.arcadedb.utility.AnsiCode;
+import com.arcadedb.utility.RecordTableFormatter;
+import com.arcadedb.utility.ServerPathUtils;
+import com.arcadedb.utility.StringUtils;
+import com.arcadedb.utility.TableFormatter;
 import org.jline.reader.Completer;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
@@ -53,7 +57,13 @@ import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileReader;
+import java.io.IOException;
+import java.io.PrintWriter;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -63,36 +73,36 @@ import java.util.Locale;
 import java.util.Map;
 
 public class Console {
-    private static final String PROMPT = "%n%s> ";
-    private static final String REMOTE_PREFIX = "remote:";
-    private static final String LOCAL_PREFIX = "local:";
-    private static final String SQL_LANGUAGE = "SQL";
-    private static final String HISTORY_FILE = ".history";
-    private final Terminal terminal;
-    private final TerminalParser parser = new TerminalParser();
-    private ConsoleOutput output;
-    private DatabaseFactory databaseFactory;
-    private BasicDatabase databaseProxy;
-    private int limit = 20;
-    private int maxMultiValueEntries = 10;
-    private int maxWidth = TableFormatter.DEFAULT_MAX_WIDTH;
-    private Boolean expandResultSet;
-    private String databaseDirectory;
-    private int verboseLevel = 3;
-    private String language = SQL_LANGUAGE;
-    private boolean asyncMode = false;
-    private long transactionBatchSize = 0L;
-    protected long currentOperationsInBatch = 0L;
-    private RemoteServer remoteServer;
-    private boolean batchMode = false;
-    private boolean failAtEnd = false;
-    // VOLATILE: SET FROM THE ASYNC WORKER THREADS IN asyncMode, READ BY main() TO PICK THE EXIT CODE
-    private static volatile boolean errored = false;
-    // BUILT LAZILY AND SHARED BY interactiveMode() AND BY THE MASKED PASSWORD PROMPT, SO A PASSWORD CAN BE ASKED FOR
-    // WITHOUT EVER APPEARING ON A LINE THAT GOES TO THE HISTORY FILE (ISSUE #6829)
-    private LineReader lineReader;
-    // WHETHER THE PROCESS OWNS A REAL TERMINAL: A MASKED PROMPT IS ONLY POSSIBLE WHEN SOMEBODY IS THERE TO TYPE INTO IT
-    private final boolean systemTerminal;
+  private static final String               PROMPT                   = "%n%s> ";
+  private static final String               REMOTE_PREFIX            = "remote:";
+  private static final String               LOCAL_PREFIX             = "local:";
+  private static final String               SQL_LANGUAGE             = "SQL";
+  private static final String               HISTORY_FILE             = ".history";
+  private final        Terminal             terminal;
+  private final        TerminalParser       parser                   = new TerminalParser();
+  private              ConsoleOutput        output;
+  private              DatabaseFactory      databaseFactory;
+  private              BasicDatabase        databaseProxy;
+  private              int                  limit                    = 20;
+  private              int                  maxMultiValueEntries     = 10;
+  private              int                  maxWidth                 = TableFormatter.DEFAULT_MAX_WIDTH;
+  private              Boolean              expandResultSet;
+  private              String               databaseDirectory;
+  private              int                  verboseLevel             = 3;
+  private              String               language                 = SQL_LANGUAGE;
+  private              boolean              asyncMode                = false;
+  private              long                 transactionBatchSize     = 0L;
+  protected            long                 currentOperationsInBatch = 0L;
+  private              RemoteServer         remoteServer;
+  private              boolean              batchMode                = false;
+  private              boolean              failAtEnd                = false;
+  // VOLATILE: SET FROM THE ASYNC WORKER THREADS IN asyncMode, READ BY main() TO PICK THE EXIT CODE
+  private static volatile boolean           errored                  = false;
+  // BUILT LAZILY AND SHARED BY interactiveMode() AND BY THE MASKED PASSWORD PROMPT, SO A PASSWORD CAN BE ASKED FOR
+  // WITHOUT EVER APPEARING ON A LINE THAT GOES TO THE HISTORY FILE (ISSUE #6829)
+  private              LineReader           lineReader;
+  // WHETHER THE PROCESS OWNS A REAL TERMINAL: A MASKED PROMPT IS ONLY POSSIBLE WHEN SOMEBODY IS THERE TO TYPE INTO IT
+  private final        boolean              systemTerminal;
 
     public Console(final DatabaseInternal database) throws IOException {
         this();
