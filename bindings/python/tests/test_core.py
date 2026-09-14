@@ -1049,6 +1049,30 @@ def test_run_in_transaction_commits_and_returns(temp_db_path):
         assert db.query("sql", "SELECT count(*) as c FROM R").first().get("c") == 1
 
 
+def test_run_in_transaction_rolls_back_on_non_arcadedb_error(temp_db_path):
+    """Regression test for #7108: a plain Python exception from fn() (not an
+    ArcadeDBError) must still roll back, matching the Java side's
+    `catch (final Throwable e)`. It used to propagate straight through the
+    `except ArcadeDBError` handler, leaving the transaction open."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE R")
+
+        def bad():
+            db.command("sql", "INSERT INTO R SET n = 1")
+            raise KeyError("boom")
+
+        with pytest.raises(KeyError):
+            db.run_in_transaction(bad)
+
+        assert db.is_transaction_active() is False
+        assert db.query("sql", "SELECT count(*) as c FROM R").first().get("c") == 0
+
+        # the connection must be usable afterwards, not stuck in a stale transaction
+        with db.transaction():
+            db.command("sql", "INSERT INTO R SET n = 2")
+        assert db.query("sql", "SELECT count(*) as c FROM R").first().get("c") == 1
+
+
 def test_single_list_arg_is_positional_param_array(temp_db_path):
     """A single list argument binds one element per `?` placeholder
     (historical semantics; regression test for the example-04 CSV ingest

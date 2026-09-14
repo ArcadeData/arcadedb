@@ -219,7 +219,7 @@ class ChatStorageTest {
     // target directory. The failure must surface (not be silently swallowed as a false success).
     final File chatsDir = Paths.get(TEST_ROOT, "chats").toFile();
     chatsDir.mkdirs();
-    final File blocker = Paths.get(TEST_ROOT, "chats", "blockeduser").toFile();
+    final File blocker = Paths.get(TEST_ROOT, "chats", ChatStorage.hashUsername("blockeduser")).toFile();
     assertThat(writeEmptyFile(blocker)).isTrue();
 
     final JSONObject chat = ChatStorage.createNewChat("db", "Will fail");
@@ -249,5 +249,31 @@ class ChatStorageTest {
     assertThat(chatStorage.listChats("john")).hasSize(1);
     assertThat(chatStorage.getChat("root", chat2.getString("id"))).isNull();
     assertThat(chatStorage.getChat("john", chat1.getString("id"))).isNull();
+  }
+
+  @Test
+  void hashUsername() {
+    // Deterministic, filename-safe (hex), and full-width (SHA-256 = 64 hex chars).
+    assertThat(ChatStorage.hashUsername("root")).isEqualTo(ChatStorage.hashUsername("root"));
+    assertThat(ChatStorage.hashUsername("root")).matches("[0-9a-f]{64}");
+    assertThat(ChatStorage.hashUsername(null)).isEqualTo(ChatStorage.hashUsername(""));
+  }
+
+  @Test
+  void usersWhoseNamesCollideUnderSanitizeFilenameGetSeparateChatStores() {
+    // Regression test for #7113: sanitizeFilename maps every character outside [a-zA-Z0-9_-] to
+    // '_', which is not injective. These three usernames all used to sanitize to "user_corp_com" and
+    // therefore shared one chat store; each could list, read and delete the others' chats.
+    final String[] collidingUsernames = { "user@corp.com", "user.corp.com", "user_corp_com" };
+    for (final String username : collidingUsernames)
+      assertThat(ChatStorage.sanitizeFilename(username)).isEqualTo("user_corp_com");
+
+    for (final String username : collidingUsernames) {
+      final JSONObject chat = ChatStorage.createNewChat("db", "Chat for " + username);
+      chatStorage.saveChat(username, chat);
+    }
+
+    for (final String username : collidingUsernames)
+      assertThat(chatStorage.listChats(username)).as("chats visible to %s", username).hasSize(1);
   }
 }

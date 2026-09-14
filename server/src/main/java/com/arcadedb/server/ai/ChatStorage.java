@@ -28,6 +28,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -179,11 +181,11 @@ public class ChatStorage {
   }
 
   private File getUserDir(final String username) {
-    return Paths.get(rootPath, "chats", sanitizeFilename(username)).toFile();
+    return Paths.get(rootPath, "chats", hashUsername(username)).toFile();
   }
 
   private File getChatFile(final String username, final String chatId) {
-    return Paths.get(rootPath, "chats", sanitizeFilename(username), sanitizeFilename(chatId) + ".json").toFile();
+    return Paths.get(rootPath, "chats", hashUsername(username), sanitizeFilename(chatId) + ".json").toFile();
   }
 
   /**
@@ -193,5 +195,30 @@ public class ChatStorage {
     if (input == null || input.isEmpty())
       return "default";
     return input.replaceAll("[^a-zA-Z0-9_\\-]", "_");
+  }
+
+  /**
+   * Maps a username to its chat-store directory name.
+   *
+   * <p>{@link #sanitizeFilename(String)} maps every character outside {@code [a-zA-Z0-9_-]} to
+   * {@code '_'}, which is not injective: usernames are essentially unconstrained (only non-blank is
+   * enforced), so e.g. {@code user@corp.com}, {@code user.corp.com} and {@code user_corp_com} all
+   * sanitize to the same string. Using that as the directory identity let two distinct users share
+   * one chat store, each able to read and delete the other's chats. A SHA-256 hex digest of the
+   * username is collision-resistant and is itself already filename-safe, so it is used as the
+   * identity directly rather than sanitized.
+   */
+  static String hashUsername(final String username) {
+    final String normalized = username == null || username.isEmpty() ? "default" : username;
+    try {
+      final byte[] hash = MessageDigest.getInstance("SHA-256").digest(normalized.getBytes(StandardCharsets.UTF_8));
+      final StringBuilder hex = new StringBuilder(hash.length * 2);
+      for (final byte b : hash)
+        hex.append(String.format("%02x", b));
+      return hex.toString();
+    } catch (final NoSuchAlgorithmException e) {
+      // SHA-256 is a JCE-mandated algorithm on every JVM; unreachable in practice.
+      throw new IllegalStateException("SHA-256 not available", e);
+    }
   }
 }

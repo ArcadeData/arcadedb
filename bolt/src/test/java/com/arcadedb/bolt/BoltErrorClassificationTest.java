@@ -23,8 +23,10 @@ import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TimeoutException;
 
 import org.junit.jupiter.api.Test;
 
@@ -148,6 +150,69 @@ class BoltErrorClassificationTest {
     // the transient classification the driver acts on.
     final Throwable wrapped = new ArithmeticErrorException("long overflow", new ConcurrentModificationException("retry"));
     assertThat(BoltNetworkExecutor.classifyExecutionError(wrapped, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR);
+  }
+
+  /**
+   * Issue #7123: a unique-index violation is a permanent failure - retrying the identical write can never
+   * succeed - so it must not collapse into the generic DatabaseError, which a Neo4j driver's retry policy
+   * reads as "server broke, safe to retry".
+   */
+  @Test
+  void duplicatedKeyClassifiesAsConstraintViolation() {
+    final Throwable e = new DuplicatedKeyException("Person.email", "[bob@x.com]", new com.arcadedb.database.RID(1, 0));
+    assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR);
+    assertThat(BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR).isEqualTo("Neo.ClientError.Schema.ConstraintValidationFailed");
+  }
+
+  @Test
+  void duplicatedKeyWrappedAsCauseAlsoClassifiesAsConstraintViolation() {
+    final Throwable wrapped = new RuntimeException("command failed",
+        new DuplicatedKeyException("Person.email", "[bob@x.com]", new com.arcadedb.database.RID(1, 0)));
+    assertThat(BoltNetworkExecutor.classifyExecutionError(wrapped, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR);
+  }
+
+  /**
+   * Issue #7123: a permission denial is a permanent client error (retrying the same request as the same
+   * user can never succeed), so it must be reported distinctly from DatabaseError rather than reading as a
+   * server fault to the driver.
+   */
+  @Test
+  void securityExceptionClassifiesAsForbidden() {
+    final Throwable e = new SecurityException("User 'bob' is not allowed to execute this operation");
+    assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.FORBIDDEN_ERROR);
+    assertThat(BoltErrorCodes.FORBIDDEN_ERROR).isEqualTo("Neo.ClientError.Security.Forbidden");
+  }
+
+  @Test
+  void securityExceptionWrappedAsCauseAlsoClassifiesAsForbidden() {
+    final Throwable wrapped = new RuntimeException("command failed", new SecurityException("not allowed"));
+    assertThat(BoltNetworkExecutor.classifyExecutionError(wrapped, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.FORBIDDEN_ERROR);
+  }
+
+  /**
+   * Issue #7123: a query/statement deadline (as opposed to the retryable {@code LockTimeoutException}
+   * contention already covered by {@link #lockTimeoutClassifiesAsTransient}) must not read as a generic
+   * DatabaseError either - Neo4j's own Transaction.Terminated keeps it transient for the driver.
+   */
+  @Test
+  void deadlineTimeoutClassifiesAsTransactionTerminated() {
+    final Throwable e = new TimeoutException("Query exceeded the configured timeout");
+    assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.TRANSACTION_TERMINATED_ERROR);
+    assertThat(BoltErrorCodes.TRANSACTION_TERMINATED_ERROR).isEqualTo("Neo.TransientError.Transaction.Terminated");
+  }
+
+  @Test
+  void lockTimeoutIsNotMisclassifiedAsTransactionTerminated() {
+    // LockTimeoutException extends NeedRetryException (contention, not a deadline) and must keep going
+    // through the DeadlockDetected transient path rather than the deadline-timeout path.
+    final Throwable e = new LockTimeoutException("Timeout on acquiring lock");
+    assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
         .isEqualTo(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR);
   }
 }

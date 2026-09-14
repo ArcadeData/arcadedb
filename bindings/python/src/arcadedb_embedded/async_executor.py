@@ -247,14 +247,9 @@ class AsyncExecutor:
 
     def is_processing(self) -> bool:
         try:
-            if bool(self._java_async.isProcessing()):
-                return True
+            return bool(self._java_async.isProcessing())
         except Exception:
             log_swallowed_exception(_LOGGER, "while polling isProcessing()")
-
-        try:
-            return not bool(self._java_async.waitCompletion(0))
-        except Exception:
             return False
 
     def kill(self):
@@ -771,6 +766,11 @@ class AsyncExecutor:
         """
         Check if any operations are pending.
 
+        This is a non-blocking poll: it must never wait for the queue to drain.
+        A timeout of 0 passed to the engine's waitCompletion() is clamped to an
+        infinite wait rather than treated as "poll", so this delegates to
+        isProcessing() instead.
+
         Returns:
             True if operations are still running, False if all complete
 
@@ -778,10 +778,7 @@ class AsyncExecutor:
             >>> if async_exec.is_pending():
             ...     print("Still processing...")
         """
-        try:
-            return not bool(self._java_async.waitCompletion(0))
-        except Exception:
-            return self.is_processing()
+        return self.is_processing()
 
     def close(self):
         """

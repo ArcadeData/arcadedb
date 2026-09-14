@@ -40,6 +40,38 @@ def _java_class_name(value: Any) -> str:
     return str(value.getClass().getName())
 
 
+def _unify_arrow_chunk_types(arrs: list, pa) -> list:
+    """Unify a column's per-batch Arrow arrays onto one Arrow type.
+
+    ArcadeDB is schemaless per document, so a property's Java type can
+    legally vary row to row; ColumnBatcher infers each batch's column type
+    independently, so two batches of the same result set can produce
+    incompatible Arrow types for the same column (#7108) - e.g. int64 in one
+    batch, float64 in the next. ``pa.chunked_array`` requires every chunk to
+    share one type, so leaving them as-is raises at concatenation time on a
+    result set that is otherwise entirely legal.
+
+    Numeric types widen (int64 -> float64, matching to_columns' pandas-style
+    promotion); anything else - including a json or vector column that
+    varied - degrades to string, so the column always ends up with exactly
+    one type rather than an exception.
+    """
+    types = {a.type for a in arrs}
+    if len(types) <= 1:
+        return arrs
+
+    if types <= {pa.int64(), pa.float64()}:
+        return [a.cast(pa.float64()) for a in arrs]
+
+    unified = []
+    for a in arrs:
+        try:
+            unified.append(a.cast(pa.string()))
+        except pa.ArrowException:
+            unified.append(pa.array([None if v is None else str(v) for v in a.to_pylist()], type=pa.string()))
+    return unified
+
+
 class ResultSet:
     """Iterator wrapper for ArcadeDB query results."""
 
@@ -477,7 +509,9 @@ class ResultSet:
 
         if total == 0 or not first_names:
             return pa.table({})
-        return pa.table({n: pa.chunked_array(chunks[n]) for n in first_names})
+        return pa.table(
+            {n: pa.chunked_array(_unify_arrow_chunk_types(chunks[n], pa)) for n in first_names}
+        )
 
     def iter_chunks(
         self, size: int = 1000, convert_types: bool = True
