@@ -93,11 +93,6 @@
         </dependency>
         <dependency>
             <groupId>${project.groupId}</groupId>
-            <artifactId>arcadedb-mcp</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>${project.groupId}</groupId>
             <artifactId>arcadedb-graphql</artifactId>
             <version>${project.version}</version>
         </dependency>
@@ -108,12 +103,7 @@
         </dependency>
         <dependency>
             <groupId>${project.groupId}</groupId>
-            <artifactId>arcadedb-bolt</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>${project.groupId}</groupId>
-            <artifactId>arcadedb-bolt</artifactId>
+            <artifactId>arcadedb-tracing</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
