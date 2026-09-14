@@ -5349,11 +5349,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return se;
     if (e instanceof final StatusRuntimeException sre)
       return new StatusException(sre.getStatus(), sre.getTrailers());
-    if (e instanceof IllegalArgumentException)
-      return Status.INVALID_ARGUMENT.withDescription(operation + ": " + e.getMessage()).asException();
     // ServerSecurityException does NOT extend java.lang.SecurityException (see GrpcErrorMapper), so it needs
-    // its own arm here; everything else falls through to the same classification every other wire protocol
-    // uses (issue #7123) instead of collapsing to INTERNAL.
+    // its own arm here; everything else - including IllegalArgumentException, which ErrorCategory's
+    // VALIDATION category already maps to INVALID_ARGUMENT - falls through to the same classification
+    // every other wire protocol uses (issue #7123) instead of collapsing to INTERNAL.
     if (e instanceof ServerSecurityException)
       return Status.PERMISSION_DENIED.withDescription(operation + ": " + e.getMessage()).asException();
     return GrpcErrorMapper.statusCodeFor(e).toStatus().withDescription(operation + ": " + e.getMessage()).asException();
