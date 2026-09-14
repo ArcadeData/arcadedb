@@ -22,6 +22,7 @@ import org.apache.ratis.util.LifeCycle;
 import org.junit.jupiter.api.Test;
 
 import static com.arcadedb.server.ha.raft.RaftHAServer.isDivisionLifecycleHealthy;
+import static com.arcadedb.server.ha.raft.RaftHAServer.isEmptyLogInMultiPeerCluster;
 import static com.arcadedb.server.ha.raft.RaftHAServer.isReadyForTrafficState;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -185,8 +186,7 @@ class RaftHAServerReadinessTest {
 
   @Test
   void emptyLogInMultiPeerClusterIsNotReady() {
-    // A follower that just rejoined (wiped/reformatted) with nothing committed yet must not be Ready
-    // even though commit == applied == 0 looks like "fully caught up" to the plain lag arithmetic.
+    // A follower that just rejoined (wiped/reformatted) with nothing committed at all must not be Ready.
     assertThat(isReadyForTrafficState(true, true, false, 0, 0, 100, false, false, true)).isFalse();
   }
 
@@ -199,6 +199,34 @@ class RaftHAServerReadinessTest {
   void leaderRoleIgnoresTheEmptyLogGate() {
     // The gate applies to followers only; the leader branch returns before it is evaluated.
     assertThat(isReadyForTrafficState(true, true, true, 5000, 100, 0, false, true, true)).isTrue();
+  }
+
+  // isEmptyLogInMultiPeerCluster: the boundary claude-review caught (PR #7605) - index 0 is
+  // RaftLog.LEAST_VALID_LOG_INDEX (the leader's first real committed entry), not "empty". An earlier
+  // revision used commitIndex <= 0, which none of the isReadyForTrafficState cases above could catch since
+  // they all pass emptyLogInMultiPeerCluster pre-reduced rather than feeding a real commitIndex through the
+  // computation that produces it.
+
+  @Test
+  void genuinelyEmptyLogInMultiPeerClusterIsDetected() {
+    // RaftLog.INVALID_LOG_INDEX (-1): nothing committed at all.
+    assertThat(isEmptyLogInMultiPeerCluster(3, -1)).isTrue();
+  }
+
+  @Test
+  void firstRealCommitIsNotTreatedAsEmpty() {
+    // RaftLog.LEAST_VALID_LOG_INDEX (0): the cluster's very first entry has committed and this follower has
+    // it. A brand-new multi-node cluster's followers are legitimately caught up here immediately after
+    // bootstrap; the bug this regression-tests reported them not-ready.
+    assertThat(isEmptyLogInMultiPeerCluster(3, 0)).isFalse();
+  }
+
+  @Test
+  void singlePeerConfigurationNeverCountsAsEmpty() {
+    // The gate only makes sense once there is more than one peer to have rejoined among; a single-node
+    // "cluster" reaching commitIndex 0 for the first time is not a cold rejoin.
+    assertThat(isEmptyLogInMultiPeerCluster(1, -1)).isFalse();
+    assertThat(isEmptyLogInMultiPeerCluster(0, -1)).isFalse();
   }
 
   @Test
