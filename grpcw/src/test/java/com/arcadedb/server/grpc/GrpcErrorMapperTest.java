@@ -220,4 +220,54 @@ class GrpcErrorMapperTest {
     assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.ALREADY_EXISTS);
     assertThat(decode(sre.getTrailers().get(GrpcErrorMapper.DUP_INDEX_KEY))).isEqualTo("idx");
   }
+
+  /**
+   * Regression tests for the code-review follow-up on issue #7123: {@code graphBatchLoad} attaches its own
+   * partial-commit trailer, so it cannot call {@link GrpcErrorMapper#toStatusRuntimeException}, which builds a
+   * standalone {@link Metadata}. Before {@code classifyAndAddTrailers} existed it fell back to
+   * {@code statusCodeFor} alone, getting the right code for a {@link DuplicatedKeyException} but silently
+   * losing the {@code DUP_INDEX_KEY}/{@code DUP_KEYS_KEY} trailers that {@code executeCommand}/
+   * {@code createRecord} attach for the identical exception.
+   */
+  @Test
+  @DisplayName("classifyAndAddTrailers adds the exception class name to an existing trailer set")
+  void classifyAndAddTrailers_addsExceptionClassToExistingTrailers() {
+    final Metadata callerTrailers = new Metadata();
+    callerTrailers.put(Metadata.Key.of("caller-own-trailer", Metadata.ASCII_STRING_MARSHALLER), "kept");
+
+    final Status.Code code = GrpcErrorMapper.classifyAndAddTrailers(new IllegalStateException("boom"), callerTrailers);
+
+    assertThat(code).isEqualTo(Status.Code.INTERNAL);
+    assertThat(callerTrailers.get(Metadata.Key.of("caller-own-trailer", Metadata.ASCII_STRING_MARSHALLER)))
+        .isEqualTo("kept");
+    assertThat(callerTrailers.get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(IllegalStateException.class.getName());
+  }
+
+  @Test
+  @DisplayName("classifyAndAddTrailers adds the dup-key trailers alongside the caller's own trailers")
+  void classifyAndAddTrailers_duplicatedKeyAddsDupTrailersToo() {
+    final Metadata callerTrailers = new Metadata();
+    callerTrailers.put(Metadata.Key.of("caller-own-trailer", Metadata.ASCII_STRING_MARSHALLER), "kept");
+
+    final Status.Code code = GrpcErrorMapper.classifyAndAddTrailers(
+        new DuplicatedKeyException("idx", "[k]", null), callerTrailers);
+
+    assertThat(code).isEqualTo(Status.Code.ALREADY_EXISTS);
+    assertThat(callerTrailers.get(Metadata.Key.of("caller-own-trailer", Metadata.ASCII_STRING_MARSHALLER)))
+        .isEqualTo("kept");
+    assertThat(decode(callerTrailers.get(GrpcErrorMapper.DUP_INDEX_KEY))).isEqualTo("idx");
+    assertThat(decode(callerTrailers.get(GrpcErrorMapper.DUP_KEYS_KEY))).isEqualTo("[k]");
+  }
+
+  @Test
+  @DisplayName("classifyAndAddTrailers unwraps an ExecutionException before classifying")
+  void classifyAndAddTrailers_unwrapsExecutionException() {
+    final Metadata callerTrailers = new Metadata();
+
+    final Status.Code code = GrpcErrorMapper.classifyAndAddTrailers(
+        new ExecutionException(new DuplicatedKeyException("idx", "[k]", null)), callerTrailers);
+
+    assertThat(code).isEqualTo(Status.Code.ALREADY_EXISTS);
+    assertThat(decode(callerTrailers.get(GrpcErrorMapper.DUP_INDEX_KEY))).isEqualTo("idx");
+  }
 }
