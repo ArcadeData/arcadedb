@@ -47,6 +47,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -1414,10 +1415,18 @@ public final class SnapshotInstaller {
       final long sizeOnDisk;
       try {
         sizeOnDisk = Files.size(onDisk);
-      } catch (final IOException e) {
+      } catch (final NoSuchFileException e) {
         throw new IOException("Snapshot file '" + entry.name() + "' was extracted and verified but is no longer "
             + "present on disk under " + targetDir + " - the staging directory was modified concurrently while "
             + "this install was in progress (possible concurrent recovery pass, issue #7128)", e);
+      } catch (final IOException e) {
+        // A narrower catch than NoSuchFileException above would miss it: not every filesystem/JDK combination
+        // is guaranteed to raise that specific subtype for a missing file. But a message asserting concurrent
+        // modification as the cause is only earned for that specific, common case; any other I/O failure here
+        // (a permission error, a disk-level fault) gets a neutral message instead of a misdiagnosis, with the
+        // wrapped exception carrying the real cause either way.
+        throw new IOException("Snapshot file '" + entry.name() + "' was extracted and verified but could not be "
+            + "re-verified on disk under " + targetDir + ": " + e.getMessage(), e);
       }
       if (sizeOnDisk != entry.size())
         throw new IOException("Snapshot file '" + entry.name() + "' was extracted and verified but now measures "
