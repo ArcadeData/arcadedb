@@ -24,6 +24,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -108,8 +109,12 @@ class ErrorHandlingIT extends BaseGraphServerTest {
   @Test
   @DisplayName("Query on non-existent type throws exception")
   void nonExistentType_throwsException() {
+    // The server now classifies a missing type through ErrorCategory.SCHEMA and ships the exact
+    // engine exception type in a trailer (issue #7123), so the client reconstructs the precise
+    // SchemaException instead of a generic RemoteException - and instead of the unrelated
+    // RecordNotFoundException the shared NOT_FOUND status code would otherwise collapse it into.
     assertThatThrownBy(() -> database.query("sql", "SELECT FROM NonExistentType12345"))
-        .isInstanceOf(RemoteException.class);
+        .isInstanceOf(SchemaException.class);
   }
 
   @Test
