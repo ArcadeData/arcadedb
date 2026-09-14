@@ -18,6 +18,7 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
@@ -160,7 +161,7 @@ class BoltErrorClassificationTest {
    */
   @Test
   void duplicatedKeyClassifiesAsConstraintViolation() {
-    final Throwable e = new DuplicatedKeyException("Person.email", "[bob@x.com]", new com.arcadedb.database.RID(1, 0));
+    final Throwable e = new DuplicatedKeyException("Person.email", "[bob@x.com]", new RID(1, 0));
     assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
         .isEqualTo(BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR);
     assertThat(BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR).isEqualTo("Neo.ClientError.Schema.ConstraintValidationFailed");
@@ -169,7 +170,7 @@ class BoltErrorClassificationTest {
   @Test
   void duplicatedKeyWrappedAsCauseAlsoClassifiesAsConstraintViolation() {
     final Throwable wrapped = new RuntimeException("command failed",
-        new DuplicatedKeyException("Person.email", "[bob@x.com]", new com.arcadedb.database.RID(1, 0)));
+        new DuplicatedKeyException("Person.email", "[bob@x.com]", new RID(1, 0)));
     assertThat(BoltNetworkExecutor.classifyExecutionError(wrapped, BoltErrorCodes.DATABASE_ERROR))
         .isEqualTo(BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR);
   }

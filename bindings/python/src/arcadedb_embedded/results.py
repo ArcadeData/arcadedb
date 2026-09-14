@@ -75,6 +75,13 @@ def _unify_arrow_chunk_types(arrs: list, pa) -> list:
     so that case - and anything else, including a json or vector column that
     varied - degrades to string instead, so the column always ends up with
     exactly one type rather than an exception.
+
+    int64/float64 is the only numeric pair worth special-casing: ColumnBatcher
+    (bindings/python/src/java/.../ColumnBatcher.java) already widens every
+    Java integer type (Long/Integer/Short/Byte) to the same "i8" wire encoding
+    and every Java floating type (Double/Float) to "f8" *within* one batch, so
+    across batches the only numeric type mismatch this ever has to unify is
+    exactly this pair - there is no int32/int64 or bool/int64 case to widen.
     """
     types = {a.type for a in arrs}
     if len(types) <= 1:

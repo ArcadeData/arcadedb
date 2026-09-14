@@ -125,6 +125,15 @@ def test_async_executor_is_pending_true_while_queued(temp_db):
     db = temp_db
     db.command("sql", "CREATE DOCUMENT TYPE Msg")
 
+    # commit_every equal to the row count means the queue's own commit boundary lands
+    # on the very last row, so there is always a real commit (page writes, WAL flush)
+    # in flight - not just an idle queue - at the moment the check below runs. Tried
+    # widening this to a much larger row count with commit_every set past it instead
+    # (so the queue would simply stay non-empty for longer): that made the test LESS
+    # reliable, not more, because JPype's per-call submission overhead from Python
+    # dominates the single background worker's per-row insert cost, so a larger
+    # backlog gives the worker more real time to catch up and fully drain the queue
+    # before the check runs (code review follow-up on #7107).
     async_exec = db.async_executor().set_parallel_level(1).set_commit_every(2000)
     assert async_exec.is_pending() is False
 
