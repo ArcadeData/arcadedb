@@ -53,10 +53,16 @@ public final class BoltErrorCodes {
   public static final String TRANSIENT_CONFLICT_ERROR = "Neo.TransientError.Transaction.DeadlockDetected";
 
   // A deadline/budget timeout (com.arcadedb.exception.TimeoutException - a query or the SQL TIMEOUT
-  // clause ran out of time), as opposed to the LockTimeoutException contention above: the work itself
-  // never got a chance to finish, which is retryable, so it must not fall into DatabaseError either
-  // (issue #7123).
-  public static final String TRANSACTION_TERMINATED_ERROR = "Neo.TransientError.Transaction.Terminated";
+  // clause ran out of time), as opposed to the LockTimeoutException contention above. NOT
+  // Neo.TransientError.Transaction.Terminated: that title means "explicitly terminated by the user"
+  // (e.g. dbms.killTransaction()) and both the Neo4j driver and Spring Data Neo4j explicitly EXCLUDE
+  // it from their retry predicates for exactly that reason - retrying a transaction the user killed on
+  // purpose is never correct (code review on issue #7123; see the two-title exclusion documented on
+  // TRANSIENT_CONFLICT_ERROR above, which already knew this). TransactionTimedOut is Neo4j's own code
+  // for this case and its own documentation says what to do with it: "You may want to retry with a
+  // longer timeout" - a caller decision, not an automatic driver retry, but still not the
+  // generic DatabaseError a driver reads as an unexplained server fault.
+  public static final String TRANSACTION_TIMED_OUT_ERROR = "Neo.ClientError.Transaction.TransactionTimedOut";
 
   // Request errors
   public static final String PROTOCOL_ERROR = "Neo.ClientError.Request.Invalid";

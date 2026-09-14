@@ -259,6 +259,35 @@ class GrpcErrorMapperTest {
     assertThat(decode(callerTrailers.get(GrpcErrorMapper.DUP_KEYS_KEY))).isEqualTo("[k]");
   }
 
+  /**
+   * Regression test for a code-review follow-up on issue #7123: {@code graphBatchLoad}'s
+   * {@code getDatabase()} call can raise a {@link StatusRuntimeException} (e.g. PERMISSION_DENIED) the
+   * same way it does for every other RPC, and {@code classifyAndAddTrailers} must preserve it - not
+   * fold it into SERVER/INTERNAL through {@code ErrorCategory}, which does not know about gRPC's own
+   * exception types.
+   */
+  @Test
+  @DisplayName("classifyAndAddTrailers preserves an already-mapped StatusRuntimeException's code and trailers")
+  void classifyAndAddTrailers_preservesUpstreamStatusRuntimeException() {
+    final Metadata upstreamTrailers = new Metadata();
+    upstreamTrailers.put(Metadata.Key.of("upstream-trailer", Metadata.ASCII_STRING_MARSHALLER), "from-getDatabase");
+    final StatusRuntimeException upstream = Status.PERMISSION_DENIED.withDescription("no access")
+        .asRuntimeException(upstreamTrailers);
+
+    final Metadata callerTrailers = new Metadata();
+    callerTrailers.put(Metadata.Key.of("caller-own-trailer", Metadata.ASCII_STRING_MARSHALLER), "kept");
+
+    final Status.Code code = GrpcErrorMapper.classifyAndAddTrailers(upstream, callerTrailers);
+
+    assertThat(code).isEqualTo(Status.Code.PERMISSION_DENIED);
+    assertThat(callerTrailers.get(Metadata.Key.of("caller-own-trailer", Metadata.ASCII_STRING_MARSHALLER)))
+        .isEqualTo("kept");
+    assertThat(callerTrailers.get(Metadata.Key.of("upstream-trailer", Metadata.ASCII_STRING_MARSHALLER)))
+        .isEqualTo("from-getDatabase");
+    // Not misclassified as INTERNAL through ErrorCategory, which does not recognize StatusRuntimeException.
+    assertThat(callerTrailers.get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isNull();
+  }
+
   @Test
   @DisplayName("classifyAndAddTrailers unwraps an ExecutionException before classifying")
   void classifyAndAddTrailers_unwrapsExecutionException() {

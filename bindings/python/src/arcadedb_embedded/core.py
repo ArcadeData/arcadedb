@@ -155,12 +155,14 @@ class Database:
                 result = fn()
                 self.commit()
                 return result
-            except Exception as e:
+            except BaseException as e:
                 # Any exit path other than a successful commit must roll back,
                 # not just ArcadeDBError - matching LocalDatabase.transaction()'s
                 # `catch (final Throwable e)` on the Java side (#7108). An
                 # ordinary bug in fn() (TypeError, KeyError, ...) must not leave
-                # an open transaction for the next caller to inherit.
+                # an open transaction for the next caller to inherit, and neither
+                # must KeyboardInterrupt/SystemExit, which `except Exception`
+                # does not catch (code review on #7108).
                 try:
                     if self.is_transaction_active():
                         self.rollback()

@@ -1073,6 +1073,25 @@ def test_run_in_transaction_rolls_back_on_non_arcadedb_error(temp_db_path):
         assert db.query("sql", "SELECT count(*) as c FROM R").first().get("c") == 1
 
 
+def test_run_in_transaction_rolls_back_on_base_exception(temp_db_path):
+    """Regression test for a code-review follow-up on #7108: SystemExit and
+    KeyboardInterrupt are BaseException, not Exception, so `except Exception`
+    let them bypass the rollback entirely - the same leaked-transaction bug
+    #7108 fixed, just for a different exception family."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE R")
+
+        def bad():
+            db.command("sql", "INSERT INTO R SET n = 1")
+            raise SystemExit(1)
+
+        with pytest.raises(SystemExit):
+            db.run_in_transaction(bad)
+
+        assert db.is_transaction_active() is False
+        assert db.query("sql", "SELECT count(*) as c FROM R").first().get("c") == 0
+
+
 def test_single_list_arg_is_positional_param_array(temp_db_path):
     """A single list argument binds one element per `?` placeholder
     (historical semantics; regression test for the example-04 CSV ingest
