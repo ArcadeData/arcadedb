@@ -226,4 +226,85 @@ class SnapshotManifestVerificationTest {
     crc.update(data);
     return crc.getValue();
   }
+
+  // -- issue #7128: the in-memory "extracted" record must not be trusted alone --
+
+  @Test
+  void fileRecordedAsExtractedButMissingOnDiskIsRejected(@TempDir final Path dir) throws Exception {
+    // Simulates a concurrent boot-time recovery pass (re-entered via a runtime Ratis restart) reading this
+    // same staging directory as orphaned and deleting a file AFTER extractAndVerifySnapshot recorded it as
+    // successfully streamed but BEFORE verifyManifest ran. The in-memory map alone would verify this clean;
+    // the on-disk re-stat must not.
+    final byte[] body = "hello".getBytes(StandardCharsets.UTF_8);
+    final Map<String, long[]> extracted = new LinkedHashMap<>();
+    extracted.put("data.bin", new long[] { body.length, crcOf(body) });
+    final List<SnapshotManager.ManifestEntry> manifest = new ArrayList<>();
+    manifest.add(new SnapshotManager.ManifestEntry("data.bin", body.length, crcOf(body)));
+    final byte[] manifestBytes = SnapshotManager.buildManifest(manifest).getBytes(StandardCharsets.UTF_8);
+
+    // Note: data.bin is deliberately never written to dir - standing in for "written, then deleted by a
+    // concurrent recovery pass before this check ran".
+    assertThatThrownBy(() -> SnapshotInstaller.verifyManifest(manifestBytes, extracted, true, dir))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("data.bin")
+        .hasMessageContaining("no longer present on disk");
+  }
+
+  @Test
+  void fileRecordedAsExtractedButTruncatedOnDiskIsRejected(@TempDir final Path dir) throws Exception {
+    // Same race, different outcome: the concurrent deletion removed and recreated (or truncated) the file
+    // rather than leaving it fully absent.
+    final byte[] body = "hello world".getBytes(StandardCharsets.UTF_8);
+    Files.write(dir.resolve("data.bin"), new byte[] { 'h', 'e' }); // on-disk size no longer matches
+    final Map<String, long[]> extracted = new LinkedHashMap<>();
+    extracted.put("data.bin", new long[] { body.length, crcOf(body) });
+    final List<SnapshotManager.ManifestEntry> manifest = new ArrayList<>();
+    manifest.add(new SnapshotManager.ManifestEntry("data.bin", body.length, crcOf(body)));
+    final byte[] manifestBytes = SnapshotManager.buildManifest(manifest).getBytes(StandardCharsets.UTF_8);
+
+    assertThatThrownBy(() -> SnapshotInstaller.verifyManifest(manifestBytes, extracted, true, dir))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("data.bin")
+        .hasMessageContaining("measures 2 bytes on disk");
+  }
+
+  @Test
+  void fileMatchingOnDiskAndInMemoryPassesVerification(@TempDir final Path dir) throws Exception {
+    final byte[] body = "hello world".getBytes(StandardCharsets.UTF_8);
+    Files.write(dir.resolve("data.bin"), body);
+    final Map<String, long[]> extracted = new LinkedHashMap<>();
+    extracted.put("data.bin", new long[] { body.length, crcOf(body) });
+    final List<SnapshotManager.ManifestEntry> manifest = new ArrayList<>();
+    manifest.add(new SnapshotManager.ManifestEntry("data.bin", body.length, crcOf(body)));
+    final byte[] manifestBytes = SnapshotManager.buildManifest(manifest).getBytes(StandardCharsets.UTF_8);
+
+    SnapshotInstaller.verifyManifest(manifestBytes, extracted, true, dir);
+  }
+
+  @Test
+  void endToEndExtractionThenConcurrentDeletionIsCaughtOnReVerification(@TempDir final Path dir) throws Exception {
+    // The full extractAndVerifySnapshot path, exercised end-to-end, to prove a normal, uninterrupted
+    // extraction still passes the new on-disk re-stat (no false positive from the hardening) - then simulates
+    // issue #7128's race against that same populated staging directory.
+    final Map<String, byte[]> files = sampleFiles();
+    final byte[] zip = buildSnapshotZip(files, true);
+
+    extract(zip, dir, true); // must not throw: every file matches on disk right after extraction
+
+    final String victim = files.keySet().iterator().next();
+    final Map<String, long[]> extracted = new LinkedHashMap<>();
+    final List<SnapshotManager.ManifestEntry> manifest = new ArrayList<>();
+    for (final Map.Entry<String, byte[]> e : files.entrySet()) {
+      extracted.put(e.getKey(), new long[] { e.getValue().length, crcOf(e.getValue()) });
+      manifest.add(new SnapshotManager.ManifestEntry(e.getKey(), e.getValue().length, crcOf(e.getValue())));
+    }
+    final byte[] manifestBytes = SnapshotManager.buildManifest(manifest).getBytes(StandardCharsets.UTF_8);
+
+    // A concurrent recovery pass deletes one already-extracted file from the staging directory.
+    Files.delete(dir.resolve(victim));
+
+    assertThatThrownBy(() -> SnapshotInstaller.verifyManifest(manifestBytes, extracted, true, dir))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining(victim);
+  }
 }
