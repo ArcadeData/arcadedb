@@ -705,10 +705,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     }
 
     /**
-     * Drops every command buffered in {@link #pendingBatchCommands} without notifying anybody - for a
-     * caller that just durably committed them through a path other than {@link #commitBatch} (issue #7615:
-     * {@link DatabaseAsyncTransaction#executeTransaction}'s own flush of a dangling prior batch). Replaying
-     * them on a LATER, unrelated retry would silently duplicate writes that are already durable.
+     * Drops every command buffered in {@link #pendingBatchCommands}, and every task in
+     * {@link #pendingUnreplayableTasks} (claude-review: both, via {@link #clearBatchState}, not just the
+     * former), without notifying anybody - for a caller that just durably committed them through a path
+     * other than {@link #commitBatch} (issue #7615: {@link DatabaseAsyncTransaction#executeTransaction}'s
+     * own flush of a dangling prior batch). Replaying them on a LATER, unrelated retry would silently
+     * duplicate writes that are already durable.
      */
     void clearPendingBatchCommands() {
       clearBatchState();
