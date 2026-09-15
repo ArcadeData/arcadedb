@@ -153,8 +153,13 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
 
     assertThat(executorWideErrors.get()).as("the executor-wide callback still fires, unchanged").isGreaterThanOrEqualTo(1);
 
-    // The actual fix: every one of the 5 buffered commands is told its own onError once the retries are exhausted,
-    // instead of the failure being visible only through the executor-wide callback above.
+    // Every buffered command already got onComplete on its first, now-discarded attempt (the non-durable
+    // signal from #6470) - that is unchanged by this fix and still fires exactly once per command.
+    assertThat(perCommandOks.get()).as("onComplete still fires once per command on its first attempt, unchanged").isEqualTo(5);
+
+    // The actual fix: every one of the 5 buffered commands is ALSO told its own onError once the retries
+    // are exhausted, instead of the failure being visible only through the executor-wide callback above -
+    // in addition to the onComplete above, which is the point (see commitBatch()'s own javadoc).
     assertThat(perCommandErrors).hasSize(5);
     for (final Exception e : perCommandErrors)
       assertThat(e).isInstanceOf(ConcurrentModificationException.class);
@@ -213,8 +218,10 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
    * commitBatch() can only replay what it buffers in {@code pendingBatchCommands} - plain {@code command()} calls.
    * A batch that ALSO ran a {@link DatabaseAsyncExecutor#createRecord} (or updateRecord/deleteRecord) cannot be
    * safely replayed: doing so anyway would silently omit that write while still reporting the retry as a clean
-   * success. This must fall back to the pre-fix behaviour instead - one attempt, no retry, batch abandoned - rather
-   * than fabricate a commit that never actually included the unreplayable write.
+   * success. This must fall back to a single attempt instead - no retry, batch abandoned - with both the buffered
+   * command AND the unreplayable task told via their own error callback ({@code DatabaseAsyncCommand#notifyError}
+   * and {@code DatabaseAsyncTask#notifyBatchAbandoned} respectively), rather than fabricating a commit that never
+   * actually included the unreplayable write.
    */
   @Test
   void mixedBatchWithAnUnreplayableWriteIsNeverSilentlyFabricatedAsASuccess() throws Exception {
@@ -254,6 +261,9 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
     // No retry attempted for an unreplayable batch: exactly one commit attempt, not up to TX_RETRIES+1.
     assertThat(hookCalls.get()).as("a mixed batch must not be retried - there is nothing safe to replay it with").isEqualTo(1);
     assertThat(commandErrors.get()).as("the buffered command is still told, unlike before this fix").isEqualTo(1);
+    // The unreplayable createRecord task is told too, via DatabaseAsyncTask#notifyBatchAbandoned - not just
+    // the executor-wide onError a caller might not have wired up.
+    assertThat(createErrors.get()).as("the unreplayable task is told its write never landed too").isEqualTo(1);
 
     // Nothing from this abandoned batch may be durably stored - the guard exists precisely so a partial replay can
     // never masquerade as a complete one.

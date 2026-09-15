@@ -37,4 +37,17 @@ public interface DatabaseAsyncTask {
   default boolean requiresActiveTx() {
     return true;
   }
+
+  /**
+   * Called when this task's write was applied to a worker's shared batch transaction that was then
+   * abandoned instead of committed - a boundary commit conflict {@code AsyncThread#commitBatch} could not
+   * safely retry because this task's write cannot be replayed (issue #7615). {@code cause} is the failure
+   * that closed the batch. Default is a no-op, for tasks with no per-task error callback to invoke (e.g.
+   * the graph edge-creation tasks, whose only callback reports a new edge, not a failure); a task that has
+   * one (e.g. {@link DatabaseAsyncCreateRecord}) overrides this to call it, so its submitter is not left
+   * having seen only a success callback for a write that never actually landed.
+   */
+  default void notifyBatchAbandoned(final Throwable cause) {
+    // DEFAULT IMPLEMENTATION: nothing to notify
+  }
 }

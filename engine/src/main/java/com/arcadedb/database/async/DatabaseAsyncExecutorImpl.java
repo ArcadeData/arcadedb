@@ -270,30 +270,33 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // that closes the batch) can still tell every one of them onError instead of only the executor-wide
     // callback. Thread-confined: only this worker touches it. Idempotent queries are never buffered -
     // they wrote nothing, so there is nothing for a rollback to lose.
-    private final    List<DatabaseAsyncCommand> pendingBatchCommands       = new ArrayList<>();
-    // #7615: true once some OTHER mutating task type (DatabaseAsyncCreateRecord/UpdateRecord/DeleteRecord,
-    // the graph edge-creation tasks, ...) has run against the shared batch since it was last committed.
-    // commitBatch() cannot replay those - only pendingBatchCommands is buffered - so replaying the batch
-    // after a rolled-back commit would silently omit their writes while still reporting success. Gates
-    // commitBatch()'s retry: set, a CME abandons immediately instead of attempting a replay that would
-    // fabricate a clean commit over data it actually dropped.
-    private          boolean                    batchHasUnreplayableWrites = false;
+    private final    List<DatabaseAsyncCommand> pendingBatchCommands     = new ArrayList<>();
+    // #7615: tasks of some OTHER mutating type (DatabaseAsyncCreateRecord/UpdateRecord/DeleteRecord, the
+    // graph edge-creation tasks, ...) that ran against the shared batch and left it active since it was
+    // last committed. commitBatch() cannot replay those - only pendingBatchCommands is buffered - so
+    // replaying the batch after a rolled-back commit would silently omit their writes while still
+    // reporting success. Non-empty gates commitBatch()'s retry off (a CME abandons immediately instead of
+    // attempting a replay that would fabricate a clean commit over data it actually dropped), and on
+    // abandonment each one's own notifyBatchAbandoned(Throwable) is called - a no-op for a task with no
+    // per-task error callback (the edge tasks), otherwise the same "you were told success, this corrects
+    // it" notification pendingBatchCommands' own commands get.
+    private final    List<DatabaseAsyncTask>    pendingUnreplayableTasks = new ArrayList<>();
     // #7615: true only while commitBatch() is replaying pendingBatchCommands after a rolled-back
     // commit. DatabaseAsyncCommand checks this to avoid re-invoking its userCallback.onComplete() (already
     // fired on the first, now-discarded attempt) and to let a failure during replay propagate to
     // commitBatch() instead of being handled - and the whole batch silently rolled back - locally.
-    private volatile boolean                    replayingBatch             = false;
+    private volatile boolean                    replayingBatch           = false;
     // Monotonic call counter feeding TEST_BEFORE_BATCH_COMMIT_HOOK's 1-based argument. Thread-confined,
     // same as pendingBatchCommands - only this worker ever calls commitBatch() on itself.
-    private          int                        batchCommitAttempt         = 0;
+    private          int                        batchCommitAttempt       = 0;
 
     // #7615: single choke point for "the shared batch's non-durable bookkeeping is now moot" - every site
     // that commits, rolls back, or otherwise closes the shared batch transaction goes through here instead
-    // of clearing pendingBatchCommands directly, so batchHasUnreplayableWrites can never drift out of sync
-    // with it.
+    // of clearing pendingBatchCommands/pendingUnreplayableTasks directly, so the two can never drift out
+    // of sync with each other.
     private void clearBatchState() {
       pendingBatchCommands.clear();
-      batchHasUnreplayableWrites = false;
+      pendingUnreplayableTasks.clear();
     }
 
     boolean isReplayingBatch() {
@@ -507,8 +510,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             // Some other mutating task type ran against the shared batch and left it active, i.e. it
             // succeeded - DatabaseAsyncCreateRecord/UpdateRecord/DeleteRecord, the graph edge-creation
             // tasks, ... commitBatch() only knows how to replay pendingBatchCommands, so it must not
-            // attempt to on a batch holding a write it cannot reconstruct (see batchHasUnreplayableWrites).
-            batchHasUnreplayableWrites = true;
+            // attempt to on a batch holding a write it cannot reconstruct (see pendingUnreplayableTasks).
+            pendingUnreplayableTasks.add(message);
 
           count++;
 
@@ -608,7 +611,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           lastFailure = e;
           if (database.isTransactionActive())
             database.rollback();
-          if (batchHasUnreplayableWrites)
+          if (!pendingUnreplayableTasks.isEmpty())
             // A replay can only reconstruct pendingBatchCommands - committing one over a batch that also
             // held a write it cannot reconstruct would silently omit that write while still reporting
             // success. No safe retry available: stop here and fall through to the abandon path below,
@@ -634,25 +637,24 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     }
 
     /**
-     * Calls {@code onError} on every command still buffered in {@link #pendingBatchCommands} - the batch
-     * is being abandoned, so none of them will be replayed - and clears the buffer. Called wherever the
-     * worker's shared batch transaction is given up on instead of committed (issue #7615): a
+     * Calls {@code onError} on every command still buffered in {@link #pendingBatchCommands}, and
+     * {@link DatabaseAsyncTask#notifyBatchAbandoned} on every task in {@link #pendingUnreplayableTasks} -
+     * the batch is being abandoned, so none of them will be replayed - then clears both. Called wherever
+     * the worker's shared batch transaction is given up on instead of committed (issue #7615): a
      * {@link #commitBatch} whose retries are exhausted, and the other commit sites that close this same
      * shared transaction ({@link #closeTransactionBoundaryIfDurabilityPolicyChanged}, the shutdown commit
      * in {@link #runLoop}, and the dangling-batch commit in {@link DatabaseAsyncTransaction#executeTransaction}).
      */
     void notifyPendingBatchCommandsAndAbandon(final Throwable cause) {
-      if (pendingBatchCommands.isEmpty()) {
-        // #7615: still reset - a batch can be unreplayable (batchHasUnreplayableWrites) with nothing
-        // buffered at all (e.g. a lone DatabaseAsyncCreateRecord), and that flag must not outlive the
-        // batch it described or every later batch on this worker would be wrongly denied a replay too.
-        batchHasUnreplayableWrites = false;
+      if (pendingBatchCommands.isEmpty() && pendingUnreplayableTasks.isEmpty())
         return;
-      }
-      final List<DatabaseAsyncCommand> abandoned = new ArrayList<>(pendingBatchCommands);
+      final List<DatabaseAsyncCommand> abandonedCommands = new ArrayList<>(pendingBatchCommands);
+      final List<DatabaseAsyncTask>    abandonedTasks    = new ArrayList<>(pendingUnreplayableTasks);
       clearBatchState();
-      for (final DatabaseAsyncCommand command : abandoned)
+      for (final DatabaseAsyncCommand command : abandonedCommands)
         command.notifyError(cause);
+      for (final DatabaseAsyncTask task : abandonedTasks)
+        task.notifyBatchAbandoned(cause);
     }
 
     /**

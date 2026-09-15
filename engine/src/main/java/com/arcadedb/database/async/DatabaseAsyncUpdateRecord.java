@@ -95,6 +95,12 @@ public class DatabaseAsyncUpdateRecord implements DatabaseAsyncTask {
   }
 
   @Override
+  public void notifyBatchAbandoned(final Throwable cause) {
+    if (onErrorCallback != null)
+      onErrorCallback.call(cause);
+  }
+
+  @Override
   public String toString() {
     return "UpdateRecord(" + record + ")";
   }
