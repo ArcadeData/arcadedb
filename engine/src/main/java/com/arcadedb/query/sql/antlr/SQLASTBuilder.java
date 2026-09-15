@@ -3077,7 +3077,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * <p>
    * Negates the ALREADY-PARSED value rather than re-parsing a {@code "-"}-prefixed text, so the folded literal keeps
    * exactly the numeric type {@code 0 - X} used to produce ({@code -2147483648} stays a {@code Long}, an
-   * {@code L}-suffixed literal stays a {@code Long}, a bare decimal stays a {@code Float}) and the sign lands
+   * {@code L}-suffixed literal stays a {@code Long}, a suffix-less decimal stays a {@code Double}) and the sign lands
    * correctly on every literal shape the visitors accept, not only on plain decimal.
    * <p>
    * A literal carrying a MODIFIER is left alone: a suffix binds tighter than the sign, so {@code -1.toString()} is
