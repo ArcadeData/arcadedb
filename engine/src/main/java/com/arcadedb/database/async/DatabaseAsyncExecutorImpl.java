@@ -660,6 +660,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      * {@link #commitBatch} whose retries are exhausted, and the other commit sites that close this same
      * shared transaction ({@link #closeTransactionBoundaryIfDurabilityPolicyChanged}, the shutdown commit
      * in {@link #runLoop}, and the dangling-batch commit in {@link DatabaseAsyncTransaction#executeTransaction}).
+     * <p>
+     * {@code cause} is attributed to the batch as a whole, not diagnosed per command: when {@code commitBatch}'s
+     * replay fails partway through a multi-command pass, every command buffered in this same batch is told
+     * about that ONE failure alike, including any that had already replayed successfully earlier in the same
+     * pass - a partial replay cannot be safely committed, so there is no finer-grained outcome to report. A
+     * submitter should read this {@code onError} as "this batch could not be made durable," not as a
+     * diagnosis of its own command.
      */
     void notifyPendingBatchCommandsAndAbandon(final Throwable cause) {
       if (pendingBatchCommands.isEmpty() && pendingUnreplayableTasks.isEmpty())
