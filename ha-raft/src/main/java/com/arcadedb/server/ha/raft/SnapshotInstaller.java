@@ -702,21 +702,27 @@ public final class SnapshotInstaller {
    * not expected to overlap on a single database. If that assumption is ever broken, two concurrent
    * installs could both pass the {@code existsDatabase} check and the second {@code close} would see an
    * already-closed instance.
-   *
-   * @return {@code true} when a registered database was closed and deregistered, {@code false} when there was
-   * nothing registered under that name. The install call sites reopen unconditionally - an install's whole purpose
-   * is to leave the database registered and serving - but the crash-recovery pass reopens only what it closed, so
-   * that a directory {@code ArcadeDBServer.loadDatabases} deliberately deferred at startup is not registered by the
-   * repair (issue #7530).
+   * <p>
+   * The crash-recovery pass needs the same close with different error handling and needs to know whether anything
+   * was closed, so it goes through {@link #closeRegisteredDatabaseForRepair} instead; both end in
+   * {@link #closeAndDeregister}.
    */
-  private static boolean closeLocalDatabaseIfOpen(final ArcadeDBServer server, final String databaseName) {
-    if (!server.existsDatabase(databaseName))
-      return false;
+  private static void closeLocalDatabaseIfOpen(final ArcadeDBServer server, final String databaseName) {
+    if (server.existsDatabase(databaseName))
+      closeAndDeregister(server, (DatabaseInternal) server.getDatabase(databaseName), databaseName);
+  }
 
-    final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
+  /**
+   * Closes a resolved local instance and takes it out of the server registry - the mutating half of
+   * {@link #closeLocalDatabaseIfOpen}, shared with {@link #closeRegisteredDatabaseForRepair}.
+   * <p>
+   * Closes the embedded instance ({@code getEmbedded().close()}) rather than the wrapper: every caller is doing a
+   * local file swap or repair, which must not carry the HA wrapper's replicated-close semantics.
+   */
+  private static void closeAndDeregister(final ArcadeDBServer server, final DatabaseInternal db,
+      final String databaseName) {
     db.getEmbedded().close();
     server.removeDatabase(databaseName);
-    return true;
   }
 
   /**
@@ -1062,36 +1068,50 @@ public final class SnapshotInstaller {
   }
 
   /**
-   * {@link #closeLocalDatabaseIfOpen} for the crash-recovery pass, which cannot let one unopenable database abort
-   * the scan of every other one (issue #7530).
+   * {@link #closeLocalDatabaseIfOpen} for the crash-recovery pass, which cannot let one database that will not
+   * <i>resolve</i> abort the scan of every other one (issue #7530).
    * <p>
    * {@code closeLocalDatabaseIfOpen} resolves the instance through {@link ArcadeDBServer#getDatabase}, and that
    * throws {@code DatabaseNotAvailableException} for a database that is registered but <i>closed</i> while the
-   * {@code .snapshot-pending} marker is on disk - the marker refusal lives in the slow path, which a closed entry
-   * falls into. Letting it propagate would abandon the pass, and with it every marker it had not reached yet: those
-   * databases stay unopenable until the next restart, which is a strictly worse outcome than the one being guarded
-   * against.
+   * {@code .snapshot-pending} marker is on disk - the marker refusal lives in the slow path, which only a
+   * {@code null} or closed entry falls into. Letting that propagate would abandon the pass, and with it every
+   * marker it had not reached yet: those databases stay unopenable until the next restart, which is worse than
+   * the state being repaired.
    * <p>
-   * Proceeding is safe in that case rather than merely expedient. The lookup only refuses an entry that is already
-   * closed - an open one is returned by the fast path, or by the slow path's "already registered and open" arm,
-   * without the directory ever being stat-ed - so there are no handles into the directory to move files under. The
-   * registry lock is held for the whole repair either way, so nothing can open it while the files move, and
-   * {@code loadDatabases(true)} and the next {@code getDatabase} pick the entry up once the marker is gone.
+   * Proceeding past a failed <b>lookup</b> is safe rather than merely expedient, and the reasoning is what bounds
+   * this catch to the lookup alone. A registered, open entry is returned without the lookup ever consulting the
+   * marker or the filesystem: by the lock-free fast path when the server is ONLINE, and otherwise by the locked
+   * path, whose {@code db == null || !db.isOpen()} guard it fails. So a throwing lookup means the entry is not
+   * open, and an entry that is not open holds no handles in the directory about to be repaired. This call holds
+   * {@link ArcadeDBServer#getDatabasesLock()} throughout, so nothing can open it meanwhile, and
+   * {@code loadDatabases(true)} and the next {@code getDatabase} pick the stale entry up once the marker is gone.
+   * <p>
+   * A failure of the <b>close</b> itself is deliberately NOT caught here. That one leaves a database registered
+   * and open, and swallowing it would put this pass back to renaming files under exactly that - the defect this
+   * whole change exists to remove. It propagates out of the pass instead, loudly, leaving the marker on disk for
+   * the next repair to find.
    *
    * @return {@code true} only when this call closed and deregistered a live instance, i.e. when the caller owes a
    * matching reopen
    */
   private static boolean closeRegisteredDatabaseForRepair(final ArcadeDBServer server, final String databaseName) {
+    if (!server.existsDatabase(databaseName))
+      return false;
+
+    final DatabaseInternal db;
     try {
-      return closeLocalDatabaseIfOpen(server, databaseName);
+      db = (DatabaseInternal) server.getDatabase(databaseName);
     } catch (final Exception e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-          "Could not close database '%s' before repairing its interrupted snapshot swap: %s. It is registered but "
-              + "not currently openable, so it holds no files in the directory being repaired; the repair proceeds "
-              + "under the registry lock and leaves the database for the next open to pick up once the '%s' marker "
-              + "is cleared", e, databaseName, e.getMessage(), SNAPSHOT_PENDING_FILE);
+          "Database '%s' is registered but did not resolve before repairing its interrupted snapshot swap: %s. Only "
+              + "an entry that is not open can fail to resolve, so it holds no files in the directory being "
+              + "repaired; the repair proceeds under the registry lock and leaves the entry for the next open to "
+              + "pick up once the '%s' marker is cleared", e, databaseName, e.getMessage(), SNAPSHOT_PENDING_FILE);
       return false;
     }
+
+    closeAndDeregister(server, db, databaseName);
+    return true;
   }
 
   private static void recoverSingleDatabase(final Path dbDir) {

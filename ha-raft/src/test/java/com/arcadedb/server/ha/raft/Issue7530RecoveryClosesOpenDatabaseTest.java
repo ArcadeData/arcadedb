@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
@@ -247,6 +248,44 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
 
     assertThat(server.isSnapshotInstallInProgress())
         .as("the window closes when its own holder releases it").isFalse();
+  }
+
+  /**
+   * A database that is registered but already <b>closed</b> while its marker is on disk cannot be resolved at all:
+   * {@code getDatabase} sends a closed entry down its locked path, where the {@code .snapshot-pending} refusal
+   * lives, and throws. That must not abandon the pass - every marker it had not reached yet would stay on disk,
+   * leaving those databases unopenable until the next restart, which is worse than the state being repaired.
+   * <p>
+   * It is also the one case where the repair proceeds without having closed anything, and it is safe precisely
+   * because the entry that failed to resolve is by definition not open, so it holds no files in the directory.
+   */
+  @Test
+  @Timeout(180)
+  void aRegisteredButUnresolvableDatabaseDoesNotAbandonTheWholePass(@TempDir final Path root) throws Exception {
+    final Path databasesDir = startServer(root);
+
+    // Registered and then closed underneath the registry, without deregistering: exactly the shape getDatabase
+    // refuses once the marker is on disk.
+    final ServerDatabase live = server.createDatabase(DB_NAME, ComponentFile.MODE.READ_WRITE);
+    live.getSchema().createDocumentType(ORIGINAL_TYPE);
+    ((DatabaseInternal) server.getDatabase(DB_NAME)).getEmbedded().close();
+    assertThat(server.existsDatabase(DB_NAME)).as("precondition: still registered").isTrue();
+
+    final Path dbDir = databasesDir.resolve(DB_NAME);
+    final Path snapshotNew = dbDir.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR);
+    Files.createDirectories(snapshotNew);
+    Files.writeString(snapshotNew.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+    Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
+
+    // A second marked directory, reached only if the first one did not abandon the scan.
+    final Path secondDir = stageSyntheticInterruptedSwap(databasesDir);
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir, server);
+
+    assertThat(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE))
+        .as("the unresolvable database was still repaired").doesNotExist();
+    assertThat(secondDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE))
+        .as("the pass went on to the next marked directory instead of abandoning the scan").doesNotExist();
   }
 
   // ---------------------------------------------------------------------------------------------------------------

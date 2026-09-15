@@ -123,6 +123,7 @@ ha-raft/.../ArcadeStateMachine.java:557:        SnapshotInstaller.recoverPending
 | Concurrent `install` of *another* database while the pass flips the node-wide 503 flag | **yes** - the flag became a depth counter | yes - `theInstallWindowSurvivesAPassThatOpensAndClosesItAlongside` |
 | `recoverPendingSnapshotSwaps` -> `.acquire-*` staging-dir deletion | **argued** | - |
 | `acquireNewDatabase` -> `deleteDirectoryIfExists(dbPath)` / `publishStaging` | **argued** | - |
+| Registered but *unresolvable* entry (registered + closed + marked) on the repaired path | **yes** - the lookup failure is caught, the pass continues | yes - `aRegisteredButUnresolvableDatabaseDoesNotAbandonTheWholePass` |
 | `recoverPendingSnapshotSwaps(Path)` one-argument overload | **argued** | yes - `recoveryWithoutAServerStillReconcilesTheDirectory` (#7449, untouched) |
 
 **Argued rows, with evidence:**
@@ -166,3 +167,98 @@ request, so the 503 window is live. `getDatabasesLock()` is the same monitor `ge
 - A database registered but already **closed** when the pass reaches it is not reopened by the repair,
   because the repair reopens only what it closed. `loadDatabases(true)` and the next `getDatabase` pick
   it up once the marker is gone. See the log line in `closeRegisteredDatabaseForRepair`.
+
+
+## Adversarial pass
+
+The skill spawns a `general-purpose` subagent for this. **No `Task` tool is available in this
+environment**, so the pass was run by the author against the committed diff rather than by a reader who
+had not been convinced. That is weaker and is recorded as such. Findings:
+
+1. **The catch around the close was too wide.** *Real, fixed here.* The first cut wrapped the whole of
+   `closeLocalDatabaseIfOpen` in a `catch (Exception)`. The justification written next to it - "only an
+   entry that is already closed can fail" - is true of the *lookup* and false of the *close*: a
+   `getEmbedded().close()` that threw would have been swallowed, leaving the database registered and
+   open, and the repair would have gone on to rename files underneath it. That is the exact defect this
+   change exists to remove, reintroduced by its own error handling. Narrowed to the lookup
+   (`closeRegisteredDatabaseForRepair`); a failing close now propagates out of the pass, loudly, with
+   the marker left on disk. `aRegisteredButUnresolvableDatabaseDoesNotAbandonTheWholePass` covers the
+   arm that is still caught, and the surefire output confirms it reaches that branch rather than passing
+   for another reason:
+
+   ```
+   WARNI [SnapshotInstaller] Database 'recov7530' is registered but did not resolve before repairing its
+   interrupted snapshot swap: ... an interrupted HA snapshot install left '.snapshot-pending' ...
+   ```
+
+2. **"The lookup only refuses a closed entry" was an exhaustive claim with no proof.** *Real, fixed
+   here.* Now argued from the code in the javadoc: an open, registered entry is returned by the
+   lock-free fast path when ONLINE, and otherwise by the locked path, whose `db == null || !db.isOpen()`
+   guard it fails - neither consults the marker. `db == null` cannot occur because `existsDatabase`
+   was true and `databasesLock` is held across both calls.
+
+3. **`closeLocalDatabaseIfOpen` was changed to return a boolean nothing read.** *Real, fixed here.* Both
+   install call sites ignore it. It is back to `void`, and the mutating half both paths share is
+   `closeAndDeregister`.
+
+4. **`.acquire-*` cleanup runs with no lock.** *Not real.* `ACQUIRE_STAGING_PREFIX` is `".acquire-"`
+   and `ArcadeDBServer.RESERVED_DATABASE_PREFIX` is `"."`, so `isReservedDatabaseName` is true for
+   every such directory and `loadDatabases` skips it; no server resolves a database to that path.
+   Nothing registered, nothing to close.
+
+5. **The lock is held across an unbounded file move.** *Not real as a defect.* `swapAndReopen` and
+   `reconcileRetainedBackup` have held `databasesLock` across the identical move since #4832. Matching
+   them is the point.
+
+6. **`server != null` with a null `BackupCoordinator` now takes the registry lock where it previously
+   did not.** *Real, accepted.* `ArcadeDBServer.backupCoordinator` is `final` and initialised inline, so
+   this is a test-only shape; the whole `ha-raft` suite (1490 tests) is green, so no test passes a stub
+   that would NPE on `getDatabasesLock()`.
+
+## Test results
+
+```
+$ mvn -o -pl ha-raft test -Dtest=Issue7530RecoveryClosesOpenDatabaseTest
+Tests run: 6, Failures: 0, Errors: 0, Skipped: 0
+
+$ mvn -o -pl ha-raft test -DexcludedGroups=benchmark,slow,vector
+Tests run: 1490, Failures: 2, Errors: 0, Skipped: 0
+```
+
+The two failures are `ArcadeStateMachinePerDatabaseHaltTest`, **red on `main` before this branch** -
+reproduced on a clean `origin/main` worktree at `6c23ce74e3` and filed as **#7630**. Nothing in this
+diff touches the apply path they exercise.
+
+Before the fix, 3 of the 6 new tests failed:
+
+```
+Issue7530RecoveryClosesOpenDatabaseTest.theRepairClosesAndDeregistersARegisteredOpenDatabaseAndReopensItAfterwards:110
+  [the database was closed and deregistered before its files were moved] expected false but was true
+Issue7530RecoveryClosesOpenDatabaseTest.theRepairDeflectsHttpClientsWhileItMovesFiles:185
+  [HTTP clients are deflected with a 503 while the files are being moved] expected true but was false
+Issue7530RecoveryClosesOpenDatabaseTest.theRepairHoldsTheRegistryLockWhileItMovesFiles:155
+  [a concurrent registry operation is blocked while the repair moves files] expected false but was true
+```
+
+The other two are guards against getting the fix's two subtle choices wrong rather than against the
+original bug, so they pass on unmodified code. Both were proved able to fail by temporarily sabotaging
+the choice they guard - making the reopen unconditional, and reverting the holder count to a boolean -
+which turned both red with their own messages, then reverted.
+
+## Impact
+
+- HA nodes only. Standalone servers never construct `ArcadeStateMachine`, so the repaired path never
+  runs for them. The `ArcadeDBServer` change is behaviour-neutral for a single holder.
+- The repair of one database now blocks `getDatabase`/`createDatabase` for *every* database on the node
+  for the duration of that one directory's repair, and answers HTTP with 503 for the same window. That
+  is the cost of the exclusion, and the per-database (rather than per-pass) granularity is what keeps it
+  to one directory at a time.
+
+## Recommendations
+
+- The pre-existing red `ArcadeStateMachinePerDatabaseHaltTest` (#7630) means the default `test` lane is
+  not running that class on `main`. Worth finding out why before it hides a real regression.
+- `isSnapshotInstallInProgress` is consulted by HTTP only. If the 503 window is meant to be a wire-level
+  contract rather than an HTTP one, the other wire protocols need the same check - out of scope here,
+  and noted under residual risk above rather than filed, because it is a design question about what the
+  window is for rather than a defect.
