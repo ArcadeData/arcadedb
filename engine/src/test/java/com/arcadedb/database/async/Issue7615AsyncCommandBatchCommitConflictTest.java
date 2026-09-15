@@ -19,6 +19,7 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -403,6 +404,62 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
     assertThat(executorWideErrors.get()).as("the executor-wide callback still fires, unchanged").isGreaterThanOrEqualTo(1);
 
     // The actual fix: all 3 commands buffered ahead of the park task are told their own onError too.
+    assertThat(perCommandErrors).hasSize(3);
+    for (final Exception e : perCommandErrors)
+      assertThat(e).isInstanceOf(ConcurrentModificationException.class);
+
+    database.transaction(() -> assertThat(database.countType(TYPE, true)).isZero());
+  }
+
+  /**
+   * Code review flagged one more site: {@code AsyncThread#executeTask}'s own generic catch, reached whenever a
+   * task's {@code execute()} lets an exception escape uncaught - several task types (e.g. the graph edge-creation
+   * ones) have no internal try/catch at all. Before this, that rollback destroyed every command already buffered in
+   * {@code pendingBatchCommands} from earlier in the same batch with nobody but the executor-wide callback ever
+   * told - the exact "already said success, then silently lost" shape #7615 is about, just triggered by a sibling
+   * task's own failure instead of a periodic-boundary commit conflict.
+   */
+  @Test
+  void aSiblingTaskThrowingUncaughtStillNotifiesEveryEarlierBufferedCommand() throws Exception {
+    database.async().setParallelLevel(1); // deterministic: the failing task must land on the same worker
+    database.async().setCommitEvery(1_000); // large enough that only the sibling task's failure is in play
+
+    final AtomicInteger executorWideErrors = new AtomicInteger();
+    database.async().onError(e -> executorWideErrors.incrementAndGet());
+
+    final List<Exception> perCommandErrors = new CopyOnWriteArrayList<>();
+
+    for (int i = 0; i < 3; i++) {
+      final AsyncResultsetCallback cb = new AsyncResultsetCallback() {
+        @Override
+        public void onComplete(final ResultSet rs) {
+        }
+
+        @Override
+        public void onError(final Exception e) {
+          perCommandErrors.add(e);
+        }
+      };
+      database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", cb, i);
+    }
+
+    // A minimal stand-in for CreateEdgeAsyncTask and its siblings: no try/catch of its own, exactly the shape
+    // that reaches executeTask()'s generic catch rather than any of this PR's own notify/retry machinery.
+    final DatabaseAsyncTask throwingTask = new DatabaseAsyncTask() {
+      @Override
+      public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
+        throw new ConcurrentModificationException("simulated conflict with no local handling at all");
+      }
+    };
+
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) database.async();
+    assertThat(async.scheduleTask(async.getBestSlot(), throwingTask, true, 0)).isTrue();
+
+    database.async().waitCompletion();
+
+    assertThat(executorWideErrors.get()).as("the executor-wide callback still fires, unchanged").isGreaterThanOrEqualTo(1);
+
+    // The actual fix: all 3 commands buffered ahead of the throwing task are told their own onError too.
     assertThat(perCommandErrors).hasSize(3);
     for (final Exception e : perCommandErrors)
       assertThat(e).isInstanceOf(ConcurrentModificationException.class);
