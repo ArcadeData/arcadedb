@@ -65,6 +65,14 @@ public class FullBackupFormat extends AbstractBackupFormat {
    */
   private static final long COMPACTION_PAUSE_TIMEOUT_MS = 60_000L;
 
+  /**
+   * Whether this attempt has written a non-empty {@code schema.json} entry, set by the two methods that append
+   * entries ({@link #compressEntry} and {@link #compressFile}) and checked once by {@link #writeArchive} before
+   * the central directory is written. See {@link #checkArchiveCarriesTheSchema()} for why the archive is asked
+   * rather than the filesystem, and {@link #writeArchive} for why it is reset per attempt.
+   */
+  private boolean schemaArchived;
+
   private interface BackupCallback {
     void backup(BackupArchiveWriter archive) throws Exception;
   }
@@ -327,6 +335,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize),
         FileUtils.getSizeAsString(compressedSize), origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
+    recordArchivedEntry(entryName, origSize);
     return origSize;
   }
 
@@ -352,11 +361,51 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
       logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize),
           FileUtils.getSizeAsString(compressedSize), origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
+      recordArchivedEntry(inputFile.getName(), origSize);
       return origSize;
     }
 
+    // STILL NOT AN ERROR HERE. A FILE THAT IS NOT THERE IS SKIPPED EXACTLY AS BEFORE - configuration.json ONLY
+    // EXISTS ONCE A SETTING HAS BEEN PERSISTED, AND A COMPONENT FILE CAN BE DROPPED WHILE THE ENUMERATION RUNS.
+    // WHAT CHANGED IN #7464 IS THAT THE SET OF ENTRIES IS CHECKED AFTERWARDS, ONCE, IN writeArchive
     logger.logLine(2, " not found");
     return 0;
+  }
+
+  /**
+   * Notes an entry that made it into the archive, for {@link #checkArchiveCarriesTheSchema()} to read.
+   * <p>
+   * NON-EMPTY, NOT MERELY PRESENT. {@code LocalSchema.readConfiguration()} treats a zero-length
+   * {@code schema.json} exactly as it treats a missing one - it falls back to {@code schema.prev.json}, which
+   * an archive does not carry (issue #7637) - so a zero-byte entry restores to a database that opens cleanly
+   * with an EMPTY schema and reports no error anywhere. That is the quieter half of the same defect, and a
+   * presence check would let it through.
+   */
+  private void recordArchivedEntry(final String entryName, final long origSize) {
+    if (origSize > 0 && LocalSchema.SCHEMA_FILE_NAME.equals(entryName))
+      schemaArchived = true;
+  }
+
+  /**
+   * Refuses an archive that would not restore to a database, which is what issue #7464 reported: both paths
+   * treated an absent {@code schema.json} as "nothing to archive" and completed, and the archive they produced
+   * satisfied neither arm of {@code DatabaseFactory.exists()} - it looks for {@code schema.json} and then for
+   * {@code schema.prev.json}, and neither path archives the latter. The restored directory was therefore not
+   * recognised as a database at all, from a backup that had printed "Full backup completed".
+   * <p>
+   * HERE AND NOT AT EACH READER, for the reason the issue gives. Failing inside
+   * {@code PageManager.captureConfigurationFiles} does not work: a raw {@code IOException} there bypasses the
+   * {@code PageSnapshotException} retry, and raising a {@code PageSnapshotException} instead just retries onto
+   * {@code backupFromFrozenFiles}, which reads the same missing file and skips it just as quietly. Asking the
+   * archive what it actually contains covers both paths with one check, and covers them at the only moment at
+   * which the answer is final.
+   */
+  private void checkArchiveCarriesTheSchema() {
+    if (!schemaArchived)
+      throw new BackupException(
+          ("Backup of database '%s' aborted: the archive would carry no '%s' (missing or empty in '%s'), and a "
+              + "database restored without it is not recognised as a database at all").formatted(database.getName(),
+              LocalSchema.SCHEMA_FILE_NAME, database.getDatabasePath()));
   }
 
   private int resolveSetting(final Integer explicitValue, final GlobalConfiguration fallback) {
@@ -385,6 +434,11 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
   private void writeArchive(final File backupFile, final int compressionLevel, final int compressionThreads,
       final int maxMBPerSecond, final AtomicReference<Exception> failure, final BackupCallback callback) throws Exception {
+    // PER ATTEMPT, NOT PER BACKUP. A snapshot attempt that archived schema.json and then lost its window retries
+    // on the frozen-files path (see the PageSnapshotException branch in backupDatabase), and that second attempt
+    // writes a brand new archive from scratch - so what the abandoned one contained says nothing about it
+    schemaArchived = false;
+
     encryptFile(backupFile, out -> {
       final IoThrottler throttler = new IoThrottler(maxMBPerSecond);
       final BackupArchiveWriter archive = compressionThreads > 0 ?
@@ -407,6 +461,12 @@ public class FullBackupFormat extends AbstractBackupFormat {
           // SURFACE IT HERE RATHER THAN ONLY AFTER writeArchive RETURNS, SO THE STREAM-CLOSING BELOW KNOWS THE BACKUP
           // FAILED AND CANNOT LET ITS OWN close() FAILURE TAKE THE ROOT CAUSE'S PLACE
           throw failure.get();
+
+        // AFTER THE FAILURE CHECK ABOVE, NOT BEFORE: A BACKUP THAT DIED HALFWAY IS ALSO MISSING ENTRIES, AND ITS
+        // ROOT CAUSE IS THE ONE WORTH REPORTING. ONLY A RUN THAT OTHERWISE SUCCEEDED GETS TOLD ITS ARCHIVE WOULD
+        // NOT RESTORE. THROWN HERE SO THE abort() BELOW RUNS: NO CENTRAL DIRECTORY IS WRITTEN, SO EVEN IF THE
+        // CALLER'S delete() OF THE PARTIAL FILE FAILS, NOTHING WILL RESTORE FROM WHAT IS LEFT
+        checkArchiveCarriesTheSchema();
 
         archive.close();
         terminated = true;
