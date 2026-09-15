@@ -81,12 +81,12 @@ public class AlterPropertyStatement extends DDLStatement {
       result.setProperty("newValue", finalValue);
     } else if (settingName != null) {
       final String setting = settingName.getStringValue().toLowerCase(Locale.ENGLISH);
-      // NAME is read the same way DEFAULT is: as the setting's raw source text rather than an evaluated expression,
-      // so a bare identifier (`NAME newName`, mirroring ALTER TYPE ... NAME) is taken literally rather than resolved
-      // as a variable reference.
-      final Object finalValue =
-          "default".equalsIgnoreCase(setting) || "name".equalsIgnoreCase(setting) ? settingValue.toString()
-              : settingValue.execute((Identifiable) null, context);
+      // NAME is read as an identifier - getDefaultAlias() resolves a bare `NAME newName` (mirroring ALTER TYPE ...
+      // NAME) or a backtick-quoted `NAME \`odd name\`` to the plain, unescaped name - rather than as an evaluated
+      // expression, so it is taken literally rather than resolved as a variable reference, and any backtick
+      // quoting is unescaped instead of being stored as part of the property name.
+      final Object finalValue = "name".equalsIgnoreCase(setting) ? settingValue.getDefaultAlias().getStringValue()
+          : "default".equalsIgnoreCase(setting) ? settingValue.toString() : settingValue.execute((Identifiable) null, context);
 
       final Object oldValue;
 

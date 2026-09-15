@@ -120,6 +120,37 @@ class Issue7589PropertyRenameTest extends TestHelper {
     assertThat(database.getSchema().getType("Person").existsProperty("name")).isTrue();
   }
 
+  /**
+   * {@link LocalDocumentType#getAllIndexes(boolean)} only ever walks up (this type and its super types), so an
+   * index a SUBTYPE declares on an inherited property is invisible to it. The rename must still refuse: otherwise
+   * the subtype's index is left bound to the old name while every write after the rename lands under the new one.
+   */
+  @Test
+  void renamingAPropertyIndexedOnlyByASubtypeIsRefused() {
+    createType();
+    database.command("sql", "CREATE DOCUMENT TYPE Employee");
+    database.command("sql", "ALTER TYPE Employee SUPERTYPE +Person");
+    database.command("sql", "CREATE INDEX ON Employee (name) NOTUNIQUE");
+
+    assertThatThrownBy(() -> database.getSchema().getType("Person").getProperty("name").rename("fullName"))
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("index");
+
+    assertThat(database.getSchema().getType("Person").existsProperty("name")).isTrue();
+  }
+
+  @Test
+  void sqlAlterPropertyNameAcceptsABacktickQuotedNameWithSpaces() {
+    createType();
+
+    database.command("sql", "ALTER PROPERTY Person.name NAME `full name`");
+
+    final DocumentType type = database.getSchema().getType("Person");
+    assertThat(type.existsProperty("name")).isFalse();
+    assertThat(type.existsProperty("full name")).isTrue();
+    assertThat(type.getProperty("full name").isMandatory()).isTrue();
+  }
+
   @Test
   void renamingADeclaredTimeSeriesColumnIsRefused() {
     database.command("sql", "CREATE TIMESERIES TYPE Reading TIMESTAMP ts TAGS (sensor STRING) FIELDS (value DOUBLE)");
