@@ -510,6 +510,34 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     }
   }
 
+  /**
+   * {@code Database.countType()} sums bucket record counts, and a LIGHTWEIGHT edge allocates none - so it answers 0
+   * for such a type no matter how many edges it holds ({@link #theCountAgreesWithTheScan} pins exactly this). The
+   * "not empty, needs UNSAFE" guard in {@code TruncateTypeStatement} reads that same count, so a LIGHTWEIGHT edge
+   * type under a real {@code E} hierarchy (unlike this class's other fixtures, none of which extend {@code E} or
+   * {@code V} and so never exercise this guard at all) must not be able to bypass it just because the count it
+   * relies on lies for this storage shape (review finding on #7481).
+   */
+  @Test
+  void truncateOnALightweightEdgeTypeUnderARealEHierarchyStillRequiresUnsafeWhenNotEmpty() {
+    database.transaction(() -> {
+      database.getSchema().createEdgeType("E");
+      database.getSchema().buildEdgeType().withName("CiteUnderE").withLightweight(true).withSuperType("E").create();
+    });
+
+    final RID[] works = newWorks(2);
+    connect("CiteUnderE", works[0], works[1]);
+
+    assertThatThrownBy(() -> database.command("sql", "truncate type CiteUnderE").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("not empty")
+        .hasMessageContaining("UNSAFE");
+    assertThat(query("select from CiteUnderE")).as("a refused TRUNCATE must not have deleted anything").hasSize(1);
+
+    database.command("sql", "truncate type CiteUnderE unsafe").close();
+    assertThat(query("select from CiteUnderE")).isEmpty();
+  }
+
   /** A regular edge type truncates as it always did. */
   @Test
   void truncateOnARegularEdgeTypeIsUnchanged() {
