@@ -756,6 +756,73 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
+   * Renames a property in place: only this type's own record of the property's name changes ({@link #properties}
+   * and, through {@link #recordFileChanges}, {@code schema.json}). See {@link Property#rename(String)} for the
+   * full contract - in particular, existing documents are not touched or revisited: a value already written under
+   * {@code propertyName} keeps reading back under that name, and only a write made after this call lands under
+   * {@code newPropertyName} (issue #7589).
+   * <p>
+   * {@code name} is one of {@link AbstractProperty}'s final fields, so the rename is a swap: a new {@link
+   * LocalProperty} is built under the new name with every other attribute copied across, and it replaces the old
+   * one in {@link #properties}. The old {@code Property} handle is stale from this point on, the same way a
+   * dropped property's handle already is.
+   * <p>
+   * Refused, mirroring {@link #dropProperty}, when an index stands on the property: the index's own definition
+   * names the property by the old name, and propagating the rename into every index type/file naming scheme is
+   * out of scope here - drop the index, rename, then recreate it on the new name. Also refused when the property
+   * is a declared TIMESERIES column, for the same reason {@link #dropProperty} refuses one: the write path
+   * resolves those by the fixed name in {@code LocalTimeSeriesType.tsColumns}, which this method does not touch.
+   *
+   * @param propertyName    the property's current name
+   * @param newPropertyName the name it should have from now on
+   *
+   * @return the renamed property, under its new name
+   */
+  @Override
+  public Property renameProperty(final String propertyName, final String newPropertyName) {
+    checkForSchemaMutation();
+
+    final LocalProperty property = (LocalProperty) properties.get(propertyName);
+    if (property == null)
+      throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' because it does not exist");
+
+    if (propertyName.equals(newPropertyName))
+      return property;
+
+    if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
+      throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name
+          + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it under its "
+          + "declared name. Drop the whole type to change the column");
+
+    if (properties.containsKey(newPropertyName))
+      throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' to '"
+          + newPropertyName + "' because a property with that name already exists");
+
+    if (getPolymorphicPropertyNames().contains(newPropertyName))
+      throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' to '"
+          + newPropertyName + "' because it is already defined in a super type");
+
+    for (final TypeIndex index : getAllIndexes(true)) {
+      if (index.getPropertyNames().contains(propertyName))
+        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name
+            + "' because it is used by index '" + index.getName()
+            + "'. Drop the index first, rename the property, then recreate the index on the new name");
+    }
+
+    final LocalProperty renamed = property.copyWithName(newPropertyName);
+
+    return recordFileChanges(() -> {
+      properties.remove(propertyName);
+      properties.put(newPropertyName, renamed);
+      if (propertiesWithDefaultDefined.get().contains(propertyName)) {
+        setPropertyHasDefault(propertyName, false);
+        setPropertyHasDefault(newPropertyName, true);
+      }
+      return renamed;
+    });
+  }
+
+  /**
    * The single point of maintenance for {@link #propertiesWithDefaultDefined}. Every mutation that can change whether
    * an own property declares a DEFAULT routes here: {@link LocalProperty#setDefaultValue} when one is set, changed or
    * cleared, and {@link #dropProperty} when the property itself goes away.
