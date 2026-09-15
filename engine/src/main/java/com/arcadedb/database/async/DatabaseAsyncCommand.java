@@ -140,6 +140,12 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
         } catch (final Exception re) {
           LogManager.instance().log(this, Level.WARNING, "Error on rolling back active transaction", re);
         }
+        // #7615: this rollback destroys the WHOLE shared batch, not just this command's own write - every
+        // sibling command buffered earlier in the same batch already fired its own onComplete and is about
+        // to have that write silently discarded too, with nothing telling them otherwise (unlike this
+        // command's own failure, reported right below via notifyError() - a per-command callback only,
+        // this local-failure path never reaches the executor-wide onError() either, unchanged).
+        async.notifyPendingBatchCommandsAndAbandon(e);
       }
 
       notifyError(e);
