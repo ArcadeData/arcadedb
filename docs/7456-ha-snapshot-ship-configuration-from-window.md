@@ -160,3 +160,32 @@ persuaded. That is a weaker pass and is recorded as such. Four candidate finding
 compacted Raft log; the window arm is taken whenever `arcadedb.pageSnapshotEnabled` is on, which is the default.
 `RaftFullSnapshotResyncIT` drives the whole path over HTTP with a real cluster, so the changed code is not
 reached only by the new unit tests.
+
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/7636
+
+## Review cycles
+
+### Cycle 1 - `cae3035f`
+
+`claude` reviewed and found no functional bug and nothing blocking ("Solid, well-tested change with honest
+documentation of its residual risk surface"). CodeRabbit posted its "review in progress" placeholder and had
+still not produced a review 10 minutes later; it re-reviews on every push, so cycle 2 picks it up.
+
+Applied:
+
+- a dedicated regression test for the symlink behaviour change the reviewer said was argued but unguarded -
+  `theWindowPathShipsASymlinkedSchemaThatTheFallbackStillRefuses`, which drives the fallback's refusal and the
+  window's shipping in one test. It failed on its first run and caught a real fixture bug (a relative symlink
+  target resolves against the LINK's directory, so the link was broken and the window saw an absent file);
+- the `java.util.function.BiConsumer` import moved back into alphabetical order.
+
+Skipped or deferred, with rationale: `docs/review-deferred-cae3035f.md`. In short - the t0-barrier gap has no
+synchronisation point a test could hold it open at (the same reason `Issue6114LockFreeBackupIT` gives for the
+same gap), the spurious-WARNING item has nothing in this repository to change, and the reviewer explicitly
+asked a maintainer, not the loop, to sign off on the two deliberate behaviour changes.
+
+The entry-point coverage table above is unchanged by this cycle: no new entry point was found, and the symlink
+test guards behaviour on two rows that were already covered.

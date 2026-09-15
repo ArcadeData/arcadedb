@@ -36,6 +36,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -266,6 +268,57 @@ class Issue7456SnapshotShipConfigurationFromWindowTest {
       assertThat(ddlCompletedInsideTheTransfer.get())
           .as("the fallback still pins the configuration with the read lock, so the DDL waits for the transfer")
           .isFalse();
+    }
+  }
+
+  /**
+   * The behaviour change the review asked to see pinned rather than only argued: on the WINDOW path a symlinked
+   * {@code schema.json} is now shipped, because the window holds bytes {@code Files.readAllBytes} read through the
+   * link at t0, while {@code SnapshotHttpHandler.addFileToZip}'s symlink refusal survives on the fallback branch
+   * only.
+   * <p>
+   * Shipping it is the intended outcome. The refusal exists to keep an archive entry from carrying content read
+   * from an attacker-chosen path; here the entry name is one of two fixed ones and the bytes are the leader's own
+   * live schema, which is what the ship exists to transfer - whereas dropping the entry hands the follower a
+   * database with no schema at all. {@code FullBackupFormat} has behaved this way on its window path since #6114.
+   */
+  @Test
+  void theWindowPathShipsASymlinkedSchemaThatTheFallbackStillRefuses() throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(true);
+
+    try (final Database database = createDatabase()) {
+      final DatabaseInternal db = (DatabaseInternal) database;
+
+      final Path schemaPath = ((LocalSchema) database.getSchema()).getConfigurationFile().toPath();
+      // ABSOLUTE, because a symlink's target is resolved relative to the LINK's own directory: a relative one
+      // here points inside the database directory and the link is simply broken, which the window reports as an
+      // absent file and this test would then "pass" on the fallback assertion alone
+      final Path outsideTarget = new File(DATABASE_PATH).getAbsoluteFile().toPath().getParent()
+          .resolve("snapshot-ship-7456-schema-outside.json");
+      Files.deleteIfExists(outsideTarget);
+      Files.move(schemaPath, outsideTarget);
+      Files.createSymbolicLink(schemaPath, outsideTarget);
+      assertThat(Files.isSymbolicLink(schemaPath)).as("the fixture must really have made it a symlink").isTrue();
+      assertThat(Files.exists(schemaPath)).as("the symlink must resolve, or the window sees an absent file").isTrue();
+
+      try {
+        // FALLBACK: the refusal still applies, so the archive carries configuration.json and nothing else
+        assertThat(archiveConfiguration(db, null))
+            .as("the frozen-files path must keep refusing a symlinked configuration file")
+            .doesNotContainKey(LocalSchema.SCHEMA_FILE_NAME);
+
+        // WINDOW: the bytes were read through the link at t0, so the follower gets a usable schema
+        try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
+          final Map<String, byte[]> archived = archiveConfiguration(db, snapshot);
+          assertThat(archived)
+              .as("the window path ships the linked-to bytes rather than dropping the schema entirely")
+              .containsKey(LocalSchema.SCHEMA_FILE_NAME);
+          assertThat(typeNamesOf(archived.get(LocalSchema.SCHEMA_FILE_NAME))).contains(TYPE);
+        }
+      } finally {
+        Files.deleteIfExists(schemaPath);
+        Files.move(outsideTarget, schemaPath);
+      }
     }
   }
 
