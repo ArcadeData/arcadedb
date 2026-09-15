@@ -219,7 +219,7 @@ public class ArcadeDBServer {
    * directory mid-swap. Every {@link #setSnapshotInstallInProgress} caller pairs its {@code true} with a
    * {@code false} in a {@code finally}, so the depth is balanced.
    */
-  private final       AtomicInteger snapshotInstallsInProgress           = new AtomicInteger(0);
+  private final       AtomicInteger                         snapshotInstallsInProgress           = new AtomicInteger(0);
   private volatile    Function<LocalDatabase, DatabaseInternal> databaseWrapper;
   // Micrometer's global composite registry, the meter binders and the per-tuple timer caches of
   // MicrometerQueryMetricsRecorder/AbstractServerHttpHandler are JVM-wide, while a start()/stop() pair is
