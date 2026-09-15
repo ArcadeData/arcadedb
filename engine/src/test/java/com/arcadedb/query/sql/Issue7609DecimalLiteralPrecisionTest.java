@@ -132,6 +132,12 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
       assertThat(count("SELECT FROM Li WHERE " + column + " > 0.05")).as(column + " > 0.05").isEqualTo(30);
       assertThat(count("SELECT FROM Li WHERE " + column + " BETWEEN 0.05 AND 0.07")).as(column + " between")
           .isEqualTo(30);
+      // IN and NOT IN take the hashed fast path of InListMembership, which keys its operands separately
+      assertThat(count("SELECT FROM Li WHERE " + column + " IN [0.05]")).as(column + " IN [0.05]").isEqualTo(10);
+      assertThat(count("SELECT FROM Li WHERE " + column + " IN [0.05, 0.07]")).as(column + " IN [0.05,0.07]")
+          .isEqualTo(20);
+      assertThat(count("SELECT FROM Li WHERE " + column + " NOT IN [0.05]")).as(column + " NOT IN [0.05]")
+          .isEqualTo(40);
     }
   }
 
@@ -282,6 +288,26 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
   }
 
   /**
+   * The write path had the same widening: coercing a value into a {@code DOUBLE} property with
+   * {@code .doubleValue()} persists the single precision error, where it outlives the statement that wrote it.
+   */
+  @Test
+  void writingAFloatIntoADoublePropertyStoresTheNumberItReads() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Written");
+      database.command("sql", "CREATE PROPERTY Written.d DOUBLE");
+      database.command("sql", "INSERT INTO Written SET d = :v", Map.of("v", 0.05f));
+      database.command("sql", "INSERT INTO Written SET d = 0.05");
+    });
+
+    assertThat(count("SELECT FROM Written WHERE d = 0.05")).as("both records read back as 0.05").isEqualTo(2);
+    try (final ResultSet rs = database.query("sql", "SELECT d FROM Written")) {
+      while (rs.hasNext())
+        assertThat((Object) rs.next().getProperty("d")).isEqualTo(0.05d);
+    }
+  }
+
+  /**
    * {@link BinaryComparator} has two entry points and they have to answer the same: the typed
    * {@code compare(value, type, value, type)} the index cursor walks a range with, and {@code equals()}, which
    * routes through {@link Type#castComparableNumber}. Moving the equality side onto the decimal form would have
@@ -320,13 +346,19 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
   void aBoundNegativeZeroKeepsItsSign() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Zero");
-      database.newDocument("Zero").set("v", -0.0d).save();
-      database.newDocument("Zero").set("v", 0.0d).save();
+      database.newDocument("Zero").set("v", -0.0d).set("sign", "negative").save();
+      database.newDocument("Zero").set("v", 0.0d).set("sign", "positive").save();
     });
 
-    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", -0.0f))).isEqualTo(1);
-    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", -0.0d))).isEqualTo(1);
-    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", 0.0f))).isEqualTo(1);
+    // the count alone would pass even if the sign were dropped, by matching the OTHER record instead, so the
+    // assertion has to name which of the two came back
+    assertThat(matchedSign(-0.0f)).as("bound -0.0f").isEqualTo("negative");
+    assertThat(matchedSign(-0.0d)).as("bound -0.0d").isEqualTo("negative");
+    assertThat(matchedSign(0.0f)).as("bound 0.0f").isEqualTo("positive");
+    assertThat(matchedSign(0.0d)).as("bound 0.0d").isEqualTo("positive");
+
+    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", -0.0f))).as("bound -0.0f matches one").isEqualTo(1);
+    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", 0.0f))).as("bound 0.0f matches one").isEqualTo(1);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -379,6 +411,19 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", sql)) {
       final Object value = rs.next().getProperty("s");
       return value == null ? 0 : ((Number) value).doubleValue();
+    }
+  }
+
+  /**
+   * Binds {@code zero} to the signed-zero query and reports which of the two fixture records answered.
+   *
+   * @param zero the signed zero to bind
+   *
+   * @return the {@code sign} discriminator of the matched record
+   */
+  private String matchedSign(final Number zero) {
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Zero WHERE v = :z", Map.of("z", zero))) {
+      return rs.hasNext() ? rs.next().getProperty("sign") : null;
     }
   }
 

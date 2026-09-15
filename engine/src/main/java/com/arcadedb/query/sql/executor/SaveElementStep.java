@@ -298,7 +298,11 @@ public class SaveElementStep extends AbstractExecutionStep {
     if (value == null)
       return null;
     return switch (targetType) {
-      case DOUBLE -> value instanceof Number n ? n.doubleValue() : Double.parseDouble(value.toString());
+      // ISSUE #7609: A Float WIDENS THROUGH ITS DECIMAL FORM, AS Type.convert() ALREADY DOES. .doubleValue() WOULD
+      // PERSIST THE SINGLE PRECISION ROUNDING ERROR INTO THE DOUBLE PROPERTY, WHERE IT OUTLIVES THE STATEMENT
+      case DOUBLE -> value instanceof Float f ?
+          Type.widenFloat(f) :
+          value instanceof Number n ? n.doubleValue() : Double.parseDouble(value.toString());
       case LONG -> value instanceof Number n ? n.longValue() : Long.parseLong(value.toString());
       case INTEGER -> value instanceof Number n ? n.intValue() : Integer.parseInt(value.toString());
       case FLOAT -> value instanceof Number n ? n.floatValue() : Float.parseFloat(value.toString());
