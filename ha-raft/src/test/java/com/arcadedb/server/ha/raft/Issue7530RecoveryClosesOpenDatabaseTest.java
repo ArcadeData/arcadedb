@@ -146,8 +146,9 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
       }
     }, "registry-lock-probe-7530");
 
+    final AtomicBoolean repairDone = new AtomicBoolean(false);
     final AtomicReference<Throwable> failure = new AtomicReference<>();
-    final Thread repair = startRecovery(databasesDir, new AtomicBoolean(), failure);
+    final Thread repair = startRecovery(databasesDir, repairDone, failure);
     try {
       assertThat(insideRepair.await(60, TimeUnit.SECONDS)).as("the repair reached the in-repair barrier").isTrue();
 
@@ -163,6 +164,7 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
     probe.join(60_000);
     repair.join(60_000);
     assertThat(failure.get()).isNull();
+    assertThat(repairDone.get()).as("the repair ran to completion rather than merely not throwing").isTrue();
   }
 
   /**

@@ -384,3 +384,33 @@ Full suite after the change: `Tests run: 1492, Failures: 2` - the same two pre-e
 `ArcadeStateMachinePerDatabaseHaltTest` failures (#7630).
 
 No deferred items.
+
+
+### Cycle 3 - `12a5d8d774`
+
+Both reviewers came back with no blockers.
+
+- `coderabbitai` re-reviewed, confirmed the `reopenIfReconciled` fix ("reading reconciliation status
+  from the presence of `.snapshot-pending` is stronger than returning an in-memory success value") and
+  **resolved its own thread**. No new inline findings.
+- `claude` traced the claims against the source independently - lock ordering, the "open is reachable"
+  state, the narrowed catch, the atomicity of the holder-count decrement, monitor reentrancy in
+  `closeRegisteredDatabaseForRepair`, and every log format string's argument count - and reported no new
+  correctness issues.
+
+One actionable nit, applied: `theRepairHoldsTheRegistryLockWhileItMovesFiles` passed a throwaway
+`AtomicBoolean` to `startRecovery` and never read it, so the test proved only that the repair did not
+throw. It now asserts the flag after `repair.join()`, which also pins that the repair thread ran to
+completion.
+
+`claude` also noted it could not run Maven in its sandbox and verified statically, so the suite numbers
+in this document come from local runs and from CI rather than from the reviewer.
+
+No deferred items.
+
+## Final state
+
+`clean-approval` - both reviewers reported no blocking findings on `12a5d8d774`, CodeRabbit resolved its
+only thread itself, and the single remaining nit was applied.
+
+**Merge is the developer's decision. This work does not merge the PR.**
