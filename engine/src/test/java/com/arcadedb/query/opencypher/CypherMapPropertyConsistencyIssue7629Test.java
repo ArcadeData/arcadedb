@@ -1,0 +1,170 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.opencypher;
+
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Regression tests for issue #7629: {@code SET n += $p} raised {@code TypeError: InvalidPropertyType} when a
+ * parameter map contained a nested map value, while {@code CREATE (n {m: $m})} silently stored the very same value.
+ * <p>
+ * Real Neo4j refuses a map-valued property everywhere - "Property values can only be of primitive types or arrays
+ * thereof" applies to the stored value regardless of which clause writes it, or whether the map came from a literal
+ * or a bound parameter (confirmed by the pre-existing {@code CypherMergeSetClauseParityIssue6831Test} and
+ * {@code CypherSetFromEntityIssue6832Test}, which already reject the equivalent literal-map forms on SET/MERGE's
+ * {@code ON MATCH SET}). So {@code SET}'s rejection in the reported repro is correct, Neo4j-faithful behaviour, not a
+ * regression: the actual bug is that {@code CreateStep} and {@code MergeStep}'s creation branch never applied the
+ * same check, silently storing a value no other openCypher write clause accepts. These tests pin CREATE and MERGE's
+ * creation branch to the same behaviour as SET/MERGE's SET actions, for both a literal map and a parameter-sourced
+ * one.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class CypherMapPropertyConsistencyIssue7629Test {
+  private Database database;
+
+  @BeforeEach
+  void setUp() {
+    database = new DatabaseFactory("./target/databases/testcypher-7629").create();
+    database.getSchema().createVertexType("R");
+    database.getSchema().createEdgeType("REL");
+  }
+
+  @AfterEach
+  void tearDown() {
+    if (database != null) {
+      if (database.isTransactionActive())
+        database.rollback();
+      database.drop();
+      database = null;
+    }
+  }
+
+  @Test
+  void createRejectsAMapValuedParameterProperty() {
+    final Map<String, Object> mapValue = Map.of("k", 1, "nested", Map.of("deep", true));
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "CREATE (n:R {id: 1, m: $m})", Map.of("m", mapValue))))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+
+    assertThat(database.query("opencypher", "MATCH (n:R) RETURN n").hasNext()).isFalse();
+  }
+
+  @Test
+  void createRejectsALiteralNestedMapProperty() {
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "CREATE (n:R {id: 1, m: {nested: 1}})")))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+  }
+
+  @Test
+  void createRejectsAMapValuedEdgeProperty() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:R {id: 1}), (:R {id: 2})"));
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (a:R {id: 1}), (b:R {id: 2}) CREATE (a)-[r:REL {m: $m}]->(b)", Map.of("m", Map.of("k", 1)))))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+  }
+
+  @Test
+  void createStillAcceptsOrdinaryScalarAndListParameters() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (n:R {id: 1, s: $s, tags: $tags})", Map.of("s", "ok", "tags", List.of("x", "y"))));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:R) RETURN n.s AS s, n.tags AS tags");
+    final var row = rs.next();
+    assertThat(row.<String>getProperty("s")).isEqualTo("ok");
+    assertThat(row.<List<Object>>getProperty("tags")).containsExactly("x", "y");
+  }
+
+  /**
+   * {@code point()} is internally a plain map of coordinate keys (ArcadeDB has no dedicated Geometry runtime type
+   * yet, issue #4870), so a naive "reject every map property" check - the fix above - would also reject a Point,
+   * which real Neo4j treats as a primitive property type. {@link com.arcadedb.function.geo.CypherPoint} exists so
+   * the validator can tell the two apart; this pins that a Point still stores through CREATE (already covered more
+   * broadly by {@code OpenCypherSpatialFunctionsTest} and {@code OpenCypherSpatialFunctionsComprehensiveTest}, which
+   * regressed without it).
+   */
+  @Test
+  void createStillAcceptsAPointValuedProperty() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (n:R {id: 1, loc: point({longitude: 12.5, latitude: 55.6})})"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:R) RETURN n.loc AS loc");
+    final Object loc = rs.next().getProperty("loc");
+    assertThat(loc).isInstanceOf(Map.class);
+    assertThat(((Map<?, ?>) loc).get("latitude")).isEqualTo(55.6);
+  }
+
+  @Test
+  void mergeCreationBranchRejectsAMapValuedParameterProperty() {
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MERGE (n:R {id: 1, m: $m})", Map.of("m", Map.of("k", 1)))))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+
+    assertThat(database.query("opencypher", "MATCH (n:R) RETURN n").hasNext()).isFalse();
+  }
+
+  @Test
+  void mergeCreationBranchRejectsAMapValuedEdgeProperty() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:R {id: 1}), (:R {id: 2})"));
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (a:R {id: 1}), (b:R {id: 2}) MERGE (a)-[r:REL {m: $m}]->(b)", Map.of("m", Map.of("k", 1)))))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+  }
+
+  /**
+   * The exact reported repro: {@code SET n += $p} with a parameter map whose own value is itself a map. This is the
+   * behaviour that reads as a regression against CREATE without the two tests above - it was already correct.
+   */
+  @Test
+  void setStillRejectsAMapValuedParameterPropertyMatchingCreate() {
+    database.transaction(() -> database.command("opencypher", "CREATE (n:R {id: 1})"));
+
+    final Map<String, Object> mapValue = Map.of("k", 1, "nested", Map.of("deep", true));
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (n:R {id: 1}) SET n += $p", Map.of("p", Map.of("m", mapValue)))))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+
+    // Scalars in the same parameter map still work, matching the reported repro's earlier successful step.
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (n:R {id: 1}) SET n += $p", Map.of("p", Map.of("s", "ok"))));
+    final ResultSet rs = database.query("opencypher", "MATCH (n:R {id: 1}) RETURN n.s AS s");
+    assertThat(rs.next().<String>getProperty("s")).isEqualTo("ok");
+  }
+}

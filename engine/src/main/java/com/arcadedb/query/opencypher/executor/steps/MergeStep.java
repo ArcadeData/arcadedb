@@ -1331,7 +1331,7 @@ public class MergeStep extends AbstractExecutionStep {
       final List<Object> keyValues = new ArrayList<>(evaluatedProperties.size() * 2);
       for (final Map.Entry<String, Object> entry : evaluatedProperties.entrySet()) {
         keyValues.add(entry.getKey());
-        keyValues.add(TemporalUtil.toCoreJavaType(entry.getValue()));
+        keyValues.add(CypherValues.coerceAndValidatePropertyValue(entry.getValue()));
       }
       edgeProperties = keyValues.toArray();
     } else
@@ -1349,11 +1349,13 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   /**
-   * Sets properties on a document from a property map.
+   * Sets properties on a document from a property map. Rejects a map property value - {@code MERGE (n {m: $m})}
+   * with {@code $m} a map - exactly like {@link SetClauseApplier} already does for the {@code ON CREATE}/
+   * {@code ON MATCH SET} actions, instead of silently storing it only on the creation branch (issue #7629).
    */
   private void setProperties(final MutableDocument document, final Map<String, Object> properties) {
     for (final Map.Entry<String, Object> entry : properties.entrySet())
-      document.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
+      document.set(entry.getKey(), CypherValues.coerceAndValidatePropertyValue(entry.getValue()));
   }
 
   /**

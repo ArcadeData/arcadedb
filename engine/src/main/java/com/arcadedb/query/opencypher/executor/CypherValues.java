@@ -18,8 +18,15 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.function.geo.CypherPoint;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
+
+import java.util.List;
+import java.util.Map;
+
 /**
- * Comparisons between a value stored on a record and a value a query supplies.
+ * Comparisons and validation shared by every openCypher write clause (CREATE, MERGE, SET) between a value stored on
+ * a record and a value a query supplies.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -42,5 +49,40 @@ public final class CypherValues {
       return numberA.longValue() == numberB.longValue()
           && Double.compare(numberA.doubleValue(), numberB.doubleValue()) == 0;
     return false;
+  }
+
+  /**
+   * Coerces a property value to its stored Java type and rejects the ones a property cannot hold, matching Neo4j's
+   * "Property values can only be of primitive types or arrays thereof". Every openCypher write clause (CREATE, MERGE,
+   * SET) funnels its property values through here so a map - or a list containing one - is refused the same way
+   * regardless of which clause, or which right-hand-side shape (dot property, {@code +=}/{@code =} map, bare
+   * parameter), produced it (issue #7629).
+   * <p>
+   * A {@link CypherPoint} is exempt: Neo4j treats Point as a primitive property type, ArcadeDB just has no dedicated
+   * Geometry runtime type yet (issue #4870) and represents one as a map of coordinate keys under the hood - refusing
+   * it here would reject {@code point()}'s own output, not a user-authored map (issue #7629).
+   */
+  public static Object coerceAndValidatePropertyValue(final Object value) {
+    if (value == null)
+      return null; // a null value is a removal (SET) or simply not stored (CREATE/MERGE), not a stored value
+    final Object coerced = TemporalUtil.toCoreJavaType(value);
+    validatePropertyValue(coerced);
+    return coerced;
+  }
+
+  private static void validatePropertyValue(final Object value) {
+    if (value instanceof List) {
+      for (final Object element : (List<?>) value) {
+        if (element instanceof CypherPoint)
+          continue;
+        if (element instanceof Map)
+          throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not contain map values");
+        if (element instanceof List)
+          validatePropertyValue(element);
+      }
+    } else if (value instanceof CypherPoint) {
+      // allowed: see the class javadoc above
+    } else if (value instanceof Map)
+      throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not be maps");
   }
 }
