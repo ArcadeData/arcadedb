@@ -359,3 +359,42 @@ Follow-ups opened by this work, none of which block the merge:
 | #7646 | `EXPORT`'s reservation count is unbounded by design, so overlapping exports can refuse every restore and expire the HA snapshot install's bounded wait. |
 
 Merge is the developer's.
+
+## CI on the final commit
+
+`unit-tests` is red on `5a69666`, and none of it is this PR. Three tests fail, all in code this diff does
+not touch (`git diff --name-only origin/main...HEAD` lists only `MaintenanceCoordinator`,
+`DatabaseOperationInProgressException`, `ExportDatabaseStatement`, `BackupCoordinator` and their tests):
+
+| Failing test | Module |
+|---|---|
+| `MultiColumnAggregationResultTest#emptySumAndCountStayZeroNotNaN` | engine / timeseries |
+| `Issue7089NaNTransparentSumAvgTest#oneNaNSampleNoLongerPoisonsTheBucketOnAnyPath` | engine / timeseries |
+| `ArcadeStateMachinePerDatabaseHaltTest` (both methods) | ha-raft |
+
+Checked rather than asserted - a second worktree was cut at pristine `origin/main` and the same classes run
+there:
+
+```
+origin/main (detached, no changes from this branch):
+  MultiColumnAggregationResultTest.emptySumAndCountStayZeroNotNaN            FAILURE
+  ArcadeStateMachinePerDatabaseHaltTest.perDatabaseApplyErrorDoesNotTripNodeWideHalt   FAILURE
+  ArcadeStateMachinePerDatabaseHaltTest.otherDatabasesKeepApplyingAfterOneDatabaseFails FAILURE
+```
+
+Identical failures, so `main` is already red on them. (`Issue7089NaNTransparentSumAvgTest` passes locally on
+both trees; its CI failure is in the same timeseries NaN area and equally untouched by this diff.)
+
+Every test class this PR adds or changes passed in that same CI run:
+
+```
+com.arcadedb.query.sql.parser.Issue7450SqlExportMaintenanceSlotTest: tests=9 failures=0 errors=0
+com.arcadedb.server.backup.Issue7450ExportAdmissionTest:             tests=9 failures=0 errors=0
+com.arcadedb.server.backup.Issue7384OperationAdmissionTest:          tests=8 failures=0 errors=0
+com.arcadedb.query.sql.parser.Issue7443SqlMaintenanceSlotTest:       tests=7 failures=0 errors=0
+com.arcadedb.server.backup.Issue7444MaintenanceSlotWaitTest:         tests=6 failures=0 errors=0
+com.arcadedb.server.backup.BackupCoordinatorTest:                    tests=8 failures=0 errors=0
+```
+
+and `integration-tests`, `vector-unit-tests`, `build-and-package`, `lint`, `claude-review`, CodeQL, Codacy,
+Meterian and every e2e lane are green.
