@@ -284,3 +284,28 @@ CodeRabbit posted two inline findings. Both were verified against the tree befor
    and answered on the thread with the reasoning and the three candidate answers.
 
 No comment was skipped, and nothing was deferred to a notes file.
+
+
+### Cycle 3 - `claude-review` on `f3758f6`
+
+Two review comments, both concluding "nothing here blocks merging". One actionable item, raised in
+both: `reserveDatabaseNameForRestore` sat between `backupCoordinator.begin()` and the `try`, so a
+throw from it would have leaked the slot for the life of the server. It is a `synchronized Set.add`
+and cannot realistically throw, but the asymmetry was real - **fixed in cycle 4** by moving the call
+inside the `try`. The release already tolerates a claim that was never taken (`Set.remove` of an
+absent element), so the outer `finally` is now correct whether or not the claim was reached.
+
+The same comments raised the window *between* `begin()` and the claim, in which a `create database`
+could still be admitted. That one is **accepted, not closed**, and the code now says so: closing it
+needs the two reservations to be one atomic operation, which they are not, and it is two adjacent
+in-memory calls with no I/O between them against an extraction window measured in seconds to
+minutes. A create landing in it is destroyed by the drop exactly as
+[#7469](https://github.com/ArcadeData/arcadedb/issues/7469) describes for the control-plane
+restores, so it is that issue's shape rather than a new one.
+
+Everything else in both comments was confirmation rather than a request: the acquire/release
+nesting, the refusal path never calling `end()`, the `existsDatabase`-gated drop, the re-resolved
+handle, the exception supertypes the ITs assert on, the `@Timeout`-rather-than-wall-clock style, and
+the scoping of #7641/#7643.
+
+No deferred items in any cycle, and no review comment was skipped.
