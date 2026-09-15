@@ -103,6 +103,11 @@
         </dependency>
         <dependency>
             <groupId>${project.groupId}</groupId>
+            <artifactId>arcadedb-tracing</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
             <artifactId>arcadedb-grpcw</artifactId>
             <version>${project.version}</version>
         </dependency>
