@@ -1317,6 +1317,11 @@ public enum Type {
    * @param value the float to convert (never {@code null})
    *
    * @return the decimal that reads the same
+   *
+   * @throws NumberFormatException if the float is NaN or infinite - {@link BigDecimal} cannot represent those at
+   *                               all, so there is nothing to return. This is what {@code BigDecimal.valueOf(float)}
+   *                               did before it, so callers that already reached it are unaffected, but unlike
+   *                               {@link #widenFloat} this one has no non-finite path to fall back on
    */
   public static BigDecimal floatToBigDecimal(final Float value) {
     return new BigDecimal(value.toString());
