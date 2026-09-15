@@ -108,10 +108,21 @@ class CypherMapPropertyConsistencyIssue7629Test {
     assertThat(row.<List<Object>>getProperty("tags")).containsExactly("x", "y");
   }
 
+  @Test
+  void createRejectsAListContainingAMapParameter() {
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "CREATE (n:R {id: 1, tags: $tags})", Map.of("tags", List.of(Map.of("k", 1))))))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+
+    assertThat(database.query("opencypher", "MATCH (n:R) RETURN n").hasNext()).isFalse();
+  }
+
   /**
    * {@code point()} is internally a plain map of coordinate keys (ArcadeDB has no dedicated Geometry runtime type
    * yet, issue #4870), so a naive "reject every map property" check - the fix above - would also reject a Point,
-   * which real Neo4j treats as a primitive property type. {@link com.arcadedb.function.geo.CypherPoint} exists so
+   * which real Neo4j treats as a primitive property type. {@code CypherValues.isPointShaped} recognises one
+   * structurally (the {@code x}/{@code y}/{@code crs} keys every branch of {@code CypherPointFunction} writes) so
    * the validator can tell the two apart; this pins that a Point still stores through CREATE (already covered more
    * broadly by {@code OpenCypherSpatialFunctionsTest} and {@code OpenCypherSpatialFunctionsComprehensiveTest}, which
    * regressed without it).
@@ -125,6 +136,38 @@ class CypherMapPropertyConsistencyIssue7629Test {
     final Object loc = rs.next().getProperty("loc");
     assertThat(loc).isInstanceOf(Map.class);
     assertThat(((Map<?, ?>) loc).get("latitude")).isEqualTo(55.6);
+  }
+
+  /**
+   * A Point read back off storage is deserialized as a plain {@link Map}, with no trace of having come from
+   * {@code point()} - which is why the exemption above has to be structural rather than by class identity. This
+   * pins the shape that would break under an identity-based check: copying a previously-stored Point property into
+   * a new node, in an entirely separate query/transaction from the one that created it.
+   */
+  @Test
+  void createAcceptsAPointPropertyCopiedFromAnEarlierlyStoredNode() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (n:R {id: 1, loc: point({longitude: 12.5, latitude: 55.6})})"));
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (a:R {id: 1}) CREATE (b:R {id: 2, loc: a.loc})"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:R {id: 2}) RETURN n.loc AS loc");
+    final Object loc = rs.next().getProperty("loc");
+    assertThat(loc).isInstanceOf(Map.class);
+    assertThat(((Map<?, ?>) loc).get("latitude")).isEqualTo(55.6);
+  }
+
+  @Test
+  void createAcceptsAListOfPoints() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (n:R {id: 1, stops: [point({x: 1, y: 2}), point({x: 3, y: 4})]})"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:R) RETURN n.stops AS stops");
+    final List<Object> stops = rs.next().getProperty("stops");
+    assertThat(stops).hasSize(2);
+    assertThat(((Map<?, ?>) stops.get(0)).get("x")).isEqualTo(1.0);
+    assertThat(((Map<?, ?>) stops.get(1)).get("x")).isEqualTo(3.0);
   }
 
   @Test

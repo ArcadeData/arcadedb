@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -75,7 +76,7 @@ public class CypherPointFunction implements StatelessFunction {
         return null;
       final double x = coerceCoordinate("x", args[0]);
       final double y = coerceCoordinate("y", args[1]);
-      final Map<String, Object> result = new CypherPoint();
+      final Map<String, Object> result = new LinkedHashMap<>();
       result.put("longitude", x);
       result.put("latitude", y);
       result.put("x", x);
@@ -93,7 +94,7 @@ public class CypherPointFunction implements StatelessFunction {
       throw new CommandSemanticException("point() argument must be a map with coordinate properties");
     final Map<?, ?> map = (Map<?, ?>) args[0];
 
-    final Map<String, Object> result = new CypherPoint();
+    final Map<String, Object> result = new LinkedHashMap<>();
 
     if (map.containsKey("longitude") || map.containsKey("latitude")) {
       // WGS-84 coordinate system

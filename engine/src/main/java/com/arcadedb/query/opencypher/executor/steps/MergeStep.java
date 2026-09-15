@@ -1352,10 +1352,15 @@ public class MergeStep extends AbstractExecutionStep {
    * Sets properties on a document from a property map. Rejects a map property value - {@code MERGE (n {m: $m})}
    * with {@code $m} a map - exactly like {@link SetClauseApplier} already does for the {@code ON CREATE}/
    * {@code ON MATCH SET} actions, instead of silently storing it only on the creation branch (issue #7629).
+   * A null value is skipped, matching {@link CreateStep#setProperties}: Cypher property maps don't remove via
+   * null the way SET's merge form does, so a null entry is simply not stored.
    */
   private void setProperties(final MutableDocument document, final Map<String, Object> properties) {
-    for (final Map.Entry<String, Object> entry : properties.entrySet())
-      document.set(entry.getKey(), CypherValues.coerceAndValidatePropertyValue(entry.getValue()));
+    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
+      final Object value = entry.getValue();
+      if (value != null)
+        document.set(entry.getKey(), CypherValues.coerceAndValidatePropertyValue(value));
+    }
   }
 
   /**

@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
-import com.arcadedb.function.geo.CypherPoint;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 
 import java.util.List;
@@ -58,9 +57,14 @@ public final class CypherValues {
    * regardless of which clause, or which right-hand-side shape (dot property, {@code +=}/{@code =} map, bare
    * parameter), produced it (issue #7629).
    * <p>
-   * A {@link CypherPoint} is exempt: Neo4j treats Point as a primitive property type, ArcadeDB just has no dedicated
-   * Geometry runtime type yet (issue #4870) and represents one as a map of coordinate keys under the hood - refusing
-   * it here would reject {@code point()}'s own output, not a user-authored map (issue #7629).
+   * A Point value is exempt: Neo4j treats Point as a primitive property type, ArcadeDB just has no dedicated
+   * Geometry runtime type yet (issue #4870) and represents one as a map of coordinate keys under the hood, so
+   * refusing every map would also reject {@code point()}'s own output. {@link #isPointShaped} recognises one
+   * structurally - by the {@code x}/{@code y}/{@code crs} keys every branch of {@code CypherPointFunction} writes,
+   * the same keys {@code CypherPointDistanceFunction} and {@code PointWithinBBoxFunction} already key off to read
+   * one back - rather than by class identity, because a Point read back off storage is deserialized as a plain
+   * {@link Map} (issue #7629): identity would exempt a point() call's immediate result but not a value copied from
+   * an already-stored Point property (e.g. {@code MATCH (a) CREATE (b {loc: a.loc})}).
    */
   public static Object coerceAndValidatePropertyValue(final Object value) {
     if (value == null)
@@ -73,16 +77,18 @@ public final class CypherValues {
   private static void validatePropertyValue(final Object value) {
     if (value instanceof List) {
       for (final Object element : (List<?>) value) {
-        if (element instanceof CypherPoint)
+        if (element instanceof Map map && isPointShaped(map))
           continue;
         if (element instanceof Map)
           throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not contain map values");
         if (element instanceof List)
           validatePropertyValue(element);
       }
-    } else if (value instanceof CypherPoint) {
-      // allowed: see the class javadoc above
-    } else if (value instanceof Map)
+    } else if (value instanceof Map map && !isPointShaped(map))
       throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not be maps");
+  }
+
+  private static boolean isPointShaped(final Map<?, ?> map) {
+    return map.containsKey("crs") && map.containsKey("x") && map.containsKey("y");
   }
 }
