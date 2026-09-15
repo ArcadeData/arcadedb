@@ -73,7 +73,13 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
     // reach. intervalMs is positive here (guarded above), so floorDiv differs from '/' only on negative inputs.
     final long bucketStart = Math.floorDiv(timestampMs, intervalMs) * intervalMs;
 
-    return new Date(bucketStart);
+    // Issue #7610: expose the bucket as a LocalDateTime, not a java.util.Date. This is the same
+    // representation AggregateFromTimeSeriesStep's own bucket pushdown already uses for a single
+    // grouping key (issue #4385), and it keeps the value out of JSONObject's ambiguous
+    // Date-vs-DATE-column dispatch - a java.util.Date here silently lost its time of day over HTTP
+    // query results, because the JSON serializer cannot tell a computed instant from a genuine DATE
+    // column by Java class alone.
+    return LocalDateTime.ofInstant(Instant.ofEpochMilli(bucketStart), ZoneOffset.UTC);
   }
 
   public static long parseInterval(final String interval) {

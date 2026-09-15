@@ -29,7 +29,9 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -244,5 +246,52 @@ class TimeSeriesSQLTest extends TestHelper {
     final JSONObject json = new JsonSerializer(database).serializeResult(database, row);
     final String tsAsString = json.get("ts").toString();
     assertThat(tsAsString).contains("2026-05-28").contains("06:46:06");
+  }
+
+  /**
+   * Regression test for issue #7610: {@code SELECT host, ts.timeBucket('1h', ts) AS h, avg(value) FROM
+   * ... GROUP BY host, h} - two grouping keys - does not qualify for the single-key TS aggregate
+   * pushdown (#4385), which already exposes the bucket as a {@code LocalDateTime}. It falls back to
+   * the generic {@code ts.timeBucket()} SQL function, which returned a raw {@code java.util.Date}.
+   * {@code serializeResult()} formats a {@code java.util.Date} with the schema's DATE-only pattern
+   * (it cannot tell a genuine DATE column from a computed instant), so every bucket inside one
+   * calendar day collapsed onto the same string over HTTP/JSON even though the engine grouped the
+   * rows correctly. Fixed by making {@code ts.timeBucket()} return a {@code LocalDateTime}, like the
+   * pushdown path already does.
+   */
+  @Test
+  void timeBucketTwoGroupingKeysKeepsTimeComponent() {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE MultiHostMetrics TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+
+    final long baseMs = 1767225600000L; // 2026-01-01T00:00:00Z
+    database.transaction(() -> {
+      for (int hour = 0; hour < 5; hour++)
+        for (final String host : new String[] { "h1", "h2" })
+          database.command("sql", "INSERT INTO MultiHostMetrics SET ts = " + (baseMs + hour * 3_600_000L)
+              + ", host = '" + host + "', value = " + hour + ".0");
+    });
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT host, ts.timeBucket('1h', ts) AS h, avg(value) AS v FROM MultiHostMetrics "
+            + "GROUP BY host, h ORDER BY host, h")) {
+      final List<Result> results = new ArrayList<>();
+      while (rs.hasNext())
+        results.add(rs.next());
+
+      assertThat(results).hasSize(10); // 2 hosts x 5 hourly buckets
+
+      // The bucket value must be a temporal, not a raw java.util.Date: matches the single-key
+      // pushdown path's type (#4385) and keeps it out of JSONObject's ambiguous Date branch.
+      final Object h = results.get(0).getProperty("h");
+      assertThat(h).isInstanceOf(LocalDateTime.class);
+
+      final JsonSerializer serializer = new JsonSerializer(database);
+      final Set<String> distinctBuckets = new HashSet<>();
+      for (final Result row : results)
+        distinctBuckets.add(serializer.serializeResult(database, row).getString("h"));
+
+      assertThat(distinctBuckets).hasSize(5); // one string per hourly bucket, not one per day
+    }
   }
 }
