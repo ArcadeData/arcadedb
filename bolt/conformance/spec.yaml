@@ -388,13 +388,16 @@ scenarios:
     current_status: passing
   - id: TYPE-005
     area: type-roundtrip
-    title: "Nested lists and maps round-trip structurally"
-    description: "A property holding nested lists/maps (list of list, map of map) round-trips with structure preserved."
+    title: "Nested lists round-trip structurally"
+    description: >
+      A property holding a nested list (list of list) round-trips with structure preserved. A map-valued property is
+      not a primitive or an array of primitives, so it is refused at write time (issue #7629) just like real Neo4j -
+      this scenario no longer claims a nested map round-trips.
     fixture: type_matrix
     preconditions: []
     steps:
-      - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l, t.nestedMapProp AS m'"
-      - "Then l == [1, 2, [3, 4]] and m == {a: 1, b: {c: 2}} with correct nested types"
+      - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l'"
+      - "Then l == [1, 2, [3, 4]] with correct nested types"
     applicable_driver_versions: all
     current_status: passing
   - id: TYPE-006
