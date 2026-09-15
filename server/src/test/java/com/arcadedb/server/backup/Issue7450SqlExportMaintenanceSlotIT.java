@@ -30,13 +30,21 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -91,8 +99,9 @@ class Issue7450SqlExportMaintenanceSlotIT extends BaseGraphServerTest {
     for (final Operation operation : Operation.values())
       coordinator.end(getDatabaseName(), operation);
     // BOUNDED RATHER THAN 'while (isInProgress)': A DRAIN THAT CANNOT TERMINATE WOULD HANG @AfterEach ITSELF, WHICH
-    // NO @Timeout ON A TEST METHOD WOULD CATCH. NO TEST HERE TAKES MORE THAN A COUPLE OF EXPORT RESERVATIONS
-    for (int i = 0; i < 16 && coordinator.isInProgress(getDatabaseName(), Operation.EXPORT); i++)
+    // NO @Timeout ON A TEST METHOD WOULD CATCH. THE BOUND IS AN ORDER OF MAGNITUDE ABOVE THE MOST ANY TEST HERE
+    // TAKES (SIX, IN concurrentDefaultNamedExportsProduceDistinctArchives)
+    for (int i = 0; i < 64 && coordinator.isInProgress(getDatabaseName(), Operation.EXPORT); i++)
       coordinator.end(getDatabaseName(), Operation.EXPORT);
 
     if (exportDir.exists())
@@ -253,6 +262,62 @@ class Issue7450SqlExportMaintenanceSlotIT extends BaseGraphServerTest {
     assertThat(targetOf(first)).isNotEqualTo(targetOf(second));
     assertThat(new File(exportDir, targetOf(first))).exists();
     assertThat(new File(exportDir, targetOf(second))).exists();
+  }
+
+  /**
+   * The same premise under genuine concurrency, which is the case the admission policy actually creates: these
+   * exports are all admitted at once, so if they resolved one name between them they would not merely refuse each
+   * other - the formats check {@code file.exists()} and then create, so several would write one archive.
+   * <p>
+   * The successive test above cannot reach this: it fails on a cached statement reusing a name, which a per-run
+   * timestamp alone already fixes. What it does NOT fix is two runs landing in the same millisecond, and that is
+   * what the random component in the default name is for. Asserting the targets are distinct rather than trying to
+   * force a same-millisecond collision keeps the test deterministic: without the random component the names of two
+   * exports that do collide are equal, and with it they cannot be, whether or not the clock happened to separate
+   * them on this run.
+   */
+  @Test
+  @Timeout(120)
+  void concurrentDefaultNamedExportsProduceDistinctArchives() throws Exception {
+    final int exporters = 6;
+    final CountDownLatch startTogether = new CountDownLatch(1);
+    final List<String> targets = Collections.synchronizedList(new ArrayList<>());
+    final List<String> failures = Collections.synchronizedList(new ArrayList<>());
+
+    final ExecutorService executor = Executors.newFixedThreadPool(exporters);
+    try {
+      for (int i = 0; i < exporters; i++)
+        executor.submit(() -> {
+          try {
+            startTogether.await();
+            final HttpResponse<String> response = postSql("EXPORT DATABASE");
+            if (response.statusCode() != 200)
+              failures.add(response.body());
+            else
+              targets.add(targetOf(response));
+          } catch (final Exception e) {
+            failures.add(e.toString());
+          }
+          return null;
+        });
+
+      startTogether.countDown();
+      executor.shutdown();
+      assertThat(executor.awaitTermination(90, TimeUnit.SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(failures).as("every concurrent export is admitted and completes").isEmpty();
+    assertThat(targets).hasSize(exporters).doesNotHaveDuplicates();
+    for (final String target : targets)
+      assertThat(new File(exportDir, target)).exists();
+
+    // AND THE NAME STILL CARRIES THE CONVENTION IT ALWAYS DID, SO THE SUFFIX IS AN ADDITION RATHER THAN A NEW SHAPE
+    assertThat(targets).allMatch(t -> t.startsWith(getDatabaseName() + "-export-") && t.endsWith(".jsonl.tgz"));
+
+    // THE SLOT IS FREE AGAIN: SIX RESERVATIONS WERE TAKEN AND SIX WERE RELEASED
+    assertThat(getServer(0).getBackupCoordinator().isInProgress(getDatabaseName())).isFalse();
   }
 
   // -------------------------------------------------------------------------------------------

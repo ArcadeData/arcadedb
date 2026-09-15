@@ -38,6 +38,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 public class ExportDatabaseStatement extends SimpleExecStatement {
 
@@ -67,10 +68,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     // EXACTLY THE COLLISION Operation.EXPORT'S ADMISSION POLICY ASSUMES CANNOT HAPPEN (issue #7450)
     final String targetUrl = this.url != null ?
         this.url.getUrlString() :
-        "%s-export-%s.%s.tgz".formatted(//
-            context.getDatabase().getName(),//
-            DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS").format(LocalDateTime.now()),//
-            format.getStringValue());
+        defaultTargetName(context.getDatabase().getName(), format.getStringValue());
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "export database");
     result.setProperty("toUrl", targetUrl);
@@ -132,6 +130,30 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
+  }
+
+  /**
+   * The archive an {@code EXPORT DATABASE} with no explicit target writes to.
+   * <p>
+   * The random component is what makes the name collision-safe, and {@code MaintenanceCoordinator.Operation.EXPORT}
+   * depends on that: two exports of one database are admitted together (issue #7450) because they write two
+   * different files, and a timestamp alone - even at millisecond precision - does not guarantee that for two that
+   * start together. The exporter formats check {@code file.exists()} and then create, so a shared name is not
+   * merely a failure for one of them but two writers of one archive.
+   * <p>
+   * Nothing parses this name back, unlike a backup archive, whose timestamp
+   * {@code BackupCoordinator.parseArchiveTimestamp} reads for retention and listing - so the suffix breaks no
+   * reader. The timestamp stays FIRST so the archives of one database still sort chronologically.
+   * <p>
+   * Package-private and static rather than inlined so the property can be tested directly: what is at risk is two
+   * calls landing within one millisecond, which no test can force through the statement itself.
+   */
+  static String defaultTargetName(final String databaseName, final String format) {
+    return "%s-export-%s-%s.%s.tgz".formatted(//
+        databaseName,//
+        DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS").format(LocalDateTime.now()),//
+        UUID.randomUUID(),//
+        format);
   }
 
   @Override
