@@ -585,9 +585,10 @@ public enum Type {
           return value;
         else if (value instanceof String string)
           return string.isEmpty() ? 0d : Double.parseDouble(string);
-        else if (value instanceof Float)
-          // THIS IS NECESSARY DUE TO A BUG/STRANGE BEHAVIOR OF JAVA BY LOSING PRECISION
-          return Double.parseDouble(value.toString());
+        else if (value instanceof Float float1)
+          // The primitive widening would carry the float's rounding error into the double; widenFloat re-reads its
+          // decimal instead, and skips the round-trip where it provably cannot matter (issue #7609).
+          return widenFloat(float1);
         else
           return ((Number) value).doubleValue();
 
@@ -1291,12 +1292,11 @@ public enum Type {
    * reached only when a {@code Float} actually meets a {@code Double} or a {@link BigDecimal}, never when both
    * operands already share a type, and never for an integral float at or below 2^24, which widens exactly.
    *
-   * @param value the float to widen (never {@code null})
+   * @param f the float to widen
    *
    * @return the double that reads the same in decimal
    */
-  public static double widenFloat(final Float value) {
-    final float f = value;
+  public static double widenFloat(final float f) {
     // NaN and the infinities have no shorter decimal form: widen them directly and skip the parse.
     if (Float.isNaN(f) || Float.isInfinite(f))
       return f;
@@ -1306,7 +1306,7 @@ public enum Type {
     // so the two diverge - 33554448f widens to 33554448 but reads as 3.355445E7, which is 33554450.
     if (f == (long) f && Math.abs(f) <= EXACT_INTEGRAL_FLOAT)
       return f;
-    return Double.parseDouble(value.toString());
+    return Double.parseDouble(Float.toString(f));
   }
 
   /**
@@ -1314,7 +1314,7 @@ public enum Type {
    * BigDecimal.valueOf(float)} has no float overload, so the argument widens through {@code double} first and
    * the single precision rounding error is carried into the decimal. See {@link #widenFloat}.
    *
-   * @param value the float to convert (never {@code null})
+   * @param value the float to convert
    *
    * @return the decimal that reads the same
    *
@@ -1323,8 +1323,8 @@ public enum Type {
    *                               did before it, so callers that already reached it are unaffected, but unlike
    *                               {@link #widenFloat} this one has no non-finite path to fall back on
    */
-  public static BigDecimal floatToBigDecimal(final Float value) {
-    return new BigDecimal(value.toString());
+  public static BigDecimal floatToBigDecimal(final float value) {
+    return new BigDecimal(Float.toString(value));
   }
 
   public static Number[] castComparableNumber(Number left, Number right) {
@@ -1373,9 +1373,9 @@ public enum Type {
     } else if (left instanceof Float) {
       // FLOAT
       if (right instanceof Double)
-        left = widenFloat((Float) left);
+        left = widenFloat(left.floatValue());
       else if (right instanceof BigDecimal)
-        left = floatToBigDecimal((Float) left);
+        left = floatToBigDecimal(left.floatValue());
       else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long)
         right = right.floatValue();
 

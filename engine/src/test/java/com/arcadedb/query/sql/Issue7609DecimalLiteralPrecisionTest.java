@@ -336,6 +336,50 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
   }
 
   /**
+   * The openCypher engine evaluates its own predicates, and its comparator carried the same widening: a FLOAT
+   * property holding 0.05 did not equal the literal 0.05, so the same records answered differently depending on
+   * which query language asked. Cypher has no 32-bit float of its own - a literal there is a 64-bit float, and
+   * Neo4j, which has no FLOAT storage type at all, matches these records - so the SQL answer is the right one.
+   */
+  @Test
+  void theOpenCypherComparatorAgreesWithTheSqlOneOnAFloatProperty() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE Cy");
+      database.command("sql", "CREATE PROPERTY Cy.fp FLOAT");
+      for (int i = 0; i < PER_VALUE; i++)
+        database.newVertex("Cy").set("fp", 0.05f).save();
+      for (int i = 0; i < PER_VALUE; i++)
+        database.newVertex("Cy").set("fp", 0.07f).save();
+    });
+
+    assertThat(cypher("MATCH (n:Cy) WHERE n.fp = 0.05 RETURN n")).as("cypher =").isEqualTo(10);
+    assertThat(cypher("MATCH (n:Cy) WHERE n.fp >= 0.05 RETURN n")).as("cypher >=").isEqualTo(20);
+    assertThat(cypher("MATCH (n:Cy) WHERE n.fp < 0.05 RETURN n")).as("cypher <").isZero();
+    assertThat(cypher("MATCH (n:Cy) WHERE n.fp <= 0.05 RETURN n")).as("cypher <=").isEqualTo(10);
+    assertThat(cypher("MATCH (n:Cy) WHERE n.fp <> 0.05 RETURN n")).as("cypher <>").isEqualTo(10);
+
+    // and the two languages agree record for record over the same data
+    assertThat(cypher("MATCH (n:Cy) WHERE n.fp = 0.05 RETURN n"))
+        .isEqualTo(count("SELECT FROM Cy WHERE fp = 0.05"));
+  }
+
+  /**
+   * @param cypher the openCypher statement to run
+   *
+   * @return how many records it answers
+   */
+  private long cypher(final String cypher) {
+    long rows = 0;
+    try (final ResultSet rs = database.query("opencypher", cypher)) {
+      while (rs.hasNext()) {
+        rs.next();
+        ++rows;
+      }
+    }
+    return rows;
+  }
+
+  /**
    * {@link Type#normalizeNumberForKey} is the GROUP BY / DISTINCT key, and its whole purpose is to let the same
    * logical value reaching a grouping step as two different numeric types land in ONE group. It widened a Float
    * with {@code .doubleValue()} like everything else did, so 0.05f keyed as 0.05000000074505806 against the
