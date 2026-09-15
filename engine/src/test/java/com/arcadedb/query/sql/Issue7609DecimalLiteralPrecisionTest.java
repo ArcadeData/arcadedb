@@ -223,6 +223,31 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
   }
 
   /**
+   * The arithmetic half of the same defect. {@code MathExpression} and {@link Type#increment} carried the very
+   * same {@code .doubleValue()} / {@code BigDecimal.valueOf(float)} widening, and making a suffix-less literal a
+   * Double made those lines MORE reachable, not less: {@code dFloat + 0.05} used to be Float plus Float and is
+   * now Float plus Double. Adding 0.05 to a FLOAT column holding 0.05 has to answer 0.1, not 0.10000000149011612.
+   */
+  @Test
+  void arithmeticMixingAFloatWithADoubleDoesNotCarryTheRoundingError() {
+    assertThat(sum("SELECT dFloat + 0.05 AS s FROM Li WHERE dFloat = 0.05F LIMIT 1")).isEqualTo(0.1d);
+    assertThat(sum("SELECT 0.05 + dFloat AS s FROM Li WHERE dFloat = 0.05F LIMIT 1")).isEqualTo(0.1d);
+    assertThat(sum("SELECT dFloat - 0.05 AS s FROM Li WHERE dFloat = 0.05F LIMIT 1")).isEqualTo(0.0d);
+    assertThat(sum("SELECT 0.05 - dFloat AS s FROM Li WHERE dFloat = 0.05F LIMIT 1")).isEqualTo(0.0d);
+
+    // sum() and avg() reach the same widening through Type.increment, once a Double joins the accumulation
+    assertThat(sum("SELECT sum(dFloat + 0.05) AS s FROM Li WHERE dFloat = 0.05F")).isCloseTo(1.0d, Offset.offset(1e-12));
+
+    // the decimal side, where BigDecimal.valueOf(float) had no float overload to protect it
+    assertThat(compare(Type.castComparableNumber(Type.increment(0.05f, new BigDecimal("0.05")), new BigDecimal("0.10"))))
+        .as("0.05f + decimal 0.05").isZero();
+    assertThat(compare(Type.castComparableNumber(Type.decrement(new BigDecimal("0.05"), 0.05f), BigDecimal.ZERO)))
+        .as("decimal 0.05 - 0.05f").isZero();
+    assertThat(Type.increment(0.05f, 0.05d)).isEqualTo(0.1d);
+    assertThat(Type.increment(0.05d, 0.05f)).isEqualTo(0.1d);
+  }
+
+  /**
    * The comparator half of the same defect, reachable without any literal at all: widening a genuine
    * {@link Float} to {@code double} or {@link BigDecimal} must re-read its decimal form, exactly as
    * {@link Type#convert} already does for the index path, rather than reproduce its rounding error.

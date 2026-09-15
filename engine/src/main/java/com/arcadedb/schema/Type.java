@@ -1049,10 +1049,10 @@ public enum Type {
         return a.floatValue() + b.floatValue();
       }
       case Double aDouble -> {
-        return a.floatValue() + b.doubleValue();
+        return widenFloat(a.floatValue()) + b.doubleValue();
       }
       case BigDecimal decimal -> {
-        return BigDecimal.valueOf(a.floatValue()).add(decimal);
+        return floatToBigDecimal(a.floatValue()).add(decimal);
       }
       default -> {
       }
@@ -1070,7 +1070,7 @@ public enum Type {
         return a.doubleValue() + b.shortValue();
       }
       case Float aFloat -> {
-        return a.doubleValue() + b.floatValue();
+        return a.doubleValue() + widenFloat(b.floatValue());
       }
       case Double aDouble -> {
         return a.doubleValue() + b.doubleValue();
@@ -1094,7 +1094,7 @@ public enum Type {
         return ((BigDecimal) a).add(new BigDecimal(b.shortValue()));
       }
       case Float v -> {
-        return ((BigDecimal) a).add(BigDecimal.valueOf(b.floatValue()));
+        return ((BigDecimal) a).add(floatToBigDecimal(b.floatValue()));
       }
       case Double v -> {
         return ((BigDecimal) a).add(BigDecimal.valueOf(b.doubleValue()));
@@ -1217,9 +1217,9 @@ public enum Type {
       else if (b instanceof Float)
         return a.floatValue() - b.floatValue();
       else if (b instanceof Double)
-        return a.floatValue() - b.doubleValue();
+        return widenFloat(a.floatValue()) - b.doubleValue();
       else if (b instanceof BigDecimal decimal)
-        return BigDecimal.valueOf(a.floatValue()).subtract(decimal);
+        return floatToBigDecimal(a.floatValue()).subtract(decimal);
     }
     case Double v -> {
       switch (b) {
@@ -1233,7 +1233,7 @@ public enum Type {
         return a.doubleValue() - b.shortValue();
       }
       case Float aFloat -> {
-        return a.doubleValue() - b.floatValue();
+        return a.doubleValue() - widenFloat(b.floatValue());
       }
       case Double aDouble -> {
         return a.doubleValue() - b.doubleValue();
@@ -1257,7 +1257,7 @@ public enum Type {
         return ((BigDecimal) a).subtract(new BigDecimal(b.shortValue()));
       }
       case Float v -> {
-        return ((BigDecimal) a).subtract(BigDecimal.valueOf(b.floatValue()));
+        return ((BigDecimal) a).subtract(floatToBigDecimal(b.floatValue()));
       }
       case Double v -> {
         return ((BigDecimal) a).subtract(BigDecimal.valueOf(b.doubleValue()));
@@ -1295,13 +1295,15 @@ public enum Type {
    *
    * @return the double that reads the same in decimal
    */
-  private static double widenFloat(final Float value) {
+  public static double widenFloat(final Float value) {
     final float f = value;
     // NaN AND THE INFINITIES HAVE NO SHORTER DECIMAL FORM: WIDEN THEM DIRECTLY AND SKIP THE PARSE
     if (Float.isNaN(f) || Float.isInfinite(f))
       return f;
     // AN INTEGRAL FLOAT AT OR BELOW 2^24 IS THE ONLY INTEGER INSIDE ITS OWN ROUNDING INTERVAL (THE ULP IS AT MOST
-    // 1 THERE), SO ITS SHORTEST DECIMAL IS THAT INTEGER AND THE PRIMITIVE WIDENING IS ALREADY EXACT
+    // 1 THERE), SO ITS SHORTEST DECIMAL IS THAT INTEGER AND THE PRIMITIVE WIDENING IS ALREADY EXACT. THE BOUND IS
+    // NOT CONSERVATIVE AND MUST NOT BE RAISED: ABOVE IT THE ULP EXCEEDS 1 AND A SHORTER DECIMAL FITS IN THE SAME
+    // INTERVAL, SO THE TWO DIVERGE - 33554448f WIDENS TO 33554448 BUT READS AS 3.355445E7, WHICH IS 33554450
     if (f == (long) f && Math.abs(f) <= EXACT_INTEGRAL_FLOAT)
       return f;
     return Double.parseDouble(value.toString());
@@ -1316,7 +1318,7 @@ public enum Type {
    *
    * @return the decimal that reads the same
    */
-  private static BigDecimal floatToBigDecimal(final Float value) {
+  public static BigDecimal floatToBigDecimal(final Float value) {
     return new BigDecimal(value.toString());
   }
 
