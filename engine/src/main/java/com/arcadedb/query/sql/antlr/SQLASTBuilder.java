@@ -3319,8 +3319,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       } else if (text.endsWith("D") || text.endsWith("d")) {
         number.value = Double.parseDouble(text.substring(0, text.length() - 1));
       } else {
-        // Default to Float for compatibility with JavaCC parser
-        number.value = Float.parseFloat(text);
+        // ISSUE #7609: A SUFFIX-LESS LITERAL IS A DOUBLE. PARSING IT AS A FLOAT MADE `0.05` MEAN 0.05000000074505806,
+        // WHICH SILENTLY DROPPED EVERY ROW SITTING EXACTLY ON THE BOUNDARY OF A COMPARISON AGAINST A DOUBLE OR DECIMAL
+        // PROPERTY, AND TURNED ANY MAGNITUDE ABOVE Float.MAX_VALUE INTO INFINITY. THE `F` SUFFIX ASKS FOR SINGLE PRECISION
+        number.value = Double.parseDouble(text);
       }
     } catch (final NumberFormatException e) {
       throw new CommandSQLParsingException("Invalid floating point: " + text);

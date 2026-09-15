@@ -49,12 +49,10 @@ public class FloatingPoint extends PNumber {
       }
     } else {
       try {
-        final double returnValue = Double.parseDouble(stringValue) * sign;
-        if (Math.abs(returnValue) < Float.MAX_VALUE) {
-          finalValue = (float) returnValue;
-        } else {
-          finalValue = returnValue;
-        }
+        // ISSUE #7609: A SUFFIX-LESS LITERAL IS A DOUBLE. IT USED TO BE NARROWED TO A FLOAT WHENEVER IT FITTED, WHICH
+        // MADE `0.05` MEAN 0.05000000074505806 AND SILENTLY DROPPED EVERY ROW SITTING EXACTLY ON THE BOUNDARY OF A
+        // COMPARISON AGAINST A DOUBLE OR DECIMAL PROPERTY. THE `F` SUFFIX IS THERE FOR ANYONE WHO WANTS SINGLE PRECISION
+        finalValue = Double.parseDouble(stringValue) * sign;
       } catch (final Exception ignore) {
         return null;//TODO NaN?
       }

@@ -264,7 +264,8 @@ class SQLFunctionsTest {
 
     assertThat(myresult.remove(Integer.valueOf(1))).isTrue();
     assertThat(myresult.remove(Integer.valueOf(4))).isTrue();
-    assertThat(myresult.remove(Float.valueOf(5))).isTrue();
+    // ISSUE #7609: A SUFFIX-LESS LITERAL IS A DOUBLE, SO `5.00` IS A Double
+    assertThat(myresult.remove(Double.valueOf(5))).isTrue();
     assertThat(myresult.remove("john")).isTrue();
 
     assertThat(myresult.size()).isEqualTo(1);

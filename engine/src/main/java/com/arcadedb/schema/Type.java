@@ -120,6 +120,11 @@ public enum Type {
   // Values previously stored in javaTypes
   private static final Map<Class<?>, Type> TYPES_BY_USERTYPE   = new HashMap<Class<?>, Type>();
   private static final Map<String, Type>   TYPES_BY_NAME       = new HashMap<String, Type>();
+  /**
+   * The largest magnitude at which every {@code float} with an integral value is exactly the shortest decimal that
+   * round-trips it: 2^24, above which consecutive floats are more than one apart. See {@link #widenFloat}.
+   */
+  private static final float               EXACT_INTEGRAL_FLOAT = 1 << 24;
 
   static {
     for (final Type type : values()) {
@@ -1271,6 +1276,49 @@ public enum Type {
         "Cannot decrement value '" + a + "' (" + a.getClass() + ") with '" + b + "' (" + b.getClass() + ")");
   }
 
+  /**
+   * Widens a {@link Float} to a {@code double} through its decimal form rather than through
+   * {@link Float#doubleValue()}. The primitive widening is exact on the BITS, which means it faithfully
+   * reproduces the single precision rounding error as a double ({@code (double) 0.05f} is
+   * 0.05000000074505806), so a float that reads as 0.05 would not compare equal to the double 0.05. Re-reading
+   * the shortest decimal that round-trips the float removes the error instead of preserving it, which is what
+   * {@link #convert} already does for the index path - the two have to agree or the same query answers
+   * differently depending on whether an index happens to exist. The mapping is strictly monotonic, so the
+   * resulting comparison is still a total order.
+   * <p>
+   * The decimal round-trip costs a string per call, so it is kept off the hot paths that do not need it: it is
+   * reached only when a {@code Float} actually meets a {@code Double} or a {@link BigDecimal}, never when both
+   * operands already share a type, and never for an integral float, which widens exactly.
+   *
+   * @param value the float to widen (never {@code null})
+   *
+   * @return the double that reads the same in decimal
+   */
+  private static double widenFloat(final Float value) {
+    final float f = value;
+    // NaN AND THE INFINITIES HAVE NO SHORTER DECIMAL FORM: WIDEN THEM DIRECTLY AND SKIP THE PARSE
+    if (Float.isNaN(f) || Float.isInfinite(f))
+      return f;
+    // AN INTEGRAL FLOAT BELOW 2^24 IS THE ONLY INTEGER INSIDE ITS OWN ROUNDING INTERVAL (THE ULP IS AT MOST 1
+    // THERE), SO ITS SHORTEST DECIMAL IS THAT INTEGER AND THE PRIMITIVE WIDENING IS ALREADY EXACT
+    if (f == (long) f && Math.abs(f) <= EXACT_INTEGRAL_FLOAT)
+      return f;
+    return Double.parseDouble(value.toString());
+  }
+
+  /**
+   * Builds the {@link BigDecimal} that reads the same in decimal as the given {@link Float}. {@code
+   * BigDecimal.valueOf(float)} has no float overload, so the argument widens through {@code double} first and
+   * the single precision rounding error is carried into the decimal. See {@link #widenFloat}.
+   *
+   * @param value the float to convert (never {@code null})
+   *
+   * @return the decimal that reads the same
+   */
+  private static BigDecimal floatToBigDecimal(final Float value) {
+    return new BigDecimal(value.toString());
+  }
+
   public static Number[] castComparableNumber(Number left, Number right) {
     // CHECK FOR CONVERSION
     if (left instanceof Short) {
@@ -1317,9 +1365,9 @@ public enum Type {
     } else if (left instanceof Float) {
       // FLOAT
       if (right instanceof Double)
-        left = left.doubleValue();
+        left = widenFloat((Float) left);
       else if (right instanceof BigDecimal)
-        left = BigDecimal.valueOf(left.floatValue());
+        left = floatToBigDecimal((Float) left);
       else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long)
         right = right.floatValue();
 
@@ -1327,8 +1375,9 @@ public enum Type {
       // DOUBLE
       if (right instanceof BigDecimal)
         left = BigDecimal.valueOf(left.doubleValue());
-      else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long
-          || right instanceof Float)
+      else if (right instanceof Float float1)
+        right = widenFloat(float1);
+      else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long)
         right = right.doubleValue();
 
     } else if (left instanceof BigDecimal) {
@@ -1336,7 +1385,7 @@ public enum Type {
       if (right instanceof Integer integer)
         right = new BigDecimal(integer);
       else if (right instanceof Float float1)
-        right = BigDecimal.valueOf(float1);
+        right = floatToBigDecimal(float1);
       else if (right instanceof Double double1)
         right = BigDecimal.valueOf(double1);
       else if (right instanceof Short short1)

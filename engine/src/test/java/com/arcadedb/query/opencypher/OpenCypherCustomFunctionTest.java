@@ -225,7 +225,8 @@ class OpenCypherCustomFunctionTest extends TestHelper {
 
     final ResultSet rs = database.command("opencypher", "RETURN test.pi() as result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Float>getProperty("result")).isEqualTo(3.14159f);
+    // ISSUE #7609: A SUFFIX-LESS LITERAL IS A DOUBLE, WHICH IS ALSO WHAT CYPHER CALLS A FLOAT (64 BIT)
+    assertThat(rs.next().<Double>getProperty("result")).isEqualTo(3.14159d);
   }
 
   @Test
