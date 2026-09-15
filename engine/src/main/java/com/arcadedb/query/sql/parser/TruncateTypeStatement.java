@@ -150,20 +150,31 @@ public class TruncateTypeStatement extends DDLStatement {
    * statement already walks the vertices that hold such an edge and removes each one from both endpoints' lists
    * correctly (issue #7477/#7478), so this reuses it instead of re-deriving the same removal-safe walk.
    * <p>
+   * {@code typeName.toString()}, not {@code getStringValue()}: the latter returns the plain, unescaped name, so a
+   * type created with a name that needs back-tick quoting (a reserved word, or one with a space) would rebuild into
+   * SQL text that fails to parse or, worse, is parsed as a different statement. {@code toString()} re-emits the
+   * back-tick quoting the parser produced this identifier from in the first place, which is what it exists for.
+   * <p>
    * Mirrors the caller-transaction-vs-own-transaction split the record-backed paths make, for the same reason
    * (issue #6220): inside a caller transaction the delete joins it, so a {@code ROLLBACK} puts the edges back;
-   * with none active, this opens and closes its own so the statement is atomic on its own.
+   * with none active, this opens and closes its own so the statement is atomic on its own. The own-transaction
+   * branch also carries over the batching {@link #truncateInOwnTransaction} uses (the same {@code BATCH} clause
+   * {@code TruncateRecordDeleter} builds its own deleter around): a lightweight type has no index to protect from
+   * LSM-Tree tombstones, but the batch size still bounds how large a single committed transaction - one Raft log
+   * entry in HA - gets for a type with a very large number of edges (issue #4817).
    */
   private void truncateLightweightEdgeType(final Database db, final boolean transactional) {
     if (transactional) {
-      db.command("sql", "DELETE FROM " + typeName.getStringValue()).close();
+      db.command("sql", "DELETE FROM " + typeName).close();
       return;
     }
+
+    final int batchSize = Math.max(1, db.getConfiguration().getValueAsInteger(GlobalConfiguration.TRUNCATE_BATCH_SIZE));
 
     db.begin();
     boolean success = false;
     try {
-      db.command("sql", "DELETE FROM " + typeName.getStringValue()).close();
+      db.command("sql", "DELETE FROM " + typeName + " BATCH " + batchSize).close();
       success = true;
     } finally {
       if (success)
