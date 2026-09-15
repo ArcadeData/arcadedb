@@ -270,7 +270,9 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
    * {@code DepthFirstTraverseStep} has its own second dedup set ({@code emitted}, gating final emission in
    * {@code fetchNextResults}) in addition to the shared {@code traversed} one ({@code fetchNextEntryPoints}) -
    * both used to be a plain {@code RidHashSet} with the same collapsing defect, and DEPTH_FIRST is the default
-   * strategy this whole test class already exercises, so both are pinned together.
+   * strategy this whole test class already exercises, so both are pinned together: a vertex whose OUT list holds
+   * more than one lightweight edge to peer vertices is exactly the case where every one of those edges shares the
+   * same (bucketId, offset) pair - distinct {@code LightEdgeRID}s that a plain {@code RidHashSet} would collapse.
    */
   @Test
   void traverseDepthFirstEmissionDedupDoesNotCollapseLightweightSiblingEdges() {
@@ -280,21 +282,6 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     connect("Cite", works[0], works[3]);
 
     assertThat(query("traverse in, out from Cite while $depth < 1 strategy depth_first")).hasSize(3);
-  }
-
-  /**
-   * A vertex whose OUT list holds more than one lightweight edge to peer vertices exercises exactly the case the
-   * fix's regression test at the utility level pins: distinct {@code LightEdgeRID}s that share the same
-   * (bucketId, offset) pair.
-   */
-  @Test
-  void traverseFromAVertexWithMultipleLightweightOutEdgesReturnsAllOfThem() {
-    final RID[] works = newWorks(4);
-    connect("Cite", works[0], works[1]);
-    connect("Cite", works[0], works[2]);
-    connect("Cite", works[0], works[3]);
-
-    assertThat(query("traverse in, out from Cite while $depth < 1")).hasSize(3);
   }
 
   /**
