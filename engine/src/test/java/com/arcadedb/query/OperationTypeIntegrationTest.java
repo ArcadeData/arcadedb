@@ -126,6 +126,19 @@ class OperationTypeIntegrationTest extends TestHelper {
     assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.SCHEMA);
   }
 
+  /**
+   * {@code AnalyzedQuery.getOperationTypes()} is documented to return "a non-empty set of OperationType values".
+   * A script with zero statements would otherwise return an empty union, violating that contract even though
+   * {@code isIdempotent()} answers true for it vacuously - so it is treated as a (vacuous) READ, consistent with
+   * every other idempotent script.
+   */
+  @Test
+  void sqlScriptWithNoStatementsStillReportsANonEmptySet() {
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sqlscript").analyze("");
+    assertThat(analyzed.isIdempotent()).isTrue();
+    assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.READ);
+  }
+
   // --- OpenCypher via engine.analyze() ---
 
   @Test
