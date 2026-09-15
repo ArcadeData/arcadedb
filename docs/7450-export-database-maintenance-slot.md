@@ -96,16 +96,17 @@ the archive there is the exporter refusing to overwrite an existing file.
 
 Two things this fix deliberately does not cover, both filed before the PR opened:
 
-1. **Two concurrent exports to the same target file.** Admitting `EXPORT` concurrently with itself is the
+1. **Two concurrent exports to the same EXPLICIT target file.** Admitting `EXPORT` concurrently with itself is the
    point of this issue, and the justification is that two exports resolve to two different files. They do
    not have to: `EXPORT DATABASE "same.jsonl.tgz" WITH overwrite = true` twice, or two default-named
    exports starting in the same millisecond, resolve to one path. The exporter formats check
    `file.exists() && !settings.overwriteFile` and then create the file, which is check-then-create and not
    atomic. This is not a regression - nothing coordinated two SQL exports before this change either - but
-   the change is what makes it worth naming. Filed as **#7644**. (The deterministic half of it - a cached
-   statement reusing the FIRST run's name for every later default-named export - is fixed in this PR; see
-   the adversarial pass below. What #7644 tracks is the residual same-millisecond race and the explicit
-   same-URL case.)
+   the change is what makes it worth naming. Filed as **#7644**. Two of its three cases are closed in this
+   PR: the cached statement reusing the FIRST run's name (adversarial pass, below) and the same-millisecond
+   default-name collision (review cycle 1, below). What #7644 still tracks is the explicit same-URL case -
+   `EXPORT DATABASE "same.tgz"` twice - and the non-atomic `file.exists()`-then-create in the formats, which
+   no naming change can close.
 2. **No live progress for `EXPORT DATABASE`.** `BackupDatabaseStatement` registers an `OperationProgress`
    so the operation is visible in the progress endpoint, the console and Studio while it runs;
    `ExportDatabaseStatement` never has. Now that an export holds a slot that can refuse a restore, an
@@ -279,3 +280,48 @@ it.
 - [x] `BackupCoordinator` counts reservations per kind rather than holding a set of kinds - done
 - [x] A test that two exports of one database coexist - `Issue7450ExportAdmissionTest#twoExportsOfOneDatabaseRunTogether`, and `Issue7450SqlExportMaintenanceSlotIT#aSecondSqlExportOfTheSameDatabaseIsAdmitted` through the statement
 - [x] A test that a restore in flight refuses an export and vice versa - `Issue7450ExportAdmissionTest#anExportAndARestoreOfOneDatabaseExcludeEachOther`, and both directions over HTTP in the IT
+
+## Review cycles
+
+### Cycle 1 - `26c891e3`
+
+`claude` (PR issue comment, the gating surface on this org's repos): no blocking findings. It verified
+`conflictsWith`'s new asymmetric relation against the pairwise cases, the `int[]` multiset's copy-on-write
+property, the reservation being taken after validation and permission checks, and confirmed the
+`StatementCache` reasoning behind the `this.url` fix independently. One non-blocking observation - the
+`@AfterEach` drain bound in the IT is a magic number - explicitly marked "not a request for change"; the
+bound was nonetheless raised from 16 to 64 and its comment now names the worst case (six, in the new
+concurrency test) rather than saying "a couple".
+
+`coderabbitai` (inline thread on `ExportDatabaseStatement.java:72`, Major): **make default export names
+collision-safe**. Two default targets can still match when both executions start within the same millisecond,
+and the formats check `file.exists()` and then create, so a shared name means two writers of one archive
+rather than one clean refusal.
+
+Accepted. It is the same gap as residual risk 1, and it undercuts the admission policy's own premise, so
+closing the half a naming change CAN close belongs here rather than in the follow-up. Verified first that
+nothing reads an export archive name back:
+
+```
+$ grep -rn -- "-export-" --include="*.java" . | grep -v /test/
+engine/src/main/java/com/arcadedb/query/sql/parser/ExportDatabaseStatement.java:70   (the only producer)
+```
+
+(unlike a BACKUP archive, whose timestamp `BackupCoordinator.parseArchiveTimestamp` parses for retention and
+listing - a suffix there WOULD have broken a reader).
+
+Applied as the suggested `UUID.randomUUID()` component, with the timestamp kept first so the archives of one
+database still sort chronologically, and with the name generation extracted to a package-private
+`ExportDatabaseStatement.defaultTargetName(databaseName, format)`. The extraction is what makes the review's
+requested test deterministic rather than a race the test hopes to lose: `defaultTargetName` is called a
+thousand times in a tight loop, the run asserts at least one repeated TIMESTAMP - proving the
+same-millisecond case was genuinely exercised - and asserts all thousand names are distinct. Reverting the
+random component to a constant fails exactly that test and the convention test, and nothing else.
+
+`Issue7450SqlExportMaintenanceSlotIT#concurrentDefaultNamedExportsProduceDistinctArchives` adds the
+end-to-end half the review asked for: six concurrent `EXPORT DATABASE` requests, all admitted, six distinct
+targets, six archives on disk, slot free afterwards.
+
+Re-verified: engine 56 tests / 0 failures, server 31 unit + 33 IT / 0 failures.
+
+No deferred items. Nothing was skipped as a disagreement.

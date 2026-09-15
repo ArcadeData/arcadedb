@@ -28,7 +28,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -198,6 +200,45 @@ class Issue7450SqlExportMaintenanceSlotTest extends TestHelper {
     assertThat(((ExportDatabaseStatement) cached).url)
         .as("a resolved default name written back here would be reused by every later export")
         .isNull();
+  }
+
+  /**
+   * The premise `Operation.EXPORT` rests on, tested where it can actually be forced. Two exports of one database
+   * are admitted together because they write two different files; a default name built from the clock alone breaks
+   * that for two that start within the same millisecond, and the exporter formats check `file.exists()` and then
+   * create, so a shared name means two writers of one archive rather than one clean refusal.
+   * <p>
+   * A thousand names in a tight loop is what makes this deterministic rather than a race the test hopes to lose:
+   * the run is asserted to have produced at least one repeated timestamp, so the same-millisecond case was
+   * genuinely exercised, and every name is still distinct.
+   */
+  @Test
+  void aDefaultExportNameIsDistinctEvenWithinOneMillisecond() {
+    final int names = 1000;
+    final Set<String> distinct = new HashSet<>();
+    final Set<String> timestamps = new HashSet<>();
+
+    for (int i = 0; i < names; i++) {
+      final String name = ExportDatabaseStatement.defaultTargetName("db7450", "jsonl");
+      distinct.add(name);
+      // '<db>-export-<yyyyMMdd-HHmmssSSS>-<random>.<format>.tgz' - the timestamp is the 3rd and 4th '-' segments
+      final String[] parts = name.split("-");
+      timestamps.add(parts[2] + "-" + parts[3]);
+    }
+
+    assertThat(timestamps)
+        .as("the loop has to have produced two names in one millisecond, or it proves nothing")
+        .hasSizeLessThan(names);
+    assertThat(distinct).as("every default export name is its own archive").hasSize(names);
+  }
+
+  /** The timestamp stays first, so the archives of one database still sort chronologically. */
+  @Test
+  void aDefaultExportNameKeepsItsConvention() {
+    final String name = ExportDatabaseStatement.defaultTargetName("db7450", "jsonl");
+
+    assertThat(name).startsWith("db7450-export-").endsWith(".jsonl.tgz");
+    assertThat(name).matches("db7450-export-\\d{8}-\\d{9}-[0-9a-f-]{36}\\.jsonl\\.tgz");
   }
 
   /**
