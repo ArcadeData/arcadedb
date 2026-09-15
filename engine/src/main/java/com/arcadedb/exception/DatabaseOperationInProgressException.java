@@ -19,9 +19,9 @@
 package com.arcadedb.exception;
 
 /**
- * Raised when a whole-database maintenance operation - a backup, a restore or an import - is refused because
- * another one of them is already running on the same database, and the two cannot overlap. The per-database slot
- * that decides it is {@link com.arcadedb.engine.MaintenanceCoordinator}.
+ * Raised when a whole-database maintenance operation - a backup, a restore, an import or an export - is refused
+ * because another one of them is already running on the same database, and the two cannot overlap. The
+ * per-database slot that decides it is {@link com.arcadedb.engine.MaintenanceCoordinator}.
  * <p>
  * The distinction this type carries is "well formed, authorized, and retryable once the other operation finishes",
  * which is what lets a transport answer it with a conflict status instead of an internal error: HTTP maps it to
@@ -30,8 +30,8 @@ package com.arcadedb.exception;
  * It lives in the engine rather than in the server because both sides raise it. The server's own entry points
  * ({@code trigger backup}, {@code restore database}, {@code restore backup}, {@code import database}) raise
  * {@code ServerControlPlane.OperationInProgressException}, which extends this, and the SQL statements
- * {@code BACKUP DATABASE} and {@code IMPORT DATABASE} - executed by the engine, which cannot see the server -
- * raise this one directly (issue #7443).
+ * {@code BACKUP DATABASE} and {@code IMPORT DATABASE} (issue #7443) and {@code EXPORT DATABASE} (issue #7450) -
+ * executed by the engine, which cannot see the server - raise this one directly.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */

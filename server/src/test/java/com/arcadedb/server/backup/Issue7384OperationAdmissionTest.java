@@ -96,6 +96,12 @@ class Issue7384OperationAdmissionTest {
   @Test
   void anOperationAlwaysExcludesASecondOneOfItsOwnKind() {
     for (final Operation operation : Operation.values()) {
+      // EXPORT IS THE ONE KIND THAT DOES NOT EXCLUDE ITSELF, AND IT IS DELIBERATE: TWO EXPORTS OF ONE DATABASE NAME
+      // TWO DIFFERENT TARGETS, WHERE TWO BACKUPS RESOLVE TO ONE ARCHIVE (#6753). ITS OWN ADMISSION IS PINNED BY
+      // Issue7450ExportAdmissionTest, WHICH COVERS BOTH THE COEXISTENCE AND THE RESTORE IT STILL EXCLUDES (#7450)
+      if (operation == Operation.EXPORT)
+        continue;
+
       final BackupCoordinator coordinator = new BackupCoordinator();
 
       assertThat(coordinator.begin("db", operation)).isNull();
@@ -194,8 +200,12 @@ class Issue7384OperationAdmissionTest {
         if (one != two)
           assertThat(one.conflictsWith(two)).isFalse();
 
-    // AND THE ONLY SET THAT CAN SURVIVE TOGETHER IS THE BACKUP/IMPORT PAIR
+    // AND THE ONLY KINDS THAT CAN SURVIVE TOGETHER ARE THE NON-DESTRUCTIVE ONES: A RESTORE IS ALONE OR NOT THERE,
+    // AND BACKUP, IMPORT AND EXPORT COEXIST IN ANY COMBINATION (EXPORT JOINED THEM IN #7450)
     assertThat(admitted).isIn(EnumSet.of(Operation.BACKUP), EnumSet.of(Operation.RESTORE), EnumSet.of(Operation.IMPORT),
-        EnumSet.of(Operation.BACKUP, Operation.IMPORT));
+        EnumSet.of(Operation.EXPORT),
+        EnumSet.of(Operation.BACKUP, Operation.IMPORT), EnumSet.of(Operation.BACKUP, Operation.EXPORT),
+        EnumSet.of(Operation.IMPORT, Operation.EXPORT),
+        EnumSet.of(Operation.BACKUP, Operation.IMPORT, Operation.EXPORT));
   }
 }
