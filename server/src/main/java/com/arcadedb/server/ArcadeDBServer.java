@@ -1761,13 +1761,23 @@ public class ArcadeDBServer {
       throw new ServerControlPlane.OperationInProgressException(
           MaintenanceCoordinator.refusal(Operation.RESTORE, databaseName, running));
 
-    // The SECOND protection a control-plane restore takes, and the one a maintenance slot cannot stand in for:
-    // create database is not a participant in that slot at all, so only this claim refuses a client creating
-    // 'databaseName' while the archive is being extracted into its directory (issue #7441, review of PR #7642).
-    // Taken before the drop, because the window a create has to slip through opens the moment the directory the
-    // command is replacing goes away.
-    reserveDatabaseNameForRestore(databaseName);
     try {
+      // The SECOND protection a control-plane restore takes, and the one a maintenance slot cannot stand in
+      // for: create database is not a participant in that slot at all, so only this claim refuses a client
+      // creating 'databaseName' while the archive is being extracted into its directory (issue #7441, review
+      // of PR #7642). Taken before the drop, because the window a create has to slip through opens the moment
+      // the directory the command is replacing goes away.
+      //
+      // INSIDE the try, not between begin() and it: this is a synchronized Set.add, but a throw from outside
+      // the try would leak the slot taken above for the life of the server, and the release below tolerates a
+      // claim that was never taken (Set.remove of an absent element). There is still a window between begin()
+      // and this line in which a create could be admitted - closing it would need the two reservations to be
+      // one atomic operation, which they are not. It is two adjacent in-memory calls with no I/O between
+      // them, against the seconds-to-minutes window this method's extraction holds open, so it is accepted
+      // rather than engineered away; a create that lands in it is destroyed by the drop below exactly as
+      // issue #7469 describes for the control-plane restores.
+      reserveDatabaseNameForRestore(databaseName);
+
       // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE
       if (existsDatabase(databaseName)) {
         ((DatabaseInternal) getDatabase(databaseName)).getEmbedded().drop();
