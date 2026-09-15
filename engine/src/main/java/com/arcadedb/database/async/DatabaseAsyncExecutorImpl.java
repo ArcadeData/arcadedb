@@ -590,6 +590,17 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      * sustained contention could in principle make a legitimately-progressing-but-slow worker look stalled
      * to a producer parked on its full queue. Not a concern at {@link GlobalConfiguration#TX_RETRIES}'s
      * default of 3; worth remembering before raising it far past that for a specific workload.
+     * <p>
+     * <b>Cost, on every batch, not just on conflict (claude-review):</b> {@link #pendingBatchCommands}
+     * itself is a new retention cost, independent of whether a conflict ever happens - each buffered
+     * {@code DatabaseAsyncCommand} (its command text, parameters, and callback) now stays reachable for the
+     * whole {@code commitEvery} window instead of becoming garbage right after its own {@code execute()}
+     * returns, one {@code ArrayList} per worker. Bounded by {@code commitEvery} and cleared every commit
+     * cycle, so this is a fixed multiple of one batch's worth of parameter payloads, not unbounded - but
+     * with the default {@code commitEvery} ({@link GlobalConfiguration#ASYNC_TX_BATCH_SIZE} = 10240) and
+     * {@link GlobalConfiguration#ASYNC_WORKER_THREADS} scaling with core count, that multiple is large
+     * enough, for a workload with sizeable per-command parameters, to be worth weighing against the
+     * correctness this buffering buys (issue #7615: without it, a conflict silently drops the batch).
      *
      * @param beginFreshTransaction whether to leave a fresh, identically-stamped transaction open on
      *                              success, for a caller (the periodic {@code commitEvery} boundary) that
