@@ -34,6 +34,7 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesRowSource;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
@@ -66,9 +67,21 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.IntConsumer;
 import java.util.logging.Level;
 
 public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
+  /**
+   * Test-only fault-injection hook. Invoked with a 1-based call number right before each attempt of
+   * {@code AsyncThread#commitBatch}'s commit of the shared per-worker batch transaction - both the periodic
+   * {@code commitEvery} boundary reached from {@code executeTask()} and the dangling-tail-batch flush
+   * {@code DatabaseAsyncCompletion} runs at {@code waitCompletion()}/shutdown time. A test throwing a
+   * {@link ConcurrentModificationException} here reproduces issue #7615's conflict deterministically,
+   * without needing genuine concurrent contention across workers to produce it. Always {@code null} in
+   * production.
+   */
+  public static volatile IntConsumer TEST_BEFORE_BATCH_COMMIT_HOOK = null;
+
   private final DatabaseInternal     database;
   private final ContextConfiguration configuration;
   // Volatile + lifecycleLock-guarded: createThreads/shutdownThreads/kill mutate this field; readers
@@ -247,6 +260,45 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     private final    ArrayDeque<DatabaseAsyncTask>   helpDeferredTasks     = new ArrayDeque<>();
     // Capacity of the own queue, doubling as the helpDeferredTasks budget (see offerHelping).
     private final    int                             queueCapacity;
+    // #7615: non-idempotent commands that ran their own execute() against this worker's shared batch
+    // transaction since it was last durably committed. Each one already told its own userCallback the
+    // write "completed" - a non-durable signal, since the write only becomes durable when the shared
+    // batch commits (see the onOk() comment in executeTask() and DatabaseAsyncCommand's class javadoc).
+    // Buffered here so that a periodic commit failing with a ConcurrentModificationException can be
+    // retried by replaying every one of them under a fresh transaction (commitBatch()) instead of
+    // silently discarding the whole batch, and so that an exhausted retry (or any other commit failure
+    // that closes the batch) can still tell every one of them onError instead of only the executor-wide
+    // callback. Thread-confined: only this worker touches it. Idempotent queries are never buffered -
+    // they wrote nothing, so there is nothing for a rollback to lose.
+    private final    List<DatabaseAsyncCommand> pendingBatchCommands       = new ArrayList<>();
+    // #7615: true once some OTHER mutating task type (DatabaseAsyncCreateRecord/UpdateRecord/DeleteRecord,
+    // the graph edge-creation tasks, ...) has run against the shared batch since it was last committed.
+    // commitBatch() cannot replay those - only pendingBatchCommands is buffered - so replaying the batch
+    // after a rolled-back commit would silently omit their writes while still reporting success. Gates
+    // commitBatch()'s retry: set, a CME abandons immediately instead of attempting a replay that would
+    // fabricate a clean commit over data it actually dropped.
+    private          boolean                    batchHasUnreplayableWrites = false;
+    // #7615: true only while commitBatch() is replaying pendingBatchCommands after a rolled-back
+    // commit. DatabaseAsyncCommand checks this to avoid re-invoking its userCallback.onComplete() (already
+    // fired on the first, now-discarded attempt) and to let a failure during replay propagate to
+    // commitBatch() instead of being handled - and the whole batch silently rolled back - locally.
+    private volatile boolean                    replayingBatch             = false;
+    // Monotonic call counter feeding TEST_BEFORE_BATCH_COMMIT_HOOK's 1-based argument. Thread-confined,
+    // same as pendingBatchCommands - only this worker ever calls commitBatch() on itself.
+    private          int                        batchCommitAttempt         = 0;
+
+    // #7615: single choke point for "the shared batch's non-durable bookkeeping is now moot" - every site
+    // that commits, rolls back, or otherwise closes the shared batch transaction goes through here instead
+    // of clearing pendingBatchCommands directly, so batchHasUnreplayableWrites can never drift out of sync
+    // with it.
+    private void clearBatchState() {
+      pendingBatchCommands.clear();
+      batchHasUnreplayableWrites = false;
+    }
+
+    boolean isReplayingBatch() {
+      return replayingBatch;
+    }
 
     private AsyncThread(final DatabaseInternal database, final int id) {
       super("AsyncExecutor-" + database.getName() + "-" + id);
@@ -359,7 +411,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         if (database.isOpen() && database.isTransactionActive())
           database.commit();
         onOk();
+        clearBatchState();
       } catch (final Exception e) {
+        // #7615: the worker is exiting - no point retrying - but every command buffered since the last
+        // commit is discarded by this failed shutdown commit too, so tell each one individually instead
+        // of only the executor-wide onError() below.
+        notifyPendingBatchCommandsAndAbandon(e);
         onError(e);
       }
 
@@ -432,29 +489,38 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         message.execute(this, database);
 
         if (!nested) {
+          // #7615: only a message that is still sitting on the (still active) shared batch transaction
+          // when it returns actually succeeded - DatabaseAsyncCommand rolls the whole batch back itself
+          // before returning normally from a genuine local failure (see its own class javadoc), so
+          // isTransactionActive() here doubles as the "did this really go in" signal without needing
+          // execute() to report it separately.
+          if (!database.isTransactionActive())
+            // That local rollback (unchanged, pre-existing behaviour: see Issue6470AsyncSuccessCallbackDurabilityTest)
+            // discarded every write buffered before it too - drop the stale references so a LATER boundary
+            // commit that fails cannot replay writes this rollback already undid.
+            clearBatchState();
+          else if (message instanceof final DatabaseAsyncCommand command) {
+            if (!command.idempotent)
+              pendingBatchCommands.add(command);
+            // idempotent (a query): wrote nothing, batch replayability unaffected either way.
+          } else if (message.requiresActiveTx())
+            // Some other mutating task type ran against the shared batch and left it active, i.e. it
+            // succeeded - DatabaseAsyncCreateRecord/UpdateRecord/DeleteRecord, the graph edge-creation
+            // tasks, ... commitBatch() only knows how to replay pendingBatchCommands, so it must not
+            // attempt to on a batch holding a write it cannot reconstruct (see batchHasUnreplayableWrites).
+            batchHasUnreplayableWrites = true;
+
           count++;
 
-          if (database.isTransactionActive() && count % commitEvery == 0) {
-            database.commit();
-            // #6470: the executor-wide onOk() callback is the durability signal for this batch - unlike a record
-            // op's own success callback (which reports the write applied to the still-open batch, not yet that it
-            // is durable), this fires only once the commit above has actually happened. Before this it fired only
-            // at shutdown and from the waitCompletion() marker, so a long-running worker that kept hitting this
-            // periodic boundary never told an onOk() listener anything until it stopped.
-            //
-            // onOk() only ever swallows an Exception thrown by the registered callback, not an Error - one would
-            // propagate out of this block with the commit above already done but database.begin() below not yet
-            // reached. Harmless: the next task's own `!database.isTransactionActive()` check in this same method
-            // begins a fresh transaction regardless, exactly as it would if this worker had never held one open.
-            onOk();
-            database.begin();
-            // TransactionContext.begin()/reset() never reset useWAL/walFlush, so the stamp above would
-            // "happen to" survive this cycle via object reuse even without this - re-applied explicitly
-            // anyway so the guarantee does not depend on that staying true in a different class (#6509
-            // review round 9).
-            database.getTransaction().setUseWAL(currentUseWAL);
-            database.setWALFlush(currentSync);
-          }
+          if (database.isTransactionActive() && count % commitEvery == 0)
+            // #6470/#7615: the executor-wide onOk() callback is the durability signal for this batch - unlike a
+            // record op's own success callback (which reports the write applied to the still-open batch, not yet
+            // that it is durable), this fires only once the commit has actually happened. Before #6470 it fired
+            // only at shutdown and from the waitCompletion() marker, so a long-running worker that kept hitting
+            // this periodic boundary never told an onOk() listener anything until it stopped. commitBatch() keeps
+            // that contract and additionally retries a ConcurrentModificationException here instead of silently
+            // discarding the batch (see its own javadoc).
+            commitBatch(currentUseWAL, currentSync, true);
         }
       } catch (final Throwable e) {
         onError(e);
@@ -469,6 +535,134 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           executingTask.set(nested);
         }
       }
+    }
+
+    /**
+     * Commits the worker's shared batch transaction, retrying a {@link ConcurrentModificationException}
+     * by rolling back, beginning a fresh transaction and replaying every task buffered in
+     * {@link #pendingBatchCommands} - the same MVCC-conflict retry contract {@code db.async().transaction()}
+     * already gets from {@link DatabaseAsyncTransaction}, bounded by {@link GlobalConfiguration#TX_RETRIES}
+     * (issue #7615).
+     * <p>
+     * Every buffered command already called its own {@code userCallback.onComplete()} when it first ran -
+     * a non-durable signal, since the write only becomes durable once THIS commit succeeds (see the
+     * {@code onOk()} comment at the call site in {@link #executeTask}). Replaying keeps that promise
+     * instead of discarding it: {@link #replayingBatch} tells {@link DatabaseAsyncCommand#execute} to skip
+     * firing {@code onComplete} again and to let a failure propagate here rather than rolling the batch
+     * back unilaterally, so one retry pass either reproduces every buffered write or none of them.
+     * <p>
+     * If every attempt fails, every buffered command's {@code onError} is called with the failure - in
+     * addition to the {@code onComplete} it already received, which is the point: the caller ({@link #executeTask}
+     * at the periodic boundary, or {@link DatabaseAsyncCompletion#execute} flushing a dangling tail batch at
+     * {@code waitCompletion()}/shutdown time) still sees the exception propagate and reports it to the
+     * executor-wide {@code onError} exactly as before, so nothing about that contract changes - only the
+     * commands that used to vanish silently now hear about it too.
+     *
+     * @param beginFreshTransaction whether to leave a fresh, identically-stamped transaction open on
+     *                              success, for a caller (the periodic {@code commitEvery} boundary) that
+     *                              keeps writing into this worker's batch afterward. {@code false} for a
+     *                              caller ({@code DatabaseAsyncCompletion}) that has no more work of its own
+     *                              queued right behind it.
+     */
+    void commitBatch(final boolean currentUseWAL, final WALFile.FlushType currentSync,
+        final boolean beginFreshTransaction) {
+      final int maxRetries = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES);
+      Throwable lastFailure = null;
+
+      for (int attempt = 0; attempt <= maxRetries; ++attempt) {
+        try {
+          if (attempt > 0) {
+            replayingBatch = true;
+            try {
+              database.begin();
+              database.getTransaction().setUseWAL(currentUseWAL);
+              database.setWALFlush(currentSync);
+              for (final DatabaseAsyncCommand command : pendingBatchCommands)
+                command.execute(this, database);
+            } finally {
+              replayingBatch = false;
+            }
+          }
+
+          final IntConsumer hook = TEST_BEFORE_BATCH_COMMIT_HOOK;
+          if (hook != null)
+            hook.accept(++batchCommitAttempt);
+
+          database.commit();
+          onOk();
+          clearBatchState();
+
+          if (beginFreshTransaction) {
+            database.begin();
+            // TransactionContext.begin()/reset() never reset useWAL/walFlush, so the stamp above would
+            // "happen to" survive this cycle via object reuse even without this - re-applied explicitly
+            // anyway so the guarantee does not depend on that staying true in a different class (#6509
+            // review round 9).
+            database.getTransaction().setUseWAL(currentUseWAL);
+            database.setWALFlush(currentSync);
+          }
+          return;
+
+        } catch (final ConcurrentModificationException e) {
+          // TRANSIENT MVCC CONFLICT: RETRY IF ATTEMPTS REMAIN
+          lastFailure = e;
+          if (database.isTransactionActive())
+            database.rollback();
+          if (batchHasUnreplayableWrites)
+            // A replay can only reconstruct pendingBatchCommands - committing one over a batch that also
+            // held a write it cannot reconstruct would silently omit that write while still reporting
+            // success. No safe retry available: stop here and fall through to the abandon path below,
+            // exactly as an un-retried commit failure always has for this batch shape.
+            break;
+
+        } catch (final Throwable e) {
+          // NOT AN MVCC CONFLICT: NOT TRANSIENT, NO POINT RETRYING
+          lastFailure = e;
+          if (database.isTransactionActive())
+            database.rollback();
+          break;
+        }
+      }
+
+      notifyPendingBatchCommandsAndAbandon(lastFailure);
+
+      if (lastFailure instanceof final RuntimeException re)
+        throw re;
+      if (lastFailure instanceof final Error err)
+        throw err;
+      throw new RuntimeException(lastFailure);
+    }
+
+    /**
+     * Calls {@code onError} on every command still buffered in {@link #pendingBatchCommands} - the batch
+     * is being abandoned, so none of them will be replayed - and clears the buffer. Called wherever the
+     * worker's shared batch transaction is given up on instead of committed (issue #7615): a
+     * {@link #commitBatch} whose retries are exhausted, and the other commit sites that close this same
+     * shared transaction ({@link #closeTransactionBoundaryIfDurabilityPolicyChanged}, the shutdown commit
+     * in {@link #runLoop}, and the dangling-batch commit in {@link DatabaseAsyncTransaction#executeTransaction}).
+     */
+    void notifyPendingBatchCommandsAndAbandon(final Throwable cause) {
+      if (pendingBatchCommands.isEmpty()) {
+        // #7615: still reset - a batch can be unreplayable (batchHasUnreplayableWrites) with nothing
+        // buffered at all (e.g. a lone DatabaseAsyncCreateRecord), and that flag must not outlive the
+        // batch it described or every later batch on this worker would be wrongly denied a replay too.
+        batchHasUnreplayableWrites = false;
+        return;
+      }
+      final List<DatabaseAsyncCommand> abandoned = new ArrayList<>(pendingBatchCommands);
+      clearBatchState();
+      for (final DatabaseAsyncCommand command : abandoned)
+        command.notifyError(cause);
+    }
+
+    /**
+     * Drops every command buffered in {@link #pendingBatchCommands} without notifying anybody - for a
+     * caller that just durably committed them through a path other than {@link #commitBatch} (issue #7615:
+     * {@link DatabaseAsyncTransaction#executeTransaction}'s own flush of a dangling prior batch). Replaying
+     * them on a LATER, unrelated retry would silently duplicate writes that are already durable.
+     */
+    void clearPendingBatchCommands() {
+      clearBatchState();
     }
 
     /**
@@ -524,6 +718,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         database.commit();
         // #6470: another real commit of the shared batch, so the executor-wide durability signal fires here too.
         onOk();
+        clearBatchState();
       } catch (final Throwable e) {
         // This commit closes out EARLIER tasks' accumulated work, not the task that triggered this check -
         // which has not run yet - so the failure must not be attributed to it: left uncaught, the caller's
@@ -531,6 +726,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // instead of running it. Reported here instead, and the caller still gets its own begin()/execute()
         // attempt on a transaction this method leaves inactive (see below) - if the failure left the
         // database unusable, that attempt fails too, for a reason that legitimately belongs to it.
+        // #7615: every command buffered since the last commit is discarded by the rollback below too -
+        // told individually here instead of only through the executor-wide onError() above.
+        notifyPendingBatchCommandsAndAbandon(e);
         onError(e);
         try {
           // TransactionContext.commit()'s own failure paths always leave the transaction inactive

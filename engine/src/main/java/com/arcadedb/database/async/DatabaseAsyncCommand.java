@@ -116,12 +116,22 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
             database.command(language, command, configuration, parametersMap) :
             database.command(language, command, configuration, parameters)) {
 
-      if (userCallback != null)
+      // #7615: a replay (DatabaseAsyncExecutorImpl.AsyncThread#commitBatch, after a rolled-back periodic
+      // commit) re-runs this exact command to rebuild a batch that already told this callback onComplete
+      // once, on the now-discarded first attempt - firing it again would double-notify the submitter.
+      if (userCallback != null && (async == null || !async.isReplayingBatch()))
         userCallback.onComplete(resultset);
 
     } catch (final Exception e) {
       if (async == null)
         // ON THE POOL: the transaction may not be ours - see the method javadoc. Hand it to the runner, which knows.
+        throw e;
+
+      if (async.isReplayingBatch())
+        // #7615: this command is one of possibly several commitBatch() is replaying together under one
+        // transaction - rolling back and reporting onError here would be correct only if this command
+        // were the sole cause of the batch failing, which cannot be known mid-replay. Propagate instead
+        // and let commitBatch() decide (retry again, or abandon and notify every buffered command alike).
         throw e;
 
       if (!idempotent && database.isTransactionActive()) {
