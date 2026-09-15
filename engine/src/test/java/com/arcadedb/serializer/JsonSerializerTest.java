@@ -210,8 +210,9 @@ class JsonSerializerTest extends TestHelper {
 
   @Test
   void floatProjectionStillEmitsPropsHint() {
-    // 2.5 is inferred as FLOAT by the SQL parser (not DOUBLE); FLOAT is lossy through JSON (deserializes to Double), so the hint must stay.
-    try (final ResultSet rs = database.query("sql", "SELECT 2.5 AS f")) {
+    // 2.5F asks the SQL parser for a FLOAT (a suffix-less 2.5 is a DOUBLE since issue #7609); FLOAT is lossy through
+    // JSON (deserializes to Double), so the hint must stay.
+    try (final ResultSet rs = database.query("sql", "SELECT 2.5F AS f")) {
       assertThat(rs.hasNext()).isTrue();
       final JSONObject json = jsonSerializer.serializeResult(database, rs.next());
       assertThat(json.has(Property.PROPERTY_TYPES_PROPERTY)).isTrue();

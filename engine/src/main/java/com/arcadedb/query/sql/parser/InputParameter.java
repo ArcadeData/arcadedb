@@ -79,6 +79,9 @@ public class InputParameter extends SimpleNode {
       if (result.stringValue.startsWith("-")) {
         result.stringValue = result.stringValue.substring(1);
       }
+      // ISSUE #7609: A SUFFIX-LESS LITERAL IS A DOUBLE, SO A Float PARAMETER HAS TO CARRY ITS SUFFIX TO BIND BACK AS ONE
+      if (value instanceof Float)
+        result.stringValue += "F";
       return result;
     }
     if (value instanceof String) {
