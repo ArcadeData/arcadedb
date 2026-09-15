@@ -193,6 +193,30 @@ class Issue7589PropertyRenameTest extends TestHelper {
     assertThat(database.getSchema().getType("Person").existsProperty("name")).isTrue();
   }
 
+  /**
+   * A subtype may independently declare its own property under a name a super type also uses -
+   * {@code addSuperType}'s own conflict check only warns about this, never refuses it - and from that subtype
+   * down, the name resolves to the subtype's shadowing property, not the super type's. An index on the shadowing
+   * property must not block renaming the super type's unrelated, same-named property.
+   */
+  @Test
+  void renamingAPropertyIsNotBlockedByAnIndexOnAnUnrelatedShadowingSubtypeProperty() {
+    database.command("sql", "CREATE DOCUMENT TYPE Employee");
+    database.command("sql", "CREATE PROPERTY Employee.name STRING");
+    database.command("sql", "CREATE INDEX ON Employee (name) NOTUNIQUE");
+
+    createType();
+    // Links Employee under Person with both already independently declaring "name" - a conflict addSuperType only
+    // warns about, producing the shadow this test targets.
+    database.command("sql", "ALTER TYPE Employee SUPERTYPE +Person");
+
+    final Property renamed = database.getSchema().getType("Person").getProperty("name").rename("fullName");
+
+    assertThat(renamed.getName()).isEqualTo("fullName");
+    assertThat(database.getSchema().getType("Employee").existsProperty("name"))
+        .as("Employee's own shadowing property is unrelated to Person's rename").isTrue();
+  }
+
   @Test
   void sqlAlterPropertyNameAcceptsABacktickQuotedNameWithSpaces() {
     createType();
