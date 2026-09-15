@@ -19,6 +19,7 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
 
 import java.util.concurrent.CountDownLatch;
 
@@ -30,9 +31,15 @@ public class DatabaseAsyncCompletion extends DatabaseAsyncAbstractCallbackTask {
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
-      if (database.isTransactionActive())
-        database.commit();
-      async.onOk();
+      if (database.isTransactionActive()) {
+        // #7615: this commit flushes out whatever DatabaseAsyncCommand tasks ran since the last
+        // commitEvery boundary - db.async().waitCompletion() is exactly the call the original report
+        // used to observe the loss, so this dangling tail batch needs the same retry-by-replay and
+        // per-command notification as the periodic boundary itself, not a bare commit().
+        final TransactionContext activeTx = database.getTransaction();
+        async.commitBatch(activeTx.isUseWAL(), activeTx.getWALFlush(), false);
+      } else
+        async.onOk();
     } catch (final Exception e) {
       async.onError(e);
     }
