@@ -307,6 +307,9 @@ public class SaveElementStep extends AbstractExecutionStep {
       case INTEGER -> value instanceof Number n ? n.intValue() : Integer.parseInt(value.toString());
       case FLOAT -> value instanceof Number n ? n.floatValue() : Float.parseFloat(value.toString());
       case SHORT -> value instanceof Number n ? n.shortValue() : Short.parseShort(value.toString());
+      // DECIMAL needs no branch of its own: Type.convert()'s BigDecimal case already builds it with
+      // new BigDecimal(value.toString()), so it reads the float's decimal rather than its bits and never
+      // carried the error this DOUBLE case had to be fixed for (issue #7609).
       default -> value;
     };
   }
