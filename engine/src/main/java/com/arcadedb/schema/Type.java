@@ -1387,6 +1387,10 @@ public enum Type {
       // DOUBLE
       if (right instanceof Integer integer)
         right = new BigDecimal(integer);
+      else if (right instanceof Long long1)
+        // ISSUE #7609: THE Long CASE WAS MISSING, SO THE COUPLE CAME BACK AS (BigDecimal, Long) AND THE CALLER'S
+        // compareTo() THREW ClassCastException - `WHERE decimalProperty > 3000000000` CRASHED RATHER THAN ANSWERED
+        right = new BigDecimal(long1);
       else if (right instanceof Float float1)
         right = floatToBigDecimal(float1);
       else if (right instanceof Double double1)
