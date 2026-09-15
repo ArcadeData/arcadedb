@@ -153,6 +153,9 @@ of it. `ServerRestoreDatabaseIT` drives the real configuration end to end and st
 
 ### 5. Residual risk
 
+- **The startup restore's drop is node-local on an HA node** - filed as
+  [#7643](https://github.com/ArcadeData/arcadedb/issues/7643). Unchanged in substance by this branch,
+  which moved the drop verbatim.
 - **`drop database` is still unslotted** - filed as
   [#7641](https://github.com/ArcadeData/arcadedb/issues/7641). A `drop database mydb` concurrent
   with a backup, restore or import of `mydb` still deletes the directory that operation is using.
@@ -216,7 +219,7 @@ diff instead, with the findings below. That is a weaker instrument and is record
 | 2 | Moving the drop leaves `loadDefaultDatabases()`'s local `database` handle pointing at an instance that no longer exists, for a following command in the same `{…}` list. | **Fixed here.** The handle is re-resolved after the restore. This was already true before the change - the old code dropped the instance and kept the variable - so it is an incidental correctness improvement, not a regression this branch introduced, and there is no test for a `{restore:…,import:…}` pair. |
 | 3 | A refusal at boot is now fatal to startup, where before the command silently corrupted. Is refusing right? | **Argued.** See "The decision the issue asked for" above. Recorded as a deliberate decision rather than an oversight; a reviewer who disagrees should say so, since the alternative (`begin(name, op, timeoutMs)`, as `SnapshotInstaller` uses) is one line away. |
 | 4 | `ServerControlPlane.dropDatabase` has the same omission. | **Filed as [#7641](https://github.com/ArcadeData/arcadedb/issues/7641).** Out of scope. |
-| 5 | The drop this branch relocated uses `getEmbedded().drop()`, which unwraps past the Raft wrapper and deletes files locally. `ServerControlPlane.dropDatabaseClusterWide` documents that shape as the #7389 defect ("takes the database out from under the cluster and leaves it on every follower"). | **Not filed - unverified either way.** The code is moved verbatim, not changed, and node-local semantics may be intended for this command: the method's own javadoc already says it "does not force a cluster snapshot", unlike `performRestore`. Recorded here rather than asserted as a bug, because no command in this session proved which semantics the `restore:` startup command is supposed to have on an HA node. |
+| 5 | The drop this branch relocated uses `getEmbedded().drop()`, which unwraps past the Raft wrapper and deletes files locally. `ServerControlPlane.dropDatabaseClusterWide` documents that shape as the #7389 defect ("takes the database out from under the cluster and leaves it on every follower"). | **Filed as [#7643](https://github.com/ArcadeData/arcadedb/issues/7643)** in review cycle 2, after CodeRabbit raised it independently. Two reviewers finding the same thing is what moved it out of this document and into the tracker. The issue lays out the three candidate answers rather than picking one: which behaviour the command means is genuinely open. |
 | 6 | Two of the eight new tests pass without the fix. | **Accepted.** `aSuccessfulStartupRestoreReleasesTheSlot` and `aFailedStartupRestoreReleasesTheSlot` guard against a leaked reservation, which is a hazard the fix itself creates; they cannot fail against code that takes no reservation. Named as leak guards in the test results section rather than counted as bug reproductions. |
 
 
@@ -262,3 +265,22 @@ No deferred items, and no review comment was skipped.
 
 Regression sweep after the cycle-2 changes: `Tests run: 188, Failures: 0, Errors: 0` across the whole
 `com.arcadedb.server.backup` package plus every startup-command suite listed above.
+
+
+### Cycle 2 - CodeRabbit on `351d911`
+
+CodeRabbit posted two inline findings. Both were verified against the tree before being acted on.
+
+1. **"Reserve the target name for the startup restore."** The same finding `claude-review` made on
+   `6003e0e`, and already fixed in `351d911` - the commit CodeRabbit reviewed. Replied on the thread
+   naming the commit, the ordering (claim before the drop, released with the slot) and the test.
+   CodeRabbit had already marked it "Addressed in commit 351d911" itself.
+2. **"Use the HA-aware drop contract for startup restore."** Real, verified, and **out of scope**:
+   `getEmbedded().drop()` does unwrap past the Raft wrapper, `loadDefaultDatabases()` puts no HA
+   restriction on `restore:`, and the HA plugin is started at `ArcadeDBServer.java:452`, before
+   `loadDefaultDatabases()` at `:476`, so the dropped handle can be replicated. But the code is moved
+   verbatim by this branch rather than changed by it, and which behaviour is correct is open - see the
+   adversarial pass, row 5. **Filed as [#7643](https://github.com/ArcadeData/arcadedb/issues/7643)**
+   and answered on the thread with the reasoning and the three candidate answers.
+
+No comment was skipped, and nothing was deferred to a notes file.
