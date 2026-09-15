@@ -18,10 +18,10 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.query.sql.parser.PInteger;
 import com.arcadedb.query.sql.parser.TraverseProjectionItem;
 import com.arcadedb.query.sql.parser.WhereClause;
-import com.arcadedb.utility.RidHashSet;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -44,14 +44,17 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
 
   // Visited set for traversal dedup. Graph traversal is inherently sparse (RIDs scatter across buckets with random offsets), so RidHashSet's primitive-packed
   // open-addressing hash wins over RidSet's bitmap on both memory and build time. See performance.RidDedupSetBenchmark.
-  final RidHashSet traversed;
+  // EdgeIdentitySet keeps that fast path for record-backed identities and falls back to a plain, RID.equals()-honouring
+  // set only for the record-less ones a LIGHTWEIGHT edge produces - RidHashSet alone keyed every one of them to the
+  // same (edge type bucket, placeholder position) pair and collapsed a type's edges into one (issue #7480).
+  final EdgeIdentitySet traversed;
 
   public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause,
       final WhereClause postFilter,
       final PInteger maxDepth,
       final CommandContext context) {
     super(context);
-    this.traversed = new RidHashSet();
+    this.traversed = new EdgeIdentitySet();
     this.whileClause = whileClause;
     this.postFilter = postFilter;
     this.maxDepth = maxDepth;
