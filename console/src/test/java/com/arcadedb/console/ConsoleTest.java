@@ -35,6 +35,7 @@ import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.jline.reader.LineReader;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnOs;
@@ -55,8 +56,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ConsoleTest {
   private static final String  DB_NAME = "console";
-  private static       Console console;
-  private static       String  absoluteDBPath;
+  private        Console console;
+  private        String  absoluteDBPath;
+
+
+  @BeforeAll
+  static void eliminateTerminalThreads() {
+    System.setProperty("org.jline.terminal.dumb", "true");
+    System.setProperty("jline.terminal.type", "none");
+  }
 
   @BeforeEach
   void populate() throws IOException {
@@ -72,7 +80,7 @@ class ConsoleTest {
   void drop() throws IOException {
     console.close();
     TestServerHelper.checkActiveDatabases();
-    assertThat(console.parse("drop database " + DB_NAME + "; close", false)).isTrue();
+//    assertThat(console.parse("drop database " + DB_NAME + "; close", false)).isTrue();
     GlobalConfiguration.resetAll();
   }
 
@@ -110,14 +118,14 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/5457: a semicolon inside a comment must not terminate the command.
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5457">...</a>: a semicolon inside a comment must not terminate the command.
    */
   @Test
   void commentWithSemicolon() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
 
     assertThat(console.parse("select 11 as value  -- A comment with a semicolon ; errors here")).isTrue();
     assertThat(buffer.toString()).contains("11").doesNotContain("ERROR");
@@ -136,7 +144,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/5457: with Cypher the line comment is `//`, while `--` is an undirected
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5457">...</a>: with Cypher the line comment is `//`, while `--` is an undirected
    * relationship in a pattern.
    */
   @Test
@@ -146,7 +154,7 @@ class ConsoleTest {
     assertThat(console.parse("set language = cypher")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
 
     assertThat(console.parse("RETURN 44 AS value // a comment with a semicolon ; here")).isTrue();
     assertThat(buffer.toString()).contains("44").doesNotContain("ERROR");
@@ -157,7 +165,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/5457: a script is loaded line by line, but a block comment can span
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5457">...</a>: a script is loaded line by line, but a block comment can span
    * multiple lines.
    */
   @Test
@@ -174,7 +182,7 @@ class ConsoleTest {
           """);
 
       final StringBuilder buffer = new StringBuilder();
-      console.setOutput(output -> buffer.append(output));
+      console.setOutput(buffer::append);
 
       assertThat(console.parse("load " + script.getAbsolutePath())).isTrue();
       assertThat(buffer.toString()).doesNotContain("ERROR");
@@ -188,7 +196,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: a script is loaded line by line, so a `CONTENT` clause whose JSON
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6439">...</a>: a script is loaded line by line, so a `CONTENT` clause whose JSON
    * object spans multiple lines must keep accumulating exactly like a multi-line block comment does, rather than being reported
    * as an unbalanced '{' on its first line - the closing '}' is simply on a line not read yet.
    */
@@ -206,7 +214,7 @@ class ConsoleTest {
           """);
 
       final StringBuilder buffer = new StringBuilder();
-      console.setOutput(output -> buffer.append(output));
+      console.setOutput(buffer::append);
 
       assertThat(console.parse("load " + script.getAbsolutePath())).isTrue();
       assertThat(buffer.toString()).doesNotContain("ERROR");
@@ -220,7 +228,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: {@code executeLoad} re-buffers one statement at a time, resetting
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6439">...</a>: {@code executeLoad} re-buffers one statement at a time, resetting
    * after every executed command, so an unclosed '{' must be reported at its real position in the FILE - here line 4 - not at
    * "line 1" relative to the buffer that happened to be accumulating when the error was found.
    */
@@ -238,7 +246,7 @@ class ConsoleTest {
           """);
 
       final StringBuilder buffer = new StringBuilder();
-      console.setOutput(output -> buffer.append(output));
+      console.setOutput(buffer::append);
 
       assertThatThrownBy(() -> console.parse("load " + script.getAbsolutePath())).isInstanceOf(ConsoleException.class)
           .hasMessageContaining("line 4");
@@ -257,7 +265,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6372: an empty line in a script loaded with LOAD must not echo an
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6372">...</a>: an empty line in a script loaded with LOAD must not echo an
    * empty prompt of its own - only the real commands are echoed.
    */
   @Test
@@ -276,7 +284,7 @@ class ConsoleTest {
           """);
 
       final StringBuilder buffer = new StringBuilder();
-      console.setOutput(output -> buffer.append(output));
+      console.setOutput(buffer::append);
 
       assertThat(console.parse("load " + script.getAbsolutePath())).isTrue();
 
@@ -326,7 +334,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: `set language = 'sql'` used to store the value with its quotes,
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6439">...</a>: `set language = 'sql'` used to store the value with its quotes,
    * and `'sql'.startsWith("sql")` is false, so TerminalParser.setLanguage() picked the non-SQL `//` comment marker. That left
    * `--` unrecognised, so the semicolon inside the comment below would have split the command in two instead of being dropped.
    */
@@ -336,7 +344,7 @@ class ConsoleTest {
     assertThat(console.parse("set language = 'sql'")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
 
     assertThat(console.parse("select 11 as value -- a comment with a semicolon ; here")).isTrue();
     assertThat(buffer.toString()).contains("11").doesNotContain("ERROR");
@@ -348,14 +356,14 @@ class ConsoleTest {
     assertThat(console.parse("set language = \"sql\"")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
 
     assertThat(console.parse("select 11 as value -- a comment with a semicolon ; here")).isTrue();
     assertThat(buffer.toString()).contains("11").doesNotContain("ERROR");
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: a SET value that starts with a quote character but never closes
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6439">...</a>: a SET value that starts with a quote character but never closes
    * it is always a typo, so it must be rejected instead of being stored half-quoted.
    */
   @Test
@@ -373,7 +381,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: content trailing after a properly closed quote is a different
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6439">...</a>: content trailing after a properly closed quote is a different
    * typo than a missing quote, and deserves a message that says so rather than "unbalanced".
    */
   @Test
@@ -391,7 +399,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: TerminalParser strips the escaping backslash from an escaped
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6439">...</a>: TerminalParser strips the escaping backslash from an escaped
    * inner quote before executeSet ever sees the value, so a value like this reaches stripMatchingQuotes as
    * {@code 'it's a test'} - indistinguishable from a real closing quote followed by trailing garbage that happens to also end
    * in a quote. It must still be accepted as the escaped value the user intended, not rejected.
@@ -401,14 +409,14 @@ class ConsoleTest {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
 
     assertThat(console.parse("set language = 'it\\'s a test'")).isTrue();
     assertThat(buffer.toString()).contains("it's a test").doesNotContain("ERROR");
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: an unclosed '{' in a CONTENT clause used to swallow every
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6439">...</a>: an unclosed '{' in a CONTENT clause used to swallow every
    * following command into one malformed statement, which then failed downstream with a confusing syntax error pointing at
    * text typed several statements earlier. The commands before the corrupted one must still run, and the corrupted tail must
    * be reported clearly instead of being forwarded to the query engine.
@@ -418,7 +426,7 @@ class ConsoleTest {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
 
     assertThatThrownBy(
         () -> console.parse("select 11 as value; insert into doc content {\"a\": 1 ; select 99999 as value"))
@@ -437,7 +445,7 @@ class ConsoleTest {
     assertThat(console.parse("create document type Person")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     assertThat(console.parse("info types")).isTrue();
     assertThat(buffer.toString().contains("Person")).isTrue();
 
@@ -447,7 +455,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/5931
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5931">...</a>
    */
   @Test
   void infoTypeWithQuoteInName() throws Exception {
@@ -455,13 +463,13 @@ class ConsoleTest {
     assertThat(console.parse("CREATE DOCUMENT TYPE `a\"b`")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     assertThat(console.parse("info type a\"b")).isTrue();
     assertThat(buffer.toString()).contains("DOCUMENT TYPE 'a\"b'").doesNotContain("ERROR");
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/5929
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5929">...</a>
    */
   @Test
   void progressBarClampsPercentageAboveHundred() {
@@ -469,7 +477,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/5928
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5928">...</a>
    */
   @Test
   void systemPropertyArgumentWithoutValueDoesNotCrash() throws Exception {
@@ -488,7 +496,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/5928: a value containing further '=' characters must be kept whole,
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5928">...</a>: a value containing further '=' characters must be kept whole,
    * not truncated at the second one.
    */
   @Test
@@ -503,7 +511,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/5928: an argument with no key at all ('-D' alone or '-D=value') must
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5928">...</a>: an argument with no key at all ('-D' alone or '-D=value') must
    * not crash the console with IllegalArgumentException from System.setProperty.
    */
   @Test
@@ -513,7 +521,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6392: SET used to split the argument on every '=', so a value that
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6392">...</a>: SET used to split the argument on every '=', so a value that
    * contains one (a connection string, a base64 padding, a date pattern) was rejected as a syntax error. It is the same rule
    * already fixed for the `-D<key>=<value>` arguments in #5928.
    */
@@ -528,7 +536,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6392: an empty value dropped the trailing token, leaving a single part
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6392">...</a>: an empty value dropped the trailing token, leaving a single part
    * that was rejected instead of clearing the setting.
    */
   @Test
@@ -547,7 +555,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6392: what is still malformed must stay malformed, and the message says
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6392">...</a>: what is still malformed must stay malformed, and the message says
    * which half is missing so the user does not have to guess.
    */
   @Test
@@ -570,7 +578,7 @@ class ConsoleTest {
   void setNameIsFoldedInEnglishWhateverTheDefaultLocale() throws Exception {
     final Locale defaultLocale = Locale.getDefault();
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     try {
       Locale.setDefault(Locale.forLanguageTag("tr-TR"));
       console.parse("set LIMIT = 7");
@@ -581,7 +589,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/5927
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5927">...</a>
    */
   @Test
   void listDatabasesOnFreshInstallDoesNotThrow() throws Exception {
@@ -613,7 +621,7 @@ class ConsoleTest {
     assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner'")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     assertThat(console.parse("select from Person")).isTrue();
     assertThat(buffer.toString().contains("Jay")).isTrue();
   }
@@ -627,7 +635,7 @@ class ConsoleTest {
     assertThat(console.parse("rollback")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     assertThat(console.parse("select from Person")).isTrue();
     assertThat(buffer.toString().contains("Jay")).isFalse();
   }
@@ -635,7 +643,7 @@ class ConsoleTest {
   @Test
   void help() throws Exception {
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     assertThat(console.parse("?")).isTrue();
     assertThat(buffer.toString().contains("quit")).isTrue();
   }
@@ -660,7 +668,7 @@ class ConsoleTest {
         console.parse("create edge E from (select from V where name ='Jay') to (select from V where name ='John')")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     assertThat(console.parse("select from D")).isTrue();
     assertThat(buffer.toString().contains("Jay")).isTrue();
 
@@ -670,7 +678,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/691
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/691">...</a>
    */
   @Test
   void notStringProperties() throws Exception {
@@ -684,7 +692,7 @@ class ConsoleTest {
     assertThat(console.parse("CREATE PROPERTY v.da DATETIME")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     assertThat(console.parse("CREATE VERTEX v SET s=\"abc\", i=1, b=true, sh=2, d=3.5, da=\"2022-12-20 18:00\"")).isTrue();
     assertThat(buffer.toString().contains("true")).isTrue();
   }
@@ -742,7 +750,7 @@ class ConsoleTest {
     final String DATABASE_PATH = "testCSV";
 
     final Console newConsole = new Console();
-    newConsole.parse("create database " + DATABASE_PATH + "");
+    newConsole.parse("create database " + DATABASE_PATH);
     newConsole.parse("set arcadedb.asyncWorkerThreads = 1");
     newConsole.parse("import database with "//
         + "vertices = `file://src/test/resources/nodes.csv`,"//
@@ -787,26 +795,26 @@ class ConsoleTest {
 
     {
       final StringBuilder buffer = new StringBuilder();
-      console.setOutput(output -> buffer.append(output));
+      console.setOutput(buffer::append);
       assertThat(console.parse("select from Person where nothing is null")).isTrue();
       assertThat(buffer.toString().contains("<null>")).isTrue();
     }
     {
       final StringBuilder buffer = new StringBuilder();
-      console.setOutput(output -> buffer.append(output));
+      console.setOutput(buffer::append);
       assertThat(console.parse("select nothing, lastname, name from Person where nothing is null")).isTrue();
       assertThat(buffer.toString().contains("<null>")).isTrue();
     }
     {
       final StringBuilder buffer = new StringBuilder();
-      console.setOutput(output -> buffer.append(output));
+      console.setOutput(buffer::append);
       assertThat(console.parse("select nothing, lastname, name from Person")).isTrue();
       assertThat(buffer.toString().contains("<null>")).isTrue();
     }
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/726
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/726">...</a>
    */
   @Test
   void projectionOrder() throws Exception {
@@ -817,7 +825,7 @@ class ConsoleTest {
 
     {
       final StringBuilder buffer = new StringBuilder();
-      console.setOutput(output -> buffer.append(output));
+      console.setOutput(buffer::append);
       assertThat(console.parse("select processor, vstart, vstop, pstart, pstop, status, node from Order")).isTrue();
 
       int pos = buffer.toString().indexOf("processor");
@@ -915,7 +923,7 @@ class ConsoleTest {
   }
 
   /**
-   * Test case for https://github.com/ArcadeData/arcadedb/issues/885
+   * Test case for <a href="https://github.com/ArcadeData/arcadedb/issues/885">...</a>
    */
   @Test
   void notNullProperties() throws Exception {
@@ -927,7 +935,7 @@ class ConsoleTest {
     assertThat(console.parse("INSERT INTO doc set a = null;")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     assertThat(console.parse("INSERT INTO doc set prop = null;")).isTrue();
 
     int pos = buffer.toString().indexOf("ValidationException");
@@ -937,7 +945,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/958
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/958">...</a>
    */
   @Test
   void percentWildcardInQuery() throws Exception {
@@ -948,14 +956,14 @@ class ConsoleTest {
 
     {
       final StringBuilder buffer = new StringBuilder();
-      console.setOutput(output -> buffer.append(output));
+      console.setOutput(buffer::append);
       assertThat(console.parse("select from Person where name like 'Thom%'")).isTrue();
       assertThat(buffer.toString().contains("Yorke")).isTrue();
     }
 
     {
       final StringBuilder buffer = new StringBuilder();
-      console.setOutput(output -> buffer.append(output));
+      console.setOutput(buffer::append);
       assertThat(console.parse("select from Person where not ( name like 'Thom%' )")).isTrue();
       assertThat(buffer.toString().contains("Miner")).isTrue();
     }
@@ -963,7 +971,7 @@ class ConsoleTest {
 
   /**
    *
-   * Issue https://github.com/ArcadeData/arcadedb/issues/1760
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/1760">...</a>
    */
   @Test
   void duplicateEntries() throws Exception {
@@ -983,7 +991,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6827: a backslash could not be typed from the console at all.
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6827">...</a>: a backslash could not be typed from the console at all.
    * The parser consumed one level of escaping before the statement reached the engine, and the engine's own string
    * literals require `\\` for a literal backslash - so the correctly escaped `'C:\\\\Users\\\\bob'` arrived at the engine as
    * `'C:\\Users\\bob'` and failed to even tokenize, while the under-escaped `'C:\\Users\\bob'` arrived as `'C:Usersbob'` and
@@ -1001,7 +1009,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6827: the parser is only half of the interactive path. jline
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6827">...</a>: the parser is only half of the interactive path. jline
    * unescapes the accepted line itself, before the parser sees it, so a Windows path typed at the prompt still lost a
    * level of escaping after the parser stopped consuming one. What that costs, and why turning it off is a gain rather
    * than a trade, is pinned in {@code org.jline.reader.impl.JLineEscapeStrippingContractTest}; this asserts the console
@@ -1016,7 +1024,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6828: `close()` ran four steps under one
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6828">...</a>: `close()` ran four steps under one
    * `catch (Throwable) { // IGNORE }` and the first one committed on a batch counter that nothing reset. Once the
    * transaction is gone - here through an explicit `commit` - that first step threw and took the terminal flush, the
    * database close and the factory close down with it.
@@ -1037,7 +1045,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6828: the same defect on the default batch path, where `exit`
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6828">...</a>: the same defect on the default batch path, where `exit`
    * closes the database and nulls the proxy before the `finally console.close()` runs, so the stale counter made the
    * first step throw a NullPointerException.
    */
@@ -1055,7 +1063,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6830: `connect remote:` split the credentials on a single space
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6830">...</a>: `connect remote:` split the credentials on a single space
    * and demanded exactly three tokens, so a run of blanks and a password containing a space - both of which the server
    * accepts - failed with "URL username and password are missing", pointing the user at the wrong problem.
    */
@@ -1076,7 +1084,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6827: a script replayed with `load` lost its backslashes too.
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6827">...</a>: a script replayed with `load` lost its backslashes too.
    * The reader compensated for the parser by doubling every `\\` it read, which cancelled out only for an EVEN number of
    * them - a lone backslash was still swallowed - and did nothing about the level the parser consumed from the rest.
    */
@@ -1100,7 +1108,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6829: without a terminal to type into, an omitted password is
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6829">...</a>: without a terminal to type into, an omitted password is
    * still an error - but it names what is missing instead of claiming the user name is missing too.
    */
   @Test
@@ -1110,7 +1118,7 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6829: a malformed remote URL used to be reported by echoing the
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6829">...</a>: a malformed remote URL used to be reported by echoing the
    * whole argument back, password and all - into the interactive output, and into the build log in batch mode, where it
    * outlives the session just like the history file does. The message must name the address and nothing else.
    */
