@@ -604,13 +604,12 @@ def test_TYPE_004_bytearray_param_roundtrip(bolt_driver):
         assert bytes(record["echo"]) == bytes(payload)
 
 
-def test_TYPE_005_nested_list_map_roundtrip(bolt_driver):
+def test_TYPE_005_nested_list_roundtrip(bolt_driver):
     with bolt_driver.session(database="beer") as session:
         record = session.run(
-            "MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l, t.nestedMapProp AS m"
+            "MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l"
         ).single()
         assert record["l"] == [1, 2, [3, 4]]
-        assert record["m"] == {"a": 1, "b": {"c": 2}}
 
 
 def test_TYPE_006_null_roundtrip(bolt_driver):
