@@ -48,6 +48,34 @@ public interface Property {
 
   String getName();
 
+  /**
+   * Renames this property in place: only the owning type's own record of the property's name changes ({@code
+   * schema.json} and its in-memory {@code properties} map), the same relationship {@link DocumentType#rename} has
+   * to a from-scratch bucket recreation, one level down. Every other attribute (type, constraints, default,
+   * custom values) carries over unchanged.
+   * <p>
+   * Existing documents are <b>not</b> touched or revisited: ArcadeDB's schema is descriptive rather than
+   * prescriptive - a type does not have to declare a property for a document to carry it, and {@code DROP
+   * PROPERTY} does not scrub the field from documents either - so a value already written under the old name
+   * keeps reading back under the old name, and only a write made after the rename lands under the new one.
+   * Making a rename also migrate existing values would be a new class of behaviour for a schema statement to
+   * have, and is deliberately out of scope; see {@code docs/7589-property-rename.md} for the reasoning and for
+   * how to migrate existing values across the rename if that is what is needed.
+   * <p>
+   * This handle is stale the moment this method returns successfully - like a handle to a dropped property, it no
+   * longer names a property the type declares - so the returned instance, not {@code this}, is the one to keep
+   * using.
+   *
+   * @param newName the new name for this property
+   *
+   * @return the property under its new name
+   *
+   * @throws com.arcadedb.exception.SchemaException if a property named {@code newName} already exists (own or
+   *                                                 inherited), if an index stands on this property, or if this
+   *                                                 property is a declared TIMESERIES column
+   */
+  Property rename(String newName);
+
   Type getType();
 
   int getId();

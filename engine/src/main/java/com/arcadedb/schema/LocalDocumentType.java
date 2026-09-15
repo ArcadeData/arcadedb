@@ -572,6 +572,68 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
+   * Refuses a super type relationship that would let a TIMESERIES type - {@code this}, {@code superType}, or a
+   * TIMESERIES type sitting anywhere in {@code this}'s existing descendant subtree - inherit a polymorphic
+   * property it cannot store.
+   * <p>
+   * The same shape {@link #checkTimeSeriesColumnDeclared} refuses for a property created directly on the type, one
+   * hop further: {@code LocalTimeSeriesType.tsColumns} is filled once by {@code TimeSeriesTypeBuilder.create()} and
+   * {@code addTsColumn} has no other caller, so a super type linked afterwards cannot extend it. A polymorphic
+   * property inherited across the hierarchy - whichever end declares it - lands in {@link #properties} and is
+   * listed as part of the type, but the time-series write path ({@code SaveElementStep#saveToTimeSeries}) reads the
+   * document under the declared column names only and silently drops everything else (issue #7581).
+   * <p>
+   * The descendant walk closes a gap the direct {@code this}/{@code superType} check alone leaves open: a legacy
+   * database can already have an ordinary type with a TIMESERIES type somewhere below it in the subtree (loaded
+   * tolerantly, warning-only, by the branch below). Linking a new, entirely ordinary super type onto {@code this}
+   * does not touch either end of THAT link, but the new super type's properties still flow down through {@code
+   * this} to every one of its subtypes, TIMESERIES ones included.
+   * <p>
+   * A database written before this rule may already carry such a hierarchy. Refusing it at schema load would make
+   * that database unopenable, so the load path only warns and leaves the hierarchy standing.
+   *
+   * @param superType the super type about to be linked
+   */
+  private void checkTimeSeriesHierarchy(final DocumentType superType) {
+    final LocalTimeSeriesType affected = findTimeSeriesInSubtree(this);
+    if (affected == null && !(superType instanceof LocalTimeSeriesType))
+      return;
+
+    if (schema.isReadingFromFile()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Type '%s' has super type '%s': a TIMESERIES type (%s) is involved in the hierarchy and this link was "
+              + "created before issue #7581 was fixed. A polymorphic property inherited across it is silently "
+              + "dropped by the time-series write path. Remove the SUPERTYPE relationship with ALTER TYPE to fix this",
+          name, superType.getName(), affected != null ? affected.getName() : superType.getName());
+      return;
+    }
+
+    throw new SchemaException("Cannot add super type '" + superType.getName() + "' to type '" + name
+        + "' because a TIMESERIES type ("
+        + (affected != null ? affected.getName() : superType.getName())
+        + ") only stores the TIMESTAMP, TAGS and FIELDS columns declared in CREATE TIMESERIES TYPE, whether it is "
+        + "an end of this link or sits below it in the hierarchy: a polymorphic property inherited across it would "
+        + "be silently dropped by every write");
+  }
+
+  /**
+   * The TIMESERIES type at or below {@code type} in its subtype tree, or {@code null} if there is none. {@code
+   * type} itself is checked first, so a direct TIMESERIES/TIMESERIES link is reported the same way a transitive
+   * one is.
+   */
+  private static LocalTimeSeriesType findTimeSeriesInSubtree(final LocalDocumentType type) {
+    if (type instanceof LocalTimeSeriesType tsType)
+      return tsType;
+
+    for (final LocalDocumentType subType : type.subTypes) {
+      final LocalTimeSeriesType found = findTimeSeriesInSubtree(subType);
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /**
    * Creates a new property with type `propertyType`.
    *
    * @param propertyName Property name to remove
@@ -684,6 +746,40 @@ public class LocalDocumentType implements DocumentType {
    *
    * @return the property dropped if found
    */
+  /**
+   * The index, if any, anywhere in the type hierarchy that names {@code propertyName} - this type's own indexes,
+   * a super type's (both via {@link #getAllIndexes(boolean)}, which only ever walks up), and a SUBTYPE's own index
+   * on the inherited property, which {@code getAllIndexes} alone misses. {@link #dropProperty} and {@link
+   * #renameProperty} both need the full picture: an index a subtype declared on a property this type owns would
+   * otherwise survive a rename or a drop, left pointing at a name the type no longer has under that meaning.
+   */
+  private TypeIndex findIndexOnProperty(final String propertyName) {
+    for (final TypeIndex index : getAllIndexes(true))
+      if (index.getPropertyNames().contains(propertyName))
+        return index;
+    return findDescendantIndexOnProperty(propertyName);
+  }
+
+  private TypeIndex findDescendantIndexOnProperty(final String propertyName) {
+    for (final LocalDocumentType subType : subTypes) {
+      if (subType.getPropertyIfExists(propertyName) != null)
+        // addSuperType lets a subtype declare its own property under a name a super type already uses - a
+        // conflict it only warns about, never refuses. From here down, propertyName resolves to THIS subtype's
+        // own, independently-declared property, not the one above being renamed or dropped: an index in this
+        // branch belongs to that shadowing property, so it is not a reason to refuse the change higher up.
+        continue;
+
+      for (final TypeIndex index : subType.getAllIndexes(false))
+        if (index.getPropertyNames().contains(propertyName))
+          return index;
+
+      final TypeIndex foundDeeper = subType.findDescendantIndexOnProperty(propertyName);
+      if (foundDeeper != null)
+        return foundDeeper;
+    }
+    return null;
+  }
+
   @Override
   public Property dropProperty(final String propertyName) {
     checkForSchemaMutation();
@@ -698,11 +794,10 @@ public class LocalDocumentType implements DocumentType {
           + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it. Drop the "
           + "whole type to remove the column");
 
-    for (final TypeIndex index : getAllIndexes(true)) {
-      if (index.getPropertyNames().contains(propertyName))
-        throw new SchemaException(
-            "Error on dropping property '" + propertyName + "' because used by index '" + index.getName() + "'");
-    }
+    final TypeIndex indexOnProperty = findIndexOnProperty(propertyName);
+    if (indexOnProperty != null)
+      throw new SchemaException(
+          "Error on dropping property '" + propertyName + "' because used by index '" + indexOnProperty.getName() + "'");
 
     return recordFileChanges(() -> {
       final Property removed = properties.remove(propertyName);
@@ -718,6 +813,79 @@ public class LocalDocumentType implements DocumentType {
         setPropertyHasDefault(propertyName, false);
       }
       return removed;
+    });
+  }
+
+  /**
+   * Renames a property in place: only this type's own record of the property's name changes ({@link #properties}
+   * and, through {@link #recordFileChanges}, {@code schema.json}). See {@link Property#rename(String)} for the
+   * full contract - in particular, existing documents are not touched or revisited: a value already written under
+   * {@code propertyName} keeps reading back under that name, and only a write made after this call lands under
+   * {@code newPropertyName} (issue #7589).
+   * <p>
+   * {@code name} is one of {@link AbstractProperty}'s final fields, so the rename is a swap: a new {@link
+   * LocalProperty} is built under the new name with every other attribute copied across, and it replaces the old
+   * one in {@link #properties}. The old {@code Property} handle is stale from this point on, the same way a
+   * dropped property's handle already is.
+   * <p>
+   * Refused, mirroring {@link #dropProperty}, when an index stands on the property anywhere in the type hierarchy
+   * - a super type's own index, or one a SUBTYPE declared on this (inherited) property, which {@link
+   * #getAllIndexes(boolean)} alone would miss (it only ever walks up): the index's own definition names the
+   * property by the old name, and propagating the rename into every index type/file naming scheme is out of scope
+   * here - drop the index, rename, then recreate it on the new name. Also refused when the property is a declared
+   * TIMESERIES column, for the same reason {@link #dropProperty} refuses one: the write path resolves those by
+   * the fixed name in {@code LocalTimeSeriesType.tsColumns}, which this method does not touch.
+   * <p>
+   * Every check above, and the mutation itself, runs inside the single {@link #recordFileChanges} callback below:
+   * validating outside it and mutating inside would let two concurrent renames both validate against the
+   * pre-rename state and then both apply, since only the mutation - not the read that preceded it - is serialised
+   * by the database write lock {@code recordFileChanges} takes.
+   *
+   * @param propertyName    the property's current name
+   * @param newPropertyName the name it should have from now on
+   *
+   * @return the renamed property, under its new name
+   */
+  @Override
+  public Property renameProperty(final String propertyName, final String newPropertyName) {
+    checkForSchemaMutation();
+
+    return recordFileChanges(() -> {
+      final LocalProperty property = (LocalProperty) properties.get(propertyName);
+      if (property == null)
+        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' because it does not exist");
+
+      if (propertyName.equals(newPropertyName))
+        return property;
+
+      if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
+        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name
+            + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it under its "
+            + "declared name. Drop the whole type to change the column");
+
+      if (properties.containsKey(newPropertyName))
+        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' to '"
+            + newPropertyName + "' because a property with that name already exists");
+
+      if (getPolymorphicPropertyNames().contains(newPropertyName))
+        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' to '"
+            + newPropertyName + "' because it is already defined in a super type");
+
+      final TypeIndex indexOnProperty = findIndexOnProperty(propertyName);
+      if (indexOnProperty != null)
+        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name
+            + "' because it is used by index '" + indexOnProperty.getName()
+            + "'. Drop the index first, rename the property, then recreate the index on the new name");
+
+      final LocalProperty renamed = property.copyWithName(newPropertyName);
+
+      properties.remove(propertyName);
+      properties.put(newPropertyName, renamed);
+      if (propertiesWithDefaultDefined.get().contains(propertyName)) {
+        setPropertyHasDefault(propertyName, false);
+        setPropertyHasDefault(newPropertyName, true);
+      }
+      return renamed;
     });
   }
 
@@ -2164,6 +2332,13 @@ public class LocalDocumentType implements DocumentType {
   private void addSuperTypeInternal(final DocumentType superType, final boolean createIndexes) {
     recordFileChanges(() -> {
       final LocalDocumentType embeddedSuperType = (LocalDocumentType) superType;
+
+      // Inside the callback, immediately before the mutation it guards: checkTimeSeriesHierarchy's descendant walk
+      // reads the (mutable) subTypes list of this type and every one below it, and linkSuperType is what mutates
+      // those same lists. Checked here, both are serialised by the database write lock recordFileChanges takes; read
+      // any earlier and a concurrent addSuperType/removeSuperType elsewhere in the hierarchy could structurally
+      // modify a list this walk is iterating, straight into a ConcurrentModificationException.
+      checkTimeSeriesHierarchy(superType);
 
       linkSuperType(embeddedSuperType);
 

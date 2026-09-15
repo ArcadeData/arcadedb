@@ -180,6 +180,17 @@ public interface DocumentType {
 
   Property dropProperty(String propertyName);
 
+  /**
+   * Renames a property in place. See {@link Property#rename(String)}, which delegates here, for the full contract:
+   * schema-metadata-only, existing documents are not touched or revisited.
+   *
+   * @param propertyName    the property's current name
+   * @param newPropertyName the name it should have from now on
+   *
+   * @return the renamed property, under its new name
+   */
+  Property renameProperty(String propertyName, String newPropertyName);
+
   TypeIndex createTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String... propertyNames);
 
   TypeIndex createTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize);

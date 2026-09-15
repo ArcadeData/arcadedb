@@ -1348,9 +1348,12 @@ public enum Type {
       // INTEGER
       if (right instanceof Long)
         left = left.longValue();
-      else if (right instanceof Float)
-        left = left.floatValue();
-      else if (right instanceof Double)
+      else if (right instanceof Float float1) {
+        // Narrowing an int to float loses precision above 2^24 (issue #7614), e.g. Integer.MAX_VALUE would
+        // become 2.1474836E9. Both operands meet at double instead, which holds every int exactly.
+        left = left.doubleValue();
+        right = widenFloat(float1);
+      } else if (right instanceof Double)
         left = left.doubleValue();
       else if (right instanceof BigDecimal)
         left = new BigDecimal(left.intValue());
@@ -1361,9 +1364,13 @@ public enum Type {
 
     } else if (left instanceof Long) {
       // LONG
-      if (right instanceof Float)
-        left = left.floatValue();
-      else if (right instanceof Double)
+      if (right instanceof Float float1) {
+        // Narrowing a long to float loses precision above 2^24 (issue #7614), e.g. 16777217L would collapse
+        // onto the same float as 16777216L. Both operands meet at double instead, which holds every long
+        // exactly up to 2^53 - the same promotion BinaryComparator.compareWideningLong already applies.
+        left = left.doubleValue();
+        right = widenFloat(float1);
+      } else if (right instanceof Double)
         left = left.doubleValue();
       else if (right instanceof BigDecimal)
         left = new BigDecimal(left.longValue());
@@ -1376,8 +1383,14 @@ public enum Type {
         left = widenFloat(left.floatValue());
       else if (right instanceof BigDecimal)
         left = floatToBigDecimal(left.floatValue());
-      else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long)
+      else if (right instanceof Byte || right instanceof Short)
         right = right.floatValue();
+      else if (right instanceof Integer || right instanceof Long) {
+        // Symmetric case of the INTEGER/LONG branches above: narrowing the integral operand to float would
+        // lose precision above 2^24 (issue #7614), so both meet at double instead.
+        left = widenFloat(left.floatValue());
+        right = right.doubleValue();
+      }
 
     } else if (left instanceof Double) {
       // DOUBLE
@@ -1404,6 +1417,10 @@ public enum Type {
         right = new BigDecimal(short1);
       else if (right instanceof Byte byte1)
         right = new BigDecimal(byte1);
+      else if (right instanceof BigInteger bigInteger1)
+        // Same hole the missing Long arm left before #7609: without this, the couple comes back as
+        // (BigDecimal, BigInteger) and the caller's compareTo()/equals() throws ClassCastException.
+        right = new BigDecimal(bigInteger1);
     } else if (left instanceof Byte) {
       if (right instanceof Short)
         left = left.shortValue();
@@ -1417,6 +1434,17 @@ public enum Type {
         left = left.doubleValue();
       else if (right instanceof BigDecimal)
         left = new BigDecimal(left.intValue());
+    }
+
+    if (left instanceof BigDecimal bigDecimal && right instanceof BigDecimal bigDecimal1) {
+      // BigDecimal.equals() is scale-sensitive (BigDecimal("5").equals(BigDecimal("5.0")) is false, even though
+      // compareTo() answers 0), so a couple that lands here with different scales makes every equals()-based
+      // caller (QueryOperatorEquals, BinaryComparator.equals()) disagree with the compareTo()-based operators
+      // on the identical pair of values (issue #7613). Stripping both to their canonical scale, the same
+      // treatment normalizeNumberForKey already applies for GROUP BY/DISTINCT keys, makes equals() agree with
+      // compareTo() by construction for every caller at once.
+      left = bigDecimal.stripTrailingZeros();
+      right = bigDecimal1.stripTrailingZeros();
     }
 
     return new Number[] { left, right };
@@ -1442,7 +1470,9 @@ public enum Type {
       if (value instanceof BigDecimal bigDecimal)
         return bigDecimal.stripTrailingZeros();
       if (value instanceof BigInteger bigInteger)
-        return new BigDecimal(bigInteger);
+        // Stripped like every other arm, so a BigInteger 100 keys the same as an Integer 100 or a Double 100.0
+        // (issue #7623) rather than landing at scale 0 while the decimal paths land at scale -2.
+        return new BigDecimal(bigInteger).stripTrailingZeros();
       if (value instanceof Double || value instanceof Float) {
         // A Float reaches its key through the decimal form, as it does everywhere else a Float meets a wider type:
         // .doubleValue() would key 0.05f as 0.05000000074505806 while the Double 0.05 keys as 0.05, splitting one
@@ -1452,8 +1482,11 @@ public enum Type {
           return value;
         return BigDecimal.valueOf(d).stripTrailingZeros();
       }
-      // Integer/Long/Short/Byte/AtomicInteger/AtomicLong and other integral numbers
-      return BigDecimal.valueOf(((Number) value).longValue());
+      // Integer/Long/Short/Byte/AtomicInteger/AtomicLong and other integral numbers. Stripped like the decimal
+      // paths above, so an Integer 100 and a Double 100.0 land on the same scale -2 key instead of disagreeing
+      // (unscaled 100 at scale 0 vs unscaled 1 at scale -2) and splitting one GROUP BY/DISTINCT group in two
+      // (issue #7623).
+      return BigDecimal.valueOf(((Number) value).longValue()).stripTrailingZeros();
     }
     return value;
   }
