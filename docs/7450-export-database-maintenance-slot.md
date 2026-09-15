@@ -1,6 +1,7 @@
 # #7450 - SQL `EXPORT DATABASE` bypasses the per-database maintenance slot
 
 Issue: https://github.com/ArcadeData/arcadedb/issues/7450
+PR: https://github.com/ArcadeData/arcadedb/pull/7647
 Follow-up to #7443 (SQL `BACKUP`/`IMPORT` took the slot) and #7384 (the slot admitted restores and imports).
 
 ## Root cause
@@ -325,3 +326,36 @@ targets, six archives on disk, slot free afterwards.
 Re-verified: engine 56 tests / 0 failures, server 31 unit + 33 IT / 0 failures.
 
 No deferred items. Nothing was skipped as a disagreement.
+
+### Cycle 2 - `e5aadf50`
+
+`claude`: no correctness bug found. It traced all 4x4 `conflictsWith` pairs by hand against the stated
+invariant, confirmed the `int[]` copy-on-write swap never publishes a partially-updated array to
+`isInProgress`, confirmed the reservation ordering matches `BackupDatabaseStatement`, and confirmed the
+`this.url` removal is a real fix rather than a style change. Two non-blocking notes, both explicitly "no
+action needed": the `@AfterEach` drain bound is still a magic number (flagged only in case a heavier
+concurrency test is added later), and #7646 / #7644 are correctly scoped out and tracked.
+
+`coderabbitai`: re-reviewed the push, posted no actionable comments, and resolved its own thread from cycle 1
+after re-verifying the fix.
+
+Working tree clean, nothing applied, no deferred items.
+
+## Deferred items
+
+None. No `review-deferred-*.md` was produced by this run - the six such files in `docs/` are committed
+artifacts of earlier PRs (#7210, #7442, #7556, #7585), not of this one.
+
+## Final state
+
+`clean-approval` after 2 review cycles.
+
+Follow-ups opened by this work, none of which block the merge:
+
+| Issue | What it tracks |
+|---|---|
+| #7644 | Two exports naming the SAME explicit URL, and the non-atomic `file.exists()`-then-create in the exporter formats. Its other two cases - the cached statement reusing a name, and the same-millisecond default-name collision - were closed in this PR. |
+| #7645 | `EXPORT DATABASE` publishes no `OperationProgress`, so an operator who reads "an export of it is already in progress" has no surface showing that export. |
+| #7646 | `EXPORT`'s reservation count is unbounded by design, so overlapping exports can refuse every restore and expire the HA snapshot install's bounded wait. |
+
+Merge is the developer's.
