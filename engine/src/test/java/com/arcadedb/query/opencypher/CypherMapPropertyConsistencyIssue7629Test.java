@@ -98,6 +98,36 @@ class CypherMapPropertyConsistencyIssue7629Test {
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
+  /**
+   * The bare-parameter property syntax ({@code CREATE (n:R $props)}) goes through
+   * {@code CreateStep.setPropertiesFromParameter}, a different method from the {@code CREATE (n:R {m: $m})} map-
+   * literal form's {@code setProperties} - this pins that it funnels through the same validation.
+   */
+  @Test
+  void createRejectsAMapValuedPropertyViaBareParameterSyntax() {
+    final Map<String, Object> props = Map.of("id", 1, "m", Map.of("k", 1));
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "CREATE (n:R $props)", Map.of("props", props))))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+
+    assertThat(database.query("opencypher", "MATCH (n:R) RETURN n").hasNext()).isFalse();
+  }
+
+  /** The edge equivalent of {@link #createRejectsAMapValuedPropertyViaBareParameterSyntax}, going through
+   *  {@code CreateStep.buildPropertiesFromParameter}. */
+  @Test
+  void createRejectsAMapValuedEdgePropertyViaBareParameterSyntax() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:R {id: 1}), (:R {id: 2})"));
+    final Map<String, Object> props = Map.of("m", Map.of("k", 1));
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (a:R {id: 1}), (b:R {id: 2}) CREATE (a)-[r:REL $props]->(b)", Map.of("props", props))))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+  }
+
   @Test
   void createStillAcceptsOrdinaryScalarAndListParameters() {
     database.transaction(() -> database.command("opencypher",
