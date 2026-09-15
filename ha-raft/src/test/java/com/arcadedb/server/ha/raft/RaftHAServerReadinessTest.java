@@ -18,8 +18,11 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import org.apache.ratis.util.LifeCycle;
 import org.junit.jupiter.api.Test;
 
+import static com.arcadedb.server.ha.raft.RaftHAServer.isDivisionLifecycleHealthy;
+import static com.arcadedb.server.ha.raft.RaftHAServer.isEmptyLogInMultiPeerCluster;
 import static com.arcadedb.server.ha.raft.RaftHAServer.isReadyForTrafficState;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -169,5 +172,129 @@ class RaftHAServerReadinessTest {
   @Test
   void sixArgOverloadTreatsAnyLeaderAsReady() {
     assertThat(isReadyForTrafficState(true, true, true, 5000, 100, 0)).isTrue();
+  }
+
+  // -----------------------------------------------------------------------------------------------
+  // Issue #7131: local commit/applied lag alone cannot see a follower that is not receiving entries
+  // at all (Ratis clamps a follower's commit index to its own flush index). emptyLogInMultiPeerCluster
+  // closes the cold-rejoin half of that gap (a wiped/reformatted follower rejoining an established
+  // multi-peer cluster). A leader-RPC-recency signal was tried for the complementary wedged-channel
+  // case and removed after review: verified against Ratis 3.3.0 bytecode, granting a PRE_VOTE to ANY
+  // candidate - not necessarily this follower's own recognized leader - refreshes the same timestamp,
+  // so it did not reliably mean "still hearing from the leader" (PR #7605 review).
+  // -----------------------------------------------------------------------------------------------
+
+  @Test
+  void emptyLogInMultiPeerClusterIsNotReady() {
+    // A follower that just rejoined (wiped/reformatted) with nothing committed at all must not be Ready.
+    assertThat(isReadyForTrafficState(true, true, false, 0, 0, 100, false, false, true)).isFalse();
+  }
+
+  @Test
+  void nonEmptyLogIgnoresTheEmptyLogGate() {
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false)).isTrue();
+  }
+
+  @Test
+  void leaderRoleIgnoresTheEmptyLogGate() {
+    // The gate applies to followers only; the leader branch returns before it is evaluated.
+    assertThat(isReadyForTrafficState(true, true, true, 5000, 100, 0, false, true, true)).isTrue();
+  }
+
+  // isEmptyLogInMultiPeerCluster: the boundary claude-review caught (PR #7605) - index 0 is
+  // RaftLog.LEAST_VALID_LOG_INDEX (the leader's first real committed entry), not "empty". An earlier
+  // revision used commitIndex <= 0, which none of the isReadyForTrafficState cases above could catch since
+  // they all pass emptyLogInMultiPeerCluster pre-reduced rather than feeding a real commitIndex through the
+  // computation that produces it.
+
+  @Test
+  void genuinelyEmptyLogInMultiPeerClusterIsDetected() {
+    // RaftLog.INVALID_LOG_INDEX (-1): nothing committed at all.
+    assertThat(isEmptyLogInMultiPeerCluster(3, -1)).isTrue();
+  }
+
+  @Test
+  void firstRealCommitIsNotTreatedAsEmpty() {
+    // RaftLog.LEAST_VALID_LOG_INDEX (0): the cluster's very first entry has committed and this follower has
+    // it. A brand-new multi-node cluster's followers are legitimately caught up here immediately after
+    // bootstrap; the bug this regression-tests reported them not-ready.
+    assertThat(isEmptyLogInMultiPeerCluster(3, 0)).isFalse();
+  }
+
+  @Test
+  void singlePeerConfigurationNeverCountsAsEmpty() {
+    // The gate only makes sense once there is more than one peer to have rejoined among; a single-node
+    // "cluster" reaching commitIndex 0 for the first time is not a cold rejoin.
+    assertThat(isEmptyLogInMultiPeerCluster(1, -1)).isFalse();
+    assertThat(isEmptyLogInMultiPeerCluster(0, -1)).isFalse();
+  }
+
+  @Test
+  void eightArgOverloadDefaultsToNoEmptyLogGate() {
+    // Backward-compatible default for callers that predate issue #7131: the gate never fires.
+    assertThat(isReadyForTrafficState(true, true, false, 0, 0, 100, false, false)).isTrue();
+  }
+
+  // -----------------------------------------------------------------------------------------------
+  // Issue #7130: a RaftServer proxy can stay RUNNING while the per-group division underneath goes
+  // CLOSED or EXCEPTION - every other field (leaderId, raft conf, commit/applied index) survives that
+  // close and keeps reporting its last value, so the division's own lifecycle has to be an explicit,
+  // first-evaluated gate. Same for ArcadeStateMachine.isHaltedAfterCriticalError().
+  // -----------------------------------------------------------------------------------------------
+
+  @Test
+  void unhealthyDivisionLifecycleIsNotReadyEvenWhenEverythingElseLooksFine() {
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, false, false))
+        .as("otherwise-ready leader with an unhealthy (CLOSED/EXCEPTION/PAUSED) division").isFalse();
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, false, false))
+        .as("otherwise-ready follower with an unhealthy division").isFalse();
+  }
+
+  @Test
+  void haltedAfterCriticalErrorIsNotReadyEvenWhenEverythingElseLooksFine() {
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, true, true))
+        .isFalse();
+  }
+
+  @Test
+  void healthyDivisionAndNotHaltedPreservesThePriorBehaviour() {
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false, true, false))
+        .isTrue();
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false, false, true, false))
+        .isTrue();
+  }
+
+  @Test
+  void nineArgOverloadDefaultsToHealthyDivisionAndNotHalted() {
+    // Backward-compatible default for callers that predate issue #7130: neither new gate fires.
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true, false)).isTrue();
+  }
+
+  // -----------------------------------------------------------------------------------------------
+  // Issue #7130 (review follow-up): the LifeCycle.State -> healthy-or-not mapping that isReadyForTraffic()
+  // feeds into the final overload above is itself untested by every case above, since they all pass the
+  // already-reduced boolean. Exercise the mapping directly against every LifeCycle.State value instead.
+  // -----------------------------------------------------------------------------------------------
+
+  @Test
+  void onlyRunningIsHealthy() {
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.RUNNING)).isTrue();
+  }
+
+  @Test
+  void everyOtherLifeCycleStateIsUnhealthy() {
+    // CLOSED/EXCEPTION are the issue #7130 targets. PAUSED looked like a candidate for "healthy" too (it is
+    // a normal, expected, self-recovering transition per ArcadeStateMachine.pause()'s javadoc) but Ratis's
+    // own request handlers (append entries, request vote, client requests) reject with
+    // ServerNotReadyException in every state but RUNNING - PAUSED included - so it is excluded here
+    // (PR #7605 review; confirmed against RaftServerImpl's assertLifeCycleState(RUNNING) call sites in the
+    // 3.3.0 bytecode).
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.NEW)).isFalse();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.STARTING)).isFalse();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.PAUSING)).isFalse();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.PAUSED)).isFalse();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.EXCEPTION)).isFalse();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.CLOSING)).isFalse();
+    assertThat(isDivisionLifecycleHealthy(LifeCycle.State.CLOSED)).isFalse();
   }
 }

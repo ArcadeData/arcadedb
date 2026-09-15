@@ -47,6 +47,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -151,6 +152,31 @@ public final class SnapshotInstaller {
   private static final Set<String> INSTALLS_IN_FLIGHT = ConcurrentHashMap.newKeySet();
 
   /**
+   * The {@link #INSTALLS_IN_FLIGHT} key for {@code dbDir}, normalized and absolutized exactly like the two
+   * {@code inFlightKey} derivations in {@link #installHoldingMaintenanceSlot} and {@link #acquireNewDatabase}
+   * (both {@code Path.of(...).normalize().toAbsolutePath().toString()}), so a path arriving from a directory
+   * listing - as {@link #recoverPendingSnapshotSwaps(Path, ArcadeDBServer)} does - matches the key an in-flight
+   * install registered from its own, differently-constructed {@code Path} (issue #7128).
+   */
+  private static String resolvedInFlightKey(final Path dbDir) {
+    return dbDir.normalize().toAbsolutePath().toString();
+  }
+
+  /**
+   * Test-only: registers {@code dbDir} as having an install in flight, so a test can exercise the issue #7128
+   * skip guard in {@link #recoverPendingSnapshotSwaps(Path, ArcadeDBServer)} without driving a real download.
+   * Always paired with {@link #clearInstallInFlightForTesting} once the test is done with it.
+   */
+  static void markInstallInFlightForTesting(final Path dbDir) {
+    INSTALLS_IN_FLIGHT.add(resolvedInFlightKey(dbDir));
+  }
+
+  /** Test-only: undoes {@link #markInstallInFlightForTesting}. */
+  static void clearInstallInFlightForTesting(final Path dbDir) {
+    INSTALLS_IN_FLIGHT.remove(resolvedInFlightKey(dbDir));
+  }
+
+  /**
    * Test-only barrier invoked once inside the registry-locked swap region of {@link #swapAndReopen}, after the
    * live database has been closed/deregistered and before the staged snapshot is moved into place. {@code null}
    * in production (the only cost is a single reference read per install). The issue-#4832 regression test sets it
@@ -253,114 +279,124 @@ public final class SnapshotInstaller {
     // which is the same reason downloadSnapshot and purgeRaftLogBeforeInstall below already tolerate one. No
     // coordinator means no slot to take, and therefore none to release.
     final BackupCoordinator coordinator = server.getBackupCoordinator();
-    final BackupCoordinator.Operation refusedBy = coordinator == null ? null
-        : coordinator.begin(databaseName, BackupCoordinator.Operation.RESTORE,
-            server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS));
-    final boolean slotHeld = coordinator != null && refusedBy == null;
-    if (refusedBy != null)
-      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-          "Reinstalling database '%s' from the leader while %s of it is still running on this node: the install "
-              + "applies a committed Raft entry and cannot be declined, so it proceeds and that operation will fail "
-              + "or produce an incomplete result. Raise '%s' to give it longer to finish", null,
-          databaseName, refusedBy.phrase(), GlobalConfiguration.HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS.getKey());
 
-    try {
-      installHoldingMaintenanceSlot(databaseName, databasePath, leaderHttpAddrSupplier, leaderHttpsAddrSupplier,
-          clusterToken, server);
-    } finally {
-      // Only what was actually reserved: a wait that expired took nothing, and releasing then would drop the
-      // reservation the operation still in flight is holding.
-      if (slotHeld)
-        coordinator.end(databaseName, BackupCoordinator.Operation.RESTORE);
-    }
-  }
-
-  /**
-   * The install itself, with this node's per-database maintenance slot already held (or deliberately given up on)
-   * by {@link #install(String, String, Supplier, Supplier, String, ArcadeDBServer)}.
-   */
-  private static void installHoldingMaintenanceSlot(final String databaseName, final String databasePath,
-      final Supplier<String> leaderHttpAddrSupplier, final Supplier<String> leaderHttpsAddrSupplier,
-      final String clusterToken, final ArcadeDBServer server) throws IOException {
-
+    // Registered before the maintenance-slot wait/acquisition below, not after: recoverPendingSnapshotSwaps
+    // (issue #7128) reads this set to skip a database an install already owns, and a prior revision of that
+    // fix registered this entry only once installHoldingMaintenanceSlot started - after coordinator.begin()
+    // below had already run. That left a narrow but real window (coordinator.begin() returning through to
+    // this add()) in which the recovery pass's check would not see this install yet, proceed into its own
+    // coordinator.begin() for the same RESTORE slot, find it held, wait out its own bounded timeout, and
+    // - by the same "an expired wait proceeds rather than skips" contract recoverSingleDatabaseHoldingMaintenanceSlot
+    // documents for the #7449 backup race - delete the staging directory anyway (review finding on PR #7605).
+    // Registering here first means the recovery pass sees this install the instant it starts, before it has
+    // touched the coordinator or the filesystem at all.
     final Path dbPath = Path.of(databasePath).normalize().toAbsolutePath();
-    final Path snapshotNew = dbPath.resolve(SNAPSHOT_NEW_DIR);
-    final Path snapshotBackup = dbPath.resolve(SNAPSHOT_BACKUP_DIR);
-    final Path pendingMarker = dbPath.resolve(SNAPSHOT_PENDING_FILE);
-
-    // The lifecycle assumes installs for a given database never overlap (see closeLocalDatabaseIfOpen).
-    // If they ever do, log it loudly rather than silently double-closing: this set makes the violation
-    // diagnosable. Keyed by resolved path so distinct logical servers do not collide on database name.
-    // Tracked across both phases and cleared in the outer finally so a download failure does not leak
-    // the entry.
     final String inFlightKey = dbPath.toString();
+    // The lifecycle assumes installs for a given database never overlap (see closeLocalDatabaseIfOpen). If
+    // they ever do, log it loudly rather than silently double-closing: this set makes the violation
+    // diagnosable. Keyed by resolved path so distinct logical servers do not collide on database name.
     if (!INSTALLS_IN_FLIGHT.add(inFlightKey))
       LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
           "Concurrent snapshot install detected for '%s'; the install lifecycle assumes these never overlap "
               + "for the same database - this may indicate a coordination bug in the HA layer", null, databaseName);
 
     try {
-      // A .snapshot-backup left behind together with the pending marker is NOT leftover junk: rollbackToBackup's
-      // failure exit deliberately keeps both, and at that point the backup is the only intact copy of the
-      // database (see its javadoc). Deleting it here destroyed that copy before this attempt had downloaded
-      // anything, so a second failure - and the conditions that cause the first, a full volume, are exactly the
-      // ones that cause the second - left the node with a torn dbPath and nothing to restore from (issue #7139).
-      // Reconcile that state first, through the same startup-recovery routine, and refuse to start if the
-      // reconciliation cannot complete.
-      reconcileRetainedBackup(databaseName, dbPath, snapshotBackup, pendingMarker, server);
+      final BackupCoordinator.Operation refusedBy = coordinator == null ? null
+          : coordinator.begin(databaseName, BackupCoordinator.Operation.RESTORE,
+              server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS));
+      final boolean slotHeld = coordinator != null && refusedBy == null;
+      if (refusedBy != null)
+        LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+            "Reinstalling database '%s' from the leader while %s of it is still running on this node: the install "
+                + "applies a committed Raft entry and cannot be declined, so it proceeds and that operation will fail "
+                + "or produce an incomplete result. Raise '%s' to give it longer to finish", null,
+            databaseName, refusedBy.phrase(), GlobalConfiguration.HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS.getKey());
 
-      // Clean up any leftover state from a previous failed attempt. Reaching here means the backup (if there was
-      // one) has been reconciled away, so these deletes only ever drop genuinely disposable state.
-      deleteDirectoryIfExists(snapshotNew);
-      deleteDirectoryIfExists(snapshotBackup);
-      Files.deleteIfExists(pendingMarker);
-
-      Files.createDirectories(snapshotNew);
-
-      // Write the pending marker BEFORE starting extraction, and fsync it together with the parent
-      // directory so a crash right after this point still leaves the marker on disk for startup
-      // recovery to find (issue #4830).
-      writeMarkerDurable(pendingMarker);
-
-      final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
-      final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
-
-      // PHASE 0 - MAKE ROOM (issue #7037). This install is the self-heal for a diverged follower, and the volume
-      // it writes onto may be the one the Raft log just filled: when that volume is under pressure, purge the local
-      // log first so the segments below the applied index are reclaimable, then let the download refuse up front
-      // (see downloadSnapshot) rather than fail with "No space left on device" halfway through the extraction.
-      purgeRaftLogBeforeInstall(databaseName, server);
-
-      // PHASE 1 - DOWNLOAD into .snapshot-new with the live database STILL OPEN. The historical behaviour
-      // closed it up-front, so any download failure (leader unreachable, network blip) left it closed and
-      // deregistered with no recovery. Staging first means we touch the live files only on success.
       try {
-        downloadWithRetry(databaseName, snapshotNew, leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken,
-            maxRetries, retryBaseMs, server);
-      } catch (final IOException e) {
-        // Download failed: the live database has not been touched and is still open. Drop the staging
-        // directory and rethrow so the caller (or Raft) can retry later without losing availability.
-        deleteDirectoryIfExists(snapshotNew);
-        Files.deleteIfExists(pendingMarker);
-        throw e;
-      }
-
-      // Mark download as complete. The extracted files were each fsynced as they were written
-      // (see extractAndVerifySnapshot), so fsyncing this marker and the staging directory now
-      // establishes the durability barrier: if this marker is on disk after a crash, every snapshot
-      // file it vouches for is on disk too, and the swap can be safely completed by startup recovery.
-      writeMarkerDurable(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE));
-
-      // PHASE 2 - SWAP. Set the server-wide flag BEFORE closing the database so HTTP handlers return 503
-      // while the files are being moved.
-      server.setSnapshotInstallInProgress(true);
-      try {
-        swapAndReopen(databaseName, dbPath, snapshotNew, snapshotBackup, pendingMarker, server);
+        installHoldingMaintenanceSlot(databaseName, dbPath, leaderHttpAddrSupplier, leaderHttpsAddrSupplier,
+            clusterToken, server);
       } finally {
-        server.setSnapshotInstallInProgress(false);
+        // Only what was actually reserved: a wait that expired took nothing, and releasing then would drop the
+        // reservation the operation still in flight is holding.
+        if (slotHeld)
+          coordinator.end(databaseName, BackupCoordinator.Operation.RESTORE);
       }
     } finally {
       INSTALLS_IN_FLIGHT.remove(inFlightKey);
+    }
+  }
+
+  /**
+   * The install itself, with this node's per-database maintenance slot already held (or deliberately given up on)
+   * and its {@link #INSTALLS_IN_FLIGHT} entry already registered, both by
+   * {@link #install(String, String, Supplier, Supplier, String, ArcadeDBServer)}.
+   */
+  private static void installHoldingMaintenanceSlot(final String databaseName, final Path dbPath,
+      final Supplier<String> leaderHttpAddrSupplier, final Supplier<String> leaderHttpsAddrSupplier,
+      final String clusterToken, final ArcadeDBServer server) throws IOException {
+
+    final Path snapshotNew = dbPath.resolve(SNAPSHOT_NEW_DIR);
+    final Path snapshotBackup = dbPath.resolve(SNAPSHOT_BACKUP_DIR);
+    final Path pendingMarker = dbPath.resolve(SNAPSHOT_PENDING_FILE);
+
+    // A .snapshot-backup left behind together with the pending marker is NOT leftover junk: rollbackToBackup's
+    // failure exit deliberately keeps both, and at that point the backup is the only intact copy of the
+    // database (see its javadoc). Deleting it here destroyed that copy before this attempt had downloaded
+    // anything, so a second failure - and the conditions that cause the first, a full volume, are exactly the
+    // ones that cause the second - left the node with a torn dbPath and nothing to restore from (issue #7139).
+    // Reconcile that state first, through the same startup-recovery routine, and refuse to start if the
+    // reconciliation cannot complete.
+    reconcileRetainedBackup(databaseName, dbPath, snapshotBackup, pendingMarker, server);
+
+    // Clean up any leftover state from a previous failed attempt. Reaching here means the backup (if there was
+    // one) has been reconciled away, so these deletes only ever drop genuinely disposable state.
+    deleteDirectoryIfExists(snapshotNew);
+    deleteDirectoryIfExists(snapshotBackup);
+    Files.deleteIfExists(pendingMarker);
+
+    Files.createDirectories(snapshotNew);
+
+    // Write the pending marker BEFORE starting extraction, and fsync it together with the parent
+    // directory so a crash right after this point still leaves the marker on disk for startup
+    // recovery to find (issue #4830).
+    writeMarkerDurable(pendingMarker);
+
+    final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
+    final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
+
+    // PHASE 0 - MAKE ROOM (issue #7037). This install is the self-heal for a diverged follower, and the volume
+    // it writes onto may be the one the Raft log just filled: when that volume is under pressure, purge the local
+    // log first so the segments below the applied index are reclaimable, then let the download refuse up front
+    // (see downloadSnapshot) rather than fail with "No space left on device" halfway through the extraction.
+    purgeRaftLogBeforeInstall(databaseName, server);
+
+    // PHASE 1 - DOWNLOAD into .snapshot-new with the live database STILL OPEN. The historical behaviour
+    // closed it up-front, so any download failure (leader unreachable, network blip) left it closed and
+    // deregistered with no recovery. Staging first means we touch the live files only on success.
+    try {
+      downloadWithRetry(databaseName, snapshotNew, leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken,
+          maxRetries, retryBaseMs, server);
+    } catch (final IOException e) {
+      // Download failed: the live database has not been touched and is still open. Drop the staging
+      // directory and rethrow so the caller (or Raft) can retry later without losing availability.
+      deleteDirectoryIfExists(snapshotNew);
+      Files.deleteIfExists(pendingMarker);
+      throw e;
+    }
+
+    // Mark download as complete. The extracted files were each fsynced as they were written
+    // (see extractAndVerifySnapshot), so fsyncing this marker and the staging directory now
+    // establishes the durability barrier: if this marker is on disk after a crash, every snapshot
+    // file it vouches for is on disk too, and the swap can be safely completed by startup recovery.
+    writeMarkerDurable(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE));
+
+    // PHASE 2 - SWAP. Set the server-wide flag BEFORE closing the database so HTTP handlers return 503
+    // while the files are being moved.
+    server.setSnapshotInstallInProgress(true);
+    try {
+      swapAndReopen(databaseName, dbPath, snapshotNew, snapshotBackup, pendingMarker, server);
+    } finally {
+      server.setSnapshotInstallInProgress(false);
     }
   }
 
@@ -840,9 +876,25 @@ public final class SnapshotInstaller {
 
         // Clean up an interrupted new-database acquisition staging dir (databases/.acquire-<name>, issue #4727).
         // A completed acquire atomically renames the staging dir to its final database name, so any surviving
-        // .acquire-* dir is an interrupted download and is safe to delete; the node re-acquires it on the next
-        // reconcile. These are reserved ('.'-prefixed) so the boot scan never opened them.
+        // .acquire-* dir is normally an interrupted download and safe to delete; the node re-acquires it on the
+        // next reconcile. These are reserved ('.'-prefixed) so the boot scan never opened them.
+        //
+        // "Normally" - not always - because this pass is not startup-only (see the class javadoc above on
+        // #7449): RaftHAServer.restartRatis rebuilds the state machine, and ArcadeStateMachine.initialize() -
+        // and this pass with it - runs again while the server stays ONLINE, so acquireNewDatabase() can already
+        // be downloading into this very staging dir. It registers under the FINAL database path (not the
+        // staging path) in INSTALLS_IN_FLIGHT before it touches the staging dir at all, so translate the
+        // staging name back to that final path and check it the same way the pending-marker branch below does
+        // (review finding on PR #7605 - the first cut of the #7128 fix only guarded that branch, leaving this
+        // one, an equally real deletion of an in-flight install's staging directory, unguarded).
         if (dirName.startsWith(ACQUIRE_STAGING_PREFIX)) {
+          final Path finalDbPath = databasesDir.resolve(dirName.substring(ACQUIRE_STAGING_PREFIX.length()));
+          if (INSTALLS_IN_FLIGHT.contains(resolvedInFlightKey(finalDbPath))) {
+            LogManager.instance().log(SnapshotInstaller.class, Level.FINE,
+                "Skipping acquisition-staging cleanup for %s this pass: an acquisition is already in flight for it",
+                null, dbDir);
+            continue;
+          }
           try {
             LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
                 "Cleaning up interrupted new-database acquisition staging dir: %s", null, dbDir);
@@ -861,6 +913,22 @@ public final class SnapshotInstaller {
         final Path pendingMarker = dbDir.resolve(SNAPSHOT_PENDING_FILE);
         if (!Files.exists(pendingMarker))
           continue;
+
+        // Same not-startup-only reasoning as the .acquire-* branch above, for a database install() is
+        // refreshing in place rather than acquiring fresh. install() registers dbDir's resolved path in
+        // INSTALLS_IN_FLIGHT before it does anything else - including acquiring the maintenance slot or
+        // writing the pending marker below - specifically so this check sees it (issue #7128; tightened
+        // further per the PR #7605 review to close a narrow window between the old registration point and
+        // the maintenance-slot wait). Skipping it is safe either way the in-flight install ends: success
+        // completes the swap and clears the marker itself; failure deletes its own staging directory and
+        // marker in its catch block. A crash takes INSTALLS_IN_FLIGHT - an in-memory set - down with it, so
+        // the next actual process restart finds the marker with nothing in-flight to race and reconciles it
+        // normally.
+        if (INSTALLS_IN_FLIGHT.contains(resolvedInFlightKey(dbDir))) {
+          LogManager.instance().log(SnapshotInstaller.class, Level.FINE,
+              "Skipping snapshot recovery for %s this pass: an install is already in flight for it", null, dbDir);
+          continue;
+        }
 
         LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
             "Recovering pending snapshot swap for database directory: %s", null, dbDir);
@@ -1319,7 +1387,7 @@ public final class SnapshotInstaller {
       }
     }
 
-    verifyManifest(manifestBytes, extracted, manifestRequired);
+    verifyManifest(manifestBytes, extracted, manifestRequired, targetDir);
   }
 
   /**
@@ -1328,11 +1396,24 @@ public final class SnapshotInstaller {
    *   <li>manifest absent + not required: legacy leader, nothing to verify;</li>
    *   <li>manifest absent + required: the leader advertised a manifest but it never arrived - the download
    *       was truncated before the final entry, so reject;</li>
-   *   <li>manifest present: every listed file must have been extracted with a matching size and CRC32.</li>
+   *   <li>manifest present: every listed file must have been extracted with a matching size and CRC32, AND
+   *       must still be present on disk under {@code targetDir} with that same size.</li>
    * </ul>
+   * <p>
+   * The on-disk re-stat (issue #7128) exists because {@code extracted} is a record of what this call
+   * <i>streamed</i>, taken as each entry was written and fsynced - it says nothing about whether the file is
+   * still there by the time this method runs. A concurrent boot-time recovery pass re-entering through a
+   * runtime Ratis restart can read this same staging directory as "orphaned" (no completion marker yet) and
+   * delete it out from under an extraction already in flight; every entry extracted before that deletion is
+   * gone from disk yet still recorded in {@code extracted} with a matching size and CRC, so the map-only check
+   * verified a directory that no longer existed. Re-stating turns that silent bad install into a loud one.
+   * Existence and size only, not a CRC re-read: the CRC was already computed from the exact bytes written in
+   * this call, immediately before the fsync that made them durable, so it cannot itself have been corrupted by
+   * a concurrent deletion the way "is the file still there" can - and re-reading every file a second time to
+   * recompute it would double this method's I/O for a check the in-memory record already answers correctly.
    */
-  private static void verifyManifest(final byte[] manifestBytes, final Map<String, long[]> extracted,
-      final boolean manifestRequired) throws IOException {
+  static void verifyManifest(final byte[] manifestBytes, final Map<String, long[]> extracted,
+      final boolean manifestRequired, final Path targetDir) throws IOException {
     if (manifestBytes == null) {
       if (manifestRequired)
         throw new IOException("Snapshot transfer incomplete: the leader advertised a completeness manifest but it was "
@@ -1353,6 +1434,29 @@ public final class SnapshotInstaller {
       if (got[1] != entry.crc())
         throw new IOException("Snapshot file '" + entry.name() + "' CRC32 mismatch: manifest declares "
             + entry.crc() + " but received content hashes to " + got[1] + " (corrupt download)");
+
+      final Path onDisk = targetDir.resolve(entry.name());
+      final long sizeOnDisk;
+      try {
+        sizeOnDisk = Files.size(onDisk);
+      } catch (final NoSuchFileException e) {
+        throw new IOException("Snapshot file '" + entry.name() + "' was extracted and verified but is no longer "
+            + "present on disk under " + targetDir + " - the staging directory was modified concurrently while "
+            + "this install was in progress (possible concurrent recovery pass, issue #7128)", e);
+      } catch (final IOException e) {
+        // A narrower catch than NoSuchFileException above would miss it: not every filesystem/JDK combination
+        // is guaranteed to raise that specific subtype for a missing file. But a message asserting concurrent
+        // modification as the cause is only earned for that specific, common case; any other I/O failure here
+        // (a permission error, a disk-level fault) gets a neutral message instead of a misdiagnosis, with the
+        // wrapped exception carrying the real cause either way.
+        throw new IOException("Snapshot file '" + entry.name() + "' was extracted and verified but could not be "
+            + "re-verified on disk under " + targetDir + ": " + e.getMessage(), e);
+      }
+      if (sizeOnDisk != entry.size())
+        throw new IOException("Snapshot file '" + entry.name() + "' was extracted and verified but now measures "
+            + sizeOnDisk + " bytes on disk instead of the manifest's " + entry.size()
+            + " - the staging directory was modified concurrently while this install was in progress "
+            + "(possible concurrent recovery pass, issue #7128)");
     }
   }
 

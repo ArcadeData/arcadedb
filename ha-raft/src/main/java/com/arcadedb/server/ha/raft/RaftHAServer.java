@@ -2882,8 +2882,30 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // may be divergent; do not advertise Ready until it clears (issue #5273).
       final ArcadeStateMachine sm = getStateMachine();
       final boolean resyncInProgress = sm != null && sm.isResyncInProgress();
+      // Issue #7131: commitIndex/appliedIndex above are both local to this division, and Ratis clamps a
+      // follower's commit index to its own flush index - a follower receiving no appends has
+      // commitIndex == appliedIndex and reports lag 0 no matter how far behind the leader it really is. This
+      // gate needs no extra round trip: it is read from data Ratis already tracks locally. A second,
+      // leader-RPC-recency signal (RoleInfoProto.FollowerInfo.LeaderInfo.lastRpcElapsedTimeMs against
+      // HA_PEER_UNREACHABLE_THRESHOLD) was tried for the wedged-channel half of #7131 and removed: verified
+      // against Ratis 3.3.0 bytecode, granting a PRE_VOTE to ANY candidate - not necessarily this follower's
+      // own recognized leader - refreshes that same timestamp (RaftServerImpl.requestVote's shared
+      // FollowerState.updateLastRpcTime(REQUEST_VOTE) call is not gated on Phase.ELECTION the way the actual
+      // vote grant is), so it does not mean what it would need to mean here and would have offered false
+      // reassurance rather than real detection (review finding on PR #7605). The wedged-channel case remains
+      // open; the empty-log case below does not depend on it.
+      final boolean emptyLogInMultiPeerCluster = isEmptyLogInMultiPeerCluster(
+          conf == null ? 0 : conf.getCurrentPeers().size(), commitIndex);
+      // Issue #7130: the division's own Ratis lifecycle, read from this same snapshot so it cannot disagree
+      // with leaderPresent/localInConfig/commitIndex/appliedIndex above. A RaftServer proxy can stay RUNNING
+      // while the per-group division underneath goes CLOSED or EXCEPTION (issue #5271); every field this
+      // method otherwise reads (leaderId, raft conf, commit/applied index) survives that close and keeps
+      // reporting its last value, which is exactly how a dead division still answered Ready before this gate.
+      final boolean divisionLifecycleHealthy = isDivisionLifecycleHealthy(info.getLifeCycleState());
+      final boolean haltedAfterCriticalError = sm != null && sm.isHaltedAfterCriticalError();
       return isReadyForTrafficState(leaderPresent, localInConfig, info.isLeader(), commitIndex, appliedIndex,
-          maxLagEntries, resyncInProgress, info.isLeaderReady());
+          maxLagEntries, resyncInProgress, info.isLeaderReady(), emptyLogInMultiPeerCluster,
+          divisionLifecycleHealthy, haltedAfterCriticalError);
     } catch (final Exception e) {
       // Catch Exception, not IOException: getLastAppliedIndex() above is documented to throw Ratis'
       // IllegalStateException while an in-place restart re-initializes the division (issue #5271), so the
@@ -2894,6 +2916,48 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       LogManager.instance().log(this, Level.WARNING, "Cannot read Raft state for readiness probe", e);
       return false;
     }
+  }
+
+  /**
+   * Whether {@code state} counts as healthy for the issue #7130 readiness gate. Only {@code RUNNING} is -
+   * every other {@link LifeCycle.State} value, {@code PAUSED} included, is not ready.
+   * <p>
+   * {@code PAUSED} was initially included alongside {@code RUNNING} on the reasoning that
+   * {@link ArcadeStateMachine#pause()}'s own javadoc verifies every Ratis {@code StateMachine.pause()} caller
+   * is paired with a subsequent {@code reinitialize()} back to RUNNING, making it a brief, self-recovering
+   * transition rather than a failure state. That reasoning conflated "will resolve itself shortly" with "can
+   * serve traffic right now": {@code RaftServerImpl}'s own request handlers (append entries, request vote,
+   * client requests) each assert the lifecycle is in the singleton {@code RUNNING} set before proceeding -
+   * verified against Ratis 3.3.0 bytecode - and reject with {@code ServerNotReadyException} for any other
+   * state, {@code PAUSED} included. A division legitimately PAUSED for a snapshot-install notification (the
+   * common real-world trigger) therefore rejects traffic exactly like a CLOSED/EXCEPTION one would, for
+   * however briefly; readiness must reflect that, not the fact that it is expected to end soon (review
+   * finding on PR #7605).
+   * <p>
+   * Package-private, not private, specifically so this mapping - the one part of the #7130 fix with no other
+   * test coverage, since every {@code isReadyForTrafficState} test passes the already-reduced boolean - can
+   * be exercised directly against every {@link LifeCycle.State} value without faking a Ratis {@code Division}.
+   */
+  static boolean isDivisionLifecycleHealthy(final LifeCycle.State state) {
+    return state == LifeCycle.State.RUNNING;
+  }
+
+  /**
+   * The issue #7131 cold-rejoin signal: whether {@code commitIndex} means "this follower's log holds nothing
+   * yet" in a configuration with more than one peer.
+   * <p>
+   * Strictly {@code < 0} ({@code RaftLog.INVALID_LOG_INDEX}), not {@code <= 0}: index {@code 0} is
+   * {@code RaftLog.LEAST_VALID_LOG_INDEX}, the leader's first real committed entry, not "empty". An earlier
+   * revision used {@code <= 0}, which reported a follower genuinely caught up to a brand-new multi-node
+   * cluster's very first commit as not-ready - confirmed against Ratis 3.3.0 bytecode ({@code RaftLogIndex}'s
+   * two named constants) and missed by every {@code isReadyForTrafficState} test because none of them fed a
+   * real, un-reduced {@code commitIndex} through this computation (review finding on PR #7605).
+   * <p>
+   * Package-private, not private, for the same reason as {@link #isDivisionLifecycleHealthy}: so this
+   * boundary can be exercised directly instead of only through a live Ratis {@code Division}.
+   */
+  static boolean isEmptyLogInMultiPeerCluster(final int peerCount, final long commitIndex) {
+    return peerCount > 1 && commitIndex < 0;
   }
 
   /**
@@ -2939,16 +3003,71 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * not-yet-ready leader must not fall through to the follower lag branch: a freshly elected leader
    * typically has {@code commitIndex == appliedIndex} and would be reported Ready there anyway. The flag
    * is meaningful only when {@code leader} is true; a follower's readiness is decided by its lag.
+   * <p>
+   * Kept as the direct 8-argument entry point for existing callers and tests: it forwards to the 9-argument
+   * overload with the issue #7131 gate disabled ({@code emptyLogInMultiPeerCluster=false}), so its documented
+   * lag-only behaviour is unchanged. Production code calls the final, 11-argument overload directly.
    */
   static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
       final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries,
       final boolean resyncInProgress, final boolean leaderReady) {
+    return isReadyForTrafficState(leaderPresent, localInConfig, leader, commitIndex, appliedIndex, maxLagEntries,
+        resyncInProgress, leaderReady, false);
+  }
+
+  /**
+   * Overload of {@link #isReadyForTrafficState(boolean, boolean, boolean, long, long, long, boolean, boolean)}
+   * that closes the empty-log half of issue #7131: the {@code commitIndex - appliedIndex} lag above is
+   * computed from indices that are both local to this division, and Ratis clamps a follower's commit index
+   * to its own flush index. A follower that has never received any entries - most concretely, one freshly
+   * rejoining an established multi-peer cluster after a wipe/reformat, before the leader's first append batch
+   * has had a chance to flush - therefore has {@code commitIndex == appliedIndex == 0} and reports lag
+   * {@code 0} regardless of how far behind the leader's true commit index it is. {@code emptyLogInMultiPeerCluster}
+   * catches exactly that: this follower's local log holds nothing yet, in a configuration that has more than
+   * one peer. Applies to followers only; the leader branch returns before it is evaluated.
+   * <p>
+   * A leader-RPC-recency signal was tried for the complementary wedged-channel case (a follower whose log is
+   * not empty but has simply stopped receiving new entries) and removed: see the comment in
+   * {@link #isReadyForTraffic(long)} for why it does not reliably mean what it would need to mean. That case
+   * remains open.
+   */
+  static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
+      final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries,
+      final boolean resyncInProgress, final boolean leaderReady, final boolean emptyLogInMultiPeerCluster) {
+    return isReadyForTrafficState(leaderPresent, localInConfig, leader, commitIndex, appliedIndex, maxLagEntries,
+        resyncInProgress, leaderReady, emptyLogInMultiPeerCluster, true, false);
+  }
+
+  /**
+   * Overload that additionally folds in the issue #7130 gap: a {@code RaftServer} proxy can stay
+   * {@code RUNNING} while the per-group division underneath goes {@code CLOSED} or {@code EXCEPTION}
+   * (issue #5271) - the node then rejects every vote/append with {@code ServerNotReadyException} while
+   * every field the overloads above read (leader id, raft configuration, commit/applied index) keeps
+   * reporting its last value from before the close, so none of those gates see it. Also fails closed once
+   * {@code ArcadeStateMachine.isHaltedAfterCriticalError()} is set, giving that flag its first production
+   * caller: the halt is meant to take the node out of service, and without this it stayed Ready with every
+   * {@code applyTransaction} failing.
+   * <p>
+   * Both are evaluated before every other gate, including {@code leaderPresent}/{@code localInConfig}: once
+   * the division is unhealthy or the node is halted, none of the other fields can be trusted either. This is
+   * the production entry point; {@link #isReadyForTraffic(long)} calls it directly.
+   */
+  static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
+      final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries,
+      final boolean resyncInProgress, final boolean leaderReady, final boolean emptyLogInMultiPeerCluster,
+      final boolean divisionLifecycleHealthy, final boolean haltedAfterCriticalError) {
+    if (!divisionLifecycleHealthy)
+      return false;
+    if (haltedAfterCriticalError)
+      return false;
     if (!leaderPresent || !localInConfig)
       return false;
     if (resyncInProgress)
       return false;
     if (leader)
       return leaderReady;
+    if (emptyLogInMultiPeerCluster)
+      return false;
     if (commitIndex < 0 || appliedIndex < 0)
       return false;
     final long lag = commitIndex - appliedIndex;

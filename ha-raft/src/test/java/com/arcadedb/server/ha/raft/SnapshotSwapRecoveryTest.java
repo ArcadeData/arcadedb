@@ -199,4 +199,43 @@ class SnapshotSwapRecoveryTest {
     assertThat(snapshotNew).doesNotExist();
     assertThat(dbDir.resolve(".snapshot-pending")).doesNotExist();
   }
+
+  /**
+   * Issue #7128: this boot-time-oriented pass also runs on a runtime Ratis restart (RaftHAServer.restartRatis
+   * rebuilds the state machine, which calls ArcadeStateMachine.initialize() again while the server stays
+   * ONLINE). Nothing previously stopped it from reading an in-flight install's staging directory as "orphaned"
+   * and deleting it out from under the extractor. Simulates exactly that: a directory that looks orphaned to
+   * this pass (pending marker, .snapshot-new present, no completion marker, no backup - "download in
+   * progress") but is registered in INSTALLS_IN_FLIGHT, standing in for the real install() holding it.
+   */
+  @Test
+  void recoverySkipsADirectoryWithAnInstallInFlight(@TempDir final Path databasesDir) throws Exception {
+    final Path dbDir = databasesDir.resolve("mydb");
+    final Path snapshotNew = dbDir.resolve(".snapshot-new");
+
+    Files.createDirectories(snapshotNew);
+    Files.writeString(dbDir.resolve(".snapshot-pending"), "");
+    // schema.json makes dbDir an intact database, matching recoveryCleansUpOrphanedNewDir above, so the
+    // orphaned branch actually deletes snapshotNew once the in-flight guard clears (issue #7139's check).
+    Files.writeString(dbDir.resolve("schema.json"), "{}");
+    Files.writeString(snapshotNew.resolve("partial.dat"), "still-being-extracted");
+
+    SnapshotInstaller.markInstallInFlightForTesting(dbDir);
+    try {
+      SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir);
+
+      // Untouched: the in-flight install still owns this directory.
+      assertThat(snapshotNew).exists();
+      assertThat(snapshotNew.resolve("partial.dat")).exists();
+      assertThat(dbDir.resolve(".snapshot-pending")).exists();
+    } finally {
+      SnapshotInstaller.clearInstallInFlightForTesting(dbDir);
+    }
+
+    // Once the (simulated) install is no longer in flight, the very same on-disk state - now genuinely
+    // orphaned - is cleaned up exactly as it always was.
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir);
+    assertThat(snapshotNew).doesNotExist();
+    assertThat(dbDir.resolve(".snapshot-pending")).doesNotExist();
+  }
 }
