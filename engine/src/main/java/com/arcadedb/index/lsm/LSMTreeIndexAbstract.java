@@ -344,7 +344,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
       return new LookupResult(false, true, low, null);
     } else if (result != HIGHER)
-      return result;
+      return seekRunBoundary(currentPageBuffer, startIndexArray, convertedKeys, count, purpose, result, low, high);
 
     // CHECK THE BOUNDARIES FIRST (HIGHER THAN THE LAST)
     result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, high, count, purpose);
@@ -355,7 +355,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
       return new LookupResult(false, true, count, null);
     } else if (result != LOWER)
-      return result;
+      return seekRunBoundary(currentPageBuffer, startIndexArray, convertedKeys, count, purpose, result, low, high);
 
     int mid;
     while (low <= high) {
@@ -368,7 +368,9 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       else if (result == LOWER)
         high = mid - 1;
       else
-        return result;
+        // INVARIANT HELD BY THE LOOP: every entry below `low` compares HIGHER and every entry above `high` compares
+        // LOWER, so the whole run of entries equal to the search key lies inside [low, high].
+        return seekRunBoundary(currentPageBuffer, startIndexArray, convertedKeys, count, purpose, result, low, high);
     }
 
     if (purpose == 3) {
@@ -376,6 +378,66 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     }
 
     return new LookupResult(false, false, low, null);
+  }
+
+  /**
+   * Moves an ITERATOR landing point (purpose 2 or 3) from wherever the binary search converged to the boundary of the
+   * RUN of entries that compare EQUAL to the search key, in the direction the scan is about to travel: the FIRST entry
+   * of the run when ascending, the LAST when descending. Any other purpose is returned untouched.
+   * <p>
+   * #7611: a run is not a partial-key curiosity. A page holds one entry per TRANSACTION that wrote the key - each
+   * commit appends its own {@code (key, rids)} entry instead of merging into the previous one - so runs under a FULL
+   * key are the normal state of every non-unique index built by batched loading. {@link LSMTreeIndexUnderlyingPageCursor}
+   * merges a key group FORWARD from where the cursor is parked, so an ascending scan that starts in the middle of a run
+   * never sees the entries before it: an inclusive lower bound lost {@code floor((k-1)/2)} of the rows equal to the
+   * bound for a run of {@code k}, while the unindexed scan over the same rows stayed correct. Resolving the boundary
+   * only for partial keys - which is what the {@code compareKey()} overrides used to do - covered the composite-prefix
+   * case (#6592, #6694) and left the far more common full-key one open.
+   * <p>
+   * Entries in a page are sorted, so "compares equal to the search key" is a contiguous block whose edge is a BINARY
+   * search over the bracket the caller has already narrowed, not the linear walk {@link #findFirstEntryOfSameKey} has
+   * to perform for purpose 1 (which needs every position in the run, not just its edge).
+   */
+  private LookupResult seekRunBoundary(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys,
+      final int count, final int purpose, final LookupResult match, final int low, final int high) {
+    if (purpose != 2 && purpose != 3)
+      return match;
+
+    final boolean ascending = purpose == 2;
+    final int matched = match.keyIndex;
+
+    // The run cannot extend past the matched entry on the side the scan is leaving, so only the other half is searched.
+    int lo = ascending ? low : matched + 1;
+    int hi = ascending ? matched - 1 : high;
+
+    int boundary = matched;
+    while (lo <= hi) {
+      final int mid = (lo + hi) >>> 1;
+
+      if (compareKey(currentPageBuffer, startIndexArray, convertedKeys, mid, count) == 0) {
+        boundary = mid;
+        if (ascending)
+          hi = mid - 1;
+        else
+          lo = mid + 1;
+      } else if (ascending)
+        // `mid` sorts BELOW the search key, so the run starts above it
+        lo = mid + 1;
+      else
+        // `mid` sorts ABOVE the search key, so the run ends below it
+        hi = mid - 1;
+    }
+
+    if (boundary == matched)
+      return match;
+
+    statsAdjacentSteps.addAndGet(Math.abs(boundary - matched));
+
+    // Re-read the entry the scan will actually start from, so the reported position describes IT and not whichever
+    // entry the search above compared last.
+    compareKey(currentPageBuffer, startIndexArray, convertedKeys, boundary, count);
+
+    return new LookupResult(true, false, boundary, new int[] { currentPageBuffer.position() });
   }
 
   protected void writeEntrySingleValue(final Binary buffer, final Object[] keys, final Object rid, final int pageUsableSpace) {
