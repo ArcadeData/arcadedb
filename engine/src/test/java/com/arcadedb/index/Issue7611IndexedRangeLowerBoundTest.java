@@ -243,6 +243,62 @@ class Issue7611IndexedRangeLowerBoundTest extends TestHelper {
   }
 
   /**
+   * The PARTIAL-key half of the same seek. Resolving an iterator landing point to the run boundary used to live in the
+   * two {@code compareKey()} overrides behind a {@code convertedKeys.length < binaryKeyTypes.length} guard, so it
+   * covered exactly this composite-prefix case (#6592, #6694) and nothing else; the fix moved it into
+   * {@code seekRunBoundary()} for full and partial keys alike. Every other test here scans a single-property index,
+   * which means a regression on the prefix path would pass the whole fixture unnoticed - hence a leading-key prefix
+   * scan, both directions, before and after a compaction, against an unindexed twin holding the same rows.
+   */
+  @Test
+  void leadingKeyPrefixOfACompositeIndexScansTheWholeGroup() throws Exception {
+    database.command("sql", "CREATE DOCUMENT TYPE Comp");
+    database.command("sql", "CREATE PROPERTY Comp.a STRING");
+    database.command("sql", "CREATE PROPERTY Comp.b STRING");
+    database.command("sql", "CREATE INDEX ON Comp (a, b) NOTUNIQUE");
+    database.command("sql", "CREATE DOCUMENT TYPE CompPlain");
+    database.command("sql", "CREATE PROPERTY CompPlain.a STRING");
+    database.command("sql", "CREATE PROPERTY CompPlain.b STRING");
+
+    final int groups = 30;
+    final int perGroup = 40;
+    // one transaction per round, so every (a, b) pair owns one index entry per round and the prefix group is a run
+    for (int round = 0; round < perGroup; round++) {
+      final int r = round;
+      database.transaction(() -> {
+        for (int g = 0; g < groups; g++) {
+          final String a = String.format("a%03d", g);
+          final String b = String.format("b%03d", r);
+          database.newDocument("Comp").set("a", a).set("b", b).save();
+          database.newDocument("CompPlain").set("a", a).set("b", b).save();
+        }
+      });
+    }
+
+    final String prefix = String.format("a%03d", groups / 2);
+    final RangeIndex index = (RangeIndex) database.getSchema().getIndexByName("Comp[a,b]");
+
+    assertThat(count("SELECT count(*) AS c FROM Comp WHERE a = '" + prefix + "'")).as("before compaction, prefix")
+        .isEqualTo(perGroup);
+    assertThat(count("SELECT count(*) AS c FROM CompPlain WHERE a = '" + prefix + "'")).as("unindexed prefix")
+        .isEqualTo(perGroup);
+    // the partial key reaches iterator purposes 2 and 3 directly, which is the path the guard used to own
+    assertThat(collect(index.range(true, new Object[] { prefix }, true, new Object[] { prefix }, true)))
+        .as("before compaction, ascending prefix").hasSize(perGroup);
+    assertThat(collect(index.range(false, new Object[] { prefix }, true, new Object[] { prefix }, true)))
+        .as("before compaction, descending prefix").hasSize(perGroup);
+
+    ((IndexInternal) index).compact();
+
+    assertThat(count("SELECT count(*) AS c FROM Comp WHERE a = '" + prefix + "'")).as("after compaction, prefix")
+        .isEqualTo(perGroup);
+    assertThat(collect(index.range(true, new Object[] { prefix }, true, new Object[] { prefix }, true)))
+        .as("after compaction, ascending prefix").hasSize(perGroup);
+    assertThat(collect(index.range(false, new Object[] { prefix }, true, new Object[] { prefix }, true)))
+        .as("after compaction, descending prefix").hasSize(perGroup);
+  }
+
+  /**
    * The shape it was found on: ISO date strings on an indexed STRING property, loaded in batches - the exact form of
    * every time-bounded report. The loss was entirely on the day EQUAL to the lower bound, every later day complete,
    * which is why only a row count catches it.
