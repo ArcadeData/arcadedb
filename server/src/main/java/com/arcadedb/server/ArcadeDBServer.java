@@ -89,7 +89,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -209,7 +209,17 @@ public class ArcadeDBServer {
   private volatile    Thread                                lifecycleOwner;
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
-  private final       AtomicBoolean snapshotInstallInProgress            = new AtomicBoolean(false);
+  /**
+   * How many snapshot installs or snapshot-swap repairs are moving files on this node right now, not whether one
+   * is (issue #7530). A depth rather than a flag because the window it guards is node-wide while the operations
+   * that open it are per database: {@code SnapshotInstaller.recoverPendingSnapshotSwaps} takes it once per
+   * repaired directory, to keep each window as short as the repair of one directory, and an {@code install} of a
+   * different database can be holding it at the same time on another thread. With a boolean, whichever of the two
+   * finished first cleared the window the other was still relying on, and HTTP clients were served from a
+   * directory mid-swap. Every {@link #setSnapshotInstallInProgress} caller pairs its {@code true} with a
+   * {@code false} in a {@code finally}, so the depth is balanced.
+   */
+  private final       AtomicInteger snapshotInstallsInProgress           = new AtomicInteger(0);
   private volatile    Function<LocalDatabase, DatabaseInternal> databaseWrapper;
   // Micrometer's global composite registry, the meter binders and the per-tuple timer caches of
   // MicrometerQueryMetricsRecorder/AbstractServerHttpHandler are JVM-wide, while a start()/stop() pair is
@@ -285,12 +295,24 @@ public class ArcadeDBServer {
     return observationRegistry;
   }
 
+  /**
+   * Opens ({@code true}) or closes ({@code false}) one holder's share of the node-wide "a snapshot install is
+   * moving files" window that {@code AbstractServerHttpHandler} answers with a 503. Nested and concurrent holders
+   * are counted, so the window stays open until the last one releases it (issue #7530).
+   * <p>
+   * A {@code false} with no matching {@code true} is floored at zero rather than allowed to go negative: an
+   * unbalanced release is a caller bug, and letting the depth drift below zero would wedge the window permanently
+   * shut for every later install.
+   */
   public void setSnapshotInstallInProgress(final boolean inProgress) {
-    snapshotInstallInProgress.set(inProgress);
+    if (inProgress)
+      snapshotInstallsInProgress.incrementAndGet();
+    else
+      snapshotInstallsInProgress.updateAndGet(depth -> depth > 0 ? depth - 1 : 0);
   }
 
   public boolean isSnapshotInstallInProgress() {
-    return snapshotInstallInProgress.get();
+    return snapshotInstallsInProgress.get() > 0;
   }
 
   public void start() {
@@ -1523,9 +1545,14 @@ public class ArcadeDBServer {
           // Skip reserved internal databases (e.g. the Raft control directory '.raft'): they are not
           // user databases and must not be registered nor leak into the server/cluster status APIs.
           if (!isReservedDatabaseName(f.getName())) {
-            // HA snapshot recovery runs between the two passes. Never open a half-swapped directory, and never
-            // leave open handles on files recovery is about to move: the recovery pass holds no registry lock and
-            // would rename them out from under a registered instance (issue #7129).
+            // HA snapshot recovery runs between the two passes. Never open a half-swapped directory: its files are
+            // neither the previous database nor the installed snapshot, so what got registered here would be a torn
+            // mix (issue #7129). The second pass is what registers it, once recovery has cleared the marker.
+            //
+            // The recovery pass now also takes this registry lock and closes whatever it finds registered before it
+            // moves anything (issue #7530), so deferring here is no longer the only thing standing between it and a
+            // set of open handles - but it is still what keeps a torn directory from being opened in the first
+            // place, which the lock cannot do.
             if (isAwaitingSnapshotRecovery(f)) {
               if (afterSnapshotRecovery)
                 LogManager.instance().log(this, Level.SEVERE,

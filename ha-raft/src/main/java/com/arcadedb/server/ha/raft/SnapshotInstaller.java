@@ -702,13 +702,21 @@ public final class SnapshotInstaller {
    * not expected to overlap on a single database. If that assumption is ever broken, two concurrent
    * installs could both pass the {@code existsDatabase} check and the second {@code close} would see an
    * already-closed instance.
+   *
+   * @return {@code true} when a registered database was closed and deregistered, {@code false} when there was
+   * nothing registered under that name. The install call sites reopen unconditionally - an install's whole purpose
+   * is to leave the database registered and serving - but the crash-recovery pass reopens only what it closed, so
+   * that a directory {@code ArcadeDBServer.loadDatabases} deliberately deferred at startup is not registered by the
+   * repair (issue #7530).
    */
-  private static void closeLocalDatabaseIfOpen(final ArcadeDBServer server, final String databaseName) {
-    if (server.existsDatabase(databaseName)) {
-      final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
-      db.getEmbedded().close();
-      server.removeDatabase(databaseName);
-    }
+  private static boolean closeLocalDatabaseIfOpen(final ArcadeDBServer server, final String databaseName) {
+    if (!server.existsDatabase(databaseName))
+      return false;
+
+    final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
+    db.getEmbedded().close();
+    server.removeDatabase(databaseName);
+    return true;
   }
 
   /**
@@ -841,8 +849,9 @@ public final class SnapshotInstaller {
   }
 
   /**
-   * Scans all database subdirectories for pending snapshot swaps and completes or rolls back each one, holding the
-   * repaired database's maintenance slot while it does.
+   * Scans all database subdirectories for pending snapshot swaps and completes or rolls back each one, with the
+   * repaired database closed, its maintenance slot held, the registry lock held and the node's 503 window open
+   * while it does.
    * <p>
    * The repair moves files into and out of the live database directory - {@code atomicSwap}, {@code restoreBackup}
    * and {@code clearLiveDatabaseFiles} all run against it - which is what #7444 set out to exclude a backup from
@@ -860,11 +869,17 @@ public final class SnapshotInstaller {
    * {@code arcadedb.ha.snapshotInstallBackupWaitMs}, the same setting {@link #install} uses, and expiry is not
    * fatal for the same reason it is not there: a directory left half-swapped is worse than a backup that reads a
    * torn one, and {@code ArcadeDBServer.loadDatabases} keeps the database unopened until the marker clears.
+   * <p>
+   * The slot excludes a backup and nothing else, which left the repair renaming files under whatever was reading
+   * the database through {@link ArcadeDBServer#getDatabase} - a reachable state, not a hypothetical one. See
+   * {@link #recoverSingleDatabaseExcludingReaders} for how that is closed, and for why its reopen is conditional
+   * where {@link #reconcileRetainedBackup}'s is not (issue #7530).
    *
    * @param databasesDir the parent directory containing all database subdirectories
-   * @param server       the server whose {@link BackupCoordinator} admits the repair, or {@code null} when there is
-   *                     none to consult - an embedded caller, or a unit test driving the pass directly - in which
-   *                     case the repair runs unreserved, exactly as it did before this existed
+   * @param server       the server whose {@link BackupCoordinator} admits the repair and whose registry the repair
+   *                     closes the database out of, or {@code null} when there is none - an embedded caller, or a
+   *                     unit test driving the pass directly - in which case the repair runs unreserved and
+   *                     unsynchronised, exactly as it did before any of this existed
    */
   public static void recoverPendingSnapshotSwaps(final Path databasesDir, final ArcadeDBServer server) {
     if (!Files.isDirectory(databasesDir))
@@ -946,7 +961,9 @@ public final class SnapshotInstaller {
 
   /**
    * Runs {@link #recoverSingleDatabase} with this node's per-database maintenance slot held, so a backup of the
-   * database cannot read a directory whose files are being moved (issue #7449).
+   * database cannot read a directory whose files are being moved (issue #7449). Excluding everything <i>else</i>
+   * from that directory - queries, the registry, HTTP clients - is {@link #recoverSingleDatabaseExcludingReaders},
+   * which this wraps (issue #7530).
    * <p>
    * A null coordinator is not a production state - {@code ArcadeDBServer}'s field is final and initialised inline -
    * but this pass also runs with no server at all (the {@code null} contract on
@@ -963,7 +980,7 @@ public final class SnapshotInstaller {
       final ArcadeDBServer server) {
     final BackupCoordinator coordinator = server == null ? null : server.getBackupCoordinator();
     if (coordinator == null) {
-      recoverSingleDatabase(dbDir);
+      recoverSingleDatabaseExcludingReaders(databaseName, dbDir, server);
       return;
     }
 
@@ -979,12 +996,101 @@ public final class SnapshotInstaller {
           GlobalConfiguration.HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS.getKey());
 
     try {
-      recoverSingleDatabase(dbDir);
+      recoverSingleDatabaseExcludingReaders(databaseName, dbDir, server);
     } finally {
       // Only what was actually reserved: a wait that expired took nothing, and releasing then would drop the
       // reservation the operation still in flight is holding.
       if (slotHeld)
         coordinator.end(databaseName, BackupCoordinator.Operation.RESTORE);
+    }
+  }
+
+  /**
+   * Runs {@link #recoverSingleDatabase} with every reader of the database excluded from it, the way
+   * {@link #reconcileRetainedBackup} already runs the identical call: the node-wide 503 window open, the registry
+   * lock held, and any registered instance closed first (issue #7530).
+   * <p>
+   * The maintenance slot {@link #recoverSingleDatabaseHoldingMaintenanceSlot} takes around this excludes a
+   * <i>backup</i>. It excludes nothing else, and the repair moves files into and out of the live database
+   * directory - {@code atomicSwap}, {@code restoreBackup}, {@code clearLiveDatabaseFiles} - so a query served
+   * meanwhile reads a directory whose files are being renamed. The {@code .snapshot-pending} marker does not stop
+   * that on its own: {@link ArcadeDBServer#getDatabase} serves an already-registered, open database from its
+   * lock-free fast path without consulting the marker at all, and {@link #swapAndReopen}'s two failure arms
+   * deliberately produce exactly that state - marker retained, database reopened - so the node keeps serving. The
+   * pass then runs again on the next {@code RaftHAServer.restartRatis}, with the node ONLINE.
+   * <p>
+   * <b>The reopen is conditional, and that is the difference from {@link #reconcileRetainedBackup}.</b> An install
+   * wants the database registered and serving when it is done, so it reopens unconditionally. This pass also runs
+   * at cold start, where {@code ArcadeDBServer.loadDatabases(false)} has <i>deferred</i> the marked directory on
+   * purpose and the second {@code loadDatabases(true)} pass - which runs after this one - is what is supposed to
+   * pick it up. Reopening unconditionally would register it from inside Ratis's state-machine initialization
+   * instead. So the repair puts the registry back exactly as it found it: it reopens what it closed, and nothing
+   * else.
+   * <p>
+   * The 503 window is taken per database rather than once for the whole pass, which keeps each window as short as
+   * the repair of one directory. That flips the node-wide flag once per repaired database, which is safe only
+   * because {@link ArcadeDBServer#setSnapshotInstallInProgress} counts holders rather than storing a boolean - an
+   * {@code install} of another database can be holding the same window on another thread.
+   * <p>
+   * A {@code null} server is the documented contract of {@link #recoverPendingSnapshotSwaps(Path, ArcadeDBServer)}:
+   * no server means no registry to lock, no HTTP clients to deflect and no registered database to close, so the
+   * repair runs exactly as it did before this existed.
+   */
+  private static void recoverSingleDatabaseExcludingReaders(final String databaseName, final Path dbDir,
+      final ArcadeDBServer server) {
+    if (server == null) {
+      recoverSingleDatabase(dbDir);
+      return;
+    }
+
+    server.setSnapshotInstallInProgress(true);
+    try {
+      synchronized (server.getDatabasesLock()) {
+        final boolean closedByThisRepair = closeRegisteredDatabaseForRepair(server, databaseName);
+        try {
+          recoverSingleDatabase(dbDir);
+        } finally {
+          // In a finally so a RuntimeException escaping the repair cannot leave the node with a database it had
+          // registered and serving now closed. recoverSingleDatabase reports its own IOExceptions and returns.
+          if (closedByThisRepair)
+            reopenQuietly(server, databaseName);
+        }
+      }
+    } finally {
+      server.setSnapshotInstallInProgress(false);
+    }
+  }
+
+  /**
+   * {@link #closeLocalDatabaseIfOpen} for the crash-recovery pass, which cannot let one unopenable database abort
+   * the scan of every other one (issue #7530).
+   * <p>
+   * {@code closeLocalDatabaseIfOpen} resolves the instance through {@link ArcadeDBServer#getDatabase}, and that
+   * throws {@code DatabaseNotAvailableException} for a database that is registered but <i>closed</i> while the
+   * {@code .snapshot-pending} marker is on disk - the marker refusal lives in the slow path, which a closed entry
+   * falls into. Letting it propagate would abandon the pass, and with it every marker it had not reached yet: those
+   * databases stay unopenable until the next restart, which is a strictly worse outcome than the one being guarded
+   * against.
+   * <p>
+   * Proceeding is safe in that case rather than merely expedient. The lookup only refuses an entry that is already
+   * closed - an open one is returned by the fast path, or by the slow path's "already registered and open" arm,
+   * without the directory ever being stat-ed - so there are no handles into the directory to move files under. The
+   * registry lock is held for the whole repair either way, so nothing can open it while the files move, and
+   * {@code loadDatabases(true)} and the next {@code getDatabase} pick the entry up once the marker is gone.
+   *
+   * @return {@code true} only when this call closed and deregistered a live instance, i.e. when the caller owes a
+   * matching reopen
+   */
+  private static boolean closeRegisteredDatabaseForRepair(final ArcadeDBServer server, final String databaseName) {
+    try {
+      return closeLocalDatabaseIfOpen(server, databaseName);
+    } catch (final Exception e) {
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+          "Could not close database '%s' before repairing its interrupted snapshot swap: %s. It is registered but "
+              + "not currently openable, so it holds no files in the directory being repaired; the repair proceeds "
+              + "under the registry lock and leaves the database for the next open to pick up once the '%s' marker "
+              + "is cleared", e, databaseName, e.getMessage(), SNAPSHOT_PENDING_FILE);
+      return false;
     }
   }
 
