@@ -70,18 +70,31 @@ public class TruncateTypeStatement extends DDLStatement {
 
     // TRUNCATE deletes what scanType() finds, and scanType() reads the type's buckets directly - it never goes
     // through the planner, so the walk that issue #7477 gave SELECT and DELETE does not reach it. A lightweight
-    // edge allocates no record, so those buckets are empty by construction and the statement would report success
-    // having deleted nothing while every edge of the type is still live in the vertices holding it.
+    // edge allocates no record, so those buckets are empty by construction: left alone, the statement would report
+    // success having deleted nothing while every edge of the type is still live in the vertices holding it.
     //
-    // It refuses instead. Silently no-opping a bulk delete is the failure #7477 is about, and it is the worse half
-    // of it: a caller who believes a TRUNCATE happened has no reason to look again. Not fixed by walking and
-    // deleting here because the walk would be mutating the very edge lists it iterates - tracked in issue #7481 -
-    // and because the caller already has an operation that does exactly this, correctly: DELETE FROM <type>.
-    if (EdgeType.holdsLightweightEdges(typez))
+    // Below, such a type is routed to DELETE FROM <type> instead (issue #7481): that statement already reaches
+    // these edges correctly (issue #7477/#7478), through the same removal-safe walk GraphEngine.deleteEdge relies
+    // on, so reusing it avoids re-implementing the read-modify-write hazard EdgeLinkedList.edgeIteratorForRemoval
+    // exists for. Nothing here is lost by giving up the index-drop/rebuild speed-up truncateInOwnTransaction uses:
+    // a lightweight type can hold no properties, so it has no index to drop in the first place.
+    final boolean lightweight = EdgeType.holdsLightweightEdges(typez);
+
+    // DELETE FROM <type> is unconditionally polymorphic (it walks the type's own buckets AND every subtype's, and
+    // for a lightweight edge type resolves subtype edges the same way): there is no "bucket-only" reading of it to
+    // fall back on the way there is for an ordinary TRUNCATE. So when the caller asked for the non-POLYMORPHIC
+    // behaviour and a subtype exists, delegating would either delete a subtype's records the caller did not ask
+    // for (silently wider than requested) or - if that were special-cased away - leave a lightweight subtype's
+    // edges behind with no bucket for a future TRUNCATE to find them in (silently narrower). Both are worse than
+    // refusing: a type with no subtypes at all has no such ambiguity, whichever way POLYMORPHIC was spelled.
+    if (lightweight && !polymorphic && !typez.getSubTypes().isEmpty())
       throw new CommandExecutionException("'TRUNCATE TYPE' cannot be used on '" + typeName.getStringValue()
-          + "' because it is a LIGHTWEIGHT edge type (or has one below it), whose edges are stored inside their two "
-          + "vertices and have no record for TRUNCATE to remove. Use 'DELETE FROM " + typeName.getStringValue()
-          + "' instead, which reaches them. See issue #7481");
+          + "' without POLYMORPHIC because it is a LIGHTWEIGHT edge type (or has one below it) with a subtype: "
+          + "a lightweight edge has no bucket of its own to scope a non-polymorphic TRUNCATE to, so this would "
+          + "either reach into '" + typeName.getStringValue() + "'s subtypes unasked or leave a subtype's "
+          + "lightweight edges behind. Use 'TRUNCATE TYPE " + typeName.getStringValue()
+          + " POLYMORPHIC' to delete every shape under it, or 'DELETE FROM " + typeName.getStringValue()
+          + " WHERE ...' to scope it precisely. See issue #7481");
 
     final long recs = context.getDatabase().countType(typeName.getStringValue(), polymorphic);
     if (recs > 0 && !unsafe) {
@@ -112,7 +125,9 @@ public class TruncateTypeStatement extends DDLStatement {
     }
 
     final boolean transactional = db.isTransactionActive();
-    if (transactional)
+    if (lightweight)
+      truncateLightweightEdgeType(db, transactional);
+    else if (transactional)
       truncateInCallerTransaction(db);
     else
       truncateInOwnTransaction(db, schema, typez);
@@ -127,6 +142,35 @@ public class TruncateTypeStatement extends DDLStatement {
     rs.add(result);
 
     return rs;
+  }
+
+  /**
+   * Deletes a LIGHTWEIGHT edge type (or one with a LIGHTWEIGHT edge type below it, once POLYMORPHIC has cleared it
+   * for that) by running {@code DELETE FROM <type>} through the query engine, rather than {@code scanType()}: that
+   * statement already walks the vertices that hold such an edge and removes each one from both endpoints' lists
+   * correctly (issue #7477/#7478), so this reuses it instead of re-deriving the same removal-safe walk.
+   * <p>
+   * Mirrors the caller-transaction-vs-own-transaction split the record-backed paths make, for the same reason
+   * (issue #6220): inside a caller transaction the delete joins it, so a {@code ROLLBACK} puts the edges back;
+   * with none active, this opens and closes its own so the statement is atomic on its own.
+   */
+  private void truncateLightweightEdgeType(final Database db, final boolean transactional) {
+    if (transactional) {
+      db.command("sql", "DELETE FROM " + typeName.getStringValue()).close();
+      return;
+    }
+
+    db.begin();
+    boolean success = false;
+    try {
+      db.command("sql", "DELETE FROM " + typeName.getStringValue()).close();
+      success = true;
+    } finally {
+      if (success)
+        db.commit();
+      else
+        db.rollback();
+    }
   }
 
   /**
