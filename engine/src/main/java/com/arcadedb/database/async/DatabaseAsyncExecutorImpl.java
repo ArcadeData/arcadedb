@@ -72,7 +72,9 @@ import java.util.logging.Level;
 
 public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   /**
-   * Test-only fault-injection hook. Invoked with a 1-based call number right before each attempt of
+   * Test-only fault-injection hook. Invoked with a call number - 1 on this worker's first-ever call,
+   * counting up from there across every {@code commitBatch()} call the worker makes for the rest of its
+   * lifetime, not reset per call (claude-review) - right before each attempt of
    * {@code AsyncThread#commitBatch}'s commit of the shared per-worker batch transaction - both the periodic
    * {@code commitEvery} boundary reached from {@code executeTask()} and the dangling-tail-batch flush
    * {@code DatabaseAsyncCompletion} runs at {@code waitCompletion()}/shutdown time - and, with a constant
@@ -289,8 +291,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // fired on the first, now-discarded attempt) and to let a failure during replay propagate to
     // commitBatch() instead of being handled - and the whole batch silently rolled back - locally.
     private volatile boolean                    replayingBatch           = false;
-    // Monotonic call counter feeding TEST_BEFORE_BATCH_COMMIT_HOOK's 1-based argument. Thread-confined,
-    // same as pendingBatchCommands - only this worker ever calls commitBatch() on itself.
+    // Monotonic call counter feeding TEST_BEFORE_BATCH_COMMIT_HOOK's argument (claude-review: "1-based"
+    // describes the first value the hook ever sees on this worker, not a per-commitBatch() reset - it
+    // keeps counting up across every commitBatch() call this worker ever makes in its lifetime, the same
+    // way completedTaskCount above does for tasks). Thread-confined, same as pendingBatchCommands - only
+    // this worker ever calls commitBatch() on itself.
     private          int                        batchCommitAttempt       = 0;
 
     // #7615: single choke point for "the shared batch's non-durable bookkeeping is now moot" - every site
