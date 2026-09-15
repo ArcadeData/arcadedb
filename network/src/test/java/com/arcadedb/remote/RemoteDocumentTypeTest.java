@@ -19,6 +19,7 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,7 +28,10 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RemoteDocumentTypeTest {
@@ -436,5 +440,64 @@ class RemoteDocumentTypeTest {
 
     assertThat(typeWithProp.count()).isEqualTo(20);
     assertThat(typeWithProp.existsProperty("myProp")).isTrue();
+  }
+
+  @Test
+  void renamePropertyIssuesQuotedAlterPropertySqlAndReturnsTheRenamedProperty() {
+    final Map<String, Object> prop = new HashMap<>();
+    prop.put("name", "oldName");
+    prop.put("type", "STRING");
+    prop.put("id", 1);
+
+    final Result record = createMockResult("RenameType", 0, List.of(),
+        "round-robin", List.of(), List.of(prop), Collections.emptyMap());
+    final RemoteDocumentType typeToRename = new RemoteDocumentType(mockDatabase, record);
+
+    final Map<String, Object> renamedProp = new HashMap<>();
+    renamedProp.put("name", "new name");
+    renamedProp.put("type", "STRING");
+    renamedProp.put("id", 1);
+
+    final Result reloadedRecord = createMockResult("RenameType", 0, List.of(),
+        "round-robin", List.of(), List.of(renamedProp), Collections.emptyMap());
+    // A real reload re-syncs this same instance's property map (RemoteSchema.reload() calls type.reload(record)
+    // on every existing type object) - simulated here since mockSchema.reload() is otherwise a no-op.
+    doAnswer(invocation -> {
+      typeToRename.reload(reloadedRecord);
+      return mockSchema;
+    }).when(mockSchema).reload();
+
+    final Property renamed = typeToRename.renameProperty("oldName", "new name");
+
+    verify(mockDatabase).command(eq("sql"), eq("alter property `RenameType`.`oldName` name `new name`"));
+    assertThat(renamed.getName()).isEqualTo("new name");
+  }
+
+  @Test
+  void renamePropertyQuotesABacktickInTheNewName() {
+    final Map<String, Object> prop = new HashMap<>();
+    prop.put("name", "old");
+    prop.put("type", "STRING");
+    prop.put("id", 1);
+
+    final Result record = createMockResult("RenameType2", 0, List.of(),
+        "round-robin", List.of(), List.of(prop), Collections.emptyMap());
+    final RemoteDocumentType typeToRename = new RemoteDocumentType(mockDatabase, record);
+
+    final Map<String, Object> renamedProp = new HashMap<>();
+    renamedProp.put("name", "a`b");
+    renamedProp.put("type", "STRING");
+    renamedProp.put("id", 1);
+
+    final Result reloadedRecord = createMockResult("RenameType2", 0, List.of(),
+        "round-robin", List.of(), List.of(renamedProp), Collections.emptyMap());
+    doAnswer(invocation -> {
+      typeToRename.reload(reloadedRecord);
+      return mockSchema;
+    }).when(mockSchema).reload();
+
+    typeToRename.renameProperty("old", "a`b");
+
+    verify(mockDatabase).command(eq("sql"), eq("alter property `RenameType2`.`old` name `a\\`b`"));
   }
 }
