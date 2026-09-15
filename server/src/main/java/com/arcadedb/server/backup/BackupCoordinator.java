@@ -22,7 +22,6 @@ import com.arcadedb.engine.MaintenanceCoordinator;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.EnumSet;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
@@ -62,9 +61,14 @@ import java.util.regex.Pattern;
  * and a restore could drop the directory a backup was reading (issue #7384). Restores and imports therefore take the
  * same per-database slot, and {@link Operation} says which one holds it so the refusal can name it.
  * <p>
- * Two operations on one database conflict unless they are a backup and an import: those two coexist by construction,
- * because an import is ordinary transactions against a live database and backing a live database up is what the
- * auto-backup schedule does all day. Everything else is refused - see {@link Operation#conflictsWith}.
+ * Two operations on one database conflict unless one of them is something other than a restore and they are not
+ * the same kind twice: a backup and an import coexist by construction, because an import is ordinary transactions
+ * against a live database and backing a live database up is what the auto-backup schedule does all day. The one
+ * exemption from "not the same kind twice" is {@link Operation#EXPORT}, added in issue #7450: a SQL
+ * {@code EXPORT DATABASE} names its own target, so two exports of one database are two different archives rather
+ * than two writers of one file, and both are admitted. That is why what is stored per database is a COUNT per kind
+ * rather than a set of kinds - two concurrent exports each release only their own reservation, where a set let the
+ * first one to finish free the database under the second. See {@link Operation#conflictsWith}.
  * <p>
  * An HA snapshot install takes {@link Operation#RESTORE} too, and for the same reason: it closes this node's copy of
  * the database, swaps its directory for the leader's snapshot and reopens it, which is a restore of this node's copy
@@ -79,11 +83,12 @@ import java.util.regex.Pattern;
  * operation this server runs, not only backups.
  * <h2>The engine's view of it</h2>
  * {@link Operation} and the reservation contract live in {@link MaintenanceCoordinator}, in the engine, and this
- * class is its only implementation. {@code BACKUP DATABASE} and {@code IMPORT DATABASE} are SQL statements the
- * ENGINE executes, so until issue #7443 they could not reach this policy at all and took nothing: a SQL backup
- * ran unseen by a concurrent restore, and a second SQL backup of one database was not refused either. The server
- * binds this instance to every database it opens (see {@code ServerDatabase}), which is how a statement finds it
- * without the engine depending on the server.
+ * class is its only implementation. {@code BACKUP DATABASE}, {@code IMPORT DATABASE} and {@code EXPORT DATABASE}
+ * are SQL statements the ENGINE executes, so until issues #7443 and #7450 they could not reach this policy at all
+ * and took nothing: a SQL backup ran unseen by a concurrent restore, a second SQL backup of one database was not
+ * refused either, and a SQL export read a directory a restore was about to replace. The server binds this instance
+ * to every database it opens (see {@code ServerDatabase}), which is how a statement finds it without the engine
+ * depending on the server.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -98,17 +103,28 @@ public class BackupCoordinator implements MaintenanceCoordinator {
   private static final DateTimeFormatter ARCHIVE_TIMESTAMP_PARSER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss[SSS]");
 
   /**
-   * The operations currently running per database. A value is never an empty set - the entry is removed instead -
-   * so {@code containsKey} answers "is anything running on it".
-   * <p>
-   * {@link EnumSet} is exact here rather than merely convenient: every kind conflicts with itself, so at most one
-   * operation of each kind is ever admitted for one database and a set needs no multiplicity.
-   * <p>
-   * Every value is replaced rather than mutated in place, so a set a reader has already been handed is never written
-   * to by another thread: {@code EnumSet} is not thread-safe, and {@link #isInProgress(String, Operation)} reads one
-   * outside the map's own per-entry lock.
+   * Cached because {@link Operation#values()} clones its array on every call, and {@link #begin(String, Operation)}
+   * walks it on every reservation.
    */
-  private final Map<String, EnumSet<Operation>> inProgress = new ConcurrentHashMap<>();
+  private static final Operation[] OPERATIONS = Operation.values();
+
+  /**
+   * How many reservations of each kind are currently running per database, indexed by {@link Operation#ordinal()}.
+   * A value is never all-zero - the entry is removed instead - so {@code containsKey} answers "is anything running
+   * on it".
+   * <p>
+   * A COUNT rather than the {@link java.util.EnumSet} this used to hold, because {@link Operation#EXPORT} does not
+   * exclude a second of its own kind (issue #7450): two exports of one database are both admitted, and each has to
+   * release only its own claim. With a set of kinds the first of the two to finish cleared the only entry, and a
+   * restore walked in while the second export was still reading the directory. Every other kind conflicts with
+   * itself, so its count never exceeds one.
+   * <p>
+   * An {@code int[]} rather than a map of boxed counters: it is four ints, it is copied on every write, and the
+   * copy is what keeps a reader safe. Every value is REPLACED rather than mutated in place, so an array a reader
+   * has already been handed is never written to by another thread - {@link #isInProgress(String, Operation)} reads
+   * one outside the map's own per-entry lock.
+   */
+  private final Map<String, int[]> inProgress = new ConcurrentHashMap<>();
 
   /**
    * The monitor a bounded wait parks on, notified by every {@link #end(String, Operation)}.
@@ -121,8 +137,9 @@ public class BackupCoordinator implements MaintenanceCoordinator {
   private final Object slotReleased = new Object();
 
   /**
-   * Reserves this database for a backup. Returns {@code false} when a backup, restore or import of it is already
-   * running, in which case the caller must not start a backup and must not call {@link #end(String)}.
+   * Reserves this database for a backup. Returns {@code false} when a backup or a restore of it is already running -
+   * the two kinds {@link Operation#BACKUP} conflicts with - in which case the caller must not start a backup and
+   * must not call {@link #end(String)}. An import or an export running on the database does not refuse it.
    * <p>
    * The shorthand every backup entry point uses. {@link #begin(String, Operation)} is the same reservation for a
    * caller that wants to name the operation already holding the slot in its refusal.
@@ -134,9 +151,8 @@ public class BackupCoordinator implements MaintenanceCoordinator {
   /**
    * Reserves this database for {@code operation}.
    * <p>
-   * When more than one operation is running - which only {@link Operation#BACKUP} and {@link Operation#IMPORT}
-   * together can be - the one named is whichever the iteration reaches first, not a ranking: both refuse the caller
-   * equally, and the message is true of either.
+   * When more than one operation is running, the one named is whichever the iteration reaches first, not a ranking:
+   * every one of them refuses the caller equally, and the message is true of any of them.
    *
    * @return {@code null} when the reservation was taken - the caller must then release it with
    * {@link #end(String, Operation)} from a {@code finally} - or the operation already running that refuses this one.
@@ -146,17 +162,20 @@ public class BackupCoordinator implements MaintenanceCoordinator {
     final AtomicReference<Operation> conflict = new AtomicReference<>();
 
     inProgress.compute(databaseName, (name, running) -> {
-      if (running == null)
-        return EnumSet.of(operation);
+      if (running == null) {
+        final int[] started = new int[OPERATIONS.length];
+        started[operation.ordinal()] = 1;
+        return started;
+      }
 
-      for (final Operation active : running)
-        if (active.conflictsWith(operation)) {
+      for (final Operation active : OPERATIONS)
+        if (running[active.ordinal()] > 0 && active.conflictsWith(operation)) {
           conflict.set(active);
           return running;
         }
 
-      final EnumSet<Operation> updated = EnumSet.copyOf(running);
-      updated.add(operation);
+      final int[] updated = running.clone();
+      updated[operation.ordinal()]++;
       return updated;
     });
 
@@ -221,18 +240,22 @@ public class BackupCoordinator implements MaintenanceCoordinator {
   }
 
   /**
-   * Releases the reservation a successful {@link #begin(String, Operation)} took. Always call it from a
+   * Releases the ONE reservation a successful {@link #begin(String, Operation)} took, not every reservation of that
+   * kind - a second export of the same database may be holding one of its own. Always call it from a
    * {@code finally}: a leaked reservation blocks every later operation of that database until the server restarts.
    */
   @Override
   public void end(final String databaseName, final Operation operation) {
     inProgress.computeIfPresent(databaseName, (name, running) -> {
-      if (!running.contains(operation))
+      // A CALLER THAT WAS REFUSED MUST NOT CALL end(), BUT IF IT DOES IT MUST NEITHER FREE SOMEBODY ELSE'S SLOT NOR
+      // DRIVE A COUNT NEGATIVE - A NEGATIVE COUNT WOULD SWALLOW THE NEXT GENUINE RELEASE AND LEAVE THE DATABASE
+      // BLOCKED UNTIL THE SERVER RESTARTS
+      if (running[operation.ordinal()] == 0)
         return running;
 
-      final EnumSet<Operation> updated = EnumSet.copyOf(running);
-      updated.remove(operation);
-      return updated.isEmpty() ? null : updated;
+      final int[] updated = running.clone();
+      updated[operation.ordinal()]--;
+      return isIdle(updated) ? null : updated;
     });
     // AFTER the map update, so a waiter that re-checks on waking sees the release that woke it. Unconditional: a
     // release that changed nothing costs one uncontended monitor and a notify nobody is parked on.
@@ -241,15 +264,27 @@ public class BackupCoordinator implements MaintenanceCoordinator {
     }
   }
 
-  /** Whether any backup, restore or import of this database is currently running. */
+  /** Whether any backup, restore, import or export of this database is currently running. */
   public boolean isInProgress(final String databaseName) {
     return inProgress.containsKey(databaseName);
   }
 
-  /** Whether an operation of this kind is currently running on this database. */
+  /**
+   * Whether at least one operation of this kind is currently running on this database. There can be more than one
+   * only for {@link Operation#EXPORT}, and a caller that needs to know the database is free asks
+   * {@link #isInProgress(String)} rather than counting.
+   */
   public boolean isInProgress(final String databaseName, final Operation operation) {
-    final EnumSet<Operation> running = inProgress.get(databaseName);
-    return running != null && running.contains(operation);
+    final int[] running = inProgress.get(databaseName);
+    return running != null && running[operation.ordinal()] > 0;
+  }
+
+  /** Whether every count in this snapshot is zero, in which case the map entry is dropped rather than kept. */
+  private static boolean isIdle(final int[] running) {
+    for (final int count : running)
+      if (count > 0)
+        return false;
+    return true;
   }
 
   /**
