@@ -344,7 +344,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
       return new LookupResult(false, true, low, null);
     } else if (result != HIGHER)
-      return result;
+      return seekRunBoundary(currentPageBuffer, startIndexArray, convertedKeys, count, purpose, result, low, high);
 
     // CHECK THE BOUNDARIES FIRST (HIGHER THAN THE LAST)
     result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, high, count, purpose);
@@ -355,7 +355,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
       return new LookupResult(false, true, count, null);
     } else if (result != LOWER)
-      return result;
+      return seekRunBoundary(currentPageBuffer, startIndexArray, convertedKeys, count, purpose, result, low, high);
 
     int mid;
     while (low <= high) {
@@ -368,7 +368,9 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       else if (result == LOWER)
         high = mid - 1;
       else
-        return result;
+        // INVARIANT HELD BY THE LOOP: every entry below `low` compares HIGHER and every entry above `high` compares
+        // LOWER, so the whole run of entries equal to the search key lies inside [low, high].
+        return seekRunBoundary(currentPageBuffer, startIndexArray, convertedKeys, count, purpose, result, low, high);
     }
 
     if (purpose == 3) {
@@ -376,6 +378,92 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     }
 
     return new LookupResult(false, false, low, null);
+  }
+
+  /**
+   * Moves an ITERATOR landing point (purpose 2 or 3) from wherever the binary search converged to the boundary of the
+   * RUN of entries that compare EQUAL to the search key, in the direction the scan is about to travel: the FIRST entry
+   * of the run when ascending, the LAST when descending. Any other purpose is returned untouched.
+   * <p>
+   * #7611: a run is not a partial-key curiosity. A page holds one entry per TRANSACTION that wrote the key - each
+   * commit appends its own {@code (key, rids)} entry instead of merging into the previous one - so runs under a FULL
+   * key are the normal state of every non-unique index built by batched loading. {@link LSMTreeIndexUnderlyingPageCursor}
+   * merges a key group FORWARD from where the cursor is parked, so an ascending scan that starts in the middle of a run
+   * never sees the entries before it: an inclusive lower bound lost {@code floor((k-1)/2)} of the rows equal to the
+   * bound for a run of {@code k}, while the unindexed scan over the same rows stayed correct. Resolving the boundary
+   * only for partial keys - which is what the {@code compareKey()} overrides used to do - covered the composite-prefix
+   * case (#6592, #6694) and left the far more common full-key one open.
+   * <p>
+   * Entries in a page are sorted, so "compares equal to the search key" is a contiguous block and its edge can be
+   * searched for, rather than walked to one entry at a time as {@link #findFirstEntryOfSameKey} has to do for purpose 1
+   * (which needs every position in the run, not just its edge). The search GALLOPS outward from the landing point in
+   * doubling strides before bisecting, so it costs ONE comparison when there is no run at all - by far the most common
+   * case, and the one a plain bisection over the caller's bracket would charge {@code O(log page-entries)} for - and
+   * {@code O(log k)} for a run of {@code k}, never more.
+   * <p>
+   * Deliberately NOT gated on {@code unique}: a unique index can still own a run, because {@code remove()} appends a
+   * tombstone entry rather than mutating in place, so a key deleted and re-inserted across two transactions has two
+   * entries on the page like any other. Skipping the resolution there would lose the older one exactly as it was lost
+   * for non-unique keys.
+   */
+  private LookupResult seekRunBoundary(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys,
+      final int count, final int purpose, final LookupResult match, final int low, final int high) {
+    if (purpose != 2 && purpose != 3)
+      return match;
+
+    final int matched = match.keyIndex;
+
+    // The run cannot extend past the matched entry on the side the scan is LEAVING, so only the other side is searched,
+    // and only as far as the bracket the caller narrowed.
+    final int step = purpose == 2 ? -1 : 1;
+    final int limit = purpose == 2 ? low : high;
+
+    if (matched == limit)
+      // already at the edge of the bracket: there is nowhere for the run to extend to
+      return match;
+
+    // GALLOP outward in doubling strides. `good` is an index known to compare equal, `bad` one known not to - or, when
+    // the gallop reaches the bracket's edge without finding a mismatch, the virtual index one past it, which the
+    // bisection below never probes because it only ever probes strictly between the two.
+    int good = matched;
+    int bad = limit + step;
+    int distance = 1;
+    while (true) {
+      final int probe = matched + (step * distance);
+      if (step < 0 ? probe < limit : probe > limit)
+        break;
+
+      if (compareKey(currentPageBuffer, startIndexArray, convertedKeys, probe, count) != 0) {
+        bad = probe;
+        break;
+      }
+
+      good = probe;
+      distance <<= 1;
+    }
+
+    // BISECT what the last stride jumped over. Each round probes strictly between `good` and `bad`, so the gap shrinks
+    // every time and the loop ends with them adjacent - `good` being the furthest entry of the run in this direction.
+    while (Math.abs(bad - good) > 1) {
+      final int probe = good + ((bad - good) / 2);
+
+      if (compareKey(currentPageBuffer, startIndexArray, convertedKeys, probe, count) == 0)
+        good = probe;
+      else
+        bad = probe;
+    }
+
+    final int boundary = good;
+    if (boundary == matched)
+      return match;
+
+    statsAdjacentSteps.addAndGet(Math.abs(boundary - matched));
+
+    // Re-read the entry the scan will actually start from, so the reported position describes IT and not whichever
+    // entry the search above compared last.
+    compareKey(currentPageBuffer, startIndexArray, convertedKeys, boundary, count);
+
+    return new LookupResult(true, false, boundary, new int[] { currentPageBuffer.position() });
   }
 
   protected void writeEntrySingleValue(final Binary buffer, final Object[] keys, final Object rid, final int pageUsableSpace) {

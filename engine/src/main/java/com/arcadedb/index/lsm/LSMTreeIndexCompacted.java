@@ -352,7 +352,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   protected LookupResult compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys,
-      int mid, final int count,
+      final int mid, final int count,
       final int purpose) {
 
     final int result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, mid, count);
@@ -386,20 +386,11 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       return new LookupResult(true, false, lastKeyPos, positionsArray);
     }
 
-    if (convertedKeys.length < binaryKeyTypes.length) {
-      // PARTIAL MATCHING: mid is an arbitrary position inside the run of entries sharing this prefix (wherever the
-      // binary search happened to converge) - walk to the run's boundary in the requested scan direction, exactly
-      // like LSMTreeIndexMutable.compareKey() does. Without this, a descending partial-key scan (composite-index
-      // prefix match, e.g. #6592) can start anywhere inside the matching group instead of at its highest entry,
-      // silently skipping the very rows ORDER BY ... DESC is supposed to return first.
-      if (purpose == 2) {
-        // ASCENDING ITERATOR: FIND THE MOST LEFT ITEM
-        mid = findFirstEntryOfSameKey(currentPageBuffer, convertedKeys, startIndexArray, mid);
-      } else if (purpose == 3) {
-        // DESCENDING ITERATOR: FIND THE MOST RIGHT ITEM
-        mid = findLastEntryOfSameKey(count, currentPageBuffer, convertedKeys, startIndexArray, mid);
-      }
-    }
+    // ITERATOR (purpose 2/3): `mid` is an arbitrary position inside the run of entries that compare equal to the search
+    // key - wherever the binary search happened to converge. Walking that to the run's boundary in the scan direction
+    // is what keeps a descending partial-key scan (composite-index prefix match, #6592) from starting below the
+    // matching group and silently skipping the very rows ORDER BY ... DESC has to return first; it now happens once,
+    // for full and partial keys alike, in LSMTreeIndexAbstract.seekRunBoundary() (#7611).
 
     // TODO: SET CORRECT VALUE POSITION FOR PARTIAL KEYS
     return new LookupResult(true, false, mid, new int[] { currentPageBuffer.position() });
@@ -504,9 +495,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         // keys are partial (fewer components than the composite index defines). Purpose=1 rejects
         // partial keys with "key is composed of N items, while the index defined M items".
         // Purpose=2/3 allows partial key comparison, which correctly matches by prefix, and - like the data-page
-        // lookup in searchInCurrentPage() below - must follow the scan direction: compareKey()'s PARTIAL MATCHING
-        // walk resolves an ambiguous binary-search landing point to the FIRST entry of a same-prefix run for
-        // purpose=2 and the LAST entry for purpose=3. Using purpose=2 unconditionally made a descending scan's
+        // lookup in searchInCurrentPage() below - must follow the scan direction: LSMTreeIndexAbstract.seekRunBoundary()
+        // resolves an ambiguous binary-search landing point to the FIRST entry of a same-prefix run for purpose=2 and
+        // the LAST entry for purpose=3. Using purpose=2 unconditionally made a descending scan's
         // root-page probe always land on the series' FIRST (lowest-keyed) data page instead of its LAST
         // (highest-keyed) one whenever a composite-index prefix match spanned multiple data pages within one
         // compacted series, so the scan started too low and silently dropped whole series/pages (#6694).
@@ -631,11 +622,11 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         startingPageNumber = firstPageNumber;
         posInPage = result.keyIndex;
         if (ascendingOrder) {
-          // Binary search may land in the middle of a repeated-key run. This matters when a bounded write starts a
-          // high-cardinality key on its predecessor leaf: starting at the middle drops the earlier RID chunks on that leaf.
-          // Position immediately before the first matching entry so the series cursor emits the complete run.
-          if (result.found && !unique)
-            posInPage = findFirstEntryOfSameKey(firstPageBuffer, convertedFromKeys, getHeaderSize(firstPageNumber), posInPage);
+          // A binary search may land in the middle of a repeated-key run - which matters when a bounded write starts a
+          // high-cardinality key on its predecessor leaf, because starting at the middle drops the earlier RID chunks on
+          // that leaf. lookupInPage() has already moved an ascending landing point to the first entry of the run
+          // (LSMTreeIndexAbstract.seekRunBoundary(), #7611), so all that is left here is to position immediately BEFORE
+          // it: the series cursor advances before reading, and then emits the complete run.
           --posInPage;
         } else
           ++posInPage;
