@@ -394,40 +394,66 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * only for partial keys - which is what the {@code compareKey()} overrides used to do - covered the composite-prefix
    * case (#6592, #6694) and left the far more common full-key one open.
    * <p>
-   * Entries in a page are sorted, so "compares equal to the search key" is a contiguous block whose edge is a BINARY
-   * search over the bracket the caller has already narrowed, not the linear walk {@link #findFirstEntryOfSameKey} has
-   * to perform for purpose 1 (which needs every position in the run, not just its edge).
+   * Entries in a page are sorted, so "compares equal to the search key" is a contiguous block and its edge can be
+   * searched for, rather than walked to one entry at a time as {@link #findFirstEntryOfSameKey} has to do for purpose 1
+   * (which needs every position in the run, not just its edge). The search GALLOPS outward from the landing point in
+   * doubling strides before bisecting, so it costs ONE comparison when there is no run at all - by far the most common
+   * case, and the one a plain bisection over the caller's bracket would charge {@code O(log page-entries)} for - and
+   * {@code O(log k)} for a run of {@code k}, never more.
+   * <p>
+   * Deliberately NOT gated on {@code unique}: a unique index can still own a run, because {@code remove()} appends a
+   * tombstone entry rather than mutating in place, so a key deleted and re-inserted across two transactions has two
+   * entries on the page like any other. Skipping the resolution there would lose the older one exactly as it was lost
+   * for non-unique keys.
    */
   private LookupResult seekRunBoundary(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys,
       final int count, final int purpose, final LookupResult match, final int low, final int high) {
     if (purpose != 2 && purpose != 3)
       return match;
 
-    final boolean ascending = purpose == 2;
     final int matched = match.keyIndex;
 
-    // The run cannot extend past the matched entry on the side the scan is leaving, so only the other half is searched.
-    int lo = ascending ? low : matched + 1;
-    int hi = ascending ? matched - 1 : high;
+    // The run cannot extend past the matched entry on the side the scan is LEAVING, so only the other side is searched,
+    // and only as far as the bracket the caller narrowed.
+    final int step = purpose == 2 ? -1 : 1;
+    final int limit = purpose == 2 ? low : high;
 
-    int boundary = matched;
-    while (lo <= hi) {
-      final int mid = (lo + hi) >>> 1;
+    if (matched == limit)
+      // already at the edge of the bracket: there is nowhere for the run to extend to
+      return match;
 
-      if (compareKey(currentPageBuffer, startIndexArray, convertedKeys, mid, count) == 0) {
-        boundary = mid;
-        if (ascending)
-          hi = mid - 1;
-        else
-          lo = mid + 1;
-      } else if (ascending)
-        // `mid` sorts BELOW the search key, so the run starts above it
-        lo = mid + 1;
-      else
-        // `mid` sorts ABOVE the search key, so the run ends below it
-        hi = mid - 1;
+    // GALLOP outward in doubling strides. `good` is an index known to compare equal, `bad` one known not to - or, when
+    // the gallop reaches the bracket's edge without finding a mismatch, the virtual index one past it, which the
+    // bisection below never probes because it only ever probes strictly between the two.
+    int good = matched;
+    int bad = limit + step;
+    int distance = 1;
+    while (true) {
+      final int probe = matched + (step * distance);
+      if (step < 0 ? probe < limit : probe > limit)
+        break;
+
+      if (compareKey(currentPageBuffer, startIndexArray, convertedKeys, probe, count) != 0) {
+        bad = probe;
+        break;
+      }
+
+      good = probe;
+      distance <<= 1;
     }
 
+    // BISECT what the last stride jumped over. Each round probes strictly between `good` and `bad`, so the gap shrinks
+    // every time and the loop ends with them adjacent - `good` being the furthest entry of the run in this direction.
+    while (Math.abs(bad - good) > 1) {
+      final int probe = good + ((bad - good) / 2);
+
+      if (compareKey(currentPageBuffer, startIndexArray, convertedKeys, probe, count) == 0)
+        good = probe;
+      else
+        bad = probe;
+    }
+
+    final int boundary = good;
     if (boundary == matched)
       return match;
 
