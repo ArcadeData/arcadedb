@@ -30,7 +30,6 @@ import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.RowAliases;
-import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
@@ -534,25 +533,11 @@ public final class SetClauseApplier {
    * goes through here, so {@code SET n = {x: {y: 1}}} is refused exactly like the {@code SET n.x = {y: 1}} that Neo4j
    * refuses with "Property values can only be of primitive types or arrays thereof" - the map forms used to be the
    * way around the check. Every call is made in phase 1, so the clause is refused as a whole rather than halfway
-   * through.
+   * through. {@link CreateStep} and {@link MergeStep}'s creation branch apply the same check through
+   * {@link CypherValues#coerceAndValidatePropertyValue} (issue #7629), so a map property value is refused the same
+   * way whichever clause writes it.
    */
   private static Object coerceAndValidate(final Object value) {
-    if (value == null)
-      return null; // a null value is a removal, not a stored value
-    final Object coerced = TemporalUtil.toCoreJavaType(value);
-    validatePropertyValue(coerced);
-    return coerced;
-  }
-
-  private static void validatePropertyValue(final Object value) {
-    if (value instanceof List) {
-      for (final Object element : (List<?>) value) {
-        if (element instanceof Map)
-          throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not contain map values");
-        if (element instanceof List)
-          validatePropertyValue(element);
-      }
-    } else if (value instanceof Map)
-      throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not be maps");
+    return CypherValues.coerceAndValidatePropertyValue(value);
   }
 }
