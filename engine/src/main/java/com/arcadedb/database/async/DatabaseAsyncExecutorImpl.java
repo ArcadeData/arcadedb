@@ -531,8 +531,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       } catch (final Throwable e) {
         onError(e);
         // SAME GUARD AS ABOVE: A NESTED ROLLBACK WOULD DESTROY THE SUSPENDED TASK'S WRITES
-        if (!nested && database.isTransactionActive())
-          database.rollback();
+        if (!nested) {
+          // #7615 (claude-review): `message` itself threw uncaught here - e.g. CreateEdgeAsyncTask and its
+          // siblings have no try/catch of their own at all - so this rollback destroys not just its own
+          // (never-buffered) write but every DatabaseAsyncCommand/unreplayable task already buffered
+          // earlier in this same batch, each of which already fired its own onComplete. Told individually
+          // here instead of only through the executor-wide onError() above.
+          notifyPendingBatchCommandsAndAbandon(e);
+          if (database.isTransactionActive())
+            database.rollback();
+        }
       } finally {
         try {
           message.completed();
