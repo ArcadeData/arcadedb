@@ -466,4 +466,62 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
 
     database.transaction(() -> assertThat(database.countType(TYPE, true)).isZero());
   }
+
+  /**
+   * Code review's second, more commonly-triggered gap: a command that fails and rolls back the shared batch
+   * <em>locally</em> - {@link DatabaseAsyncCommand#execute} catching and handling its own failure, never
+   * propagating to {@code executeTask()} - used to notify only itself, not the sibling commands buffered earlier
+   * in the same now-discarded batch. Unlike every other scenario this PR fixes, this one needs no fault-injection
+   * hook at all: an ordinary bad SQL statement is enough, which is exactly what makes it the more likely trigger
+   * in practice than a periodic-boundary MVCC conflict.
+   */
+  @Test
+  void aSiblingCommandFailingLocallyStillNotifiesEveryEarlierBufferedCommand() throws Exception {
+    database.async().setParallelLevel(1); // deterministic: the failing command must land on the same worker
+    database.async().setCommitEvery(1_000); // large enough that only the local failure below is in play
+
+    final List<Exception> perCommandErrors  = new CopyOnWriteArrayList<>();
+    final AtomicInteger    failingCommandErrors = new AtomicInteger();
+
+    for (int i = 0; i < 3; i++) {
+      final AsyncResultsetCallback cb = new AsyncResultsetCallback() {
+        @Override
+        public void onComplete(final ResultSet rs) {
+        }
+
+        @Override
+        public void onError(final Exception e) {
+          perCommandErrors.add(e);
+        }
+      };
+      database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", cb, i);
+    }
+
+    // Ordinary bad SQL - not a ConcurrentModificationException, not routed through any fault-injection hook -
+    // caught and handled entirely inside DatabaseAsyncCommand.execute() itself.
+    database.async().command("sql", "INSERT INTO " + TYPE + " NOT VALID SYNTAX AT ALL", new AsyncResultsetCallback() {
+      @Override
+      public void onComplete(final ResultSet rs) {
+      }
+
+      @Override
+      public void onError(final Exception e) {
+        failingCommandErrors.incrementAndGet();
+      }
+    });
+
+    database.async().waitCompletion();
+
+    // DatabaseAsyncCommand's own local-failure path never calls the executor-wide onError() at all (only
+    // notifyError(), a per-command callback) - unchanged by this fix, unlike CreateRecord/UpdateRecord/DeleteRecord's
+    // equivalent catch blocks, which do. Not asserted on here since it is not what this test is about.
+    assertThat(failingCommandErrors.get()).as("the failing command's own callback still fires, unchanged").isEqualTo(1);
+
+    // The actual fix: all 3 commands buffered ahead of the failing one are told their own onError too, instead of
+    // silently losing writes whose onComplete already fired - the same shape as #7615 itself, just triggered by
+    // an ordinary command failure instead of a periodic-boundary commit conflict.
+    assertThat(perCommandErrors).as("every command buffered ahead of the local failure must be told too").hasSize(3);
+
+    database.transaction(() -> assertThat(database.countType(TYPE, true)).isZero());
+  }
 }
