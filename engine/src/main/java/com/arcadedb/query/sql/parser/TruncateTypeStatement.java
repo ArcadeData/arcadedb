@@ -96,7 +96,15 @@ public class TruncateTypeStatement extends DDLStatement {
           + " POLYMORPHIC' to delete every shape under it, or 'DELETE FROM " + typeName.getStringValue()
           + " WHERE ...' to scope it precisely. See issue #7481");
 
-    final long recs = context.getDatabase().countType(typeName.getStringValue(), polymorphic);
+    // Database.countType() sums bucket record counts, and a LIGHTWEIGHT edge allocates none - it answers 0 for such
+    // a type no matter how many edges it holds (issue #7477), which would let this guard through unconditionally
+    // for exactly the type this method is about to delete via a walk rather than a bucket scan. The SQL count(*)
+    // push-down already knows how to count such a type correctly (CountFromTypeStep routes it to the same vertex
+    // walk SELECT uses), so it is reused here - skipped entirely when UNSAFE is already given, since the O(V+E)
+    // walk would buy nothing the check below would use.
+    final long recs = lightweight
+        ? (unsafe ? 0 : countRecordsIncludingLightweightEdges(db, typeName))
+        : context.getDatabase().countType(typeName.getStringValue(), polymorphic);
     if (recs > 0 && !unsafe) {
       if (typez.isSubTypeOf("V")) {
         throw new CommandExecutionException(
@@ -181,6 +189,17 @@ public class TruncateTypeStatement extends DDLStatement {
         db.commit();
       else
         db.rollback();
+    }
+  }
+
+  /**
+   * Counts a LIGHTWEIGHT edge type's rows the way {@link com.arcadedb.query.sql.executor.CountFromTypeStep} already
+   * does for {@code SELECT count(*)} - by running the query rather than reading {@code Database.countType()}, which
+   * reads bucket record counts directly and answers 0 for such a type regardless of how many edges it holds.
+   */
+  private static long countRecordsIncludingLightweightEdges(final Database db, final Identifier typeName) {
+    try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM " + typeName)) {
+      return rs.hasNext() ? ((Number) rs.next().getProperty("c")).longValue() : 0L;
     }
   }
 
