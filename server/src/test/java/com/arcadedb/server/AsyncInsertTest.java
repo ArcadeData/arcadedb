@@ -64,6 +64,13 @@ class AsyncInsertTest {
     final int CONCURRENCY_LEVEL = 24;
     ContextConfiguration configuration = new ContextConfiguration();
     GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(CONCURRENCY_LEVEL);
+    // #7615 review: this test's whole point is genuine cross-worker page contention (24 workers sharing 8
+    // buckets), so a worker's periodic boundary commit can legitimately collide on TX_RETRIES' default 3
+    // retries in a row under a slow/loaded CI runner - a real, if rare, source of flakiness for the strict
+    // errCount==0/stored==N assertions below that a synthetic fault-injection test wouldn't have. A more
+    // generous budget makes the retry mechanism itself, not this runner's speed, the deciding factor; reset
+    // automatically by endTests()'s GlobalConfiguration.resetAll().
+    GlobalConfiguration.TX_RETRIES.setValue(20);
     arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
 

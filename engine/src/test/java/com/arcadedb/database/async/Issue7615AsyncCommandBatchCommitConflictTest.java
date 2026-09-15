@@ -516,4 +516,50 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
 
     database.transaction(() -> assertThat(database.countType(TYPE, true)).isZero());
   }
+
+  /**
+   * claude-review found that {@code pendingUnreplayableTasks} classified purely by {@code requiresActiveTx()},
+   * which answers "does this task need {@code begin()} called first," not "did this task write something
+   * {@code commitBatch()} cannot replay." A pure read like {@link DatabaseAsyncScanBucket} (dispatched via
+   * {@code scanType()}) defaults {@code requiresActiveTx() == true} while writing nothing at all - landing mid-batch
+   * on a worker with buffered commands used to disable that worker's retry-by-replay for no reason, falling back to
+   * abandon-and-notify for a conflict a replay could have resolved transparently. Not a data-loss regression (every
+   * buffered command was still notified either way), but it defeated the retry this PR exists to add.
+   */
+  @Test
+  void aPureReadTaskInterleavedMidBatchDoesNotDisableTheRetry() throws Exception {
+    database.async().setParallelLevel(1); // deterministic: the scan must land on the same worker as the commands
+    database.async().setCommitEvery(1_000); // large enough that only waitCompletion()'s tail flush is in play
+
+    final AtomicInteger hookCalls = new AtomicInteger();
+    DatabaseAsyncExecutorImpl.TEST_BEFORE_BATCH_COMMIT_HOOK = callNumber -> {
+      if (hookCalls.incrementAndGet() == 1)
+        throw new ConcurrentModificationException("simulated conflict at the first attempt only");
+    };
+
+    final Map<Integer, AtomicInteger> errorCountsByIndex = new ConcurrentHashMap<>();
+
+    try {
+      database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", errorTrackingCallback(0, errorCountsByIndex), 0);
+      database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", errorTrackingCallback(1, errorCountsByIndex), 1);
+
+      // A pure read landing mid-batch on the very same worker (parallel level 1) - blocks until the scan
+      // completes, exactly like the real interleaving a concurrent scanType()/parallel SELECT would produce.
+      database.async().scanType(TYPE, false, record -> true);
+
+      database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", errorTrackingCallback(2, errorCountsByIndex), 2);
+
+      database.async().waitCompletion();
+    } finally {
+      DatabaseAsyncExecutorImpl.TEST_BEFORE_BATCH_COMMIT_HOOK = null;
+    }
+
+    // The actual fix: the scan does not count as an unreplayable write, so the conflict on the first attempt
+    // is retried by replaying the 3 buffered commands instead of being abandoned outright - a second hook call
+    // is proof a retry was actually attempted, not just that the (still correct either way) notification fired.
+    assertThat(hookCalls.get()).as("the conflict must be retried, not abandoned on the first attempt").isGreaterThanOrEqualTo(2);
+    assertThat(errorCountsByIndex).as("no command should need its own onError - the retry must succeed transparently").isEmpty();
+
+    database.transaction(() -> assertThat(database.countType(TYPE, true)).isEqualTo(3));
+  }
 }
