@@ -54,6 +54,16 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
   }
 
   @Override
+  public boolean writesToSharedBatch() {
+    // #7615 (claude-review): functionally unreachable either way - executeTransaction() always leaves the
+    // transaction inactive before returning (its own commit succeeded, or the final rollback on exhausted
+    // retries), so executeTask()'s own !isTransactionActive() branch always wins first and this task is
+    // never classified via writesToSharedBatch() at all. Made explicit rather than left incidental: this
+    // task manages and commits its OWN transaction, never the shared batch commitBatch() replays.
+    return false;
+  }
+
+  @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     // Bind the submitting principal onto this thread's DatabaseContext so the engine permission gates
     // (LocalDatabase.checkPermissionsOnFile) enforce exactly as on the synchronous transports. Restore the
@@ -75,8 +85,22 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
   private void executeTransaction(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     ConcurrentModificationException lastException = null;
 
-    if (database.isTransactionActive())
-      database.commit();
+    if (database.isTransactionActive()) {
+      try {
+        database.commit();
+        // #7615: those commands are durably committed now - drop the stale references so a LATER periodic
+        // boundary commit that fails and retries by replay (commitBatch()) cannot replay them a second time.
+        async.clearPendingBatchCommands();
+      } catch (final Throwable e) {
+        // #7615: this commit flushes out whatever DatabaseAsyncCommand tasks this worker had already run
+        // against its shared batch transaction before this transaction() task arrived - none of them are
+        // this task's own doing, so their failure must not become an implicit CME retry of THIS task's
+        // tx.execute() below. Told individually instead of vanishing silently; propagates unchanged
+        // otherwise, exactly as an uncaught commit failure here always has.
+        async.notifyPendingBatchCommandsAndAbandon(e);
+        throw e;
+      }
+    }
 
     for (int retry = 0; retry < retries + 1; ++retry) {
       try {

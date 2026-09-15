@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.IntConsumer;
 import java.util.logging.Level;
 
 /**
@@ -60,8 +61,18 @@ public class DatabaseAsyncParkWorker implements DatabaseAsyncTask {
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
-      if (database.isTransactionActive())
+      if (database.isTransactionActive()) {
+        // #7615: same test-only fault-injection hook commitBatch() fires - lets a test reproduce a
+        // conflict on THIS out-of-band commit deterministically too, without a real quiesce race.
+        final IntConsumer hook = DatabaseAsyncExecutorImpl.TEST_BEFORE_BATCH_COMMIT_HOOK;
+        if (hook != null)
+          hook.accept(1);
+
         database.commit();
+        // #7615: those commands are durably committed now - drop the stale references so a LATER periodic
+        // boundary commit that fails and retries by replay (commitBatch()) cannot replay them a second time.
+        async.clearPendingBatchCommands();
+      }
     } catch (final Exception e) {
       // The batch could not be published. Say so and still park: the quiescing caller has to be released either way,
       // and it is going to scan data this worker's batch was supposed to be part of - a silent skip here is exactly
@@ -70,6 +81,16 @@ public class DatabaseAsyncParkWorker implements DatabaseAsyncTask {
           "Error on committing the pending asynchronous batch of database '%s' before parking its worker", e,
           database.getName());
       async.onError(e);
+      // #7615: every DatabaseAsyncCommand buffered since the last commit is discarded by this failed
+      // publish too - told individually here instead of only through the executor-wide onError() above.
+      async.notifyPendingBatchCommandsAndAbandon(e);
+      // This catch swallows rather than rethrows (by design: the quiescing caller must be released either
+      // way, see the class javadoc), so - unlike every other site that closes this shared batch -
+      // executeTask()'s own `!nested && isTransactionActive()` rollback is never reached for this failure.
+      // Made unconditional here instead of assuming database.commit()'s own failure paths always leave the
+      // transaction inactive.
+      if (database.isTransactionActive())
+        database.rollback();
     } finally {
       signalParked();
     }

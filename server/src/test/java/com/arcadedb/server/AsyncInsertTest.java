@@ -49,11 +49,33 @@ class AsyncInsertTest {
   private static ArcadeDBServer arcadeDBServer;
   static final   String         DATABASE_NAME = "AsyncInsertTest";
 
+  /**
+   * More async workers ({@code CONCURRENCY_LEVEL}) than buckets forces several worker threads to share the same
+   * bucket/index pages, so their periodic {@code commitEvery} boundary commits genuinely collide with
+   * {@code ConcurrentModificationException} - the exact shape of issue #7615. Before that fix this asserted the bug's
+   * own symptom as the expected outcome ({@code errCount != 0}, stored count {@code != N}): a batch that lost the
+   * race was rolled back silently, with nothing telling the submitters of the discarded writes. Now that boundary
+   * commit retries transparently by replaying the batch, so every one of the N UPSERTs (each on its own random UUID,
+   * never a genuine unique-index collision) ends up stored with no error surfacing at all - same as
+   * {@link #bulkAsyncInsertOk}, just reached under contention instead of by construction.
+   */
   @Test
   void bulkAsyncInsertConflict() {
     final int CONCURRENCY_LEVEL = 24;
     ContextConfiguration configuration = new ContextConfiguration();
     GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(CONCURRENCY_LEVEL);
+    // #7615 review: this test's whole point is genuine cross-worker page contention (24 workers sharing 8
+    // buckets), so a worker's periodic boundary commit can legitimately collide on TX_RETRIES' default 3
+    // retries in a row under a slow/loaded CI runner - a real, if rare, source of flakiness for the strict
+    // errCount==0/stored==N assertions below that a synthetic fault-injection test wouldn't have. A more
+    // generous budget makes the retry mechanism itself, not this runner's speed, the deciding factor; reset
+    // automatically by endTests()'s GlobalConfiguration.resetAll(). 10, not higher: commitBatch() replays
+    // every command buffered since the last commit on EACH attempt, and with the default
+    // ASYNC_TX_BATCH_SIZE (10240, far above what any of the 24 workers accumulates from its ~833-command
+    // share of N below) that periodic boundary never actually fires - all contention here resolves at
+    // waitCompletion()'s own dangling-batch flush, replaying a whole worker's share per attempt. The
+    // waitCompletion() budget below is sized for this cost, not just for TX_RETRIES' old default headroom.
+    GlobalConfiguration.TX_RETRIES.setValue(10);
     arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
 
@@ -91,14 +113,21 @@ class AsyncInsertTest {
       }, name, name);
     }
 
-    assertThat(database.async().waitCompletion(3000)).isTrue();
+    // #7615 review: a liveness guard, not a performance assertion - deliberately far above any plausible
+    // loaded-CI duration for retrying-by-replay every worker's dangling batch (up to TX_RETRIES attempts
+    // each, ~833 commands replayed per attempt), so this never becomes the flakiness source it would have
+    // traded the old, always-passing assertions for at the original 3s budget.
+    assertThat(database.async().waitCompletion(60_000)).isTrue();
 
     assertThat(okCount.get()).isEqualTo(N);
-    assertThat(errCount.get()).isNotEqualTo(0);
+    // #7615: a periodic-boundary conflict is now retried transparently instead of silently discarding the batch,
+    // so it must not surface as an error here either.
+    assertThat(errCount.get()).isEqualTo(0);
 
     try (ResultSet resultSet = database.query("sql", "SELECT count(*) as total FROM Product")) {
       Result result = resultSet.next();
-      assertThat((Long) result.getProperty("total")).isNotEqualTo(N);
+      // #7615: every one of the N UPSERTs must be durably stored - none may be lost to a retried conflict.
+      assertThat((Long) result.getProperty("total")).isEqualTo(N);
     }
   }
 

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
@@ -229,14 +230,15 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
   }
 
   /**
-   * TRAVERSE is not routed to the walk (issue #7480 - its dedup keys on {@code (bucketId, position)}, which every
-   * lightweight edge of a type shares, so routing alone would hand back one edge of three). Until that is fixed it
-   * refuses rather than reporting a clean empty traversal: answering zero rows for data the graph holds is the
-   * defect this issue is about, and it would read as "this type has no edges" to someone who just watched SELECT
-   * prove it does.
+   * Issue #7480: {@code TraverseExecutionPlanner} now routes a LIGHTWEIGHT edge type target to the same vertex walk
+   * SELECT uses (issue #7477/#7478), and {@code AbstractTraverseStep}'s dedup no longer collapses every lightweight
+   * edge of a type into one. Before the dedup fix, routing the planner alone reproduced exactly this: a graph
+   * holding 3 {@code Cite} edges answered 1 row instead of 3, because {@code RidHashSet} keys on
+   * {@code (bucketId, position)} - the edge type's bucket and the placeholder position -1 - which every lightweight
+   * edge of the type shares.
    */
   @Test
-  void traverseOnALightweightEdgeTypeRefusesRatherThanAnsweringNothing() {
+  void traverseOnALightweightEdgeTypeReturnsEveryEdgeNotJustOne() {
     final RID[] works = newWorks(3);
     connect("Cite", works[0], works[1]);
     connect("Cite", works[0], works[2]);
@@ -244,15 +246,42 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
 
     assertThat(query("select from Cite")).as("precondition: the SELECT side is fixed").hasSize(3);
 
-    assertThatThrownBy(() -> database.transaction(
-        () -> database.query("sql", "traverse in, out from Cite").hasNext()))
-        .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("LIGHTWEIGHT")
-        .hasMessageContaining("#7480");
+    assertThat(query("traverse in, out from Cite while $depth < 1"))
+        .as("every lightweight edge of the type must be its own row, not collapsed into one")
+        .hasSize(3);
 
-    // a regular edge type is untouched
+    // a regular edge type is unaffected
     connect("Wrote", works[0], works[2]);
     assertThat(query("traverse in, out from Wrote while $depth < 1")).hasSize(1);
+  }
+
+  /** The dedup fix lives in the shared base step, so BREADTH_FIRST must be just as unaffected as DEPTH_FIRST. */
+  @Test
+  void traverseBreadthFirstOnALightweightEdgeTypeReturnsEveryEdgeNotJustOne() {
+    final RID[] works = newWorks(3);
+    connect("Cite", works[0], works[1]);
+    connect("Cite", works[0], works[2]);
+    connect("Cite", works[1], works[2]);
+
+    assertThat(query("traverse in, out from Cite while $depth < 1 strategy breadth_first")).hasSize(3);
+  }
+
+  /**
+   * {@code DepthFirstTraverseStep} has its own second dedup set ({@code emitted}, gating final emission in
+   * {@code fetchNextResults}) in addition to the shared {@code traversed} one ({@code fetchNextEntryPoints}) -
+   * both used to be a plain {@code RidHashSet} with the same collapsing defect, and DEPTH_FIRST is the default
+   * strategy this whole test class already exercises, so both are pinned together: a vertex whose OUT list holds
+   * more than one lightweight edge to peer vertices is exactly the case where every one of those edges shares the
+   * same (bucketId, offset) pair - distinct {@code LightEdgeRID}s that a plain {@code RidHashSet} would collapse.
+   */
+  @Test
+  void traverseDepthFirstEmissionDedupDoesNotCollapseLightweightSiblingEdges() {
+    final RID[] works = newWorks(4);
+    connect("Cite", works[0], works[1]);
+    connect("Cite", works[0], works[2]);
+    connect("Cite", works[0], works[3]);
+
+    assertThat(query("traverse in, out from Cite while $depth < 1 strategy depth_first")).hasSize(3);
   }
 
   /**
@@ -321,33 +350,179 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
   }
 
   /**
-   * TRUNCATE deletes what {@code scanType()} finds, and that reads the type's buckets directly rather than going
-   * through the planner - so the walk never reaches it and the statement used to report success having deleted
-   * nothing. It refuses instead, and points at the operation that does reach them (issue #7481).
+   * TRUNCATE used to delete what {@code scanType()} finds, and that reads the type's buckets directly rather than
+   * going through the planner - so the walk never reached it and the statement reported success having deleted
+   * nothing. It now delegates to the same removal-safe path {@code DELETE FROM <type>} already takes correctly
+   * (issue #7481): a lightweight type has no indexes to drop, so the index-drop/rebuild speed-up
+   * {@code truncateInOwnTransaction} exists for buys nothing here.
    */
   @Test
-  void truncateOnALightweightEdgeTypeRefusesAndPointsAtDelete() {
+  void truncateOnALightweightEdgeTypeActuallyDeletesTheEdges() {
     final RID[] works = newWorks(3);
     connect("Cite", works[0], works[1]);
+    connect("Cite", works[0], works[2]);
     connect("Cite", works[1], works[2]);
 
-    assertThatThrownBy(() -> database.command("sql", "truncate type Cite").close())
-        .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("LIGHTWEIGHT")
-        .hasMessageContaining("DELETE FROM Cite");
+    database.command("sql", "truncate type Cite").close();
 
-    assertThat(query("select from Cite")).as("a refused TRUNCATE must not have deleted anything either").hasSize(2);
+    assertThat(query("select from Cite")).as("TRUNCATE must actually reach the edges now").isEmpty();
+    database.transaction(() -> {
+      assertThat(database.lookupByRID(works[0], true).asVertex().countEdges(Vertex.DIRECTION.OUT, "Cite")).isZero();
+      assertThat(database.lookupByRID(works[1], true).asVertex().countEdges(Vertex.DIRECTION.OUT, "Cite")).isZero();
+      assertThat(database.lookupByRID(works[1], true).asVertex().countEdges(Vertex.DIRECTION.IN, "Cite")).isZero();
+      assertThat(database.lookupByRID(works[2], true).asVertex().countEdges(Vertex.DIRECTION.IN, "Cite")).isZero();
+    });
+  }
 
-    // UNSAFE is about "the type is not empty", not about "this cannot work": it must not talk its way past this
-    assertThatThrownBy(() -> database.command("sql", "truncate type Cite unsafe").close())
-        .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("LIGHTWEIGHT");
+  /** The fast (own-transaction) path and the caller-transaction path must both actually delete. */
+  @Test
+  void truncateOnALightweightEdgeTypeWorksInsideACallerTransactionToo() {
+    final RID[] works = newWorks(2);
+    connect("Cite", works[0], works[1]);
 
-    // ...and the operation the message names does the job
-    database.transaction(() -> database.command("sql", "delete from Cite").close());
+    database.transaction(() -> database.command("sql", "truncate type Cite").close());
+
     assertThat(query("select from Cite")).isEmpty();
-    database.transaction(() -> assertThat(database.lookupByRID(works[0], true).asVertex()
-        .countEdges(Vertex.DIRECTION.OUT, "Cite")).isZero());
+  }
+
+  /** A ROLLBACK inside a caller transaction must put the lightweight edges back, exactly as DELETE FROM does. */
+  @Test
+  void truncateOnALightweightEdgeTypeInsideACallerTransactionRollsBack() {
+    final RID[] works = newWorks(2);
+    connect("Cite", works[0], works[1]);
+
+    database.begin();
+    database.command("sql", "truncate type Cite").close();
+    assertThat(query("select from Cite")).isEmpty();
+    database.rollback();
+
+    assertThat(query("select from Cite")).as("the rollback must put the edge back").hasSize(1);
+  }
+
+  /**
+   * A hierarchy where the named type itself is not lightweight but a subtype below it is: TRUNCATE cannot silently
+   * pick one meaning of "not POLYMORPHIC" (there is no bucket-only truncation that also reaches a subtype's
+   * lightweight edges, which have no bucket at all), so it refuses rather than under- or over-deleting, and POLYMORPHIC
+   * says which behaviour the caller actually wants.
+   */
+  @Test
+  void truncateOnAMixedHierarchyRefusesWithoutPolymorphicAndDeletesBothShapesWithIt() {
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Mentions").create());
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Quotes").withLightweight(true)
+        .withSuperType("Mentions").create());
+
+    final RID[] works = newWorks(3);
+    connect("Mentions", works[0], works[1]);
+    connect("Quotes", works[0], works[2]);
+
+    assertThatThrownBy(() -> database.command("sql", "truncate type Mentions").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("POLYMORPHIC");
+    assertThat(query("select from Mentions")).as("a refused TRUNCATE must not have deleted anything").hasSize(2);
+
+    database.command("sql", "truncate type Mentions polymorphic").close();
+    assertThat(query("select from Mentions")).isEmpty();
+  }
+
+  /** A lightweight LEAF type (no subtypes of its own) truncates the same way with or without POLYMORPHIC. */
+  @Test
+  void truncateOnALightweightLeafTypeIgnoresThePolymorphicFlag() {
+    final RID[] works = newWorks(2);
+    connect("Cite", works[0], works[1]);
+
+    database.command("sql", "truncate type Cite polymorphic").close();
+
+    assertThat(query("select from Cite")).isEmpty();
+  }
+
+  /** UNSAFE keeps meaning "the type is not empty", not "force past a structural refusal". */
+  @Test
+  void truncateOnAMixedHierarchyStillRefusesWithoutPolymorphicEvenWithUnsafe() {
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Mentions").create());
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Quotes").withLightweight(true)
+        .withSuperType("Mentions").create());
+
+    final RID[] works = newWorks(2);
+    connect("Quotes", works[0], works[1]);
+
+    assertThatThrownBy(() -> database.command("sql", "truncate type Mentions unsafe").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("POLYMORPHIC");
+  }
+
+  /**
+   * TRUNCATE rebuilds {@code DELETE FROM <type>} as SQL text, so a type name that needs back-tick quoting (a
+   * reserved word, here) has to come back out through {@code Identifier.toString()} rather than the plain,
+   * unescaped {@code getStringValue()} - otherwise the rebuilt text fails to parse instead of deleting anything.
+   */
+  @Test
+  void truncateOnALightweightEdgeTypeWithAReservedWordNameStillDeletes() {
+    database.transaction(() -> database.command("sql", "CREATE EDGE TYPE `SELECT` LIGHTWEIGHT").close());
+
+    final RID[] works = newWorks(2);
+    connect("SELECT", works[0], works[1]);
+
+    assertThat(query("select from `SELECT`")).hasSize(1);
+
+    database.command("sql", "truncate type `SELECT`").close();
+
+    assertThat(query("select from `SELECT`")).isEmpty();
+  }
+
+  /**
+   * The own-transaction path now carries the same {@code BATCH} commit-and-reopen cycle
+   * {@link com.arcadedb.query.sql.executor.BatchStep} gives the record-backed path, so a lightweight type with more
+   * edges than the configured batch size must still delete every one of them across several committed transactions,
+   * not just the first batch.
+   */
+  @Test
+  void truncateOnALightweightEdgeTypeDeletesEverythingAcrossSeveralBatches() {
+    final int batchSize = 4;
+    database.getConfiguration().setValue(GlobalConfiguration.TRUNCATE_BATCH_SIZE, batchSize);
+    try {
+      final RID[] works = newWorks(1 + 3 * batchSize);
+      for (int i = 1; i < works.length; i++)
+        connect("Cite", works[0], works[i]);
+
+      assertThat(query("select from Cite")).hasSize(works.length - 1);
+
+      database.command("sql", "truncate type Cite").close();
+
+      assertThat(query("select from Cite")).isEmpty();
+      database.transaction(() -> assertThat(database.lookupByRID(works[0], true).asVertex()
+          .countEdges(Vertex.DIRECTION.OUT, "Cite")).isZero());
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.TRUNCATE_BATCH_SIZE,
+          GlobalConfiguration.TRUNCATE_BATCH_SIZE.getDefValue());
+    }
+  }
+
+  /**
+   * {@code Database.countType()} sums bucket record counts, and a LIGHTWEIGHT edge allocates none - so it answers 0
+   * for such a type no matter how many edges it holds ({@link #theCountAgreesWithTheScan} pins exactly this). The
+   * "not empty, needs UNSAFE" guard in {@code TruncateTypeStatement} reads that same count, so a LIGHTWEIGHT edge
+   * type under a real {@code E} hierarchy (unlike this class's other fixtures, none of which extend {@code E} or
+   * {@code V} and so never exercise this guard at all) must not be able to bypass it just because the count it
+   * relies on lies for this storage shape (review finding on #7481).
+   */
+  @Test
+  void truncateOnALightweightEdgeTypeUnderARealEHierarchyStillRequiresUnsafeWhenNotEmpty() {
+    database.transaction(() -> {
+      database.getSchema().createEdgeType("E");
+      database.getSchema().buildEdgeType().withName("CiteUnderE").withLightweight(true).withSuperType("E").create();
+    });
+
+    final RID[] works = newWorks(2);
+    connect("CiteUnderE", works[0], works[1]);
+
+    assertThatThrownBy(() -> database.command("sql", "truncate type CiteUnderE").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("not empty")
+        .hasMessageContaining("UNSAFE");
+    assertThat(query("select from CiteUnderE")).as("a refused TRUNCATE must not have deleted anything").hasSize(1);
+
+    database.command("sql", "truncate type CiteUnderE unsafe").close();
+    assertThat(query("select from CiteUnderE")).isEmpty();
   }
 
   /** A regular edge type truncates as it always did. */
