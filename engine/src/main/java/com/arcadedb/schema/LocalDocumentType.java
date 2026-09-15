@@ -572,7 +572,9 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * Refuses a super type relationship reached through either end of a TIMESERIES type.
+   * Refuses a super type relationship that would let a TIMESERIES type - {@code this}, {@code superType}, or a
+   * TIMESERIES type sitting anywhere in {@code this}'s existing descendant subtree - inherit a polymorphic
+   * property it cannot store.
    * <p>
    * The same shape {@link #checkTimeSeriesColumnDeclared} refuses for a property created directly on the type, one
    * hop further: {@code LocalTimeSeriesType.tsColumns} is filled once by {@code TimeSeriesTypeBuilder.create()} and
@@ -581,28 +583,54 @@ public class LocalDocumentType implements DocumentType {
    * listed as part of the type, but the time-series write path ({@code SaveElementStep#saveToTimeSeries}) reads the
    * document under the declared column names only and silently drops everything else (issue #7581).
    * <p>
+   * The descendant walk closes a gap the direct {@code this}/{@code superType} check alone leaves open: a legacy
+   * database can already have an ordinary type with a TIMESERIES type somewhere below it in the subtree (loaded
+   * tolerantly, warning-only, by the branch below). Linking a new, entirely ordinary super type onto {@code this}
+   * does not touch either end of THAT link, but the new super type's properties still flow down through {@code
+   * this} to every one of its subtypes, TIMESERIES ones included.
+   * <p>
    * A database written before this rule may already carry such a hierarchy. Refusing it at schema load would make
    * that database unopenable, so the load path only warns and leaves the hierarchy standing.
    *
    * @param superType the super type about to be linked
    */
   private void checkTimeSeriesHierarchy(final DocumentType superType) {
-    if (!(this instanceof LocalTimeSeriesType) && !(superType instanceof LocalTimeSeriesType))
+    final LocalTimeSeriesType affected = findTimeSeriesInSubtree(this);
+    if (affected == null && !(superType instanceof LocalTimeSeriesType))
       return;
 
     if (schema.isReadingFromFile()) {
       LogManager.instance().log(this, Level.WARNING,
-          "Type '%s' has super type '%s': one of the two is a TIMESERIES type and this hierarchy was created before "
-              + "issue #7581 was fixed. A polymorphic property inherited across it is silently dropped by the "
-              + "time-series write path. Remove the SUPERTYPE relationship with ALTER TYPE to fix this",
-          name, superType.getName());
+          "Type '%s' has super type '%s': a TIMESERIES type (%s) is involved in the hierarchy and this link was "
+              + "created before issue #7581 was fixed. A polymorphic property inherited across it is silently "
+              + "dropped by the time-series write path. Remove the SUPERTYPE relationship with ALTER TYPE to fix this",
+          name, superType.getName(), affected != null ? affected.getName() : superType.getName());
       return;
     }
 
     throw new SchemaException("Cannot add super type '" + superType.getName() + "' to type '" + name
-        + "' because a TIMESERIES type only stores the TIMESTAMP, TAGS and FIELDS columns declared in CREATE "
-        + "TIMESERIES TYPE, on either end of the hierarchy: a polymorphic property inherited across it would be "
-        + "silently dropped by every write");
+        + "' because a TIMESERIES type ("
+        + (affected != null ? affected.getName() : superType.getName())
+        + ") only stores the TIMESTAMP, TAGS and FIELDS columns declared in CREATE TIMESERIES TYPE, whether it is "
+        + "an end of this link or sits below it in the hierarchy: a polymorphic property inherited across it would "
+        + "be silently dropped by every write");
+  }
+
+  /**
+   * The TIMESERIES type at or below {@code type} in its subtype tree, or {@code null} if there is none. {@code
+   * type} itself is checked first, so a direct TIMESERIES/TIMESERIES link is reported the same way a transitive
+   * one is.
+   */
+  private static LocalTimeSeriesType findTimeSeriesInSubtree(final LocalDocumentType type) {
+    if (type instanceof LocalTimeSeriesType tsType)
+      return tsType;
+
+    for (final LocalDocumentType subType : type.subTypes) {
+      final LocalTimeSeriesType found = findTimeSeriesInSubtree(subType);
+      if (found != null)
+        return found;
+    }
+    return null;
   }
 
   /**
