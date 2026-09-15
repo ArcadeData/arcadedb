@@ -122,7 +122,8 @@ public enum Type {
   private static final Map<String, Type>   TYPES_BY_NAME       = new HashMap<String, Type>();
   /**
    * The largest magnitude at which every {@code float} with an integral value is exactly the shortest decimal that
-   * round-trips it: 2^24, above which consecutive floats are more than one apart. See {@link #widenFloat}.
+   * round-trips it: 2^24 itself qualifies, and above it consecutive floats are more than one apart. See
+   * {@link #widenFloat}.
    */
   private static final float               EXACT_INTEGRAL_FLOAT = 1 << 24;
 
@@ -1288,7 +1289,7 @@ public enum Type {
    * <p>
    * The decimal round-trip costs a string per call, so it is kept off the hot paths that do not need it: it is
    * reached only when a {@code Float} actually meets a {@code Double} or a {@link BigDecimal}, never when both
-   * operands already share a type, and never for an integral float, which widens exactly.
+   * operands already share a type, and never for an integral float at or below 2^24, which widens exactly.
    *
    * @param value the float to widen (never {@code null})
    *
@@ -1299,8 +1300,8 @@ public enum Type {
     // NaN AND THE INFINITIES HAVE NO SHORTER DECIMAL FORM: WIDEN THEM DIRECTLY AND SKIP THE PARSE
     if (Float.isNaN(f) || Float.isInfinite(f))
       return f;
-    // AN INTEGRAL FLOAT BELOW 2^24 IS THE ONLY INTEGER INSIDE ITS OWN ROUNDING INTERVAL (THE ULP IS AT MOST 1
-    // THERE), SO ITS SHORTEST DECIMAL IS THAT INTEGER AND THE PRIMITIVE WIDENING IS ALREADY EXACT
+    // AN INTEGRAL FLOAT AT OR BELOW 2^24 IS THE ONLY INTEGER INSIDE ITS OWN ROUNDING INTERVAL (THE ULP IS AT MOST
+    // 1 THERE), SO ITS SHORTEST DECIMAL IS THAT INTEGER AND THE PRIMITIVE WIDENING IS ALREADY EXACT
     if (f == (long) f && Math.abs(f) <= EXACT_INTEGRAL_FLOAT)
       return f;
     return Double.parseDouble(value.toString());

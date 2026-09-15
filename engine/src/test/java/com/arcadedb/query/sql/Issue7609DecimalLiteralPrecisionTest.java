@@ -66,6 +66,9 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE Sw");
     database.command("sql", "CREATE PROPERTY Sw.v DOUBLE");
 
+    database.command("sql", "CREATE DOCUMENT TYPE Neg");
+    database.command("sql", "CREATE PROPERTY Neg.v DOUBLE");
+
     database.command("sql", "CREATE DOCUMENT TYPE Ix");
     database.command("sql", "CREATE PROPERTY Ix.v DOUBLE");
     database.command("sql", "CREATE INDEX ON Ix (v) NOTUNIQUE");
@@ -82,6 +85,10 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
       for (final String d : SWEEP)
         for (int i = 0; i < PER_VALUE; i++)
           database.newDocument("Sw").set("v", Double.parseDouble(d)).save();
+
+      for (final String d : new String[] { "-0.06", "-0.05", "-0.04" })
+        for (int i = 0; i < PER_VALUE; i++)
+          database.newDocument("Neg").set("v", Double.parseDouble(d)).save();
 
       for (final String d : DISCOUNTS)
         for (int i = 0; i < PER_VALUE; i++)
@@ -140,6 +147,12 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
     assertSweep("0.7", 30);
   }
 
+  /**
+   * Asserts every operator at {@code literal} against the fifty records of type {@code Sw}.
+   *
+   * @param literal the suffix-less literal under test
+   * @param below   how many of the fifty records sit strictly below it
+   */
   private void assertSweep(final String literal, final int below) {
     assertThat(count("SELECT FROM Sw WHERE v = " + literal)).as("v = " + literal).isEqualTo(10);
     assertThat(count("SELECT FROM Sw WHERE v >= " + literal)).as("v >= " + literal).isEqualTo(50 - below);
@@ -178,6 +191,21 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
 
     // a Float parameter still binds as a Float, and still matches the FLOAT property
     assertThat(count("SELECT FROM Li WHERE dFloat = :d", Map.of("d", 0.05f))).isEqualTo(10);
+  }
+
+  /**
+   * The sign travels a path of its own - the JavaCC node carries it in a field while the ANTLR tree makes it a
+   * unary minus over the literal - so the boundary is asserted on the negative side too. Thirty records, ten
+   * each at -0.06, -0.05 and -0.04.
+   */
+  @Test
+  void aNegativeLiteralSeesItsBoundaryRecordsToo() {
+    assertThat(count("SELECT FROM Neg WHERE v = -0.05")).isEqualTo(10);
+    assertThat(count("SELECT FROM Neg WHERE v > -0.05")).isEqualTo(10);
+    assertThat(count("SELECT FROM Neg WHERE v >= -0.05")).isEqualTo(20);
+    assertThat(count("SELECT FROM Neg WHERE v < -0.05")).isEqualTo(10);
+    assertThat(count("SELECT FROM Neg WHERE v <= -0.05")).isEqualTo(20);
+    assertThat(count("SELECT FROM Neg WHERE v BETWEEN -0.05 AND -0.04")).isEqualTo(20);
   }
 
   /**
@@ -222,15 +250,34 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
 
   // ---------------------------------------------------------------------------------------------
 
+  /**
+   * Compares the two numbers {@link Type#castComparableNumber} brought to a common type, the way every operator
+   * that calls it does.
+   *
+   * @param pair the couple returned by {@code castComparableNumber}
+   *
+   * @return negative, zero or positive as the first is below, equal to or above the second
+   */
   @SuppressWarnings({ "unchecked", "rawtypes" })
   private static int compare(final Number[] pair) {
     return ((Comparable) pair[0]).compareTo(pair[1]);
   }
 
+  /**
+   * @param sql the statement to run
+   *
+   * @return how many records the statement answers
+   */
   private long count(final String sql) {
     return count(sql, Map.of());
   }
 
+  /**
+   * @param sql    the statement to run
+   * @param params the bound parameters, empty to run the statement without any
+   *
+   * @return how many records the statement answers
+   */
   private long count(final String sql, final Map<String, Object> params) {
     long rows = 0;
     try (final ResultSet rs = params.isEmpty() ? database.query("sql", sql) : database.query("sql", sql, params)) {
@@ -242,6 +289,11 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
     return rows;
   }
 
+  /**
+   * @param sql a statement whose first record carries the aggregate under the alias {@code s}
+   *
+   * @return that aggregate as a double, zero when there is nothing to sum
+   */
   private double sum(final String sql) {
     try (final ResultSet rs = database.query("sql", sql)) {
       final Object value = rs.next().getProperty("s");
@@ -249,12 +301,22 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
     }
   }
 
+  /**
+   * @param sql a statement expected to answer at least one record
+   *
+   * @return its first record
+   */
   private Result single(final String sql) {
     try (final ResultSet rs = database.query("sql", sql)) {
       return rs.next();
     }
   }
 
+  /**
+   * @param sql the statement to explain
+   *
+   * @return the execution plan as text, so a test can tell an index fetch from a full scan
+   */
   private String explain(final String sql) {
     try (final ResultSet rs = database.query("sql", "EXPLAIN " + sql)) {
       return rs.next().getProperty("executionPlanAsString").toString();
