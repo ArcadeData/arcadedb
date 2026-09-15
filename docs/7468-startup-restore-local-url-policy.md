@@ -1,4 +1,7 @@
-# #7468 - startup `restore:` resolves the local-URL policy from the static global
+# #7468 - the startup `restore:` local-URL policy now resolves from the server's `ContextConfiguration`
+
+It used to resolve from the static `GlobalConfiguration` value. What follows is the defect as reported, the
+sweep for every other path that could share it, and the fix.
 
 ## Problem
 
@@ -193,8 +196,10 @@ comment text alone.
 
 ## Ledger
 
-- [x] 1. Startup `restore:` resolves the local-URL policy from the static global instead of the server's
-  `ContextConfiguration` - **fixed**, tested in both directions.
+- [x] 1. Startup `restore:` **resolved** the local-URL policy from the static global instead of the server's
+  `ContextConfiguration` - **fixed**: the static-global fallback is gone, and the policy now resolves through
+  `ServerControlPlane.isRestoreImportLocalUrlsAllowed()` like every other server-side restore. Tested in both
+  directions.
 - [x] 2. Sibling: startup `import:` resolves `SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS` from the static
   global - **filed as #7632**, out of scope here.
 
@@ -212,3 +217,29 @@ with that caveat: it carries less weight than an agent that was never persuaded.
 | Is the `hasValue` guard in the no-override test vacuous? | No. `ContextConfiguration.setValue(GlobalConfiguration, ...)` stores under `iConfig.getKey()` and `hasValue(String)` looks up `normalizeKey(iName)`, which resolves a declared key to itself (#7297), so the two agree on the key. | Verified, no change. |
 | Is `new ServerControlPlane(this)` a real cost? | Its constructor assigns one field. One object per startup restore, of which there is one per `restore:` entry per boot. | Not a defect. Chosen over a second copy of the `getConfiguration().getValueAsBoolean(...)` expression so the setting keeps one accessor. |
 | Is any entry point still resolving a restore/import policy from the static global? | Yes - the startup `import:` command, on the other setting. | Real and out of scope: filed as **#7632** before this PR opened. |
+
+## Review cycles
+
+### Cycle 1 - `da8d23c` (PR #7633)
+
+| Reviewer | Outcome |
+|---|---|
+| `claude` | **No blocking issues found.** Verified the fallback, the accessor, the reflective signature and the exception shape against the real sources, and confirmed `BaseGraphServerTest` gives each method a fresh server so the per-server override cannot leak between test methods. |
+| `coderabbitai` | 1 actionable comment, `Minor`, on the tracking doc. |
+| `codacy-production` | 0 new issues, 0 complexity. |
+
+**Applied.** CodeRabbit (thread `4018356122`): the doc's title and ledger entry stated the pre-fix behaviour in
+the present tense, so a reader arriving after the merge could take them for a description of current code. Real,
+if cosmetic. The title now names the server `ContextConfiguration` as the source and says the static-global
+resolution is what it replaced; the ledger entry is past-tense about the defect and names the accessor the policy
+now resolves through.
+
+**Skipped, with the reason.** `claude` observed that every other `ServerControlPlane` caller holds one as a field
+rather than constructing it inline, and suggested hoisting a field onto `ArcadeDBServer` - explicitly "in a future
+pass. Not worth blocking on." Not done here: the other callers are HTTP/gRPC handlers that construct one per
+handler and serve many requests from it, whereas this path runs at most once per `restore:` entry per boot, so the
+field would buy nothing and would add a server-lifetime object whose relationship to `getConfiguration()` is a
+wider decision than this fix needs. Recorded here rather than in a `review-deferred-*.md` notes file because there
+is nothing for the developer to act on - the reviewer classified it as non-blocking and future-scoped.
+
+No `review-deferred-*.md` notes file was produced in this cycle.
