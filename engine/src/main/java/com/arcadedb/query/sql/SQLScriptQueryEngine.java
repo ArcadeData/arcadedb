@@ -140,6 +140,11 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
         final EnumSet<OperationType> all = EnumSet.noneOf(OperationType.class);
         for (final Statement s : statements)
           all.addAll(s.getOperationTypes());
+        // getOperationTypes() is documented to return a non-empty set. A script with zero statements is vacuously
+        // idempotent (the loop in isIdempotent() above never finds a counterexample), so it is reported as a
+        // (vacuous) READ here too, rather than as the only case that would return an empty union.
+        if (all.isEmpty())
+          all.add(OperationType.READ);
         return all;
       }
     };
