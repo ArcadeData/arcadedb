@@ -25,6 +25,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -201,6 +202,36 @@ class CypherMapPropertyConsistencyIssue7629Test {
         "MATCH (a:R {id: 1}), (b:R {id: 2}) MERGE (a)-[r:REL {m: $m}]->(b)", Map.of("m", Map.of("k", 1)))))
         .rootCause()
         .hasMessageContaining("TypeError: InvalidPropertyType");
+  }
+
+  /**
+   * A null-valued property on the MERGE creation branch is simply not stored, matching CREATE - it isn't a removal
+   * the way it is on SET's merge form ({@code ON MATCH SET n += {..}}), since there's nothing yet to remove it from.
+   */
+  @Test
+  void mergeCreationBranchSkipsANullVertexProperty() {
+    database.transaction(() -> database.command("opencypher",
+        "MERGE (n:R {id: 1, s: $s})", Collections.singletonMap("s", null)));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:R {id: 1}) RETURN n.s AS s, keys(n) AS k");
+    final var row = rs.next();
+    assertThat(row.<Object>getProperty("s")).isNull();
+    assertThat(row.<List<String>>getProperty("k")).doesNotContain("s");
+  }
+
+  /** The edge equivalent of {@link #mergeCreationBranchSkipsANullVertexProperty}. */
+  @Test
+  void mergeCreationBranchSkipsANullEdgeProperty() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:R {id: 1}), (:R {id: 2})"));
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (a:R {id: 1}), (b:R {id: 2}) MERGE (a)-[r:REL {s: $s}]->(b)", Collections.singletonMap("s", null)));
+
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (:R {id: 1})-[r:REL]->(:R {id: 2}) RETURN r.s AS s, keys(r) AS k");
+    final var row = rs.next();
+    assertThat(row.<Object>getProperty("s")).isNull();
+    assertThat(row.<List<String>>getProperty("k")).doesNotContain("s");
   }
 
   /**

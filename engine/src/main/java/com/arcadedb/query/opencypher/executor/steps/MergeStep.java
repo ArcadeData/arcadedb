@@ -1330,8 +1330,14 @@ public class MergeStep extends AbstractExecutionStep {
       final Map<String, Object> evaluatedProperties = evaluateProperties(relPattern.getProperties(), result);
       final List<Object> keyValues = new ArrayList<>(evaluatedProperties.size() * 2);
       for (final Map.Entry<String, Object> entry : evaluatedProperties.entrySet()) {
-        keyValues.add(entry.getKey());
-        keyValues.add(CypherValues.coerceAndValidatePropertyValue(entry.getValue()));
+        // Skip a null value, matching setProperties (the vertex creation branch) and CreateStep's own
+        // buildEdgeProperties/buildPropertiesFromParameter: Cypher property maps don't remove via null the way
+        // SET's merge form does, so a null entry is simply not stored (issue #7629).
+        final Object value = entry.getValue();
+        if (value != null) {
+          keyValues.add(entry.getKey());
+          keyValues.add(CypherValues.coerceAndValidatePropertyValue(value));
+        }
       }
       edgeProperties = keyValues.toArray();
     } else
