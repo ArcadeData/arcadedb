@@ -235,6 +235,14 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   @Override
+  public Property renameProperty(final String propertyName, final String newPropertyName) {
+    // NAME's value is parsed as a bare identifier (mirroring ALTER TYPE ... NAME), not a quoted one.
+    remoteDatabase.command("sql", "alter property `" + name + "`.`" + propertyName + "` name " + newPropertyName);
+    remoteDatabase.getSchema().reload();
+    return getProperty(newPropertyName);
+  }
+
+  @Override
   public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
     remoteDatabase.getSchema().createTypeIndex(indexType, unique, name, propertyNames);
     remoteDatabase.getSchema().invalidateSchema();
