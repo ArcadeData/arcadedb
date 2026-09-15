@@ -300,7 +300,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   }
 
   protected LookupResult compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys,
-      int mid, final int count, final int purpose) {
+      final int mid, final int count, final int purpose) {
 
     final int result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, mid, count);
 
@@ -332,16 +332,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       return new LookupResult(true, false, lastKeyPos, positionsArray);
     }
 
-    if (convertedKeys.length < binaryKeyTypes.length) {
-      // PARTIAL MATCHING
-      if (purpose == 2) {
-        // ASCENDING ITERATOR: FIND THE MOST LEFT ITEM
-        mid = findFirstEntryOfSameKey(currentPageBuffer, convertedKeys, startIndexArray, mid);
-      } else if (purpose == 3) {
-        // DESCENDING ITERATOR
-        mid = findLastEntryOfSameKey(count, currentPageBuffer, convertedKeys, startIndexArray, mid);
-      }
-    }
+    // ITERATOR (purpose 2/3): `mid` is wherever the binary search converged inside the run of entries that compare
+    // equal to the search key. Resolving that to the run's boundary is LSMTreeIndexAbstract.seekRunBoundary()'s job -
+    // it is the only place holding the bracket the search narrowed, so the walk is a binary search there instead of a
+    // linear one here, and it runs for FULL keys too rather than only for partial ones (#7611).
 
     // TODO: SET CORRECT VALUE POSITION FOR PARTIAL KEYS
     return new LookupResult(true, false, mid, new int[] { currentPageBuffer.position() });
