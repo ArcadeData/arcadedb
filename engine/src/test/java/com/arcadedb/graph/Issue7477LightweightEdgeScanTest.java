@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
@@ -460,6 +461,53 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     assertThatThrownBy(() -> database.command("sql", "truncate type Mentions unsafe").close())
         .isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("POLYMORPHIC");
+  }
+
+  /**
+   * TRUNCATE rebuilds {@code DELETE FROM <type>} as SQL text, so a type name that needs back-tick quoting (a
+   * reserved word, here) has to come back out through {@code Identifier.toString()} rather than the plain,
+   * unescaped {@code getStringValue()} - otherwise the rebuilt text fails to parse instead of deleting anything.
+   */
+  @Test
+  void truncateOnALightweightEdgeTypeWithAReservedWordNameStillDeletes() {
+    database.transaction(() -> database.command("sql", "CREATE EDGE TYPE `SELECT` LIGHTWEIGHT").close());
+
+    final RID[] works = newWorks(2);
+    connect("SELECT", works[0], works[1]);
+
+    assertThat(query("select from `SELECT`")).hasSize(1);
+
+    database.command("sql", "truncate type `SELECT`").close();
+
+    assertThat(query("select from `SELECT`")).isEmpty();
+  }
+
+  /**
+   * The own-transaction path now carries the same {@code BATCH} commit-and-reopen cycle
+   * {@link com.arcadedb.query.sql.executor.BatchStep} gives the record-backed path, so a lightweight type with more
+   * edges than the configured batch size must still delete every one of them across several committed transactions,
+   * not just the first batch.
+   */
+  @Test
+  void truncateOnALightweightEdgeTypeDeletesEverythingAcrossSeveralBatches() {
+    final int batchSize = 4;
+    database.getConfiguration().setValue(GlobalConfiguration.TRUNCATE_BATCH_SIZE, batchSize);
+    try {
+      final RID[] works = newWorks(1 + 3 * batchSize);
+      for (int i = 1; i < works.length; i++)
+        connect("Cite", works[0], works[i]);
+
+      assertThat(query("select from Cite")).hasSize(works.length - 1);
+
+      database.command("sql", "truncate type Cite").close();
+
+      assertThat(query("select from Cite")).isEmpty();
+      database.transaction(() -> assertThat(database.lookupByRID(works[0], true).asVertex()
+          .countEdges(Vertex.DIRECTION.OUT, "Cite")).isZero());
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.TRUNCATE_BATCH_SIZE,
+          GlobalConfiguration.TRUNCATE_BATCH_SIZE.getDefValue());
+    }
   }
 
   /** A regular edge type truncates as it always did. */
