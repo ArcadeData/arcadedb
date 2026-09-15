@@ -298,8 +298,8 @@ public class SaveElementStep extends AbstractExecutionStep {
     if (value == null)
       return null;
     return switch (targetType) {
-      // ISSUE #7609: A Float WIDENS THROUGH ITS DECIMAL FORM, AS Type.convert() ALREADY DOES. .doubleValue() WOULD
-      // PERSIST THE SINGLE PRECISION ROUNDING ERROR INTO THE DOUBLE PROPERTY, WHERE IT OUTLIVES THE STATEMENT
+      // A Float widens through its decimal form, as Type.convert() already does: .doubleValue() would persist the
+      // single precision rounding error into the DOUBLE property, where it outlives the statement (issue #7609).
       case DOUBLE -> value instanceof Float f ?
           Type.widenFloat(f) :
           value instanceof Number n ? n.doubleValue() : Double.parseDouble(value.toString());
