@@ -101,7 +101,6 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
         durationProp: duration('P1DT2H30M'),
         pointProp: point({x: 12.34, y: 56.78}),
         nestedListProp: [1, 2, [3, 4]],
-        nestedMapProp: {a: 1, b: {c: 2}},
         nullProp: null
       })""";
 
@@ -556,13 +555,12 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     }
 
     @Test
-    @DisplayName("[TYPE-005] Nested lists and maps round-trip structurally")
+    @DisplayName("[TYPE-005] Nested lists round-trip structurally")
     void type005_nested() {
       try (final Session s = boltSession()) {
         final Record rec = s.run(
-            "MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l, t.nestedMapProp AS m LIMIT 1").single();
+            "MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l LIMIT 1").single();
         assertThat(rec.get("l").asList()).hasSize(3);
-        assertThat(rec.get("m").asMap()).containsKeys("a", "b");
       }
     }
 

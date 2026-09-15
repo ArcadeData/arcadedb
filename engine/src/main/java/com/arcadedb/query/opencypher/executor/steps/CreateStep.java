@@ -29,12 +29,12 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.Expression;
-import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -515,11 +515,14 @@ public class CreateStep extends AbstractExecutionStep {
   }
 
   /**
-   * Convert CypherTemporalValue objects (and collections of them) to types ArcadeDB can serialize.
-   * Delegates to the shared TemporalUtil so all Cypher write paths apply identical conversion.
+   * Converts CypherTemporalValue objects (and collections of them) to types ArcadeDB can serialize, and rejects a
+   * value a property cannot hold. Delegates to {@link CypherValues#coerceAndValidatePropertyValue} so CREATE refuses
+   * a map property value - {@code CREATE (n {m: $m})} with {@code $m} a map - exactly like {@link SetClauseApplier}
+   * already does for SET/MERGE, instead of silently storing something no other openCypher write clause accepts
+   * (issue #7629).
    */
   private static Object convertTemporalForStorage(final Object value) {
-    return TemporalUtil.toCoreJavaType(value);
+    return CypherValues.coerceAndValidatePropertyValue(value);
   }
 
   /**

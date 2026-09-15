@@ -677,21 +677,17 @@ describe("Bolt conformance (issue #4888)", () => {
       }
     });
 
-    it("[TYPE-005] nested lists and maps round-trip structurally", async () => {
+    it("[TYPE-005] nested lists round-trip structurally", async () => {
       const s = session();
       try {
         const r = await s.run(
-          "MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l, t.nestedMapProp AS m"
+          "MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l"
         );
         expect(r.records[0].get("l")).toEqual([
           neo4j.int(1),
           neo4j.int(2),
           [neo4j.int(3), neo4j.int(4)],
         ]);
-        expect(r.records[0].get("m")).toEqual({
-          a: neo4j.int(1),
-          b: { c: neo4j.int(2) },
-        });
       } finally {
         await s.close();
       }
