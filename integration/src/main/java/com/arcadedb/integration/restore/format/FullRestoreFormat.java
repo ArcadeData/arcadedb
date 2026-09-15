@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.restore.RestoreException;
 import com.arcadedb.integration.restore.RestoreSettings;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IPAddressBlocklist;
 import com.arcadedb.utility.SafeHttpFetcher;
@@ -119,9 +120,46 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     if (stats.files() == 0)
       throw new RestoreException("Unable to perform restore");
 
+    checkRestoredDirectoryIsADatabase(databaseDirectory);
+
     logger.logLine(0, "Full restore completed in %d seconds %s -> %s (%,d%% compression)", elapsedInSecs,
         FileUtils.getSizeAsString(inputSource.fileSize()), FileUtils.getSizeAsString(stats.uncompressedSize()),
         stats.uncompressedSize() > 0 ? (stats.uncompressedSize() - inputSource.fileSize()) * 100 / stats.uncompressedSize() : 0);
+  }
+
+  /**
+   * Refuses a restore that produced a directory ArcadeDB does not recognise as a database (issue #7464).
+   * <p>
+   * Every build up to the one that carries #7464's backup-side fix could write an archive with no
+   * {@code schema.json} in it: both backup paths treated the file as optional and completed anyway. Extracted,
+   * such an archive leaves a directory full of page files that {@code DatabaseFactory.exists()} answers "no" to,
+   * so the next thing the operator sees is "database not found" with nothing connecting it to the restore that
+   * reported success minutes earlier. This build cannot stop those archives existing - it can stop them
+   * restoring quietly.
+   * <p>
+   * THE SAME TWO ARMS AS {@code DatabaseFactory.exists()}, deliberately. {@code schema.prev.json} is what
+   * {@code LocalSchema.readConfiguration()} loads from when the primary is missing or empty, so an archive
+   * carrying only the fallback really does restore to a working database and must not be refused. The size test
+   * is there for the same reason {@code readConfiguration()} applies one: a zero-length {@code schema.json}
+   * passes a presence check and then loads as an EMPTY schema, which is the failure that reports nothing at all.
+   * <p>
+   * Checked on the extracted directory rather than on the entry names, so the sequential walk and the parallel
+   * extractor of #6086 are both covered by one check at the point they both return through.
+   */
+  private void checkRestoredDirectoryIsADatabase(final File databaseDirectory) {
+    if (isUsable(new File(databaseDirectory, LocalSchema.SCHEMA_FILE_NAME))
+        || isUsable(new File(databaseDirectory, LocalSchema.SCHEMA_PREV_FILE_NAME)))
+      return;
+
+    throw new RestoreException(
+        ("Restore of '%s' aborted: the archive carries no usable '%s' (nor the '%s' ArcadeDB falls back to), so "
+            + "the restored directory would not be recognised as a database. The archive was produced by a backup "
+            + "that skipped the file and reported success (issue #7464)").formatted(settings.inputFileURL,
+            LocalSchema.SCHEMA_FILE_NAME, LocalSchema.SCHEMA_PREV_FILE_NAME));
+  }
+
+  private static boolean isUsable(final File file) {
+    return file.exists() && file.length() > 0;
   }
 
   /**
