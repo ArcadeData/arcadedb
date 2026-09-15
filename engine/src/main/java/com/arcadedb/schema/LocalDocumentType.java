@@ -762,6 +762,13 @@ public class LocalDocumentType implements DocumentType {
 
   private TypeIndex findDescendantIndexOnProperty(final String propertyName) {
     for (final LocalDocumentType subType : subTypes) {
+      if (subType.getPropertyIfExists(propertyName) != null)
+        // addSuperType lets a subtype declare its own property under a name a super type already uses - a
+        // conflict it only warns about, never refuses. From here down, propertyName resolves to THIS subtype's
+        // own, independently-declared property, not the one above being renamed or dropped: an index in this
+        // branch belongs to that shadowing property, so it is not a reason to refuse the change higher up.
+        continue;
+
       for (final TypeIndex index : subType.getAllIndexes(false))
         if (index.getPropertyNames().contains(propertyName))
           return index;
@@ -2280,8 +2287,6 @@ public class LocalDocumentType implements DocumentType {
       // ALREADY PARENT
       return this;
 
-    checkTimeSeriesHierarchy(superType);
-
     // CHECK FOR CONFLICT WITH PROPERTIES NAMES
     final Set<String> allProperties = getPropertyNames();
     for (final String p : superType.getPolymorphicPropertyNames())
@@ -2327,6 +2332,13 @@ public class LocalDocumentType implements DocumentType {
   private void addSuperTypeInternal(final DocumentType superType, final boolean createIndexes) {
     recordFileChanges(() -> {
       final LocalDocumentType embeddedSuperType = (LocalDocumentType) superType;
+
+      // Inside the callback, immediately before the mutation it guards: checkTimeSeriesHierarchy's descendant walk
+      // reads the (mutable) subTypes list of this type and every one below it, and linkSuperType is what mutates
+      // those same lists. Checked here, both are serialised by the database write lock recordFileChanges takes; read
+      // any earlier and a concurrent addSuperType/removeSuperType elsewhere in the hierarchy could structurally
+      // modify a list this walk is iterating, straight into a ConcurrentModificationException.
+      checkTimeSeriesHierarchy(superType);
 
       linkSuperType(embeddedSuperType);
 
