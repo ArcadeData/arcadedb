@@ -145,6 +145,9 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
    * <p>
    * Checked on the extracted directory rather than on the entry names, so the sequential walk and the parallel
    * extractor of #6086 are both covered by one check at the point they both return through.
+   * <p>
+   * The thrown message deliberately carries no issue number: it is read by an operator holding an archive that
+   * will not restore, years after #7464 stops meaning anything to anyone. The reference lives here instead.
    */
   private void checkRestoredDirectoryIsADatabase(final File databaseDirectory) {
     if (isUsable(new File(databaseDirectory, LocalSchema.SCHEMA_FILE_NAME))
@@ -153,8 +156,8 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
     throw new RestoreException(
         ("Restore of '%s' aborted: the archive carries no usable '%s' (nor the '%s' ArcadeDB falls back to), so "
-            + "the restored directory would not be recognised as a database. The archive was produced by a backup "
-            + "that skipped the file and reported success (issue #7464)").formatted(settings.inputFileURL,
+            + "the restored directory would not be recognised as a database. It was produced by a backup that "
+            + "skipped the file and reported success").formatted(settings.inputFileURL,
             LocalSchema.SCHEMA_FILE_NAME, LocalSchema.SCHEMA_PREV_FILE_NAME));
   }
 
