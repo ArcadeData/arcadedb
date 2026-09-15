@@ -298,11 +298,18 @@ public class SaveElementStep extends AbstractExecutionStep {
     if (value == null)
       return null;
     return switch (targetType) {
-      case DOUBLE -> value instanceof Number n ? n.doubleValue() : Double.parseDouble(value.toString());
+      // A Float widens through its decimal form, as Type.convert() already does: .doubleValue() would persist the
+      // single precision rounding error into the DOUBLE property, where it outlives the statement (issue #7609).
+      case DOUBLE -> value instanceof Float f ?
+          Type.widenFloat(f) :
+          value instanceof Number n ? n.doubleValue() : Double.parseDouble(value.toString());
       case LONG -> value instanceof Number n ? n.longValue() : Long.parseLong(value.toString());
       case INTEGER -> value instanceof Number n ? n.intValue() : Integer.parseInt(value.toString());
       case FLOAT -> value instanceof Number n ? n.floatValue() : Float.parseFloat(value.toString());
       case SHORT -> value instanceof Number n ? n.shortValue() : Short.parseShort(value.toString());
+      // DECIMAL needs no branch of its own: Type.convert()'s BigDecimal case already builds it with
+      // new BigDecimal(value.toString()), so it reads the float's decimal rather than its bits and never
+      // carried the error this DOUBLE case had to be fixed for (issue #7609).
       default -> value;
     };
   }

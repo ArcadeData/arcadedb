@@ -32,6 +32,13 @@ public class PNumber extends SimpleNode {
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(value);
+    // A suffix-less literal re-parses as a double, so a Float has to carry its suffix or rendering and re-parsing the
+    // same statement (EXPLAIN, the statement cache key, a rewritten sub-query) would change its type. NaN and the
+    // infinities are left alone, as InputParameter does: an `F`-suffixed literal past the float range overflows to
+    // Infinity, and "InfinityF" is a spelling the grammar cannot lex, so it would render worse than it reads
+    // (issue #7609).
+    if (value instanceof Float float1 && Float.isFinite(float1))
+      builder.append('F');
   }
 
   public PNumber copy() {

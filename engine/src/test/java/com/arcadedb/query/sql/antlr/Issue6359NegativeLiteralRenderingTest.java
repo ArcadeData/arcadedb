@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -141,7 +142,23 @@ class Issue6359NegativeLiteralRenderingTest extends TestHelper {
     assertValueSurvivesReparse("SELECT -(1 + 2) AS n", -3);
     assertValueSurvivesReparse("SELECT (1 + 2) * 3 AS n", 9);
     assertValueSurvivesReparse("SELECT 1 + 2 * 3 AS n", 7);
-    assertValueSurvivesReparse("SELECT -1.5 + 0.5 AS n", -1.0f);
+    // A suffix-less literal is a double, so the sum of two of them is a double too (issue #7609).
+    assertValueSurvivesReparse("SELECT -1.5 + 0.5 AS n", -1.0d);
+    assertValueSurvivesReparse("SELECT -1.5F + 0.5F AS n", -1.0f);
+  }
+
+  /**
+   * An {@code F}-suffixed literal past the float range lexes and then overflows to infinity, and
+   * {@code "InfinityF"} is a spelling the grammar cannot lex - so appending the suffix unconditionally would
+   * render a statement that no longer reads back. The suffix is only written where it round-trips (issue #7609).
+   */
+  @Test
+  void aNonFiniteFloatLiteralStillRendersSomethingParseable() {
+    for (final String literal : new String[] { "1.0E50F", "-1.0E50F" }) {
+      final String rendered = render("SELECT " + literal + " AS n");
+      assertThat(rendered).as("rendered " + literal).doesNotContain("InfinityF");
+      assertThatCode(() -> render(rendered)).as("re-parsing " + rendered).doesNotThrowAnyException();
+    }
   }
 
   private void assertValueSurvivesReparse(final String query, final Object expected) {

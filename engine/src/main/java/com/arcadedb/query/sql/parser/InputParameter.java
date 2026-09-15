@@ -74,11 +74,19 @@ public class InputParameter extends SimpleNode {
 
     if (value instanceof Number number) {
       final FloatingPoint result = new FloatingPoint();
-      result.sign = number.doubleValue() >= 0 ? 1 : -1;
       result.stringValue = value.toString();
+      // The sign comes from the text, not from `doubleValue() >= 0`, which is true for negative zero too and so
+      // bound -0.0 as +0.0 - a difference Double.equals() can see, so the parameter matched nothing (issue #7609).
       if (result.stringValue.startsWith("-")) {
+        result.sign = -1;
         result.stringValue = result.stringValue.substring(1);
-      }
+      } else
+        result.sign = 1;
+      // A suffix-less literal is a double, so a Float parameter has to carry its suffix to bind back as one. NaN and
+      // the infinities are left alone: "NaN" is already not a literal the grammar lexes, and "NaNF" would be a second
+      // unlexable spelling rather than a fix. They bind as a Double, which carries the same value (issue #7609).
+      if (value instanceof Float float1 && Float.isFinite(float1))
+        result.stringValue += "F";
       return result;
     }
     if (value instanceof String) {

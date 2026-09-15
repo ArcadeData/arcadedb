@@ -3077,7 +3077,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * <p>
    * Negates the ALREADY-PARSED value rather than re-parsing a {@code "-"}-prefixed text, so the folded literal keeps
    * exactly the numeric type {@code 0 - X} used to produce ({@code -2147483648} stays a {@code Long}, an
-   * {@code L}-suffixed literal stays a {@code Long}, a bare decimal stays a {@code Float}) and the sign lands
+   * {@code L}-suffixed literal stays a {@code Long}, a suffix-less decimal stays a {@code Double}) and the sign lands
    * correctly on every literal shape the visitors accept, not only on plain decimal.
    * <p>
    * A literal carrying a MODIFIER is left alone: a suffix binds tighter than the sign, so {@code -1.toString()} is
@@ -3319,8 +3319,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       } else if (text.endsWith("D") || text.endsWith("d")) {
         number.value = Double.parseDouble(text.substring(0, text.length() - 1));
       } else {
-        // Default to Float for compatibility with JavaCC parser
-        number.value = Float.parseFloat(text);
+        // A suffix-less literal is a double. Parsing it as a float made `0.05` mean 0.05000000074505806, which
+        // silently dropped every record sitting exactly on the boundary of a comparison against a DOUBLE or DECIMAL
+        // property, and turned any magnitude above Float.MAX_VALUE into infinity. The `F` suffix asks for single
+        // precision (issue #7609).
+        number.value = Double.parseDouble(text);
       }
     } catch (final NumberFormatException e) {
       throw new CommandSQLParsingException("Invalid floating point: " + text);

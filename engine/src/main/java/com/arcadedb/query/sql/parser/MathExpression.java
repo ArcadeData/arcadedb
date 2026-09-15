@@ -26,6 +26,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
 
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -685,16 +686,19 @@ public class MathExpression extends SimpleNode {
           return operation.apply(a.doubleValue(), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
           return operation.apply(new BigDecimal((Long) a), decimal);
-      } else if (a instanceof Float) {
+      } else if (a instanceof Float float1) {
         if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float)
           return operation.apply(a.floatValue(), b.floatValue());
         else if (b instanceof Double)
-          return operation.apply(a.doubleValue(), b.doubleValue());
+          // The decimal form, not .doubleValue(), which would carry the single precision error along (issue #7609).
+          return operation.apply(Type.widenFloat(float1), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
-          return operation.apply(BigDecimal.valueOf((Float) a), decimal);
+          return operation.apply(Type.floatToBigDecimal(float1), decimal);
 
       } else if (a instanceof Double double1) {
-        if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float || b instanceof Double)
+        if (b instanceof Float float2)
+          return operation.apply(a.doubleValue(), Type.widenFloat(float2));
+        else if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
           return operation.apply(BigDecimal.valueOf(double1), decimal);
@@ -707,7 +711,7 @@ public class MathExpression extends SimpleNode {
         else if (b instanceof Short short1)
           return operation.apply(bigDecimal, new BigDecimal(short1));
         else if (b instanceof Float float1)
-          return operation.apply(bigDecimal, BigDecimal.valueOf(float1));
+          return operation.apply(bigDecimal, Type.floatToBigDecimal(float1));
         else if (b instanceof Double double1)
           return operation.apply(bigDecimal, BigDecimal.valueOf(double1));
         else if (b instanceof BigDecimal decimal)

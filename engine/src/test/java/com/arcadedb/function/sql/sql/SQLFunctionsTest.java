@@ -264,7 +264,8 @@ class SQLFunctionsTest {
 
     assertThat(myresult.remove(Integer.valueOf(1))).isTrue();
     assertThat(myresult.remove(Integer.valueOf(4))).isTrue();
-    assertThat(myresult.remove(Float.valueOf(5))).isTrue();
+    // A suffix-less literal is a double, so `5.00` is a Double (issue #7609).
+    assertThat(myresult.remove(Double.valueOf(5))).isTrue();
     assertThat(myresult.remove("john")).isTrue();
 
     assertThat(myresult.size()).isEqualTo(1);

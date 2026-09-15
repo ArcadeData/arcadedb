@@ -1,0 +1,558 @@
+/*
+ * Copyright 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.sql;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.serializer.BinaryTypes;
+import org.assertj.core.data.Offset;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Regression test for issue #7609: a floating point literal written without a type suffix ({@code 0.05}) was
+ * parsed into a {@link Float} and then widened back to {@code double} with {@code .doubleValue()}, which
+ * reproduces the single precision rounding error as a double instead of removing it. Against a {@code DOUBLE}
+ * or {@code DECIMAL} property the literal was therefore not the number the user typed, and every row sitting
+ * exactly on the boundary was decided the wrong way: {@code >= 0.05} answered what {@code > 0.05} answers,
+ * {@code = 0.05} answered nothing, and {@code < 0.05} answered the rows that are EQUAL to 0.05.
+ * <p>
+ * Which side loses depends only on the sign of the rounding error of that particular literal: at 0.05, 0.1,
+ * 0.2 and 0.3 the float form rounds UP, so the lower bound loses its boundary rows; at 0.7 it rounds DOWN, so
+ * the upper bound does.
+ * <p>
+ * The same query was already correct through {@code BETWEEN}, through a bound parameter, with an explicit
+ * {@code D} suffix, and through an index - so the presence of an index changed the answer, which is the part
+ * that makes this more than a rounding curiosity.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
+
+  /** ten rows at each of these five discounts, the TPC-H Q6 shape the defect was found on */
+  private static final String[] DISCOUNTS = { "0.04", "0.05", "0.06", "0.07", "0.08" };
+  /** ten rows at each of these, to exercise literals whose float form rounds the other way */
+  private static final String[] SWEEP     = { "0.1", "0.2", "0.3", "0.7", "0.8" };
+  private static final int      PER_VALUE = 10;
+
+  @Override
+  protected void beginTest() {
+    database.command("sql", "CREATE DOCUMENT TYPE Li");
+    database.command("sql", "CREATE PROPERTY Li.dDouble DOUBLE");
+    database.command("sql", "CREATE PROPERTY Li.dFloat FLOAT");
+    database.command("sql", "CREATE PROPERTY Li.dDecimal DECIMAL");
+
+    database.command("sql", "CREATE DOCUMENT TYPE Sw");
+    database.command("sql", "CREATE PROPERTY Sw.v DOUBLE");
+
+    database.command("sql", "CREATE DOCUMENT TYPE Neg");
+    database.command("sql", "CREATE PROPERTY Neg.v DOUBLE");
+
+    database.command("sql", "CREATE DOCUMENT TYPE Ix");
+    database.command("sql", "CREATE PROPERTY Ix.v DOUBLE");
+    database.command("sql", "CREATE INDEX ON Ix (v) NOTUNIQUE");
+
+    database.transaction(() -> {
+      for (final String d : DISCOUNTS)
+        for (int i = 0; i < PER_VALUE; i++)
+          database.newDocument("Li")//
+              .set("dDouble", Double.parseDouble(d))//
+              .set("dFloat", Float.parseFloat(d))//
+              .set("dDecimal", new BigDecimal(d))//
+              .save();
+
+      for (final String d : SWEEP)
+        for (int i = 0; i < PER_VALUE; i++)
+          database.newDocument("Sw").set("v", Double.parseDouble(d)).save();
+
+      for (final String d : new String[] { "-0.06", "-0.05", "-0.04" })
+        for (int i = 0; i < PER_VALUE; i++)
+          database.newDocument("Neg").set("v", Double.parseDouble(d)).save();
+
+      for (final String d : DISCOUNTS)
+        for (int i = 0; i < PER_VALUE; i++)
+          database.newDocument("Ix").set("v", Double.parseDouble(d)).save();
+    });
+  }
+
+  /**
+   * The reported shape. Every operator has to agree with the number the user typed, on a DOUBLE property with
+   * no index, and the three ways of writing the same range have to answer the same rows.
+   */
+  @Test
+  void everyComparisonOperatorSeesTheBoundaryRowOnADoubleProperty() {
+    assertThat(count("SELECT FROM Li WHERE dDouble = 0.05")).isEqualTo(10);
+    assertThat(count("SELECT FROM Li WHERE dDouble > 0.05")).isEqualTo(30);
+    assertThat(count("SELECT FROM Li WHERE dDouble >= 0.05")).isEqualTo(40);
+    assertThat(count("SELECT FROM Li WHERE dDouble < 0.05")).isEqualTo(10);
+    assertThat(count("SELECT FROM Li WHERE dDouble <= 0.05")).isEqualTo(20);
+    assertThat(count("SELECT FROM Li WHERE dDouble <> 0.05")).isEqualTo(40);
+    assertThat(count("SELECT FROM Li WHERE dDouble IN [0.05]")).isEqualTo(10);
+
+    assertThat(count("SELECT FROM Li WHERE dDouble >= 0.05 AND dDouble <= 0.07")).isEqualTo(30);
+    assertThat(count("SELECT FROM Li WHERE dDouble BETWEEN 0.05 AND 0.07")).isEqualTo(30);
+    assertThat(count("SELECT FROM Li WHERE dDouble >= 0.05D AND dDouble <= 0.07D")).isEqualTo(30);
+
+    // the TPC-H Q6 symptom: the window summed two of the three buckets and reported revenue ~30% low
+    assertThat(sum("SELECT sum(dDouble) AS s FROM Li WHERE dDouble >= 0.05 AND dDouble <= 0.07"))
+        .isCloseTo(1.8, Offset.offset(1e-9));
+  }
+
+  /** DOUBLE and DECIMAL were both wrong; FLOAT was accidentally right because it carried the same error. */
+  @Test
+  void theSameComparisonsAreCorrectOnEveryDeclaredPropertyType() {
+    for (final String column : new String[] { "dDouble", "dFloat", "dDecimal" }) {
+      assertThat(count("SELECT FROM Li WHERE " + column + " = 0.05")).as(column + " = 0.05").isEqualTo(10);
+      assertThat(count("SELECT FROM Li WHERE " + column + " >= 0.05")).as(column + " >= 0.05").isEqualTo(40);
+      assertThat(count("SELECT FROM Li WHERE " + column + " <= 0.05")).as(column + " <= 0.05").isEqualTo(20);
+      assertThat(count("SELECT FROM Li WHERE " + column + " < 0.05")).as(column + " < 0.05").isEqualTo(10);
+      assertThat(count("SELECT FROM Li WHERE " + column + " > 0.05")).as(column + " > 0.05").isEqualTo(30);
+      assertThat(count("SELECT FROM Li WHERE " + column + " BETWEEN 0.05 AND 0.07")).as(column + " between")
+          .isEqualTo(30);
+      // IN and NOT IN take the hashed fast path of InListMembership, which keys its operands separately
+      assertThat(count("SELECT FROM Li WHERE " + column + " IN [0.05]")).as(column + " IN [0.05]").isEqualTo(10);
+      assertThat(count("SELECT FROM Li WHERE " + column + " IN [0.05, 0.07]")).as(column + " IN [0.05,0.07]")
+          .isEqualTo(20);
+      assertThat(count("SELECT FROM Li WHERE " + column + " NOT IN [0.05]")).as(column + " NOT IN [0.05]")
+          .isEqualTo(40);
+    }
+  }
+
+  /**
+   * At 0.05/0.1/0.2/0.3 the float form of the literal sits ABOVE the stored double, so {@code >=} lost its
+   * boundary rows; at 0.7 it sits BELOW, so {@code <=} did. A range written as two comparisons could
+   * therefore lose either end, both, or neither, depending only on the two constants.
+   */
+  @Test
+  void aLiteralWhoseFloatFormRoundsDownLosesTheOtherBound() {
+    // rows strictly below the literal, out of the fifty in Sw
+    assertSweep("0.1", 0);
+    assertSweep("0.2", 10);
+    assertSweep("0.3", 20);
+    assertSweep("0.7", 30);
+  }
+
+  /**
+   * Asserts every operator at {@code literal} against the fifty records of type {@code Sw}.
+   *
+   * @param literal the suffix-less literal under test
+   * @param below   how many of the fifty records sit strictly below it
+   */
+  private void assertSweep(final String literal, final int below) {
+    assertThat(count("SELECT FROM Sw WHERE v = " + literal)).as("v = " + literal).isEqualTo(10);
+    assertThat(count("SELECT FROM Sw WHERE v >= " + literal)).as("v >= " + literal).isEqualTo(50 - below);
+    assertThat(count("SELECT FROM Sw WHERE v <= " + literal)).as("v <= " + literal).isEqualTo(below + 10);
+    assertThat(count("SELECT FROM Sw WHERE v > " + literal)).as("v > " + literal).isEqualTo(40 - below);
+    assertThat(count("SELECT FROM Sw WHERE v < " + literal)).as("v < " + literal).isEqualTo(below);
+  }
+
+  /**
+   * The index path converts the bound to the property's own class before comparing, so it was right while the
+   * filter path was wrong: adding or dropping an index changed the answer of the very same SQL. The two plans
+   * must now agree row for row.
+   */
+  @Test
+  void theIndexedAndUnindexedPlansAnswerTheSameRows() {
+    for (final String predicate : new String[] { "= 0.05", "> 0.05", ">= 0.05", "< 0.05", "<= 0.05",
+        "BETWEEN 0.05 AND 0.07" }) {
+      final long indexed = count("SELECT FROM Ix WHERE v " + predicate);
+      final long filtered = count("SELECT FROM Li WHERE dDouble " + predicate);
+      assertThat(indexed).as("index vs filter on " + predicate).isEqualTo(filtered);
+    }
+
+    assertThat(explain("SELECT FROM Ix WHERE v >= 0.05")).contains("FETCH FROM INDEX");
+    assertThat(count("SELECT FROM Ix WHERE v >= 0.05")).isEqualTo(40);
+  }
+
+  /** The three spellings that were already correct must stay correct. */
+  @Test
+  void boundParametersAndExplicitSuffixesKeepWorking() {
+    final Map<String, Object> params = Map.of("d", 0.05d);
+    assertThat(count("SELECT FROM Li WHERE dDouble = :d", params)).isEqualTo(10);
+    assertThat(count("SELECT FROM Li WHERE dDouble >= :d", params)).isEqualTo(40);
+
+    assertThat(count("SELECT FROM Li WHERE dDouble = 0.05D")).isEqualTo(10);
+    assertThat(count("SELECT FROM Li WHERE dDouble >= 0.05D")).isEqualTo(40);
+
+    // a Float parameter still binds as a Float, and still matches the FLOAT property
+    assertThat(count("SELECT FROM Li WHERE dFloat = :d", Map.of("d", 0.05f))).isEqualTo(10);
+  }
+
+  /**
+   * The sign travels a path of its own - the JavaCC node carries it in a field while the ANTLR tree makes it a
+   * unary minus over the literal - so the boundary is asserted on the negative side too. Thirty records, ten
+   * each at -0.06, -0.05 and -0.04.
+   */
+  @Test
+  void aNegativeLiteralSeesItsBoundaryRecordsToo() {
+    assertThat(count("SELECT FROM Neg WHERE v = -0.05")).isEqualTo(10);
+    assertThat(count("SELECT FROM Neg WHERE v > -0.05")).isEqualTo(10);
+    assertThat(count("SELECT FROM Neg WHERE v >= -0.05")).isEqualTo(20);
+    assertThat(count("SELECT FROM Neg WHERE v < -0.05")).isEqualTo(10);
+    assertThat(count("SELECT FROM Neg WHERE v <= -0.05")).isEqualTo(20);
+    assertThat(count("SELECT FROM Neg WHERE v BETWEEN -0.05 AND -0.04")).isEqualTo(20);
+  }
+
+  /**
+   * The literal itself: a suffix-less floating point literal is a {@code double}, an {@code F} suffix still
+   * asks for single precision, and a {@code D} suffix is unchanged.
+   */
+  @Test
+  void aSuffixLessLiteralIsADoubleAndTheSuffixesStillSelectTheirType() {
+    assertThat((Object) single("SELECT 0.05 AS v").getProperty("v")).isInstanceOf(Double.class).isEqualTo(0.05d);
+    assertThat((Object) single("SELECT -0.05 AS v").getProperty("v")).isInstanceOf(Double.class).isEqualTo(-0.05d);
+    assertThat((Object) single("SELECT 0.05D AS v").getProperty("v")).isInstanceOf(Double.class).isEqualTo(0.05d);
+    assertThat((Object) single("SELECT 0.05F AS v").getProperty("v")).isInstanceOf(Float.class).isEqualTo(0.05f);
+    // a magnitude beyond the float range was already a double, and stays one
+    assertThat((Object) single("SELECT 1.0E39 AS v").getProperty("v")).isInstanceOf(Double.class).isEqualTo(1.0E39d);
+  }
+
+  /**
+   * The arithmetic half of the same defect. {@code MathExpression} and {@link Type#increment} carried the very
+   * same {@code .doubleValue()} / {@code BigDecimal.valueOf(float)} widening, and making a suffix-less literal a
+   * Double made those lines MORE reachable, not less: {@code dFloat + 0.05} used to be Float plus Float and is
+   * now Float plus Double. Adding 0.05 to a FLOAT column holding 0.05 has to answer 0.1, not 0.10000000149011612.
+   */
+  @Test
+  void arithmeticMixingAFloatWithADoubleDoesNotCarryTheRoundingError() {
+    assertThat(sum("SELECT dFloat + 0.05 AS s FROM Li WHERE dFloat = 0.05F LIMIT 1")).isEqualTo(0.1d);
+    assertThat(sum("SELECT 0.05 + dFloat AS s FROM Li WHERE dFloat = 0.05F LIMIT 1")).isEqualTo(0.1d);
+    assertThat(sum("SELECT dFloat - 0.05 AS s FROM Li WHERE dFloat = 0.05F LIMIT 1")).isEqualTo(0.0d);
+    assertThat(sum("SELECT 0.05 - dFloat AS s FROM Li WHERE dFloat = 0.05F LIMIT 1")).isEqualTo(0.0d);
+
+    // sum() and avg() reach the same widening through Type.increment, once a Double joins the accumulation
+    assertThat(sum("SELECT sum(dFloat + 0.05) AS s FROM Li WHERE dFloat = 0.05F")).isCloseTo(1.0d, Offset.offset(1e-12));
+
+    // the decimal side, where BigDecimal.valueOf(float) had no float overload to protect it
+    assertThat(compare(Type.castComparableNumber(Type.increment(0.05f, new BigDecimal("0.05")), new BigDecimal("0.10"))))
+        .as("0.05f + decimal 0.05").isZero();
+    assertThat(compare(Type.castComparableNumber(Type.decrement(new BigDecimal("0.05"), 0.05f), BigDecimal.ZERO)))
+        .as("decimal 0.05 - 0.05f").isZero();
+    assertThat(Type.increment(0.05f, 0.05d)).isEqualTo(0.1d);
+    assertThat(Type.increment(0.05d, 0.05f)).isEqualTo(0.1d);
+  }
+
+  /**
+   * The comparator half of the same defect, reachable without any literal at all: widening a genuine
+   * {@link Float} to {@code double} or {@link BigDecimal} must re-read its decimal form, exactly as
+   * {@link Type#convert} already does for the index path, rather than reproduce its rounding error.
+   */
+  @Test
+  void castComparableNumberWidensAFloatWithoutReproducingItsRoundingError() {
+    assertThat(compare(Type.castComparableNumber(0.05f, 0.05d))).as("0.05f vs 0.05d").isZero();
+    assertThat(Type.castComparableNumber(0.05f, 0.05d)[0]).isEqualTo(0.05d);
+
+    assertThat(compare(Type.castComparableNumber(0.05d, 0.05f))).as("0.05d vs 0.05f").isZero();
+    assertThat(compare(Type.castComparableNumber(0.05f, new BigDecimal("0.05")))).as("0.05f vs decimal").isZero();
+    assertThat(compare(Type.castComparableNumber(new BigDecimal("0.05"), 0.05f))).as("decimal vs 0.05f").isZero();
+
+    // the BigDecimal branch had no Long case at all, so the couple came back uncast and the caller threw
+    assertThat(compare(Type.castComparableNumber(new BigDecimal("5"), 5L))).as("decimal 5 vs 5L").isZero();
+    assertThat(compare(Type.castComparableNumber(new BigDecimal("3000000000"), 3000000000L)))
+        .as("decimal vs a Long past the int range").isZero();
+    assertThat(compare(Type.castComparableNumber(new BigDecimal("4"), 5L))).as("decimal 4 vs 5L").isNegative();
+
+    // ordering is still respected, the widening only removes the error it used to introduce
+    assertThat(compare(Type.castComparableNumber(0.05f, 0.06d))).as("0.05f vs 0.06d").isNegative();
+    assertThat(compare(Type.castComparableNumber(0.06f, 0.05d))).as("0.06f vs 0.05d").isPositive();
+
+    // the allocation-free paths: an integral float widens exactly, and the non-finite values have no decimal form
+    assertThat(Type.castComparableNumber(42.0f, 0.0d)[0]).isEqualTo(42.0d);
+    assertThat(compare(Type.castComparableNumber(42.0f, 42.0d))).as("42.0f vs 42.0d").isZero();
+    assertThat(Type.castComparableNumber(Float.NaN, 0.0d)[0]).isEqualTo(Double.NaN);
+    assertThat(Type.castComparableNumber(Float.POSITIVE_INFINITY, 0.0d)[0]).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(compare(Type.castComparableNumber(Float.MAX_VALUE, 0.0d))).as("MAX_VALUE vs 0").isPositive();
+  }
+
+  /**
+   * The write path had the same widening: coercing a value into a {@code DOUBLE} property with
+   * {@code .doubleValue()} persists the single precision error, where it outlives the statement that wrote it.
+   */
+  @Test
+  void writingAFloatIntoADoublePropertyStoresTheNumberItReads() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Written");
+      database.command("sql", "CREATE PROPERTY Written.d DOUBLE");
+      database.command("sql", "INSERT INTO Written SET d = :v", Map.of("v", 0.05f));
+      database.command("sql", "INSERT INTO Written SET d = 0.05");
+    });
+
+    assertThat(count("SELECT FROM Written WHERE d = 0.05")).as("both records read back as 0.05").isEqualTo(2);
+    try (final ResultSet rs = database.query("sql", "SELECT d FROM Written")) {
+      while (rs.hasNext())
+        assertThat((Object) rs.next().getProperty("d")).isEqualTo(0.05d);
+    }
+  }
+
+  /**
+   * The 2^24 bound on {@link Type#widenFloat}'s allocation-free path is the crux of when the decimal round-trip
+   * is paid and when it is skipped, so it is pinned here rather than left to a code comment. Below the bound an
+   * integral float IS its own shortest decimal; above it the ulp exceeds 1, a shorter decimal fits the same
+   * rounding interval, and the two answers diverge - which is why the bound must not be raised.
+   */
+  @Test
+  void widenFloatIsExactAtTheIntegralBoundAndReadsTheDecimalAboveIt() {
+    final float bound = 1 << 24;
+    assertThat(Type.widenFloat(bound)).as("2^24 itself takes the exact path").isEqualTo(16777216.0d);
+    assertThat(Type.widenFloat(bound - 1)).isEqualTo(16777215.0d);
+    assertThat(Type.widenFloat(-bound)).isEqualTo(-16777216.0d);
+
+    // the counterexample the bound exists for: its exact value is 33554448, but its shortest decimal is
+    // 3.355445E7, so raising the bound would start answering the wrong number on the fast path
+    final float above = 33554448f;
+    assertThat((double) above).as("the primitive widening").isEqualTo(33554448.0d);
+    assertThat(Type.widenFloat(above)).as("the decimal form").isEqualTo(33554450.0d);
+
+    // the fractional case the whole issue is about still reads its decimal
+    assertThat(Type.widenFloat(0.05f)).isEqualTo(0.05d);
+
+    // signed zero survives the fast path, and the non-finite values skip the parse
+    assertThat(Type.widenFloat(-0.0f)).isEqualTo(-0.0d);
+    assertThat(Type.widenFloat(Float.NaN)).isNaN();
+    assertThat(Type.widenFloat(Float.NEGATIVE_INFINITY)).isNegative().isInfinite();
+  }
+
+  /**
+   * The openCypher engine evaluates its own predicates, and its comparator carried the same widening: a FLOAT
+   * property holding 0.05 did not equal the literal 0.05, so the same records answered differently depending on
+   * which query language asked. Cypher has no 32-bit float of its own - a literal there is a 64-bit float, and
+   * Neo4j, which has no FLOAT storage type at all, matches these records - so the SQL answer is the right one.
+   */
+  @Test
+  void theOpenCypherComparatorAgreesWithTheSqlOneOnAFloatProperty() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE Cy");
+      database.command("sql", "CREATE PROPERTY Cy.fp FLOAT");
+      for (int i = 0; i < PER_VALUE; i++)
+        database.newVertex("Cy").set("fp", 0.05f).save();
+      for (int i = 0; i < PER_VALUE; i++)
+        database.newVertex("Cy").set("fp", 0.07f).save();
+    });
+
+    assertThat(cypher("MATCH (n:Cy) WHERE n.fp = 0.05 RETURN n")).as("cypher =").isEqualTo(10);
+    assertThat(cypher("MATCH (n:Cy) WHERE n.fp >= 0.05 RETURN n")).as("cypher >=").isEqualTo(20);
+    assertThat(cypher("MATCH (n:Cy) WHERE n.fp < 0.05 RETURN n")).as("cypher <").isZero();
+    assertThat(cypher("MATCH (n:Cy) WHERE n.fp <= 0.05 RETURN n")).as("cypher <=").isEqualTo(10);
+    assertThat(cypher("MATCH (n:Cy) WHERE n.fp <> 0.05 RETURN n")).as("cypher <>").isEqualTo(10);
+
+    // and the two languages agree record for record over the same data
+    assertThat(cypher("MATCH (n:Cy) WHERE n.fp = 0.05 RETURN n"))
+        .isEqualTo(count("SELECT FROM Cy WHERE fp = 0.05"));
+  }
+
+  /**
+   * @param cypher the openCypher statement to run
+   *
+   * @return how many records it answers
+   */
+  private long cypher(final String cypher) {
+    long rows = 0;
+    try (final ResultSet rs = database.query("opencypher", cypher)) {
+      while (rs.hasNext()) {
+        rs.next();
+        ++rows;
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * {@link Type#normalizeNumberForKey} is the GROUP BY / DISTINCT key, and its whole purpose is to let the same
+   * logical value reaching a grouping step as two different numeric types land in ONE group. It widened a Float
+   * with {@code .doubleValue()} like everything else did, so 0.05f keyed as 0.05000000074505806 against the
+   * Double 0.05 and the group split in two.
+   */
+  @Test
+  void aFloatAndADoubleOfTheSameValueShareOneGroupingKey() {
+    assertThat(Type.normalizeNumberForKey(0.05f)).isEqualTo(Type.normalizeNumberForKey(0.05d));
+    assertThat(Type.normalizeNumberForKey(0.1f)).isEqualTo(Type.normalizeNumberForKey(0.1d));
+    assertThat(Type.normalizeNumberForKey(42.0f)).isEqualTo(Type.normalizeNumberForKey(42.0d));
+    assertThat(Type.normalizeNumberForKey(42.0f)).isEqualTo(Type.normalizeNumberForKey(42));
+
+    // values that are genuinely different still key apart
+    assertThat(Type.normalizeNumberForKey(0.05f)).isNotEqualTo(Type.normalizeNumberForKey(0.06d));
+
+    // the non-finite values have no decimal form and are returned unchanged, as before
+    assertThat(Type.normalizeNumberForKey(Float.NaN)).isEqualTo(Float.NaN);
+    assertThat(Type.normalizeNumberForKey(Float.POSITIVE_INFINITY)).isEqualTo(Float.POSITIVE_INFINITY);
+
+    // and end to end, through a GROUP BY that sees the same number as a FLOAT and as a DOUBLE property
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Grp");
+      database.newDocument("Grp").set("v", 0.05f).save();
+      database.newDocument("Grp").set("v", 0.05d).save();
+    });
+    assertThat(count("SELECT v, count(*) AS n FROM Grp GROUP BY v")).as("one group, not two").isEqualTo(1);
+  }
+
+  /**
+   * {@link BinaryComparator} has two entry points and they have to answer the same: the typed
+   * {@code compare(value, type, value, type)} the index cursor walks a range with, and {@code equals()}, which
+   * routes through {@link Type#castComparableNumber}. Moving the equality side onto the decimal form would have
+   * split them - the same class of split #6997 closed for strings - so the ordering side reads the decimal too.
+   */
+  @Test
+  void bothBinaryComparatorEntryPointsAgreeOnAFloatAgainstADouble() {
+    final BinaryComparator comparator = new BinaryComparator();
+
+    assertThat(comparator.compare(0.05f, BinaryTypes.TYPE_FLOAT, 0.05d, BinaryTypes.TYPE_DOUBLE))
+        .as("compare(0.05f, 0.05d)").isZero();
+    assertThat(BinaryComparator.equals(0.05f, 0.05d)).as("equals(0.05f, 0.05d)").isTrue();
+
+    assertThat(comparator.compare(0.05d, BinaryTypes.TYPE_DOUBLE, 0.05f, BinaryTypes.TYPE_FLOAT))
+        .as("compare(0.05d, 0.05f)").isZero();
+    assertThat(BinaryComparator.equals(0.05d, 0.05f)).as("equals(0.05d, 0.05f)").isTrue();
+
+    assertThat(comparator.compare(new BigDecimal("0.05"), BinaryTypes.TYPE_DECIMAL, 0.05f, BinaryTypes.TYPE_FLOAT))
+        .as("compare(decimal 0.05, 0.05f)").isZero();
+    assertThat(BinaryComparator.equals(new BigDecimal("0.05"), 0.05f)).as("equals(decimal 0.05, 0.05f)").isTrue();
+
+    // an integral operand against a float still orders the same through both narrow-integral helpers
+    assertThat(comparator.compare(1, BinaryTypes.TYPE_INT, 0.05f, BinaryTypes.TYPE_FLOAT)).isPositive();
+    assertThat(comparator.compare(1L, BinaryTypes.TYPE_LONG, 0.05f, BinaryTypes.TYPE_FLOAT)).isPositive();
+
+    // and the ordering is untouched where the two genuinely differ
+    assertThat(comparator.compare(0.05f, BinaryTypes.TYPE_FLOAT, 0.06d, BinaryTypes.TYPE_DOUBLE)).isNegative();
+  }
+
+  /**
+   * {@code -0.0} is not {@code 0.0} to {@link Double#equals}, which is what the equality operator ends up
+   * calling, so a bound {@code Float} carrying negative zero has to keep its sign or the parameter matches
+   * nothing. The sign used to be read from {@code doubleValue() >= 0}, and that is true for negative zero.
+   */
+  @Test
+  void aBoundNegativeZeroKeepsItsSign() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Zero");
+      database.newDocument("Zero").set("v", -0.0d).set("sign", "negative").save();
+      database.newDocument("Zero").set("v", 0.0d).set("sign", "positive").save();
+    });
+
+    // the count alone would pass even if the sign were dropped, by matching the OTHER record instead, so the
+    // assertion has to name which of the two came back
+    assertThat(matchedSign(-0.0f)).as("bound -0.0f").isEqualTo("negative");
+    assertThat(matchedSign(-0.0d)).as("bound -0.0d").isEqualTo("negative");
+    assertThat(matchedSign(0.0f)).as("bound 0.0f").isEqualTo("positive");
+    assertThat(matchedSign(0.0d)).as("bound 0.0d").isEqualTo("positive");
+
+    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", -0.0f))).as("bound -0.0f matches one").isEqualTo(1);
+    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", 0.0f))).as("bound 0.0f matches one").isEqualTo(1);
+
+    // a non-finite Float parameter binds without the suffix: "NaNF" would be a spelling the grammar cannot lex,
+    // and NaN carries the same value as a Double. It must still bind rather than throw
+    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", Float.NaN))).as("bound NaN").isZero();
+    assertThat(count("SELECT FROM Zero WHERE v < :z", Map.of("z", Float.POSITIVE_INFINITY)))
+        .as("bound +Infinity").isEqualTo(2);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Compares the two numbers {@link Type#castComparableNumber} brought to a common type, the way every operator
+   * that calls it does.
+   *
+   * @param pair the couple returned by {@code castComparableNumber}
+   *
+   * @return negative, zero or positive as the first is below, equal to or above the second
+   */
+  @SuppressWarnings({ "unchecked", "rawtypes" })
+  private static int compare(final Number[] pair) {
+    return ((Comparable) pair[0]).compareTo(pair[1]);
+  }
+
+  /**
+   * @param sql the statement to run
+   *
+   * @return how many records the statement answers
+   */
+  private long count(final String sql) {
+    return count(sql, Map.of());
+  }
+
+  /**
+   * @param sql    the statement to run
+   * @param params the bound parameters, empty to run the statement without any
+   *
+   * @return how many records the statement answers
+   */
+  private long count(final String sql, final Map<String, Object> params) {
+    long rows = 0;
+    try (final ResultSet rs = params.isEmpty() ? database.query("sql", sql) : database.query("sql", sql, params)) {
+      while (rs.hasNext()) {
+        rs.next();
+        ++rows;
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * @param sql a statement whose first record carries the aggregate under the alias {@code s}
+   *
+   * @return that aggregate as a double, zero when there is nothing to sum
+   */
+  private double sum(final String sql) {
+    try (final ResultSet rs = database.query("sql", sql)) {
+      final Object value = rs.next().getProperty("s");
+      return value == null ? 0 : ((Number) value).doubleValue();
+    }
+  }
+
+  /**
+   * Binds {@code zero} to the signed-zero query and reports which of the two fixture records answered.
+   *
+   * @param zero the signed zero to bind
+   *
+   * @return the {@code sign} discriminator of the matched record
+   */
+  private String matchedSign(final Number zero) {
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Zero WHERE v = :z", Map.of("z", zero))) {
+      return rs.hasNext() ? rs.next().getProperty("sign") : null;
+    }
+  }
+
+  /**
+   * @param sql a statement expected to answer at least one record
+   *
+   * @return its first record
+   */
+  private Result single(final String sql) {
+    try (final ResultSet rs = database.query("sql", sql)) {
+      return rs.next();
+    }
+  }
+
+  /**
+   * @param sql the statement to explain
+   *
+   * @return the execution plan as text, so a test can tell an index fetch from a full scan
+   */
+  private String explain(final String sql) {
+    try (final ResultSet rs = database.query("sql", "EXPLAIN " + sql)) {
+      return rs.next().getProperty("executionPlanAsString").toString();
+    }
+  }
+}

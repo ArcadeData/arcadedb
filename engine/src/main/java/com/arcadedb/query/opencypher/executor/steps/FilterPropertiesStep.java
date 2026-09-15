@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.schema.Type;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
@@ -185,7 +186,9 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
     try {
       // Try numeric comparison
       if (left instanceof Number) {
-        final double leftNum = ((Number) left).doubleValue();
+        // A Float is widened through its decimal form, the same way ComparisonExpression does it, or a FLOAT
+        // property holding 0.05 would not match the literal 0.05 (issue #7609).
+        final double leftNum = left instanceof Float float1 ? Type.widenFloat(float1) : ((Number) left).doubleValue();
         final double rightNum = Double.parseDouble(right);
 
         return switch (operator) {

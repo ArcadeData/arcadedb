@@ -225,7 +225,8 @@ class OpenCypherCustomFunctionTest extends TestHelper {
 
     final ResultSet rs = database.command("opencypher", "RETURN test.pi() as result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Float>getProperty("result")).isEqualTo(3.14159f);
+    // A suffix-less literal is a double, which is also what Cypher calls a float (64 bit) (issue #7609).
+    assertThat(rs.next().<Double>getProperty("result")).isEqualTo(3.14159d);
   }
 
   @Test

@@ -49,6 +49,7 @@ import java.util.Properties;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
@@ -1382,11 +1383,15 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         st.execute("CREATE PROPERTY " + arcadeName + ".data IF NOT EXISTS LIST");
 
         List<?> randomData = randomValues(typeToTest);
-        JSONArray jsonArray = new JSONArray(randomData);
+        // A suffix-less floating point literal is a Double, so the Float case spells out the `F` suffix - otherwise
+        // this would insert Doubles and stop covering Float at all (issue #7609).
+        String arrayLiteral = typeToTest == Float.class ?
+            randomData.stream().map(v -> v + "F").collect(Collectors.joining(",", "[", "]")) :
+            new JSONArray(randomData).toString();
 
         try (ResultSet rs = st.executeQuery(
             "INSERT INTO `" + arcadeName + "` SET str = 'meow', data = " +
-                jsonArray + " RETURN data")) {
+                arrayLiteral + " RETURN data")) {
         }
 
         try (ResultSet rs = st.executeQuery(

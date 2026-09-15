@@ -49,12 +49,11 @@ public class FloatingPoint extends PNumber {
       }
     } else {
       try {
-        final double returnValue = Double.parseDouble(stringValue) * sign;
-        if (Math.abs(returnValue) < Float.MAX_VALUE) {
-          finalValue = (float) returnValue;
-        } else {
-          finalValue = returnValue;
-        }
+        // A suffix-less literal is a double. It used to be narrowed to a float whenever it fitted, which made
+        // `0.05` mean 0.05000000074505806 and silently dropped every record sitting exactly on the boundary of a
+        // comparison against a DOUBLE or DECIMAL property. The `F` suffix is there for anyone who wants single
+        // precision (issue #7609).
+        finalValue = Double.parseDouble(stringValue) * sign;
       } catch (final Exception ignore) {
         return null;//TODO NaN?
       }

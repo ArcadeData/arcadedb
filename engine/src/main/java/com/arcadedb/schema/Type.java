@@ -120,6 +120,12 @@ public enum Type {
   // Values previously stored in javaTypes
   private static final Map<Class<?>, Type> TYPES_BY_USERTYPE   = new HashMap<Class<?>, Type>();
   private static final Map<String, Type>   TYPES_BY_NAME       = new HashMap<String, Type>();
+  /**
+   * The largest magnitude at which every {@code float} with an integral value is exactly the shortest decimal that
+   * round-trips it: 2^24 itself qualifies, and above it consecutive floats are more than one apart. See
+   * {@link #widenFloat}.
+   */
+  private static final float               EXACT_INTEGRAL_FLOAT = 1 << 24;
 
   static {
     for (final Type type : values()) {
@@ -579,9 +585,10 @@ public enum Type {
           return value;
         else if (value instanceof String string)
           return string.isEmpty() ? 0d : Double.parseDouble(string);
-        else if (value instanceof Float)
-          // THIS IS NECESSARY DUE TO A BUG/STRANGE BEHAVIOR OF JAVA BY LOSING PRECISION
-          return Double.parseDouble(value.toString());
+        else if (value instanceof Float float1)
+          // The primitive widening would carry the float's rounding error into the double; widenFloat re-reads its
+          // decimal instead, and skips the round-trip where it provably cannot matter (issue #7609).
+          return widenFloat(float1);
         else
           return ((Number) value).doubleValue();
 
@@ -1043,10 +1050,10 @@ public enum Type {
         return a.floatValue() + b.floatValue();
       }
       case Double aDouble -> {
-        return a.floatValue() + b.doubleValue();
+        return widenFloat(a.floatValue()) + b.doubleValue();
       }
       case BigDecimal decimal -> {
-        return BigDecimal.valueOf(a.floatValue()).add(decimal);
+        return floatToBigDecimal(a.floatValue()).add(decimal);
       }
       default -> {
       }
@@ -1064,7 +1071,7 @@ public enum Type {
         return a.doubleValue() + b.shortValue();
       }
       case Float aFloat -> {
-        return a.doubleValue() + b.floatValue();
+        return a.doubleValue() + widenFloat(b.floatValue());
       }
       case Double aDouble -> {
         return a.doubleValue() + b.doubleValue();
@@ -1088,7 +1095,7 @@ public enum Type {
         return ((BigDecimal) a).add(new BigDecimal(b.shortValue()));
       }
       case Float v -> {
-        return ((BigDecimal) a).add(BigDecimal.valueOf(b.floatValue()));
+        return ((BigDecimal) a).add(floatToBigDecimal(b.floatValue()));
       }
       case Double v -> {
         return ((BigDecimal) a).add(BigDecimal.valueOf(b.doubleValue()));
@@ -1211,9 +1218,9 @@ public enum Type {
       else if (b instanceof Float)
         return a.floatValue() - b.floatValue();
       else if (b instanceof Double)
-        return a.floatValue() - b.doubleValue();
+        return widenFloat(a.floatValue()) - b.doubleValue();
       else if (b instanceof BigDecimal decimal)
-        return BigDecimal.valueOf(a.floatValue()).subtract(decimal);
+        return floatToBigDecimal(a.floatValue()).subtract(decimal);
     }
     case Double v -> {
       switch (b) {
@@ -1227,7 +1234,7 @@ public enum Type {
         return a.doubleValue() - b.shortValue();
       }
       case Float aFloat -> {
-        return a.doubleValue() - b.floatValue();
+        return a.doubleValue() - widenFloat(b.floatValue());
       }
       case Double aDouble -> {
         return a.doubleValue() - b.doubleValue();
@@ -1251,7 +1258,7 @@ public enum Type {
         return ((BigDecimal) a).subtract(new BigDecimal(b.shortValue()));
       }
       case Float v -> {
-        return ((BigDecimal) a).subtract(BigDecimal.valueOf(b.floatValue()));
+        return ((BigDecimal) a).subtract(floatToBigDecimal(b.floatValue()));
       }
       case Double v -> {
         return ((BigDecimal) a).subtract(BigDecimal.valueOf(b.doubleValue()));
@@ -1269,6 +1276,55 @@ public enum Type {
 
     throw new IllegalArgumentException(
         "Cannot decrement value '" + a + "' (" + a.getClass() + ") with '" + b + "' (" + b.getClass() + ")");
+  }
+
+  /**
+   * Widens a {@link Float} to a {@code double} through its decimal form rather than through
+   * {@link Float#doubleValue()}. The primitive widening is exact on the BITS, which means it faithfully
+   * reproduces the single precision rounding error as a double ({@code (double) 0.05f} is
+   * 0.05000000074505806), so a float that reads as 0.05 would not compare equal to the double 0.05. Re-reading
+   * the shortest decimal that round-trips the float removes the error instead of preserving it, which is what
+   * {@link #convert} already does for the index path - the two have to agree or the same query answers
+   * differently depending on whether an index happens to exist. The mapping is strictly monotonic, so the
+   * resulting comparison is still a total order.
+   * <p>
+   * The decimal round-trip costs a string per call, so it is kept off the hot paths that do not need it: it is
+   * reached only when a {@code Float} actually meets a {@code Double} or a {@link BigDecimal}, never when both
+   * operands already share a type, and never for an integral float at or below 2^24, which widens exactly.
+   *
+   * @param f the float to widen
+   *
+   * @return the double that reads the same in decimal
+   */
+  public static double widenFloat(final float f) {
+    // NaN and the infinities have no shorter decimal form: widen them directly and skip the parse.
+    if (Float.isNaN(f) || Float.isInfinite(f))
+      return f;
+    // An integral float at or below 2^24 is the only integer inside its own rounding interval (the ulp is at most 1
+    // there), so its shortest decimal is that integer and the primitive widening is already exact. The bound is not
+    // conservative and must not be raised: above it the ulp exceeds 1 and a shorter decimal fits in the same interval,
+    // so the two diverge - 33554448f widens to 33554448 but reads as 3.355445E7, which is 33554450.
+    if (f == (long) f && Math.abs(f) <= EXACT_INTEGRAL_FLOAT)
+      return f;
+    return Double.parseDouble(Float.toString(f));
+  }
+
+  /**
+   * Builds the {@link BigDecimal} that reads the same in decimal as the given {@link Float}. {@code
+   * BigDecimal.valueOf(float)} has no float overload, so the argument widens through {@code double} first and
+   * the single precision rounding error is carried into the decimal. See {@link #widenFloat}.
+   *
+   * @param value the float to convert
+   *
+   * @return the decimal that reads the same
+   *
+   * @throws NumberFormatException if the float is NaN or infinite - {@link BigDecimal} cannot represent those at
+   *                               all, so there is nothing to return. This is what {@code BigDecimal.valueOf(float)}
+   *                               did before it, so callers that already reached it are unaffected, but unlike
+   *                               {@link #widenFloat} this one has no non-finite path to fall back on
+   */
+  public static BigDecimal floatToBigDecimal(final float value) {
+    return new BigDecimal(Float.toString(value));
   }
 
   public static Number[] castComparableNumber(Number left, Number right) {
@@ -1317,9 +1373,9 @@ public enum Type {
     } else if (left instanceof Float) {
       // FLOAT
       if (right instanceof Double)
-        left = left.doubleValue();
+        left = widenFloat(left.floatValue());
       else if (right instanceof BigDecimal)
-        left = BigDecimal.valueOf(left.floatValue());
+        left = floatToBigDecimal(left.floatValue());
       else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long)
         right = right.floatValue();
 
@@ -1327,16 +1383,21 @@ public enum Type {
       // DOUBLE
       if (right instanceof BigDecimal)
         left = BigDecimal.valueOf(left.doubleValue());
-      else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long
-          || right instanceof Float)
+      else if (right instanceof Float float1)
+        right = widenFloat(float1);
+      else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long)
         right = right.doubleValue();
 
     } else if (left instanceof BigDecimal) {
       // DOUBLE
       if (right instanceof Integer integer)
         right = new BigDecimal(integer);
+      else if (right instanceof Long long1)
+        // The Long case was missing, so the couple came back as (BigDecimal, Long) and the caller's compareTo()
+        // threw ClassCastException - `WHERE decimalProperty > 3000000000` crashed rather than answered (issue #7609).
+        right = new BigDecimal(long1);
       else if (right instanceof Float float1)
-        right = BigDecimal.valueOf(float1);
+        right = floatToBigDecimal(float1);
       else if (right instanceof Double double1)
         right = BigDecimal.valueOf(double1);
       else if (right instanceof Short short1)
@@ -1383,7 +1444,10 @@ public enum Type {
       if (value instanceof BigInteger bigInteger)
         return new BigDecimal(bigInteger);
       if (value instanceof Double || value instanceof Float) {
-        final double d = ((Number) value).doubleValue();
+        // A Float reaches its key through the decimal form, as it does everywhere else a Float meets a wider type:
+        // .doubleValue() would key 0.05f as 0.05000000074505806 while the Double 0.05 keys as 0.05, splitting one
+        // logical group in two - which is the very thing this method exists to prevent (issue #7609).
+        final double d = value instanceof Float float1 ? widenFloat(float1) : ((Number) value).doubleValue();
         if (Double.isNaN(d) || Double.isInfinite(d))
           return value;
         return BigDecimal.valueOf(d).stripTrailingZeros();

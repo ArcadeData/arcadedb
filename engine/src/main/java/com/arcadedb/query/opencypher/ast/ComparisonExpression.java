@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.schema.Type;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
@@ -201,8 +202,11 @@ public class ComparisonExpression implements BooleanExpression {
           case GREATER_THAN_OR_EQUAL -> leftNum >= rightNum;
         };
       }
-      final double leftNum = ((Number) left).doubleValue();
-      final double rightNum = ((Number) right).doubleValue();
+      // A Float reaches the comparison through its decimal form, as the SQL comparator does: the primitive widening
+      // reproduces the single precision rounding error, so a FLOAT property holding 0.05 did not equal the literal
+      // 0.05 - which Cypher reads as a 64-bit float. Neo4j has no 32-bit float to disagree with (issue #7609).
+      final double leftNum = toComparableDouble((Number) left);
+      final double rightNum = toComparableDouble((Number) right);
       return switch (operator) {
         case EQUALS -> leftNum == rightNum;
         case NOT_EQUALS -> leftNum != rightNum;
@@ -391,4 +395,18 @@ public class ComparisonExpression implements BooleanExpression {
       case GREATER_THAN_OR_EQUAL -> leftNum >= rightNum;
     };
   }
+
+  /**
+   * Widens a number for comparison, reading a {@link Float} through its decimal form rather than its bits. See
+   * {@link Type#widenFloat}: this evaluator is the authoritative answer for a Cypher predicate, so it has to agree
+   * with what the SQL comparator answers over the same records.
+   *
+   * @param value the operand (never {@code null})
+   *
+   * @return the operand as a double
+   */
+  private static double toComparableDouble(final Number value) {
+    return value instanceof Float float1 ? Type.widenFloat(float1) : value.doubleValue();
+  }
+
 }
