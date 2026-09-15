@@ -576,6 +576,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      * {@code waitCompletion()}/shutdown time) still sees the exception propagate and reports it to the
      * executor-wide {@code onError} exactly as before, so nothing about that contract changes - only the
      * commands that used to vanish silently now hear about it too.
+     * <p>
+     * <b>Cost, on conflict (claude-review):</b> a replay is not a cheap re-commit - it re-executes every
+     * buffered command, so worst-case retry cost scales as {@code commitEvery * TX_RETRIES}. That is
+     * inherent to "retry instead of losing the batch" (the alternative is the data loss issue #7615 is
+     * about), but this worker's {@code completedTaskCount} - the progress probe the cross-slot stall
+     * detector reads - does not advance until this whole call returns, so a large {@code commitEvery} under
+     * sustained contention could in principle make a legitimately-progressing-but-slow worker look stalled
+     * to a producer parked on its full queue. Not a concern at {@link GlobalConfiguration#TX_RETRIES}'s
+     * default of 3; worth remembering before raising it far past that for a specific workload.
      *
      * @param beginFreshTransaction whether to leave a fresh, identically-stamped transaction open on
      *                              success, for a caller (the periodic {@code commitEvery} boundary) that
