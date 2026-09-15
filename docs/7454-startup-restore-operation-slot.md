@@ -1,6 +1,7 @@
 # 7454 - the startup `restore:` command takes the #7384 per-database operation slot
 
 Issue: https://github.com/ArcadeData/arcadedb/issues/7454
+PR: https://github.com/ArcadeData/arcadedb/pull/7642
 
 ## Root cause
 
@@ -309,3 +310,39 @@ handle, the exception supertypes the ITs assert on, the `@Timeout`-rather-than-w
 the scoping of #7641/#7643.
 
 No deferred items in any cycle, and no review comment was skipped.
+
+
+### Cycle 4 - `claude-review` on `e79e420`
+
+**"No blocking issues from this pass."** Nothing was applied, and nothing was deferred. Two
+non-blocking notes, both recorded rather than acted on:
+
+1. *"`getDatabase(databaseName)` is called once inside `restoreDatabaseFromStartupCommand`
+   (STEP_ACTIVATE) and again right after in `loadDefaultDatabases()`. Harmless (registry lookup on
+   an already-open database), just a redundant call worth noting."* **Skipped deliberately.** The
+   second call is the re-resolution of the stale handle, which `Issue7454StartupRestoreThenImportTest`
+   pins; removing it reintroduces the bug that test exists for. The first is what activates the
+   restored database and publishes STEP_ACTIVATE. Collapsing them would couple the package-private
+   method's contract to its one production caller for the price of one registry lookup on a
+   startup-only path.
+2. Two decisions the reviewer asked a **maintainer** to bless rather than accept from a self-authored
+   argument. Neither is a code change and both are surfaced in the PR for the developer:
+   - the accepted window between `begin()` and `reserveDatabaseNameForRestore()` (cycle 3 above),
+   - **a refused startup restore is now fatal to startup**, where the race previously corrupted
+     silently. Argued from the #7484 precedent in "The decision the issue asked for" above, but it
+     changes what an operator sees when this trips, so it is a real behaviour change to sign off on.
+
+## Final state
+
+`clean-approval`, reached on cycle 4 of a maximum of 4.
+
+| | |
+|---|---|
+| PR | https://github.com/ArcadeData/arcadedb/pull/7642 |
+| Branch | `fix/7454-startup-restore-operation-slot` |
+| Cycles run | 4 |
+| Deferred items | none - no `review-deferred-*.md` was produced by this run |
+| Follow-ups filed | [#7641](https://github.com/ArcadeData/arcadedb/issues/7641), [#7643](https://github.com/ArcadeData/arcadedb/issues/7643) |
+| Open review threads | one CodeRabbit thread on the HA drop, kept open by CodeRabbit itself after it accepted the scoping and #7643 as the tracker |
+
+Merge is the developer's.
