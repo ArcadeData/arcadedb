@@ -22,6 +22,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.serializer.BinaryTypes;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
@@ -271,6 +273,54 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
     assertThat(Type.castComparableNumber(Float.NaN, 0.0d)[0]).isEqualTo(Double.NaN);
     assertThat(Type.castComparableNumber(Float.POSITIVE_INFINITY, 0.0d)[0]).isEqualTo(Double.POSITIVE_INFINITY);
     assertThat(compare(Type.castComparableNumber(Float.MAX_VALUE, 0.0d))).as("MAX_VALUE vs 0").isPositive();
+  }
+
+  /**
+   * {@link BinaryComparator} has two entry points and they have to answer the same: the typed
+   * {@code compare(value, type, value, type)} the index cursor walks a range with, and {@code equals()}, which
+   * routes through {@link Type#castComparableNumber}. Moving the equality side onto the decimal form would have
+   * split them - the same class of split #6997 closed for strings - so the ordering side reads the decimal too.
+   */
+  @Test
+  void bothBinaryComparatorEntryPointsAgreeOnAFloatAgainstADouble() {
+    final BinaryComparator comparator = new BinaryComparator();
+
+    assertThat(comparator.compare(0.05f, BinaryTypes.TYPE_FLOAT, 0.05d, BinaryTypes.TYPE_DOUBLE))
+        .as("compare(0.05f, 0.05d)").isZero();
+    assertThat(BinaryComparator.equals(0.05f, 0.05d)).as("equals(0.05f, 0.05d)").isTrue();
+
+    assertThat(comparator.compare(0.05d, BinaryTypes.TYPE_DOUBLE, 0.05f, BinaryTypes.TYPE_FLOAT))
+        .as("compare(0.05d, 0.05f)").isZero();
+    assertThat(BinaryComparator.equals(0.05d, 0.05f)).as("equals(0.05d, 0.05f)").isTrue();
+
+    assertThat(comparator.compare(new BigDecimal("0.05"), BinaryTypes.TYPE_DECIMAL, 0.05f, BinaryTypes.TYPE_FLOAT))
+        .as("compare(decimal 0.05, 0.05f)").isZero();
+    assertThat(BinaryComparator.equals(new BigDecimal("0.05"), 0.05f)).as("equals(decimal 0.05, 0.05f)").isTrue();
+
+    // an integral operand against a float still orders the same through both narrow-integral helpers
+    assertThat(comparator.compare(1, BinaryTypes.TYPE_INT, 0.05f, BinaryTypes.TYPE_FLOAT)).isPositive();
+    assertThat(comparator.compare(1L, BinaryTypes.TYPE_LONG, 0.05f, BinaryTypes.TYPE_FLOAT)).isPositive();
+
+    // and the ordering is untouched where the two genuinely differ
+    assertThat(comparator.compare(0.05f, BinaryTypes.TYPE_FLOAT, 0.06d, BinaryTypes.TYPE_DOUBLE)).isNegative();
+  }
+
+  /**
+   * {@code -0.0} is not {@code 0.0} to {@link Double#equals}, which is what the equality operator ends up
+   * calling, so a bound {@code Float} carrying negative zero has to keep its sign or the parameter matches
+   * nothing. The sign used to be read from {@code doubleValue() >= 0}, and that is true for negative zero.
+   */
+  @Test
+  void aBoundNegativeZeroKeepsItsSign() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Zero");
+      database.newDocument("Zero").set("v", -0.0d).save();
+      database.newDocument("Zero").set("v", 0.0d).save();
+    });
+
+    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", -0.0f))).isEqualTo(1);
+    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", -0.0d))).isEqualTo(1);
+    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", 0.0f))).isEqualTo(1);
   }
 
   // ---------------------------------------------------------------------------------------------

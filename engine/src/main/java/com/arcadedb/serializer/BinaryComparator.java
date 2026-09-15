@@ -103,11 +103,12 @@ public class BinaryComparator {
 
     case BinaryTypes.TYPE_DOUBLE:
     case BinaryTypes.TYPE_FLOAT: {
-      // FLOAT always widens losslessly into double (the reverse direction is what loses precision), so both
-      // share this branch instead of FLOAT narrowing the other operand down to float's 24-bit mantissa - the
-      // same narrow-instead-of-widen bug as INT/SHORT/BYTE/LONG, just for the floating types (#5900 review
-      // follow-up).
-      final double v1 = ((Number) value1).doubleValue();
+      // FLOAT widens into double (the reverse direction is what loses precision), so both share this branch
+      // instead of FLOAT narrowing the other operand down to float's 24-bit mantissa - the same
+      // narrow-instead-of-widen bug as INT/SHORT/BYTE/LONG, just for the floating types (#5900 review
+      // follow-up). The widening itself goes through toDouble(), not doubleValue(), so it reads the float's
+      // decimal rather than reproducing its rounding error (#7609).
+      final double v1 = toDouble(value1, type1);
       final double v2;
 
       switch (type2) {
@@ -120,7 +121,7 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_DECIMAL:
       case BinaryTypes.TYPE_FLOAT:
       case BinaryTypes.TYPE_DOUBLE:
-        v2 = ((Number) value2).doubleValue();
+        v2 = toDouble(value2, type2);
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
@@ -215,7 +216,7 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_DECIMAL:
         return ((BigDecimal) value1).compareTo((BigDecimal) value2);
       case BinaryTypes.TYPE_FLOAT:
-        return ((BigDecimal) value1).compareTo(BigDecimal.valueOf((Float) value2));
+        return ((BigDecimal) value1).compareTo(Type.floatToBigDecimal((Float) value2));
       case BinaryTypes.TYPE_DOUBLE:
         return ((BigDecimal) value1).compareTo(BigDecimal.valueOf((Double) value2));
       case BinaryTypes.TYPE_STRING:
@@ -281,7 +282,7 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_DECIMAL:
     case BinaryTypes.TYPE_FLOAT:
     case BinaryTypes.TYPE_DOUBLE:
-      return Double.compare(value1.doubleValue(), ((Number) value2).doubleValue());
+      return Double.compare(value1.doubleValue(), toDouble(value2, type2));
 
     case BinaryTypes.TYPE_STRING:
       return compareAgainstNumericString(value1, (String) value2);
@@ -289,6 +290,25 @@ public class BinaryComparator {
     default:
       return -1;
     }
+  }
+
+  /**
+   * Widens a numeric operand to {@code double} for comparison. A {@code FLOAT} goes through its decimal form
+   * ({@link Type#widenFloat}) rather than {@link Number#doubleValue()}: the primitive widening is exact on the
+   * bits and so reproduces the single precision rounding error as a double, which would make this comparator
+   * disagree with {@link #equals(Object, Object)} - that one routes through {@link Type#castComparableNumber},
+   * which reads the decimal. The two entry points of this class have to answer the same (issue #7609, the same
+   * invariant #6997 established for strings).
+   *
+   * @param value the operand (never {@code null})
+   * @param type  its {@link BinaryTypes} code
+   *
+   * @return the operand as a double
+   */
+  private static double toDouble(final Object value, final byte type) {
+    if (type == BinaryTypes.TYPE_FLOAT)
+      return Type.widenFloat((Float) value);
+    return ((Number) value).doubleValue();
   }
 
   /**
@@ -314,7 +334,7 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_DECIMAL:
     case BinaryTypes.TYPE_FLOAT:
     case BinaryTypes.TYPE_DOUBLE:
-      return Double.compare(value1.doubleValue(), ((Number) value2).doubleValue());
+      return Double.compare(value1.doubleValue(), toDouble(value2, type2));
 
     case BinaryTypes.TYPE_STRING:
       return compareAgainstNumericString(value1, (String) value2);
