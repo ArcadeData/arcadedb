@@ -408,9 +408,37 @@ in this document come from local runs and from CI rather than from the reviewer.
 
 No deferred items.
 
+### Cycle 4 - `a2cc1c5bf0`
+
+`claude` re-traced the diff against the current source - the fast-path premise, monitor reentrancy in
+`closeRegisteredDatabaseForRepair`, the holder count's CAS loop and its over-release detection, the
+unwind order when the close itself throws (503 window, then maintenance slot, then the per-database
+guard), and every log format string's argument count - and reported **no new correctness issues and
+nothing actionable**.
+
+Its three minor observations are the three things already written into residual risk above and
+deliberately left in place: the node-wide registry-lock hold across an unbounded move, the wire
+protocols that do not consult `isSnapshotInstallInProgress`, and the size of this document. Nothing to
+apply.
+
+No deferred items.
+
 ## Final state
 
-`clean-approval` - both reviewers reported no blocking findings on `12a5d8d774`, CodeRabbit resolved its
-only thread itself, and the single remaining nit was applied.
+`clean-approval` at cycle 4 (`a2cc1c5bf0`). Both reviewers reported no blocking findings, CodeRabbit
+resolved its only inline thread itself after confirming the `reopenIfReconciled` fix, every nit raised
+across the four cycles was applied, and no feedback was deferred or skipped.
+
+Four review cycles ran:
+
+| Cycle | Head | Outcome |
+|---|---|---|
+| 1 | `f05d893a9b` | `claude`: close-failure blast radius (real, fixed) |
+| 2 | `bf65138364` | `coderabbitai`: reopen only after a successful repair (real, fixed); `claude`: 3 points, 1 fixed, 1 documented, 1 verified |
+| 3 | `12a5d8d774` | No blockers; CodeRabbit resolved its thread; one test nit applied |
+| 4 | `a2cc1c5bf0` | No new issues, nothing actionable |
+
+Known gap carried out of this PR: **#7630**, `ArcadeStateMachinePerDatabaseHaltTest` red on `main`
+independently of this branch.
 
 **Merge is the developer's decision. This work does not merge the PR.**
