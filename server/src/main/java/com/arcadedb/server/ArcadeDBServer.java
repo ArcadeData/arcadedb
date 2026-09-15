@@ -1725,6 +1725,14 @@ public class ArcadeDBServer {
    * {@link Operation#RESTORE} for the whole command: the drop of the database being replaced as well as the
    * extraction, since dropping the directory a backup is reading is the more destructive half.
    * <p>
+   * It also claims the database NAME for the duration, with
+   * {@link #reserveDatabaseNameForRestore}/{@link #releaseDatabaseNameReservedForRestore}, exactly as
+   * {@code ServerControlPlane.restoreDatabase} and {@code restoreBackup} do (issue #7441). The two protections
+   * are not interchangeable: {@code create database} is not a participant in the maintenance slot at all, so
+   * the claim is the only thing that refuses a client creating this name while the archive is being extracted
+   * into its directory. The claim is taken before the drop, because the window a create can slip through opens
+   * the moment the directory this command is replacing goes away.
+   * <p>
    * A conflict is <b>refused</b>, not waited out, and the refusal is fatal to startup because
    * {@code loadDefaultDatabases()}'s caller stops the server and rethrows. That is deliberate. The only way the
    * slot is held when this runs is a client operation admitted in the boot window just described, and waiting it
@@ -1753,6 +1761,12 @@ public class ArcadeDBServer {
       throw new ServerControlPlane.OperationInProgressException(
           MaintenanceCoordinator.refusal(Operation.RESTORE, databaseName, running));
 
+    // The SECOND protection a control-plane restore takes, and the one a maintenance slot cannot stand in for:
+    // create database is not a participant in that slot at all, so only this claim refuses a client creating
+    // 'databaseName' while the archive is being extracted into its directory (issue #7441, review of PR #7642).
+    // Taken before the drop, because the window a create has to slip through opens the moment the directory the
+    // command is replacing goes away.
+    reserveDatabaseNameForRestore(databaseName);
     try {
       // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE
       if (existsDatabase(databaseName)) {
@@ -1790,6 +1804,7 @@ public class ArcadeDBServer {
         OperationProgressRegistry.instance().unregister(progress);
       }
     } finally {
+      releaseDatabaseNameReservedForRestore(databaseName);
       backupCoordinator.end(databaseName, Operation.RESTORE);
     }
   }

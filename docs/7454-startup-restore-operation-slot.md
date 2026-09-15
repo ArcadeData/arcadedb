@@ -72,8 +72,14 @@ one method owning the whole command is the only shape that covers both steps.
 ### 1. The invariant
 
 > Every whole-database restore this server performs - the `restore:` startup command included, and
-> including the drop of the database it replaces - holds the `BackupCoordinator` per-database slot
-> for its whole duration.
+> including the drop of the database it replaces - holds **both** protections a control-plane restore
+> holds for its whole duration: the `BackupCoordinator` per-database slot, and the #7441 claim on the
+> database name.
+
+The second half was added in review cycle 1. The two are not interchangeable: `create database` is
+not a participant in the maintenance slot at all (`ArcadeDBServer.createDatabase` consults only
+`checkDatabaseNameIsNotBeingRestored` and the existence checks), so the name claim is the only thing
+that refuses a client creating this name while the archive is being extracted into its directory.
 
 ### 2. Every way to violate it
 
@@ -110,7 +116,9 @@ server/src/main/java/com/arcadedb/server/ArcadeDBServer.java:1648:      the star
 |---|---|---|
 | `restore:` startup command - extraction | **yes** | yes - `aStartupRestoreHoldsTheSlotWhileItRuns`, `aStartupRestoreIsRefusedWhileAConflictingOperationHoldsTheSlot` (x3) |
 | `restore:` startup command - the drop of the replaced database | **yes** | yes - `aRefusedStartupRestoreDoesNotDropTheDatabaseItWouldHaveReplaced`, `aStartupRestoreOverAnExistingDatabaseStillReplacesIt` |
-| `restore:` startup command - slot release on success / on failure | **yes** | yes - `aSuccessfulStartupRestoreReleasesTheSlot`, `aFailedStartupRestoreReleasesTheSlot` |
+| `restore:` startup command - the database NAME, against a concurrent `create database` | **yes** (added in review cycle 1) | yes - `aStartupRestoreClaimsTheDatabaseNameAgainstAConcurrentCreate` |
+| `restore:` startup command - slot and claim released on success / on failure | **yes** | yes - `aSuccessfulStartupRestoreReleasesTheSlot`, `aFailedStartupRestoreReleasesTheSlot` |
+| `restore:` startup command, driven through the real `loadDefaultDatabases()` loop with a following `import:` | **yes** | yes - `Issue7454StartupRestoreThenImportTest` |
 | `import:` startup command (`database.command("sql", "import database …")`) | already covered | argued - see below |
 | `import:` startup command's `createDatabase` before the SQL statement | already safe | argued - see below |
 | HTTP/gRPC `restore database`, `restore backup`, `import database`, `trigger backup` | already covered (#7384) | existing `Issue7384ConcurrentRestoreIT` |
@@ -210,3 +218,47 @@ diff instead, with the findings below. That is a weaker instrument and is record
 | 4 | `ServerControlPlane.dropDatabase` has the same omission. | **Filed as [#7641](https://github.com/ArcadeData/arcadedb/issues/7641).** Out of scope. |
 | 5 | The drop this branch relocated uses `getEmbedded().drop()`, which unwraps past the Raft wrapper and deletes files locally. `ServerControlPlane.dropDatabaseClusterWide` documents that shape as the #7389 defect ("takes the database out from under the cluster and leaves it on every follower"). | **Not filed - unverified either way.** The code is moved verbatim, not changed, and node-local semantics may be intended for this command: the method's own javadoc already says it "does not force a cluster snapshot", unlike `performRestore`. Recorded here rather than asserted as a bug, because no command in this session proved which semantics the `restore:` startup command is supposed to have on an HA node. |
 | 6 | Two of the eight new tests pass without the fix. | **Accepted.** `aSuccessfulStartupRestoreReleasesTheSlot` and `aFailedStartupRestoreReleasesTheSlot` guard against a leaked reservation, which is a hazard the fix itself creates; they cannot fail against code that takes no reservation. Named as leak guards in the test results section rather than counted as bug reproductions. |
+
+
+## Review cycles
+
+### Cycle 1 - `6003e0e`
+
+`claude-review` returned one substantive finding and no blockers. Codacy reported 0 new issues; lint
+and every CodeQL analyzer passed.
+
+**Finding: the startup restore took the maintenance slot but not the #7441 name claim.**
+Verified against the tree before acting on it, rather than accepted on the reviewer's word:
+
+- `ServerControlPlane.restoreDatabase` (`:1393-1404`) and `restoreBackup` (`:1443-1455`) take two
+  protections, `beginExclusive(..., Operation.RESTORE)` **and**
+  `reserveRestoreTarget` / `releaseDatabaseNameReservedForRestore`.
+- `ArcadeDBServer.createDatabase` (`:1145-1172`) consults `checkDatabaseNameIsNotBeingRestored` and
+  the existence checks, and nothing from `BackupCoordinator`. So a `create database` of the name a
+  startup restore is extracting into was admitted: the slot cannot refuse it, and no claim existed.
+- The window is the one this branch already reasons about, made wider by the branch's own drop: it
+  opens the moment the directory being replaced goes away.
+
+**Fixed in cycle 2**, not deferred. `restoreDatabaseFromStartupCommand` now calls
+`reserveDatabaseNameForRestore` before the drop and releases it in the same `finally` as the slot.
+`aStartupRestoreClaimsTheDatabaseNameAgainstAConcurrentCreate` pins it, and fails
+("the startup restore never claimed the database name") when the two calls are removed.
+
+Nothing else in the review was actionable: the remaining sections confirmed the slot lifecycle, the
+locking, the test coverage and the style, and explicitly endorsed the two decisions this document
+argues for (moving the drop, and refusing rather than waiting).
+
+No deferred items, and no review comment was skipped.
+
+### Cycle 2 - additions
+
+- `reserveDatabaseNameForRestore` / `releaseDatabaseNameReservedForRestore` around the whole command.
+- `Issue7454StartupRestoreSlotIT#aStartupRestoreClaimsTheDatabaseNameAgainstAConcurrentCreate`, and a
+  name-claim release assertion added to the shared `assertReservable` helper so every other test in
+  the class now checks the claim did not leak either.
+- `Issue7454StartupRestoreThenImportTest` - written during cycle 1 and pushed here. It is the only
+  test that drives the real `loadDefaultDatabases()` loop, and the only coverage of the re-resolved
+  `database` handle: it fails with a closed-database error when that one line is removed.
+
+Regression sweep after the cycle-2 changes: `Tests run: 188, Failures: 0, Errors: 0` across the whole
+`com.arcadedb.server.backup` package plus every startup-command suite listed above.

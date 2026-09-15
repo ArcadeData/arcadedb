@@ -45,6 +45,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -224,6 +225,51 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
   }
 
   /**
+   * The maintenance slot is not the only protection a control-plane restore takes, and it cannot stand in for the
+   * other one: {@code create database} is not a participant in the slot at all, so only the #7441 name claim
+   * refuses a client creating this name while the archive is being extracted into its directory. The window opens
+   * the moment the drop removes the database being replaced, which is why the claim is taken before the drop.
+   * <p>
+   * The wait is on the claim itself rather than on a sleep, so what the test asserts is what the restore
+   * published about its own state.
+   */
+  @Test
+  @Timeout(180)
+  void aStartupRestoreClaimsTheDatabaseNameAgainstAConcurrentCreate() throws Exception {
+    final String target = "claimed7454";
+    databasesToDrop.add(target);
+
+    final AtomicReference<Throwable> restoreFailure = new AtomicReference<>();
+    final Thread restorer = new Thread(() -> {
+      try {
+        getServer(0).restoreDatabaseFromStartupCommand(target, slowArchiveUrl(),
+            databaseDirectory() + File.separator + target);
+      } catch (final Throwable t) {
+        restoreFailure.set(t);
+      }
+    }, "issue7454-restorer");
+    restorer.setDaemon(true);
+    restorer.start();
+
+    try {
+      final boolean claimed = awaitNameClaim(target);
+      assertThat(claimed).as("the startup restore never claimed the database name").isTrue();
+
+      assertThatThrownBy(() -> getServer(0).createDatabase(target, ComponentFile.MODE.READ_WRITE))
+          .as("a create of the name a startup restore is extracting into must be refused, not admitted")
+          .isInstanceOf(ServerControlPlane.OperationInProgressException.class)
+          .hasMessageContaining(target);
+    } finally {
+      restorer.join(120_000);
+    }
+
+    assertThat(restoreFailure.get()).as("the startup restore itself must still have succeeded").isNull();
+    assertThat(getServer(0).isDatabaseNameReservedForRestore(target))
+        .as("the name claim must be released when the startup restore returns").isFalse();
+    assertThat(getServer(0).existsDatabase(target)).isTrue();
+  }
+
+  /**
    * A reservation that outlives its operation blocks every later backup, restore and import of that database
    * until the server restarts, so both exits are asserted: the successful one here, the failing one below.
    */
@@ -282,7 +328,23 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
     assertThat(coordinator.begin(databaseName, Operation.RESTORE))
         .as("the startup restore leaked its reservation on '%s'", databaseName).isNull();
     coordinator.end(databaseName, Operation.RESTORE);
+    assertThat(getServer(0).isDatabaseNameReservedForRestore(databaseName))
+        .as("the startup restore leaked its name claim on '%s'", databaseName).isFalse();
     assertThat(OperationProgressRegistry.instance().getOperations(databaseName)).isEmpty();
+  }
+
+  /**
+   * Waits for the restore thread to publish its name claim. The claim is taken on the first statement of the
+   * method, so what this actually waits for is the thread to start - the twenty seconds is a hang guard that
+   * lets a missing claim FAIL rather than hang, never a latency assertion about how fast a restore starts.
+   */
+  private boolean awaitNameClaim(final String databaseName) throws InterruptedException {
+    for (int i = 0; i < 4_000; i++) {
+      if (getServer(0).isDatabaseNameReservedForRestore(databaseName))
+        return true;
+      Thread.sleep(5);
+    }
+    return false;
   }
 
   private void createDatabaseWithMarker(final String databaseName) {
