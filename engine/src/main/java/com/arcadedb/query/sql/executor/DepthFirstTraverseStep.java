@@ -21,10 +21,10 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.query.sql.parser.PInteger;
 import com.arcadedb.query.sql.parser.TraverseProjectionItem;
 import com.arcadedb.query.sql.parser.WhereClause;
-import com.arcadedb.utility.RidHashSet;
 
 import java.util.*;
 
@@ -41,7 +41,9 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
   // shorter path arrives, so every node reachable within d hops is expanded. Nodes are still emitted once. On single-path graphs no relaxation fires, so the walk
   // is byte-for-byte identical to before.
   private final Map<RID, Integer> bestDepthByRid = new HashMap<>();
-  private final RidHashSet        emitted        = new RidHashSet();
+  // Same rationale as AbstractTraverseStep.traversed (issue #7480): a plain RidHashSet keys every lightweight edge
+  // of a type to the same (bucket, placeholder position) pair, so this second dedup point needs the same fallback.
+  private final EdgeIdentitySet   emitted        = new EdgeIdentitySet();
 
   public DepthFirstTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth,
       final CommandContext context) {

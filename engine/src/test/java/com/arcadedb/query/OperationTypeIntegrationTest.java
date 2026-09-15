@@ -81,6 +81,64 @@ class OperationTypeIntegrationTest extends TestHelper {
     assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.SCHEMA);
   }
 
+  // --- sqlscript via engine.analyze() (issue #7576) ---
+
+  /**
+   * {@code SQLScriptQueryEngine.analyze()} used to answer only {@code isIdempotent()}/{@code isDDL()} and let
+   * {@link QueryEngine.AnalyzedQuery#getOperationTypes()} fall back to its default, which derives {@code READ} from
+   * {@code isIdempotent()} alone. {@code BACKUP DATABASE} is idempotent but not read-only - it writes an archive to
+   * the server filesystem, which is why {@link com.arcadedb.query.sql.parser.BackupDatabaseStatement} overrides
+   * {@code getOperationTypes()} to declare {@code {READ, CREATE}}. Under {@code sql} that override reaches the
+   * caller; under {@code sqlscript} it used to be discarded on the way through the anonymous {@code AnalyzedQuery}.
+   */
+  @Test
+  void sqlScriptBackupDatabaseViaEngineReportsTheWriteNotJustRead() {
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sqlscript").analyze("BACKUP DATABASE;");
+    assertThat(analyzed.isIdempotent()).isTrue();
+    assertThat(analyzed.getOperationTypes()).containsExactlyInAnyOrder(OperationType.READ, OperationType.CREATE);
+  }
+
+  @Test
+  void sqlScriptOfPlainReadsIsStillReadOnly() {
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sqlscript")
+        .analyze("SELECT FROM V; SELECT count(*) FROM V;");
+    assertThat(analyzed.isIdempotent()).isTrue();
+    assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.READ);
+  }
+
+  /**
+   * The fix is a union across every statement of the script, not the first statement's own types: a mixed script
+   * must report every write a caller downstream (the ndjson streaming gate, MCP's permission check) needs to see.
+   */
+  @Test
+  void sqlScriptUnionsOperationTypesAcrossStatements() {
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sqlscript")
+        .analyze("SELECT FROM V; INSERT INTO V SET name = 'test';");
+    assertThat(analyzed.isIdempotent()).isFalse();
+    assertThat(analyzed.getOperationTypes()).containsExactlyInAnyOrder(OperationType.READ, OperationType.CREATE);
+  }
+
+  @Test
+  void sqlScriptDdlStillReportsSchema() {
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sqlscript")
+        .analyze("CREATE VERTEX TYPE NewScriptType;");
+    assertThat(analyzed.isDDL()).isTrue();
+    assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.SCHEMA);
+  }
+
+  /**
+   * {@code AnalyzedQuery.getOperationTypes()} is documented to return "a non-empty set of OperationType values".
+   * A script with zero statements would otherwise return an empty union, violating that contract even though
+   * {@code isIdempotent()} answers true for it vacuously - so it is treated as a (vacuous) READ, consistent with
+   * every other idempotent script.
+   */
+  @Test
+  void sqlScriptWithNoStatementsStillReportsANonEmptySet() {
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sqlscript").analyze("");
+    assertThat(analyzed.isIdempotent()).isTrue();
+    assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.READ);
+  }
+
   // --- OpenCypher via engine.analyze() ---
 
   @Test
