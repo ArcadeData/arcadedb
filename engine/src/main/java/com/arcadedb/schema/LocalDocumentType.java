@@ -572,6 +572,40 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
+   * Refuses a super type relationship reached through either end of a TIMESERIES type.
+   * <p>
+   * The same shape {@link #checkTimeSeriesColumnDeclared} refuses for a property created directly on the type, one
+   * hop further: {@code LocalTimeSeriesType.tsColumns} is filled once by {@code TimeSeriesTypeBuilder.create()} and
+   * {@code addTsColumn} has no other caller, so a super type linked afterwards cannot extend it. A polymorphic
+   * property inherited across the hierarchy - whichever end declares it - lands in {@link #properties} and is
+   * listed as part of the type, but the time-series write path ({@code SaveElementStep#saveToTimeSeries}) reads the
+   * document under the declared column names only and silently drops everything else (issue #7581).
+   * <p>
+   * A database written before this rule may already carry such a hierarchy. Refusing it at schema load would make
+   * that database unopenable, so the load path only warns and leaves the hierarchy standing.
+   *
+   * @param superType the super type about to be linked
+   */
+  private void checkTimeSeriesHierarchy(final DocumentType superType) {
+    if (!(this instanceof LocalTimeSeriesType) && !(superType instanceof LocalTimeSeriesType))
+      return;
+
+    if (schema.isReadingFromFile()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Type '%s' has super type '%s': one of the two is a TIMESERIES type and this hierarchy was created before "
+              + "issue #7581 was fixed. A polymorphic property inherited across it is silently dropped by the "
+              + "time-series write path. Remove the SUPERTYPE relationship with ALTER TYPE to fix this",
+          name, superType.getName());
+      return;
+    }
+
+    throw new SchemaException("Cannot add super type '" + superType.getName() + "' to type '" + name
+        + "' because a TIMESERIES type only stores the TIMESTAMP, TAGS and FIELDS columns declared in CREATE "
+        + "TIMESERIES TYPE, on either end of the hierarchy: a polymorphic property inherited across it would be "
+        + "silently dropped by every write");
+  }
+
+  /**
    * Creates a new property with type `propertyType`.
    *
    * @param propertyName Property name to remove
@@ -2118,6 +2152,8 @@ public class LocalDocumentType implements DocumentType {
     if (superTypes.contains(superType))
       // ALREADY PARENT
       return this;
+
+    checkTimeSeriesHierarchy(superType);
 
     // CHECK FOR CONFLICT WITH PROPERTIES NAMES
     final Set<String> allProperties = getPropertyNames();

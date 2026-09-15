@@ -1286,8 +1286,10 @@ class TypeTest extends TestHelper {
     Number[] result = Type.castComparableNumber(1, 2L);
     assertThat(result[0]).isInstanceOf(Long.class);
 
+    // Both operands meet at double, not narrowed to float, so a large int is not lossy (issue #7614)
     result = Type.castComparableNumber(1, 2.0f);
-    assertThat(result[0]).isInstanceOf(Float.class);
+    assertThat(result[0]).isInstanceOf(Double.class);
+    assertThat(result[1]).isInstanceOf(Double.class);
 
     result = Type.castComparableNumber(1, 2.0);
     assertThat(result[0]).isInstanceOf(Double.class);
@@ -1304,8 +1306,10 @@ class TypeTest extends TestHelper {
 
   @Test
   void castComparableNumberLong() {
+    // Both operands meet at double, not narrowed to float, so a large long is not lossy (issue #7614)
     Number[] result = Type.castComparableNumber(1L, 2.0f);
-    assertThat(result[0]).isInstanceOf(Float.class);
+    assertThat(result[0]).isInstanceOf(Double.class);
+    assertThat(result[1]).isInstanceOf(Double.class);
 
     result = Type.castComparableNumber(1L, 2.0);
     assertThat(result[0]).isInstanceOf(Double.class);
@@ -1331,11 +1335,14 @@ class TypeTest extends TestHelper {
     result = Type.castComparableNumber(1.0f, new BigDecimal("2"));
     assertThat(result[0]).isInstanceOf(BigDecimal.class);
 
+    // Both operands meet at double, not narrowed to float, so a large int/long is not lossy (issue #7614)
     result = Type.castComparableNumber(1.0f, 2);
-    assertThat(result[1]).isInstanceOf(Float.class);
+    assertThat(result[0]).isInstanceOf(Double.class);
+    assertThat(result[1]).isInstanceOf(Double.class);
 
     result = Type.castComparableNumber(1.0f, 2L);
-    assertThat(result[1]).isInstanceOf(Float.class);
+    assertThat(result[0]).isInstanceOf(Double.class);
+    assertThat(result[1]).isInstanceOf(Double.class);
 
     result = Type.castComparableNumber(1.0f, (short) 2);
     assertThat(result[1]).isInstanceOf(Float.class);
@@ -1372,6 +1379,12 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber(new BigDecimal("1"), (byte) 2);
     assertThat(result[1]).isInstanceOf(BigDecimal.class);
+
+    // The Long arm was added for #7609; BigInteger has the identical shape and was missed (issue #7623)
+    result = Type.castComparableNumber(new BigDecimal("1"), new BigInteger("2"));
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("1"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("2"));
   }
 
   @Test
