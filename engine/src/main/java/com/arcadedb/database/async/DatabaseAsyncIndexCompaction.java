@@ -24,6 +24,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 
+import java.util.function.IntConsumer;
 import java.util.logging.Level;
 
 public class DatabaseAsyncIndexCompaction implements DatabaseAsyncTask {
@@ -35,8 +36,29 @@ public class DatabaseAsyncIndexCompaction implements DatabaseAsyncTask {
 
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
-    if (database.isTransactionActive())
-      database.commit();
+    if (database.isTransactionActive()) {
+      try {
+        // #7615: same test-only fault-injection hook commitBatch() fires - lets a test reproduce a
+        // conflict on THIS out-of-band commit deterministically too, without a real compaction race.
+        final IntConsumer hook = DatabaseAsyncExecutorImpl.TEST_BEFORE_BATCH_COMMIT_HOOK;
+        if (hook != null)
+          hook.accept(1);
+
+        database.commit();
+        // #7615: those commands are durably committed now - drop the stale references so a LATER periodic
+        // boundary commit that fails and retries by replay (commitBatch()) cannot replay them a second
+        // time (this task runs with requiresActiveTx() == false, so it can land mid-batch on a worker that
+        // has commands from pendingBatchCommands still open in this very transaction).
+        async.clearPendingBatchCommands();
+      } catch (final Throwable e) {
+        // This commit closes out whatever DatabaseAsyncCommand tasks this worker had already run against
+        // its shared batch transaction before this compaction task ran - none of them are this task's own
+        // doing, so their failure must not vanish silently. Told individually instead; propagates
+        // unchanged otherwise, exactly as an uncaught commit failure here always has.
+        async.notifyPendingBatchCommandsAndAbandon(e);
+        throw e;
+      }
+    }
 
     try {
       ((LocalDatabase) database.getEmbedded()).indexCompactions.incrementAndGet();
