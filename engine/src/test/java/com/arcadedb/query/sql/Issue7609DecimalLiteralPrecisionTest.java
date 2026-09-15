@@ -308,6 +308,34 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
   }
 
   /**
+   * The 2^24 bound on {@link Type#widenFloat}'s allocation-free path is the crux of when the decimal round-trip
+   * is paid and when it is skipped, so it is pinned here rather than left to a code comment. Below the bound an
+   * integral float IS its own shortest decimal; above it the ulp exceeds 1, a shorter decimal fits the same
+   * rounding interval, and the two answers diverge - which is why the bound must not be raised.
+   */
+  @Test
+  void widenFloatIsExactAtTheIntegralBoundAndReadsTheDecimalAboveIt() {
+    final float bound = 1 << 24;
+    assertThat(Type.widenFloat(bound)).as("2^24 itself takes the exact path").isEqualTo(16777216.0d);
+    assertThat(Type.widenFloat(bound - 1)).isEqualTo(16777215.0d);
+    assertThat(Type.widenFloat(-bound)).isEqualTo(-16777216.0d);
+
+    // the counterexample the bound exists for: its exact value is 33554448, but its shortest decimal is
+    // 3.355445E7, so raising the bound would start answering the wrong number on the fast path
+    final float above = 33554448f;
+    assertThat((double) above).as("the primitive widening").isEqualTo(33554448.0d);
+    assertThat(Type.widenFloat(above)).as("the decimal form").isEqualTo(33554450.0d);
+
+    // the fractional case the whole issue is about still reads its decimal
+    assertThat(Type.widenFloat(0.05f)).isEqualTo(0.05d);
+
+    // signed zero survives the fast path, and the non-finite values skip the parse
+    assertThat(Type.widenFloat(-0.0f)).isEqualTo(-0.0d);
+    assertThat(Type.widenFloat(Float.NaN)).isNaN();
+    assertThat(Type.widenFloat(Float.NEGATIVE_INFINITY)).isNegative().isInfinite();
+  }
+
+  /**
    * {@link Type#normalizeNumberForKey} is the GROUP BY / DISTINCT key, and its whole purpose is to let the same
    * logical value reaching a grouping step as two different numeric types land in ONE group. It widened a Float
    * with {@code .doubleValue()} like everything else did, so 0.05f keyed as 0.05000000074505806 against the
