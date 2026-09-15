@@ -60,11 +60,14 @@ public final class CypherValues {
    * A Point value is exempt: Neo4j treats Point as a primitive property type, ArcadeDB just has no dedicated
    * Geometry runtime type yet (issue #4870) and represents one as a map of coordinate keys under the hood, so
    * refusing every map would also reject {@code point()}'s own output. {@link #isPointShaped} recognises one
-   * structurally - by the {@code x}/{@code y}/{@code crs} keys every branch of {@code CypherPointFunction} writes,
-   * the same keys {@code CypherPointDistanceFunction} and {@code PointWithinBBoxFunction} already key off to read
-   * one back - rather than by class identity, because a Point read back off storage is deserialized as a plain
-   * {@link Map} (issue #7629): identity would exempt a point() call's immediate result but not a value copied from
-   * an already-stored Point property (e.g. {@code MATCH (a) CREATE (b {loc: a.loc})}).
+   * structurally - by the numeric {@code x}/{@code y} and a {@code crs} key every branch of
+   * {@code CypherPointFunction} writes, the same keys {@code CypherPointDistanceFunction} and
+   * {@code PointWithinBBoxFunction} already key off to read one back - rather than by class identity, because a
+   * Point read back off storage is deserialized as a plain {@link Map} (issue #7629): identity would exempt a
+   * point() call's immediate result but not a value copied from an already-stored Point property (e.g.
+   * {@code MATCH (a) CREATE (b {loc: a.loc})}). The exemption only waives the "is a Map" check on the point-shaped
+   * map itself - every one of its own entries is still validated, so a map smuggled in under some other key (e.g.
+   * {@code {x: 1, y: 2, crs: 'x', payload: {secret: 1}}}) is still refused.
    */
   public static Object coerceAndValidatePropertyValue(final Object value) {
     if (value == null)
@@ -77,18 +80,31 @@ public final class CypherValues {
   private static void validatePropertyValue(final Object value) {
     if (value instanceof List) {
       for (final Object element : (List<?>) value) {
-        if (element instanceof Map map && isPointShaped(map))
+        if (element instanceof Map<?, ?> map && isPointShaped(map)) {
+          validatePointEntries(map);
           continue;
+        }
         if (element instanceof Map)
           throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not contain map values");
         if (element instanceof List)
           validatePropertyValue(element);
       }
-    } else if (value instanceof Map map && !isPointShaped(map))
-      throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not be maps");
+    } else if (value instanceof Map<?, ?> map) {
+      if (isPointShaped(map))
+        validatePointEntries(map);
+      else
+        throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not be maps");
+    }
   }
 
   private static boolean isPointShaped(final Map<?, ?> map) {
-    return map.containsKey("crs") && map.containsKey("x") && map.containsKey("y");
+    return map.containsKey("crs") && map.get("x") instanceof Number && map.get("y") instanceof Number;
+  }
+
+  /** A point-shaped map is exempt as a whole, but its own values are not: this refuses one smuggling a map/list of
+   *  maps in under a key {@link #isPointShaped} doesn't look at. */
+  private static void validatePointEntries(final Map<?, ?> map) {
+    for (final Object entry : map.values())
+      validatePropertyValue(entry);
   }
 }

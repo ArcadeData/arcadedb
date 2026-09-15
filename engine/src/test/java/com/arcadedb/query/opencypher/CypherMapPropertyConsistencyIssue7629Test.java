@@ -145,7 +145,7 @@ class CypherMapPropertyConsistencyIssue7629Test {
    * a new node, in an entirely separate query/transaction from the one that created it.
    */
   @Test
-  void createAcceptsAPointPropertyCopiedFromAnEarlierlyStoredNode() {
+  void createAcceptsAPointPropertyCopiedFromAPreviouslyStoredNode() {
     database.transaction(() -> database.command("opencypher",
         "CREATE (n:R {id: 1, loc: point({longitude: 12.5, latitude: 55.6})})"));
 
@@ -156,6 +156,19 @@ class CypherMapPropertyConsistencyIssue7629Test {
     final Object loc = rs.next().getProperty("loc");
     assertThat(loc).isInstanceOf(Map.class);
     assertThat(((Map<?, ?>) loc).get("latitude")).isEqualTo(55.6);
+  }
+
+  /**
+   * The Point exemption waives the "is a Map" check on a point-shaped map itself, but not on its own entries: a map
+   * that pads out the x/y/crs keys a Point needs with an extra map-valued key must still be refused, or the
+   * exemption would double as a general escape hatch from the whole check.
+   */
+  @Test
+  void createRejectsAPointShapedMapSmugglingANestedMap() {
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "CREATE (n:R {id: 1, loc: {x: 1, y: 2, crs: 'cartesian', payload: {secret: 1}}})")))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
   @Test
