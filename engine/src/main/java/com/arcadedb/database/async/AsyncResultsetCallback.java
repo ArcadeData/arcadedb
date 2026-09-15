@@ -24,6 +24,15 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 /**
  * Callback interface for asynchronous commands. If the command returns an exception, the {@link #onError(Exception)} method is invoked. Otherwise
  * {@link #onComplete(ResultSet)} is called.
+ * <p>
+ * <b>{@code onComplete} is not a durability signal.</b> It fires as soon as the command applies to the worker's
+ * still-open shared batch transaction - not once that batch is actually committed (see
+ * {@link DatabaseAsyncExecutor#setCommitEvery(int)}). If the batch's periodic commit later hits a transient
+ * conflict, the command is retried by re-executing it (issue #7615) - {@code onComplete} does not fire again for a
+ * successful retry, but {@code onError} DOES fire, in addition to the {@code onComplete} already received, if every
+ * retry is exhausted. A command whose text is not safe to execute more than once (e.g. one that calls
+ * {@code SEQUENCE.next()} or an SQL function with an external side effect) should account for this - the same
+ * caveat already applies to a transaction body passed to {@link DatabaseAsyncExecutor#transaction(com.arcadedb.database.Database.TransactionScope)}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

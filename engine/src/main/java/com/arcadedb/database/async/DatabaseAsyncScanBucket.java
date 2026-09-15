@@ -90,6 +90,13 @@ public class DatabaseAsyncScanBucket implements DatabaseAsyncTask {
   }
 
   @Override
+  public boolean writesToSharedBatch() {
+    // #7615 review: a pure read (bucket.scan()) - never writes to the shared batch transaction, so must
+    // not disable a periodic-boundary retry-by-replay just for sharing a worker with buffered commands.
+    return false;
+  }
+
+  @Override
   public String toString() {
     return "ScanBucket(" + bucket + ")";
   }

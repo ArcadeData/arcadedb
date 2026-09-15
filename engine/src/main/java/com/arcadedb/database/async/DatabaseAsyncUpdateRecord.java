@@ -86,11 +86,31 @@ public class DatabaseAsyncUpdateRecord implements DatabaseAsyncTask {
           LogManager.instance().log(this, Level.WARNING, "Error on rolling back active transaction", re);
         }
       }
+      // #7615 (claude-review): unconditional, matching commitBatch()/closeTransactionBoundaryIfDurabilityPolicyChanged()
+      // - not nested in the isTransactionActive() branch above, so a hypothetical failure that already left the
+      // transaction inactive before this catch runs (not via the rollback() right above) still notifies every
+      // sibling command buffered earlier in this same batch, each of which already fired its own onComplete and
+      // is about to have that write silently discarded too. A no-op when both lists are already empty.
+      async.notifyPendingBatchCommandsAndAbandon(e);
 
       async.onError(e);
 
       if (onErrorCallback != null)
         onErrorCallback.call(e);
+    }
+  }
+
+  @Override
+  public void notifyBatchAbandoned(final Throwable cause) {
+    if (onErrorCallback != null) {
+      try {
+        onErrorCallback.call(cause);
+      } catch (final Throwable callbackError) {
+        // Never let the callback's own failure escape onto the caller (issue #7615): it would abort
+        // notifyPendingBatchCommandsAndAbandon()'s loop over the rest of the abandoned batch, and replace
+        // the real conflict with this one on its way out of commitBatch().
+        LogManager.instance().log(this, Level.WARNING, "Error on invoking the error callback of %s", callbackError, this);
+      }
     }
   }
 

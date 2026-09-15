@@ -75,6 +75,10 @@ public interface DatabaseAsyncExecutor {
 
   /**
    * Schedules the execution of a command by specifying the language and an optional variable array of arguments.
+   * See {@link AsyncResultsetCallback} for what its {@code onComplete}/{@code onError} actually guarantee - in
+   * particular, a command may be silently re-executed if a periodic batch commit needs to retry it, and
+   * {@code onError} fires in addition to an {@code onComplete} already received only if every retry is
+   * exhausted, never on a retry that succeeds.
    *
    * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
    * @param query    The command to be interpreted in the specified language as a string
@@ -85,6 +89,10 @@ public interface DatabaseAsyncExecutor {
 
   /**
    * Schedules the execution of a command by specifying the language and arguments in a map.
+   * See {@link AsyncResultsetCallback} for what its {@code onComplete}/{@code onError} actually guarantee - in
+   * particular, a command may be silently re-executed if a periodic batch commit needs to retry it, and
+   * {@code onError} fires in addition to an {@code onComplete} already received only if every retry is
+   * exhausted, never on a retry that succeeds.
    *
    * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
    * @param query    The command to be interpreted in the specified language as a string
