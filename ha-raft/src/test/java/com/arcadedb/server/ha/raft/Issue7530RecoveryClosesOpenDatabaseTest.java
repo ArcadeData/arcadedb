@@ -341,6 +341,43 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
         .as("the maintenance slot was released even though the repair threw").isFalse();
   }
 
+  /**
+   * A repair that fails leaves the {@code .snapshot-pending} marker in place, and a marked directory is refused by
+   * {@code getDatabase}'s locked path and by {@code loadDatabases}. Reopening it anyway would put it back on the
+   * lock-free fast path, which serves a registered, open database without ever consulting the marker - the exact
+   * hole this issue is about. So the repair reopens only what it reconciled.
+   * <p>
+   * The failure is staged without mocks by making {@code .snapshot-pending} a non-empty <i>directory</i>:
+   * {@code Files.exists} still sees it, so the pass picks the database up, and {@code Files.deleteIfExists} throws
+   * {@code DirectoryNotEmptyException} at the end of the repair. That leaves the marker in place with the database
+   * directory otherwise untouched and perfectly openable - which is what makes this test discriminating, since a
+   * torn directory would fail to reopen anyway and prove nothing.
+   */
+  @Test
+  @Timeout(180)
+  void aRepairThatDidNotClearTheMarkerDoesNotReopenTheDatabase(@TempDir final Path root) throws Exception {
+    final Path databasesDir = startServer(root);
+
+    final ServerDatabase live = server.createDatabase(DB_NAME, ComponentFile.MODE.READ_WRITE);
+    live.getSchema().createDocumentType(ORIGINAL_TYPE);
+    assertThat(server.existsDatabase(DB_NAME)).isTrue();
+
+    // No .snapshot-new and no .snapshot-backup, over a directory that does hold a loadable database: the
+    // "orphaned snapshot directory" branch, which ends by deleting the marker - and cannot, here.
+    final Path dbDir = databasesDir.resolve(DB_NAME);
+    final Path marker = dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE);
+    Files.createDirectories(marker);
+    Files.writeString(marker.resolve("undeletable"), "keeps the marker directory non-empty");
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir, server);
+
+    assertThat(marker).as("precondition: the repair really did fail to clear the marker").exists();
+    assertThat(server.existsDatabase(DB_NAME))
+        .as("a database whose marker is still set is not reopened onto the fast path").isFalse();
+    assertThat(server.isSnapshotInstallInProgress())
+        .as("the 503 window is still released").isFalse();
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
 
   private Thread startRecovery(final Path databasesDir, final AtomicBoolean done,

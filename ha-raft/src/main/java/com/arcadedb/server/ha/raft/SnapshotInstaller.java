@@ -1078,15 +1078,50 @@ public final class SnapshotInstaller {
         try {
           recoverSingleDatabase(dbDir);
         } finally {
-          // In a finally so a RuntimeException escaping the repair cannot leave the node with a database it had
-          // registered and serving now closed. recoverSingleDatabase reports its own IOExceptions and returns.
+          // In a finally so a RuntimeException escaping the repair cannot skip the decision below.
+          // recoverSingleDatabase reports its own IOExceptions and returns, so the outcome is read off the
+          // filesystem rather than from a return value - the same way reconcileRetainedBackup reads its own.
           if (closedByThisRepair)
-            reopenQuietly(server, databaseName);
+            reopenIfReconciled(server, databaseName, dbDir);
         }
       }
     } finally {
       server.setSnapshotInstallInProgress(false);
     }
+  }
+
+  /**
+   * Reopens the database this repair closed, but <b>only if the repair actually reconciled the directory</b> -
+   * i.e. only if the {@code .snapshot-pending} marker is gone (review finding on PR #7631).
+   * <p>
+   * This is deliberately unlike {@link #swapAndReopen}'s failure arms and {@link #reconcileRetainedBackup}, which
+   * reopen unconditionally. They are rescuing a database from a close <i>they</i> performed in order to serve it
+   * again, over a marker <i>they</i> wrote moments ago on a directory that was healthy before they touched it. This
+   * pass is in the opposite position: the marker predates it, the repair has just failed to make sense of the
+   * directory, and nothing is waiting on the handle - the next pass, or an operator, will deal with it.
+   * <p>
+   * Reopening anyway would recreate exactly the state this whole issue is about. A marked directory is refused by
+   * {@link ArcadeDBServer#getDatabase}'s locked path and by {@code loadDatabases}, so a registered, open entry over
+   * a still-marked directory buys nothing except the lock-free fast path - which serves it without ever consulting
+   * the marker. That fast path is the hole #7530 exists to close; ending the repair by reopening into it would be
+   * this pass putting the hole back.
+   * <p>
+   * Read off the filesystem rather than from a success flag because that is the fact that matters and the one every
+   * other reconciliation path keys on, {@link #reconcileRetainedBackup} included: what the next
+   * {@code loadDatabases} and the next repair will see, not what this call believes it did.
+   */
+  private static void reopenIfReconciled(final ArcadeDBServer server, final String databaseName, final Path dbDir) {
+    if (!Files.exists(dbDir.resolve(SNAPSHOT_PENDING_FILE))) {
+      reopenQuietly(server, databaseName);
+      return;
+    }
+
+    LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+        "The interrupted snapshot swap of database '%s' could not be reconciled, so its '%s' marker is still in "
+            + "place and it is NOT being reopened: its directory is neither the previous database nor the installed "
+            + "snapshot, and serving it would be worse than leaving it unavailable. It stays closed until a later "
+            + "recovery pass or a new snapshot install reconciles the directory, or an operator does", null,
+        databaseName, SNAPSHOT_PENDING_FILE);
   }
 
   /**

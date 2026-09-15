@@ -302,13 +302,22 @@ public class ArcadeDBServer {
    * <p>
    * A {@code false} with no matching {@code true} is floored at zero rather than allowed to go negative: an
    * unbalanced release is a caller bug, and letting the depth drift below zero would wedge the window permanently
-   * shut for every later install.
+   * shut for every later install. It is logged rather than absorbed silently, because the bug it would be hiding -
+   * one holder releasing another holder's window - is the exact class of bug this counter exists to prevent, and a
+   * double release closes the window early for whoever is still moving files (review finding on PR #7631).
    */
   public void setSnapshotInstallInProgress(final boolean inProgress) {
-    if (inProgress)
+    if (inProgress) {
       snapshotInstallsInProgress.incrementAndGet();
-    else
-      snapshotInstallsInProgress.updateAndGet(depth -> depth > 0 ? depth - 1 : 0);
+      return;
+    }
+
+    if (snapshotInstallsInProgress.getAndUpdate(depth -> depth > 0 ? depth - 1 : 0) == 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "setSnapshotInstallInProgress(false) was called with no snapshot install or repair holding the window. "
+              + "The release is ignored rather than driving the holder count negative, but it means some caller "
+              + "released a window it did not open - which can close the window early for a caller that is still "
+              + "moving database files");
   }
 
   public boolean isSnapshotInstallInProgress() {

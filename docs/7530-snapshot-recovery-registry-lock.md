@@ -125,6 +125,7 @@ ha-raft/.../ArcadeStateMachine.java:557:        SnapshotInstaller.recoverPending
 | `acquireNewDatabase` -> `deleteDirectoryIfExists(dbPath)` / `publishStaging` | **argued** | - |
 | Registered but *unresolvable* entry (registered + closed + marked) on the repaired path | **yes** - the lookup failure is caught, the pass continues | yes - `aRegisteredButUnresolvableDatabaseDoesNotAbandonTheWholePass` |
 | An unchecked failure repairing one database ending the whole scan / failing Ratis init | **yes** - per-database guard in the scan loop | yes - `anUncheckedFailureRepairingOneDatabaseDoesNotEndTheScan` |
+| A failed repair reopening a still-marked directory back onto the fast path | **yes** - the reopen is conditional on the marker being gone | yes - `aRepairThatDidNotClearTheMarkerDoesNotReopenTheDatabase` |
 | `recoverPendingSnapshotSwaps(Path)` one-argument overload | **argued** | yes - `recoveryWithoutAServerStillReconcilesTheDirectory` (#7449, untouched) |
 
 **Argued rows, with evidence:**
@@ -165,6 +166,15 @@ request, so the 503 window is live. `getDatabasesLock()` is the same monitor `ge
   which is the stronger of the two guarantees - but an in-flight request that already holds a reference
   to the `Database` object is not interrupted. That is the same exposure `swapAndReopen` has had since
   #4832 and is not narrowed here.
+- **The registry-lock stall is node-wide and is a larger cost than the 503, because it is not limited to
+  HTTP.** `databasesLock` is the monitor every `getDatabase` and `createDatabase` on the server contends
+  on, for *every* database, and the repair holds it across an unbounded file move. So while one
+  database's swap is being repaired, opening or creating an unrelated database blocks for that whole
+  window on every protocol, not only on the one that gets a 503. This is the accepted shape of the
+  exclusion rather than something new: `swapAndReopen` (#4832) and `reconcileRetainedBackup` (#7139)
+  have held the same lock across the same move since they were written, and the alternative - repairing
+  a directory without the lock - is the defect being fixed. Repair is bounded by one directory at a time
+  because the window is taken per database rather than once for the pass.
 - A database registered but already **closed** when the pass reaches it is not reopened by the repair,
   because the repair reopens only what it closed. `loadDatabases(true)` and the next `getDatabase` pick
   it up once the marker is gone. See the log line in `closeRegisteredDatabaseForRepair`.
@@ -306,6 +316,71 @@ fail by replacing the guard with a bare call, which turned it red with the escap
 ```
 
 Full suite after the change: `Tests run: 1491, Failures: 2` - the same two pre-existing
+`ArcadeStateMachinePerDatabaseHaltTest` failures (#7630).
+
+No deferred items.
+
+
+### Cycle 2 - `bf65138364`
+
+`claude` reported no blockers and three points to confirm; `coderabbitai` raised one Major inline
+finding. All four addressed.
+
+**CodeRabbit, `SnapshotInstaller.java:1084` - reopen only after a successful repair.** *Real, fixed.*
+The finding is right, and for a reason that follows from this PR's own premise rather than from the
+general "don't reopen on failure" rule. A repair that fails leaves the marker in place, and a marked
+directory is refused by `getDatabase`'s locked path and by `loadDatabases`. So a registered, open entry
+over a still-marked directory buys exactly one thing: the lock-free fast path, which serves it without
+consulting the marker - the hole #7530 exists to close. Ending the repair by reopening into it would be
+this pass putting the hole back.
+
+`reopenIfReconciled` now reopens only when the marker is gone, and logs SEVERE naming the state when it
+declines. The outcome is read off the filesystem rather than from a success flag, the same way
+`reconcileRetainedBackup` reads its own: the fact that matters is what the next `loadDatabases` and the
+next repair will see.
+
+This is deliberately *unlike* `swapAndReopen`'s failure arms and `reconcileRetainedBackup`, which reopen
+unconditionally. They rescue a database from a close they performed in order to serve it again, over a
+marker they wrote moments ago on a directory that was healthy beforehand. This pass is the opposite: the
+marker predates it and the repair has just failed to make sense of the directory.
+
+`aRepairThatDidNotClearTheMarkerDoesNotReopenTheDatabase` pins it. Staging a failure that leaves the
+directory *openable* is what makes the test discriminating - a torn directory would fail to reopen
+anyway and prove nothing - so the marker is created as a non-empty **directory**: `Files.exists` still
+sees it, and `Files.deleteIfExists` throws `DirectoryNotEmptyException` at the end of the repair.
+Proved able to fail by restoring the unconditional `reopenQuietly`:
+
+```
+[ERROR] aRepairThatDidNotClearTheMarkerDoesNotReopenTheDatabase:376
+        [a database whose marker is still set is not reopened onto the fast path]
+```
+
+**claude point 1 - the registry-lock stall is node-wide and affects non-HTTP protocols.** *Real, not a
+regression; documented.* Written into residual risk above rather than changed: holding the lock across
+the move is what `swapAndReopen` and `reconcileRetainedBackup` already do, and repairing without it is
+the defect. The tradeoff is now stated explicitly instead of only the 503 half of it.
+
+**claude point 2 - the floor on the holder count was silent.** *Real, fixed.* An unbalanced
+`setSnapshotInstallInProgress(false)` now logs a WARNING. Absorbing it silently would hide one holder
+releasing another holder's window, which is the exact class of bug the counter was introduced to
+prevent.
+
+**claude point 3 - check no test supplies a null `BackupCoordinator`.** *Checked, nothing to do.* No
+test overrides `getBackupCoordinator()` or writes the field:
+
+```
+$ grep -rn "extends ArcadeDBServer" --include="*.java" .   # 5 subclasses, none overriding it
+$ grep -rn "backupCoordinator" --include="*.java" .
+server/src/main/java/com/arcadedb/server/ArcadeDBServer.java:185:  private final BackupCoordinator backupCoordinator = new BackupCoordinator();
+server/src/main/java/com/arcadedb/server/ArcadeDBServer.java:1369:    return backupCoordinator;
+```
+
+Mockito mocks of `ArcadeDBServer` do exist in `ha-raft`, and for one of those both
+`getBackupCoordinator()` and `getDatabasesLock()` would return null - but none of them is passed to
+`recoverPendingSnapshotSwaps`; its only test callers are the five files listed by the grep in the
+Completeness section above, none of which mock the server.
+
+Full suite after the change: `Tests run: 1492, Failures: 2` - the same two pre-existing
 `ArcadeStateMachinePerDatabaseHaltTest` failures (#7630).
 
 No deferred items.
