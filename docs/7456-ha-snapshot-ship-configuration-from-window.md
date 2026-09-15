@@ -189,3 +189,26 @@ asked a maintainer, not the loop, to sign off on the two deliberate behaviour ch
 
 The entry-point coverage table above is unchanged by this cycle: no new entry point was found, and the symlink
 test guards behaviour on two rows that were already covered.
+
+### Cycle 2 - `464a990c`
+
+`claude` reviewed again and raised nothing actionable: "I don't see functional bugs in the diff ... this is a
+sign-off ask rather than a code issue". It confirmed the symlink asymmetry is now pinned by a test, that the
+manifest accounting stays correct on both branches, and that the latch-based lock tests match this repo's rule
+against wall-clock assertions. No changes applied, no new deferred items.
+
+CodeRabbit had still posted no review or inline comment on either head after both pushes (its placeholder
+comment from cycle 1 is all there is), so there are no CodeRabbit threads to resolve.
+
+## Final state
+
+`clean-approval` after 2 cycles. Nothing in the loop is outstanding.
+
+**One thing is waiting on the developer, and it is not a defect:** the reviewer asked twice for an explicit
+maintainer "yes, acceptable" on the two deliberate behaviour changes - a symlinked configuration file is now
+shipped on the window path rather than dropped (pinned by a test since cycle 1), and removing the read lock
+makes the t0-barrier gap reachable during a ship. Both are argued in the code, in the PR body and in the
+residual-risk section above, and both match what `FullBackupFormat` has done since #6114. See
+`docs/review-deferred-cae3035f.md`.
+
+Merge is the developer's: this workflow does not merge PRs.
