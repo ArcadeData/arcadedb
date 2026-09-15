@@ -265,6 +265,31 @@ class CypherMapPropertyConsistencyIssue7629Test {
   }
 
   /**
+   * A side effect worth pinning explicitly: before this PR, {@code SetClauseApplier}'s private validation (#6863)
+   * rejected any {@code Map} unconditionally, including the plain map {@code point()} returns internally - so
+   * {@code SET n.loc = point(...)} threw {@code TypeError: InvalidPropertyType} on {@code main} today, the mirror
+   * image of the CREATE/MERGE gap this PR closes. Now that {@code SetClauseApplier} delegates to the same
+   * {@code CypherValues.coerceAndValidatePropertyValue}/{@code isPointShaped}, SET accepts a Point-valued property
+   * exactly like CREATE and MERGE do.
+   */
+  @Test
+  void setAcceptsAPointValuedPropertyLikeCreateAndMerge() {
+    database.transaction(() -> database.command("opencypher", "CREATE (n:R {id: 1})"));
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (n:R {id: 1}) SET n.loc = point({longitude: 12.5, latitude: 55.6})"));
+
+    final ResultSet dotAssign = database.query("opencypher", "MATCH (n:R {id: 1}) RETURN n.loc AS loc");
+    assertThat(((Map<?, ?>) dotAssign.next().<Object>getProperty("loc")).get("latitude")).isEqualTo(55.6);
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (n:R {id: 1}) SET n += {loc2: point({x: 1, y: 2})}"));
+
+    final ResultSet mergeMap = database.query("opencypher", "MATCH (n:R {id: 1}) RETURN n.loc2 AS loc2");
+    assertThat(((Map<?, ?>) mergeMap.next().<Object>getProperty("loc2")).get("x")).isEqualTo(1.0);
+  }
+
+  /**
    * The exact reported repro: {@code SET n += $p} with a parameter map whose own value is itself a map. This is the
    * behaviour that reads as a regression against CREATE without the two tests above - it was already correct.
    */
