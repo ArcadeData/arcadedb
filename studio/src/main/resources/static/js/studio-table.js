@@ -183,6 +183,14 @@ function renderTable() {
       globalStorageSave("table.pageLength", len);
     });
 
+    // Copy already shows its own "copied to clipboard" tooltip; the file-based exports save
+    // silently in the background, so let the user know it actually happened.
+    dataTable.on("buttons-action", function (e, buttonApi, dtApi, node, config) {
+      if (config.extend === "copy") return;
+      const label = config.extend === "print" ? "sent to print" : "exported";
+      globalNotify("Export", "Table " + label + " successfully", "success");
+    });
+
     $(".dt-length").css("padding", "7px");
     $(".dt-search").css("padding", "7px");
   }
