@@ -20,13 +20,19 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -267,6 +273,140 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
 
     // Nothing from this abandoned batch may be durably stored - the guard exists precisely so a partial replay can
     // never masquerade as a complete one.
+    database.transaction(() -> assertThat(database.countType(TYPE, true)).isZero());
+  }
+
+  /**
+   * Code review on this PR flagged that {@link DatabaseAsyncIndexCompaction} and {@link DatabaseAsyncParkWorker}
+   * commit the same shared, worker-owned batch transaction directly, bypassing {@code commitBatch()} entirely - so a
+   * conflict there used to leave {@code pendingBatchCommands} either stale (index compaction: no try/catch at all, so
+   * the whole {@code executeTask()} postprocessing block that would have cleared it was skipped) or silently cleared
+   * with nobody notified (park worker: caught, but only the executor-wide callback was told). Both now route through
+   * the same {@code clearPendingBatchCommands()}/{@code notifyPendingBatchCommandsAndAbandon()} choke points
+   * {@code commitBatch()} uses.
+   * <p>
+   * {@code index compaction} runs with {@code requiresActiveTx() == false} and is dispatched via
+   * {@code DatabaseAsyncExecutorImpl.compact()} exactly as the real {@code onAfterCommit} hook does when an LSM index
+   * crosses its compaction threshold mid-batch - the scenario the PR's own {@code concurrentWorkersUnderRealContentionLoseNothingSilently}
+   * test exercises for real, reproduced here deterministically via the same fault-injection hook.
+   */
+  @Test
+  void indexCompactionAbandoningTheBatchNotifiesEveryBufferedCommand() throws Exception {
+    database.async().setParallelLevel(1); // deterministic: no other worker's own commit competes for the hook
+    database.async().setCommitEvery(1_000); // large enough that only the compaction's own commit triggers the hook
+
+    final Index index = database.getSchema().getType(TYPE).createProperty("seq", Integer.class)
+        .createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+    // The per-bucket index, the same one DatabaseAsyncIndexCompaction actually compacts (see
+    // DatabaseAsyncExecutorCompactionShutdownRaceTest for the identical extraction).
+    final IndexInternal indexInternal = ((TypeIndex) index).getIndexesOnBuckets()[0];
+
+    final AtomicInteger executorWideErrors = new AtomicInteger();
+    database.async().onError(e -> executorWideErrors.incrementAndGet());
+
+    DatabaseAsyncExecutorImpl.TEST_BEFORE_BATCH_COMMIT_HOOK =
+        callNumber -> {
+          throw new ConcurrentModificationException("simulated conflict on the compaction task's own commit");
+        };
+
+    final List<Exception> perCommandErrors = new CopyOnWriteArrayList<>();
+
+    try {
+      for (int i = 0; i < 3; i++) {
+        final AsyncResultsetCallback cb = new AsyncResultsetCallback() {
+          @Override
+          public void onComplete(final ResultSet rs) {
+          }
+
+          @Override
+          public void onError(final Exception e) {
+            perCommandErrors.add(e);
+          }
+        };
+        database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", cb, i);
+      }
+
+      // Dispatched to the same worker (parallel level 1), landing mid-batch behind the 3 commands above -
+      // exactly like the real onAfterCommit hook would once the index crosses its compaction threshold.
+      ((DatabaseAsyncExecutorImpl) database.async()).compact(indexInternal);
+
+      database.async().waitCompletion();
+    } finally {
+      DatabaseAsyncExecutorImpl.TEST_BEFORE_BATCH_COMMIT_HOOK = null;
+    }
+
+    assertThat(executorWideErrors.get()).as("the executor-wide callback still fires, unchanged").isGreaterThanOrEqualTo(1);
+
+    // The actual fix: all 3 commands buffered ahead of the compaction task are told their own onError, instead of
+    // the failure being visible only through the executor-wide callback above (or, pre-fix, not at all for the
+    // no-try/catch compaction path).
+    assertThat(perCommandErrors).hasSize(3);
+    for (final Exception e : perCommandErrors)
+      assertThat(e).isInstanceOf(ConcurrentModificationException.class);
+
+    database.transaction(() -> assertThat(database.countType(TYPE, true)).isZero());
+  }
+
+  /**
+   * Same gap as {@link #indexCompactionAbandoningTheBatchNotifiesEveryBufferedCommand}, for
+   * {@link DatabaseAsyncParkWorker} - the task {@code quiesceWorkers()} uses to commit and pause each worker (issue
+   * #6303 item 2). Unlike the compaction task it already caught its own commit failure, but only told the
+   * executor-wide callback, never the commands buffered ahead of it.
+   */
+  @Test
+  void parkWorkerAbandoningTheBatchNotifiesEveryBufferedCommand() throws Exception {
+    database.async().setParallelLevel(1);
+    database.async().setCommitEvery(1_000);
+
+    final AtomicInteger executorWideErrors = new AtomicInteger();
+    database.async().onError(e -> executorWideErrors.incrementAndGet());
+
+    DatabaseAsyncExecutorImpl.TEST_BEFORE_BATCH_COMMIT_HOOK =
+        callNumber -> {
+          throw new ConcurrentModificationException("simulated conflict on the park worker's own commit");
+        };
+
+    final List<Exception> perCommandErrors = new CopyOnWriteArrayList<>();
+
+    final CountDownLatch parked  = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+
+    try {
+      for (int i = 0; i < 3; i++) {
+        final AsyncResultsetCallback cb = new AsyncResultsetCallback() {
+          @Override
+          public void onComplete(final ResultSet rs) {
+          }
+
+          @Override
+          public void onError(final Exception e) {
+            perCommandErrors.add(e);
+          }
+        };
+        database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", cb, i);
+      }
+
+      final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) database.async();
+      // getBestSlot() rather than a hardcoded slot: with a single worker it is always slot 0, but this
+      // guarantees the park task lands on the very worker the 3 commands above did, exactly like
+      // quiesceWorkers() (its real caller) targets every worker by construction rather than by guessing.
+      assertThat(async.scheduleTask(async.getBestSlot(), new DatabaseAsyncParkWorker(parked, release), true, 0)).isTrue();
+
+      assertThat(parked.await(30, TimeUnit.SECONDS)).as("the park worker task must report parked").isTrue();
+    } finally {
+      release.countDown(); // let the parked worker resume so waitCompletion() below does not hang
+      DatabaseAsyncExecutorImpl.TEST_BEFORE_BATCH_COMMIT_HOOK = null;
+    }
+
+    database.async().waitCompletion();
+
+    assertThat(executorWideErrors.get()).as("the executor-wide callback still fires, unchanged").isGreaterThanOrEqualTo(1);
+
+    // The actual fix: all 3 commands buffered ahead of the park task are told their own onError too.
+    assertThat(perCommandErrors).hasSize(3);
+    for (final Exception e : perCommandErrors)
+      assertThat(e).isInstanceOf(ConcurrentModificationException.class);
+
     database.transaction(() -> assertThat(database.countType(TYPE, true)).isZero());
   }
 }

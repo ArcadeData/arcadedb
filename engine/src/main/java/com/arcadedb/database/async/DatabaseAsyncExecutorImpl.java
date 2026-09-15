@@ -75,9 +75,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * Test-only fault-injection hook. Invoked with a 1-based call number right before each attempt of
    * {@code AsyncThread#commitBatch}'s commit of the shared per-worker batch transaction - both the periodic
    * {@code commitEvery} boundary reached from {@code executeTask()} and the dangling-tail-batch flush
-   * {@code DatabaseAsyncCompletion} runs at {@code waitCompletion()}/shutdown time. A test throwing a
-   * {@link ConcurrentModificationException} here reproduces issue #7615's conflict deterministically,
-   * without needing genuine concurrent contention across workers to produce it. Always {@code null} in
+   * {@code DatabaseAsyncCompletion} runs at {@code waitCompletion()}/shutdown time - and, with a constant
+   * call number of 1 (there is no retry loop to count attempts of), right before the two other tasks that
+   * commit this same shared transaction out of band: {@code DatabaseAsyncIndexCompaction} and
+   * {@code DatabaseAsyncParkWorker}. A test throwing a {@link ConcurrentModificationException} here
+   * reproduces issue #7615's conflict deterministically, without needing genuine concurrent contention (or,
+   * for the last two, a real index compaction / quiesce race) to produce it. Always {@code null} in
    * production.
    */
   public static volatile IntConsumer TEST_BEFORE_BATCH_COMMIT_HOOK = null;
@@ -701,6 +704,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      * warning and moving on, not a guarantee, and its own comment already documents that failure mode as
      * held file locks. A double failure on top of the double failure that got here is out of scope for this
      * class to solve.
+     * <p>
+     * <b>Deliberately does not retry through {@code commitBatch()} (issue #7615 review).</b> A conflict here
+     * still notifies every buffered command via {@code notifyPendingBatchCommandsAndAbandon}, same as an
+     * exhausted {@code commitBatch()} retry, but gets no retry attempts of its own: this boundary exists
+     * because the durability policy the caller is about to apply differs from what this transaction was
+     * stamped with, so retrying UNDER THE OLD POLICY would be retrying something the caller is already
+     * walking away from, and the caller's own {@code begin()} right after this returns starts a fresh
+     * transaction under the NEW policy regardless of whether this commit succeeded.
      */
     private boolean closeTransactionBoundaryIfDurabilityPolicyChanged(final boolean currentUseWAL,
         final WALFile.FlushType currentSync) {

@@ -96,8 +96,16 @@ public class DatabaseAsyncUpdateRecord implements DatabaseAsyncTask {
 
   @Override
   public void notifyBatchAbandoned(final Throwable cause) {
-    if (onErrorCallback != null)
-      onErrorCallback.call(cause);
+    if (onErrorCallback != null) {
+      try {
+        onErrorCallback.call(cause);
+      } catch (final Throwable callbackError) {
+        // Never let the callback's own failure escape onto the caller (issue #7615): it would abort
+        // notifyPendingBatchCommandsAndAbandon()'s loop over the rest of the abandoned batch, and replace
+        // the real conflict with this one on its way out of commitBatch().
+        LogManager.instance().log(this, Level.WARNING, "Error on invoking the error callback of %s", callbackError, this);
+      }
+    }
   }
 
   @Override
