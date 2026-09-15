@@ -3319,9 +3319,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       } else if (text.endsWith("D") || text.endsWith("d")) {
         number.value = Double.parseDouble(text.substring(0, text.length() - 1));
       } else {
-        // ISSUE #7609: A SUFFIX-LESS LITERAL IS A DOUBLE. PARSING IT AS A FLOAT MADE `0.05` MEAN 0.05000000074505806,
-        // WHICH SILENTLY DROPPED EVERY ROW SITTING EXACTLY ON THE BOUNDARY OF A COMPARISON AGAINST A DOUBLE OR DECIMAL
-        // PROPERTY, AND TURNED ANY MAGNITUDE ABOVE Float.MAX_VALUE INTO INFINITY. THE `F` SUFFIX ASKS FOR SINGLE PRECISION
+        // A suffix-less literal is a double. Parsing it as a float made `0.05` mean 0.05000000074505806, which
+        // silently dropped every record sitting exactly on the boundary of a comparison against a DOUBLE or DECIMAL
+        // property, and turned any magnitude above Float.MAX_VALUE into infinity. The `F` suffix asks for single
+        // precision (issue #7609).
         number.value = Double.parseDouble(text);
       }
     } catch (final NumberFormatException e) {

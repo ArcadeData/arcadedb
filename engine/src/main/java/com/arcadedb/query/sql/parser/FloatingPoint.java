@@ -49,9 +49,10 @@ public class FloatingPoint extends PNumber {
       }
     } else {
       try {
-        // ISSUE #7609: A SUFFIX-LESS LITERAL IS A DOUBLE. IT USED TO BE NARROWED TO A FLOAT WHENEVER IT FITTED, WHICH
-        // MADE `0.05` MEAN 0.05000000074505806 AND SILENTLY DROPPED EVERY ROW SITTING EXACTLY ON THE BOUNDARY OF A
-        // COMPARISON AGAINST A DOUBLE OR DECIMAL PROPERTY. THE `F` SUFFIX IS THERE FOR ANYONE WHO WANTS SINGLE PRECISION
+        // A suffix-less literal is a double. It used to be narrowed to a float whenever it fitted, which made
+        // `0.05` mean 0.05000000074505806 and silently dropped every record sitting exactly on the boundary of a
+        // comparison against a DOUBLE or DECIMAL property. The `F` suffix is there for anyone who wants single
+        // precision (issue #7609).
         finalValue = Double.parseDouble(stringValue) * sign;
       } catch (final Exception ignore) {
         return null;//TODO NaN?

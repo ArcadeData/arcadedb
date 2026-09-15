@@ -32,8 +32,8 @@ public class PNumber extends SimpleNode {
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(value);
-    // ISSUE #7609: A SUFFIX-LESS LITERAL RE-PARSES AS A DOUBLE, SO A Float HAS TO CARRY ITS SUFFIX OR RENDERING AND
-    // RE-PARSING THE SAME STATEMENT (EXPLAIN, THE STATEMENT CACHE KEY, A REWRITTEN SUB-QUERY) WOULD CHANGE ITS TYPE
+    // A suffix-less literal re-parses as a double, so a Float has to carry its suffix or rendering and re-parsing the
+    // same statement (EXPLAIN, the statement cache key, a rewritten sub-query) would change its type (issue #7609).
     if (value instanceof Float)
       builder.append('F');
   }

@@ -173,9 +173,9 @@ public final class InListMembership {
 
     final Number number = (Number) value;
     if (number instanceof Double || number instanceof Float) {
-      // ISSUE #7609: A Float IS WIDENED THROUGH ITS DECIMAL FORM, THE SAME WAY Type.castComparableNumber DOES IT FOR
-      // THE LINEAR PATH THIS FAST PATH HAS TO AGREE WITH. .doubleValue() WOULD REPRODUCE THE SINGLE PRECISION
-      // ROUNDING ERROR, SO A FLOAT PROPERTY HOLDING 0.05 KEYED AS 0.05000000074505806 AND `IN [0.05]` MISSED IT
+      // A Float is widened through its decimal form, the same way Type.castComparableNumber does it for the linear
+      // path this fast path has to agree with. .doubleValue() would reproduce the single precision rounding error, so
+      // a FLOAT property holding 0.05 keyed as 0.05000000074505806 and `IN [0.05]` missed it (issue #7609).
       final double d = number instanceof Float float1 ? Type.widenFloat(float1) : number.doubleValue();
       if (Double.isNaN(d) || Double.isInfinite(d))
         // Not representable as a BigDecimal at all; the linear path answers these from Double.equals.

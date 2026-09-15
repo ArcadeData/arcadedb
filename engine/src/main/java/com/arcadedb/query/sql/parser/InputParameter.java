@@ -75,16 +75,16 @@ public class InputParameter extends SimpleNode {
     if (value instanceof Number number) {
       final FloatingPoint result = new FloatingPoint();
       result.stringValue = value.toString();
-      // ISSUE #7609: THE SIGN COMES FROM THE TEXT, NOT FROM `doubleValue() >= 0`, WHICH IS TRUE FOR NEGATIVE ZERO
-      // TOO AND SO BOUND -0.0 AS +0.0 - A DIFFERENCE Double.equals() CAN SEE, SO THE PARAMETER MATCHED NOTHING
+      // The sign comes from the text, not from `doubleValue() >= 0`, which is true for negative zero too and so
+      // bound -0.0 as +0.0 - a difference Double.equals() can see, so the parameter matched nothing (issue #7609).
       if (result.stringValue.startsWith("-")) {
         result.sign = -1;
         result.stringValue = result.stringValue.substring(1);
       } else
         result.sign = 1;
-      // ISSUE #7609: A SUFFIX-LESS LITERAL IS A DOUBLE, SO A Float PARAMETER HAS TO CARRY ITS SUFFIX TO BIND BACK AS
-      // ONE. NaN AND THE INFINITIES ARE LEFT ALONE: "NaN" IS ALREADY NOT A LITERAL THE GRAMMAR LEXES, AND "NaNF" WOULD
-      // BE A SECOND UNLEXABLE SPELLING RATHER THAN A FIX. THEY BIND AS A Double, WHICH CARRIES THE SAME VALUE
+      // A suffix-less literal is a double, so a Float parameter has to carry its suffix to bind back as one. NaN and
+      // the infinities are left alone: "NaN" is already not a literal the grammar lexes, and "NaNF" would be a second
+      // unlexable spelling rather than a fix. They bind as a Double, which carries the same value (issue #7609).
       if (value instanceof Float float1 && Float.isFinite(float1))
         result.stringValue += "F";
       return result;

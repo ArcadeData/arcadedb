@@ -690,7 +690,7 @@ public class MathExpression extends SimpleNode {
         if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float)
           return operation.apply(a.floatValue(), b.floatValue());
         else if (b instanceof Double)
-          // ISSUE #7609: THE DECIMAL FORM, NOT .doubleValue(), WHICH WOULD CARRY THE SINGLE PRECISION ERROR ALONG
+          // The decimal form, not .doubleValue(), which would carry the single precision error along (issue #7609).
           return operation.apply(Type.widenFloat(float1), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
           return operation.apply(Type.floatToBigDecimal(float1), decimal);

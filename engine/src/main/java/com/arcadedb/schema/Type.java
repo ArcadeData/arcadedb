@@ -1297,13 +1297,13 @@ public enum Type {
    */
   public static double widenFloat(final Float value) {
     final float f = value;
-    // NaN AND THE INFINITIES HAVE NO SHORTER DECIMAL FORM: WIDEN THEM DIRECTLY AND SKIP THE PARSE
+    // NaN and the infinities have no shorter decimal form: widen them directly and skip the parse.
     if (Float.isNaN(f) || Float.isInfinite(f))
       return f;
-    // AN INTEGRAL FLOAT AT OR BELOW 2^24 IS THE ONLY INTEGER INSIDE ITS OWN ROUNDING INTERVAL (THE ULP IS AT MOST
-    // 1 THERE), SO ITS SHORTEST DECIMAL IS THAT INTEGER AND THE PRIMITIVE WIDENING IS ALREADY EXACT. THE BOUND IS
-    // NOT CONSERVATIVE AND MUST NOT BE RAISED: ABOVE IT THE ULP EXCEEDS 1 AND A SHORTER DECIMAL FITS IN THE SAME
-    // INTERVAL, SO THE TWO DIVERGE - 33554448f WIDENS TO 33554448 BUT READS AS 3.355445E7, WHICH IS 33554450
+    // An integral float at or below 2^24 is the only integer inside its own rounding interval (the ulp is at most 1
+    // there), so its shortest decimal is that integer and the primitive widening is already exact. The bound is not
+    // conservative and must not be raised: above it the ulp exceeds 1 and a shorter decimal fits in the same interval,
+    // so the two diverge - 33554448f widens to 33554448 but reads as 3.355445E7, which is 33554450.
     if (f == (long) f && Math.abs(f) <= EXACT_INTEGRAL_FLOAT)
       return f;
     return Double.parseDouble(value.toString());
@@ -1388,8 +1388,8 @@ public enum Type {
       if (right instanceof Integer integer)
         right = new BigDecimal(integer);
       else if (right instanceof Long long1)
-        // ISSUE #7609: THE Long CASE WAS MISSING, SO THE COUPLE CAME BACK AS (BigDecimal, Long) AND THE CALLER'S
-        // compareTo() THREW ClassCastException - `WHERE decimalProperty > 3000000000` CRASHED RATHER THAN ANSWERED
+        // The Long case was missing, so the couple came back as (BigDecimal, Long) and the caller's compareTo()
+        // threw ClassCastException - `WHERE decimalProperty > 3000000000` crashed rather than answered (issue #7609).
         right = new BigDecimal(long1);
       else if (right instanceof Float float1)
         right = floatToBigDecimal(float1);

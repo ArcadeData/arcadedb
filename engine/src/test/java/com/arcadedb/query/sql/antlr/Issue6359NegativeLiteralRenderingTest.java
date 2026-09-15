@@ -141,7 +141,7 @@ class Issue6359NegativeLiteralRenderingTest extends TestHelper {
     assertValueSurvivesReparse("SELECT -(1 + 2) AS n", -3);
     assertValueSurvivesReparse("SELECT (1 + 2) * 3 AS n", 9);
     assertValueSurvivesReparse("SELECT 1 + 2 * 3 AS n", 7);
-    // ISSUE #7609: A SUFFIX-LESS LITERAL IS A DOUBLE, SO THE SUM OF TWO OF THEM IS A DOUBLE TOO
+    // A suffix-less literal is a double, so the sum of two of them is a double too (issue #7609).
     assertValueSurvivesReparse("SELECT -1.5 + 0.5 AS n", -1.0d);
     assertValueSurvivesReparse("SELECT -1.5F + 0.5F AS n", -1.0f);
   }
