@@ -612,11 +612,20 @@ public class JsonSerializer {
    * day. Only a value actually backed by a DATE-typed property is left for that dispatch (unchanged
    * below); everything else is formatted here with the full date-time pattern, anchored to UTC to
    * match {@code Type#convertToDate}'s own UTC-anchored LocalDateTime-to-Date conversion (the write
-   * side of the same round trip).
+   * side of the same round trip), and precision-expanded the same way the {@code Temporal} branch
+   * below is, so a {@code Date} with a non-zero millisecond component doesn't get silently truncated
+   * by a seconds-only schema pattern. {@code Date} can never hold finer than millisecond precision, so
+   * the data-driven fallback below caps at {@link ChronoUnit#MILLIS}, not the nanos field.
    */
   private static Object formatTemporalForPrecision(final Object value, final Type propertyType, final String baseDateTimeFormat) {
-    if (value instanceof Date date)
-      return propertyType == Type.DATE ? value : DateUtils.format(date, baseDateTimeFormat, "UTC");
+    if (value instanceof Date date) {
+      if (propertyType == Type.DATE)
+        return value;
+      final ChronoUnit precision = propertyType != null
+          ? DateUtils.getPrecisionFromType(propertyType)
+          : DateUtils.getPrecision((int) (Math.floorMod(date.getTime(), 1000L) * 1_000_000L));
+      return DateUtils.format(date, expandFormatToPrecision(baseDateTimeFormat, precision), "UTC");
+    }
     if (!(value instanceof Temporal))
       return value;
     final ChronoUnit precision;

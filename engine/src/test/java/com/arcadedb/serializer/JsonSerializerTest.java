@@ -369,7 +369,10 @@ class JsonSerializerTest extends TestHelper {
       database.transaction(() -> {
         final DocumentType type = database.getSchema().createDocumentType("DateTimeAsDateType");
         type.createProperty("dt", Type.DATETIME);
-        database.newDocument("DateTimeAsDateType").set("dt", LocalDateTime.of(2026, 6, 12, 15, 30, 0)).save();
+        // A non-zero millisecond component: Type.DATETIME's declared precision is MILLIS, and a
+        // java.util.Date can carry exactly that - this must survive, not be truncated by a
+        // seconds-only schema pattern (issue #7610 code-review follow-up).
+        database.newDocument("DateTimeAsDateType").set("dt", LocalDateTime.of(2026, 6, 12, 15, 30, 0, 250_000_000)).save();
       });
 
       // SELECT FROM (not a column list) keeps the result an element, so serializeResult() resolves
@@ -381,7 +384,7 @@ class JsonSerializerTest extends TestHelper {
         assertThat(dt).isInstanceOf(Date.class);
 
         final JSONObject json = new JsonSerializer(database).serializeResult(database, row);
-        assertThat(json.getString("dt")).isEqualTo("2026-06-12 15:30:00");
+        assertThat(json.getString("dt")).isEqualTo("2026-06-12 15:30:00.250");
       }
     } finally {
       serializer.setDateTimeImplementation(previous);
