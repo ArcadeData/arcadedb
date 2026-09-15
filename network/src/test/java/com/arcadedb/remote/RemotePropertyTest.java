@@ -220,6 +220,12 @@ class RemotePropertyTest {
   }
 
   @Test
+  void renameThrowsUnsupportedOperationException() {
+    assertThatThrownBy(() -> property.rename("newName"))
+        .isInstanceOf(UnsupportedOperationException.class);
+  }
+
+  @Test
   void setOfTypeThrowsUnsupportedOperationException() {
     assertThatThrownBy(() -> property.setOfType("INTEGER"))
         .isInstanceOf(UnsupportedOperationException.class);

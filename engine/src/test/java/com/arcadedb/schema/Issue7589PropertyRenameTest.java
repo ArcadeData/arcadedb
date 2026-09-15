@@ -109,6 +109,39 @@ class Issue7589PropertyRenameTest extends TestHelper {
   }
 
   @Test
+  void renamingANonExistentPropertyIsRefused() {
+    createType();
+
+    assertThatThrownBy(() -> database.getSchema().getType("Person").renameProperty("doesNotExist", "newName"))
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("does not exist");
+  }
+
+  @Test
+  void renamingToANameAlreadyDefinedInASuperTypeIsRefused() {
+    database.command("sql", "CREATE DOCUMENT TYPE Base");
+    database.command("sql", "CREATE PROPERTY Base.email STRING");
+    createType();
+    database.command("sql", "ALTER TYPE Person SUPERTYPE +Base");
+
+    assertThatThrownBy(() -> database.getSchema().getType("Person").getProperty("name").rename("email"))
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("already defined in a super type");
+  }
+
+  @Test
+  void aDefaultValueCarriesOverToTheNewNameAndNoLongerAppliesUnderTheOldOne() {
+    createType();
+    database.command("sql", "ALTER PROPERTY Person.name DEFAULT 'Anonymous'");
+
+    database.command("sql", "ALTER PROPERTY Person.name NAME fullName");
+
+    final DocumentType type = database.getSchema().getType("Person");
+    assertThat(type.getProperty("fullName").getDefaultValueDefinition()).isEqualTo("'Anonymous'");
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).contains("fullName").doesNotContain("name");
+  }
+
+  @Test
   void renamingAnIndexedPropertyIsRefused() {
     createType();
     database.command("sql", "CREATE INDEX ON Person (name) UNIQUE");
@@ -131,6 +164,27 @@ class Issue7589PropertyRenameTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE Employee");
     database.command("sql", "ALTER TYPE Employee SUPERTYPE +Person");
     database.command("sql", "CREATE INDEX ON Employee (name) NOTUNIQUE");
+
+    assertThatThrownBy(() -> database.getSchema().getType("Person").getProperty("name").rename("fullName"))
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("index");
+
+    assertThat(database.getSchema().getType("Person").existsProperty("name")).isTrue();
+  }
+
+  /**
+   * Same shape as {@link #renamingAPropertyIndexedOnlyByASubtypeIsRefused}, one level deeper: the index sits on a
+   * subtype of a subtype, exercising {@code findDescendantIndexOnProperty}'s recursive case rather than just its
+   * first level.
+   */
+  @Test
+  void renamingAPropertyIndexedOnlyByAGrandchildSubtypeIsRefused() {
+    createType();
+    database.command("sql", "CREATE DOCUMENT TYPE Employee");
+    database.command("sql", "ALTER TYPE Employee SUPERTYPE +Person");
+    database.command("sql", "CREATE DOCUMENT TYPE Manager");
+    database.command("sql", "ALTER TYPE Manager SUPERTYPE +Employee");
+    database.command("sql", "CREATE INDEX ON Manager (name) NOTUNIQUE");
 
     assertThatThrownBy(() -> database.getSchema().getType("Person").getProperty("name").rename("fullName"))
         .isInstanceOf(SchemaException.class)
