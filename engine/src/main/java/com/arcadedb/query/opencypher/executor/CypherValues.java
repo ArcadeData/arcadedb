@@ -97,8 +97,16 @@ public final class CypherValues {
     }
   }
 
+  /**
+   * A heuristic, not a type check: any map with a non-null {@code crs} and numeric {@code x}/{@code y} is treated as
+   * a Point, even one a query wrote as a plain literal rather than through {@code point()} - ArcadeDB has no
+   * dedicated Geometry runtime type to check identity against instead (#4870). It is the most robust option
+   * available today: identity-based exemption breaks as soon as a Point is copied from storage (see the class
+   * javadoc above), and {@link #validatePointEntries} closes the map-smuggling loophole a looser key-presence check
+   * would leave open.
+   */
   private static boolean isPointShaped(final Map<?, ?> map) {
-    return map.containsKey("crs") && map.get("x") instanceof Number && map.get("y") instanceof Number;
+    return map.get("crs") != null && map.get("x") instanceof Number && map.get("y") instanceof Number;
   }
 
   /** A point-shaped map is exempt as a whole, but its own values are not: this refuses one smuggling a map/list of
