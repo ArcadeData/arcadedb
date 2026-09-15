@@ -495,9 +495,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         // keys are partial (fewer components than the composite index defines). Purpose=1 rejects
         // partial keys with "key is composed of N items, while the index defined M items".
         // Purpose=2/3 allows partial key comparison, which correctly matches by prefix, and - like the data-page
-        // lookup in searchInCurrentPage() below - must follow the scan direction: compareKey()'s PARTIAL MATCHING
-        // walk resolves an ambiguous binary-search landing point to the FIRST entry of a same-prefix run for
-        // purpose=2 and the LAST entry for purpose=3. Using purpose=2 unconditionally made a descending scan's
+        // lookup in searchInCurrentPage() below - must follow the scan direction: LSMTreeIndexAbstract.seekRunBoundary()
+        // resolves an ambiguous binary-search landing point to the FIRST entry of a same-prefix run for purpose=2 and
+        // the LAST entry for purpose=3. Using purpose=2 unconditionally made a descending scan's
         // root-page probe always land on the series' FIRST (lowest-keyed) data page instead of its LAST
         // (highest-keyed) one whenever a composite-index prefix match spanned multiple data pages within one
         // compacted series, so the scan started too low and silently dropped whole series/pages (#6694).
