@@ -30,8 +30,8 @@ import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -63,6 +63,36 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.getSchema().createDocumentType(TYPE);
+  }
+
+  /**
+   * A per-command-index error tracker (CodeRabbit review): an aggregate {@code hasSize(N)} plus an
+   * {@code instanceof} check on every entry cannot tell a correct notify loop from a buggy one that
+   * double-notifies one command and skips another entirely - both produce N entries, all
+   * {@link ConcurrentModificationException}. Tracked by index instead, and verified below with
+   * {@link #assertEachCommandNotifiedExactlyOnce}.
+   */
+  private static AsyncResultsetCallback errorTrackingCallback(final int index, final Map<Integer, AtomicInteger> errorCountsByIndex) {
+    return new AsyncResultsetCallback() {
+      @Override
+      public void onComplete(final ResultSet rs) {
+      }
+
+      @Override
+      public void onError(final Exception e) {
+        assertThat(e).isInstanceOf(ConcurrentModificationException.class);
+        errorCountsByIndex.computeIfAbsent(index, k -> new AtomicInteger()).incrementAndGet();
+      }
+    };
+  }
+
+  private static void assertEachCommandNotifiedExactlyOnce(final Map<Integer, AtomicInteger> errorCountsByIndex, final int total) {
+    for (int i = 0; i < total; i++) {
+      final AtomicInteger count = errorCountsByIndex.get(i);
+      assertThat(count == null ? 0 : count.get())
+          .as("command %d must be notified exactly once, not skipped or duplicated", i).isEqualTo(1);
+    }
+    assertThat(errorCountsByIndex).as("no notification for an index outside the buffered range").hasSize(total);
   }
 
   /**
@@ -134,20 +164,22 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
           throw new ConcurrentModificationException("simulated permanent conflict");
         };
 
-    final List<Exception> perCommandErrors = new CopyOnWriteArrayList<>();
-    final AtomicInteger    perCommandOks    = new AtomicInteger();
+    final Map<Integer, AtomicInteger> errorCountsByIndex = new ConcurrentHashMap<>();
+    final Map<Integer, AtomicInteger> okCountsByIndex     = new ConcurrentHashMap<>();
 
     try {
       for (int i = 0; i < 5; i++) {
+        final int idx = i;
         final AsyncResultsetCallback cb = new AsyncResultsetCallback() {
           @Override
           public void onComplete(final ResultSet rs) {
-            perCommandOks.incrementAndGet();
+            okCountsByIndex.computeIfAbsent(idx, k -> new AtomicInteger()).incrementAndGet();
           }
 
           @Override
           public void onError(final Exception e) {
-            perCommandErrors.add(e);
+            assertThat(e).isInstanceOf(ConcurrentModificationException.class);
+            errorCountsByIndex.computeIfAbsent(idx, k -> new AtomicInteger()).incrementAndGet();
           }
         };
         database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", cb, i);
@@ -162,14 +194,12 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
 
     // Every buffered command already got onComplete on its first, now-discarded attempt (the non-durable
     // signal from #6470) - that is unchanged by this fix and still fires exactly once per command.
-    assertThat(perCommandOks.get()).as("onComplete still fires once per command on its first attempt, unchanged").isEqualTo(5);
+    assertEachCommandNotifiedExactlyOnce(okCountsByIndex, 5);
 
     // The actual fix: every one of the 5 buffered commands is ALSO told its own onError once the retries
     // are exhausted, instead of the failure being visible only through the executor-wide callback above -
     // in addition to the onComplete above, which is the point (see commitBatch()'s own javadoc).
-    assertThat(perCommandErrors).hasSize(5);
-    for (final Exception e : perCommandErrors)
-      assertThat(e).isInstanceOf(ConcurrentModificationException.class);
+    assertEachCommandNotifiedExactlyOnce(errorCountsByIndex, 5);
 
     database.transaction(() -> assertThat(database.countType(TYPE, true)).isZero());
   }
@@ -310,22 +340,11 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
           throw new ConcurrentModificationException("simulated conflict on the compaction task's own commit");
         };
 
-    final List<Exception> perCommandErrors = new CopyOnWriteArrayList<>();
+    final Map<Integer, AtomicInteger> errorCountsByIndex = new ConcurrentHashMap<>();
 
     try {
-      for (int i = 0; i < 3; i++) {
-        final AsyncResultsetCallback cb = new AsyncResultsetCallback() {
-          @Override
-          public void onComplete(final ResultSet rs) {
-          }
-
-          @Override
-          public void onError(final Exception e) {
-            perCommandErrors.add(e);
-          }
-        };
-        database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", cb, i);
-      }
+      for (int i = 0; i < 3; i++)
+        database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", errorTrackingCallback(i, errorCountsByIndex), i);
 
       // Dispatched to the same worker (parallel level 1), landing mid-batch behind the 3 commands above -
       // exactly like the real onAfterCommit hook would once the index crosses its compaction threshold.
@@ -341,9 +360,7 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
     // The actual fix: all 3 commands buffered ahead of the compaction task are told their own onError, instead of
     // the failure being visible only through the executor-wide callback above (or, pre-fix, not at all for the
     // no-try/catch compaction path).
-    assertThat(perCommandErrors).hasSize(3);
-    for (final Exception e : perCommandErrors)
-      assertThat(e).isInstanceOf(ConcurrentModificationException.class);
+    assertEachCommandNotifiedExactlyOnce(errorCountsByIndex, 3);
 
     database.transaction(() -> assertThat(database.countType(TYPE, true)).isZero());
   }
@@ -367,25 +384,14 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
           throw new ConcurrentModificationException("simulated conflict on the park worker's own commit");
         };
 
-    final List<Exception> perCommandErrors = new CopyOnWriteArrayList<>();
+    final Map<Integer, AtomicInteger> errorCountsByIndex = new ConcurrentHashMap<>();
 
     final CountDownLatch parked  = new CountDownLatch(1);
     final CountDownLatch release = new CountDownLatch(1);
 
     try {
-      for (int i = 0; i < 3; i++) {
-        final AsyncResultsetCallback cb = new AsyncResultsetCallback() {
-          @Override
-          public void onComplete(final ResultSet rs) {
-          }
-
-          @Override
-          public void onError(final Exception e) {
-            perCommandErrors.add(e);
-          }
-        };
-        database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", cb, i);
-      }
+      for (int i = 0; i < 3; i++)
+        database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", errorTrackingCallback(i, errorCountsByIndex), i);
 
       final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) database.async();
       // getBestSlot() rather than a hardcoded slot: with a single worker it is always slot 0, but this
@@ -404,9 +410,7 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
     assertThat(executorWideErrors.get()).as("the executor-wide callback still fires, unchanged").isGreaterThanOrEqualTo(1);
 
     // The actual fix: all 3 commands buffered ahead of the park task are told their own onError too.
-    assertThat(perCommandErrors).hasSize(3);
-    for (final Exception e : perCommandErrors)
-      assertThat(e).isInstanceOf(ConcurrentModificationException.class);
+    assertEachCommandNotifiedExactlyOnce(errorCountsByIndex, 3);
 
     database.transaction(() -> assertThat(database.countType(TYPE, true)).isZero());
   }
@@ -427,21 +431,10 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
     final AtomicInteger executorWideErrors = new AtomicInteger();
     database.async().onError(e -> executorWideErrors.incrementAndGet());
 
-    final List<Exception> perCommandErrors = new CopyOnWriteArrayList<>();
+    final Map<Integer, AtomicInteger> errorCountsByIndex = new ConcurrentHashMap<>();
 
-    for (int i = 0; i < 3; i++) {
-      final AsyncResultsetCallback cb = new AsyncResultsetCallback() {
-        @Override
-        public void onComplete(final ResultSet rs) {
-        }
-
-        @Override
-        public void onError(final Exception e) {
-          perCommandErrors.add(e);
-        }
-      };
-      database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", cb, i);
-    }
+    for (int i = 0; i < 3; i++)
+      database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", errorTrackingCallback(i, errorCountsByIndex), i);
 
     // A minimal stand-in for CreateEdgeAsyncTask and its siblings: no try/catch of its own, exactly the shape
     // that reaches executeTask()'s generic catch rather than any of this PR's own notify/retry machinery.
@@ -460,9 +453,7 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
     assertThat(executorWideErrors.get()).as("the executor-wide callback still fires, unchanged").isGreaterThanOrEqualTo(1);
 
     // The actual fix: all 3 commands buffered ahead of the throwing task are told their own onError too.
-    assertThat(perCommandErrors).hasSize(3);
-    for (final Exception e : perCommandErrors)
-      assertThat(e).isInstanceOf(ConcurrentModificationException.class);
+    assertEachCommandNotifiedExactlyOnce(errorCountsByIndex, 3);
 
     database.transaction(() -> assertThat(database.countType(TYPE, true)).isZero());
   }
@@ -480,10 +471,11 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
     database.async().setParallelLevel(1); // deterministic: the failing command must land on the same worker
     database.async().setCommitEvery(1_000); // large enough that only the local failure below is in play
 
-    final List<Exception> perCommandErrors  = new CopyOnWriteArrayList<>();
-    final AtomicInteger    failingCommandErrors = new AtomicInteger();
+    final Map<Integer, AtomicInteger> errorCountsByIndex   = new ConcurrentHashMap<>();
+    final AtomicInteger               failingCommandErrors = new AtomicInteger();
 
     for (int i = 0; i < 3; i++) {
+      final int idx = i;
       final AsyncResultsetCallback cb = new AsyncResultsetCallback() {
         @Override
         public void onComplete(final ResultSet rs) {
@@ -491,7 +483,7 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
 
         @Override
         public void onError(final Exception e) {
-          perCommandErrors.add(e);
+          errorCountsByIndex.computeIfAbsent(idx, k -> new AtomicInteger()).incrementAndGet();
         }
       };
       database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", cb, i);
@@ -520,7 +512,7 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
     // The actual fix: all 3 commands buffered ahead of the failing one are told their own onError too, instead of
     // silently losing writes whose onComplete already fired - the same shape as #7615 itself, just triggered by
     // an ordinary command failure instead of a periodic-boundary commit conflict.
-    assertThat(perCommandErrors).as("every command buffered ahead of the local failure must be told too").hasSize(3);
+    assertEachCommandNotifiedExactlyOnce(errorCountsByIndex, 3);
 
     database.transaction(() -> assertThat(database.countType(TYPE, true)).isZero());
   }
