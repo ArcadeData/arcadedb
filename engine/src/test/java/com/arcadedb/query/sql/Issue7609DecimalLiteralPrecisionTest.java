@@ -308,6 +308,35 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
   }
 
   /**
+   * {@link Type#normalizeNumberForKey} is the GROUP BY / DISTINCT key, and its whole purpose is to let the same
+   * logical value reaching a grouping step as two different numeric types land in ONE group. It widened a Float
+   * with {@code .doubleValue()} like everything else did, so 0.05f keyed as 0.05000000074505806 against the
+   * Double 0.05 and the group split in two.
+   */
+  @Test
+  void aFloatAndADoubleOfTheSameValueShareOneGroupingKey() {
+    assertThat(Type.normalizeNumberForKey(0.05f)).isEqualTo(Type.normalizeNumberForKey(0.05d));
+    assertThat(Type.normalizeNumberForKey(0.1f)).isEqualTo(Type.normalizeNumberForKey(0.1d));
+    assertThat(Type.normalizeNumberForKey(42.0f)).isEqualTo(Type.normalizeNumberForKey(42.0d));
+    assertThat(Type.normalizeNumberForKey(42.0f)).isEqualTo(Type.normalizeNumberForKey(42));
+
+    // values that are genuinely different still key apart
+    assertThat(Type.normalizeNumberForKey(0.05f)).isNotEqualTo(Type.normalizeNumberForKey(0.06d));
+
+    // the non-finite values have no decimal form and are returned unchanged, as before
+    assertThat(Type.normalizeNumberForKey(Float.NaN)).isEqualTo(Float.NaN);
+    assertThat(Type.normalizeNumberForKey(Float.POSITIVE_INFINITY)).isEqualTo(Float.POSITIVE_INFINITY);
+
+    // and end to end, through a GROUP BY that sees the same number as a FLOAT and as a DOUBLE property
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Grp");
+      database.newDocument("Grp").set("v", 0.05f).save();
+      database.newDocument("Grp").set("v", 0.05d).save();
+    });
+    assertThat(count("SELECT v, count(*) AS n FROM Grp GROUP BY v")).as("one group, not two").isEqualTo(1);
+  }
+
+  /**
    * {@link BinaryComparator} has two entry points and they have to answer the same: the typed
    * {@code compare(value, type, value, type)} the index cursor walks a range with, and {@code equals()}, which
    * routes through {@link Type#castComparableNumber}. Moving the equality side onto the decimal form would have
