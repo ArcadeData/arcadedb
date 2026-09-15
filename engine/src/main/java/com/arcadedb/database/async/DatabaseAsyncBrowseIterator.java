@@ -57,6 +57,13 @@ public class DatabaseAsyncBrowseIterator implements DatabaseAsyncTask {
   }
 
   @Override
+  public boolean writesToSharedBatch() {
+    // #7615 review: a pure read (iterator.next()) - never writes to the shared batch transaction, so must
+    // not disable a periodic-boundary retry-by-replay just for sharing a worker with buffered commands.
+    return false;
+  }
+
+  @Override
   public String toString() {
     return "BrowseIterator(" + iterator + ")";
   }

@@ -509,11 +509,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             if (!command.idempotent)
               pendingBatchCommands.add(command);
             // idempotent (a query): wrote nothing, batch replayability unaffected either way.
-          } else if (message.requiresActiveTx())
+          } else if (message.writesToSharedBatch())
             // Some other mutating task type ran against the shared batch and left it active, i.e. it
             // succeeded - DatabaseAsyncCreateRecord/UpdateRecord/DeleteRecord, the graph edge-creation
             // tasks, ... commitBatch() only knows how to replay pendingBatchCommands, so it must not
             // attempt to on a batch holding a write it cannot reconstruct (see pendingUnreplayableTasks).
+            // writesToSharedBatch() (issue #7615 review), not requiresActiveTx(): a pure-read task (a
+            // bucket scan, a browse iterator) or one writing to storage entirely separate from this
+            // transaction (a time-series shard append) still needs begin() called before it runs but has
+            // nothing here a rolled-back commit could actually lose - counting it anyway would needlessly
+            // disable the retry-by-replay for every command buffered ahead of it on the same worker.
             pendingUnreplayableTasks.add(message);
 
           count++;

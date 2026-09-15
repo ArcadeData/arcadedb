@@ -70,6 +70,14 @@ public class DatabaseAsyncAppendSamples implements DatabaseAsyncTask {
   }
 
   @Override
+  public boolean writesToSharedBatch() {
+    // #7615 review: writes to a TimeSeriesEngine shard, a storage path entirely separate from database's
+    // transaction - never touches the shared batch, so must not disable a periodic-boundary retry-by-replay
+    // just for sharing a worker with buffered commands.
+    return false;
+  }
+
+  @Override
   public String toString() {
     return "AppendSamples(type=" + engine.getTypeName() + " shard=" + shardIndex + " points=" + source.size() + ")";
   }
