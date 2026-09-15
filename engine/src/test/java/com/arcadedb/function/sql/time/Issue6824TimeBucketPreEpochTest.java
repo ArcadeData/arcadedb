@@ -23,6 +23,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -53,7 +55,8 @@ class Issue6824TimeBucketPreEpochTest extends TestHelper {
   private long bucket(final String interval, final long timestampMs) {
     try (final ResultSet resultSet = database.query("sql",
         "SELECT ts.timeBucket('" + interval + "', " + timestampMs + ") AS b")) {
-      return resultSet.next().<Date>getProperty("b").getTime();
+      // Issue #7610: the bucket is a UTC-anchored LocalDateTime, not a java.util.Date.
+      return resultSet.next().<LocalDateTime>getProperty("b").toInstant(ZoneOffset.UTC).toEpochMilli();
     }
   }
 
@@ -111,11 +114,13 @@ class Issue6824TimeBucketPreEpochTest extends TestHelper {
   void theTypedPreEpochOverloadsFloorAsWell() {
     try (final ResultSet resultSet = database.query("sql", "SELECT ts.timeBucket('1h', ?) AS b",
         new Date(-1_800_000L))) {
-      assertThat(resultSet.next().<Date>getProperty("b").getTime()).isEqualTo(-HOUR_MS);
+      assertThat(resultSet.next().<LocalDateTime>getProperty("b").toInstant(ZoneOffset.UTC).toEpochMilli())
+          .isEqualTo(-HOUR_MS);
     }
     try (final ResultSet resultSet = database.query("sql", "SELECT ts.timeBucket('1h', ?) AS b",
         Instant.ofEpochMilli(-1_800_000L))) {
-      assertThat(resultSet.next().<Date>getProperty("b").getTime()).isEqualTo(-HOUR_MS);
+      assertThat(resultSet.next().<LocalDateTime>getProperty("b").toInstant(ZoneOffset.UTC).toEpochMilli())
+          .isEqualTo(-HOUR_MS);
     }
   }
 }

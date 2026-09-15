@@ -21,6 +21,8 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,70 +37,78 @@ class SQLFunctionTimeBucketTest {
 
   private final SQLFunctionTimeBucket fn = new SQLFunctionTimeBucket();
 
+  /**
+   * Issue #7610: the function returns a UTC-anchored LocalDateTime, not a java.util.Date (see
+   * SQLFunctionTimeBucket for why), so tests compare bucket boundaries as epoch millis.
+   */
+  private static long bucketMs(final Object result) {
+    return ((LocalDateTime) result).toInstant(ZoneOffset.UTC).toEpochMilli();
+  }
+
   @Test
   void hourBucket() {
     // 2026-02-20T10:35:00Z -> should truncate to 2026-02-20T10:00:00Z
     final long ts = 1771580100000L; // ~2026-02-20T10:35:00Z
-    final Date result = (Date) fn.execute(null, null, null, new Object[] { "1h", ts }, null);
+    final Object result = fn.execute(null, null, null, new Object[] { "1h", ts }, null);
 
     // Should be truncated to nearest hour
-    assertThat(result.getTime() % 3600000L).isEqualTo(0L);
-    assertThat(result.getTime()).isLessThanOrEqualTo(ts);
-    assertThat(result.getTime()).isGreaterThan(ts - 3600000L);
+    assertThat(bucketMs(result) % 3600000L).isEqualTo(0L);
+    assertThat(bucketMs(result)).isLessThanOrEqualTo(ts);
+    assertThat(bucketMs(result)).isGreaterThan(ts - 3600000L);
   }
 
   @Test
   void minuteBucket() {
     final long ts = 1771580100000L; // some timestamp
-    final Date result = (Date) fn.execute(null, null, null, new Object[] { "5m", ts }, null);
+    final Object result = fn.execute(null, null, null, new Object[] { "5m", ts }, null);
 
     // Should be truncated to 5-minute boundary
-    assertThat(result.getTime() % (5 * 60000L)).isEqualTo(0L);
-    assertThat(result.getTime()).isLessThanOrEqualTo(ts);
+    assertThat(bucketMs(result) % (5 * 60000L)).isEqualTo(0L);
+    assertThat(bucketMs(result)).isLessThanOrEqualTo(ts);
   }
 
   @Test
   void secondBucket() {
     final long ts = 1771580123456L;
-    final Date result = (Date) fn.execute(null, null, null, new Object[] { "1s", ts }, null);
+    final Object result = fn.execute(null, null, null, new Object[] { "1s", ts }, null);
 
-    assertThat(result.getTime() % 1000L).isEqualTo(0L);
-    assertThat(result.getTime()).isLessThanOrEqualTo(ts);
+    assertThat(bucketMs(result) % 1000L).isEqualTo(0L);
+    assertThat(bucketMs(result)).isLessThanOrEqualTo(ts);
   }
 
   @Test
   void dayBucket() {
     final long ts = 1771580100000L;
-    final Date result = (Date) fn.execute(null, null, null, new Object[] { "1d", ts }, null);
+    final Object result = fn.execute(null, null, null, new Object[] { "1d", ts }, null);
 
-    assertThat(result.getTime() % 86400000L).isEqualTo(0L);
-    assertThat(result.getTime()).isLessThanOrEqualTo(ts);
+    assertThat(bucketMs(result) % 86400000L).isEqualTo(0L);
+    assertThat(bucketMs(result)).isLessThanOrEqualTo(ts);
   }
 
   @Test
   void weekBucket() {
     final long ts = 1771580100000L;
-    final Date result = (Date) fn.execute(null, null, null, new Object[] { "1w", ts }, null);
+    final Object result = fn.execute(null, null, null, new Object[] { "1w", ts }, null);
 
-    assertThat(result.getTime() % (7 * 86400000L)).isEqualTo(0L);
-    assertThat(result.getTime()).isLessThanOrEqualTo(ts);
+    assertThat(bucketMs(result) % (7 * 86400000L)).isEqualTo(0L);
+    assertThat(bucketMs(result)).isLessThanOrEqualTo(ts);
   }
 
   @Test
   void withDateObject() {
     final Date input = new Date(1771580100000L);
-    final Date result = (Date) fn.execute(null, null, null, new Object[] { "1h", input }, null);
+    final Object result = fn.execute(null, null, null, new Object[] { "1h", input }, null);
 
-    assertThat(result.getTime() % 3600000L).isEqualTo(0L);
+    assertThat(bucketMs(result) % 3600000L).isEqualTo(0L);
   }
 
   @Test
   void exactBoundary() {
     // Timestamp already on an hour boundary
     final long ts = 3600000L * 5; // exactly 05:00:00 UTC epoch
-    final Date result = (Date) fn.execute(null, null, null, new Object[] { "1h", ts }, null);
+    final Object result = fn.execute(null, null, null, new Object[] { "1h", ts }, null);
 
-    assertThat(result.getTime()).isEqualTo(ts);
+    assertThat(bucketMs(result)).isEqualTo(ts);
   }
 
   @Test

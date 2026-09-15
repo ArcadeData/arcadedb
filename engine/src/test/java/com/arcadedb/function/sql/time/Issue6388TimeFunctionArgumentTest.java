@@ -25,8 +25,9 @@ import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
-import java.util.Date;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -132,8 +133,10 @@ class Issue6388TimeFunctionArgumentTest extends TestHelper {
 
   @Test
   void timeBucketStillTruncatesToTheBucketStart() {
+    // Issue #7610: the bucket is a UTC-anchored LocalDateTime, not a java.util.Date.
     try (final ResultSet rs = database.query("sql", "SELECT ts.timeBucket('1h', 3900000) AS b")) {
-      assertThat(rs.next().<Date>getProperty("b")).isEqualTo(new Date(3_600_000L));
+      assertThat(rs.next().<LocalDateTime>getProperty("b"))
+          .isEqualTo(LocalDateTime.ofEpochSecond(3_600L, 0, ZoneOffset.UTC));
     }
   }
 

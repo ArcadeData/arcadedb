@@ -350,4 +350,62 @@ class JsonSerializerTest extends TestHelper {
       serializer.setDateTimeImplementation(previous);
     }
   }
+
+  /**
+   * Issue #7610: {@code serializeResult()} formatted every {@code java.util.Date} value with the
+   * schema's DATE-only pattern, because {@code JSONObject} dispatches on Java class alone and
+   * {@code java.util.Date} backs both a genuine DATE column and a DATETIME column configured with
+   * {@code arcadedb.dateTimeImplementation} = java.util.Date - a real, supported configuration, not a
+   * hypothetical one. A DATETIME column in that configuration lost its time of day over HTTP query
+   * results before this fix.
+   */
+  @Test
+  void dateTimeImplementationAsJavaUtilDateKeepsTimeComponent() {
+    final BinarySerializer serializer = ((DatabaseInternal) database).getSerializer();
+    final Object previous = serializer.getDateTimeImplementation();
+    try {
+      serializer.setDateTimeImplementation(Date.class);
+
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("DateTimeAsDateType");
+        type.createProperty("dt", Type.DATETIME);
+        database.newDocument("DateTimeAsDateType").set("dt", LocalDateTime.of(2026, 6, 12, 15, 30, 0)).save();
+      });
+
+      // SELECT FROM (not a column list) keeps the result an element, so serializeResult() resolves
+      // the property's schema type - the case the fix's DATE-vs-DATETIME distinction depends on.
+      try (final ResultSet rs = database.query("sql", "SELECT FROM DateTimeAsDateType")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        final Object dt = row.getProperty("dt");
+        assertThat(dt).isInstanceOf(Date.class);
+
+        final JSONObject json = new JsonSerializer(database).serializeResult(database, row);
+        assertThat(json.getString("dt")).isEqualTo("2026-06-12 15:30:00");
+      }
+    } finally {
+      serializer.setDateTimeImplementation(previous);
+    }
+  }
+
+  /**
+   * Companion to {@link #dateTimeImplementationAsJavaUtilDateKeepsTimeComponent()}: a genuine DATE
+   * column (default {@code arcadedb.dateImplementation} = java.time.LocalDate) must keep its
+   * date-only formatting through {@code serializeResult()} - only a {@code java.util.Date} that does
+   * NOT back a DATE-typed property gained the time component in the fix above.
+   */
+  @Test
+  void plainDateColumnStaysDateOnlyInSerializeResult() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType("PlainDateType");
+      type.createProperty("d", Type.DATE);
+      database.newDocument("PlainDateType").set("d", LocalDate.of(2026, 6, 12)).save();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM PlainDateType")) {
+      assertThat(rs.hasNext()).isTrue();
+      final JSONObject json = new JsonSerializer(database).serializeResult(database, rs.next());
+      assertThat(json.getString("d")).isEqualTo("2026-06-12");
+    }
+  }
 }
