@@ -23,14 +23,17 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.query.sql.parser.*;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class SQLScriptQueryEngine extends SQLQueryEngine {
   public static final String ENGINE_NAME = "sqlscript";
@@ -122,6 +125,22 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
           if (s.isDDL())
             return true;
         return false;
+      }
+
+      /**
+       * Union of every statement's own operation types, not the interface default derived from
+       * {@link #isIdempotent()}/{@link #isDDL()} alone: that default would report a script such as
+       * {@code BACKUP DATABASE} as a plain {@code READ}, discarding the write
+       * {@link BackupDatabaseStatement#getOperationTypes()} declares (issue #7576). A script is admitted by a
+       * caller only when every statement in it is, which is already how {@code isIdempotent()} and {@code isDDL()}
+       * aggregate above - so the union, not the first statement's types, is what keeps this consistent with them.
+       */
+      @Override
+      public Set<OperationType> getOperationTypes() {
+        final EnumSet<OperationType> all = EnumSet.noneOf(OperationType.class);
+        for (final Statement s : statements)
+          all.addAll(s.getOperationTypes());
+        return all;
       }
     };
   }
