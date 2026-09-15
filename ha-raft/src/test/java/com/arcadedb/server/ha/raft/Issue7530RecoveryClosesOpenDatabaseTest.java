@@ -288,6 +288,59 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
         .as("the pass went on to the next marked directory instead of abandoning the scan").doesNotExist();
   }
 
+  /**
+   * Closing the database first put an <b>unchecked</b> failure on this path for the first time.
+   * {@code recoverSingleDatabase} catches its own {@code IOException}s and every file-moving helper it reaches
+   * declares only {@code IOException}, so before this change the scan loop could not be ended by one bad
+   * directory. {@code LocalDatabase.close()} declares no checked exception, and a close that throws is most likely
+   * in exactly the disk-pressure conditions that leave a marker behind - so an unguarded repair would abandon
+   * every other pending marker in the pass and then escape into {@code ArcadeStateMachine.initialize()}, which
+   * does not catch it either, failing the Ratis start for the whole node.
+   * <p>
+   * Driven through the repair barrier rather than through a failing {@code close()}, because that is the seam
+   * available without mocking a database: it throws from inside {@code recoverSingleDatabase}, which unwinds
+   * through the same registry lock, reopen, 503 window and maintenance slot that a failing close does. What is
+   * pinned is the guard, and the guard is the same code for either origin.
+   */
+  @Test
+  @Timeout(180)
+  void anUncheckedFailureRepairingOneDatabaseDoesNotEndTheScan(@TempDir final Path root) throws Exception {
+    final Path databasesDir = startServer(root);
+
+    // Two marked directories. The one that blows up is named so it sorts first is not something the directory
+    // stream guarantees, so the barrier fails only the first database it is called for, whichever that is.
+    final Path first = stageSyntheticInterruptedSwap(databasesDir);
+    final Path second = databasesDir.resolve(DEFERRED_DB);
+    Files.createDirectories(second.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR));
+    Files.writeString(second.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR).resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+    Files.writeString(second.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
+    Files.writeString(second.resolve("data.dat"), "old-data");
+
+    final AtomicBoolean alreadyFailed = new AtomicBoolean(false);
+    SnapshotInstaller.recoveryBarrierForTesting = () -> {
+      if (alreadyFailed.compareAndSet(false, true))
+        throw new IllegalStateException("simulated unchecked failure while repairing this database");
+    };
+
+    // The pass itself must not throw: the exception must not reach ArcadeStateMachine.initialize().
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir, server);
+
+    assertThat(alreadyFailed.get()).as("the barrier fired, so one repair really did blow up").isTrue();
+
+    final boolean firstStillMarked = Files.exists(first.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE));
+    final boolean secondStillMarked = Files.exists(second.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE));
+    assertThat(firstStillMarked ^ secondStillMarked)
+        .as("exactly one database kept its marker: the one that failed, not the one after it").isTrue();
+
+    // Neither the node-wide window nor the maintenance slot may be leaked by the failing repair.
+    assertThat(server.isSnapshotInstallInProgress())
+        .as("the 503 window was released even though the repair threw").isFalse();
+    assertThat(server.getBackupCoordinator().isInProgress(SYNTHETIC_DB))
+        .as("the maintenance slot was released even though the repair threw").isFalse();
+    assertThat(server.getBackupCoordinator().isInProgress(DEFERRED_DB))
+        .as("the maintenance slot was released even though the repair threw").isFalse();
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
 
   private Thread startRecovery(final Path databasesDir, final AtomicBoolean done,

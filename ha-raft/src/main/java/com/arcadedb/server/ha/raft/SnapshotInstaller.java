@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.backup.BackupCoordinator;
@@ -957,7 +958,28 @@ public final class SnapshotInstaller {
         // The directory name IS the database name: ArcadeDBServer resolves databases/<name> both when it opens
         // them (loadDatabases) and when it looks one up (getDatabase), so it is the key the coordinator - and
         // every backup entry point that consults it - uses for this database.
-        recoverSingleDatabaseHoldingMaintenanceSlot(dirName, dbDir, server);
+        //
+        // One database's repair must not end the scan. recoverSingleDatabase reports its own IOExceptions and
+        // returns, so before #7530 this loop was effectively immune to a bad directory - every file-moving helper
+        // it reaches declares only IOException. Closing the database first (#7530) put an UNCHECKED failure on
+        // this path for the first time: LocalDatabase.close() declares no checked exception, and a close that
+        // throws is most likely in exactly the disk-pressure and crash conditions that leave a marker behind. Left
+        // unguarded it would escape this loop, leaving every other pending marker unrepaired this pass, and then
+        // escape recoverPendingSnapshotSwaps into ArcadeStateMachine.initialize(), which does not catch it either
+        // - turning one database's close failure into a failed Ratis start for the node (review finding on PR
+        // #7631).
+        //
+        // So it is caught per database, loudly, and the marker is left on disk for the next pass. Error is not
+        // caught: an OutOfMemoryError is not a per-database problem and the node has bigger trouble than a marker.
+        try {
+          recoverSingleDatabaseHoldingMaintenanceSlot(dirName, dbDir, server);
+        } catch (final RuntimeException e) {
+          LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+              "Could not repair the interrupted snapshot swap of database '%s': %s. Its '%s' marker is left on disk, "
+                  + "so the database stays unavailable until the next recovery pass reconciles it or an operator "
+                  + "intervenes; the scan continues with the remaining databases", e, dirName, e.getMessage(),
+              SNAPSHOT_PENDING_FILE);
+        }
       }
     } catch (final IOException e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
@@ -1086,10 +1108,16 @@ public final class SnapshotInstaller {
    * {@link ArcadeDBServer#getDatabasesLock()} throughout, so nothing can open it meanwhile, and
    * {@code loadDatabases(true)} and the next {@code getDatabase} pick the stale entry up once the marker is gone.
    * <p>
+   * Only {@code DatabaseNotAvailableException} is caught, not {@code Exception}: that is the one the reasoning
+   * above is built on, and anything else from the lookup is a bug worth seeing rather than a routine "not
+   * resolved" (review finding on PR #7631). It is survivable to let it through because
+   * {@link #recoverPendingSnapshotSwaps} guards each database's repair and continues the scan.
+   * <p>
    * A failure of the <b>close</b> itself is deliberately NOT caught here. That one leaves a database registered
    * and open, and swallowing it would put this pass back to renaming files under exactly that - the defect this
-   * whole change exists to remove. It propagates out of the pass instead, loudly, leaving the marker on disk for
-   * the next repair to find.
+   * whole change exists to remove. It leaves this database's marker on disk instead, and the per-database guard in
+   * {@link #recoverPendingSnapshotSwaps} keeps it from taking the rest of the scan - or Ratis initialization -
+   * down with it.
    *
    * @return {@code true} only when this call closed and deregistered a live instance, i.e. when the caller owes a
    * matching reopen
@@ -1101,7 +1129,7 @@ public final class SnapshotInstaller {
     final DatabaseInternal db;
     try {
       db = (DatabaseInternal) server.getDatabase(databaseName);
-    } catch (final Exception e) {
+    } catch (final DatabaseNotAvailableException e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
           "Database '%s' is registered but did not resolve before repairing its interrupted snapshot swap: %s. Only "
               + "an entry that is not open can fail to resolve, so it holds no files in the directory being "

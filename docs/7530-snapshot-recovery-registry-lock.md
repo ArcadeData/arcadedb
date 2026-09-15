@@ -124,6 +124,7 @@ ha-raft/.../ArcadeStateMachine.java:557:        SnapshotInstaller.recoverPending
 | `recoverPendingSnapshotSwaps` -> `.acquire-*` staging-dir deletion | **argued** | - |
 | `acquireNewDatabase` -> `deleteDirectoryIfExists(dbPath)` / `publishStaging` | **argued** | - |
 | Registered but *unresolvable* entry (registered + closed + marked) on the repaired path | **yes** - the lookup failure is caught, the pass continues | yes - `aRegisteredButUnresolvableDatabaseDoesNotAbandonTheWholePass` |
+| An unchecked failure repairing one database ending the whole scan / failing Ratis init | **yes** - per-database guard in the scan loop | yes - `anUncheckedFailureRepairingOneDatabaseDoesNotEndTheScan` |
 | `recoverPendingSnapshotSwaps(Path)` one-argument overload | **argued** | yes - `recoveryWithoutAServerStillReconcilesTheDirectory` (#7449, untouched) |
 
 **Argued rows, with evidence:**
@@ -262,3 +263,49 @@ which turned both red with their own messages, then reverted.
   contract rather than an HTTP one, the other wire protocols need the same check - out of scope here,
   and noted under residual risk above rather than filed, because it is a design question about what the
   window is for rather than a defect.
+
+
+## Review cycles
+
+### Cycle 1 - `f05d893a9b`
+
+`claude` found one real correctness issue and one minor one. Both applied.
+
+**Blast radius of a close failure.** Verified before agreeing, and the reviewer is right on all three
+links of the chain:
+
+- `recoverPendingSnapshotSwaps`'s `for (final Path dbDir : stream)` loop has no per-database
+  try/catch - only the `DirectoryStream` is wrapped, in `catch (IOException e)`.
+- `LocalDatabase.close()` (`engine/.../LocalDatabase.java:387`) declares no checked exception, so a
+  close failure is unchecked.
+- `ArcadeStateMachine.initialize()` calls the pass at `:557` with no try/catch either.
+
+Before this PR the loop could not be ended by one bad directory: `recoverSingleDatabase` catches its own
+`IOException`s and every helper it reaches declares only `IOException`. Closing the database first put an
+unchecked failure on the path for the first time - and a close that throws is most likely in exactly the
+disk-pressure conditions that leave a marker behind. So one database's close failure could have abandoned
+every other pending marker in the pass and then failed the Ratis start for the node. Now caught per
+database at SEVERE, the marker left on disk, the scan continuing. `Error` is deliberately not caught.
+
+**`catch (final Exception e)` on the lookup was broader than the reasoning behind it.** Narrowed to
+`DatabaseNotAvailableException`, the one the argument is actually built on. Anything else from
+`getDatabase` is a bug worth seeing, and is now survivable precisely because of the per-database guard
+above.
+
+`anUncheckedFailureRepairingOneDatabaseDoesNotEndTheScan` pins the behaviour: two marked directories,
+the first repair throws, and the pass must not throw, must repair the other directory, and must leave
+neither the 503 window nor the maintenance slot held. Driven through `recoveryBarrierForTesting` rather
+than through a failing `close()`, because that is the seam available without mocking a database; it
+throws from inside `recoverSingleDatabase` and unwinds through the same registry lock, reopen, 503 window
+and slot a failing close does, so it pins the guard rather than one origin of the failure. Proved able to
+fail by replacing the guard with a bare call, which turned it red with the escaping exception:
+
+```
+[ERROR] anUncheckedFailureRepairingOneDatabaseDoesNotEndTheScan
+        IllegalState simulated unchecked failure while repairing this database
+```
+
+Full suite after the change: `Tests run: 1491, Failures: 2` - the same two pre-existing
+`ArcadeStateMachinePerDatabaseHaltTest` failures (#7630).
+
+No deferred items.
